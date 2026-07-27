@@ -1338,6 +1338,21 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     validatePlugins(config.plugins);
   }
 
+  // #4854 — `datasourceExpected: false` says no analytics datasource is expected
+  // here; a `datasources` block says one is. Both cannot be true statements
+  // about the same deployment. A warning rather than a throw: the resolution is
+  // unambiguous (the registered datasource wins — `dsNotConfigured` is false, so
+  // the declaration is inert), and refusing to boot over a contradiction that
+  // changes no behaviour would be a worse trade than saying so.
+  if (config.datasourceExpected === false && Object.keys(config.datasources ?? {}).length > 0) {
+    log.warn(
+      { datasources: Object.keys(config.datasources ?? {}) },
+      "atlas.config.ts declares datasourceExpected: false but also defines datasources — " +
+        "the declaration is ignored for health reporting while a datasource is registered. " +
+        "Remove one of the two.",
+    );
+  }
+
   return {
     datasources: config.datasources ?? {},
     // Conditional spread, not `?? true`: "undeclared" must stay distinguishable
@@ -1772,7 +1787,20 @@ export function _resetConfig(): void {
   _resolved = null;
 }
 
-/** Set the cached config directly. For testing only. */
-export function _setConfigForTest(config: ResolvedConfig | null): void {
-  _resolved = config;
+/**
+ * Set the cached config directly. For testing only.
+ *
+ * Accepts a `Partial` because essentially every caller drives one field (a
+ * deploy mode, a sandbox pin, a datasource expectation) and the rest of
+ * `ResolvedConfig` is irrelevant to what it is testing. Typing this as the full
+ * shape pushed an `as any` cast onto ~100 call sites — a lie repeated a hundred
+ * times, each needing its own oxlint-disable. Told once, here, it stays visible.
+ *
+ * The cast is sound for the intended use and unsound in general: readers of an
+ * absent field see `undefined` where the type promises a value. That is exactly
+ * what a partial fixture means, and it is why this is test-only.
+ */
+export function _setConfigForTest(config: Partial<ResolvedConfig> | null): void {
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see the note above: one deliberate widening for a test-only seam
+  _resolved = config as any;
 }

@@ -564,8 +564,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
     ]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(503);
@@ -580,8 +579,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
     internalDBQueryImpl = () => Promise.reject(new Error("connection refused"));
     mockValidateEnvironment.mockResolvedValue([]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(503);
@@ -610,8 +608,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
     ]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "self-hosted" } as any);
+    config._setConfigForTest({ deployMode: "self-hosted" });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(200);
@@ -631,8 +628,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       deployModeDowngraded: {
         reason: 'atlas.config.ts requested deployMode "saas" but enterprise is not enabled — see #1978',
       },
-      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
-    } as any);
+    });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(200);
@@ -646,8 +642,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
   it("omits deployModeDowngraded on a normal boot (#3184)", async () => {
     mockValidateEnvironment.mockResolvedValue([]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "self-hosted" } as any);
+    config._setConfigForTest({ deployMode: "self-hosted" });
 
     const response = await app.fetch(healthRequest());
     const body = (await response.json()) as Record<string, unknown>;
@@ -757,17 +752,55 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
     expect(checks.datasource?.status).toBe("not_configured");
   });
 
-  it("an unrecognized declaration is treated as undeclared — still degrades", async () => {
+  it("an unrecognized declaration still degrades, and says so in warnings[]", async () => {
     process.env.ATLAS_DATASOURCE_EXPECTED = "nope";
 
     const response = await app.fetch(healthRequest());
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(body.status).toBe("degraded");
+    // The typo has to be visible on the surface the operator set it from — a
+    // once-per-process log line has scrolled away by the time they look.
+    const warnings = body.warnings as string[];
+    expect(warnings.some((w) => w.includes("ATLAS_DATASOURCE_EXPECTED"))).toBe(true);
+    // …without echoing the operator-supplied value: /health is public.
+    expect(warnings.some((w) => w.includes("nope"))).toBe(false);
   });
 
-  // #1981 — the LB-eviction path. A CONFIGURED datasource that fails its probe
-  // must still 503, or the region stays in rotation while queries are dead.
+  it("adds no expectation warning when the declaration parses", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.warnings).toBeUndefined();
+  });
+
+  // The declaration changes the ROLLUP, not the other signals. A deployment
+  // with neither URL still carries the startup warning, and it must keep
+  // carrying it: suppressing warnings to make a dashboard look clean is the
+  // failure mode #4854 is about, pointed the other way.
+  it("does not suppress the startup warning on a declared-absent deployment", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+    delete process.env.DATABASE_URL;
+    mockValidateEnvironment.mockResolvedValue([]);
+    mockGetStartupWarnings.mockReturnValue([
+      "ATLAS_DATASOURCE_URL is not set. Atlas can start without an analytics datasource, but queries will not work.",
+    ]);
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("ok");
+    expect(body.warnings).toEqual([
+      "ATLAS_DATASOURCE_URL is not set. Atlas can start without an analytics datasource, but queries will not work.",
+    ]);
+  });
+
+  // The LB-eviction path (#1981 for the internal-DB half, #3907 for the
+  // primary-datasource isolation contract). A CONFIGURED datasource that fails
+  // its probe must still 503, or the region stays in rotation while queries are
+  // dead.
   it("a configured datasource that fails still reports error + 503", async () => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     mockValidateEnvironment.mockResolvedValue([]);
@@ -825,8 +858,7 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
 
   it("accepts the declaration from atlas.config.ts", async () => {
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
-    config._setConfigForTest({ datasourceExpected: false } as any);
+    config._setConfigForTest({ datasourceExpected: false });
 
     const response = await app.fetch(healthRequest());
     const body = (await response.json()) as Record<string, unknown>;
@@ -840,8 +872,7 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
   it("ATLAS_DATASOURCE_EXPECTED=true overrides a config file that says false", async () => {
     process.env.ATLAS_DATASOURCE_EXPECTED = "true";
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
-    config._setConfigForTest({ datasourceExpected: false } as any);
+    config._setConfigForTest({ datasourceExpected: false });
 
     const response = await app.fetch(healthRequest());
     const body = (await response.json()) as Record<string, unknown>;
@@ -948,8 +979,7 @@ describe("GET /api/health — plugin component", () => {
     // Plugin failures are observable in the dashboard but never page oncall.
     process.env.ATLAS_DEPLOY_MODE = "saas";
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     pluginDescribeImpl = () => [
       { id: "p1", types: ["action"], version: "1.0.0", name: "P1", status: "unhealthy", enabled: true },
@@ -1361,8 +1391,7 @@ describe("GET /api/health — backups component (#4457)", () => {
     // an overdue backup must never pull the region from the LB.
     process.env.ATLAS_DEPLOY_MODE = "saas";
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     backupHealthImpl = () =>
       Promise.resolve({

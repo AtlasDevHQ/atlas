@@ -24,7 +24,10 @@ import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 import { getConfig } from "@atlas/api/lib/config";
-import { isDatasourceExpected } from "@atlas/api/lib/db/datasource-expectation";
+import {
+  resolveDatasourceExpectation,
+  datasourceExpectationWarning,
+} from "@atlas/api/lib/db/datasource-expectation";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { getUserRole } from "@atlas/api/lib/auth/permissions";
 import type { PluginStatus } from "@atlas/api/lib/plugins/registry";
@@ -351,7 +354,8 @@ health.openapi(healthRoute, async (c) => {
     // error/503 arm below. Undeclared keeps degrading — see
     // `lib/db/datasource-expectation.ts` for why intent is never inferred from
     // the absence itself.
-    const dsIntentionallyAbsent = dsNotConfigured && !isDatasourceExpected();
+    const dsExpectation = resolveDatasourceExpectation();
+    const dsIntentionallyAbsent = dsNotConfigured && !dsExpectation.expected;
     const hasKeyError = !!findDiagnostic(diagnostics, "MISSING_API_KEY");
     const hasSemanticError = !!findDiagnostic(
       diagnostics,
@@ -405,6 +409,15 @@ health.openapi(healthRoute, async (c) => {
     if (exploreFailClosed && status === "ok") status = "degraded";
 
     const warnings = [...getStartupWarnings()];
+
+    // #4854 — an unparseable ATLAS_DATASOURCE_EXPECTED is logged once per
+    // process, which is the right volume for a public polled endpoint but the
+    // wrong surface: by the time an operator wonders why their declaration did
+    // nothing, that line has scrolled away. Surface it where they set it. The
+    // deployment is treated as expecting a datasource, so this rides alongside a
+    // `degraded` status rather than explaining an `ok` one.
+    const expectationWarning = datasourceExpectationWarning(dsExpectation);
+    if (expectationWarning) warnings.push(expectationWarning);
 
     // Per-source health from ConnectionRegistry. The bare `describe()`
     // enumerates only native/bare pools; published plugin datasources

@@ -129,8 +129,7 @@ describe("/api/v1/teams (Azure admin-consent, cap-gated — #3142)", () => {
       await saveOAuthState("teams-cb-ok", { orgId: "org-teams", provider: "teams" });
 
       const config = await import("@atlas/api/lib/config");
-      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-      config._setConfigForTest({ deployMode: "self-hosted" } as any);
+      config._setConfigForTest({ deployMode: "self-hosted" });
       try {
         const app = await getApp();
         const tenant = "11111111-2222-3333-4444-555555555555";
@@ -156,8 +155,7 @@ describe("/api/v1/teams (Azure admin-consent, cap-gated — #3142)", () => {
       await saveOAuthState("teams-cb-orphan", { provider: "teams" });
 
       const config = await import("@atlas/api/lib/config");
-      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-      config._setConfigForTest({ deployMode: "saas" } as any);
+      config._setConfigForTest({ deployMode: "saas" });
       try {
         const app = await getApp();
         const tenant = "11111111-2222-3333-4444-555555555555";
@@ -184,8 +182,7 @@ describe("/api/v1/teams (Azure admin-consent, cap-gated — #3142)", () => {
       await saveOAuthState("teams-cb-cap", { orgId: "org-teams", provider: "teams" });
 
       const config = await import("@atlas/api/lib/config");
-      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-      config._setConfigForTest({ deployMode: "self-hosted" } as any);
+      config._setConfigForTest({ deployMode: "self-hosted" });
       try {
         const app = await getApp();
         const tenant = "11111111-2222-3333-4444-555555555555";

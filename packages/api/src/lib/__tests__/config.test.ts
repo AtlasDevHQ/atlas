@@ -243,6 +243,19 @@ describe("validateAndResolve", () => {
     expect("datasourceExpected" in resolved).toBe(false);
   });
 
+  // A contradiction (no datasource expected, here are the datasources) warns
+  // rather than throwing: the resolution is unambiguous — a registered
+  // datasource makes the declaration inert — so refusing to boot over it would
+  // be the worse trade. Both values survive so the operator sees what they wrote.
+  it("accepts a contradictory datasourceExpected + datasources, keeping both", () => {
+    const resolved = validateAndResolve({
+      datasourceExpected: false,
+      datasources: { default: { url: "postgresql://host/data" } },
+    });
+    expect(resolved.datasourceExpected).toBe(false);
+    expect(Object.keys(resolved.datasources)).toEqual(["default"]);
+  });
+
   it("rejects a non-boolean datasourceExpected", () => {
     expect(() => validateAndResolve({ datasourceExpected: "false" })).toThrow(
       /datasourceExpected/,

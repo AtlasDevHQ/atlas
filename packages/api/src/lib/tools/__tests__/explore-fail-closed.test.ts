@@ -153,6 +153,16 @@ describe("ATLAS_SANDBOX=nsjail refuses rather than degrading (#4829)", () => {
       // failure, and #4834 kept that distinction rather than blurring it.
       expect(mod.snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
 
+      // INTENT and CAPABILITY must diverge here, and this is the only place that
+      // asserts it. `nsjailAvailable` is the pin-inclusive `useNsjail()` the
+      // PLANNER consumes — still true, because the operator did ask for nsjail
+      // and the hard-fail step must stand. Reporting says `fail-closed` from the
+      // same module at the same instant. Collapsing the two predicates back into
+      // one (the tempting simplification, since the pin short-circuit is inert
+      // in both of `useNsjail()`'s consumers today) makes these two lines
+      // contradict each other, which is exactly what #4834 fixed.
+      expect(mod.snapshotExploreSandboxEnv().nsjailAvailable).toBe(true);
+
       // Half two — the RUNTIME CONSEQUENCE, asserted alongside the report rather
       // than in a separate case, because the bug was precisely the two halves
       // disagreeing. `just-bash` would genuinely run the command against the

@@ -110,10 +110,16 @@ let _nsjailAvailable: boolean | null = null;
  *
  * Keeping both, rather than narrowing `useNsjail()` in place, is deliberate.
  * `useNsjail()` still feeds `snapshotExploreSandboxEnv().nsjailAvailable` (the
- * shared planner's input) and `tryCreateBackend`'s attempt gate, and the
- * explore-vs-python asymmetry there is documented and pinned by
- * `sandbox-selection-parity.test.ts`. A reporting fix must not perturb the
- * planner; this one does not touch it.
+ * shared planner's input) and `tryCreateBackend`'s attempt gate. A reporting fix
+ * must not perturb the planner; this one does not touch it.
+ *
+ * Note the pin short-circuit is currently INERT in both of those consumers — the
+ * planner reads `nsjailAvailable` only on the auto-detect branch, and
+ * `tryCreateBackend` short-circuits on the env var before calling this. So the
+ * suite does not go red if someone "simplifies" the two back into one.
+ * `explore-fail-closed.test.ts` guards the divergence directly instead, by
+ * asserting `nsjailAvailable === true` (intent) alongside `fail-closed`
+ * (capability) for the same pinned-but-missing shape.
  */
 function nsjailBinaryPresent(): boolean {
   if (_nsjailAvailable !== null) return _nsjailAvailable;
@@ -123,20 +129,29 @@ function nsjailBinaryPresent(): boolean {
     const { isNsjailAvailable } = require("./backends/nsjail");
     _nsjailAvailable = isNsjailAvailable();
   } catch (err) {
-    if (
+    // Both arms log. The MODULE_NOT_FOUND arm used to swallow silently, which
+    // was survivable while this answer only nudged the auto-detect chain — but
+    // #4834 made it the REPORTING predicate for the pinned case, so an unlogged
+    // `false` here now pins `/api/health` to `fail-closed` / `status: "down"`
+    // and pushes a total-outage startup warning, for a host where nsjail is
+    // installed and explore works. A posture surface must never go dark without
+    // saying why. `./backends/nsjail` is first-party, so its absence is a
+    // bundling anomaly (Next.js standalone output, `serverExternalPackages`
+    // drift, a partial-mock leak), never an expected state.
+    const detail = errorMessage(err);
+    const moduleMissing =
       err != null &&
       typeof err === "object" &&
       "code" in err &&
-      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
-    ) {
-      _nsjailAvailable = false;
-    } else {
-      log.error(
-        { error: errorMessage(err) },
-        "Unexpected error loading nsjail module",
-      );
-      _nsjailAvailable = false;
-    }
+      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
+    log.error(
+      { error: detail, ...(moduleMissing && { code: "MODULE_NOT_FOUND" }) },
+      moduleMissing
+        ? "nsjail detection module could not be loaded — reporting nsjail UNAVAILABLE for this " +
+            "process (memoized until restart). Under ATLAS_SANDBOX=nsjail this surfaces as fail-closed."
+        : "Unexpected error loading nsjail module",
+    );
+    _nsjailAvailable = false;
   }
   return _nsjailAvailable ?? false;
 }
@@ -207,28 +222,34 @@ export function getActiveSandboxPluginId(): string | null {
 }
 
 /**
- * Can this backend actually be constructed right now? Sync, side-effect-free,
- * and the predicate every REPORTING surface passes to
- * {@link resolveSandboxBackend}.
+ * Can this backend actually be constructed right now? Sync, free of observable
+ * side effects beyond {@link nsjailBinaryPresent}'s one-time memoized probe, and
+ * the predicate every REPORTING surface passes to {@link resolveSandboxBackend}.
  *
  * "Available" means CONSTRUCTIBLE, not "configured" or "asked for" (#4834). The
  * nsjail arm used to answer `pin || useNsjail()`, so the bare
  * `ATLAS_SANDBOX=nsjail` pin reported available on a host with no nsjail binary
  * — and since availability is what the resolver walks, `/api/health` reported
- * `backend: "nsjail"`, `isolated: true`, `status: "ok"` for a deployment where
- * `tryCreateBackend` threw on EVERY request. The operator's INTENT to use nsjail
- * is not evidence that nsjail works, and a health surface must report the second.
+ * `checks.explore.backend: "nsjail"` with `isolated: true`,
+ * `components.sandbox.status: "healthy"`, and a top-level `status: "ok"`, for a
+ * deployment where `tryCreateBackend` threw on EVERY request. The operator's
+ * INTENT to use nsjail is not evidence that nsjail works, and a health surface
+ * must report the second.
  *
  * With the pin no longer able to fake availability, an unsatisfiable pin makes
  * `resolveSandboxBackend` short-circuit on its unavailable hard-fail step and
  * report `"fail-closed"` — which is the truth, and matches what boot logs from
  * the same resolver.
  *
- * Chosen over marking the failure at boot (#4834 option 1) because this holds
- * with no precondition: the predicate is correct whenever it is called, whereas
- * the boot-marking fix would have been correct only where the pre-flight probe
- * runs — and it does not run on a Vercel host, nor is it consulted when a
+ * Chosen over marking the failure at boot (#4834 option 1) because it needs no
+ * probe to have run first — it answers from the filesystem itself. The
+ * boot-marking fix would have been correct only where the pre-flight probe runs,
+ * and it does not run on a Vercel host, nor is it consulted when a
  * `sandbox.priority` pin outranks `ATLAS_SANDBOX`.
+ *
+ * The remaining temporal caveat is the memo, not the probe: detection is cached
+ * on first call, so an nsjail installed after boot is not picked up until
+ * restart.
  */
 function isBackendAvailable(name: SandboxBackendName): boolean {
   switch (name) {
@@ -483,9 +504,11 @@ export function invalidateOrgExploreBackends(orgId: string): void {
  * env shapes would otherwise depend on test ORDER to stay honest, and the
  * failure mode is a still-passing test that no longer proves what it claims.
  *
- * Also clears the `_nsjailAvailable` binary-detection memo (`useNsjail()`'s
- * cache) — not a failure flag, but cached on first read, so a suite that varies
- * `PATH` / `ATLAS_NSJAIL_PATH` between cases needs it dropped too. Does NOT
+ * Also clears the `_nsjailAvailable` binary-detection memo — since #4834 that is
+ * `nsjailBinaryPresent()`'s cache, i.e. the REPORTING predicate's, not
+ * `useNsjail()`'s. Not a failure flag, but cached on first read, so a suite that
+ * varies `PATH` / `ATLAS_NSJAIL_PATH` between cases needs it dropped too;
+ * `startup-sandbox-preflight.test.ts` drops it mid-loop for exactly that reason. Does NOT
  * clear `_activeSandboxPluginId` or `backendCache`; a suite that exercises a
  * plugin backend must handle those itself.
  */

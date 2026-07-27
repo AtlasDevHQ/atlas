@@ -849,7 +849,7 @@ async function checkSandboxPreFlight(): Promise<void> {
   //
   // Each probe is also load-bearing beyond its logging; see autoDetectNsjail().
   const isVercelHost = process.env.ATLAS_RUNTIME === "vercel" || !!process.env.VERCEL;
-  let pinnedNsjail: PinnedNsjailOutcome = "usable";
+  let pinnedNsjail: PinnedNsjailOutcome = "not-probed";
   if (!isVercelHost) {
     // On a Vercel host the default chain always resolves vercel-sandbox, so
     // there is nothing local worth probing. Two pre-existing holes: a Vercel
@@ -878,37 +878,45 @@ async function checkSandboxPreFlight(): Promise<void> {
   // pin: `planSandboxSelection` gives `configPriority` absolute precedence, so
   // `ATLAS_SANDBOX` is ignored entirely there and the nsjail-only advice named a
   // backend that was never in play, while the real resolution went unlogged.
-  // The `hard-fail` line is now gone; the `unverified` caveat below survives,
-  // and still speaks of "the pin" — under a `configPriority` read it as
-  // qualified by the resolver line that follows it.
+  // The `hard-fail` line is now gone. The `unverified` caveat below survives —
+  // ACCEPTED RESIDUE, not an oversight: it still speaks of "the pin", which is
+  // wrong advice under a `configPriority` that outranks `ATLAS_SANDBOX`. Gating
+  // it needs the probe to know the resolved chain, which is a separate change;
+  // the resolver line that follows is what corrects the record meanwhile.
   if (pinnedNsjail === "unverified") {
-    // The probe threw, so `_nsjailFailed` is untouched and (absent a
-    // `sandbox.priority` pin) the resolver still names `nsjail` — exactly what
-    // /api/health will report. Logged FIRST so the resolved-backend line that
-    // follows is read as qualified: the pin is armed and nsjail WILL be
-    // attempted, but nobody confirmed it works. Suppressing that line instead is
-    // what left boot silent while health named a backend, which is the same
-    // disagreement one notch softer.
+    // The probe threw, so `_nsjailFailed` is untouched — and if the binary IS
+    // present the resolver still names `nsjail`, exactly what /api/health will
+    // report. (With the binary absent it names `fail-closed`, since #4834's
+    // predicate probes rather than trusting the pin; `unverified` is reachable
+    // that way because both dynamic imports run BEFORE findNsjailBinary().)
+    //
+    // Logged FIRST so the resolved-backend line that follows is read as
+    // qualified: nsjail may be attempted, but nobody confirmed it works.
+    // Suppressing that line instead is what left boot silent while health named
+    // a backend — the same disagreement one notch softer.
     log.error(
       "Explore tool: isolation UNVERIFIED — the pinned nsjail probe could not complete. " +
         "The pin is still armed, so explore will attempt nsjail and fail if it cannot initialize.",
     );
   }
 
-  // The resolver reaches `fail-closed` on its own for both failing arms, from
-  // different facts: "hard-fail" because `isBackendAvailable` probes the binary
-  // and finds none (#4834), "capability-failed" because markNsjailFailed() ran
-  // and, since #4829, no longer deletes the pin's hard-fail step. Neither needs
-  // this switch to tell it. Whatever it names, /api/health names the same —
-  // that is the invariant, and it holds unconditionally.
+  // Absent a `sandbox.priority` pin, the resolver reaches `fail-closed` on its
+  // own for both failing arms, from different facts: "hard-fail" because
+  // `isBackendAvailable` probes the binary and finds none (#4834),
+  // "capability-failed" because markNsjailFailed() ran and, since #4829, no
+  // longer deletes the pin's hard-fail step. Neither needs this code to tell it.
+  //
+  // Under an outranking `configPriority` the resolution is that list's own and
+  // may legitimately be `just-bash` — `planSandboxSelection` builds config steps
+  // with `hardFail: false`, so nothing short-circuits. What holds in every case
+  // is the weaker and more useful claim: whatever the resolver names here,
+  // /api/health names the same, because both read that one resolver.
   //
   // The binary-missing specifics ("Install nsjail or set ATLAS_NSJAIL_PATH") are
   // not lost with the bespoke line: checkExplicitNsjail() already recorded them
   // as a startup warning, and formatSandboxFailClosed() adds the pin-scoped
   // remediation.
-  await logResolvedExploreBackend({
-    isolationVerified: pinnedNsjail === "unverified" ? false : undefined,
-  });
+  await logResolvedExploreBackend(pinnedNsjail);
 }
 
 /**
@@ -943,18 +951,14 @@ async function checkSandboxPreFlight(): Promise<void> {
  * polarity (#4828).
  */
 async function logResolvedExploreBackend(
-  opts?: {
-    /**
-     * Pass `false` when the caller's probe could NOT confirm the backend
-     * isolates. Adds the field to the structured record and qualifies the
-     * message, so a log pipeline keyed on `{ backend }` alone cannot read an
-     * unverified deployment as a clean isolated one — the adjacent caveat line
-     * survives a grep-by-prefix but not field-based alerting (#4834).
-     */
-    readonly isolationVerified?: false;
-  },
+  /**
+   * What the pinned-nsjail probe concluded, so this function can qualify its own
+   * line. Taking the domain value rather than a pre-computed flag is what lets
+   * it apply the verdict ONLY to the backend the probe actually spoke about —
+   * see the `nsjail` check below.
+   */
+  probe: PinnedNsjailOutcome = "not-probed",
 ): Promise<void> {
-  const unverified = opts?.isolationVerified === false;
   try {
     const { getExploreBackendType, snapshotExploreSandboxEnv } = await import(
       "@atlas/api/lib/tools/explore"
@@ -1019,7 +1023,18 @@ async function logResolvedExploreBackend(
         "Explore tool: %s (no process isolation). Install nsjail or configure ATLAS_SANDBOX_URL for sandboxed execution.",
         backend,
       );
-    } else if (unverified) {
+    } else if (probe === "unverified" && backend === "nsjail") {
+      // `backend === "nsjail"` is the load-bearing half. The probe only ever
+      // examined nsjail, so its inconclusive verdict says nothing about any
+      // other backend — and `checkSandboxPreFlight` runs it whenever
+      // `ATLAS_SANDBOX=nsjail`, INCLUDING when a `sandbox.priority` outranks the
+      // pin and resolves, say, vercel-sandbox. Stamping `isolationVerified:
+      // false` there would raise a false UNVERIFIED alert against a correctly
+      // isolated deployment, on the one field added to be trustworthy.
+      //
+      // The two branches above deliberately drop the field even for nsjail: a
+      // `fail-closed` or unsandboxed resolution is already self-describing, and
+      // the stronger claim wins.
       log.warn(
         { backend, isolationVerified: false },
         "Explore tool: %s selected, but isolation is UNVERIFIED — the boot probe could not complete.",
@@ -1060,26 +1075,31 @@ async function logResolvedExploreBackend(
  */
 type PinnedNsjailOutcome =
   /**
-   * Namespaces verified and the pin holds — OR no probe ran at all, which is
-   * the initial value `checkSandboxPreFlight` keeps on a Vercel host and on the
-   * sidecar / auto-detect branches. The two are merged because the consumer
-   * treats them identically (nothing was detected wrong, so name the resolved
-   * backend); do not read this member as "verified" on its own.
+   * No probe ran: `checkSandboxPreFlight` keeps this on a Vercel host and on
+   * the sidecar / auto-detect branches. A separate member rather than a second
+   * meaning for `"usable"`, so "the probe passed" is a truthful check for
+   * whoever needs it next instead of an invariant held only by a doc comment.
    */
+  | "not-probed"
+  /** Namespaces verified; the pin holds. */
   | "usable"
   /**
    * Binary absent. The pin's hard-fail step stands (it always does since #4829)
    * and `isBackendAvailable` reports the step unavailable because it probes the
    * binary (#4834), so reporting resolves `fail-closed` — WITHOUT this arm
-   * marking a runtime failure it did not observe. Distinct from
-   * `"capability-failed"` only in operator advice: here the binary is missing,
-   * there it is present but the platform denies namespaces.
+   * marking a runtime failure it did not observe. (Absent an outranking
+   * `configPriority`, which resolves its own list instead.) Differs from
+   * `"capability-failed"` in the operator advice `checkExplicitNsjail` records
+   * as a startup warning — here the binary is missing, there it is present but
+   * the platform denies namespaces. No consumer branches on that difference
+   * today; only `"unverified"` is read.
    */
   | "hard-fail"
   /**
    * Binary present, namespaces broken. `markNsjailFailed()` has run, which marks
    * the backend unusable WITHOUT deleting the pin's hard-fail step (#4829) — so
-   * the pin holds and explore fails closed rather than degrading.
+   * the pin holds and explore fails closed rather than degrading (again, absent
+   * an outranking `configPriority`).
    */
   | "capability-failed"
   /** The probe itself threw; isolation is neither confirmed nor refuted. */

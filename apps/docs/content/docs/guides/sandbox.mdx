@@ -233,7 +233,7 @@ When no explicit override is set, Atlas auto-detects the best available backend 
 
 1. Plugin backends (always highest priority)
 2. Vercel Sandbox (when running on Vercel)
-3. nsjail explicit (when `ATLAS_SANDBOX=nsjail` is set) — **hard fail**: if nsjail is unusable the API still boots, but the explore tool refuses every request rather than degrading to an unsandboxed backend. When nsjail is present but its namespaces do not work, `/api/health` reports `checks.explore.backend: "fail-closed"` and `components.sandbox.status: "down"`. Remove `ATLAS_SANDBOX` to fall through to auto-detect.
+3. nsjail explicit (when `ATLAS_SANDBOX=nsjail` is set) — **hard fail**: if nsjail is unusable the API still boots, but the explore tool refuses every request rather than degrading to an unsandboxed backend. `/api/health` reports `checks.explore.backend: "fail-closed"` and `components.sandbox.status: "down"` for this state — immediately when the nsjail binary is missing, and once the boot probe or the first explore request has run when the binary is present but its namespaces do not work. Remove `ATLAS_SANDBOX` to fall through to auto-detect.
 4. Sidecar (when `ATLAS_SANDBOX_URL` is set)
 5. nsjail auto-detect (when nsjail binary is found on PATH)
 6. just-bash (development fallback)

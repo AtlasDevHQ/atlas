@@ -78,9 +78,11 @@ void mock.module("@atlas/api/lib/logger", () => ({
 // without touching a database or the filesystem.
 // ---------------------------------------------------------------------------
 
-// findNsjailBinary() walks PATH with accessSync(candidate, constants.X_OK). This
-// stub throws ENOENT for every candidate, so detection is null regardless of
-// host — the empty PATH in beforeEach is belt-and-braces, not the mechanism.
+// findNsjailBinary() checks ATLAS_NSJAIL_PATH first, then walks PATH with
+// accessSync(candidate, constants.X_OK). This stub throws ENOENT for every path
+// EXCEPT `mockNsjailBinaryPath`, so detection is whatever the case declared,
+// regardless of host — the empty PATH in beforeEach is belt-and-braces for the
+// walk, not the mechanism. `givenNsjailBinary()` sets both halves.
 // Supplying `constants` matters anyway: without it the probe throws a TypeError
 // that its catch swallows as "not found", which looks identical but tests
 // nothing about the code under test.
@@ -119,11 +121,13 @@ void mock.module("@atlas/api/lib/providers", () => ({
   },
 }));
 
-// The nsjail binary probe the pre-flight drives, controlled per-test. This is a
-// SEPARATE seam from explore's own `useNsjail()` detection, which stays real and
-// resolves false because the mocked accessSync throws for every candidate (see
-// the fs mock above) — so a test can hand the pre-flight a binary without also
-// convincing explore that nsjail is available.
+// The nsjail binary probe the pre-flight drives, controlled per-test. It is a
+// SEPARATE seam from explore's own detection, which stays real — but since
+// #4834 the two must AGREE, because explore's detection now decides what gets
+// reported. Setting this alone hands the pre-flight a binary that explore's
+// reporting predicate cannot see, which silently turns a "binary present" case
+// into a fail-closed one. Always go through `givenNsjailBinary()`; assign this
+// directly only to declare the binary ABSENT (`= null`).
 let mockNsjailBinaryPath: string | null = null;
 let mockCapabilityResult: { ok: boolean; error?: string } = { ok: true };
 /**

@@ -50,11 +50,44 @@ describe("explore backend selection", () => {
     process.env = { ...originalEnv };
   });
 
-  describe("useNsjail via getExploreBackendType", () => {
-    it("returns 'nsjail' when ATLAS_SANDBOX=nsjail (regardless of binary)", async () => {
+  describe("nsjail binary detection via getExploreBackendType", () => {
+    it("reports 'fail-closed' when ATLAS_SANDBOX=nsjail but no binary is present", async () => {
+      // Was "returns 'nsjail' … (regardless of binary)", which named the exact
+      // property #4834 removed. Reporting now means CONSTRUCTIBLE: the pin says
+      // what the operator WANTS, and wanting nsjail is not evidence that nsjail
+      // is installed. `/api/health` used to read `nsjail` / `isolated: true`
+      // here for a deployment that refused every request.
+      //
+      // The pin is still honored where it counts — see the hard-fail case
+      // below, which asserts explore REFUSES rather than degrading. Only the
+      // report changed.
       process.env.ATLAS_SANDBOX = "nsjail";
-      const mod = await freshExploreModule();
-      expect(mod.getExploreBackendType()).toBe("nsjail");
+      process.env.PATH = "";
+      const fs = await import("fs");
+      const spy = spyOn(fs, "accessSync").mockImplementation(() => {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+      try {
+        const mod = await freshExploreModule();
+        expect(mod.getExploreBackendType()).toBe("fail-closed");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("reports 'nsjail' when ATLAS_SANDBOX=nsjail and the binary IS present", async () => {
+      // The other half of the same predicate, and the reason the case above is
+      // about the binary rather than about the pin being ignored.
+      process.env.ATLAS_SANDBOX = "nsjail";
+      process.env.ATLAS_NSJAIL_PATH = "/usr/local/bin/nsjail";
+      const fs = await import("fs");
+      const spy = spyOn(fs, "accessSync").mockImplementation(() => {});
+      try {
+        const mod = await freshExploreModule();
+        expect(mod.getExploreBackendType()).toBe("nsjail");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("returns 'nsjail' when nsjail binary is available on PATH", async () => {
@@ -135,10 +168,21 @@ describe("explore backend selection", () => {
     });
 
     it("explicit nsjail (ATLAS_SANDBOX=nsjail) still beats sidecar", async () => {
+      // The binary must genuinely be present for this to test PRECEDENCE. Since
+      // #4834 reporting probes it, so a version of this case without a binary
+      // would resolve `fail-closed` and prove nothing about the ordering — it
+      // would pass for years while silently testing the wrong thing.
       process.env.ATLAS_SANDBOX = "nsjail";
       process.env.ATLAS_SANDBOX_URL = "http://localhost:8080";
-      const mod = await freshExploreModule();
-      expect(mod.getExploreBackendType()).toBe("nsjail");
+      process.env.ATLAS_NSJAIL_PATH = "/usr/local/bin/nsjail";
+      const fs = await import("fs");
+      const spy = spyOn(fs, "accessSync").mockImplementation(() => {});
+      try {
+        const mod = await freshExploreModule();
+        expect(mod.getExploreBackendType()).toBe("nsjail");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("nsjail auto-detect works when no ATLAS_SANDBOX_URL is set", async () => {
@@ -215,12 +259,17 @@ describe("explore backend selection", () => {
       });
 
       const mod = await freshExploreModule();
-      // getExploreBackendType says nsjail because ATLAS_SANDBOX=nsjail
-      // bypasses binary check
-      expect(mod.getExploreBackendType()).toBe("nsjail");
+      // Reporting says `fail-closed`: since #4834 `isBackendAvailable` probes
+      // the binary rather than trusting the pin, so an unsatisfiable pin
+      // short-circuits the resolver on its unavailable hard-fail step.
+      expect(mod.getExploreBackendType()).toBe("fail-closed");
 
-      // But actually trying to create the backend will fail with a throw,
-      // NOT fall back to just-bash
+      // CONSTRUCTION is still attempted, though — `tryCreateBackend` gates on
+      // the pin-inclusive `useNsjail()`, deliberately unchanged — so the refusal
+      // carries nsjail's specific remediation rather than a generic message.
+      // Reporting got stricter; the attempt did not.
+      //
+      // And it is a refusal, NOT a fall back to just-bash
       const result = await mod.explore.execute(
         { command: "ls" },
         { toolCallId: "test", messages: [], abortSignal: new AbortController().signal },

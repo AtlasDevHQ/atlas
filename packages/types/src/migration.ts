@@ -361,9 +361,12 @@ export interface ExportedBrainFact {
    * every widened fact reads as never-widened in the target and discloses its
    * first episode's actor, channel and timestamp to the whole org.
    *
-   * `null` is a legitimate value, not a missing one — a bundle written before
-   * this field existed carries no widened facts this can describe, and `null`
-   * is what those facts already mean.
+   * `null` is a legitimate value, not a missing one. A bundle written before
+   * this field existed carries no RECORDED pre-widening grants — the source
+   * region had no column to record them in — so facts widened in the
+   * #4823-to-0183 window land disclosing. That is the same accepted residual
+   * migration 0183's header records, reappearing for cross-region moves, not a
+   * new one.
    */
   preWideningVisibleTo: string[] | null;
   predicateCardinality: "single" | "multi";

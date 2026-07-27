@@ -796,10 +796,15 @@ describe("provenance attribution — the widened-fact disclosure (#4836)", () =>
   });
 
   it("selects the pre-widening grant, so the decision has an input at all", async () => {
-    // A projection-only fix is impossible (#4836): drop this column from the
-    // SELECT and every row arrives `undefined`, which reads as "never widened"
-    // and discloses everything. Cheap to assert, and it is what keeps every
-    // test above non-vacuous.
+    // Cheap to assert, and it is what keeps every test above non-vacuous: the
+    // mocked rows supply `pre_widening_visible_to` themselves, so without this
+    // the suite would pass against a SELECT that never asked for it.
+    //
+    // Dropping the column is not a DISCLOSURE — `attributionDecision` treats
+    // the resulting `undefined` as drift and withholds. It is the opposite
+    // failure: attribution withheld across the entire corpus, degrading the
+    // review surface for exactly the people #4836 refuses to degrade it for.
+    // Silent either way, which is why it is pinned.
     const db = reader([{ match: SQL.factPage, rows: [] }]);
     await searchBrainCore(db, {
       ctx: ctx(),

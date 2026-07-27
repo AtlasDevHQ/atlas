@@ -44,6 +44,15 @@ function orDash(value: string | null): React.ReactNode {
  * arm is also reachable when the original grant was a `role:` the reader
  * lacks, or a `user:`, so "you are not in that channel" would be wrong some of
  * the time. "An audience you are not part of" is true of every arm.
+ *
+ * It promises WHO and WHEN, and deliberately not WHERE. The Grant panel below
+ * renders `visibleTo` verbatim, which on a widened fact still names the
+ * originating `audience:chat-channel:slack:<id>` — by design, and asserted by
+ * test: a reviewer must be able to see the grant actually in force, and
+ * `malformedGrantIndices` indexes into that list positionally. So the audience
+ * is not secret on this surface; who spoke into it, and when, are. Do not
+ * "fix" this by hiding the grant. (`searchBrain` carries no grant at all, so
+ * the agent path discloses neither.)
  */
 function AttributionRestricted() {
   return (
@@ -52,8 +61,7 @@ function AttributionRestricted() {
       <p className="text-xs text-muted-foreground">
         <span className="font-medium text-foreground">Attribution restricted.</span> This claim was
         first recorded under an audience you are not part of, and reaches you only because it was
-        later restated under one you are. Who stated it first, where, and when stay with that
-        audience.
+        later restated under one you are. Who stated it first, and when, stay with that audience.
       </p>
     </div>
   );

@@ -251,9 +251,11 @@ export const EVIDENCE_GRANTS_SQL = `
  * ## `pre_widening_visible_to` — the reason this statement is now load-bearing
  * ## twice (#4836)
  *
- * This is the ONLY writer of `pre_widening_visible_to`, and the only place the
- * pre-widening grant still exists: the next expression in the same SET list
- * destroys it. Postgres evaluates every SET expression against the OLD row, so
+ * This is the only place the pre-widening grant is DERIVED, and the only
+ * chance to capture it: the next expression in the same SET list destroys it.
+ * (It is not the only writer — the region import restores the column verbatim
+ * from the bundle, `admin-migrate.ts`. That path carries a value; this one
+ * computes it.) Postgres evaluates every SET expression against the OLD row, so
  * `f.visible_to` here is the grant before this statement's own overwrite — no
  * ordering dependency between the two assignments, and none is available to
  * depend on.

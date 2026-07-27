@@ -16,7 +16,12 @@ _openapi:
           in-tension-with hints. Results are gated by the reviewer's own
           fail-closed visibility predicate; the provenance episode is gated
           INDEPENDENTLY, so evidence a reviewer is not entitled to is reported
-          as withheld rather than omitted. Block-class extraction failures (no
+          as withheld rather than omitted. `provenance.attribution` is gated on
+          a THIRD grant — the one the fact held before publish-time widening. A
+          reviewer who can see a claim only because it was restated under some
+          principal they hold receives `{ visible: false }` instead of its first
+          episode's `sourceId`, `actor` and `occurredAt`; anyone entitled to the
+          original grant receives all three. Block-class extraction failures (no
           provenance, no usable grant, unattributable actor, malformed claim)
           never appear here — they were refused upstream. Retracted facts are
           excluded.

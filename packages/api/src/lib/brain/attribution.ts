@@ -93,10 +93,14 @@ export type BrainAttributionDecision = "disclose" | "withhold";
  *
  * Snake_case on purpose. Both read surfaces already hold a row of exactly this
  * shape off `pg` (`FactRow` in `candidates.ts` and in `search.ts`), so taking
- * it structurally means `pre_widening_visible_to` is named ONCE — here, in the
- * module that owns the decision. An adapter per call site would reintroduce
- * the hazard it was written to prevent: `{ preWideningVisibleTo: row.visible_to }`
- * type-checks, and it discloses to everybody.
+ * it structurally means the column is INTERPRETED once — here, in the module
+ * that owns the decision. A per-call-site adapter would reintroduce the hazard
+ * this shape prevents: `{ preWideningVisibleTo: row.visible_to }` type-checks,
+ * and it discloses to everybody.
+ *
+ * Each read surface still has to NAME the column in its own SELECT and row
+ * type. Nothing at compile time forces that — which is exactly what the
+ * `undefined` arm of {@link attributionDecision} exists to catch.
  */
 export interface AttributionRow {
   /** `brain_facts.id`, for the drift log lines. */

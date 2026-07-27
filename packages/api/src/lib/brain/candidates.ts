@@ -242,18 +242,18 @@ export function projectProvenance(
   expectedEpisodeId: string | null | undefined,
   attribution: BrainAttributionDecision,
 ): BrainFactProvenanceView {
-  // Built from a decision that does not depend on the payload, so the
-  // unparseable-payload arm below and the ordinary arm cannot disagree about
-  // entitlement. On `disclose` this is the all-null attribution the
-  // unparseable arm wants; the ordinary arm rebuilds it with the real values.
-  //
+  // The attribution the unparseable-payload arm below returns, and the value
+  // the ordinary arm falls back to. Computed once, from a decision that does
+  // not depend on the payload, so the two arms cannot disagree about
+  // entitlement — on `disclose` it is all-null, which is exactly what a
+  // payload we could not read has to say.
   //
   // Tested against "disclose", not against "withhold", and that polarity is
   // the safety property: if `BrainAttributionDecision` ever grows a third arm
   // (an audit-override arm is the obvious candidate — see `attribution.ts`),
   // this takes the WITHHELD branch until somebody deliberately handles it,
   // instead of silently disclosing to it.
-  const emptyAttribution: BrainFactAttributionView =
+  const fallbackAttribution: BrainFactAttributionView =
     attribution === "disclose"
       ? { visible: true, sourceId: null, actor: null, occurredAt: null }
       : { visible: false };
@@ -263,7 +263,7 @@ export function projectProvenance(
       source: null,
       episodeId: null,
       producer: null,
-      attribution: emptyAttribution,
+      attribution: fallbackAttribution,
       extractedAt: null,
       reconciledAt: null,
       provisional: false,
@@ -317,7 +317,7 @@ export function projectProvenance(
             actor: asString(p.actor),
             occurredAt: asString(p.occurredAt),
           }
-        : emptyAttribution,
+        : fallbackAttribution,
     extractedAt: asString(p.extractedAt),
     reconciledAt: asString(p.reconciledAt),
     provisional,

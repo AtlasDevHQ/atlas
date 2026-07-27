@@ -216,8 +216,13 @@ price of the fix; [#4836](https://github.com/AtlasDevHQ/atlas/issues/4836)
 narrowed it instead. The attribution triple (`sourceId`, `actor`, `occurredAt`)
 is now withheld from any reader who reaches the fact *only* because it widened,
 and kept intact for anyone entitled to the grant it had beforehand — so
-enabling private-channel ingest does not leak channel membership through the
-fact layer. See ADR-0036 §T5, `Amendment (2026-07-27, #4836)`.
+enabling private-channel ingest does not leak *who was in a private channel*
+through the fact layer. One residual, stated because this is the doc you read
+before turning private ingest on: the grant itself still names the channel's
+audience on the **review queue**, deliberately, so a reviewer can see what is
+in force. `searchBrain` carries no grant, so the agent path names neither the
+channel nor the speaker. See ADR-0036 §T5, `Amendment (2026-07-27, #4836)`,
+Scope.
 
 Before that landed, a publicly-restated private claim stayed private. That was
 fail-closed and never a leak, but it made org-wide information invisible to the

@@ -1086,6 +1086,81 @@ describe("validateBundle — company brain (#4767)", () => {
       if (!result.ok) expect(result.error).toContain(section);
     }
   });
+
+  // ── The pre-widening grant travels (#4836) ───────────────────────────────
+  //
+  // Pairs with `residency/__tests__/export.test.ts`. Between them, dropping
+  // the column from either side of the bundle now fails a test that ALWAYS
+  // runs, rather than only the `-pg` round-trip that skips silently without a
+  // database — which is how round 1 of the review panel came to find this by
+  // hand. The bundle-scope tripwire gates new TABLES, not new COLUMNS, and
+  // TypeScript cannot see a missing bind in a positional INSERT.
+  //
+  // The failure is not loud: a widened fact landing with a NULL pre-widening
+  // grant reads as never-widened in the target region and discloses its first
+  // episode's actor, channel and timestamp to the whole org. The import writes
+  // `status` verbatim, so the fact never re-publishes and the widening UPDATE
+  // that derives the column never runs again to repair it.
+
+  function widenedBundle(preWidening: unknown): ExportBundle {
+    const bundle = brainBundle();
+    const fact = bundle.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>;
+    if (preWidening === undefined) delete fact.preWideningVisibleTo;
+    else fact.preWideningVisibleTo = preWidening;
+    return bundle;
+  }
+
+  it("names the column on the INSERT and binds the bundle's value", async () => {
+    const { client, calls } = v2CaptureClient();
+    await importBundle(client, widenedBundle(["audience:chat-channel:slack:C-FOUNDERS"]), "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO brain_facts"));
+    expect(insert).toBeDefined();
+    expect(insert!.sql).toContain("pre_widening_visible_to");
+    // Positional INSERT, so ORDER is the contract — a misplaced bind would
+    // write one grant into the other's column. Anchored off `visible_to`,
+    // which the column list puts immediately before it.
+    const visibleToAt = insert!.params.findIndex((p) => Array.isArray(p) && p.includes("org"));
+    expect(visibleToAt).toBeGreaterThan(-1);
+    expect(insert!.params[visibleToAt + 1]).toEqual(["audience:chat-channel:slack:C-FOUNDERS"]);
+  });
+
+  it("binds null when the bundle carries none, so the fact stays disclosed", async () => {
+    // The negative, and the legacy-bundle path: a pre-#4836 exporter emits no
+    // such field. An importer that defaulted it to the live grant would
+    // withhold attribution across the whole imported corpus — the opposite
+    // failure, equally silent, and the one #4836 explicitly refuses.
+    const { client, calls } = v2CaptureClient();
+    await importBundle(client, widenedBundle(undefined), "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO brain_facts"));
+    expect(insert!.sql).toContain("pre_widening_visible_to");
+    const visibleToAt = insert!.params.findIndex((p) => Array.isArray(p) && p.includes("org"));
+    expect(insert!.params[visibleToAt + 1]).toBeNull();
+  });
+
+  it("REFUSES a pre-widening grant of the wrong shape", () => {
+    // Caught in `validateBundle`, not at the INSERT. `"org"` would otherwise
+    // abort the whole cutover on a raw `malformed array literal` after every
+    // earlier pillar is already written — and `{}` is worse: node-pg
+    // stringifies it to `{}`, which Postgres accepts as a legal empty
+    // `text[]`, so junk silently becomes a real ACL value.
+    for (const bad of ["org", 42, {}, [1, 2]]) {
+      const result = validateBundle(widenedBundle(bad));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("preWideningVisibleTo");
+    }
+  });
+
+  it("accepts absent, null, and an array of strings", () => {
+    // The permissive half must stay permissive, and `grantProblem` is the
+    // WRONG validator here for exactly that reason: absent is a legacy
+    // bundle, `null` is "never widened", and `[]` is the source region saying
+    // it could not vouch for the grant and wants the target to withhold.
+    for (const good of [undefined, null, [], ["org"], ["audience:x", "role:admin"]]) {
+      expect(validateBundle(widenedBundle(good)).ok).toBe(true);
+    }
+  });
 });
 
 describe("importBundle — v2 sections (#4460)", () => {

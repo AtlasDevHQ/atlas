@@ -1102,7 +1102,22 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     CHANNEL_ROSTER = { ...CHANNEL_ROSTER, [EXEC_CHANNEL]: ["U_ALAN", "U_BOT", "U_GRACE"] };
     const third = await syncAudiences();
     expect(third.membersAdded).toBe(1);
-    expect(subjectsOf((await search(await execMember())).results)).toContain("acquisition target");
+    const restored = await search(await execMember());
+    expect(subjectsOf(restored.results)).toContain("acquisition target");
+
+    // …and because nothing widened this fact, #4836's narrowing is inert on
+    // it: the restored member gets FULL attribution through the real
+    // `searchBrain` path. The negative at the INTEGRATION level — whole loop,
+    // real Postgres, real ACL predicate — where a fix that withheld across the
+    // board would surface as an agent that can no longer say who decided
+    // anything. (The widened arm is covered in `candidates-pg.test.ts`; here
+    // every episode behind this claim was posted in the exec channel, so
+    // `pre_widening_visible_to` is NULL by construction — see the note above.)
+    const acquisition = restored.results.find(
+      (r) => r.tier === "fact" && r.subject === "acquisition target",
+    );
+    if (acquisition?.tier !== "fact") throw new Error("expected an acquisition fact result");
+    expect(acquisition.provenance.attribution.visible).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
   it("surfaces an un-drained episode as `extraction: pending`", async () => {

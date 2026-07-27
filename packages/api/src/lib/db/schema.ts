@@ -3305,9 +3305,13 @@ export const brainFacts = pgTable(
     // reader of the fact is an original reader.
     //
     // Nullable, unlike `visible_to` — absence is the meaningful, common state
-    // and no invented default could express it. Written once, by
-    // `WIDEN_AND_PROMOTE_FACTS_SQL` only, and COALESCE-guarded there so a
-    // re-widened draft keeps the NARROWEST grant it ever had.
+    // and no invented default could express it. Written by exactly two paths,
+    // same as `visible_to` above: `WIDEN_AND_PROMOTE_FACTS_SQL` DERIVES it
+    // (COALESCE-guarded, so a re-widened draft keeps the NARROWEST grant it
+    // ever had), and the region import RESTORES it verbatim from the bundle
+    // (`admin-migrate.ts`) — it cannot be re-derived in the target region,
+    // because the import writes `status` verbatim and the fact never
+    // re-publishes.
     preWideningVisibleTo: text("pre_widening_visible_to").array(),
     // The supersede-vs-coexist switch M2 needs, landing now so M2 adds an
     // engine and not a column. `single` supersedes, `multi` coexists +

@@ -539,10 +539,11 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // that supply `pre_widening_visible_to` as a JS array. This is the only
       // place the value makes the round trip through a real `text[]` column
       // and back out through the real SELECT — which matters because the
-      // failure direction is silent in BOTH directions: a value `isUnknownArray`
+      // failure is silent in BOTH directions: a value `isUnknownArray`
       // rejected would withhold from everyone (degrading the review surface
-      // exactly the way #4836 refuses), and a column the SELECT dropped would
-      // disclose to everyone.
+      // exactly the way #4836 refuses), and a `text[]` that came back as `[]`
+      // rather than SQL NULL would do the same to every never-widened fact in
+      // the workspace.
       const episode = await seedEpisode({
         sourceId: "C-FOUNDERS:1799999999.001",
         visibleTo: ["audience:private-channel"],

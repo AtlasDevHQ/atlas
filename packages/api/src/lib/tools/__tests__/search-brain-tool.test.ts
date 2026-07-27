@@ -86,7 +86,7 @@ void mock.module("@atlas/api/lib/logger", () => ({
   setLogLevel: () => true,
 }));
 
-const { searchBrain } = await import("@atlas/api/lib/tools/search-brain");
+const { searchBrain, SEARCH_BRAIN_DESCRIPTION } = await import("@atlas/api/lib/tools/search-brain");
 
 function run(input: Record<string, unknown> = {}) {
   // AI SDK tool.execute(args, ToolCallOptions). Cast through unknown: the tool's
@@ -291,5 +291,40 @@ describe("searchBrain tool.execute", () => {
     // The committed edge behavior — unextracted evidence is returned, labeled.
     expect(episode.extraction).toBe("pending");
     expect(episode.sourceId).toBe("m1");
+  });
+});
+
+/**
+ * The agent-facing honesty property (#4836).
+ *
+ * `SEARCH_BRAIN_DESCRIPTION` is the ONLY thing standing between a withheld
+ * attribution and an agent reporting the claim as anonymous or undated. The web
+ * review surface pins the same property with seven rendering tests; this is the
+ * agent surface's equivalent, and it exists because the description is a string
+ * nobody would notice deleting. It rides to MCP for free — `packages/mcp` reuses
+ * `searchBrain.description`.
+ */
+describe("SEARCH_BRAIN_DESCRIPTION — withheld attribution is explained to the model", () => {
+  it("names the wire shape the model will actually see", () => {
+    // A rule keyed on prose the response does not contain is unactionable.
+    expect(SEARCH_BRAIN_DESCRIPTION).toContain("provenance.attribution");
+    expect(SEARCH_BRAIN_DESCRIPTION).toContain('"visible": false');
+  });
+
+  it("forbids the three wrong readings and the inference", () => {
+    // "Say nothing" is not enough: the failure mode is an agent filling the
+    // gap — reporting the claim as unsourced, or guessing the author from the
+    // episode list. Each wrong reading is named explicitly.
+    for (const forbidden of ["anonymous", "undated", "unsourced"]) {
+      expect(SEARCH_BRAIN_DESCRIPTION).toContain(forbidden);
+    }
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/never infer the author/i);
+  });
+
+  it("still tells the model the CLAIM is usable", () => {
+    // The other half, and the one a well-meaning tightening would delete: the
+    // fact is legitimately visible. An agent that refused to use it would turn
+    // an attribution boundary into a knowledge gap.
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/Use the claim/i);
   });
 });

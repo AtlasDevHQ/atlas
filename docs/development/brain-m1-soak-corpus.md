@@ -109,6 +109,8 @@ select ep.visible_to from brain_edges e join brain_episodes ep on ep.id = e.to_e
 >
 > Read the middle column before concluding anything: a non-NULL value is **not** by itself a withholding. S1 widens and still discloses to everyone, because the grant it widened *from* was already `org`. Only NULL means "never widened".
 >
+> **Publish a FRESH fact for this check.** Anything already widened on `api-staging` predates migration 0183, so its pre-widening grant was overwritten and is gone: it reads NULL and still discloses. That is 0183's accepted residual, not a regression — but reuse an old fact and you will report one.
+>
 > Both reader rows are needed: withholding from everybody would pass the first and is a regression, not a fix. Check the agent path too — `searchBrain` feeds chat answers, so ask a question that returns the widened fact as **B** and confirm the answer names no author and no channel.
 >
 > ```sql

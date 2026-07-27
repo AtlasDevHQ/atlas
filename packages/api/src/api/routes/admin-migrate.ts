@@ -332,6 +332,26 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
         }
         const factGrantError = grantProblem(f.visibleTo);
         if (factGrantError) return { ok: false, error: `${at}.visibleTo: ${factGrantError}` };
+        // Deliberately NOT `grantProblem`, which is the wrong validator here:
+        // it requires at least one usable principal, and absent-or-empty is
+        // legitimate for this column (#4836 — `null` means the fact was never
+        // widened, `[]` means the source region could not vouch for the grant
+        // and wanted the target to withhold). What must be rejected is a shape
+        // Postgres would either abort the whole cutover on (`"org"` →
+        // `malformed array literal`, after every earlier pillar is written) or
+        // silently coerce into a real ACL value (`{}` stringifies to `{}`,
+        // which parses as a legal empty `text[]`).
+        if (
+          f.preWideningVisibleTo !== undefined &&
+          f.preWideningVisibleTo !== null &&
+          (!Array.isArray(f.preWideningVisibleTo) ||
+            f.preWideningVisibleTo.some((t) => t !== null && typeof t !== "string"))
+        ) {
+          return {
+            ok: false,
+            error: `${at}.preWideningVisibleTo: must be absent, null, or an array of strings.`,
+          };
+        }
         // No-provenance-no-promotion. `{}` is rejected at rest by the table,
         // so reject it here rather than aborting the transaction on it.
         if (!f.provenance || typeof f.provenance !== "object" || Array.isArray(f.provenance) || Object.keys(f.provenance).length === 0) {
@@ -949,7 +969,7 @@ export async function importBundle(
   // fail the FK; writing edges before both would fail theirs.
   //
   // Everything that makes a fact trustworthy is carried verbatim — provenance,
-  // grant, review status, all four temporal columns. Nothing is defaulted: a
+  // grant, review status, all four temporal columns. Nothing is defaulted except the bundle-version fallback on `preWideningVisibleTo` (#4836, see below): a
   // permissive fallback here would manufacture the very rows the table's
   // CHECKs exist to refuse, and would do it while claiming a successful
   // migration.
@@ -1073,8 +1093,10 @@ export async function importBundle(
           fact.status,
           fact.visibleTo,
           // `?? null` is the BUNDLE-VERSION fallback, not a permissive one: a
-          // bundle written before #4836 carries no widened facts this could
-          // describe, and `null` is already what those facts mean.
+          // pre-#4836 bundle carries no RECORDED pre-widening grants, because
+          // the source region had no column to record them in. Facts widened
+          // in the #4823-to-0183 window therefore land disclosing — migration
+          // 0183's accepted residual, reappearing for cross-region moves.
           fact.preWideningVisibleTo ?? null,
           fact.predicateCardinality,
           fact.createdAt,

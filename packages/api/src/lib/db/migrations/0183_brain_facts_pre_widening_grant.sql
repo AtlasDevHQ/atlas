@@ -31,11 +31,15 @@
 --
 -- ## What NULL means, and why that is the safe default
 --
--- NULL is "this fact's grant was never widened" — the overwhelming majority,
--- including every fact published before this migration and every fact promoted
--- through the plain `PROMOTE_FACTS_SQL` path. A NULL row discloses full
--- attribution, which is the pre-#4836 behaviour and correct: nothing widened,
--- so every reader who can see the fact could always see it.
+-- NULL means NO RECORDED PRE-WIDENING GRANT. For everything promoted after
+-- this migration that is the same thing as "never widened" — the overwhelming
+-- majority, including every fact taking the plain `PROMOTE_FACTS_SQL` path —
+-- and disclosing full attribution is then correct: nothing widened, so every
+-- reader who can see the fact could always see it.
+--
+-- For a fact widened in the #4823-to-0183 window it is NOT the same thing. NULL
+-- there is an unknown that reads as never-widened and therefore discloses. That
+-- is the accepted residual below, not a correctness claim.
 --
 -- Backfilling is not possible and not attempted. For a fact published before
 -- this column existed, the pre-widening grant is simply gone — it was

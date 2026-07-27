@@ -2779,3 +2779,25 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - A runbook upload no longer pays an entity-root rebuild (backend eviction stays — snapshot sandboxes are inherent); producer↔wire drift guards now run in BOTH directions (the API's response schemas were previously untied to the types the web drift-checks against).
 
 **Category:** Milestone-wide combined-diff review (the friction class per-issue review structurally misses) → orchestration-seam extraction, shared read module, type-derived wire contracts, and mirror-mechanics unification.
+
+---
+
+## 102. `probeWorkspaceCapabilities` — the chat gate asks what the workspace has, not what the operator exported (#4826)
+
+**Date:** 2026-07-26
+**Issue:** #4826
+**PR:** #4831
+**Commit:** aa7411800
+
+**Problem:** `POST /api/v1/chat` refused every turn when no analytics datasource was configured **at the process level**, ahead of the agent loop — and the refusal told the adopter to set the one env var they had deliberately not set. `resolveDatasourceUrl()` reads only `ATLAS_DATASOURCE_URL` / `ATLAS_DEMO_DATA`, never the connection registry or `workspace_plugins`, so a process-level env check was standing in for a per-workspace capability question. Knowledge and brain both read exclusively from the internal DB and need no analytics datasource at all, so a deployment adopted for either pillar had no working primary surface. It went unnoticed because all three prod regions set one of those env vars — every SaaS workspace inherits the operator's demo datasource as its pass, so the gate is satisfied by operator config rather than by the tenant having any data. Self-hosted knowledge-first was dead on arrival; the same unguarded copy sat in the crash-resume route with no test coverage.
+
+**Solution:** `lib/workspace-capability.ts` is the one seam that answers "is there anything here the agent can serve?" — a registered datasource **or** installed knowledge collections **or** brain content — in one indexed internal-DB round trip with every predicate leading on `workspace_id`. Three decisions carry the design. (1) The probe returns a discriminated `resolved | unknown`, so a transient DB fault can never be mistaken for "this workspace is empty" — an undecidable probe **fails open**, correct precisely because this is a UX affordance and not an authorization boundary. (2) `diagnosticsForBoundWorkspace()` drops the four process-datasource diagnostics (`MISSING_DATASOURCE_URL`, `MISSING_SEMANTIC_LAYER`, `DB_UNREACHABLE`, `INVALID_SCHEMA`) for a bound workspace while provider/auth/internal-DB diagnostics still block — that set is what actually 400'd staging, since any deploy with `DATABASE_URL` and no `ATLAS_DATASOURCE_URL` raises `MISSING_DATASOURCE_URL`. (3) Unbound single-tenant requests keep the env-level checks unchanged, because knowledge and brain are both workspace-scoped and unreachable without an org — there the env datasource really is the only thing that can serve a turn.
+
+**Impact:**
+- Both gates were fixed in lockstep, including the crash-resume route that had the same guard and zero tests; the resume gate now sits **ahead of the lease claim**, so a refusal cannot burn the single-resumer lease.
+- A new `no_capability` wire code is kept deliberately distinct from `no_datasource` because the remedies differ — operator env var versus in-product onboarding — and it propagates through `@useatlas/types`, the SDK/React reference docs, and the web ErrorBanner.
+- SQL tools stay **registered** and fail per call rather than de-registering: a per-workspace tool surface is something the frozen module-load registry does not model. The rejected alternative is recorded in `lib/tools/registry.ts` rather than lost.
+- The probe deliberately ignores `visible_to` ACL grants and draft/published content mode — per-user reach stays inside `searchBrain` and the SQL pipeline. The module docblock records both directions of that call, including the one consequence it accepts (a draft-only workspace passes the gate, then meets an agent that sees nothing in published mode) and the mode-aware narrowing that would fix it if it ever bites.
+- 634 lines of new tests across `workspace-capability.test.ts` + a real-PG `-pg` suite, plus 317 added to the two chat route suites.
+
+**Category:** Process-level config check standing in for a per-tenant capability question → a single capability-probe seam with an explicit undecidable state, fail-open semantics chosen against a stated threat model, and the rejected alternatives recorded at the sites that would otherwise re-litigate them.

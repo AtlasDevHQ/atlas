@@ -391,7 +391,8 @@ All error responses follow a consistent format:
 | `auth_error` | 401/403 | Authentication failed or missing |
 | `rate_limited` | 429 | Too many requests. `Retry-After` header included |
 | `configuration_error` | 400 | Atlas is not fully configured (missing provider, etc.) |
-| `no_datasource` | 400 | No datasource URL configured |
+| `no_datasource` | 400 / 503 | No analytics datasource URL configured. 400 from chat, `/query`, and `/demo`; 503 from the SQL pipeline (`/execute-sql`, `/metrics`, dashboards) |
+| `no_capability` | 400 | Workspace has no datasource, Knowledge Base collections, or Company Brain content |
 | `invalid_request` | 400 | Invalid request body or parameters |
 | `validation_error` | 422 | Request validation failed (Zod errors in `details`) |
 | `not_found` | 404 | Resource not found |

@@ -227,7 +227,7 @@
             }
           },
           "400": {
-            "description": "Bad request (malformed JSON, missing datasource, or invalid configuration)",
+            "description": "Bad request (malformed JSON, invalid configuration, or a workspace with no datasource, knowledge collections, or brain content)",
             "content": {
               "application/json": {
                 "schema": {
@@ -510,7 +510,7 @@
             }
           },
           "400": {
-            "description": "No analytics datasource configured",
+            "description": "Workspace has nothing the agent can serve, or no analytics datasource is configured",
             "content": {
               "application/json": {
                 "schema": {

@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, "milestone/**"]
   push:
-    branches: [main, "milestone/**"]
+    branches: [main, "milestone/**", "hotfix/**"]
   # Manual lever: lets an operator/agent re-create required check runs when
   # GitHub drops pull_request event deliveries (observed 2026-06-10 on #3358).
   workflow_dispatch:
@@ -12,6 +12,11 @@ on:
 # `milestone/**` mirrors ci.yml — see the longer rationale there. Scaffold drift
 # is exactly the class of break that hides until the milestone lands, so the
 # gate has to travel with the stacked PRs, not wait for the final merge.
+#
+# `hotfix/**` mirrors ci.yml too, and matters here for the same reason: a hotfix
+# branched off the tag `prod` serves is the one release path whose SHA no
+# pull_request ever validates. Deploy Validation is a required check, so without
+# this the scaffolds are unverified on exactly the tree going to prod.
 
 permissions:
   contents: read

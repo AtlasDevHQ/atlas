@@ -99,6 +99,13 @@ describe("ATLAS_SANDBOX=nsjail refuses rather than degrading (#4829)", () => {
   });
 
   it("reports fail-closed, not just-bash, once nsjail is marked failed", async () => {
+    // A real, executable path, so `findNsjailBinary()` genuinely succeeds. This
+    // case is about the RUNTIME-failure transition, so it must start from a
+    // deployment whose binary is present — since #4834 the reporting predicate
+    // probes for it, and a case that skipped this would start at `fail-closed`
+    // for the wrong reason and assert a transition that never happened.
+    process.env.ATLAS_NSJAIL_PATH = "/bin/sh";
+
     const mod = await freshExploreModule();
 
     // Pre-condition: without the failure the pin resolves to nsjail. Asserting
@@ -113,36 +120,72 @@ describe("ATLAS_SANDBOX=nsjail refuses rather than degrading (#4829)", () => {
     expect(mod.getExploreBackendType()).toBe("fail-closed");
   });
 
-  it("keeps the pin armed when nsjail is merely undetected (the #4824 arm)", async () => {
-    // The missing-BINARY arm must be untouched: #4824 deliberately does not call
-    // markNsjailFailed() there, so the pin stays armed and reports `nsjail`.
-    // Guarding it here means a future "simplification" that collapses the two
-    // arms into one fails this file rather than silently reintroducing the
-    // divergence #4824 closed.
+  it("reports fail-closed AND refuses when the pinned binary is missing (#4834)", async () => {
+    // The missing-BINARY arm. This was the KNOWN GAP: it reported `nsjail` — so
+    // `/api/health` claimed `isolated: true`, `sandbox.status: "healthy"`,
+    // `status: "ok"` — while explore refused every request. Same shape as #4828
+    // one arm over, and the last place boot and health disagreed.
     //
-    // KNOWN GAP, pinned here deliberately rather than left unstated: this arm
-    // reports `nsjail` (and therefore `/api/health` reports `isolated: true`,
-    // `sandbox.status: "healthy"`) while explore refuses every request — the
-    // assertions below show both halves. It is the same shape as #4828 one arm
-    // over, it PRE-DATES this change (main behaves identically), and closing it
-    // means either marking the failure here — which #4824's regression test
-    // forbids — or redefining `isBackendAvailable` as constructibility. Tracked
-    // as #4834; do not "fix" it by weakening #4824.
+    // #4834 closed it by redefining the reporting predicate:
+    // `isBackendAvailable("nsjail")` used to answer `pin || useNsjail()` and now
+    // probes the binary, so the operator's INTENT can no longer masquerade as
+    // capability. Nothing is marked failed and nothing is booted here — the
+    // absent binary alone is what makes the resolver say `fail-closed`, which is
+    // exactly why this fix needs no boot pre-flight to have run.
+    //
+    // The binary is made genuinely absent, and unlike before that is now the
+    // MECHANISM rather than belt-and-braces: `accessSync` throws for every
+    // candidate and `PATH` is empty, so `findNsjailBinary()` returns null. Undo
+    // either and this case stops testing anything.
     const fs = await import("fs");
     const spy = spyOn(fs, "accessSync").mockImplementation(() => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     });
     process.env.PATH = "";
 
-    const mod = await freshExploreModule();
-    expect(mod.getExploreBackendType()).toBe("nsjail");
+    try {
+      const mod = await freshExploreModule();
 
-    // …and it still refuses to run rather than degrading.
-    const result = await runExplore(mod);
-    expect(result).not.toContain(MARKER);
-    expect(result).toContain("nsjail was explicitly requested");
+      // Half one — the REPORT. `/api/health` reads this same function, and gets
+      // it right on the very first call, with no probe and no prior request.
+      expect(mod.getExploreBackendType()).toBe("fail-closed");
+      // The flag stays clear: this is a CONFIGURATION state, not a runtime
+      // failure, and #4834 kept that distinction rather than blurring it.
+      expect(mod.snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
 
-    spy.mockRestore();
+      // Half two — the RUNTIME CONSEQUENCE, asserted alongside the report rather
+      // than in a separate case, because the bug was precisely the two halves
+      // disagreeing. `just-bash` would genuinely run the command against the
+      // real temp semantic root (see this file's header), so `not.toContain`
+      // fails loudly on a fall-through instead of passing on a technicality.
+      //
+      // Looped like its sibling above: "refuses on EVERY request" is the
+      // acceptance criterion, and `getExploreBackend`'s `.catch` drops the
+      // failed cache entry so each attempt re-walks the plan from scratch.
+      for (const attempt of [1, 2, 3]) {
+        const result = await runExplore(mod);
+        expect(result, `attempt ${attempt} executed the command`).not.toContain(MARKER);
+        expect(result, `attempt ${attempt}`).toContain("Explore tool is unavailable");
+        expect(result, `attempt ${attempt}`).toContain("nsjail was explicitly requested");
+
+        // Only the FIRST attempt carries the specific remediation. Construction
+        // is still attempted under the pin (`tryCreateBackend` gates on
+        // `useNsjail()`, which #4834 left pin-inclusive), so attempt 1 raises
+        // "nsjail binary not found. Install nsjail or set ATLAS_NSJAIL_PATH" —
+        // and that failure latches `_nsjailFailed`, so attempts 2+ short-circuit
+        // to the generic "previous initialization failed". Pre-existing, and
+        // deliberately left alone here: it is a message-quality wart on the
+        // repeat path, not part of this fix, and asserting the generic string
+        // would pin a behaviour worth improving later.
+        if (attempt === 1) {
+          expect(result, "first attempt must name the remediation").toContain(
+            "ATLAS_NSJAIL_PATH",
+          );
+        }
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

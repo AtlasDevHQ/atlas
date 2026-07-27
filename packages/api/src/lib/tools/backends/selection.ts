@@ -202,11 +202,23 @@ export type SandboxResolution = SandboxBackendName | "fail-closed";
  * The walks agree only for the SAME predicate. In production they are fed
  * different ones — reporting passes availability (`isBackendAvailable`), the
  * runner passes constructibility (`tryCreateBackend`) — and availability is an
- * optimistic upper bound on constructibility. So `"fail-closed"` is a LOWER
- * bound on brokenness: this can still name a backend that will refuse to
- * construct. The live instance is the `ATLAS_SANDBOX=nsjail` pin with no binary,
- * where the pin alone reports available (see `isBackendAvailable` in
- * `explore.ts`); tracked as #4834.
+ * upper bound on constructibility. So `"fail-closed"` is a LOWER bound on
+ * brokenness: this can still name a backend that then fails to construct.
+ *
+ * How TIGHT that bound is, is a property of the availability predicate, and
+ * #4834 tightened it. The predicate used to answer a different question for
+ * nsjail — "is nsjail pinned or detected?" rather than "would nsjail build?" —
+ * so the bare `ATLAS_SANDBOX=nsjail` pin reported available on a host with no
+ * binary, and this function named `"nsjail"` for deployments that refused every
+ * request. `isBackendAvailable` now probes the binary, so intent can no longer
+ * masquerade as capability.
+ *
+ * What remains is the irreducible part: availability is a cheap CHECK and
+ * construction is the real thing, so a present-but-broken backend (an nsjail
+ * binary the kernel won't let create namespaces, before the probe has run) is
+ * still reported available. That residue is why this stays documented as a
+ * bound rather than an equality — and why a future backend whose availability
+ * check drifts further from its construction cost would widen it again.
  */
 export function resolveSandboxBackend(
   plan: SandboxPlan,

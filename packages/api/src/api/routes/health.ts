@@ -150,8 +150,11 @@ export const HealthResponseSchema = z.object({
       // explore throws on every request (a sandbox.priority pin with no just-bash
       // fallback, or an ATLAS_SANDBOX=nsjail pin whose backend was marked failed).
       // Additive member: before #4828 that state was reported as `just-bash`,
-      // i.e. a working but unsandboxed deploy, the opposite of the truth. See
-      // `getExploreBackendType` for the one pinned case NOT covered here.
+      // i.e. a working but unsandboxed deploy, the opposite of the truth. The
+      // one pinned case this used to miss — a pinned nsjail whose binary is
+      // simply absent — now reaches `fail-closed` too, because
+      // `isBackendAvailable` probes the binary rather than trusting the pin
+      // (#4834).
       backend: z.enum(["nsjail", "sidecar", "vercel-sandbox", "just-bash", "plugin", "fail-closed"]),
       isolated: z.boolean(),
       isolationVerified: z.boolean().optional(),

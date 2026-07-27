@@ -42,6 +42,8 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   CONTENT_MODE_TABLES,
   collectRefusals,
+  collectWidenings,
+  type WidenedGrantRecord,
   makeService,
   promotedCountsFromReports,
   type RefusalSweep,
@@ -263,6 +265,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     // ── Transaction ────────────────────────────────────────────────
     let promoted: PublishPromotedCounts;
     let refusals: RefusalSweep;
+    let widenedGrants: readonly WidenedGrantRecord[];
     let deletedEntityCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
@@ -346,6 +349,14 @@ adminPublish.openapi(publishRoute, async (c) =>
       // not the workspace's whole publish. `collectRefusals` is shared with the
       // MCP lib seam so the two publish paths cannot report differently.
       refusals = collectRefusals(tx.reports);
+      // Rows whose ACL this publish widened (#4823, `brain_facts` only today).
+      // Swept with the same shared helper as the refusals, for the same reason:
+      // the MCP seam runs the identical phases, and a per-route inline sweep is
+      // how the two paths drift. Collected for `logAdminAction` alone —
+      // deliberately NOT surfaced in the response: unlike a refusal it needs no
+      // action from the admin, and the reason to record it is that "why can the
+      // whole org see this?" is asked months later.
+      widenedGrants = collectWidenings(tx.reports);
       deletedEntityCount =
         tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;
       archivedConnectionCount = tx.archived.connections;
@@ -401,6 +412,14 @@ adminPublish.openapi(publishRoute, async (c) =>
           reasons: r.reasons,
         })),
         refusedDraftCount: refusals.total,
+        // Uncapped, for the reason above and one sharper: a widened grant
+        // PERMANENTLY changed who can read a claim, and nothing re-offers it.
+        // The adapter's own log line samples the list; this row carries all of
+        // it. (`logAdminAction` also mirrors this metadata to pino, so the log
+        // stream gets the full list too — that is a property of every admin
+        // audit row, not a guarantee this field adds.)
+        widenedGrants,
+        widenedGrantCount: widenedGrants.length,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,

@@ -132,6 +132,27 @@ export interface PromotionRefusal {
   readonly detail: string;
 }
 
+/**
+ * A row whose ACL this publish widened, and the principals it added (#4823).
+ *
+ * Only `brain_facts` produces these today: it is the one table whose promote
+ * computes a visibility grant rather than only flipping a status. Reported
+ * rather than only logged because a log line rotates and its level is
+ * hot-mutable — `admin-publish.ts` puts the sweep in `logAdminAction`'s durable
+ * jsonb, the same argument `refusedDrafts` is written for, applied to the more
+ * consequential of the two events. (The MCP publish seam writes no audit row
+ * for anything, so there it reaches a `log.warn` and no further;
+ * `collectWidenings` is shared so at least the two cannot report differently.)
+ *
+ * `added` is a non-empty tuple: a widening that widened nothing is not an
+ * event, and the producer already makes that state unrepresentable.
+ */
+export interface GrantWidening {
+  readonly rowId: string;
+  /** Grant tokens added. Syntactic — a token may already be implied by a role. */
+  readonly added: readonly [string, ...string[]];
+}
+
 /** Result of promoting drafts for a single table. */
 export interface PromotionReport {
   readonly table: string;
@@ -144,6 +165,12 @@ export interface PromotionReport {
    * refused nothing today" stay distinguishable.
    */
   readonly refused?: readonly PromotionRefusal[];
+  /**
+   * Rows whose grant this publish widened. Absent for every adapter that has
+   * no grant concept at all, on the same distinguishability grounds as
+   * {@link PromotionReport.refused}.
+   */
+  readonly widened?: readonly GrantWidening[];
 }
 
 /**

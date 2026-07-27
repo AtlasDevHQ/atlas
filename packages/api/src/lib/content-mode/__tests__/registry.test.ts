@@ -23,7 +23,7 @@ import {
   makeService,
   type ContentModeRegistryService,
 } from "../registry";
-import { collectRefusals, promotedCountsFromReports } from "../promoted";
+import { collectRefusals, collectWidenings, promotedCountsFromReports } from "../promoted";
 import type { ContentModeEntry, PromotionReport } from "../port";
 import {
   ExoticReadFilterUnavailableError,
@@ -201,6 +201,39 @@ describe("collectRefusals (#4769)", () => {
     expect(out.reported).toHaveLength(100);
     expect(out.all).toHaveLength(100);
     expect(out.total).toBe(100);
+  });
+});
+
+describe("collectWidenings (#4823)", () => {
+  it("is NEVER capped, unlike collectRefusals", () => {
+    // The asymmetry is the whole design, so it gets its own pin: a refusal list
+    // is capped because it goes on the wire, and a widening list does not —
+    // it goes into `logAdminAction`'s jsonb, where the payload-size argument
+    // does not apply, and it is the ONLY durable record that who can read a
+    // claim changed. A future "make these two consistent" refactor that capped
+    // this at 100 would silently truncate that record.
+    const many = Array.from({ length: 250 }, (_, i) => ({
+      rowId: `f${i}`,
+      added: ["org"] as [string, ...string[]],
+    }));
+    const out = collectWidenings([{ table: "brain_facts", promoted: 250, widened: many }]);
+    expect(out).toHaveLength(250);
+    expect(out[249]).toEqual({ surface: "brain_facts", id: "f249", added: ["org"] });
+  });
+
+  it("sweeps EVERY adapter and keeps the surface attributable", () => {
+    // Swept rather than read off a named table, for `collectRefusals`' reason:
+    // `brain_facts` is the only adapter with a grant today, and a second one is
+    // reported here with no edit.
+    const out = collectWidenings([
+      { table: "semantic_entities", promoted: 1 },
+      { table: "brain_facts", promoted: 1, widened: [{ rowId: "f1", added: ["org"] }] },
+    ]);
+    expect(out).toEqual([{ surface: "brain_facts", id: "f1", added: ["org"] }]);
+  });
+
+  it("returns [] when no adapter has a grant concept", () => {
+    expect(collectWidenings([{ table: "prompt_collections", promoted: 3 }])).toEqual([]);
   });
 });
 
@@ -530,7 +563,8 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // 3. query_suggestions   → UPDATE (1 SQL)
     // 4. knowledge_documents → UPDATE (1 SQL)  [#4206]
     // 5. semantic_entities   → applyTombstones (2 SQL) + promoteDraftEntities (2 SQL)
-    // 6. brain_facts         → SELECT drafts FOR UPDATE + UPDATE promotable (2 SQL) [#4769]
+    // 6. brain_facts         → SELECT drafts FOR UPDATE + SELECT evidence grants
+    //                          + UPDATE promotable (3 SQL) [#4769, #4823]
     const { client, calls } = makeMockPoolClient([
       { rowCount: 3 }, // connections
       { rowCount: 2 }, // prompt_collections
@@ -567,6 +601,9 @@ describe("ContentModeRegistry.runPublishPhases", () => {
           },
         ],
       },
+      // #4823 evidence-grant lookup: `f-ok`'s only episode carries the grant it
+      // already has, so nothing widens and the plain promote runs.
+      { rows: [{ fact_id: "f-ok", visible_to: ["org"] }] },
       { rowCount: 1 }, //                                        UPDATE promote (only f-ok)
     ]);
 
@@ -602,8 +639,9 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // ungranted draft is refused and stays a draft; its sibling promotes.
     expect(reports[5].promoted).toBe(1);
     expect(reports[5].refused?.map((r) => r.rowId)).toEqual(["f-ungranted"]);
+    expect(reports[5].widened).toEqual([]);
 
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(11);
     expect(calls[0].sql).toContain("UPDATE workspace_plugins");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
@@ -613,16 +651,21 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(calls[5].sql).toContain("draft_delete");
     expect(calls[6].sql).toMatch(/DELETE FROM semantic_entities/);
     expect(calls[7].sql).toContain("UPDATE semantic_entities");
-    // brain_facts: read the drafts under a lock, then promote by explicit id.
+    // brain_facts: read the drafts under a lock, read the grants of the
+    // episodes behind them (#4823), then promote by explicit id.
     expect(calls[8].sql).toMatch(/FROM brain_facts/);
     expect(calls[8].sql).toMatch(/FOR UPDATE/i);
-    expect(calls[9].sql).toContain("UPDATE brain_facts");
+    expect(calls[9].sql).toContain("brain_edges");
+    expect(calls[10].sql).toContain("UPDATE brain_facts");
 
     // Every phase is org-scoped on $1. The brain promote additionally binds the
     // promotable id list on $2 — the refusal is enforced by which rows we ask
-    // Postgres to touch, so that second param is the gate, not a filter.
+    // Postgres to touch, so that second param is the gate, not a filter. The
+    // evidence lookup binds the SAME list, so a refused row's episodes cannot
+    // widen anything either.
     for (const c of calls.slice(0, 9)) expect(c.params).toEqual(["org-1"]);
     expect(calls[9].params).toEqual(["org-1", ["f-ok"]]);
+    expect(calls[10].params).toEqual(["org-1", ["f-ok"]]);
   });
 
   it("invokes simple and exotic adapters in tuple order with a non-failing exotic (test tuple)", async () => {

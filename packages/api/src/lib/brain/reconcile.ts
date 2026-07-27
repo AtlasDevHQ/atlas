@@ -104,8 +104,11 @@
  *
  * ## What this slice does NOT do
  *
- * A fact's grant is INHERITED from its episode verbatim — a claim is never more
- * visible than the evidence behind it. Deriving a grant from source membership
+ * A fact's grant is INHERITED from its FIRST episode verbatim — a claim is never
+ * more visible than the evidence behind it, and this stage never revisits that
+ * choice. A later episode restating the claim under a wider grant is recorded
+ * as evidence and nothing more; the publish gate is what unions those grants in
+ * (#4823, `promoteBrainFacts`). Deriving a grant from source membership
  * (a chat channel's roster → `audience:` + a `fact_audience_member` sync) is the
  * INGEST seam's job for the episode (`ingest/grant.ts`), and the membership sync
  * that makes a private channel's `audience:` resolve to real people is not in
@@ -363,7 +366,10 @@ const NO_BLOCKS: Readonly<Record<ReconcileBlockReason, number>> = Object.freeze(
 // Exported so the real-Postgres test runs these exact strings against the live
 // schema instead of asserting a paraphrase of them.
 //
-// NOTE for the next editor: none of these may name `status`.
+// NOTE for the next editor: none of these may name `status`, and no UPDATE
+// here may name `visible_to` (#4823 — the grant is a per-version snapshot that
+// widens only at the review gate; the INSERT below names it and must, because
+// derive-at-ingest is that snapshot being taken).
 // `scripts/check-brain-fact-promotion.sh` refuses any statement that touches
 // `brain_facts` and mentions the column — including in a WHERE clause — and
 // that over-breadth is deliberate. The fact insert omits `status` on purpose:
@@ -380,9 +386,12 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
  *
  * Deliberately NOT filtered by review state: a claim re-observed after it was
  * published must corroborate the published fact, not mint a fresh draft
- * duplicate of it. Deliberately not filtered by grant either — a narrower
- * re-observation is recorded as EVIDENCE and never widens the existing fact's
- * `visible_to`, because a grant is immutable per fact version (0180).
+ * duplicate of it. Deliberately not filtered by grant either — a re-observation
+ * at ANY grant, narrower or wider, is recorded as EVIDENCE and never rewrites
+ * the existing fact's `visible_to` from here, because a grant is immutable per
+ * fact version (0180) and ADR-0036 §T5 admits widening only at the review gate.
+ * A wider re-observation is acted on there instead: `promoteBrainFacts` unions
+ * the evidence grants in when the draft is published (#4823).
  */
 export const CORROBORATION_LOOKUP_SQL = `SELECT id
      FROM brain_facts
@@ -534,10 +543,12 @@ export async function reconcileFacts(
   // `isUsableGrant` above answers "can ANY reader match this?" and discards the
   // rest of the parse. The half it discards is the one that bites in practice:
   // a grant like `['user:abc', 'everyone']` passes on its valid token while
-  // carrying a second one whose author believed it was doing something, and the
-  // resulting fact is narrower than intended FOREVER (grants are immutable per
-  // fact version). `logGrantAnomalies` is the seam `acl.ts` built for exactly
-  // this, and this is the write path that holds the row.
+  // carrying a second one whose author believed it was doing something, and
+  // NOTHING ever repairs it. Publish-time widening (#4823) is not the escape
+  // hatch it might look like: it appends grammar-valid principals drawn from
+  // EVIDENCE grants and never re-parses the fact's own tokens, so the dead one
+  // rides along untouched. `logGrantAnomalies` is the seam `acl.ts` built for
+  // exactly this, and this is the write path that holds the row.
   logGrantAnomalies(episode.visibleTo, {
     table: "brain_episodes",
     rowId: episode.id,
@@ -814,10 +825,23 @@ async function writeCandidate(
   if (existingId !== null) {
     // Strengthen: one more piece of evidence for a belief Atlas already holds.
     // Nothing about the fact itself changes — not its grant, not its review
-    // state, not its validity. (The new episode may be narrower than the fact's
-    // own grant; that is safe because `brain_episodes` is ACL-gated in its own
-    // right by the same predicate, so walking the edge cannot read an episode
-    // the reader is not entitled to.)
+    // state, not its validity. Both grant directions land here, and they are
+    // safe for different reasons:
+    //
+    //   NARROWER episode than the fact's grant — safe outright. `brain_episodes`
+    //   is ACL-gated in its own right by the same predicate, so walking the edge
+    //   cannot read an episode the reader is not entitled to.
+    //
+    //   WIDER episode than the fact's grant — safe but not yet CORRECT, and
+    //   deliberately not fixed here (#4823). A claim first seen in a private
+    //   channel and then restated in a public one keeps the private grant, so
+    //   the direction is fail-closed: information is withheld, never disclosed.
+    //   The correction happens at PUBLISH, where `promoteBrainFacts` unions in
+    //   the grants of every episode on a `provenance` edge
+    //   (`widenGrantFromEvidence`). ADR-0036 §T5 puts widening only at the
+    //   review gate and makes a grant an immutable per-version snapshot, so an
+    //   unattended ingest pass — this one — is precisely where it must NOT
+    //   happen. Recording the edge here is what makes the gate able to do it.
     //
     // Nor its CARDINALITY: a claim first stored `multi` and re-asserted `single`
     // stays `multi` and earns no tension edges. Upgrading it would supersede by

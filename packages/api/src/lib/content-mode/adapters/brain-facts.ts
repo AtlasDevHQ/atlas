@@ -14,6 +14,17 @@
  * so the promote path has to be able to name a row. See `lib/brain/promotion.ts`
  * for WHICH of those rules is live and which is defense in depth.
  *
+ * #4823 added a second per-row opinion on the same seam: the grant a fact is
+ * published WITH. ADR-0036 §T5 permits a grant to widen only at the review
+ * gate, and publish is the review gate — so a draft whose evidence includes an
+ * episode granted more widely than the fact itself is promoted with the union
+ * (`widenGrantFromEvidence`). Both opinions are per-row and neither is
+ * expressible as a blanket UPDATE, which is the same reason twice. Both are
+ * grep-guarded: `check-brain-fact-promotion.sh` refuses an `UPDATE brain_facts
+ * … SET … status` OR `… visible_to` outside its allowlist. The `visible_to` arm
+ * is UPDATE-only on purpose — `reconcile.ts` writes the column at INSERT, which
+ * IS the derive-at-ingest grant and must stay legal.
+ *
  * The alternative considered and rejected was widening `SimpleModeTable` with a
  * `refuse` SQL fragment. That restates the grant grammar in SQL — a second
  * source of truth for the thing `acl.ts` exists to be the only source of truth
@@ -35,10 +46,17 @@
 import { Effect } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
-import { logGrantAnomalies } from "@atlas/api/lib/brain/acl";
-import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { isUnknownArray, logGrantAnomalies } from "@atlas/api/lib/brain/acl";
+import {
+  classifyFactForPromotion,
+  isJsonObject,
+  widenGrantFromEvidence,
+  type DraftFactRow,
+  type StoredGrant,
+} from "@atlas/api/lib/brain/promotion";
 import {
   PublishPhaseError,
+  type GrantWidening,
   type ModeTxClient,
   type PromotionRefusal,
   type PromotionReport,
@@ -164,6 +182,86 @@ export const PROMOTE_FACTS_SQL = `
      AND id = ANY($2::uuid[])
 `;
 
+/**
+ * Every episode that is already EVIDENCE for one of these drafts, with its
+ * grant — the input to publish-time grant widening (#4823).
+ *
+ * Restricted to `provenance` edges, which is the fact class's evidence pointer.
+ * Be precise about whose decision that is: ADR-0036 constrains WHEN a grant may
+ * widen (only at the review gate), not which edge feeds it — and its one worked
+ * example, T9 lock 3, is a `derives-from` edge. Narrowing to `provenance` is
+ * #4823's own choice, because "that episode SAYS this" is a stronger warrant
+ * than "this was DERIVED FROM that", and widening off a derivation would let a
+ * lineage relationship move an ACL field. The consequence, stated because it is
+ * easy to miss: an M5 write-back fact whose only evidence edge is `derives-from`
+ * will not widen here.
+ *
+ * Workspace-scoped on BOTH sides of the join, not just the edge. The composite
+ * FKs make a cross-tenant edge unstorable today, so the second predicate is
+ * defense in depth — but it is defense in depth on the one query in this file
+ * whose output WIDENS an ACL, where the failure mode is disclosure rather than
+ * the fail-closed over-restriction everything else here degrades to.
+ *
+ * Ordered so the stored token order does not depend on the query plan. It is
+ * NOT a meaningful chronology: `ingested_at` defaults to the inserting
+ * transaction's timestamp, so episodes written in one ingest batch tie and
+ * break by random uuid — and `occurred_at`, which would be the honest
+ * chronology, is nullable. Determinism is all that is claimed, and all that is
+ * needed.
+ */
+export const EVIDENCE_GRANTS_SQL = `
+  SELECT e.from_fact_id::text AS fact_id,
+         ep.id::text          AS episode_id,
+         ep.visible_to        AS visible_to
+    FROM brain_edges e
+    JOIN brain_episodes ep
+      ON ep.workspace_id = e.workspace_id
+     AND ep.id = e.to_episode_id
+   WHERE e.workspace_id = $1
+     AND e.edge_type = 'provenance'
+     AND e.from_fact_id = ANY($2::uuid[])
+   ORDER BY ep.ingested_at, ep.id
+`;
+
+/**
+ * Promote the subset whose grant the evidence widened, each with its own new
+ * `visible_to` (#4823).
+ *
+ * Separate from {@link PROMOTE_FACTS_SQL} rather than folded into it, even
+ * though one statement with a `FROM (…) w` would cover both: widening is rare
+ * (it needs the same claim stated across two differently-granted sources) and
+ * a single statement would rewrite `visible_to` on EVERY promoted fact,
+ * round-tripping thousands of grants through jsonb to change none of them. The
+ * blast radius of the write that touches an ACL should be exactly the rows
+ * whose ACL changed.
+ *
+ * `$2` is a jsonb array of `{id, grant}` for the BATCH episode insert's reason
+ * (`ingest/episodes.ts`), not `INSERT_FACT_SQL`'s — per-row grants of differing
+ * length would otherwise need a ragged `text[][]`, which POSTGRES requires to
+ * be rectangular, so a batch mixing a 1-principal and a 2-principal grant could
+ * not be bound at all.
+ *
+ * The `status = 'draft'` predicate is kept for {@link PROMOTE_FACTS_SQL}'s
+ * reason — it makes the statement correct on its own terms. `DRAFT_FACTS_SQL`
+ * is what actually keeps a published id out of the payload; this is the second
+ * lock on the same door, and on this statement the door is an immutable grant.
+ */
+export const WIDEN_AND_PROMOTE_FACTS_SQL = `
+  UPDATE brain_facts f
+     SET status = 'published',
+         visible_to = ARRAY(SELECT jsonb_array_elements_text(w.grant)),
+         updated_at = now()
+    FROM (
+      SELECT (entry->>'id')::uuid AS id,
+             entry->'grant'       AS grant
+        FROM jsonb_array_elements($2::jsonb) AS entry
+    ) AS w
+   WHERE f.workspace_id = $1
+     AND f.status = 'draft'
+     AND f.invalidated_at IS NULL
+     AND f.id = w.id
+`;
+
 /** Draft count for the `brainFacts` segment of `/api/v1/mode` `draftCounts`. */
 export function brainFactsCountSql(orgParam: string): string {
   return `SELECT 'brainFacts' AS key, COUNT(*)::int AS n FROM brain_facts WHERE workspace_id = ${orgParam} AND status = 'draft' AND invalidated_at IS NULL`;
@@ -198,13 +296,133 @@ function toDraftFactRow(row: unknown): DraftFactRow | null {
 }
 
 /**
+ * Bound on any id list this file spells out in a log line.
+ *
+ * The two uses have different backstops, which is worth knowing before raising
+ * or lowering it. For `widened`, the sample is a convenience — the complete
+ * list rides `PromotionReport.widened` to a durable record. For the
+ * evidence-drift warnings there is NO complete record anywhere: the sample plus
+ * the count is all that exists, so the count is the number to act on.
+ */
+const LOGGED_ID_SAMPLE_CAP = 20;
+
+/** One promotable draft, carried past the classifier so its grant can be widened. */
+interface PromotableDraft {
+  readonly id: string;
+  /**
+   * `visible_to` narrowed to what a `text[]` can hold. Narrowed HERE rather
+   * than left `unknown` because this value is written back into the ACL column:
+   * `jsonb_array_elements_text` would coerce a stray JSON number into a
+   * principal, and this is the last point at which the type can say it cannot.
+   */
+  readonly grant: StoredGrant;
+}
+
+/**
+ * Bucket {@link EVIDENCE_GRANTS_SQL}'s rows by fact, preserving the SQL's order.
+ *
+ * Also the seam where an evidence grant's own anomalies are reported. A
+ * malformed token in an EPISODE's grant is the quiet way a widening comes out
+ * short: `parseGrant` drops the token, the fact publishes narrower than the
+ * author intended, and nothing else notices — `reconcile.ts`'s
+ * `logGrantAnomalies` fired at a different row, at a different time, and could
+ * not know it would later cost a fact readers. Reported through the same seam
+ * so the anomaly lands at the moment it changed an outcome.
+ *
+ * ONCE PER EPISODE, not once per row. One episode can be evidence for many
+ * drafts, and N byte-identical warnings for one bad grant makes a single
+ * mistyped `audience:` prefix read as a fleet-wide problem.
+ *
+ * The two `unusable*` results are QUERY DRIFT — every column is non-null by the
+ * schema — and they are kept apart for `acl.ts`'s reason: they send an
+ * investigation to opposite places. `unusableRows` means the SELECT's shape
+ * changed (diff the SQL); `unusableGrantFor` means `brain_episodes.visible_to`
+ * stopped arriving as an array (diff the column). It is a SET, so the cap on
+ * the caller's sample spends its slots on distinct facts.
+ *
+ * Both are skipped rather than fatal, and the trade is worth stating exactly.
+ * Skipping is fail-CLOSED — the fact publishes with whatever evidence DID load,
+ * so nothing is over-shared and nothing goes uncounted. But unlike a refusal it
+ * is NOT re-offered: the fact is published, so no later publish revisits it and
+ * the widening opportunity is spent. Failing the phase instead would wedge a
+ * tenant's entire publish on an evidence-side bug, which this adapter exists to
+ * avoid; the price is that the caller's warning is the only chance to notice,
+ * which is why it names ids.
+ */
+function groupEvidenceGrants(
+  rows: readonly unknown[],
+  meta: { readonly workspaceId: string },
+): {
+  readonly byFact: ReadonlyMap<string, readonly (readonly unknown[])[]>;
+  /** Rows with no usable `fact_id` — unattributable, so not even countable per fact. */
+  readonly unusableRows: number;
+  /** DISTINCT facts whose evidence row carried a non-array `visible_to`. */
+  readonly unusableGrantFor: ReadonlySet<string>;
+} {
+  const byFact = new Map<string, (readonly unknown[])[]>();
+  const unusableGrantFor = new Set<string>();
+  const inspectedEpisodes = new Set<string>();
+  let unusableRows = 0;
+  for (const raw of rows) {
+    if (!isJsonObject(raw) || typeof raw.fact_id !== "string" || raw.fact_id === "") {
+      unusableRows++;
+      continue;
+    }
+    if (!isUnknownArray(raw.visible_to)) {
+      unusableGrantFor.add(raw.fact_id);
+      continue;
+    }
+    // `episode_id` is only ever used to attribute this warning and to dedupe
+    // it, so a shape change there costs the message its precision — never the
+    // widening. `"?"` is one bucket, which is the right degradation: an
+    // unattributable anomaly said once beats it said N times.
+    const episodeId = typeof raw.episode_id === "string" ? raw.episode_id : "?";
+    if (!inspectedEpisodes.has(episodeId)) {
+      inspectedEpisodes.add(episodeId);
+      logGrantAnomalies(raw.visible_to, {
+        table: "brain_episodes",
+        rowId: episodeId,
+        workspaceId: meta.workspaceId,
+      });
+    }
+    const bucket = byFact.get(raw.fact_id);
+    if (bucket) bucket.push(raw.visible_to);
+    else byFact.set(raw.fact_id, [raw.visible_to]);
+  }
+  return { byFact, unusableRows, unusableGrantFor };
+}
+
+/**
+ * Narrow `visible_to` off the driver to what the column can hold.
+ *
+ * `classifyFactForPromotion` refuses a non-array grant under
+ * `GRANT_NOT_AN_ARRAY`, so a promotable row always reaches here as an array and
+ * the `[]` arm is unreachable. The per-element coercion is likewise unreachable
+ * from a `text[]` — it exists so that if the query ever did return something
+ * else, the value written back into an ACL column is still only tokens or
+ * NULLs, never a coerced number.
+ */
+function toStoredGrant(visibleTo: unknown): StoredGrant {
+  if (!isUnknownArray(visibleTo)) return [];
+  return visibleTo.map((token) => (typeof token === "string" ? token : null));
+}
+
+/**
  * Promote reviewed facts inside the caller's transaction, refusing any draft
  * that breaks a structural rule.
+ *
+ * This phase writes `visible_to`, not only `status`: it also decides the grant
+ * each fact is published WITH — its own, unioned with those of the episodes on
+ * a `provenance` edge to it (#4823). Publish is the review gate, and ADR-0036
+ * §T5 permits a grant to widen there and nowhere else.
  *
  * The returned `PromotionReport` carries `refused` so `admin-publish.ts` can
  * surface the refusals to the admin instead of reporting an unqualified
  * success — a refused fact that only appeared in the server log would be a
- * silent partial publish from the admin's side.
+ * silent partial publish from the admin's side — and `widened` so the ACL
+ * change can reach a record its caller controls: `admin-publish.ts` puts it in
+ * `logAdminAction`'s durable jsonb; the MCP seam, which audits nothing, at
+ * least logs the same swept list rather than a different one.
  */
 export function promoteBrainFacts(
   tx: ModeTxClient,
@@ -217,7 +435,7 @@ export function promoteBrainFacts(
         new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
     });
 
-    const promotableIds: string[] = [];
+    const promotable: PromotableDraft[] = [];
     const refused: PromotionRefusal[] = [];
     for (const raw of drafts.rows) {
       const row = toDraftFactRow(raw);
@@ -243,52 +461,152 @@ export function promoteBrainFacts(
       // did something. `acl.ts` calls this the read-time seam it cannot reach
       // from a push-down predicate; promotion is the one place holding every
       // draft's grant, so it is where the observable half of that gap narrows.
-      // NOT closed: #4797 stays open for `brain_episodes` (gated by the same
-      // predicate, but never promoted, so it has no equivalent seam) and for
-      // facts that arrive already `published` through the region import.
-      if (Array.isArray(row.visible_to)) {
-        logGrantAnomalies(row.visible_to as readonly unknown[], {
-          table: BRAIN_FACTS_TABLE,
-          rowId: row.id,
-          workspaceId: orgId,
-        });
-      }
-      promotableIds.push(row.id);
+      // NOT closed: #4797 stays open for `brain_episodes` that are evidence for
+      // nothing promotable (gated by the same predicate, but never promoted;
+      // `groupEvidenceGrants` below is the equivalent seam for the ones that
+      // ARE) and for facts that arrive already `published` through the region
+      // import.
+      //
+      // Narrowed once, here, because this value is also what gets written BACK
+      // if the evidence widens it — see `toStoredGrant`.
+      const grant = toStoredGrant(row.visible_to);
+      logGrantAnomalies(grant, {
+        table: BRAIN_FACTS_TABLE,
+        rowId: row.id,
+        workspaceId: orgId,
+      });
+      promotable.push({ id: row.id, grant });
     }
 
-    // Skip the round trip when there is nothing to promote — a workspace with
+    // Skip the round trips when there is nothing to promote — a workspace with
     // no brain drafts is the overwhelmingly common case and publish runs this
     // adapter on every call.
     let promoted = 0;
-    if (promotableIds.length > 0) {
-      const result = yield* Effect.tryPromise({
-        try: () => tx.query(PROMOTE_FACTS_SQL, [orgId, promotableIds]),
+    const widened: GrantWidening[] = [];
+    if (promotable.length > 0) {
+      // #4823: publish is the review gate, and the review gate is the one place
+      // ADR-0036 permits a grant to widen. Read every episode already recorded
+      // as evidence, so a claim restated in a wider audience stops being served
+      // only to the narrower one it was first seen in.
+      const evidence = yield* Effect.tryPromise({
+        try: () =>
+          tx.query(EVIDENCE_GRANTS_SQL, [orgId, promotable.map((draft) => draft.id)]),
         catch: (cause) =>
           new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
       });
+      const { byFact, unusableRows, unusableGrantFor } = groupEvidenceGrants(evidence.rows, {
+        workspaceId: orgId,
+      });
+      if (unusableRows > 0) {
+        // Deliberately does NOT claim which facts were affected: rows with no
+        // usable `fact_id` are unattributable by definition, which is the whole
+        // problem with them.
+        log.warn(
+          { workspaceId: orgId, unusableRows, evidenceRows: evidence.rows.length },
+          "brain publish: evidence rows carry no usable fact_id, so the widening input was incomplete and the facts they belonged to cannot be named — diff EVIDENCE_GRANTS_SQL",
+        );
+      }
+      if (unusableGrantFor.size > 0) {
+        // "May be narrower", not "is": a fact with one bad evidence row and
+        // three good ones still widens, just less than it should have. An
+        // operator told the grant is unchanged would go looking for the wrong
+        // symptom.
+        const factIds = [...unusableGrantFor];
+        log.warn(
+          {
+            workspaceId: orgId,
+            factIds: factIds.slice(0, LOGGED_ID_SAMPLE_CAP),
+            factIdCount: factIds.length,
+            sampleTruncated: factIds.length > LOGGED_ID_SAMPLE_CAP,
+          },
+          "brain publish: an evidence episode's visible_to did not load as an array — brain_episodes.visible_to changed shape. These facts widened from their remaining usable evidence only, so their published grant may be narrower than intended, and it is NOT re-offered",
+        );
+      }
+
+      const plainIds: string[] = [];
+      const widenedEntries: { readonly id: string; readonly grant: StoredGrant }[] = [];
+      for (const draft of promotable) {
+        const widening = widenGrantFromEvidence(draft.grant, byFact.get(draft.id) ?? []);
+        if (!widening) {
+          plainIds.push(draft.id);
+          continue;
+        }
+        widenedEntries.push({ id: draft.id, grant: widening.grant });
+        widened.push({ rowId: draft.id, added: widening.added });
+      }
+
       // `rowCount` is authoritative for a non-RETURNING UPDATE (`rows` is
       // empty); the `rows.length` fallback keeps test doubles that populate
       // only one of the two from reporting a false zero. Mirrors
       // `promoteSimpleTable` in the registry.
-      promoted = result.rowCount ?? result.rows?.length ?? 0;
-      if (promoted !== promotableIds.length) {
+      const countOf = (result: Awaited<ReturnType<ModeTxClient["query"]>>): number =>
+        result.rowCount ?? result.rows?.length ?? 0;
+
+      let plainPromoted = 0;
+      if (plainIds.length > 0) {
+        const result = yield* Effect.tryPromise({
+          try: () => tx.query(PROMOTE_FACTS_SQL, [orgId, plainIds]),
+          catch: (cause) =>
+            new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+        });
+        plainPromoted = countOf(result);
+      }
+      let widenedPromoted = 0;
+      if (widenedEntries.length > 0) {
+        const result = yield* Effect.tryPromise({
+          try: () => tx.query(WIDEN_AND_PROMOTE_FACTS_SQL, [orgId, JSON.stringify(widenedEntries)]),
+          catch: (cause) =>
+            new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+        });
+        widenedPromoted = countOf(result);
+      }
+      promoted = plainPromoted + widenedPromoted;
+
+      if (promoted !== promotable.length) {
         // `FOR UPDATE` pins every classified row for the rest of this
-        // transaction, so the UPDATE must touch exactly the ids we passed.
-        // A divergence means the lock did not hold, a row changed status
-        // underneath us, or the driver under-reported `rowCount` — and the
-        // consequence is rows that are neither promoted-and-counted nor
+        // transaction, so the two UPDATEs must together touch exactly the ids
+        // we passed. A divergence means the lock did not hold, a row changed
+        // status underneath us, or the driver under-reported `rowCount` — and
+        // the consequence is rows that are neither promoted-and-counted nor
         // refused-and-reported, i.e. the silent under-report this whole
         // adapter exists to prevent. Never silent.
+        //
+        // Reported per STATEMENT: a shortfall on the widening UPDATE is a
+        // different incident from one on the plain promote — it means facts
+        // whose ACL should have changed are sitting as unpromoted drafts — and
+        // a single pair of totals cannot tell an operator which happened.
         log.warn(
           {
             workspaceId: orgId,
-            expected: promotableIds.length,
+            expected: promotable.length,
             actual: promoted,
-            rowCount: result.rowCount,
+            plainExpected: plainIds.length,
+            plainActual: plainPromoted,
+            widenedExpected: widenedEntries.length,
+            widenedActual: widenedPromoted,
           },
           "brain publish: promoted count does not match the classified-promotable set — some drafts may be unaccounted for",
         );
       }
+    }
+
+    if (widened.length > 0) {
+      // An ACL widened, so it is stated at INFO rather than left to a debug
+      // level: over-restriction is invisible by construction — nobody can report
+      // a fact they cannot read — so this is the signal, on both publish seams,
+      // that a publish changed who can see a claim. Sampled purely for LINE
+      // SIZE: the first publish after a history backfill can widen a lot at
+      // once. Not a privacy bound — the complete list travels in
+      // `PromotionReport.widened` and both callers record it in full.
+      log.info(
+        {
+          workspaceId: orgId,
+          widenedCount: widened.length,
+          widened: widened.slice(0, LOGGED_ID_SAMPLE_CAP),
+          sampleTruncated: widened.length > LOGGED_ID_SAMPLE_CAP,
+        },
+        "brain publish: widened grants to cover the evidence behind them — a claim restated in a wider audience is no longer served only to the narrower one it was first seen in",
+      );
     }
 
     if (refused.length > 0) {
@@ -310,6 +628,9 @@ export function promoteBrainFacts(
       // refusal concept, and `[]` is the meaningful "nothing was refused this
       // run" answer, distinct from a table that cannot refuse at all.
       refused,
+      // Same reasoning, one axis over: this is the table that HAS a grant, so
+      // `[]` means "no ACL changed today" rather than "this table has no ACL".
+      widened,
     } satisfies PromotionReport;
   });
 }

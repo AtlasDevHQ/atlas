@@ -258,6 +258,53 @@ run_fixture "tokens from two different statements do not pair up" pass \
 'await db.query(`UPDATE other_table SET name = $1`);
 const live = await db.query(`SELECT id FROM brain_facts WHERE status = '"'"'published'"'"'`);'
 
+# ── (gg) The `visible_to` arm (#4823). Publish now writes the GRANT as well as
+#    the review state, so a second writer to that column is the same class of
+#    defect — with a worse failure direction: `status` fails closed, an ACL
+#    fails open. The arm is deliberately UPDATE-ONLY; the INSERT fixtures below
+#    are what stop a future edit from "tidying" it into symmetry with `status`
+#    and breaking derive-at-ingest.
+
+run_fixture "UPDATE … SET visible_to fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET visible_to = ARRAY['"'"'org'"'"'] WHERE id = $1`);'
+
+run_fixture "Drizzle .update().set({visibleTo}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ visibleTo: ["org"] }).where(eq(brainFacts.id, id));'
+
+run_fixture "ON CONFLICT … DO UPDATE SET visible_to fails" fail \
+  "packages/api/src/lib/brain/connector.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3)
+  ON CONFLICT (id) DO UPDATE SET visible_to = EXCLUDED.visible_to`);'
+
+# An INSERT naming `visible_to` must PASS: that IS the derive-at-ingest grant
+# (`reconcile.ts`'s INSERT_FACT_SQL, `ingest/episodes.ts`). Refusing it would
+# refuse the write the whole ACL design rests on.
+run_fixture "Drizzle .insert().onConflictDoUpdate({set:{visibleTo}}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.insert(brainFacts).values(v).onConflictDoUpdate({ set: { visibleTo: ["org"] } });'
+
+run_fixture "INSERT naming visible_to passes — the grant IS derived at ingest" pass \
+  "packages/api/src/lib/brain/reconcile.ts" \
+'await tx.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5::jsonb,$6::uuid, ARRAY(SELECT jsonb_array_elements_text($7::jsonb)))`);'
+
+run_fixture "Drizzle .insert().values({visibleTo}) passes — INSERT-only asymmetry" pass \
+  "packages/api/src/lib/brain/ingest/episodes.ts" \
+'await db.insert(brainFacts).values({ subject: s, visibleTo: ["org"] });'
+
+# The allowlisted adapter is where the widening UPDATE lives.
+run_fixture "the allowlisted adapter's visible_to widening passes" pass \
+  "packages/api/src/lib/content-mode/adapters/brain-facts.ts" \
+'await tx.query(`UPDATE brain_facts f SET status = '"'"'published'"'"', visible_to = ARRAY(SELECT jsonb_array_elements_text(w.grant)) FROM (SELECT 1) w WHERE f.status = '"'"'draft'"'"'`);'
+
+# A write to some OTHER table'"'"'s visible_to is not this gate'"'"'s business.
+run_fixture "UPDATE of another table's visible_to passes" pass \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_episodes SET visible_to = ARRAY['"'"'org'"'"'] WHERE id = $1`);
+const live = await db.query(`SELECT id FROM brain_facts`);'
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

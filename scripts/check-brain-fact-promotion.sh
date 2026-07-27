@@ -1,6 +1,7 @@
 #!/bin/bash
-# Refuse any write to `brain_facts.status` outside the atomic publish endpoint
-# (#4769, ADR-0036 — acceptance criterion 4). Scope + blind spots below.
+# Refuse any write to `brain_facts.status`, or any MUTATION of
+# `brain_facts.visible_to`, outside the atomic publish endpoint (#4769 / #4823,
+# ADR-0036 — acceptance criterion 4). Scope + blind spots below.
 #
 # `brain_facts.status` is the fact class's review gate. ADR-0036 makes the gate
 # the brain's conflict-resolution mechanism, which only holds if `draft →
@@ -10,9 +11,27 @@
 # not merely duplicate logic; it would bypass the no-provenance / no-grant
 # refusals and stamp trust on a claim nothing checked.
 #
+# `brain_facts.visible_to` is the fact's ACL, and #4823 made the same publish
+# path its second writer: a draft is promoted with its own grant unioned with
+# those of the episodes on its `provenance` edges. ADR-0036 §T5 permits a grant
+# to widen at the review gate and NOWHERE else, so the same single-writer
+# argument applies — with a worse failure direction. A rogue `status` write
+# over-trusts a claim; a rogue `visible_to` write DISCLOSES one.
+#
+# THE TWO COLUMNS ARE GATED ASYMMETRICALLY, and the asymmetry is load-bearing:
+#   - `status` — refused on UPDATE **and** INSERT. A writer must omit it so
+#     0180's `draft` default applies the review gate by construction.
+#   - `visible_to` — refused on UPDATE **only** (including an upsert's
+#     `DO UPDATE` half). A grant is DERIVED AT INGEST: `reconcile.ts`'s
+#     `INSERT_FACT_SQL` names the column and must, so an INSERT arm here would
+#     refuse the write the whole ACL design rests on. Fixtures pin BOTH
+#     directions, so "tidying" this into symmetry has to fail a test first.
+#
 # WHAT IS REFUSED (each has a fixture in the adversarial suite)
 #   - `UPDATE [schema.]brain_facts … SET … status …`
+#   - `UPDATE [schema.]brain_facts … SET … visible_to …`
 #   - `INSERT INTO [schema.]brain_facts (… status …)`
+#   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … visible_to …`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
 #     — the path-upsert shape ADR-0030's connector engine uses, and therefore
 #     the single most likely way #4770/#4771 would reach this column. It names
@@ -169,15 +188,40 @@ STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$#
 QUALIFIED='("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?'
 ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 
-# Does one statement write `brain_facts.status`? Echoes nothing; exit 0 = yes.
-statement_writes_status() {
+# The gated columns, and why the two arms are asymmetric.
+#
+# `status` is refused on UPDATE **and** INSERT: a writer must omit it entirely
+# so 0180's `draft` default applies the review gate by construction.
+#
+# `visible_to` (#4823) is refused on UPDATE **only**. A grant is DERIVED AT
+# INGEST — `reconcile.ts`'s `INSERT_FACT_SQL` and `ingest/episodes.ts` name the
+# column on their inserts, and must — so an INSERT arm here would refuse the
+# write the whole ACL design depends on. What must not exist is a second writer
+# that MUTATES an existing fact's grant: ADR-0036 §T5 permits widening only at
+# the review gate, and unlike the `status` gate the failure direction here is
+# DISCLOSURE rather than fail-closed over-restriction.
+UPDATE_GATED_COLUMNS='(status|visible_to)'
+ORM_UPDATE_GATED_COLUMNS='(status|visibleTo)'
+
+# Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
+# ECHOES which one — the two have completely different remedies, and a message
+# that named the wrong column would send the reader to fix code they did not
+# write. When a statement trips on both, `status` is reported: it is the arm
+# with the shorter fix.
+statement_writes_gated_column() {
   local stmt="$1"
 
-  # Raw SQL — UPDATE … SET … status
+  # Raw SQL — UPDATE … SET … status / visible_to
   if grep -qiE "UPDATE[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
-    && grep -qiE '\bSET\b' <<<"$stmt" \
-    && grep -qiE '\bstatus\b' <<<"$stmt"; then
-    return 0
+    && grep -qiE '\bSET\b' <<<"$stmt"; then
+    if grep -qiE '\bstatus\b' <<<"$stmt"; then
+      echo status
+      return 0
+    fi
+    if grep -qiE '\bvisible_to\b' <<<"$stmt"; then
+      echo visible_to
+      return 0
+    fi
   fi
 
   # Raw SQL — INSERT INTO brain_facts … status. Covers BOTH the column-list form
@@ -187,13 +231,31 @@ statement_writes_status() {
   # legitimate case wants an allowlist entry with a rationale, not a loosening.
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
     && grep -qiE '\bstatus\b' <<<"$stmt"; then
+    echo status
     return 0
   fi
 
-  # Raw SQL — a column-less positional INSERT. `status` cannot appear by name,
-  # so this is refused on shape: a positional insert into a 17-column table is
-  # unreviewable regardless of whether it happens to set the review state.
+  # Raw SQL — the UPSERT's UPDATE half, for `visible_to` only. It needs its own
+  # arm precisely because `visible_to` is INSERT-legal and UPDATE-forbidden, so
+  # it cannot ride the blanket INSERT rule above the way `status` does — and
+  # `ON CONFLICT … DO UPDATE SET visible_to` names no table after `UPDATE`,
+  # which is how it evaded the UPDATE rule when this was first written.
+  # Deliberately over-broad in the same direction as everything else here: an
+  # upsert that inserts `visible_to` and DO-UPDATEs some other column trips it
+  # too, and that wants an allowlist entry with a rationale, not a loosening.
+  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+    && grep -qiE 'ON[[:space:]]+CONFLICT' <<<"$stmt" \
+    && grep -qiE 'DO[[:space:]]+UPDATE' <<<"$stmt" \
+    && grep -qiE '\bvisible_to\b' <<<"$stmt"; then
+    echo visible_to
+    return 0
+  fi
+
+  # Raw SQL — a column-less positional INSERT. Neither column can appear by
+  # name, so this is refused on shape: a positional insert into a 17-column
+  # table is unreviewable regardless of what it happens to set.
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then
+    echo status
     return 0
   fi
 
@@ -201,12 +263,27 @@ statement_writes_status() {
   # update half: without it the ORM and raw-SQL spellings of one write would
   # disagree, and the ORM insert is the shape an ingest fiber reaches for.
   if grep -qE "\.update\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
-    && grep -qE '\.set\(' <<<"$stmt" \
-    && grep -qE '\bstatus\b' <<<"$stmt"; then
-    return 0
+    && grep -qE '\.set\(' <<<"$stmt"; then
+    if grep -qE '\bstatus\b' <<<"$stmt"; then
+      echo status
+      return 0
+    fi
+    if grep -qE '\bvisibleTo\b' <<<"$stmt"; then
+      echo visible_to
+      return 0
+    fi
   fi
   if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
     && grep -qE '\bstatus\b' <<<"$stmt"; then
+    echo status
+    return 0
+  fi
+  # The ORM twin of the raw upsert arm above, for the same asymmetry reason:
+  # `.insert().values({visibleTo})` is legal, `.onConflictDoUpdate` of it is not.
+  if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+    && grep -qE '\.onConflictDoUpdate\(' <<<"$stmt" \
+    && grep -qE '\bvisibleTo\b' <<<"$stmt"; then
+    echo visible_to
     return 0
   fi
 
@@ -214,6 +291,11 @@ statement_writes_status() {
 }
 
 OFFENDERS=""
+# Which arm(s) fired — the two columns have completely different remedies, so
+# only the relevant advice is printed. Printing both would put a wrong fix in
+# front of every reader, and "omit the column" is actively wrong for a grant.
+SAW_STATUS=0
+SAW_GRANT=0
 if [ -n "$CANDIDATES" ]; then
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -238,8 +320,9 @@ if [ -n "$CANDIDATES" ]; then
     #   query literal is not a case this has to handle.
     while IFS= read -r stmt; do
       [ -z "$stmt" ] && continue
-      if statement_writes_status "$stmt"; then
-        OFFENDERS="${OFFENDERS}${f}"$'\n'
+      if column=$(statement_writes_gated_column "$stmt"); then
+        OFFENDERS="${OFFENDERS}${f}  (${column})"$'\n'
+        [ "$column" = "visible_to" ] && SAW_GRANT=1 || SAW_STATUS=1
         break
       fi
     done < <(eval "$STRIP_COMMENTS \"\$f\"" | tr '\n' ' ' | tr ';' '\n' \
@@ -250,25 +333,54 @@ fi
 OFFENDERS=$(echo "${OFFENDERS%$'\n'}" | grep -v '^$' || true)
 
 if [ -n "$OFFENDERS" ]; then
-  echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)."
+  if [ "$SAW_GRANT" -eq 1 ] && [ "$SAW_STATUS" -eq 1 ]; then
+    echo "::error::a company-brain fact's \`status\` and \`visible_to\` are written outside the atomic publish endpoint (#4769 / #4823)."
+  elif [ "$SAW_GRANT" -eq 1 ]; then
+    echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)."
+  else
+    echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)."
+  fi
   echo ""
-  echo "\`brain_facts.status\` is the review gate (ADR-0036). Promotion must happen"
-  echo "ONLY in \`promoteBrainFacts\`, which \`/api/v1/admin/publish\` runs inside its"
-  echo "transaction — that is where no-provenance-no-promotion and"
-  echo "no-grant-no-promotion are enforced. A second writer bypasses both."
-  echo ""
-  echo "Offending files:"
+  echo "Offending files (with the column that tripped the gate):"
   echo "$OFFENDERS" | sed 's/^/  /'
   echo ""
-  echo "Fixes:"
-  echo "  * Writing a NEW fact? Omit \`status\` entirely — migration 0180 defaults it"
-  echo "    to 'draft', which is the review gate applying itself."
-  echo "  * Promoting? Don't. Let \`/api/v1/admin/publish\` do it."
-  echo "  * Retracting? Stamp \`invalidated_at\` — a fact is never deleted and never"
-  echo "    demoted by status (ADR-0036: supersession is not deletion)."
-  echo "  * Genuinely restoring a PRIOR gate decision (a region import)? Add the file"
-  echo "    to ALLOWLIST in this script WITH the rationale, per CLAUDE.md § Content Mode."
+
+  if [ "$SAW_STATUS" -eq 1 ]; then
+    echo "\`brain_facts.status\` is the review gate (ADR-0036). Promotion must happen"
+    echo "ONLY in \`promoteBrainFacts\`, which \`/api/v1/admin/publish\` runs inside its"
+    echo "transaction — that is where no-provenance-no-promotion and"
+    echo "no-grant-no-promotion are enforced. A second writer bypasses both."
+    echo ""
+    echo "Fixes for a \`status\` write:"
+    echo "  * Writing a NEW fact? Omit \`status\` entirely — migration 0180 defaults it"
+    echo "    to 'draft', which is the review gate applying itself."
+    echo "  * Promoting? Don't. Let \`/api/v1/admin/publish\` do it."
+    echo "  * Retracting? Stamp \`invalidated_at\` — a fact is never deleted and never"
+    echo "    demoted by status (ADR-0036: supersession is not deletion)."
+    echo "  * Genuinely restoring a PRIOR gate decision (a region import)? Add the file"
+    echo "    to ALLOWLIST in this script WITH the rationale, per CLAUDE.md § Content Mode."
+    echo ""
+  fi
+
+  if [ "$SAW_GRANT" -eq 1 ]; then
+    echo "\`brain_facts.visible_to\` is the fact's ACL. ADR-0036 §T5 makes it a"
+    echo "per-version snapshot that may widen ONLY at the review gate — which is"
+    echo "\`promoteBrainFacts\`, where a draft is published with its own grant unioned"
+    echo "with those of its \`provenance\` evidence (#4823). Note the failure direction:"
+    echo "a stray \`status\` write over-trusts a claim, a stray grant write DISCLOSES one."
+    echo ""
+    echo "Fixes for a \`visible_to\` write — note that OMITTING the column is NOT one:"
+    echo "  * Writing a NEW fact or episode? An INSERT naming \`visible_to\` is correct"
+    echo "    and required — the grant is derived at ingest (\`ingest/grant.ts\`). Only"
+    echo "    UPDATE (and an upsert's \`DO UPDATE\` half) is refused here."
+    echo "  * Widening because new evidence arrived? Don't write it. Record the"
+    echo "    \`provenance\` edge; the next publish unions the grants in for you."
+    echo "  * Repairing a malformed grant? That is not this path either — see"
+    echo "    \`lib/brain/grant-sweep.ts\` and #4797; the sweep is an observer by design."
+    echo "  * Genuinely a new gate-time decision? It belongs in \`promoteBrainFacts\`,"
+    echo "    not in a second writer. An allowlist entry needs a recorded rationale."
+  fi
   exit 1
 fi
 
-echo "Brain-fact promotion check passed — no status write to brain_facts outside the atomic publish endpoint."
+echo "Brain-fact promotion check passed — no ungated status or visible_to write to brain_facts outside the atomic publish endpoint."

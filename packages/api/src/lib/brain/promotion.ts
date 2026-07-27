@@ -3,8 +3,10 @@
  * "no-provenance-no-promotion" (T4, ADR-0036 §Temporal, conflict & provenance)
  * and "no-grant-no-promotion" (T5, ADR-0036 §Access control & residency).
  *
- * Pure classification only. The transactional half — the SELECT, the scoped
- * UPDATE, and the `PromotionReport` — lives in
+ * Pure decisions only — what the gate REFUSES ({@link classifyFactForPromotion})
+ * and, for what it admits, what grant it publishes with
+ * ({@link widenGrantFromEvidence}, #4823). The transactional half — the SELECT,
+ * the scoped UPDATE, and the `PromotionReport` — lives in
  * `lib/content-mode/adapters/brain-facts.ts`, which is the ONLY promotion path
  * (`scripts/check-brain-fact-promotion.sh` proves it). Keeping the rules here,
  * dependency-free, is what lets #4772's review surface pre-flight a candidate
@@ -74,7 +76,7 @@
  * `published` through the import path above.
  */
 
-import { parseGrant } from "@atlas/api/lib/brain/acl";
+import { formatPrincipal, isUnknownArray, parseGrant } from "@atlas/api/lib/brain/acl";
 import type { PromotionRefusal } from "@atlas/api/lib/content-mode/port";
 
 /**
@@ -149,8 +151,13 @@ export interface FactRefusal extends PromotionRefusal {
   readonly reasons: readonly FactRefusalReason[];
 }
 
-/** A non-null, non-array object — what `jsonb_typeof(...) = 'object'` means. */
-function isJsonObject(value: unknown): value is Record<string, unknown> {
+/**
+ * A non-null, non-array object — what `jsonb_typeof(...) = 'object'` means.
+ *
+ * Exported so the adapter narrows a driver row with the same guard rather than
+ * an `as Record<string, unknown>` cast.
+ */
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -194,13 +201,16 @@ export function classifyFactForPromotion(row: DraftFactRow): FactRefusal | null 
   // A non-array `visible_to` is refused too (fail-closed either way), but under
   // its own code: coercing it to `[]` and reporting "carries no grant" would
   // tell an admin their data is wrong when in fact the query is.
-  if (!Array.isArray(row.visible_to)) {
+  // `isUnknownArray`, not `Array.isArray` — the latter narrows to `any[]`, which
+  // would make the grant elements implicitly `any` in the one call that decides
+  // whether this fact is visible to anybody (`acl.ts`'s note on the guard).
+  if (!isUnknownArray(row.visible_to)) {
     reasons.push(FACT_REFUSAL_REASONS.grantNotAnArray);
     details.push(
       "its grant did not load as an array, which means the draft-facts query returned an unexpected shape — this is an Atlas bug, not a problem with the fact",
     );
   } else {
-    const parsed = parseGrant(row.visible_to as readonly unknown[]);
+    const parsed = parseGrant(row.visible_to);
     if (parsed.principals.length === 0) {
       reasons.push(FACT_REFUSAL_REASONS.grantUnusable);
       details.push(
@@ -257,3 +267,131 @@ function describeMalformed(malformed: readonly string[]): string {
  */
 export const GRANT_GRAMMAR_HINT =
   "A grant must contain at least one of: `org`, `role:owner`, `role:admin`, `role:member`, `user:<id>`, or `audience:<name>`.";
+
+/**
+ * A grant as it can actually be stored: `text[]`, whose elements arrive off the
+ * driver as strings or `null`. Narrower than the `readonly unknown[]` the
+ * PARSERS take, on purpose — `parseGrant` must accept anything a hand-authored
+ * import bundle smuggled in, but the value on its way BACK INTO an ACL column
+ * should not be able to carry a JSON number that `jsonb_array_elements_text`
+ * would happily coerce into a principal.
+ */
+export type StoredGrant = readonly (string | null)[];
+
+/**
+ * A grant the evidence actually widened — never a no-op.
+ *
+ * `added` is `[string, ...string[]]` and the function returns `null` rather
+ * than an empty result, so "nothing changed" is unrepresentable here. That
+ * pairing is the whole point: the caller must take a different, cheaper path
+ * when nothing widened (see `PROMOTE_FACTS_SQL` vs
+ * `WIDEN_AND_PROMOTE_FACTS_SQL`), and a shape that let it read `grant` on the
+ * no-change branch would compile straight into rewriting `visible_to` on every
+ * promoted fact to change none of them.
+ */
+export interface EvidenceWidenedGrant {
+  /** The grant to write: the input's tokens, in order, followed by `added`. */
+  readonly grant: StoredGrant;
+  /** Tokens the evidence added, in the order the evidence arrived. */
+  readonly added: readonly [string, ...string[]];
+}
+
+/**
+ * Widen a draft fact's grant to cover every episode that is already evidence
+ * for it (#4823, ADR-0036 §T5 amendment 2026-07-26).
+ *
+ * ## The problem this exists to fix
+ *
+ * A fact's grant is inherited verbatim from the episode it was FIRST extracted
+ * from, and `reconcile.ts` deliberately never touches it again: a later episode
+ * asserting the same claim corroborates, adding a `provenance` edge and nothing
+ * else. That is right in the direction it was written for — a NARROWER
+ * re-observation must not shrink anything — and over-restricts in the inverse
+ * one. Say the same sentence in a private channel and then in a public one:
+ * Atlas ends up holding an `{org}` episode as evidence for a fact it serves
+ * only to the private channel's audience. Nothing leaks (the direction is
+ * fail-closed), but public information is invisible, and it is invisible in the
+ * one way nobody can report — you cannot notice a fact you cannot read.
+ *
+ * ## Why HERE and not at corroboration
+ *
+ * ADR-0036 §T5 makes a grant an immutable per-version snapshot and §T9 states
+ * "widening happens only at the review gate". Publish IS the review gate, so
+ * doing it here satisfies that literally rather than by analogy, and it rides
+ * the existing bulk promote — so it introduces no per-fact affirmative verb,
+ * which #4772's inverted review model (reject-then-publish, no `approve`
+ * button) forbids. Widening at corroboration time would instead let any
+ * unattended ingest pass mutate an ACL field, which is the same side-effect
+ * class that #4771 refused for predicate cardinality.
+ *
+ * ## The rule, stated exactly, because this is the one direction that leaks
+ *
+ * - **Append-only.** The fact's own tokens are preserved verbatim and in order,
+ *   including malformed ones. Nothing is ever removed, so this can never narrow
+ *   a grant, and it cannot silently "repair" a grant an operator has to see
+ *   (that stays `logGrantAnomalies`'s job). "Verbatim" is bounded by
+ *   {@link StoredGrant}: a non-string, non-null element cannot reach here from
+ *   a `text[]`, and the adapter coerces one to `null` if query drift ever
+ *   produced it rather than passing it through.
+ * - **Evidence only, and only grammar-valid evidence.** A token is added only
+ *   if some episode's grant PARSED it as a principal — `parseGrant` then
+ *   `formatPrincipal`, which round-trips byte-exactly. Malformed evidence
+ *   tokens are dropped rather than copied: they grant nobody anything, so
+ *   propagating them would spread noise into a second row for no reader.
+ *   Note this is a token union, not a READER union: `impliedRoles` makes role
+ *   matching monotone, so adding `role:owner` to a fact already granted
+ *   `role:member` admits nobody new. `added` is therefore syntactic — an upper
+ *   bound on what changed, not a count of readers gained.
+ * - **Union, not "pick the widest".** Widest is not a total order —
+ *   `audience:A` and `audience:B` are incomparable — but visibility is token
+ *   overlap, so the set of readers a grant admits is monotone in its tokens and
+ *   the union IS the least upper bound. It is also the honest reading: the
+ *   claim was stated in A and in B, and a reader of either already saw it said.
+ *   That last part is the safety argument, and it is about the CLAIM only —
+ *   ADR-0036 §T5 has provenance ride the fact's grant, and a fact's provenance
+ *   names its FIRST episode (`sourceId`, `actor`, `occurredAt`). So a reader
+ *   gained by widening learns nothing new about the claim and does learn who
+ *   said it first, in which channel, and when. That is a deliberate,
+ *   ADR-recorded consequence, not an oversight; do not restate this rule as
+ *   "no information gain".
+ * - **No `org` collapse.** `['audience:X', 'org']` is left as-is rather than
+ *   reduced to `['org']`, even though `org` subsumes everything. The pair
+ *   records that the claim was made both privately and publicly; collapsing
+ *   would discard that and turn an append into a rewrite.
+ *
+ * The caller decides WHICH episodes count as evidence (see
+ * `EVIDENCE_GRANTS_SQL` in the adapter — `provenance` edges, workspace-scoped
+ * on both sides). This function is pure and trusts what it is handed; it is not
+ * a place to check tenancy.
+ *
+ * Returns `null` when the evidence adds nothing — the common case by a wide
+ * margin, and the caller's signal to take the blanket promote that never
+ * touches `visible_to`.
+ */
+export function widenGrantFromEvidence(
+  factGrant: StoredGrant,
+  evidenceGrants: readonly (readonly unknown[])[],
+): EvidenceWidenedGrant | null {
+  // Seeded from the RAW array so the dedupe is over exactly the bytes stored.
+  // `null` elements are skipped because they are not tokens and match nothing;
+  // a malformed string lands in the set and is inert there, since the only
+  // candidates for appending are `parseGrant`'d principals.
+  const held = new Set<string>();
+  for (const token of factGrant) {
+    if (token !== null) held.add(token);
+  }
+
+  const added: string[] = [];
+  for (const evidence of evidenceGrants) {
+    for (const principal of parseGrant(evidence).principals) {
+      const token = formatPrincipal(principal);
+      if (held.has(token)) continue;
+      held.add(token);
+      added.push(token);
+    }
+  }
+
+  const [first, ...rest] = added;
+  if (first === undefined) return null;
+  return { grant: [...factGrant, ...added], added: [first, ...rest] };
+}

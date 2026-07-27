@@ -138,5 +138,5 @@ Converge on the beat structure (Lead → an early stat/visual → H2 sections �
    curl -s http://localhost:3002/blog | grep -o "<slug>"                          # index lists it
    ```
    On a rename, also confirm the **old** URL → **404**.
-3. **Fact-safety.** Cross-check any hard claim against reality before it ships — license is **AGPL-3.0** (not MIT), the SQL pipeline is **7-layer**, datasource/plugin/region counts, pricing. The stale `.claude/research/launch/blog-intro.md` (MIT, 4-layer) is the cautionary tale. For anything load-bearing, hand off to **`/www-audit`** rather than trust memory.
+3. **Fact-safety.** Cross-check any hard claim against reality before it ships — license is **AGPL-3.0** (not MIT), the SQL pipeline is **7-layer**, datasource/plugin/region counts, pricing. The stale `.claude/research/launch/blog-intro.md` (MIT, 4-layer) is the cautionary tale. For anything load-bearing, hand off to **`/audit-www`** rather than trust memory.
 4. **Don't auto-commit.** Blog work is creative and iterative — show the result (quote the key new/changed lines), let Matt react, commit only when he says so. Keep the dev server up for live reload while he reads; offer to shut it down after.

@@ -8,7 +8,7 @@ Cross-reference the running-system surface against code reality, deployed config
 
 **Mode:** Read-only audit — generate a report with findings. Fix trivial issues (< 5 lines) directly. File GH issues for larger gaps.
 
-**Why this is its own command:** /docs-audit covers code-vs-docs accuracy. /www-audit covers marketing-and-legal accuracy. Neither asks "is the running system actually configured for prod scale, resilience, and observability." That's this command. Its source-of-truth anchors are different: deploy configs, env defaults, OTel instrumentation, settings registry, encryption-key derivation, scheduled tasks, abuse thresholds, plus the live-fetch endpoints that operators consult during incidents.
+**Why this is its own command:** /audit-docs covers code-vs-docs accuracy. /audit-www covers marketing-and-legal accuracy. Neither asks "is the running system actually configured for prod scale, resilience, and observability." That's this command. Its source-of-truth anchors are different: deploy configs, env defaults, OTel instrumentation, settings registry, encryption-key derivation, scheduled tasks, abuse thresholds, plus the live-fetch endpoints that operators consult during incidents.
 
 The audit is most valuable when **Atlas Cloud** is the deployment under review — every finding maps to "could this misroute a customer's data, drop their mail, miss an abuse signal, or hide a P1 from on-call." Self-hosted operators benefit too — the audit doubles as a "is your Atlas instance prod-ready" checklist.
 
@@ -116,7 +116,7 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
 **Source of truth:**
 - `.env.example` (declared env contract)
 - `packages/api/src/lib/settings.ts` (settings registry — what's hot-reloadable, what's startup-only)
-- `apps/docs/content/shared/reference/environment-variables.mdx` (just freshly backfilled by /docs-audit)
+- `apps/docs/content/shared/reference/environment-variables.mdx` (just freshly backfilled by /audit-docs)
 - Real Railway env values (operator confirms or memory:railway.md hints)
 
 ### Steps
@@ -141,7 +141,7 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
    - `ATLAS_RATE_LIMIT_RPM_CHAT` (memory: F-74 separate-bucket chat ceiling) — what's the actual production value vs default?
    - `ATLAS_CONVERSATION_STEP_CAP` default 500 — fine
 4. **Hot-reloadable vs startup-only correctness** — the lock mechanism now exists: `SAAS_IMMUTABLE_KEYS` (in `lib/effect/saas-env.ts`) blocks runtime mutation of boot-guard-dependent keys. Audit its MEMBERSHIP, not its existence: every setting whose value a boot guard validated (DPA email vendor, encryption keys, deploy mode, plan-tier enforcement) must be in the immutable set or have a hot-reload path that re-runs the guard. A guard-validated key that's runtime-mutable is the finding.
-5. **Required-but-undocumented env vars** — `/docs-audit` Part A handles this for the docs site, but cross-check that `.env.example` and the docs page agree with what the **deployed** API actually reads in prod paths (vs dev/test-only).
+5. **Required-but-undocumented env vars** — `/audit-docs` Part A handles this for the docs site, but cross-check that `.env.example` and the docs page agree with what the **deployed** API actually reads in prod paths (vs dev/test-only).
 
 ### Findings to flag
 

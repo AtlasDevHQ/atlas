@@ -124,5 +124,5 @@ Env vars: see `.env.example`. Key ones — `ATLAS_PROVIDER`, `ATLAS_MODEL`, `ATL
 - **Workflow** — how Atlas commands (`/next`, `/tidy`, `/investigate`, `/elevate`, `/kickoff`, `/closeout`, `/ci`, `/pr`) compose with the Matt Pocock skills. See `docs/agents/workflow.md`
 - **Issue tracker** — GitHub issues at `AtlasDevHQ/atlas` via `gh` (always `-R AtlasDevHQ/atlas`). Atlas body format (`## Key files / ## Acceptance criteria / ## Dependencies`); labels on two axes (kind+area AND triage state). See `docs/agents/issue-tracker.md`
 - **Triage labels** — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` (created lazily). See `docs/agents/triage-labels.md`
-- **Audit commands** — `/docs-audit`, `/www-audit`, `/prod-audit`, `/contracts-audit` share conventions in `docs/agents/audits.md`: Step-0 self-check, discover-don't-enumerate, guard-first, the promote-to-CI ratchet, and the pre-tag battery
+- **Audit commands** — all prefixed `/audit-*` so they list together: `/audit-docs`, `/audit-www`, `/audit-readme`, `/audit-prod`, `/audit-contracts`. Shared conventions in `docs/agents/audits.md`: Step-0 self-check, discover-don't-enumerate, guard-first, the promote-to-CI ratchet, and the pre-tag battery
 - **Domain docs** — single-context `CONTEXT.md` + `docs/adr/` at repo root, produced lazily by `/grill-with-docs`. See `docs/agents/domain.md`

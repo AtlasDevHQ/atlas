@@ -190,7 +190,11 @@ atlas/
 │   ├── react/            # @useatlas/react — Embeddable chat component + hooks
 │   ├── types/            # @useatlas/types — Shared wire-format types
 │   ├── schemas/          # @useatlas/schemas — Shared Zod schemas
-│   └── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
+│   ├── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
+│   ├── webhook-publisher/# @useatlas/webhook-publisher — HMAC-signed outbound webhooks
+│   ├── oauth-helper/     # @atlas/oauth-helper — OAuth 2.1 + DCR + PKCE primitives (internal)
+│   ├── okf-bundle/       # @atlas/okf-bundle — OKF knowledge-bundle builder (internal)
+│   └── fumadocs-okf/     # @atlas/fumadocs-okf — Fumadocs → OKF adapter (internal)
 ├── plugins/              # 24 plugins (datasource, context, interaction, action, sandbox)
 ├── ee/                   # @atlas/ee — Enterprise features (source-available, commercial license)
 ├── create-atlas/         # Scaffolding CLI (bun create atlas-agent)
@@ -211,7 +215,7 @@ SQL validation runs through multiple layers. Your database credentials and query
 | Table whitelist | Only tables in your semantic layer are queryable |
 | Auto LIMIT | Every query gets a LIMIT (default 1000) |
 | Statement timeout | Queries killed after 30s (configurable) |
-| Sandboxed execution | Filesystem access runs in nsjail / Firecracker / sidecar |
+| Sandboxed execution | Filesystem access runs in Vercel Sandbox, nsjail, or the sidecar — with e2b, Daytona, and Railway available as bring-your-own-cloud backends |
 | Row-level security | Optional RLS injection per-user |
 
 See [sandbox architecture](https://docs.useatlas.dev/architecture/sandbox) for the full threat model.

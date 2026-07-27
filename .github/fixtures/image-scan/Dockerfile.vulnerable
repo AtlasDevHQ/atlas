@@ -1,0 +1,27 @@
+# DELIBERATELY VULNERABLE — CI negative control only. Never built, pushed, or
+# shipped by any deploy path.
+#
+# scripts/__tests__/scan-image.test.sh builds this and asserts that
+# scripts/scan-image.sh exits 1 on it. A green scan of a currently-clean tree
+# proves nothing about whether the gate is capable of going red; this fixture is
+# what proves it.
+#
+# Two independent sources of fixable HIGH/CRITICAL findings, so the control does
+# not rest on any single CVE staying classified the way it is today:
+#
+#   1. alpine:3.10 — end-of-life since 2021-05. Its accumulated OS-package
+#      advisories are frozen history and carry fixed-in versions, so they
+#      survive the --ignore-unfixed filter.
+#
+#   2. lodash 4.17.15 — GHSA-p6mc-m468-83gg (prototype pollution, HIGH), fixed
+#      in 4.17.19. Trivy's node-pkg analyzer reads node_modules/*/package.json,
+#      so the manifest alone is enough; no install needed and the build stays
+#      offline after the base pull.
+#
+# This path is pruned from scripts/list-runtime-base-images.sh discovery. If it
+# were not, alpine:3.10 would enter the real scan matrix and pin the gate red
+# forever.
+FROM alpine:3.10
+
+RUN mkdir -p /app/node_modules/lodash && \
+    printf '{"name":"lodash","version":"4.17.15"}' > /app/node_modules/lodash/package.json

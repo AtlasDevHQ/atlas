@@ -1,0 +1,293 @@
+name: Image Scan
+
+# Container-image vulnerability scanning (#4822).
+#
+# ── What this covers that nothing else did ────────────────────────────────────
+#
+# CodeQL analyses source. Dependabot watches manifests. Neither one sees a
+# vulnerable OS package baked into a runtime layer — that was the gap, and it is
+# the gap this workflow closes. Atlas ships eight Dockerfiles, several of them
+# customer-facing scaffolds, so a base-image CVE propagates into every project
+# scaffolded from a template.
+#
+# ── Policy ────────────────────────────────────────────────────────────────────
+#
+# Threshold and unfixed-CVE handling live in scripts/scan-image.sh, next to the
+# flags that implement them; the baseline and its expiry dates live in
+# .trivyignore. Read those two files for the reasoning. In short:
+#
+#   blocks    fixable HIGH/CRITICAL, minus the dated .trivyignore baseline
+#   reports   everything else, unfiltered, via SARIF to GitHub code scanning
+#
+# Unfixed CVEs do not block on purpose: a gate that is red for something nobody
+# can action gets ignored, and an ignored gate reads as coverage while providing
+# none.
+#
+# ── Where it runs, and why ────────────────────────────────────────────────────
+#
+# Two tiers, because the two kinds of target cost very different amounts:
+#
+#   base-images   Pull-and-scan the runtime base of every Dockerfile in the
+#                 tree, discovered rather than enumerated. ~1-2 min, so it runs
+#                 on EVERY pull request. This is the only tier that can cover
+#                 the create-atlas templates, examples/docker, and the sidecar:
+#                 those Dockerfiles cannot be built standalone in CI (they need
+#                 a scaffolded project as build context), but their runtime base
+#                 layer is exactly where OS CVEs live.
+#
+#   built-images  Build deploy/api, deploy/web and deploy/docs and scan the
+#                 finished artifacts. Catches what Atlas adds on top of the
+#                 base — apt packages in the runner stages, the resolved
+#                 production node_modules. ~8-10 min, so it is path-gated to
+#                 PRs that can plausibly change image content.
+#
+# The weekly schedule is the tier that matters most and is easy to overlook: our
+# base images are pinned by digest, so their content never changes, but the
+# vulnerability database changes daily. A PR-triggered-only gate would never
+# notice that a pinned image acquired a CRITICAL last Tuesday. The cron is what
+# turns this from a change-detector into actual monitoring.
+
+on:
+  pull_request:
+    branches: [main, "milestone/**"]
+  push:
+    branches: [main, "milestone/**", "hotfix/**"]
+  schedule:
+    # Mondays 07:00 UTC. Catches CVEs disclosed against unchanged, digest-pinned
+    # base images — the case no push or PR event will ever surface.
+    - cron: "0 7 * * 1"
+  # Manual lever, mirroring ci.yml: lets an operator re-run the scan against a
+  # specific SHA (notably a hotfix branched off the tag prod serves, which no
+  # pull_request ever validates).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned with a checksum rather than installed via a third-party action: this
+  # workflow's whole job is supply-chain hygiene, so it should not widen the
+  # supply chain to do it. Bump both values together.
+  TRIVY_VERSION: "0.72.0"
+  TRIVY_SHA256: "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea"
+
+jobs:
+  # Does this PR touch anything that could change what is inside a built image?
+  # Mirrors the gating style in deploy-validation.yml, including its fail-safe:
+  # if the diff cannot be computed, run everything.
+  changes:
+    name: Detect image-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      built-images: ${{ steps.filter.outputs.built-images }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Everything except a pull_request scans in full: pushes to main are
+          # the last chance before an artifact reaches Railway, and the cron and
+          # manual runs exist precisely to scan an unchanged tree.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "built-images=true" >> "$GITHUB_OUTPUT"
+            echo "Event is $EVENT_NAME — scanning built images unconditionally"
+            exit 0
+          fi
+
+          if ! CHANGED=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" 2>&1); then
+            echo "::warning::git diff failed: $CHANGED — defaulting to a full scan"
+            echo "built-images=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Deliberately broad. A false positive costs ~10 min of parallel CI; a
+          # false negative ships an unscanned image. bun.lock and package.json
+          # are included because the resolved production dependency tree is part
+          # of the image, and Trivy scans it.
+          if echo "$CHANGED" | grep -qE '^(deploy/|packages/|plugins/|ee/|apps/docs/|create-atlas/templates/docker/|examples/docker/|bun\.lock$|package\.json$|\.trivyignore$|scripts/(scan-image|list-runtime-base-images)\.sh$|\.github/workflows/image-scan\.yml$)'; then
+            echo "built-images=true" >> "$GITHUB_OUTPUT"
+            echo "Image-relevant paths changed — scanning built images"
+          else
+            echo "built-images=false" >> "$GITHUB_OUTPUT"
+            echo "No image-relevant paths changed — base-image scan only"
+          fi
+
+  # Prove the gate can actually go red, and that it is not merely red.
+  #
+  # #4822 called this out explicitly: a green run against a currently-clean tree
+  # proves nothing. scripts/__tests__/scan-image.test.sh builds a deliberately
+  # vulnerable image and asserts scan-image.sh exits 1 on it, builds a
+  # package-free image and asserts it exits 0, and checks that the .trivyignore
+  # baseline suppresses the gate WITHOUT suppressing the SARIF report.
+  #
+  # It runs before the real scans and gates them: if the scanner has silently
+  # stopped detecting anything (a bad Trivy bump, a broken flag, an over-broad
+  # baseline), a green scan of the real images is meaningless and should not be
+  # reported as a pass.
+  gate-self-test:
+    name: Gate self-test (vulnerable fixture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: ./.github/actions/setup-trivy
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          sha256: ${{ env.TRIVY_SHA256 }}
+      - name: Adversarial fixtures for the image-scan gate (#4822)
+        run: bash scripts/__tests__/scan-image.test.sh
+
+  # Tier 1 — runtime base images, discovered from every Dockerfile in the tree.
+  base-images:
+    name: Base images
+    needs: gate-self-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: ./.github/actions/setup-trivy
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          sha256: ${{ env.TRIVY_SHA256 }}
+
+      - name: Scan every runtime base image
+        run: |
+          set -euo pipefail
+          mkdir -p trivy-results
+          # Discovery, not enumeration — a Dockerfile added anywhere enters the
+          # matrix without editing this workflow. See the script for why only
+          # the runtime stage's base counts.
+          IMAGES="$(bash scripts/list-runtime-base-images.sh)"
+          echo "Runtime base images discovered:"
+          echo "$IMAGES" | sed 's/^/  /'
+
+          fail=0
+          while IFS= read -r image; do
+            [ -n "$image" ] || continue
+            # Stable, filesystem-safe SARIF category. It must stay stable across
+            # runs or code scanning treats each run as a new analysis and never
+            # closes resolved alerts.
+            category="base-$(printf '%s' "$image" | sed 's#[/:@]#-#g' | cut -c1-80)"
+            bash scripts/scan-image.sh "$image" "$category" trivy-results || fail=1
+          done <<< "$IMAGES"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::One or more base images have fixable HIGH/CRITICAL vulnerabilities outside the .trivyignore baseline"
+            exit 1
+          fi
+
+      - name: Upload SARIF to code scanning
+        # `always()` so findings are still triageable when the gate failed —
+        # that is exactly when someone needs to look at them. Fork PRs cannot
+        # write security events, so skip rather than fail the job on a
+        # permissions error that says nothing about the code.
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
+        with:
+          sarif_file: trivy-results
+
+  # Tier 2 — the images Atlas builds and deploys, scanned as finished artifacts.
+  built-images:
+    name: Built image (${{ matrix.name }})
+    needs: [changes, gate-self-test]
+    if: needs.changes.outputs.built-images == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            dockerfile: deploy/api/Dockerfile
+            # Shares the gha cache scope deploy-validation.yml's boot-build and
+            # boot-smoke jobs populate, so on a PR where those run this build is
+            # warm rather than a third full build of the same tree.
+            cache-scope: boot-smoke
+          - name: web
+            dockerfile: deploy/web/Dockerfile
+            cache-scope: image-scan-web
+          - name: docs
+            dockerfile: deploy/docs/Dockerfile
+            cache-scope: image-scan-docs
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Build ${{ matrix.name }} image
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          # The whole point is scanning the resolved runtime layers, so the
+          # final stage must be built and loaded — a `target: builder` build
+          # would scan layers that never ship and miss the ones that do.
+          load: true
+          tags: atlas-${{ matrix.name }}:image-scan
+          cache-from: type=gha,scope=${{ matrix.cache-scope }}
+          # mode=min: only the final-stage layers. Writing intermediates here
+          # would duplicate what boot-build already pushes to the shared scope
+          # and cost several minutes per run (see deploy-validation.yml).
+          cache-to: type=gha,scope=${{ matrix.cache-scope }},mode=min
+
+      - uses: ./.github/actions/setup-trivy
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          sha256: ${{ env.TRIVY_SHA256 }}
+
+      - name: Scan ${{ matrix.name }} image
+        run: bash scripts/scan-image.sh atlas-${{ matrix.name }}:image-scan built-${{ matrix.name }} trivy-results
+
+      - name: Upload SARIF to code scanning
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
+        with:
+          sarif_file: trivy-results
+
+  # Umbrella check, mirroring `deploy-validation-required`. Always runs, so a
+  # single stable context name is present on every PR even when the matrix job
+  # skips — which is what branch protection needs to be able to require it.
+  image-scan-required:
+    name: Image Scan
+    needs: [changes, gate-self-test, base-images, built-images]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all dependent jobs succeeded or were skipped
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          SELFTEST_RESULT: ${{ needs.gate-self-test.result }}
+          BASE_RESULT: ${{ needs.base-images.result }}
+          BUILT_RESULT: ${{ needs.built-images.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          # These three run unconditionally. A `skipped` among them means the
+          # gate was bypassed rather than satisfied, which must not read green.
+          for pair in "changes=$CHANGES_RESULT" "gate-self-test=$SELFTEST_RESULT" "base-images=$BASE_RESULT"; do
+            name=${pair%%=*}
+            result=${pair#*=}
+            if [ "$result" != "success" ]; then
+              echo "::error::$name job result was '$result' (expected 'success')"
+              fail=1
+            fi
+          done
+          # built-images is path-gated; skipping is a legitimate outcome on a PR
+          # that cannot have changed image content.
+          if [ "$BUILT_RESULT" != "success" ] && [ "$BUILT_RESULT" != "skipped" ]; then
+            echo "::error::built-images job result was '$BUILT_RESULT' (expected 'success' or 'skipped')"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "All image-scan gates passed (or properly skipped)."

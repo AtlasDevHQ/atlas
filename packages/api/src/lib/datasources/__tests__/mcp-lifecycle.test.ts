@@ -935,6 +935,47 @@ describe("publishWorkspaceDrafts (#4126)", () => {
     expect(publishClientQueries.map((q) => q.sql.trim().toUpperCase())).toContain("COMMIT");
   });
 
+  it("widens grants on THIS seam too, not only through the REST route (#4823)", async () => {
+    // Same `runPublishPhases`, so an MCP publish changes brain-fact ACLs
+    // identically. The record differs — this seam writes no `audit_log` row for
+    // anything, so it gets a `log.warn` and the REST route gets the durable row
+    // — but `collectWidenings` is shared, so what the two OBSERVE cannot drift.
+    const PRIVATE = "audience:chat-channel:slack:C0BK";
+    publishQueryHandler = async (sql) => {
+      if (/FROM\s+brain_facts/i.test(sql)) {
+        return {
+          rows: [
+            {
+              id: "fact-c3",
+              subject: "prod-branch",
+              predicate: "is advanced only by",
+              object: "/release",
+              source_episode_id: "ep-priv",
+              provenance: { actor: "test" },
+              visible_to: [PRIVATE],
+            },
+          ],
+        };
+      }
+      if (/brain_edges/i.test(sql)) {
+        return { rows: [{ fact_id: "fact-c3", episode_id: "ep-pub", visible_to: ["org"] }] };
+      }
+      if (/UPDATE\s+brain_facts/i.test(sql)) return { rows: [], rowCount: 1 };
+      return { rows: [] };
+    };
+
+    const result = await publishWorkspaceDrafts("org_1");
+    expect(result.promoted.brainFacts).toBe(1);
+
+    const widen = publishClientQueries.find(
+      (q) => /UPDATE\s+brain_facts/i.test(q.sql) && q.sql.includes("visible_to"),
+    );
+    expect(widen).toBeDefined();
+    expect(JSON.parse(String(widen?.params?.[1]))).toEqual([
+      { id: "fact-c3", grant: [PRIVATE, "org"] },
+    ]);
+  });
+
   it("omits refusedDrafts when nothing was refused", async () => {
     // Omitted, not `[]`, matching REST so a client branches on presence
     // identically on both surfaces.

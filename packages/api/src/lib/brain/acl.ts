@@ -289,9 +289,9 @@ export function logGrantAnomalies(
  *   - `authenticated` — a real identity. `userId` is non-null BY THE TYPE.
  *     `audienceIds` is a SNAPSHOT of as-of-now membership, read locally from
  *     `fact_audience_member` — never a live connector call (ADR-0036: grants
- *     are derived at ingest and immutable per fact version; membership is the
- *     live half and the revocation path, so it must be cheap enough to
- *     evaluate on every read).
+ *     are derived at ingest, fixed at publish (#4823), and immutable
+ *     thereafter; membership is the live half and the revocation path, so it
+ *     must be cheap enough to evaluate on every read).
  *   - `unauthenticated-local` — `auth: none`, where the deployment has
  *     DECLARED there is no identity to resolve. Granted the `org` principal
  *     ONLY, so anything deliberately narrowed to a role, user, or audience

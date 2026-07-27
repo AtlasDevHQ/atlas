@@ -184,6 +184,38 @@ stated now so M3's sources inherit it deliberately rather than by accident:
 The fail-closed direction is built in: a source whose audience ids this module
 cannot parse gets opaque handles without anyone deciding, and an install-config
 read fault withholds every label while leaving the counts intact.
+### The corroboration rule — the grant a REPEATED claim ends up with
+
+A company Slack restates the same claim across channels constantly, and the two
+stages treat that differently on purpose:
+
+- **At ingest / reconcile — nothing happens.** A second episode asserting a
+  claim Atlas already holds corroborates it: one more `provenance` edge, and
+  the fact itself is untouched. Its grant is still the one inherited verbatim
+  from the *first* episode, whether the new episode is narrower or wider.
+  ADR-0036 §T5 admits widening only at the review gate, so an unattended pass
+  is precisely where it must not change.
+- **At publish — the grants are unioned.** `promoteBrainFacts` reads every
+  episode on a `provenance` edge to the draft and publishes it with its own
+  grant plus every grammar-valid principal theirs name
+  (`widenGrantFromEvidence`, #4823). So the claim posted in `#atlas-founders`
+  and then repeated in `#general` is published `{audience:…, org}` rather than
+  staying locked to the private channel it was seen in first.
+
+The union is append-only — no token is ever removed, so this cannot narrow a
+grant — and it only ever adds a principal some episode's grant *already* named,
+so a reader who gains the fact had already been told the claim. Once a fact is
+published its grant is sealed: later evidence does not re-open it.
+
+One thing it *does* newly disclose: provenance rides the fact's grant, and a
+fact's provenance names its **first** episode — for Slack, `<channelId>:<ts>`
+plus the actor. So a fact widened out of `#atlas-founders` tells its new readers
+that the claim was first made there, and when. Accepted deliberately (see the
+ADR-0036 §T5 amendment), not overlooked.
+
+Before that landed, a publicly-restated private claim stayed private. That was
+fail-closed and never a leak, but it made org-wide information invisible to the
+org — and unreportably so, since nobody can flag a fact they cannot read.
 
 ## The per-channel cursor
 

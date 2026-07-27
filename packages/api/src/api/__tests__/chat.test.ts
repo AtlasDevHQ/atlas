@@ -17,6 +17,7 @@ import {
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import type { DiagnosticCode } from "@atlas/api/lib/startup";
 
 // --- Mocks ---
 
@@ -44,8 +45,11 @@ void mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: mockGetClientIP,
 }));
 
+// `code` is optional so existing tests can keep asserting on `message` alone,
+// while the #4826 gate tests can drive a specific `DiagnosticCode` through the
+// bound-workspace filter.
 const mockValidateEnvironment: Mock<
-  () => Promise<{ message: string }[]>
+  () => Promise<{ message: string; code?: DiagnosticCode }[]>
 > = mock(() => Promise.resolve([]));
 
 const mockRunAgent = mock(() =>
@@ -93,6 +97,27 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mockValidateEnvironment,
   getStartupWarnings: () => [],
+}));
+
+// #4826 — the serviceability gate. Resolved BEFORE the mock.module below
+// registers, so this is the real module; spreading it keeps
+// `diagnosticsForBoundWorkspace` REAL (the diagnostic-filter assertions below
+// depend on its actual behaviour) while only the DB-backed probe is faked.
+import * as realWorkspaceCapability from "@atlas/api/lib/workspace-capability";
+import type { CapabilityProbe, WorkspaceCapability } from "@atlas/api/lib/workspace-capability";
+
+/** Defaults to a datasource-capable workspace so every other test is unaffected. */
+const mockProbeWorkspaceCapabilities: Mock<(workspaceId: string) => Promise<CapabilityProbe>> =
+  mock(() =>
+    Promise.resolve({
+      kind: "resolved" as const,
+      capabilities: new Set<WorkspaceCapability>(["datasource"]),
+    }),
+  );
+
+void mock.module("@atlas/api/lib/workspace-capability", () => ({
+  ...realWorkspaceCapability,
+  probeWorkspaceCapabilities: mockProbeWorkspaceCapabilities,
 }));
 
 // Mock action tools so buildRegistry({ includeActions: true }) works
@@ -280,6 +305,11 @@ describe("POST /api/v1/chat", () => {
     mockGetClientIP.mockReturnValue(null);
     mockValidateEnvironment.mockReset();
     mockValidateEnvironment.mockResolvedValue([]);
+    mockProbeWorkspaceCapabilities.mockReset();
+    mockProbeWorkspaceCapabilities.mockResolvedValue({
+      kind: "resolved" as const,
+      capabilities: new Set<WorkspaceCapability>(["datasource"]),
+    });
     mockRunAgent.mockReset();
     mockRunAgent.mockResolvedValue({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -1189,6 +1219,192 @@ describe("POST /api/v1/chat", () => {
     expect(body.error).toBe("configuration_error");
 
     expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // #4826 — the serviceability gate is a WORKSPACE-capability question, not a
+  // process-env one.
+  //
+  // Before this, `POST /api/v1/chat` refused every turn on a deployment with no
+  // process-level analytics datasource, ahead of the agent loop. Knowledge-only
+  // and brain-only workspaces — pillars that need no analytics datasource by
+  // design — therefore had no working chat surface at all, and the refusal told
+  // them to configure the exact thing they had deliberately not configured.
+  // -------------------------------------------------------------------------
+  describe("serviceability gate — bound workspace", () => {
+    /** Bind an org so the request takes the workspace-capability path. */
+    function bindWorkspace(orgId = "org-capability"): void {
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true as const,
+        mode: "managed" as const,
+        user: {
+          id: "user-capability",
+          mode: "managed" as const,
+          label: "capability@useatlas.dev",
+          role: "admin",
+          activeOrganizationId: orgId,
+          claims: { twoFactorEnabled: true },
+        },
+      });
+    }
+
+    it("serves a brain-only workspace with no analytics datasource", async () => {
+      // The Brain M1 soak shape: `searchBrain` reads brain_facts/brain_episodes
+      // out of the internal DB and needs no analytics datasource whatsoever.
+      bindWorkspace("org-brain-only");
+      delete process.env.ATLAS_DATASOURCE_URL;
+      mockProbeWorkspaceCapabilities.mockResolvedValueOnce({
+        kind: "resolved" as const,
+        capabilities: new Set<WorkspaceCapability>(["brain"]),
+      });
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalled();
+      // The identifier matters as much as the verdict: probing the user id or
+      // the conversation id instead would find no rows for EVERY tenant and
+      // 400 the whole fleet with `no_capability`.
+      expect(mockProbeWorkspaceCapabilities).toHaveBeenCalledWith("org-brain-only");
+    });
+
+    it("serves a knowledge-only workspace with no analytics datasource", async () => {
+      bindWorkspace("org-knowledge-only");
+      delete process.env.ATLAS_DATASOURCE_URL;
+      mockProbeWorkspaceCapabilities.mockResolvedValueOnce({
+        kind: "resolved" as const,
+        capabilities: new Set<WorkspaceCapability>(["knowledge"]),
+      });
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalled();
+    });
+
+    it("ignores MISSING_DATASOURCE_URL — the diagnostic that killed knowledge-first deployments", async () => {
+      // Exactly the api-staging shape: DATABASE_URL set, ATLAS_DATASOURCE_URL
+      // unset, so `validateEnvironment` raises MISSING_DATASOURCE_URL and the
+      // old gate 400'd `configuration_error` before the agent loop started.
+      bindWorkspace();
+      delete process.env.ATLAS_DATASOURCE_URL;
+      mockValidateEnvironment.mockResolvedValueOnce([
+        {
+          code: "MISSING_DATASOURCE_URL",
+          message: "DATABASE_URL is set but ATLAS_DATASOURCE_URL is not.",
+        },
+      ]);
+      mockProbeWorkspaceCapabilities.mockResolvedValueOnce({
+        kind: "resolved" as const,
+        capabilities: new Set<WorkspaceCapability>(["brain"]),
+      });
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalled();
+    });
+
+    it("still blocks a bound workspace on a diagnostic that is not datasource-shaped", async () => {
+      // The inverse risk: over-filtering. A missing provider key blocks chat for
+      // every tenancy shape and must still surface as `configuration_error`.
+      bindWorkspace();
+      mockValidateEnvironment.mockResolvedValueOnce([
+        { code: "MISSING_API_KEY", message: "ANTHROPIC_API_KEY is not set." },
+      ]);
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("configuration_error");
+      expect(body.message).toContain("ANTHROPIC_API_KEY");
+      expect(mockRunAgent).not.toHaveBeenCalled();
+    });
+
+    it("refuses a genuinely empty workspace without blaming a missing datasource", async () => {
+      bindWorkspace("org-empty");
+      mockProbeWorkspaceCapabilities.mockResolvedValueOnce({
+        kind: "resolved" as const,
+        capabilities: new Set<WorkspaceCapability>(),
+      });
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("no_capability");
+      expect(body.retryable).toBe(false);
+      // The old message told a brain-only adopter to set the one env var they
+      // had deliberately not set.
+      expect(body.message).not.toContain("ATLAS_DATASOURCE_URL");
+      expect(mockRunAgent).not.toHaveBeenCalled();
+      expect(mockProbeWorkspaceCapabilities).toHaveBeenCalledWith("org-empty");
+    });
+
+    it("fails open when the capability probe cannot decide", async () => {
+      // A transient internal-DB fault must not read as "this workspace is
+      // empty" and take chat down for a correctly-configured tenant.
+      bindWorkspace("org-probe-blip");
+      mockProbeWorkspaceCapabilities.mockResolvedValueOnce({
+        kind: "unknown" as const,
+        reason: "connection terminated unexpectedly",
+      });
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalled();
+    });
+
+    it("does not probe at all for an unbound (self-hosted single-tenant) request", async () => {
+      // The default auth mock carries no org; that path keeps the env-level
+      // checks, because knowledge and brain are both workspace-scoped and
+      // unreachable without one.
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockProbeWorkspaceCapabilities).not.toHaveBeenCalled();
+    });
+
+    it("still reports MISSING_DATASOURCE_URL to an UNBOUND request", async () => {
+      // The filter must stay conditional on tenancy. If it were applied
+      // unconditionally, a self-hosted operator would silently lose the startup
+      // guidance that is their only signal — the mirror image of #4826.
+      mockValidateEnvironment.mockResolvedValueOnce([
+        {
+          code: "MISSING_DATASOURCE_URL",
+          message: "DATABASE_URL is set but ATLAS_DATASOURCE_URL is not.",
+        },
+      ]);
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("configuration_error");
+      expect(body.message).toContain("ATLAS_DATASOURCE_URL");
+      expect(mockRunAgent).not.toHaveBeenCalled();
+    });
+
+    it("still blocks a bound workspace when the analytics datasource is unreachable", async () => {
+      // DB_UNREACHABLE is deliberately NOT filtered: it can only be raised when
+      // a process datasource URL resolved, and the probe counts that same URL
+      // as this workspace's datasource. Suppressing it would trade an
+      // actionable 400 for a turn that dies inside the agent loop.
+      bindWorkspace();
+      mockValidateEnvironment.mockResolvedValueOnce([
+        { code: "DB_UNREACHABLE", message: "Cannot connect to the analytics database." },
+      ]);
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("configuration_error");
+      expect(body.message).toContain("Cannot connect");
+      expect(mockRunAgent).not.toHaveBeenCalled();
+    });
   });
 
   it("returns x-conversation-id header when conversation is created", async () => {

@@ -88,6 +88,39 @@ export function collectRefusals(reports: ReadonlyArray<PromotionReport>): Refusa
  */
 const MAX_REPORTED_REFUSALS = 100;
 
+/** One row whose grant a publish widened, attributed to the table it came from. */
+export interface WidenedGrantRecord {
+  readonly surface: string;
+  readonly id: string;
+  readonly added: readonly [string, ...string[]];
+}
+
+/**
+ * Every grant any adapter widened this publish (#4823), attributed by surface.
+ *
+ * Lives beside {@link collectRefusals} and for the same stated reason: BOTH
+ * publish surfaces run the identical `runPublishPhases`, so a per-route inline
+ * sweep is the exact layout that let MCP report `published: true` over refused
+ * drafts. A widening is the more consequential of the two events — it
+ * permanently changed who can read a claim, and unlike a refusal nothing
+ * re-offers it — so it is the last thing that should be collected twice.
+ *
+ * Uncapped. Both callers put it in a durable-ish record rather than an HTTP
+ * response, so the payload-size argument behind `MAX_REPORTED_REFUSALS` does
+ * not apply, and "which rows" is the entire point.
+ */
+export function collectWidenings(
+  reports: ReadonlyArray<PromotionReport>,
+): readonly WidenedGrantRecord[] {
+  return reports.flatMap((report) =>
+    (report.widened ?? []).map((w) => ({
+      surface: report.table,
+      id: w.rowId,
+      added: w.added,
+    })),
+  );
+}
+
 /**
  * One promoted count per registered entry, keyed by the entry's wire key
  * (`key` for simple entries, `promotedKey` for exotic adapters), looked up by

@@ -18,6 +18,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   classifyFactForPromotion,
+  widenGrantFromEvidence,
   FACT_REFUSAL_REASONS,
   GRANT_GRAMMAR_HINT,
   type DraftFactRow,
@@ -180,5 +181,119 @@ describe("classifyFactForPromotion — reporting", () => {
       validRow({ source_episode_id: null, visible_to: ["org"] }),
     );
     expect(refusal?.detail).toContain("evidence behind it. Fix it");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// `widenGrantFromEvidence` (#4823)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("widenGrantFromEvidence", () => {
+  const PRIVATE = "audience:chat-channel:slack:C0BKTMEDUN9";
+
+  it("returns null when there is no evidence at all", () => {
+    // `null`, not an empty widening: the caller must take the cheap blanket
+    // promote that never rewrites `visible_to`, and the type is what forces it.
+    expect(widenGrantFromEvidence([PRIVATE], [])).toBeNull();
+  });
+
+  it("returns null when every evidence episode is granted the same way", () => {
+    // The overwhelmingly common case — one claim, one channel. It must not
+    // cost an UPDATE that touches an ACL column.
+    expect(widenGrantFromEvidence([PRIVATE], [[PRIVATE], [PRIVATE]])).toBeNull();
+  });
+
+  it("unions in a wider evidence grant — the cross-grant corroboration case", () => {
+    // Same sentence in a private channel, then in a public one four minutes
+    // later (#4823, found in the Brain M1 staging soak).
+    const result = widenGrantFromEvidence([PRIVATE], [[PRIVATE], ["org"]]);
+    expect(result?.added).toEqual(["org"]);
+    expect(result?.grant).toEqual([PRIVATE, "org"]);
+  });
+
+  it("is APPEND-ONLY — it can never remove a token, so it can never narrow", () => {
+    // The single property that makes this safe to run unattended in a publish.
+    // `org` is subsumed by nothing, and even so a narrower episode leaves it in
+    // place; the result is a superset of the input, always.
+    expect(widenGrantFromEvidence(["org"], [[PRIVATE]])?.grant).toEqual(["org", PRIVATE]);
+  });
+
+  it("preserves the fact's own tokens verbatim, malformed ones included", () => {
+    // Repairing a grant is `logGrantAnomalies`'s job to REPORT, not this
+    // function's to do silently — an operator has to see `everyone` to fix the
+    // deriver that emitted it.
+    const result = widenGrantFromEvidence(["everyone", PRIVATE], [["org"]]);
+    expect(result?.grant).toEqual(["everyone", PRIVATE, "org"]);
+  });
+
+  it("preserves a NULL element in place", () => {
+    // `visible_to` may legally hold NULL beside a usable token. It is not a
+    // token, matches nothing, and must survive the append untouched — this
+    // value is written straight back into the column.
+    const result = widenGrantFromEvidence([PRIVATE, null], [["org"]]);
+    expect(result?.grant).toEqual([PRIVATE, null, "org"]);
+  });
+
+  it("never copies a malformed token OUT of the evidence", () => {
+    // It grants nobody anything, so copying it spreads an anomaly to a second
+    // row for no reader's benefit.
+    const result = widenGrantFromEvidence([PRIVATE], [["everyone", null, "", "org"]]);
+    expect(result?.added).toEqual(["org"]);
+  });
+
+  it("never copies `role:platform_admin` — a cross-tenant token is not a principal", () => {
+    // Deliberately outside the grammar (`acl.ts`): ADR-0036 scopes the
+    // admin/audit override to a region and admits no super-admin arm. An
+    // evidence grant carrying it must contribute nothing.
+    expect(widenGrantFromEvidence([PRIVATE], [["role:platform_admin"]])).toBeNull();
+  });
+
+  it("returns null when the fact already holds every evidence token", () => {
+    expect(
+      widenGrantFromEvidence(["org", PRIVATE], [["org"], [PRIVATE], ["org"]]),
+    ).toBeNull();
+  });
+
+  it("dedupes across evidence episodes", () => {
+    const result = widenGrantFromEvidence([PRIVATE], [["org"], ["org"], ["role:admin"]]);
+    expect(result?.added).toEqual(["org", "role:admin"]);
+  });
+
+  it("unions INCOMPARABLE audiences rather than picking one", () => {
+    // "Widest" is not a total order — two private channels are incomparable —
+    // but visibility is token overlap, so the union is the least upper bound,
+    // and a reader of either channel already saw the claim said there.
+    const other = "audience:chat-channel:slack:C0BBXHYHQQ7";
+    expect(widenGrantFromEvidence([PRIVATE], [[other]])?.grant).toEqual([PRIVATE, other]);
+  });
+
+  it("does NOT collapse to `org` when `org` is present", () => {
+    // `org` subsumes every other principal, so `['audience:X','org']` is
+    // redundant — and kept anyway. The pair records that the claim was made
+    // both privately and publicly; collapsing would turn an append into a
+    // rewrite and lose that.
+    const result = widenGrantFromEvidence([PRIVATE], [["org"]]);
+    expect(result?.grant).toContain(PRIVATE);
+    expect(result?.grant).toContain("org");
+  });
+
+  it("round-trips tokens byte-exactly — it never re-spells a principal", () => {
+    // `parseGrant` → `formatPrincipal` is the path an added token takes. If it
+    // normalised case or trimmed, the stored token would stop matching
+    // Postgres's byte-exact `&&` and the widening would grant nobody anything.
+    const result = widenGrantFromEvidence(["org"], [["user:UPPER-Case_id.42"]]);
+    expect(result?.added).toEqual(["user:UPPER-Case_id.42"]);
+  });
+
+  it("appends in evidence order, so the stored grant is deterministic", () => {
+    const other = "audience:chat-channel:slack:C0BBXHYHQQ7";
+    expect(widenGrantFromEvidence([PRIVATE], [["org"], [other]])?.added).toEqual([
+      "org",
+      other,
+    ]);
+    expect(widenGrantFromEvidence([PRIVATE], [[other], ["org"]])?.added).toEqual([
+      other,
+      "org",
+    ]);
   });
 });

@@ -214,6 +214,28 @@ Use the createDashboard tool when the user wants a dashboard, not just a single 
  * (workspace/install/context checks inside `execute`) — except `querySalesforce`,
  * which is additionally env-gated on the Salesforce OAuth config (see its inline
  * note below).
+ *
+ * #4826 — that execute-time posture is a DELIBERATE choice for the SQL tools on
+ * a workspace with no analytics datasource. Now that chat serves knowledge-only
+ * and brain-only workspaces (see `lib/workspace-capability.ts`), `executeSQL`
+ * can be offered to a workspace that has nothing to run it against. It stays
+ * REGISTERED and fails per call: the pipeline raises `NoDatasourceConfiguredError`,
+ * which `lib/tools/sql.ts` maps to a `NoDatasourceError` and then to a clean
+ * `{ success: false, error }` tool result the agent can read and route around —
+ * never an unhandled throw.
+ *
+ * De-registering it instead would make the surface vary **per workspace**. Note
+ * what that does and does not cost: the surface already varies by *surface*
+ * (`dashboardUrlResolver`) and by *process env* (`querySalesforce`,
+ * `executePython`), both resolvable synchronously with no I/O. A per-workspace
+ * surface is different in kind — it would mean threading a workspace id through
+ * the builders and paying a DB probe on every turn to decide the tool list. It
+ * would also strand the frozen singletons, which cannot express a per-workspace
+ * answer at all and are still on live paths: the web chat route builds a
+ * registry only when `ATLAS_ACTIONS_ENABLED=true` and otherwise rides
+ * `defaultRegistry`, while `executeAgentQuery` (SDK / Slack / MCP / scheduler)
+ * always builds but falls back to `nonDashboardRegistry`. That is a registry
+ * refactor, not a release fix.
  */
 function registerCoreTools(
   registry: ToolRegistry,

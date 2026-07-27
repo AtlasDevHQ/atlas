@@ -273,3 +273,40 @@ export function formatSandboxPriorityFailure(
 
   return `All backends in sandbox.priority (${priority.join(", ")}) failed to initialize.${summary} ${guidance.join(" ")}`;
 }
+
+/** Isolation posture of a sandbox backend. */
+export type SandboxIsolationPosture = "isolated" | "unsandboxed" | "plugin-declared";
+
+/**
+ * Isolation posture of each backend, so operator-facing surfaces don't have to
+ * re-derive "does this one actually isolate?" from a string equality check.
+ *
+ * `satisfies Record<…>` is the point: adding a backend to
+ * `SANDBOX_BACKEND_NAMES` without classifying it HERE is a compile error, so a
+ * new unsandboxed backend cannot slip in unclassified — the fail-open shape
+ * that let the #4824 boot dispatch assert the wrong isolation posture. Callers
+ * must still route through this table rather than string-comparing; nothing
+ * lints for that. The three that do: `health.ts` (twice) and `startup.ts`.
+ *
+ * `plugin` is `plugin-declared`: the plugin supplies its own security metadata
+ * (surfaced by `logSandboxPlugins()`), and `/api/health` reports
+ * `isolationVerified: false` for it because Atlas has not verified that claim.
+ * This table must not claim isolation on the plugin's behalf.
+ *
+ * Both current consumers collapse `plugin-declared` to "not unsandboxed"; the
+ * separate value exists so a future surface can distinguish verified from
+ * declared isolation without re-deriving it.
+ *
+ * Lives here rather than beside `ExploreBackendType` in `lib/tools/explore.ts`
+ * deliberately: explore is partially mocked in 40+ test files, so a new VALUE
+ * export there is `undefined` for any production importer running under those
+ * mocks (`health.ts` imports this table statically). This module is pure policy
+ * and is mocked nowhere.
+ */
+export const BACKEND_ISOLATION = {
+  "vercel-sandbox": "isolated",
+  nsjail: "isolated",
+  sidecar: "isolated",
+  "just-bash": "unsandboxed",
+  plugin: "plugin-declared",
+} as const satisfies Record<SandboxBackendName | "plugin", SandboxIsolationPosture>;

@@ -76,14 +76,60 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     }
   }, PG_TEST_TIMEOUT_MS);
 
-  async function seedEpisode(workspaceId: string, sourceId: string): Promise<string> {
+  async function seedEpisode(
+    workspaceId: string,
+    sourceId: string,
+    visibleTo: readonly string[] = ["org"],
+  ): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
-       VALUES ($1, 'test', $2, 'evidence', ARRAY['org'])
+       VALUES ($1, 'test', $2, 'evidence', $3::text[])
        RETURNING id`,
-      [workspaceId, sourceId],
+      [workspaceId, sourceId, [...visibleTo]],
     );
     return rows[0]!.id;
+  }
+
+  /** The `provenance` edge `reconcile.ts` writes for every episode behind a fact. */
+  async function seedProvenanceEdge(
+    workspaceId: string,
+    factId: string,
+    episodeId: string,
+  ): Promise<void> {
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'provenance', $2::uuid, $3::uuid)`,
+      [workspaceId, factId, episodeId],
+    );
+  }
+
+  async function grantOf(id: string): Promise<readonly (string | null)[]> {
+    const { rows } = await pool.query<{ visible_to: (string | null)[] }>(
+      `SELECT visible_to FROM brain_facts WHERE id = $1`,
+      [id],
+    );
+    return rows[0]!.visible_to;
+  }
+
+  /**
+   * Run one publish in its own committed transaction, as `admin-publish.ts`
+   * does. Rolls back on failure — releasing a client with an open or aborted
+   * transaction poisons the pool and makes every later test in this file fail
+   * somewhere other than the cause.
+   */
+  async function publish(workspaceId: string) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const report = await Effect.runPromise(promoteBrainFacts(client, workspaceId));
+      await client.query("COMMIT");
+      return report;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async function seedDraftFact(opts: {
@@ -642,6 +688,424 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       }
 
       expect(await statusOf(archived)).toBe("archived");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ══════════════════════════════════════════════════════════════════
+  // 5. Publish-time grant widening (#4823) — cross-grant corroboration
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // Nothing short of a real database answers these. The widening statement
+  // round-trips a per-row grant through jsonb into `text[]`, and the payoff is
+  // a change in what `aclVisibilityClause` — a push-down Postgres predicate —
+  // returns for a reader who was excluded a moment earlier. A double cannot
+  // fake either half.
+
+  const CHANNEL_AUDIENCE = "chat-channel:slack:C0BKTMEDUN9";
+  const PRIVATE_GRANT = `audience:${CHANNEL_AUDIENCE}`;
+
+  /** A reader resolved the way production resolves one — never hand-assembled (#4775). */
+  async function readerIn(workspaceId: string, userId: string) {
+    return resolvePrincipalContext(pool, {
+      workspaceId,
+      mode: "managed",
+      userId,
+      resolvedRole: { role: "member", orgId: workspaceId },
+    });
+  }
+
+  async function subjectsVisibleTo(
+    ctx: Awaited<ReturnType<typeof readerIn>>,
+    extraSql = "",
+  ): Promise<string[]> {
+    const clause = aclVisibilityClause(ctx, {
+      table: "brain_facts",
+      alias: "f",
+      paramIndex: 1,
+    });
+    const { rows } = await pool.query<{ subject: string }>(
+      `SELECT f.subject FROM brain_facts f WHERE ${clause.sql} ${extraSql}
+        ORDER BY f.subject COLLATE "C"`,
+      [...clause.params],
+    );
+    return rows.map((r) => r.subject);
+  }
+
+  it(
+    "publishes a privately-granted fact with the ORG grant its public evidence carries",
+    async () => {
+      // The exact shape the 2026-07-26 staging soak hit by accident: the same
+      // sentence posted in a private channel and, four minutes later, a public
+      // one. The second episode CORROBORATED (one fact, two provenance edges)
+      // and the fact stayed locked to the private audience — fail-closed, but
+      // it made org-wide information invisible to the org.
+      const ws = "ws-c3";
+      const privateEp = await seedEpisode(ws, "c3-private", [PRIVATE_GRANT]);
+      const publicEp = await seedEpisode(ws, "c3-public", ["org"]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "prod-branch",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, fact, privateEp);
+      await seedProvenanceEdge(ws, fact, publicEp);
+
+      // `insider` is in the private channel; `outsider` is only in the org.
+      await pool.query(
+        `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+         VALUES ($1, $2, 'insider', 'test')`,
+        [ws, CHANNEL_AUDIENCE],
+      );
+      const insider = await readerIn(ws, "insider");
+      const outsider = await readerIn(ws, "outsider");
+
+      // Before: the grant genuinely excludes the outsider. Asserted WITHOUT the
+      // status filter, or "invisible because it is a draft" would masquerade as
+      // "invisible because of the grant" and the test would prove nothing.
+      expect(await subjectsVisibleTo(outsider)).toEqual([]);
+      expect(await subjectsVisibleTo(insider)).toEqual(["prod-branch"]);
+
+      const report = await publish(ws);
+      expect(report.promoted).toBe(1);
+      expect(report.refused).toEqual([]);
+
+      // Append-only: the private token keeps its place and `org` follows it.
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT, "org"]);
+      expect(await statusOf(fact)).toBe("published");
+
+      // After: the outsider reads it through the real push-down predicate…
+      expect(await subjectsVisibleTo(outsider, "AND f.status = 'published'")).toEqual([
+        "prod-branch",
+      ]);
+      // …and the insider did not lose it.
+      expect(await subjectsVisibleTo(insider, "AND f.status = 'published'")).toEqual([
+        "prod-branch",
+      ]);
+
+      // The invariant the M1 soak corpus pins for this case: ONE fact survives cross-grant
+      // corroboration, and `brain_edges` still holds BOTH episodes.
+      const { rows: facts } = await pool.query(
+        `SELECT id FROM brain_facts WHERE workspace_id = $1 AND subject = 'prod-branch'`,
+        [ws],
+      );
+      expect(facts).toHaveLength(1);
+      const { rows: edges } = await pool.query<{ to_episode_id: string }>(
+        `SELECT to_episode_id FROM brain_edges
+          WHERE workspace_id = $1 AND edge_type = 'provenance' AND from_fact_id = $2
+          ORDER BY to_episode_id`,
+        [ws, fact],
+      );
+      // Explicit comparator — a bare `.sort()` stringifies through `toString()`
+      // and the type-aware lint gate refuses it (`require-array-sort-compare`).
+      const byString = (a: string, b: string) => a.localeCompare(b);
+      expect(edges.map((e) => e.to_episode_id).sort(byString)).toEqual(
+        [privateEp, publicEp].sort(byString),
+      );
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "never narrows — a private episode behind a public fact leaves `org` in place",
+    async () => {
+      // The direction `reconcile.ts` was already safe in, re-proved at the gate
+      // that now writes the column. Widening is a union, so the audience token
+      // is added; what must never happen is `org` being displaced by it.
+      const ws = "ws-c3-narrow";
+      const publicEp = await seedEpisode(ws, "narrow-public", ["org"]);
+      const privateEp = await seedEpisode(ws, "narrow-private", [PRIVATE_GRANT]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: publicEp,
+        subject: "public-claim",
+        visibleTo: ["org"],
+      });
+      await seedProvenanceEdge(ws, fact, publicEp);
+      await seedProvenanceEdge(ws, fact, privateEp);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      const grant = await grantOf(fact);
+      expect(grant[0]).toBe("org");
+      expect(grant).toContain(PRIVATE_GRANT);
+      expect(await subjectsVisibleTo(await readerIn(ws, "anyone"), "AND f.status = 'published'"))
+        .toEqual(["public-claim"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "widens only from `provenance` edges — a `derives-from` episode is lineage, not testimony",
+    async () => {
+      // The edge filter is #4823's own narrowing (ADR-0036 constrains WHEN a
+      // grant may widen, not which edge feeds it), so nothing but this test
+      // holds it: drop `AND e.edge_type = 'provenance'` and every other case in
+      // this section still passes, because they all seed provenance edges.
+      const ws = "ws-c3-edge-type";
+      const privateEp = await seedEpisode(ws, "edge-private", [PRIVATE_GRANT]);
+      const derivedFrom = await seedEpisode(ws, "edge-derived", ["org"]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "lineage-only",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, fact, privateEp);
+      await pool.query(
+        `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+         VALUES ($1, 'derives-from', $2::uuid, $3::uuid)`,
+        [ws, fact, derivedFrom],
+      );
+
+      expect((await publish(ws)).promoted).toBe(1);
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT]);
+      expect(
+        await subjectsVisibleTo(await readerIn(ws, "outsider"), "AND f.status = 'published'"),
+      ).toEqual([]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "widens only from episodes EDGED to the fact — a stray workspace episode is not evidence",
+    async () => {
+      // Guards the mutation that would hurt most: "union in every episode in
+      // the workspace" instead of "every episode on an edge to THIS fact".
+      // That is mass over-disclosure of every draft on the next publish, and it
+      // passes every other test here, where the unedged episodes happen to
+      // carry the grant the fact already has.
+      const ws = "ws-c3-unlinked";
+      const privateEp = await seedEpisode(ws, "unlinked-private", [PRIVATE_GRANT]);
+      await seedEpisode(ws, "unlinked-public", ["org"]); // deliberately no edge
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "unlinked",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, fact, privateEp);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT]);
+      expect(
+        await subjectsVisibleTo(await readerIn(ws, "outsider"), "AND f.status = 'published'"),
+      ).toEqual([]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "widening to another AUDIENCE still excludes a reader in neither",
+    async () => {
+      // Every other case widens to `org`, where "everyone can now read it" is
+      // the expected answer and the predicate is only ever proved permissive
+      // enough. This is the negative: the round trip through
+      // `jsonb_array_elements_text` must produce a grant that still DENIES.
+      const ws = "ws-c3-audience";
+      const audienceA = "chat-channel:slack:CAAAAAAAA";
+      const audienceB = "chat-channel:slack:CBBBBBBBB";
+      const epA = await seedEpisode(ws, "aud-a", [`audience:${audienceA}`]);
+      const epB = await seedEpisode(ws, "aud-b", [`audience:${audienceB}`]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: epA,
+        subject: "two-rooms",
+        visibleTo: [`audience:${audienceA}`],
+      });
+      await seedProvenanceEdge(ws, fact, epA);
+      await seedProvenanceEdge(ws, fact, epB);
+      await pool.query(
+        `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+         VALUES ($1, $2, 'in-a', 'test'), ($1, $3, 'in-b', 'test')`,
+        [ws, audienceA, audienceB],
+      );
+
+      const inA = await readerIn(ws, "in-a");
+      const inB = await readerIn(ws, "in-b");
+      const inNeither = await readerIn(ws, "in-neither");
+      expect(await subjectsVisibleTo(inB)).toEqual([]);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      const published = "AND f.status = 'published'";
+
+      expect(await subjectsVisibleTo(inA, published)).toEqual(["two-rooms"]);
+      expect(await subjectsVisibleTo(inB, published)).toEqual(["two-rooms"]);
+      // The one that matters: a plain org member in neither room still reads
+      // nothing. A widening that leaked `org` in would show up only here.
+      expect(await subjectsVisibleTo(inNeither, published)).toEqual([]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "widens TWO facts in one statement without crossing their grants",
+    async () => {
+      // `WIDEN_AND_PROMOTE_FACTS_SQL` joins a jsonb set of `{id, grant}` to the
+      // rows on `f.id = w.id`. With one entry that join is vacuous — every
+      // other widening case here has exactly one, so dropping the predicate
+      // passes all of them. With two DIFFERENTLY-widened facts it is the whole
+      // statement: a mis-join publishes fact A's claim under fact B's grant,
+      // which is an ACL write to the wrong row in the direction that discloses.
+      const ws = "ws-c3-pair";
+      const audienceB = "audience:chat-channel:slack:CBBBBBBBB";
+      const epOnePriv = await seedEpisode(ws, "pair-1-priv", [PRIVATE_GRANT]);
+      const epOneWide = await seedEpisode(ws, "pair-1-wide", [audienceB]);
+      const epTwoPriv = await seedEpisode(ws, "pair-2-priv", [PRIVATE_GRANT]);
+      const epTwoWide = await seedEpisode(ws, "pair-2-wide", ["org"]);
+
+      const one = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: epOnePriv,
+        subject: "pair-one",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      const two = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: epTwoPriv,
+        subject: "pair-two",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, one, epOnePriv);
+      await seedProvenanceEdge(ws, one, epOneWide);
+      await seedProvenanceEdge(ws, two, epTwoPriv);
+      await seedProvenanceEdge(ws, two, epTwoWide);
+
+      const report = await publish(ws);
+      expect(report.promoted).toBe(2);
+      // Each fact got ITS OWN union, and neither carries the other's token.
+      expect(await grantOf(one)).toEqual([PRIVATE_GRANT, audienceB]);
+      expect(await grantOf(two)).toEqual([PRIVATE_GRANT, "org"]);
+      // The report the durable audit row is built from describes what Postgres
+      // actually did — asserted here, where both sides are real.
+      expect(report.widened).toEqual([
+        { rowId: one, added: [audienceB] },
+        { rowId: two, added: ["org"] },
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "commits both promote statements in one publish and counts each row once",
+    async () => {
+      // The adapter sums `rowCount` across two UPDATEs. Elsewhere only the
+      // doubles exercise that split, and a double always agrees with itself —
+      // only a real database proves the two statements sum to the row count.
+      const ws = "ws-c3-mixed";
+      const publicEp = await seedEpisode(ws, "mixed-public", ["org"]);
+      const privateEp = await seedEpisode(ws, "mixed-private", [PRIVATE_GRANT]);
+      const plain = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: publicEp,
+        subject: "a-plain",
+        visibleTo: ["org"],
+      });
+      const wide = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "b-wide",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, plain, publicEp);
+      await seedProvenanceEdge(ws, wide, privateEp);
+      await seedProvenanceEdge(ws, wide, publicEp);
+
+      expect((await publish(ws)).promoted).toBe(2);
+      expect(await statusOf(plain)).toBe("published");
+      expect(await statusOf(wide)).toBe("published");
+      expect(await grantOf(plain)).toEqual(["org"]);
+      expect(await grantOf(wide)).toEqual([PRIVATE_GRANT, "org"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not rewrite an ALREADY-PUBLISHED fact's grant on a later publish",
+    async () => {
+      // ADR-0036 §T5 makes a grant an immutable per-version snapshot; the gate
+      // is the one moment it is computed. New evidence arriving after a fact is
+      // published must not retroactively re-open it — that is supersession's
+      // job (M2), and it is what the `status = 'draft'` predicate on the
+      // widening UPDATE is holding shut.
+      const ws = "ws-c3-immutable";
+      const privateEp = await seedEpisode(ws, "imm-private", [PRIVATE_GRANT]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "sealed",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, fact, privateEp);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT]);
+
+      // Now a public episode corroborates the already-published claim.
+      const publicEp = await seedEpisode(ws, "imm-public", ["org"]);
+      await seedProvenanceEdge(ws, fact, publicEp);
+
+      expect((await publish(ws)).promoted).toBe(0);
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "preserves a NULL element through the jsonb round-trip the widening does",
+    async () => {
+      // `visible_to` may legally hold NULL alongside a usable token
+      // (`chk_brain_facts_grant_nonempty` counts only the usable ones), and the
+      // widening statement is the one write that sends an existing grant OUT to
+      // JSON and back. A round-trip that dropped or stringified the NULL would
+      // be a silent rewrite of a row the publish was only supposed to extend.
+      const ws = "ws-c3-null";
+      const privateEp = await seedEpisode(ws, "null-private", [PRIVATE_GRANT]);
+      const publicEp = await seedEpisode(ws, "null-public", ["org"]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "ragged",
+        visibleTo: [PRIVATE_GRANT, null],
+      });
+      await seedProvenanceEdge(ws, fact, privateEp);
+      await seedProvenanceEdge(ws, fact, publicEp);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT, null, "org"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "cannot be fed another tenant's episode — the edge itself is unstorable",
+    async () => {
+      // The widening query is workspace-scoped on both sides of its join, but
+      // the primary guarantee is structural: `brain_edges`' composite FKs mean
+      // a cross-tenant evidence edge never lands, so there is no such row for
+      // the query to be careless about. Asserted here because "the SQL has a
+      // predicate" is a weaker claim than "the state is unrepresentable".
+      const wsA = "ws-c3-tenant-a";
+      const wsB = "ws-c3-tenant-b";
+      const epA = await seedEpisode(wsA, "tenant-a", [PRIVATE_GRANT]);
+      const factA = await seedDraftFact({
+        workspaceId: wsA,
+        episodeId: epA,
+        subject: "theirs",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      const epB = await seedEpisode(wsB, "tenant-b", ["org"]);
+
+      await expect(
+        pool.query(
+          `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+           VALUES ($1, 'provenance', $2::uuid, $3::uuid)`,
+          [wsA, factA, epB],
+        ),
+      ).rejects.toThrow(/foreign key|violates/i);
+
+      expect((await publish(wsA)).promoted).toBe(1);
+      expect(await grantOf(factA)).toEqual([PRIVATE_GRANT]);
     },
     PG_TEST_TIMEOUT_MS,
   );

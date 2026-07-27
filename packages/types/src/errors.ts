@@ -28,6 +28,17 @@ export const CHAT_ERROR_CODES = [
   "conversation_budget_exceeded",
   "configuration_error",
   "no_datasource",
+  // #4826 — the workspace-bound counterpart of `no_datasource`. `no_datasource`
+  // means "no analytics datasource URL resolved": chat/query emit it as a 400 on
+  // the UNBOUND path (no bound workspace — normally self-hosted single-tenant),
+  // `/demo` emits it as a 400 unconditionally, and the SQL pipeline emits it as
+  // a 503 from dashboards/metrics/execute-sql. `no_capability` means "this
+  // WORKSPACE has no datasource AND no knowledge collections AND no brain
+  // content" — the only shape that genuinely has nothing for the agent to serve
+  // — and is only ever a 400 from the workspace-bound chat gate. Kept distinct
+  // because the remedies differ: one is an operator env var, the other is an
+  // in-product onboarding step.
+  "no_capability",
   "invalid_request",
   "provider_model_not_found",
   "provider_auth_error",
@@ -144,6 +155,7 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   session_expired: false,
   configuration_error: false,
   no_datasource: false,
+  no_capability: false,
   invalid_request: false,
   provider_model_not_found: false,
   provider_auth_error: false,
@@ -700,6 +712,9 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     case "no_datasource":
       return { title: "No data source configured.", detail: serverMessage, code: rawCode, retryable, requestId };
+
+    case "no_capability":
+      return { title: "This workspace has no data yet.", detail: serverMessage, code: rawCode, retryable, requestId };
 
     case "invalid_request":
       return { title: "Invalid request.", detail: serverMessage, code: rawCode, retryable, requestId };

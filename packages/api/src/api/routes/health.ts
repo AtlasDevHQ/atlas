@@ -18,6 +18,7 @@ import {
 import { getWhitelistedTables } from "@atlas/api/lib/semantic";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getExploreBackendType, getActiveSandboxPluginId } from "@atlas/api/lib/tools/explore";
+import { BACKEND_ISOLATION } from "@atlas/api/lib/tools/backends/selection";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
@@ -625,12 +626,20 @@ health.openapi(healthRoute, async (c) => {
         status: schedulerEnabled ? "healthy" as const : "disabled" as const,
         lastCheckedAt: now,
       },
-      // just-bash means no isolation — report degraded so operators know
+      // An unsandboxed backend means no isolation — report degraded so operators
+      // know. Posture comes from BACKEND_ISOLATION rather than a `=== "just-bash"`
+      // comparison, so a future unsandboxed backend cannot report itself healthy
+      // by not being named here (#4824).
       sandbox: {
-        status: exploreBackend === "just-bash" ? "degraded" as const : "healthy" as const,
+        status:
+          BACKEND_ISOLATION[exploreBackend] === "unsandboxed"
+            ? "degraded" as const
+            : "healthy" as const,
         backend: exploreBackend,
         lastCheckedAt: now,
-        ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
+        ...(BACKEND_ISOLATION[exploreBackend] === "unsandboxed" && {
+          message: `No sandbox isolation — using ${exploreBackend} fallback`,
+        }),
       },
       plugins: pluginsComponent,
       backups: backupsComponent,
@@ -702,7 +711,10 @@ health.openapi(healthRoute, async (c) => {
             },
         explore: {
           backend: exploreBackend,
-          isolated: exploreBackend !== "just-bash",
+          // `!== "unsandboxed"` (not `=== "isolated"`) so a plugin backend keeps
+          // reporting isolated:true as it always has — its `isolationVerified:
+          // false` below is what says Atlas has not confirmed the claim.
+          isolated: BACKEND_ISOLATION[exploreBackend] !== "unsandboxed",
           ...(exploreBackend === "plugin" && { isolationVerified: false }),
           ...(() => {
             const pluginId = exploreBackend === "plugin" ? getActiveSandboxPluginId() : null;

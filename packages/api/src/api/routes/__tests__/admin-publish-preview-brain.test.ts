@@ -29,6 +29,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { buildInternalDbMockDefaults } from "@atlas/api/__mocks__/api-test-mocks";
+import { brainFactsCountSql } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 
 const WS = "ws-preview-brain";
 
@@ -89,7 +90,7 @@ void mock.module("@atlas/api/lib/brain/reader-context", () => ({
   },
 }));
 
-const { loadBrainFactSegment } = await import("../admin-publish-preview");
+const { buildPreview, loadBrainFactSegment } = await import("../admin-publish-preview");
 
 beforeEach(() => {
   queries = [];
@@ -121,10 +122,6 @@ describe("the ordinary path", () => {
   });
 
   it("keeps `shown + withheld` equal to the workspace draft count", async () => {
-    // THE anchoring invariant. The unscoped half comes from the same statement
-    // as `/api/v1/mode` draftCounts.brainFacts, so the modal's arithmetic
-    // matches the pending badge by construction — not because two queries
-    // happen to agree.
     workspaceDraftCount = 32;
     visibleRows = Array.from({ length: 26 }, (_, i) => ({
       id: `f${i}`,
@@ -135,6 +132,25 @@ describe("the ordinary path", () => {
     const result = await segment();
     expect(result.rows.length + result.withheld).toBe(32);
     expect(result.withheld).toBe(6); // the 26 / 32 soak reading
+  });
+
+  it("anchors the unscoped half to the statement behind the pending badge", async () => {
+    // THE anchoring invariant, and the arithmetic above does NOT pin it —
+    // `shown + withheld === total` is true by the formula for any `total`. What
+    // matters is WHICH total: `brainFactsCountSql` is the same statement
+    // `/api/v1/mode` draftCounts.brainFacts uses, so the modal's numbers match
+    // the pending badge by construction rather than by two queries happening to
+    // agree.
+    //
+    // Exact equality, not a substring: a hand-rolled count that merely
+    // contained "COUNT(*)::int AS n" would satisfy the dispatch in this file's
+    // own double. Concretely, one that dropped `AND invalidated_at IS NULL`
+    // while the label projection kept it would silently report retracted drafts
+    // as facts hidden from the admin.
+    await segment();
+    const countQuery = queries.find((q) => q.sql.includes("COUNT(*)::int AS n"))!;
+    expect(countQuery.sql).toBe(brainFactsCountSql("$1"));
+    expect(countQuery.params).toEqual([WS]);
   });
 
   it("gates the label projection but not the count", async () => {
@@ -229,8 +245,40 @@ describe("what must NOT be degraded", () => {
   it("refuses to report a scope it could not count", async () => {
     // Silently treating an unreadable count as 0 drops the notice and puts
     // "Publish all (N)" on a button that promotes more — #4825's defect, with
-    // no trace, exactly when the count query is misbehaving.
-    workspaceDraftCount = undefined;
-    await expect(segment()).rejects.toThrow(/did not read back as a number/);
+    // no trace, exactly when the count query is misbehaving. Both arms of the
+    // guard: an absent row, and a value that will not read back.
+    for (const bad of [undefined, "abc", -1, null]) {
+      workspaceDraftCount = bad;
+      await expect(segment()).rejects.toThrow(/did not read back as a number/);
+    }
+  });
+});
+
+describe("the wire mapping", () => {
+  it("carries the withheld count and its cause onto the response", async () => {
+    // Hono does not validate responses and this route runs no `checked()`, so
+    // nothing but this catches a dropped field or one wired to `rows.length`.
+    // The web tests hard-code the wire shape in their fetch mock, so they
+    // cannot see it either.
+    workspaceDraftCount = 9;
+    visibleRows = [{ id: "f1", label: "Acme uses Snowflake", updated_at: new Date(0) }];
+
+    const preview = await buildPreview(WS, "managed", { id: "user-1" } as never, "test-req");
+    expect(preview.brainFacts).toHaveLength(1);
+    expect(preview.brainFactsWithheld).toBe(8);
+    expect(preview.brainFactsScopeUnavailable).toBe(false);
+    // Distinct values throughout, so a mapping that crossed the two fields — or
+    // reached for `rows.length` — cannot coincide with the right answer.
+    expect(preview.brainFactsWithheld).not.toBe(preview.brainFacts.length);
+  });
+
+  it("carries the degraded cause through, not just the number", async () => {
+    readerMode = "identity-error";
+    workspaceDraftCount = 4;
+
+    const preview = await buildPreview(WS, "managed", { id: "user-1" } as never, "test-req");
+    expect(preview.brainFacts).toEqual([]);
+    expect(preview.brainFactsWithheld).toBe(4);
+    expect(preview.brainFactsScopeUnavailable).toBe(true);
   });
 });

@@ -744,6 +744,59 @@ describe("hidden-backlog disclosure (#4825)", () => {
     expect(view.container.textContent ?? "").not.toContain("chat-channel");
   });
 
+  test("names a configured audience, and explains each withheld kind", async () => {
+    // The nameable arm has no coverage otherwise — every other fixture is `org`
+    // (which takes the "Everyone in the workspace" branch) or `discovered`. A
+    // regression that opaque-handled EVERYTHING would pass every other test in
+    // this file while making the breakdown useless, which is the same
+    // "satisfied by a component that discloses nothing" failure the API-side
+    // header warns about, one layer out.
+    const bucket = (over: Record<string, unknown>) => ({
+      awaitingReview: 1,
+      published: 0,
+      retracted: 0,
+      provisional: 0,
+      inTension: 0,
+      ...over,
+    });
+    oversight = {
+      buckets: [
+        bucket({
+          key: "audience:chat-channel:slack:C0PRIVATE1",
+          kind: "audience",
+          labelPolicy: "configured",
+          label: "audience:chat-channel:slack:C0PRIVATE1",
+        }),
+        bucket({ key: "discovered-1", kind: "user", labelPolicy: "discovered" }),
+        bucket({ key: "discovered-2", kind: "malformed", labelPolicy: "discovered" }),
+      ],
+      workspaceTotals: {
+        awaitingReview: 3,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 3,
+      countsConsistent: true,
+      distinctAudiences: 3,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("Workspace breakdown"));
+    clickButton(view, /Workspace breakdown/i);
+    // The channel the admin configured IS named — that is the whole point of
+    // the configured/discovered split.
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "audience:chat-channel:slack:C0PRIVATE1",
+      ),
+    );
+    // And the two withheld kinds render their handles, not their tokens.
+    expect(view.container.textContent ?? "").toContain("discovered-1");
+    expect(view.container.textContent ?? "").toContain("discovered-2");
+  });
+
   test("refuses to render a withheld bucket that smuggles its label", async () => {
     // The HOSTILE payload — a `discovered` bucket carrying the very id the
     // policy withheld, i.e. what a producer regressed to a flat

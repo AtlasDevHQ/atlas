@@ -127,9 +127,11 @@ export function brainFactStatusClause(mode: AtlasMode | undefined, alias: string
  * the same rows.
  *
  * Unbounded by design: the row set is exactly what `draftCounts.brainFacts`
- * already reports and what the publish preview already lists in full, so a
- * LIMIT here would silently promote a prefix — the one outcome a review gate
- * must never produce.
+ * already reports, and what the publish preview accounts for in full — since
+ * #4825 that is `brainFacts` PLUS `brainFactsWithheld`, because the preview
+ * scoped its LABELS to the reader while leaving its arithmetic workspace-wide.
+ * So a LIMIT here would silently promote a prefix — the one outcome a review
+ * gate must never produce.
  */
 export const DRAFT_FACTS_SQL = `
   SELECT id::text AS id,

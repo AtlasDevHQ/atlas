@@ -6,17 +6,19 @@
  * do:
  *
  *   - **no content reaches the wire.** Not "the happy path returns numbers" —
- *     that proves nothing. The pin walks the whole serialized payload looking
- *     for the claim text of a fact the reader cannot see, so a future producer
- *     that helpfully attached an SPO fails here rather than at whichever
- *     consumer noticed first.
+ *     that proves nothing. The pin sweeps the serialized payload twice: for the
+ *     projection KEY NAMES a producer might have wired through, and for VALUES
+ *     smuggled under an innocuous key. The claim-text sweep against real seeded
+ *     rows is `oversight-pg.test.ts`'s job — that is the layer where the text
+ *     actually exists.
  *   - **the counts are NOT reader-scoped.** A view that silently agreed with
  *     `/summary` would restore the exact false all-clear the issue recorded, and
  *     would pass any test that only checked the shape. Asserted by inspecting
  *     the emitted SQL: the bucket statement must carry no `visible_to &&`.
- *   - **a discovered audience is never named.** Both halves: the label is null
- *     AND the withheld id does not appear anywhere in the response, including
- *     in the ordering.
+ *   - **a discovered audience is never named.** Both halves: the withheld arm
+ *     carries no `label` PROPERTY at all (not a null one — `.label` does not
+ *     typecheck there), AND the withheld id does not appear anywhere in the
+ *     response, including in the ordering.
  *   - **a configured audience IS named** — otherwise the label rule would be
  *     satisfied by a component that opaque-handled everything, which discloses
  *     nothing and helps nobody.
@@ -87,8 +89,9 @@ interface ReaderOptions {
   totals?: Record<string, number>;
   /** Overrides `totals` entirely — `[]` models a totals aggregate returning no row. */
   totalsRows?: readonly unknown[];
-  reviewable?: number;
-  distinctTokens?: number;
+  /** `unknown` so a test can model query drift — a value that will not read back. */
+  reviewable?: unknown;
+  distinctTokens?: unknown;
   configs?: Array<Record<string, unknown> | null>;
   seen?: string[];
   /** Params of the install-config read, recorded for assertion AFTER the call. */
@@ -119,14 +122,21 @@ function reader(options: ReaderOptions): BrainCandidateReader {
       if (sql.includes("COUNT(*)::int AS n")) {
         return { rows: [{ n: options.reviewable ?? 0 }] };
       }
+      // MERGED over a complete zero baseline, not substituted for it. A partial
+      // `totals` would leave the other four columns `undefined`, which the
+      // producer correctly treats as query drift — so every test that names one
+      // counter would trip `countsConsistent: false` and the fixture, not the
+      // code, would be what the assertion was reading. Drift is exercised
+      // deliberately via an explicit non-numeric value instead.
       return {
         rows: options.totalsRows ?? [
-          options.totals ?? {
+          {
             awaiting_review: 0,
             published: 0,
             retracted: 0,
             provisional: 0,
             in_tension: 0,
+            ...options.totals,
           },
         ],
       };
@@ -403,32 +413,44 @@ describe("loadFactOversight", () => {
     expect(keys.every((k) => k.startsWith("discovered-"))).toBe(true);
   });
 
-  it("keeps a withheld bucket's handle stable when only the counts move", async () => {
-    // The documented reason `orderingKey` hashes instead of reusing the display
-    // sort. Swapping it for the count order passes every other test in this
-    // file and makes `discovered-2` mean a different audience between two
-    // glances at the same screen.
-    const tokens = ["user:usr_a", "user:usr_b", "user:usr_c"];
+  it("keeps a withheld bucket's handle stable across count AND row-order changes", async () => {
+    // The documented reason `orderingKey` hashes rather than reusing the
+    // display sort or the row order.
+    //
+    // Getting this test right is fiddly, because the response deliberately
+    // carries no token — so the audience has to be identified by something
+    // else. Each token gets a DISTINCT, STABLE count, which is then the join
+    // key: `count -> key` must be identical across runs.
+    //
+    // Both confounders are varied at once. Asserting only on the key SET is
+    // vacuous (any 3 withheld buckets yield {discovered-1,2,3}); varying only
+    // the counts misses an insertion-order implementation, and in production
+    // the SQL is `ORDER BY awaiting_review DESC`, so insertion order IS count
+    // order — the exact instability the hash exists to prevent.
+    const counts = new Map([
+      ["user:usr_a", 7],
+      ["user:usr_b", 19],
+      ["user:usr_c", 43],
+    ]);
+    const rows = (order: readonly string[]) =>
+      order.map((token) => ({ token, awaiting_review: counts.get(token)! }));
+
     const first = await loadFactOversight(
-      reader({ buckets: tokens.map((token, i) => ({ token, awaiting_review: i + 1 })) }),
+      reader({ buckets: rows(["user:usr_a", "user:usr_b", "user:usr_c"]) }),
       ctx(),
     );
     const second = await loadFactOversight(
-      // Same token set, counts reversed.
-      reader({ buckets: tokens.map((token, i) => ({ token, awaiting_review: 30 - i })) }),
+      // Same tokens, same counts, DIFFERENT row order.
+      reader({ buckets: rows(["user:usr_c", "user:usr_a", "user:usr_b"]) }),
       ctx(),
     );
 
-    const keysByCount = (r: Awaited<ReturnType<typeof loadFactOversight>>) =>
-      r.buckets.map((b) => [b.awaitingReview, b.key] as const);
-    // The handle a given AUDIENCE gets must not move. Counts identify the
-    // audience here because each token has a distinct one in both runs.
-    expect(new Set(first.buckets.map((b) => b.key))).toEqual(
-      new Set(second.buckets.map((b) => b.key)),
-    );
-    expect(keysByCount(first).map(([, k]) => k)).not.toEqual(
-      keysByCount(second).map(([, k]) => k),
-    );
+    const pairing = (r: Awaited<ReturnType<typeof loadFactOversight>>) =>
+      Object.fromEntries(r.buckets.map((b) => [b.awaitingReview, b.key]));
+    expect(pairing(first)).toEqual(pairing(second));
+    // Non-vacuity: the pairing has to be a real mapping, not three identical
+    // handles.
+    expect(new Set(Object.values(pairing(first))).size).toBe(3);
   });
 
   it("orders tied withheld buckets by their handle, never by their own text", async () => {
@@ -436,6 +458,13 @@ describe("loadFactOversight", () => {
     // display order is observable and would leak the alphabetical position of
     // an id this surface just refused to print. With the counts tied, that
     // tiebreak is the only thing deciding order — so this is where it shows.
+    //
+    // NOTE the tokens and `WS` are load-bearing: this is non-vacuous because
+    // `sha256("ws-oversight-test:user:…")` happens to order these three as
+    // mmm, aaa, zzz, so an alphabetical regression produces a different
+    // sequence. Renaming either would silently make it vacuous — re-check the
+    // mutation (swap the tiebreak for `a.token.localeCompare(b.token)` and
+    // confirm this test FAILS) if you touch them.
     const result = await loadFactOversight(
       reader({
         buckets: [
@@ -509,11 +538,15 @@ describe("loadFactOversight", () => {
       token: `user:usr_${i}`,
       awaiting_review: 1,
     }));
+    // 337 is deliberately neither 200 (the cap) nor 201 (the rows the query
+    // returned). With all three equal, an implementation that skipped the
+    // uncapped COUNT and used `bucketRows.length` passes — and a workspace with
+    // 500 audiences would then report "across 201 audiences" as fact.
     const result = await loadFactOversight(
       reader({
         buckets,
-        totals: { awaiting_review: OVERSIGHT_BUCKET_MAX + 1 },
-        distinctTokens: OVERSIGHT_BUCKET_MAX + 1,
+        totals: { awaiting_review: 900 },
+        distinctTokens: 337,
       }),
       ctx(),
     );
@@ -521,10 +554,29 @@ describe("loadFactOversight", () => {
     expect(result.buckets).toHaveLength(OVERSIGHT_BUCKET_MAX);
     // The totals are per FACT, not a rollup of the buckets, so the top-line
     // disclosure has to survive a clipped breakdown intact.
-    expect(result.workspaceTotals.awaitingReview).toBe(OVERSIGHT_BUCKET_MAX + 1);
+    expect(result.workspaceTotals.awaitingReview).toBe(900);
     // And the cardinality is the REAL one, not `buckets.length` — otherwise the
     // panel prints "across 200 audiences" as a fact.
-    expect(result.distinctAudiences).toBe(OVERSIGHT_BUCKET_MAX + 1);
+    expect(result.distinctAudiences).toBe(337);
+  });
+
+  it("never reports fewer audiences than the buckets it is shipping", async () => {
+    // The buckets ARE a subset of the distinct tokens, so a smaller answer can
+    // only be `count()` degrading this one statement to 0 — which would print
+    // "across 0 audiences" over a visible 200-row table, beneath a banner
+    // promising the count is exact. Understating is the reassuring direction
+    // for a cardinality, which inverts `count()`'s usual posture.
+    const buckets = Array.from({ length: OVERSIGHT_BUCKET_MAX + 1 }, (_, i) => ({
+      token: `user:usr_${i}`,
+      awaiting_review: 1,
+    }));
+    const result = await loadFactOversight(
+      reader({ buckets, distinctTokens: "drifted" }),
+      ctx(),
+    );
+    expect(result.distinctAudiences).toBe(OVERSIGHT_BUCKET_MAX);
+    expect(result.distinctAudiences).toBeGreaterThanOrEqual(result.buckets.length);
+    expect(result.countsConsistent).toBe(false);
   });
 
   it("skips the cardinality round trip when nothing was clipped", async () => {
@@ -563,6 +615,67 @@ describe("loadFactOversight", () => {
       ctx(),
     );
     expect(result.countsConsistent).toBe(true);
+  });
+
+  it("treats EQUAL counts as consistent — the modal case, not an edge case", async () => {
+    // The `<=` boundary. A workspace whose facts are all `org`-granted has
+    // reviewable == total, and an empty one has 0 == 0 — so under a `<` the
+    // panel would tell essentially EVERY healthy workspace that two counts
+    // disagreed, permanently suppressing the disclosure this feature exists to
+    // make. Both strict-inequality cases above survive that mutation; these do
+    // not.
+    for (const n of [26, 0]) {
+      const result = await loadFactOversight(
+        reader({ totals: { awaiting_review: n }, reviewable: n }),
+        ctx(),
+      );
+      expect(result.countsConsistent).toBe(true);
+      expect(result.workspaceTotals.awaitingReview - result.reviewableAwaitingReview).toBe(0);
+    }
+  });
+
+  it("marks the delta untrustworthy when a counter did not read back", async () => {
+    // 0 is the REASSURING answer here, so a silently-degraded counter does not
+    // understate, it fabricates: a scoped 0 against a real 32 invents a hidden
+    // backlog and attributes it to private channels. The log alone cannot stop
+    // that — the flag has to travel.
+    const result = await loadFactOversight(
+      reader({ totals: { awaiting_review: 32 }, reviewable: "not-a-number" }),
+      ctx(),
+    );
+    expect(result.reviewableAwaitingReview).toBe(0);
+    expect(result.countsConsistent).toBe(false);
+  });
+
+  it("marks the delta untrustworthy when a totals column drifts", async () => {
+    const result = await loadFactOversight(
+      reader({ totals: { awaiting_review: -1 } }),
+      ctx(),
+    );
+    expect(result.workspaceTotals.awaitingReview).toBe(0);
+    expect(result.countsConsistent).toBe(false);
+  });
+
+  it("drops a drifted bucket row rather than merging it into `malformed`", async () => {
+    // The `?? ""` this code deliberately does NOT do. Under it, two unrelated
+    // drifted rows both become the token `''`, merge into one `malformed`
+    // bucket, collide on one `discovered-N` handle, and render as a single row
+    // — an under-report from a surface whose product is a breakdown, and one
+    // the "no display handle" throw cannot catch because they share a token.
+    const result = await loadFactOversight(
+      reader({
+        buckets: [
+          { token: 1 as unknown as string, awaiting_review: 1 },
+          {} as unknown as BucketRow,
+          { token: "org", awaiting_review: 5 },
+        ],
+      }),
+      ctx(),
+    );
+    expect(result.buckets).toHaveLength(1);
+    expect(result.buckets[0]?.kind).toBe("org");
+    // And the under-report is disclosed rather than silent.
+    expect(result.countsConsistent).toBe(false);
   });
 
   it("refuses to serve all-zero totals when the totals row is missing", async () => {

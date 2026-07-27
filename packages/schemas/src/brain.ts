@@ -360,19 +360,57 @@ export const BrainFactOversightBucketSchema = z.discriminatedUnion("labelPolicy"
   }),
 ]) satisfies z.ZodType<BrainFactOversightBucket, unknown>;
 
-/**
- * The strict server-side contract. `admin-brain-facts.ts` parses every response
- * through this before it goes out, so a producer that broke the no-content rule
- * gets a 500 with a requestId instead of shipping.
- */
-export const BrainFactOversightSchema = z.strictObject({
+const OVERSIGHT_ENVELOPE_FIELDS = {
   buckets: z.array(BrainFactOversightBucketSchema),
   workspaceTotals: BrainFactOversightTotalsSchema,
   reviewableAwaitingReview: z.number().int().nonnegative(),
   countsConsistent: z.boolean(),
   distinctAudiences: z.number().int().nonnegative(),
   bucketsTruncated: z.boolean(),
-}) satisfies z.ZodType<BrainFactOversight, unknown>;
+} as const;
+
+/**
+ * The strict server-side contract. `admin-brain-facts.ts` parses every response
+ * through this before it goes out, so a producer that broke the no-content rule
+ * gets a 500 with a requestId instead of shipping.
+ *
+ * ## The refinements, and why only the server gets them
+ *
+ * `countsConsistent` and `distinctAudiences` are CROSS-CHECKS whose own operands
+ * are on the wire beside them, so each admits a state where the flag and the
+ * numbers contradict each other — and the panel trusts the flag while computing
+ * the delta from the numbers, which would render a NEGATIVE hidden backlog. The
+ * refinements make a producer that got either wrong a 500 with a requestId,
+ * which is the posture the rest of this surface keeps.
+ *
+ * They are deliberately absent from the client schema. There, a contradiction
+ * is somebody else's already-shipped bug, and refusing to render would take the
+ * hidden-backlog alert down over it — failing closed for consistency at the
+ * cost of failing open for the disclosure.
+ */
+export const BrainFactOversightSchema = z
+  .strictObject(OVERSIGHT_ENVELOPE_FIELDS)
+  .superRefine((value, ctx) => {
+    if (
+      value.countsConsistent &&
+      value.reviewableAwaitingReview > value.workspaceTotals.awaitingReview
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["countsConsistent"],
+        message:
+          "countsConsistent is true but the reader-scoped draft count exceeds the workspace count — the delta this surface exists to report would render negative",
+      });
+    }
+    if (value.distinctAudiences < value.buckets.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["distinctAudiences"],
+        message:
+          "distinctAudiences is below the number of buckets shipped — the buckets are a subset of the distinct tokens, so this understates a cardinality the client renders as exact",
+      });
+    }
+  }) satisfies z.ZodType<BrainFactOversight, unknown>;
 
 /**
  * The BROWSER's parser. Same fields, additive-tolerant at the envelope.
@@ -389,12 +427,12 @@ export const BrainFactOversightSchema = z.strictObject({
  * losing the breakdown during a deploy window is not. Different failure costs,
  * different postures — the same reason `publish-modal.tsx` types
  * `brainFactsWithheld` optional.
+ *
+ * The honest limit of the split: an additive field INSIDE a bucket still fails
+ * the whole parse, so the tolerance buys envelope growth only. That outcome is
+ * a loud error Alert rather than a false all-clear, so it is the right way to
+ * fail — just narrower than "additive changes are safe".
  */
-export const BrainFactOversightClientSchema = z.object({
-  buckets: z.array(BrainFactOversightBucketSchema),
-  workspaceTotals: BrainFactOversightTotalsSchema,
-  reviewableAwaitingReview: z.number().int().nonnegative(),
-  countsConsistent: z.boolean(),
-  distinctAudiences: z.number().int().nonnegative(),
-  bucketsTruncated: z.boolean(),
-}) satisfies z.ZodType<BrainFactOversight, unknown>;
+export const BrainFactOversightClientSchema = z.object(
+  OVERSIGHT_ENVELOPE_FIELDS,
+) satisfies z.ZodType<BrainFactOversight, unknown>;

@@ -40,9 +40,10 @@ import {
  *
  * It never widens what anyone may read. Everything below is a number, and the
  * only text is a grant token the API already decided was disclosable — see
- * `lib/brain/oversight.ts` for that rule. A withheld audience arrives as
- * `label: null` and renders as an opaque handle, so the panel cannot leak by
- * forgetting to check a flag: there is nothing in the payload to leak.
+ * `lib/brain/oversight.ts` for that rule. A withheld audience arrives with **no
+ * `label` field at all** — the wire type's `discovered` arm cannot carry one —
+ * and renders as an opaque handle. So the panel cannot leak by forgetting to
+ * check a flag: there is nothing in the payload to leak.
  *
  * ## Collapsed by default, and the delta is not
  *
@@ -214,12 +215,12 @@ export function OversightPanel() {
 /**
  * One audience's row.
  *
- * Branches on `labelPolicy`, the wire type's DISCRIMINANT — not on
- * `label === null`. The two are equivalent today and only one stays that way:
- * `BrainFactOversightBucket`'s withheld arm has no `label` property at all, so
- * `bucket.label` does not typecheck in this branch, and a payload that smuggled
- * one cannot be rendered by accident. The label is whatever the API sent or an
- * explanation of why it sent none — never a reconstruction.
+ * Branches on `labelPolicy`, the wire type's DISCRIMINANT. `label === null` is
+ * not even expressible: `BrainFactOversightBucket`'s withheld arm has no `label`
+ * property at all, so `bucket.label` does not typecheck in this branch, and a
+ * payload that smuggled one cannot be rendered by accident. The label is
+ * whatever the API sent or an explanation of why it sent none — never a
+ * reconstruction.
  */
 function BucketRow({ bucket }: { bucket: BrainFactOversightBucket }) {
   return (

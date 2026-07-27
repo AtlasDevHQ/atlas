@@ -22,10 +22,14 @@
  *
  * Mechanically that means: no query here selects `subject`, `predicate`,
  * `object`, `provenance`, `source_episode_id`, or anything off `brain_episodes`.
- * The only non-numeric value that reaches the wire is a GRANT TOKEN, and only
- * when {@link classifyToken} rules it disclosable. `oversight.test.ts` pins both
- * halves, because a `z.strictObject` on the wire schema can reject an unexpected
- * KEY but cannot tell a channel id from a sentence.
+ *
+ * TWO non-numeric values reach the wire, and an auditor must check both:
+ * `label`, only when {@link classifyToken} rules the token disclosable; and
+ * `key`, which is that same token on the disclosable arms and a positional
+ * handle (`discovered-N`) on the withheld one. Everything else is a number or a
+ * closed enum. `oversight.test.ts` pins both, because a `z.strictObject` on the
+ * wire schema can reject an unexpected KEY but cannot tell a channel id from a
+ * sentence.
  *
  * ## Why the aggregate is deliberately NOT ACL-scoped
  *
@@ -394,35 +398,71 @@ export const OVERSIGHT_DISTINCT_TOKENS_SQL = `SELECT COUNT(DISTINCT g.token)::in
 // ---------------------------------------------------------------------------
 
 /**
- * A counter off `pg`, or 0 — and LOUDLY 0.
+ * Set when any counter failed to read back — see {@link count}.
+ *
+ * A mutable cell rather than a result union because `count` is called from three
+ * places over a dozen fields, and threading a wrapper through all of them would
+ * bury the one line that matters. It reaches the wire as
+ * `countsConsistent: false`.
+ */
+interface DegradedCounters {
+  hit: boolean;
+}
+
+/**
+ * A counter off `pg`, or 0 — and loudly, VISIBLY 0.
  *
  * Every column here is `::int` over a `COUNT(*)`, so a value that will not read
- * back as a non-negative number is query drift, not data. The fallback direction
- * matters more than usual: 0 is the REASSURING answer on this surface, so a
- * silent coercion would default the whole disclosure to "nothing is hidden"
- * on any unexpected input — inverting the fail-closed posture the rest of this
- * module keeps. `loadConfiguredChannels` degrades toward MORE opacity; this must
- * not degrade toward less alarm without saying so.
+ * back as a non-negative number is query drift, not data.
+ *
+ * ## Why a log is not enough, and this clears `countsConsistent`
+ *
+ * The fallback direction is the reassuring one, and this surface's whole product
+ * is a single delta — so a silent 0 does not merely understate, it FABRICATES.
+ * Both directions are reachable and both are worse than saying nothing:
+ *
+ *   - `reviewableAwaitingReview` degrades to 0 against a real 32 ⇒ the panel
+ *     announces "32 drafts are not in your queue. They belong to audiences you
+ *     are not part of" — a confident, invented explanation for a column rename.
+ *   - every counter degrades to 0 ⇒ no alert renders at all and the table is
+ *     zeros. A complete, confident, false all-clear on the one surface that
+ *     exists to prevent one.
+ *
+ * So the degradation TRAVELS: `degraded.hit` clears `countsConsistent`, and the
+ * panel's existing "can't work out the delta right now" arm covers it with no
+ * second wire field. It is not a throw, unlike the missing-totals-row case — a
+ * drifted column still yields a usable per-audience breakdown, and taking the
+ * page down would remove more disclosure than it protects.
  */
-function count(value: unknown, field: string, meta: CountMeta): number {
+function count(
+  value: unknown,
+  field: string,
+  meta: CountMeta,
+  degraded: DegradedCounters,
+): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n) || n < 0) {
+    degraded.hit = true;
     log.warn(
       { ...meta, field, rawType: typeof value },
-      "brain oversight: a counter did not read back as a non-negative number — reporting 0, which UNDERSTATES the workspace; the aggregate's query shape changed",
+      "brain oversight: a counter did not read back as a non-negative number — reporting 0 and marking the delta untrustworthy; the aggregate's query shape changed",
     );
     return 0;
   }
   return Math.trunc(n);
 }
 
-function totalsFrom(row: Record<string, unknown>, meta: CountMeta): BrainFactOversightTotals {
+function totalsFrom(
+  row: Record<string, unknown>,
+  meta: CountMeta,
+  degraded: DegradedCounters,
+): BrainFactOversightTotals {
   return {
-    awaitingReview: count(row.awaiting_review, "awaiting_review", meta),
-    published: count(row.published, "published", meta),
-    retracted: count(row.retracted, "retracted", meta),
-    provisional: count(row.provisional, "provisional", meta),
-    inTension: count(row.in_tension, "in_tension", meta),
+    awaitingReview: count(row.awaiting_review, "awaiting_review", meta, degraded),
+    published: count(row.published, "published", meta, degraded),
+    retracted: count(row.retracted, "retracted", meta, degraded),
+    provisional: count(row.provisional, "provisional", meta, degraded),
+    inTension: count(row.in_tension, "in_tension", meta, degraded),
   };
 }
 
@@ -515,6 +555,7 @@ export async function loadFactOversight(
   }
 
   const countMeta: CountMeta = { workspaceId, requestId };
+  const degraded: DegradedCounters = { hit: false };
   const raw: RawBucket[] = [];
   // A drifted row is DROPPED, not coerced — and counted, because a dropped
   // bucket is an under-report from a surface whose product is a breakdown. The
@@ -535,9 +576,13 @@ export async function loadFactOversight(
       continue;
     }
     const { kind, labelPolicy } = classifyToken(r.token, configured, countMeta);
-    raw.push({ token: r.token, kind, labelPolicy, ...totalsFrom(r, countMeta) });
+    raw.push({ token: r.token, kind, labelPolicy, ...totalsFrom(r, countMeta, degraded) });
   }
   if (droppedRows > 0) {
+    // A dropped bucket also makes `distinctAudiences` too small on the
+    // untruncated path (where it IS `buckets.length`), so the breakdown
+    // understates itself with no banner. Same wire signal as a drifted counter.
+    degraded.hit = true;
     log.warn(
       { workspaceId, requestId, droppedRows, kept: raw.length },
       "brain oversight: bucket rows came back without a readable `token` — they are missing from the breakdown, which therefore understates the workspace; the aggregate's query shape changed",
@@ -608,26 +653,48 @@ export async function loadFactOversight(
       `brain oversight: the workspace totals aggregate returned no row for workspace ${workspaceId} — the totals query shape changed`,
     );
   }
-  const workspaceTotals = totalsFrom(totalsRow as Record<string, unknown>, countMeta);
+  const workspaceTotals = totalsFrom(totalsRow as Record<string, unknown>, countMeta, degraded);
   const reviewableAwaitingReview = count(
     (reviewableResult.rows[0] as Record<string, unknown> | undefined)?.n,
     "reviewable_n",
     countMeta,
+    degraded,
   );
 
-  // The scoped count is a subset of the unscoped one at any single instant —
-  // but these are separate statements on separate connections (see the header),
-  // so a fact ingested between them that this reader CAN see legitimately
-  // inverts them. It is therefore a race, not proof of a bug, and the log says
-  // so; a persistent or large inversion is the part that means the two
-  // statements disagree about the workspace.
+  // The TRUE cardinality, uncapped — `buckets.length` stops being it the moment
+  // truncation bites, and the client must never infer one from the other.
   //
-  // What must NOT happen is silently clamping the delta to zero: that renders
-  // as "nothing is hidden from you", which is the pre-#4825 defect reproduced
-  // by its own fix. So the condition travels to the client as
-  // `countsConsistent` and the panel says it cannot compute the delta.
-  const countsConsistent = reviewableAwaitingReview <= workspaceTotals.awaitingReview;
-  if (!countsConsistent) {
+  // FLOORED at the number of buckets actually shipping. The buckets are a subset
+  // of the distinct tokens by construction, so a smaller answer can only come
+  // from `count()` degrading this one statement to 0 — and that would print
+  // "across 0 audiences" over a visible 200-row table, beneath a banner
+  // promising the count is exact. Note the direction: for a CARDINALITY,
+  // understating is the reassuring direction, which inverts `count()`'s usual
+  // posture. The floor is preferred to a throw because the breakdown is still
+  // usable and `degraded.hit` has already marked the delta untrustworthy —
+  // taking the page down would remove more disclosure than it protects.
+  const distinctAudiences = truncated
+    ? Math.max(await countDistinctTokens(db, workspaceId, countMeta, degraded), buckets.length)
+    : buckets.length;
+
+  // Two independent reasons the delta cannot be trusted, one wire signal.
+  //
+  //   1. A DEGRADED COUNTER. 0 is the reassuring answer, and it fabricates in
+  //      both directions: 0 on the scoped half invents a hidden backlog with a
+  //      confident false cause, 0 on the unscoped half erases a real one.
+  //   2. AN INVERSION. The scoped count is a subset of the unscoped one at any
+  //      single instant — but these are separate statements on separate
+  //      connections (see the header), so a fact ingested between them that this
+  //      reader CAN see legitimately inverts them. A race, not proof of a bug;
+  //      a persistent or large inversion is what means the two statements
+  //      disagree about the workspace.
+  //
+  // What must NOT happen in either case is silently clamping the delta to zero:
+  // that renders as "nothing is hidden from you", which is the pre-#4825 defect
+  // reproduced by its own fix. So the condition travels to the client and the
+  // panel says it cannot compute the delta.
+  const inverted = reviewableAwaitingReview > workspaceTotals.awaitingReview;
+  if (inverted) {
     log.warn(
       { workspaceId, requestId, reviewableAwaitingReview, workspaceTotals },
       "brain oversight: the reader-scoped draft count exceeds the workspace draft count — expected only as a brief race between two non-transactional statements; if it persists, the two statements disagree about the workspace and the hidden-backlog delta is not trustworthy",
@@ -638,11 +705,8 @@ export async function loadFactOversight(
     buckets,
     workspaceTotals,
     reviewableAwaitingReview,
-    countsConsistent,
-    // The TRUE cardinality, uncapped — `buckets.length` stops being it the
-    // moment truncation bites, and the client must never infer one from the
-    // other.
-    distinctAudiences: truncated ? await countDistinctTokens(db, workspaceId, countMeta) : buckets.length,
+    countsConsistent: !degraded.hit && !inverted,
+    distinctAudiences,
     bucketsTruncated: truncated,
   };
 }
@@ -659,11 +723,13 @@ async function countDistinctTokens(
   db: BrainCandidateReader,
   workspaceId: string,
   meta: CountMeta,
+  degraded: DegradedCounters,
 ): Promise<number> {
   const result = await db.query(OVERSIGHT_DISTINCT_TOKENS_SQL, [workspaceId]);
   return count(
     (result.rows[0] as Record<string, unknown> | undefined)?.n,
     "distinct_tokens",
     meta,
+    degraded,
   );
 }

@@ -313,6 +313,36 @@ describeIfPg("brain fact oversight aggregate (real Postgres)", () => {
   );
 
   it(
+    "keeps the preview's count and its labels agreeing about retracted drafts",
+    async () => {
+      // The anchoring invariant's live half. `brainFactsCountSql` and
+      // `brainFactPreviewSql` both exclude `invalidated_at IS NOT NULL`, and
+      // `withheld` is their DIFFERENCE — so if either dropped that predicate
+      // the modal would report retracted drafts as facts hidden from the admin
+      // (or as visible ones publish will never promote). The unit test pins the
+      // statement identity; only this pins that they agree against real rows.
+      const ws = "ws-oversight-retracted";
+      const ep = await seedEpisode(ws, "retracted");
+      await seedFact({ workspaceId: ws, episodeId: ep, subject: "live" });
+      await seedFact({ workspaceId: ws, episodeId: ep, subject: "gone", retracted: true });
+
+      const { rows: counted } = await pool.query<{ n: number }>(brainFactsCountSql("$1"), [ws]);
+      const acl = aclVisibilityClause(ctxFor(ws, []), {
+        table: "brain_facts",
+        alias: "f",
+        paramIndex: 1,
+      });
+      const { rows: shown } = await pool.query(brainFactPreviewSql(acl.sql), [...acl.params]);
+
+      expect(counted[0]!.n).toBe(1);
+      expect(shown).toHaveLength(1);
+      // Both saw the same one fact, so the modal reports nothing withheld.
+      expect(counted[0]!.n - shown.length).toBe(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "counts distinct tokens uncapped, so a clipped breakdown still reports its size",
     async () => {
       const ws = "ws-oversight-cardinality";

@@ -195,22 +195,40 @@ function toIso(value: Date | string | null | undefined): string {
   return new Date(0).toISOString();
 }
 
-/** The brain segment: reader-scoped labels plus the withheld remainder. */
-export interface BrainFactSegment {
-  readonly rows: readonly DbRow[];
-  readonly withheld: number;
-  /**
-   * True when Atlas could not work out what this reader may see, so `withheld`
-   * is "all of them" for an INFRASTRUCTURE reason rather than an ACL one.
-   *
-   * It exists because the copy differs, and the wrong copy is a lie. Without
-   * it the modal tells an admin who can read every fact in the workspace that
-   * all of them came from channels they are not a member of — a confident,
-   * fabricated explanation, printed directly above the publish button, with no
-   * hint that anything failed.
-   */
-  readonly scopeUnavailable: boolean;
-}
+/**
+ * The brain segment: reader-scoped labels plus the withheld remainder.
+ *
+ * A union on `scopeUnavailable` so "degraded means nothing was listed" is
+ * structural — the unavailable arm's `rows` is `readonly []`, which it always
+ * is in fact. Deliberately NOT the fuller treatment
+ * `BrainFactOversightBucket` gets: forgetting there discloses a private channel
+ * name, where forgetting here shows correctly-ACL-filtered rows beside the wrong
+ * explanatory sentence. There is no unscoped-rows path left — `brainFactPreviewSql`
+ * requires an interpolated `aclSql` — so a mis-set flag produces bad copy, never
+ * a disclosure. The sole consumer does `.rows.map(…)`, which typechecks on both
+ * arms unchanged, so this costs no branching at the call site.
+ */
+export type BrainFactSegment =
+  | {
+      /**
+       * Atlas could not work out what this reader may see, so `withheld` is
+       * "all of them" for an INFRASTRUCTURE reason rather than an ACL one.
+       *
+       * This arm exists because the copy differs, and the wrong copy is a lie:
+       * without it the modal tells an admin who can read every fact in the
+       * workspace that all of them came from channels they are not a member of
+       * — a confident, fabricated explanation, printed directly above the
+       * publish button, with no hint that anything failed.
+       */
+      readonly scopeUnavailable: true;
+      readonly rows: readonly [];
+      readonly withheld: number;
+    }
+  | {
+      readonly scopeUnavailable: false;
+      readonly rows: readonly DbRow[];
+      readonly withheld: number;
+    };
 
 /**
  * Load the brain-fact segment of the preview.
@@ -240,8 +258,8 @@ export interface BrainFactSegment {
  * a confidentiality message. A DB fault on either statement propagates too;
  * this function is not a shield against those.
  *
- * Exported for `__tests__/admin-publish-preview.test.ts`: both degraded arms
- * return the same shape as the happy path, so a refactor that "simplified"
+ * Exported for `__tests__/admin-publish-preview-brain.test.ts`: both degraded
+ * arms return the same shape as the happy path, so a refactor that "simplified"
  * either into `withheld: 0` would restore #4825's defect and pass a suite that
  * only tested the route end to end.
  */
@@ -251,12 +269,34 @@ export async function loadBrainFactSegment(
   user: AtlasUser | undefined,
   requestId: string | undefined,
 ): Promise<BrainFactSegment> {
-  // Total first: it is unscoped, so it is meaningful even when the scoped half
-  // cannot run at all — which is exactly the degraded path below.
-  const totalRows = await internalQuery<{ n: number }>(brainFactsCountSql("$1"), [orgId]);
+  // Both reads are independent, so they go together rather than in sequence —
+  // this segment already costs the preview a third round trip for the labels.
+  //
+  // The reader context is REIFIED to a settled result rather than left as a
+  // rejecting promise: the two have different error semantics (a count failure
+  // propagates, an identity failure degrades), so they cannot share a `try`,
+  // and an un-reified rejection would go unhandled in the window where the
+  // count throws first.
+  const countPromise = internalQuery<{ n: number }>(brainFactsCountSql("$1"), [orgId]);
+  const readerPromise = resolveBrainReaderContext(getInternalDB(), {
+    workspaceId: orgId,
+    mode,
+    user,
+    requestId,
+  }).then(
+    (ctx) => ({ ok: true, ctx }) as const,
+    (err: unknown) => ({ ok: false, err }) as const,
+  );
+  const [totalRows, reader] = await Promise.all([countPromise, readerPromise]);
+
   const rawTotal = totalRows[0]?.n;
-  const total = Number(rawTotal);
-  if (!Number.isFinite(total) || total < 0) {
+  const total = typeof rawTotal === "number" ? rawTotal : Number(rawTotal);
+  // `typeof` first, then `Number`: a bare `Number(rawTotal)` coerces BOTH
+  // `null` and `""` to 0, so a NULL count would sail through as "nothing
+  // withheld" rather than as the drift it is. `COUNT(*)` cannot return NULL, so
+  // this is unreachable from Postgres — but 0 is the failure-silencing answer
+  // here, and the guard costs one comparison.
+  if (rawTotal === null || rawTotal === undefined || !Number.isFinite(total) || total < 0) {
     // Silently treating this as 0 would drop `WithheldFactsNotice` and put
     // "Publish all (N)" on a button that promotes more — #4825's defect,
     // reproduced without a trace, precisely when the count query is
@@ -266,46 +306,41 @@ export async function loadBrainFactSegment(
       `publish preview: the brain-fact draft count did not read back as a number for workspace ${orgId} — refusing to report a scope Atlas cannot establish`,
     );
   }
-  const withheldAll: BrainFactSegment = {
+  const withheldAll = {
     rows: [],
     withheld: Math.trunc(total),
     scopeUnavailable: true,
-  };
+  } as const satisfies BrainFactSegment;
 
-  let aclSql: string;
-  let aclParams: readonly unknown[];
-  try {
-    const ctx = await resolveBrainReaderContext(getInternalDB(), {
-      workspaceId: orgId,
-      mode,
-      user,
-      requestId,
-    });
-    const acl = aclVisibilityClause(ctx, {
-      table: "brain_facts",
-      alias: "f",
-      paramIndex: 1,
-      requestId,
-    });
-    if (acl.decision === "deny-all") {
-      log.warn(
-        { workspaceId: orgId, requestId, origin: ctx.origin },
-        "publish preview: brain reader resolved to no principals — listing no claims; the withheld count still reports what publish would promote",
-      );
-      return withheldAll;
-    }
-    aclSql = acl.sql;
-    aclParams = acl.params;
-  } catch (err) {
+  if (!reader.ok) {
     // ONLY an identity failure degrades. Anything else is a defect or an
     // outage, and laundering it into a confidentiality message would hide it.
-    if (!(err instanceof BrainReaderIdentityError)) throw err;
+    if (!(reader.err instanceof BrainReaderIdentityError)) throw reader.err;
     log.warn(
-      { workspaceId: orgId, requestId, err: errorMessage(err) },
+      { workspaceId: orgId, requestId, err: errorMessage(reader.err) },
       "publish preview: could not resolve the brain reader's grants — listing no claims rather than risking one this admin may not read",
     );
     return withheldAll;
   }
+
+  // OUTSIDE any catch, deliberately. `aclVisibilityClause` throws only on a bad
+  // `paramIndex` or an unsafe alias — both constants here, so a throw is a
+  // defect on constant inputs. Inside the block above it would have been
+  // laundered into a confidentiality message.
+  const acl = aclVisibilityClause(reader.ctx, {
+    table: "brain_facts",
+    alias: "f",
+    paramIndex: 1,
+    requestId,
+  });
+  if (acl.decision === "deny-all") {
+    log.warn(
+      { workspaceId: orgId, requestId, origin: reader.ctx.origin },
+      "publish preview: brain reader resolved to no principals — listing no claims; the withheld count still reports what publish would promote",
+    );
+    return withheldAll;
+  }
+  const { sql: aclSql, params: aclParams } = acl;
 
   const rows = await internalQuery<DbRow>(brainFactPreviewSql(aclSql), [...aclParams]);
 
@@ -341,9 +376,12 @@ const adminPublishPreview = createAdminRouter();
 adminPublishPreview.use(requireOrgContext());
 
 // `runEffect` rather than `runHandler`: the brain segment needs the reader's
-// identity to gate its labels, and `AuthContext` is where that lives. Reading
-// `c.get("authResult")` inside the handler would work and would reintroduce
-// exactly the runtime `c.get()` the context layer exists to replace.
+// identity to gate its labels, and `AuthContext` is where that lives —
+// `runHandler`'s plain-async callback cannot `yield*` a Context Tag at all.
+//
+// `orgContext` is still read off Hono below, and that is not the same thing:
+// it is `requireOrgContext()`'s payload, the middleware that 400s an org-less
+// request, so the router-level contract is where it belongs.
 adminPublishPreview.openapi(previewRoute, async (c) =>
   runEffect(
     c,
@@ -361,7 +399,16 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
   ),
 );
 
-async function buildPreview(
+/**
+ * Assemble the whole preview.
+ *
+ * Exported for `__tests__/admin-publish-preview-brain.test.ts`. Hono does not
+ * validate responses and this route runs no `checked()`, so the
+ * {@link BrainFactSegment} → wire mapping below is unguarded at runtime:
+ * dropping `brainFactsWithheld`, or wiring it to `rows.length`, would ship. The
+ * segment's own tests cannot see that — they stop at the helper.
+ */
+export async function buildPreview(
   orgId: string,
   mode: AuthMode,
   user: AtlasUser | undefined,

@@ -97,7 +97,9 @@ async function createBashBackend(
 let _nsjailAvailable: boolean | null = null;
 
 /**
- * Is the nsjail BINARY actually present on this host? Pure detection, memoized.
+ * Is the nsjail BINARY actually present on this host? Detection only — never
+ * construction. Memoized for the process; logs if the detection module itself
+ * cannot be loaded.
  *
  * Split out of {@link useNsjail} by #4834 so that CONSTRUCTIBILITY and the
  * OPERATOR'S INTENT stop sharing one predicate. `useNsjail()` answers "should
@@ -115,11 +117,12 @@ let _nsjailAvailable: boolean | null = null;
  *
  * Note the pin short-circuit is currently INERT in both of those consumers — the
  * planner reads `nsjailAvailable` only on the auto-detect branch, and
- * `tryCreateBackend` short-circuits on the env var before calling this. So the
- * suite does not go red if someone "simplifies" the two back into one.
- * `explore-fail-closed.test.ts` guards the divergence directly instead, by
- * asserting `nsjailAvailable === true` (intent) alongside `fail-closed`
- * (capability) for the same pinned-but-missing shape.
+ * `tryCreateBackend` short-circuits on the env var before calling this. So no
+ * production behaviour would change if someone "simplified" the two back into
+ * one, and nothing would go red on its own. `explore-fail-closed.test.ts`
+ * therefore guards the divergence directly, asserting `nsjailAvailable === true`
+ * (intent) alongside `fail-closed` (capability) for one pinned-but-missing
+ * shape — that assertion is the only thing that fails on the collapse.
  */
 function nsjailBinaryPresent(): boolean {
   if (_nsjailAvailable !== null) return _nsjailAvailable;
@@ -133,11 +136,14 @@ function nsjailBinaryPresent(): boolean {
     // was survivable while this answer only nudged the auto-detect chain — but
     // #4834 made it the REPORTING predicate for the pinned case, so an unlogged
     // `false` here now pins `/api/health` to `fail-closed` / `status: "down"`
-    // and pushes a total-outage startup warning, for a host where nsjail is
-    // installed and explore works. A posture surface must never go dark without
-    // saying why. `./backends/nsjail` is first-party, so its absence is a
-    // bundling anomaly (Next.js standalone output, `serverExternalPackages`
-    // drift, a partial-mock leak), never an expected state.
+    // and pushes a total-outage startup warning. A posture surface must never go
+    // dark without saying why. `./backends/nsjail` is first-party, so its
+    // absence is a bundling anomaly (Next.js standalone output,
+    // `serverExternalPackages` drift, a partial-mock leak), never an expected
+    // state — and specifically an anomaly of THIS deferred `require`, since
+    // `explore-nsjail.ts` imports the same module statically. Where the two
+    // disagree, the deployment reports broken while construction would have
+    // worked; where they agree, everything is broken and the log still helps.
     const detail = errorMessage(err);
     const moduleMissing =
       err != null &&
@@ -222,9 +228,11 @@ export function getActiveSandboxPluginId(): string | null {
 }
 
 /**
- * Can this backend actually be constructed right now? Sync, free of observable
- * side effects beyond {@link nsjailBinaryPresent}'s one-time memoized probe, and
- * the predicate every REPORTING surface passes to {@link resolveSandboxBackend}.
+ * Can this backend actually be constructed right now? Sync, and the predicate
+ * every REPORTING surface passes to {@link resolveSandboxBackend}. Free of
+ * observable side effects beyond two one-time breadcrumbs — {@link
+ * nsjailBinaryPresent}'s detection memo, and `vercelSandboxAccess()`'s
+ * partial-credentials warning.
  *
  * "Available" means CONSTRUCTIBLE, not "configured" or "asked for" (#4834). The
  * nsjail arm used to answer `pin || useNsjail()`, so the bare

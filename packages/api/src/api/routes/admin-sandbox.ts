@@ -270,11 +270,14 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       // `platformResolution` straight to `string | null` compiles fine — nullable
       // wire types create an obligation for READERS, not for this writer. What
       // `satisfies` pins is the next non-backend member: add one to
-      // `ExploreBackendType` (the pinned-but-missing-nsjail case in #4834 is a
-      // live candidate) and this line stops compiling, instead of the new
+      // `ExploreBackendType` and this line stops compiling, instead of the new
       // sentinel silently rendering as an id exactly as `"fail-closed"` did. That
       // is #4835's `BACKEND_ISOLATION` precedent — make the compiler reject the
       // unclassified value — applied to the producer.
+      //
+      // (#4834 was cited here as a live candidate for such a member; it shipped
+      // reusing `"fail-closed"` instead — a pinned-but-missing nsjail binary now
+      // resolves to it — so this guard sees that value MORE often, not a new one.)
       const platformResolution = getExploreBackendType();
       const platformFailClosed = platformResolution === "fail-closed";
       const platformDefault: string | null = platformFailClosed

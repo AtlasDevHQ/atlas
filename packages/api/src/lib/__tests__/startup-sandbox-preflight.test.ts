@@ -478,6 +478,52 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     ).toBe(true);
   });
 
+  it("does not stamp UNVERIFIED on a backend the nsjail probe never examined (#4834)", async () => {
+    // The guard `probe === "unverified" && backend === "nsjail"` exists because
+    // `checkSandboxPreFlight` probes nsjail whenever `ATLAS_SANDBOX=nsjail`,
+    // INCLUDING when a `sandbox.priority` outranks the pin and nsjail is not in
+    // the resolved chain at all. Without the backend check, a throwing nsjail
+    // probe would stamp `isolationVerified: false` onto a perfectly good
+    // vercel-sandbox deployment — a false alarm on the one field added to be
+    // trustworthy, and the same misattribution the bespoke nsjail-only lines
+    // were removed for.
+    //
+    // Dropping `&& backend === "nsjail"` must fail HERE; nothing else notices.
+    process.env.ATLAS_SANDBOX = "nsjail";
+    process.env.VERCEL_TEAM_ID = "team_test";
+    process.env.VERCEL_PROJECT_ID = "prj_test";
+    process.env.VERCEL_TOKEN = "tok_test";
+    // The binary must be PRESENT for the probe to reach — and throw in —
+    // testNsjailCapabilities; with it absent, checkExplicitNsjail takes the
+    // binary-absent arm and returns "hard-fail" instead of "unverified".
+    givenNsjailBinary();
+    mockCapabilityThrows = new Error("probe exploded");
+    _setConfigForTest({
+      ...configFromEnv(),
+      sandbox: { priority: ["vercel-sandbox"] },
+    });
+
+    await runPreFlight();
+
+    // The probe DID go inconclusive — otherwise this case proves nothing.
+    expect(
+      logCalls.some((c) =>
+        c.args.some((a) => typeof a === "string" && a.includes("isolation UNVERIFIED")),
+      ),
+    ).toBe(true);
+
+    // …but the resolved backend is vercel-sandbox, and it carries no verdict
+    // from a probe that never looked at it.
+    expect(loggedBackend()).toBe("vercel-sandbox");
+    const resolvedMeta = logCalls.find(
+      (c) =>
+        c.args.some((a) => typeof a === "string" && a.startsWith("Explore tool:")) &&
+        typeof c.args[0] === "object",
+    )?.args[0];
+    expect(resolvedMeta).toMatchObject({ backend: "vercel-sandbox" });
+    expect(resolvedMeta).not.toHaveProperty("isolationVerified");
+  });
+
   it("names fail-closed, not nsjail, when a sandbox.priority pin outranks ATLAS_SANDBOX (#4834)", async () => {
     // The deployment the bespoke nsjail-only lines misreported.
     // `planSandboxSelection` gives `configPriority` absolute precedence, so

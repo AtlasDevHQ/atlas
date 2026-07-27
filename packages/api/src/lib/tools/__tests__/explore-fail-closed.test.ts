@@ -179,8 +179,10 @@ describe("ATLAS_SANDBOX=nsjail refuses rather than degrading (#4829)", () => {
         expect(result, `attempt ${attempt}`).toContain("nsjail was explicitly requested");
 
         // Only the FIRST attempt carries the specific remediation. Construction
-        // is still attempted under the pin (`tryCreateBackend` gates on
-        // `useNsjail()`, which #4834 left pin-inclusive), so attempt 1 raises
+        // is still attempted under the pin — `tryCreateBackend` checks
+        // `ATLAS_SANDBOX` itself and skips its availability gate, so #4834's
+        // narrowing of the REPORTING predicate never reaches it — and attempt 1
+        // raises
         // "nsjail binary not found. Install nsjail or set ATLAS_NSJAIL_PATH" —
         // and that failure latches `_nsjailFailed`, so attempts 2+ short-circuit
         // to the generic "previous initialization failed". Pre-existing, and

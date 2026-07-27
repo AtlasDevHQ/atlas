@@ -1,15 +1,22 @@
 #!/bin/bash
 # Adversarial fixture suite for scripts/scan-image.sh.
 #
-# Locks in that the gate (a) FAILS on a deliberately vulnerable image, and
-# (b) PASSES on an image with no packages. Both directions matter: (a) alone is
-# satisfied by a gate that is merely broken and always red, and (b) alone is
-# satisfied by a gate that never looks at anything.
+# Locks in four properties of the gate, each of which fails silently on its own:
 #
-# This is the acceptance criterion from #4822 — "prove the negative; a green run
-# against a currently-clean tree proves nothing" — expressed as a test rather
-# than as a one-off manual check, so it keeps holding after a Trivy upgrade or a
-# policy-flag edit.
+#   1. It FAILS on a deliberately vulnerable image. This is the acceptance
+#      criterion from #4822 — "prove the negative; a green run against a
+#      currently-clean tree proves nothing."
+#   2. It PASSES on an image with no packages. Without this, a gate that is
+#      merely broken and unconditionally red would satisfy (1).
+#   3. The .trivyignore baseline suppresses the GATE but not the SARIF report,
+#      so an exemption stays a documented deferral rather than becoming
+#      invisible.
+#   4. A vulnerable LIBRARY is reported but does not block, pinning the
+#      OS-only gate scope documented in scan-image.sh.
+#
+# Expressed as tests rather than one-off manual checks so they keep holding
+# after a Trivy upgrade or a policy-flag edit — every one of these properties
+# can be destroyed by a single flag change that nothing else would catch.
 #
 # Also covers scripts/list-runtime-base-images.sh, which decides *what* gets
 # scanned: a discovery bug there is silent, and looks exactly like coverage.
@@ -94,7 +101,7 @@ if ! command -v docker >/dev/null 2>&1 || ! command -v trivy >/dev/null 2>&1; th
 fi
 
 SARIF_DIR="$(mktemp -d)"
-trap 'rm -rf "$SARIF_DIR"; docker rmi -f atlas-scan-fixture:vulnerable atlas-scan-fixture:clean >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$SARIF_DIR"; docker rmi -f atlas-scan-fixture:vulnerable atlas-scan-fixture:clean atlas-scan-fixture:library >/dev/null 2>&1 || true' EXIT
 
 # (4) The gate must go RED on a deliberately vulnerable image.
 #
@@ -126,7 +133,7 @@ fi
 #
 #     Built hermetically: take the fixture's own findings, baseline exactly
 #     those, and assert the gate goes green while the SARIF still names them.
-trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL --ignore-unfixed \
   --ignorefile /dev/null --quiet --format json atlas-scan-fixture:vulnerable 2>/dev/null \
   | grep -oE '"VulnerabilityID": *"[^"]+"' | sed 's/.*"\([A-Z][A-Z0-9-]*\)"$/\1/' | sort -u \
   > "$SARIF_DIR/fixture.ids"
@@ -153,7 +160,28 @@ else
   fi
 fi
 
-# (7) The gate must go GREEN on an image with no packages.
+# (7) A vulnerable LIBRARY must be REPORTED but must NOT block.
+#
+#     This pins the scope decision in scan-image.sh: OS packages gate, library
+#     findings go to code scanning and are left to Dependabot. Without this,
+#     dropping --pkg-types os from the gate would pass every other test here
+#     and only surface later as unrelated PRs going red on transitive bumps.
+docker build -q -f "$FIXTURES/Dockerfile.library" -t atlas-scan-fixture:library "$FIXTURES" >/dev/null
+rc=0
+bash "$SCAN" atlas-scan-fixture:library fixture-library "$SARIF_DIR" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "vulnerable library does not block the gate (OS-only scope)"
+else
+  bad "library fixture — expected exit 0, got exit $rc (gate is blocking on libraries)"
+fi
+
+if grep -q "GHSA-p6mc-m468-83gg\|CVE-2020-8203" "$SARIF_DIR/fixture-library.sarif" 2>/dev/null; then
+  ok "vulnerable library still reported in SARIF"
+else
+  bad "library finding missing from SARIF — reported-but-not-gated is the whole point"
+fi
+
+# (8) The gate must go GREEN on an image with no packages.
 docker build -q -f "$FIXTURES/Dockerfile.clean" -t atlas-scan-fixture:clean "$FIXTURES" >/dev/null
 rc=0
 bash "$SCAN" atlas-scan-fixture:clean fixture-clean "$SARIF_DIR" >/dev/null 2>&1 || rc=$?

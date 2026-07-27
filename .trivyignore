@@ -1,178 +1,89 @@
-# Trivy gate baseline — the container-image scan's list of pre-existing findings.
+# Trivy gate baseline — pre-existing OS-package findings in the base images.
 #
 # ── What this file is NOT ─────────────────────────────────────────────────────
 #
-# It is not a waiver, and it does not hide anything. scripts/scan-image.sh runs
-# Trivy twice and applies this file to ONE of the two passes:
+# It is not a waiver, and it hides nothing. scripts/scan-image.sh runs Trivy
+# twice and applies this file to ONE of the two passes:
 #
-#   report pass  --ignorefile /dev/null   every severity, every CVE, including
-#                                         everything listed here → SARIF →
-#                                         GitHub code scanning. Nothing is
-#                                         suppressed on the reporting surface.
+#   report pass  --ignorefile /dev/null   every severity, every package type,
+#                                         including everything listed here →
+#                                         SARIF → GitHub code scanning.
 #
-#   gate pass    --ignorefile .trivyignore  fixable HIGH/CRITICAL only, minus
-#                                           this list → blocks the merge.
+#   gate pass    --ignorefile .trivyignore  fixable HIGH/CRITICAL OS packages,
+#                                           minus this list → blocks the merge.
 #
 # The effect is that the gate blocks *regressions*. A newly disclosed CVE, or
-# one a PR introduces via a dependency or base-image change, goes red on that
-# PR. Debt that arrived with a third-party base image Atlas does not build stays
-# visible in code scanning without pinning every unrelated PR red.
+# one a PR introduces via a base-image change, goes red on that PR. Debt that
+# arrived with a third-party base image Atlas does not build stays visible in
+# code scanning without pinning every unrelated PR red.
 #
 # ── Why there is a baseline at all ────────────────────────────────────────────
 #
 # Every entry below was present in an upstream base image on the day the gate
-# landed (#4822), and none of them was fixable by bumping a pin: the pinned
-# digest for oven/bun:1.3.13 IS the current digest for that tag, so upstream has
-# simply not rebuilt with the patched packages. "Fixable" in Trivy's sense means
-# the distro has published a fixed package version — not that a fixed base image
-# exists for us to move to.
+# landed (#4822), and none was fixable by bumping a pin: the pinned digest for
+# oven/bun:1.3.13 IS the current digest for that tag, so upstream has simply not
+# rebuilt with the patched packages. "Fixable" in Trivy's sense means the distro
+# published a fixed package version — not that a fixed base image exists for us
+# to move to.
 #
-# Clearing them needs a change to shipped artifacts (an apt upgrade in the
-# runner stages, a rebase, or waiting for upstream rebuilds). That is deliberate
-# product surface, and it was out of scope for the PR that added the gate, which
-# landed during the 2026-07-27 ship freeze.
+# Clearing them needs a change to shipped artifacts: an apt/apk upgrade in the
+# runner stages, a rebase onto a refreshed base, or waiting for upstream to
+# rebuild. That is deliberate product surface, and it was out of scope for the
+# PR that added the gate, which landed during the 2026-07-27 ship freeze.
+#
+# ── Scope note ────────────────────────────────────────────────────────────────
+#
+# Only OS packages appear here, because only OS packages are gated. Library
+# findings inside the images (npm, Go modules) are reported to code scanning but
+# never block — they are Dependabot's remit, and it can open the fix PR. See the
+# SCOPE section in scripts/scan-image.sh.
 #
 # ── How to clear it ───────────────────────────────────────────────────────────
 #
-# Re-run the scan after any base-image change and delete every line that no
-# longer appears. The expiry dates are the forcing function: once passed, Trivy
-# stops honouring the entry and the gate goes red until it is either fixed or
-# consciously re-dated. Do not bulk-extend the dates — re-scan first.
+# Re-scan after any base-image change and delete every line that no longer
+# appears. The expiry dates are the forcing function: once passed, Trivy stops
+# honouring the entry and the gate goes red until it is fixed or consciously
+# re-dated. Do not bulk-extend the dates — re-scan first.
 #
-# Regenerate the current findings with:
 #   bash scripts/list-runtime-base-images.sh | while read -r i; do \
-#     trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
-#       --ignorefile /dev/null --format json "$i"; done
+#     trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL \
+#       --ignore-unfixed --ignorefile /dev/null "$i"; done
 #
-# Format: <ID> exp:<YYYY-MM-DD>. Comments are per-CVE below (severity, package).
-# Entries are global rather than per-image on purpose — the two runtime bases
-# share all 7 of the openssl-family CVEs, so per-image files would duplicate
-# them and drift apart.
+# Entries are global rather than per-image on purpose: the two runtime bases
+# share 7 of these, so per-image files would duplicate them and drift apart.
 #
-# Baseline captured 2026-07-27. Expiry 2026-09-01 (after the v0.2.0 release on
-# 2026-08-03, with slack to schedule the base-image work).
+# Baseline captured 2026-07-27. Expiry 2026-09-01 — after the v0.2.0 release on
+# 2026-08-03, with slack to schedule the base-image work.
 
 # ─────────────────────────────────────────────────────────────────────────────
-# oven/bun:1.3.13 — runtime base for deploy/api, deploy/web, examples/docker,
-# packages/sandbox-sidecar, and the create-atlas docker templates. All 7 are
-# Debian openssl-family packages; all 7 also appear in caddy below.
+# Shared by BOTH runtime bases (oven/bun:1.3.13 and caddy:2.10-alpine).
+# openssl plus libcap — the same upstream advisories reaching Debian and Alpine.
+# These ship in every Atlas image, including the create-atlas docker templates.
 # ─────────────────────────────────────────────────────────────────────────────
-# HIGH     libssl3t64
+# HIGH     libcrypto3 (debian: libssl3t64)
 CVE-2026-28387 exp:2026-09-01
-# HIGH     libssl3t64
+# HIGH     libcrypto3 (debian: libssl3t64)
 CVE-2026-28388 exp:2026-09-01
-# HIGH     libssl3t64
+# HIGH     libcrypto3 (debian: libssl3t64)
 CVE-2026-28389 exp:2026-09-01
-# HIGH     libssl3t64
+# HIGH     libcrypto3 (debian: libssl3t64)
 CVE-2026-28390 exp:2026-09-01
-# CRITICAL libssl3t64
+# CRITICAL libcrypto3 (debian: libssl3t64)
 CVE-2026-31789 exp:2026-09-01
-# HIGH     libssl3t64
+# HIGH     libcrypto3 (debian: libssl3t64)
 CVE-2026-45447 exp:2026-09-01
-# HIGH     libcap2
+# HIGH     libcap (debian: libcap2)
 CVE-2026-4878 exp:2026-09-01
 
 # ─────────────────────────────────────────────────────────────────────────────
-# caddy:2.10-alpine — runtime base for deploy/docs only. Mostly Go stdlib and
-# Go module CVEs compiled into the caddy binary, so they are fixed by an upstream
-# caddy rebuild against a newer Go, not by anything in this repo. The 7 shared
-# openssl entries are listed above, not repeated here.
+# caddy:2.10-alpine only — runtime base for deploy/docs. Alpine/musl packages
+# with no Debian equivalent, so they do not affect the bun-based images.
 # ─────────────────────────────────────────────────────────────────────────────
-# CRITICAL github.com/smallstep/certificates
-CVE-2025-44005 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2025-47913 exp:2026-09-01
-# HIGH     github.com/quic-go/quic-go
-CVE-2025-59530 exp:2026-09-01
-# HIGH     stdlib
-CVE-2025-61726 exp:2026-09-01
-# HIGH     stdlib
-CVE-2025-61729 exp:2026-09-01
-# CRITICAL stdlib
-CVE-2025-68121 exp:2026-09-01
 # HIGH     zlib
 CVE-2026-22184 exp:2026-09-01
-# HIGH     go.opentelemetry.io/otel/sdk
-CVE-2026-24051 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-25679 exp:2026-09-01
-# HIGH     golang.org/x/net
-CVE-2026-25681 exp:2026-09-01
-# HIGH     github.com/slackhq/nebula
-CVE-2026-25793 exp:2026-09-01
 # HIGH     nghttp2-libs
 CVE-2026-27135 exp:2026-09-01
-# HIGH     golang.org/x/net
-CVE-2026-27136 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-27145 exp:2026-09-01
-# HIGH     github.com/caddyserver/caddy/v2
-CVE-2026-27586 exp:2026-09-01
-# HIGH     github.com/caddyserver/caddy/v2
-CVE-2026-27587 exp:2026-09-01
-# HIGH     github.com/caddyserver/caddy/v2
-CVE-2026-27588 exp:2026-09-01
-# HIGH     github.com/caddyserver/caddy/v2
-CVE-2026-27590 exp:2026-09-01
-# HIGH     go.opentelemetry.io/otel
-CVE-2026-29181 exp:2026-09-01
-# CRITICAL github.com/smallstep/certificates
-CVE-2026-30836 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-32280 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-32281 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-32283 exp:2026-09-01
-# CRITICAL google.golang.org/grpc
-CVE-2026-33186 exp:2026-09-01
 # HIGH     c-ares
 CVE-2026-33630 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-33811 exp:2026-09-01
-# HIGH     golang.org/x/net
-CVE-2026-33814 exp:2026-09-01
-# HIGH     github.com/go-jose/go-jose/v3
-CVE-2026-34986 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-39820 exp:2026-09-01
-# HIGH     golang.org/x/net
-CVE-2026-39821 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-39822 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-39828 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-39829 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-39830 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-39831 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-39832 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-39835 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-39836 exp:2026-09-01
-# HIGH     go.opentelemetry.io/otel/sdk
-CVE-2026-39883 exp:2026-09-01
 # HIGH     musl
 CVE-2026-40200 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-42499 exp:2026-09-01
-# HIGH     stdlib
-CVE-2026-42504 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-42508 exp:2026-09-01
-# HIGH     github.com/caddyserver/caddy/v2
-CVE-2026-45135 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-46595 exp:2026-09-01
-# HIGH     golang.org/x/crypto
-CVE-2026-46597 exp:2026-09-01
-# HIGH     github.com/caddyserver/caddy/v2
-CVE-2026-52844 exp:2026-09-01
-# HIGH     github.com/caddyserver/caddy/v2
-CVE-2026-52845 exp:2026-09-01
-# HIGH     google.golang.org/grpc
-GHSA-hrxh-6v49-42gf exp:2026-09-01

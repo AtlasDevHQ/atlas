@@ -17,6 +17,25 @@
 # still reported, so an unfixed CRITICAL is visible — it just does not stop a
 # merge that had nothing to do with it.
 #
+# SCOPE      The gate looks at OS packages only (--pkg-types os). Language
+#            dependencies found inside the image — npm, Go modules — are
+#            REPORTED but do not block.
+#
+#            That split follows who can act. A vulnerable OS package baked into
+#            a runtime layer is the gap nothing else covers: CodeQL analyses
+#            source, Dependabot reads manifests, and neither one sees it. That
+#            is the gap #4822 exists to close, and it is what this gate blocks
+#            on. Library findings already have an owner — Dependabot watches the
+#            manifests and opens the fix PR — so gating on them here would
+#            create two red surfaces for one problem and block unrelated PRs on
+#            a dependency bump somebody else's PR is already making. #4822
+#            scoped dependency scanning out for exactly this reason.
+#
+#            They are still reported, because the image's resolved node_modules
+#            is not identical to the manifest Dependabot reads, and a finding
+#            visible in code scanning is worth having even when this gate is not
+#            the right place to enforce it.
+#
 # BASELINE   .trivyignore holds the fixable HIGH/CRITICAL findings that already
 #            existed in the third-party base images when this gate was added.
 #            It is applied to the GATE pass only — never to the report pass — so
@@ -104,6 +123,7 @@ echo "SARIF written to $SARIF (unfiltered — all severities, baseline not appli
 rc=0
 trivy image \
   --scanners vuln \
+  --pkg-types os \
   --severity HIGH,CRITICAL \
   --ignore-unfixed \
   --ignorefile "$BASELINE" \
@@ -113,7 +133,8 @@ trivy image \
   "$IMAGE" || rc=$?
 
 if [ "$rc" -eq 0 ]; then
-  echo "PASS: no fixable HIGH/CRITICAL vulnerabilities in $IMAGE"
+  echo "PASS: no fixable HIGH/CRITICAL OS-package vulnerabilities in $IMAGE"
+  echo "      (library findings, if any, are in the SARIF report and are Dependabot's remit — see the SCOPE note above)"
   exit 0
 fi
 
@@ -126,6 +147,6 @@ if [ "$rc" -ne 1 ]; then
   exit "$rc"
 fi
 
-echo "::error::Fixable HIGH/CRITICAL vulnerabilities found in $IMAGE ($CATEGORY)"
-echo "::error::A fixed version exists upstream. Bump the base-image pin, or the offending dependency, and re-run."
+echo "::error::Fixable HIGH/CRITICAL OS-package vulnerabilities found in $IMAGE ($CATEGORY)"
+echo "::error::A fixed package version exists upstream. Bump the base-image pin, rebuild against a refreshed base, or upgrade the package in the runner stage."
 exit 1

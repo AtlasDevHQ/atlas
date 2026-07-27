@@ -16,12 +16,22 @@ name: Image Scan
 # flags that implement them; the baseline and its expiry dates live in
 # .trivyignore. Read those two files for the reasoning. In short:
 #
-#   blocks    fixable HIGH/CRITICAL, minus the dated .trivyignore baseline
-#   reports   everything else, unfiltered, via SARIF to GitHub code scanning
+#   blocks    fixable HIGH/CRITICAL in OS packages, minus the dated
+#             .trivyignore baseline
+#   reports   everything else, unfiltered — every severity, unfixed CVEs, and
+#             language dependencies — via SARIF to GitHub code scanning
 #
-# Unfixed CVEs do not block on purpose: a gate that is red for something nobody
-# can action gets ignored, and an ignored gate reads as coverage while providing
-# none.
+# Two things deliberately do not block:
+#
+#   Unfixed CVEs, because a gate that is red for something nobody can action
+#   gets ignored, and an ignored gate reads as coverage while providing none.
+#
+#   Library findings (npm, Go modules) inside the images, because Dependabot
+#   already owns them and can open the fix PR. Gating here too would put two
+#   red surfaces on one problem and block unrelated PRs on a dependency bump.
+#   #4822 scoped dependency scanning out for exactly this reason. They are
+#   still reported — the image's resolved node_modules is not identical to the
+#   manifest Dependabot reads.
 #
 # ── Where it runs, and why ────────────────────────────────────────────────────
 #
@@ -80,10 +90,36 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       built-images: ${{ steps.filter.outputs.built-images }}
+      base-images: ${{ steps.discover.outputs.images }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
+
+      # Emitted as a matrix so each base image gets its own job — and, more to
+      # the point, its own SARIF upload. GitHub code scanning rejects multiple
+      # SARIF runs sharing one category, so a single job uploading a directory
+      # of reports fails; one image per matrix leg gives each a distinct
+      # category for free.
+      # Each entry carries both the full ref (what gets scanned) and a short
+      # label (what names the check and the SARIF category). The label drops the
+      # digest: a digest-pinned ref makes an unreadable check name, and the
+      # category must stay stable across a digest bump or code scanning treats
+      # the same image as a brand-new analysis and never closes its old alerts.
+      - id: discover
+        run: |
+          set -euo pipefail
+          IMAGES="$(bash scripts/list-runtime-base-images.sh)"
+          echo "Runtime base images discovered:"
+          echo "$IMAGES" | sed 's/^/  /'
+          MATRIX="$(printf '%s' "$IMAGES" | jq -R -s -c '
+            split("\n") | map(select(length > 0)) | map({
+              ref: .,
+              label: (. | split("@")[0] | gsub("[/:]"; "-"))
+            })')"
+          echo "Matrix: $MATRIX"
+          echo "images=$MATRIX" >> "$GITHUB_OUTPUT"
+
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -144,13 +180,21 @@ jobs:
         run: bash scripts/__tests__/scan-image.test.sh
 
   # Tier 1 — runtime base images, discovered from every Dockerfile in the tree.
+  #
+  # One matrix leg per image. Splitting them is not just parallelism: code
+  # scanning refuses multiple SARIF runs under one category, so each image needs
+  # its own upload with its own category anyway.
   base-images:
-    name: Base images
-    needs: gate-self-test
+    name: Base image (${{ matrix.image.label }})
+    needs: [changes, gate-self-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.changes.outputs.base-images) }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: ./.github/actions/setup-trivy
@@ -158,31 +202,11 @@ jobs:
           version: ${{ env.TRIVY_VERSION }}
           sha256: ${{ env.TRIVY_SHA256 }}
 
-      - name: Scan every runtime base image
-        run: |
-          set -euo pipefail
-          mkdir -p trivy-results
-          # Discovery, not enumeration — a Dockerfile added anywhere enters the
-          # matrix without editing this workflow. See the script for why only
-          # the runtime stage's base counts.
-          IMAGES="$(bash scripts/list-runtime-base-images.sh)"
-          echo "Runtime base images discovered:"
-          echo "$IMAGES" | sed 's/^/  /'
-
-          fail=0
-          while IFS= read -r image; do
-            [ -n "$image" ] || continue
-            # Stable, filesystem-safe SARIF category. It must stay stable across
-            # runs or code scanning treats each run as a new analysis and never
-            # closes resolved alerts.
-            category="base-$(printf '%s' "$image" | sed 's#[/:@]#-#g' | cut -c1-80)"
-            bash scripts/scan-image.sh "$image" "$category" trivy-results || fail=1
-          done <<< "$IMAGES"
-
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::One or more base images have fixable HIGH/CRITICAL vulnerabilities outside the .trivyignore baseline"
-            exit 1
-          fi
+      - name: Scan ${{ matrix.image.ref }}
+        env:
+          IMAGE: ${{ matrix.image.ref }}
+          CATEGORY: base-${{ matrix.image.label }}
+        run: bash scripts/scan-image.sh "$IMAGE" "$CATEGORY" trivy-results
 
       - name: Upload SARIF to code scanning
         # `always()` so findings are still triageable when the gate failed —
@@ -192,7 +216,8 @@ jobs:
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
         with:
-          sarif_file: trivy-results
+          sarif_file: trivy-results/base-${{ matrix.image.label }}.sarif
+          category: base-${{ matrix.image.label }}
 
   # Tier 2 — the images Atlas builds and deploys, scanned as finished artifacts.
   built-images:
@@ -253,7 +278,8 @@ jobs:
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
         with:
-          sarif_file: trivy-results
+          sarif_file: trivy-results/built-${{ matrix.name }}.sarif
+          category: built-${{ matrix.name }}
 
   # Umbrella check, mirroring `deploy-validation-required`. Always runs, so a
   # single stable context name is present on every PR even when the matrix job

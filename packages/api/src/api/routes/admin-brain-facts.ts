@@ -103,7 +103,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * EXTRA field is stripped rather than refused (the envelope schemas are
  * `z.object`), so this catches drift in one direction only.
  *
- * It also makes the withheld-episode / withheld-counterpart / withheld-attribution arms enforceable
+ * It also makes the three withheld arms (episode, tension counterpart, attribution) enforceable
  * rather than conventional: both are `z.strictObject`, so a future producer
  * that attached a body to a `visible: false` variant fails HERE — at the ACL
  * boundary — instead of shipping the payload it was supposed to withhold.

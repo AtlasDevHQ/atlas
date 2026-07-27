@@ -134,7 +134,10 @@ export interface AttributionRow {
  * predicate rather than being re-derived here.
  *
  * **It is not pure.** It logs on both drift arms, and `isVisibleTo` logs on
- * two of its own three denies. `acl.ts` warns that its zero-principal warn is
+ * three of its own four denies — the ordinary no-overlap deny is deliberately
+ * silent, and from THIS caller only two of the logging arms are reachable at
+ * all (`ctx.workspaceId` pre-empts the cross-workspace arm, the
+ * `isUnknownArray` guard above pre-empts the non-array one). `acl.ts` warns that its zero-principal warn is
  * per-reader and would repeat per row in a loop; that is unreachable from the
  * two read surfaces, which throw `BrainReaderUnresolvedError` on `deny-all`
  * before any row is projected. The per-row cost is bounded for a second

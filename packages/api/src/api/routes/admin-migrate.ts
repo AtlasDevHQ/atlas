@@ -349,7 +349,12 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
         ) {
           return {
             ok: false,
-            error: `${at}.preWideningVisibleTo: must be absent, null, or an array of strings.`,
+            // NULL ELEMENTS are accepted on purpose, and the message says so:
+            // `text[]` admits them, 0180's CHECK only requires one USABLE
+            // principal, and `isVisibleTo` treats a null token as inert. A
+            // maintainer who "tightened" this to reject them would refuse rows
+            // Postgres legally holds and strand that workspace in its region.
+            error: `${at}.preWideningVisibleTo: must be absent, null, or an array of strings (null elements allowed).`,
           };
         }
         // No-provenance-no-promotion. `{}` is rejected at rest by the table,

@@ -767,7 +767,9 @@ export async function loadFactCandidates(
         row.provenance,
         row.source_episode_id,
         // `FactRow` structurally satisfies `AttributionRow`, so the column is
-        // named once — in the module that owns the decision.
+        // INTERPRETED once, in the module that owns the decision. Each surface
+        // still names it in its own SELECT — which is what the `undefined` arm
+        // of `attributionDecision` exists to catch.
         attributionDecision(row, ctx, requestId),
       ),
       // `source_episode_id uuid NOT NULL` + the composite FK make the `null`

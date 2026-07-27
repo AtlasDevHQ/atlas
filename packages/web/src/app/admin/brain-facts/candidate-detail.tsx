@@ -43,7 +43,12 @@ function orDash(value: string | null): React.ReactNode {
  * membership. The dominant case is a private chat channel, but the withheld
  * arm is also reachable when the original grant was a `role:` the reader
  * lacks, or a `user:`, so "you are not in that channel" would be wrong some of
- * the time. "An audience you are not part of" is true of every arm.
+ * the time. "An audience you are not part of" is true of every ENTITLEMENT arm.
+ * It is not true of the two drift arms (`attributionDecision` also withholds
+ * when the column is missing from the SELECT or does not decode as an array) —
+ * accepted, because those are unreachable-by-construction states that mean
+ * Atlas has a defect, and inventing a fourth message for them would trade a
+ * rare wrong sentence for a permanent confusing one.
  *
  * It promises WHO and WHEN, and deliberately not WHERE. The Grant panel below
  * renders `visibleTo` verbatim, which on a widened fact still names the

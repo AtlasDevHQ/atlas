@@ -3305,8 +3305,9 @@ export const brainFacts = pgTable(
     // reader of the fact is an original reader.
     //
     // Nullable, unlike `visible_to` — absence is the meaningful, common state
-    // and no invented default could express it. Written by exactly two paths,
-    // same as `visible_to` above: `WIDEN_AND_PROMOTE_FACTS_SQL` DERIVES it
+    // and no invented default could express it. Written by exactly two paths
+    // — as `visible_to` above is, though not the SAME two (its are ingest and
+    // widening): `WIDEN_AND_PROMOTE_FACTS_SQL` DERIVES it
     // (COALESCE-guarded, so a re-widened draft keeps the NARROWEST grant it
     // ever had), and the region import RESTORES it verbatim from the bundle
     // (`admin-migrate.ts`) — it cannot be re-derived in the target region,

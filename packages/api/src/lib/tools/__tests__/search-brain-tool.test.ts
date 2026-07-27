@@ -87,6 +87,7 @@ void mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 const { searchBrain, SEARCH_BRAIN_DESCRIPTION } = await import("@atlas/api/lib/tools/search-brain");
+const { SEARCH_BRAIN_TOOL_DESCRIPTION } = await import("@atlas/api/lib/tools/descriptions");
 
 function run(input: Record<string, unknown> = {}) {
   // AI SDK tool.execute(args, ToolCallOptions). Cast through unknown: the tool's
@@ -295,36 +296,53 @@ describe("searchBrain tool.execute", () => {
 });
 
 /**
- * The agent-facing honesty property (#4836).
+ * The agent-facing honesty property (#4836), on BOTH agent surfaces.
  *
- * `SEARCH_BRAIN_DESCRIPTION` is the ONLY thing standing between a withheld
- * attribution and an agent reporting the claim as anonymous or undated. The web
- * review surface pins the same property with seven rendering tests; this is the
- * agent surface's equivalent, and it exists because the description is a string
- * nobody would notice deleting. It rides to MCP for free — `packages/mcp` reuses
- * `searchBrain.description`.
+ * Prose is the only thing standing between a withheld attribution and a model
+ * reporting the claim as anonymous or undated — the wire shape says "withheld"
+ * but nothing makes a model say it out loud. The web review surface pins the
+ * same property with six rendering tests; these are the agent equivalents, and
+ * they exist because a description is a string nobody would notice deleting.
+ *
+ * TWO strings, not one, and that is the whole reason this block is parameterised:
+ *
+ *   - `SEARCH_BRAIN_DESCRIPTION` (`lib/tools/search-brain.ts`) — workflow
+ *     guidance injected into the in-process agent's SYSTEM PROMPT via
+ *     `registry.ts`'s `describe()`.
+ *   - `SEARCH_BRAIN_TOOL_DESCRIPTION` (`lib/tools/descriptions.ts`) — the
+ *     LLM-facing tool description `packages/mcp/src/tools.ts` registers, i.e.
+ *     what an external MCP client's model reads.
+ *
+ * They are NOT the same string and neither is derived from the other, so
+ * guidance added to one reaches only half the agents. The MCP half is the one
+ * Atlas does not control the model of, which makes it the half where an
+ * unguided `{ "visible": false }` is most likely to be narrated as "nobody
+ * recorded who said this".
  */
-describe("SEARCH_BRAIN_DESCRIPTION — withheld attribution is explained to the model", () => {
+describe.each([
+  ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
+  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+])("%s — withheld attribution is explained to the model", (_label, description) => {
   it("names the wire shape the model will actually see", () => {
     // A rule keyed on prose the response does not contain is unactionable.
-    expect(SEARCH_BRAIN_DESCRIPTION).toContain("provenance.attribution");
-    expect(SEARCH_BRAIN_DESCRIPTION).toContain('"visible": false');
+    expect(description).toContain("provenance.attribution");
+    expect(description).toContain('"visible": false');
   });
 
   it("forbids the three wrong readings and the inference", () => {
-    // "Say nothing" is not enough: the failure mode is an agent filling the
+    // "Say nothing" is not enough: the failure mode is a model filling the
     // gap — reporting the claim as unsourced, or guessing the author from the
     // episode list. Each wrong reading is named explicitly.
     for (const forbidden of ["anonymous", "undated", "unsourced"]) {
-      expect(SEARCH_BRAIN_DESCRIPTION).toContain(forbidden);
+      expect(description).toContain(forbidden);
     }
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/never infer the author/i);
+    expect(description).toMatch(/never infer the author|nor infer the author/i);
   });
 
   it("still tells the model the CLAIM is usable", () => {
     // The other half, and the one a well-meaning tightening would delete: the
-    // fact is legitimately visible. An agent that refused to use it would turn
+    // fact is legitimately visible. A model that refused to use it would turn
     // an attribution boundary into a knowledge gap.
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/Use the claim/i);
+    expect(description).toMatch(/use the claim/i);
   });
 });

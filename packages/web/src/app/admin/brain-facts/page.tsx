@@ -9,6 +9,7 @@ import { brainFactsSearchParams } from "./search-params";
 import { buildBrainFactsPath, hasBrainFactFilters } from "./list-query";
 import { getBrainFactColumns } from "./columns";
 import { CandidateDetail } from "./candidate-detail";
+import { OversightPanel } from "./oversight-panel";
 import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import {
@@ -223,8 +224,8 @@ export default function BrainFactsPage() {
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
               Rejecting a claim withdraws it — it leaves this queue and is never published, but
               stays on the record so past answers still make sense. Publishing promotes{" "}
-              <strong>every remaining draft</strong> in the workspace, so reject what you don&apos;t
-              trust first.
+              <strong>every remaining draft in the workspace</strong> — including any this
+              queue cannot show you — so reject what you don&apos;t trust first.
             </p>
           </div>
           {/* Gated on a queue that actually loaded. Publishing is workspace-wide
@@ -286,6 +287,11 @@ export default function BrainFactsPage() {
                 </div>
               )
             )}
+
+            {/* Above the queue, not below it: the queue is this reader's
+                subset, and the fact that it IS a subset has to be readable
+                before the rows are, not after scrolling past them. */}
+            <OversightPanel />
 
             <QueueFilterRow
               options={STATUS_FILTERS}

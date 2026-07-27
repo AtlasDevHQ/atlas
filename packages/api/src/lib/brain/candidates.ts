@@ -314,8 +314,13 @@ const CORROBORATION_SELECT = `(
  * `reconcile.ts` writes both keys or neither, so the divergence is not
  * producible in-region; a region-import bundle is the reachable path, which is
  * the drift class the projection's OR was added for in the first place.
+ *
+ * Exported for #4825's oversight aggregate, which reports the same "provisional"
+ * word to the same admin on the same page. A second spelling there would be two
+ * quality queues disagreeing about their own size — the exact failure the note
+ * above describes, one surface further out. Both alias the fact table `f`.
  */
-const PROVISIONAL_PREDICATE = `(
+export const PROVISIONAL_PREDICATE = `(
     jsonb_exists(f.provenance, 'provisional')
     OR jsonb_array_length(COALESCE(f.provenance -> 'unresolved', '[]'::jsonb)) > 0
   )`;
@@ -327,8 +332,12 @@ const PROVISIONAL_PREDICATE = `(
  * the incumbent, so an incumbent that has since been contradicted only ever
  * appears on the `to` side. Filtering on `from_fact_id` alone would hide from
  * the reviewer exactly the older claim whose trust is now in question.
+ *
+ * Exported alongside {@link PROVISIONAL_PREDICATE} and for the same reason —
+ * #4825's oversight aggregate reports "in tension" beside this queue's own
+ * count. Aliases the fact table `f`.
  */
-const TENSION_EXISTS_SELECT = `EXISTS (
+export const TENSION_EXISTS_SELECT = `EXISTS (
     SELECT 1 FROM brain_edges te
      WHERE te.workspace_id = f.workspace_id
        AND te.edge_type = 'in-tension-with'

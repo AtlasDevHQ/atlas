@@ -84,7 +84,7 @@ const log = createLogger("brain-reader-context");
 export class BrainReaderIdentityError extends Error {}
 
 /** Closed diagnostic vocabulary for which surface refused a read. */
-export type BrainReadSurface = "read" | "review" | "search";
+export type BrainReadSurface = "read" | "review" | "search" | "oversight";
 
 /**
  * The reader's identity could not be turned into a usable principal set, so

@@ -25143,6 +25143,363 @@
         "operationId": "getAdminBrainFactsSummary"
       }
     },
+    "/api/v1/admin/brain-facts/oversight": {
+      "get": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Where the workspace's facts stand, as counts",
+        "description": "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. `reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped.",
+        "responses": {
+          "200": {
+            "description": "Per-audience counts by state, plus workspace totals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "labelPolicy": {
+                                "type": "string",
+                                "enum": [
+                                  "intrinsic"
+                                ]
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "audience",
+                                  "role",
+                                  "user",
+                                  "malformed"
+                                ]
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "awaitingReview": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "published": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "retracted": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "provisional": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inTension": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "labelPolicy",
+                              "key",
+                              "kind",
+                              "label",
+                              "awaitingReview",
+                              "published",
+                              "retracted",
+                              "provisional",
+                              "inTension"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "labelPolicy": {
+                                "type": "string",
+                                "enum": [
+                                  "configured"
+                                ]
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "audience",
+                                  "role",
+                                  "user",
+                                  "malformed"
+                                ]
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "awaitingReview": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "published": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "retracted": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "provisional": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inTension": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "labelPolicy",
+                              "key",
+                              "kind",
+                              "label",
+                              "awaitingReview",
+                              "published",
+                              "retracted",
+                              "provisional",
+                              "inTension"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "labelPolicy": {
+                                "type": "string",
+                                "enum": [
+                                  "discovered"
+                                ]
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "audience",
+                                  "role",
+                                  "user",
+                                  "malformed"
+                                ]
+                              },
+                              "awaitingReview": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "published": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "retracted": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "provisional": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inTension": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "labelPolicy",
+                              "key",
+                              "kind",
+                              "awaitingReview",
+                              "published",
+                              "retracted",
+                              "provisional",
+                              "inTension"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "workspaceTotals": {
+                      "type": "object",
+                      "properties": {
+                        "awaitingReview": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "published": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "retracted": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "provisional": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "inTension": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "awaitingReview",
+                        "published",
+                        "retracted",
+                        "provisional",
+                        "inTension"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "reviewableAwaitingReview": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "countsConsistent": {
+                      "type": "boolean"
+                    },
+                    "distinctAudiences": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "bucketsTruncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "buckets",
+                    "workspaceTotals",
+                    "reviewableAwaitingReview",
+                    "countsConsistent",
+                    "distinctAudiences",
+                    "bucketsTruncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainFactsOversight"
+      }
+    },
     "/api/v1/admin/brain-facts/{id}/retract": {
       "post": {
         "tags": [
@@ -59614,6 +59971,13 @@
                           "updatedAt"
                         ]
                       }
+                    },
+                    "brainFactsWithheld": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "brainFactsScopeUnavailable": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -59624,7 +59988,9 @@
                     "prompts",
                     "starterPrompts",
                     "knowledgeDocuments",
-                    "brainFacts"
+                    "brainFacts",
+                    "brainFactsWithheld",
+                    "brainFactsScopeUnavailable"
                   ]
                 }
               }

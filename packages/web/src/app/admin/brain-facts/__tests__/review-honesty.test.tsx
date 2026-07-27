@@ -120,6 +120,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
 /** Every URL the page is allowed to touch. */
 const ALLOWED = [
   /\/api\/v1\/admin\/brain-facts\/summary$/,
+  /\/api\/v1\/admin\/brain-facts\/oversight$/,
   /\/api\/v1\/admin\/brain-facts\/[^/]+\/retract$/,
   /\/api\/v1\/admin\/brain-facts(\?|$)/,
   /\/api\/v1\/admin\/publish-preview$/,
@@ -130,6 +131,31 @@ const ALLOWED = [
 let requested: Array<{ url: string; method: string }> = [];
 /** Status the retract POST answers with. */
 let retractStatus = 200;
+
+/**
+ * The oversight payload (#4825). Defaults to "nothing hidden", so the
+ * disclosure's ABSENCE is the baseline every other test in this file renders
+ * against — a panel that shouted at an admin with a fully visible queue would
+ * be as wrong as one that stayed silent on a hidden backlog.
+ */
+let oversight: Record<string, unknown> = {
+  buckets: [],
+  workspaceTotals: {
+    awaitingReview: 3,
+    published: 12,
+    retracted: 0,
+    provisional: 1,
+    inTension: 1,
+  },
+  reviewableAwaitingReview: 3,
+  countsConsistent: true,
+  distinctAudiences: 1,
+  bucketsTruncated: false,
+};
+/** Withheld brain-fact count the publish preview reports. */
+let withheldFacts = 0;
+/** Whether that count is an Atlas fault rather than an audience boundary. */
+let scopeUnavailable = false;
 
 function mockApi(
   candidates: Array<Record<string, unknown>>,
@@ -153,6 +179,11 @@ function mockApi(
         jsonResponse({ draftTotal: 3, provisionalTotal: 1, inTensionTotal: 1, publishedTotal: 12 }),
       );
     }
+    // BEFORE the bare `/brain-facts` arm: `.includes` would otherwise match the
+    // list endpoint and answer the oversight fetch with a candidate page.
+    if (url.includes("/api/v1/admin/brain-facts/oversight")) {
+      return Promise.resolve(jsonResponse(oversight));
+    }
     if (url.includes("/api/v1/admin/brain-facts")) {
       return Promise.resolve(
         jsonResponse({
@@ -173,6 +204,8 @@ function mockApi(
           starterPrompts: [],
           knowledgeDocuments: [],
           brainFacts: [],
+          brainFactsWithheld: withheldFacts,
+          brainFactsScopeUnavailable: scopeUnavailable,
         }),
       );
     }
@@ -186,6 +219,22 @@ function mockApi(
 beforeEach(() => {
   requested = [];
   retractStatus = 200;
+  withheldFacts = 0;
+  scopeUnavailable = false;
+  oversight = {
+    buckets: [],
+    workspaceTotals: {
+      awaitingReview: 3,
+      published: 12,
+      retracted: 0,
+      provisional: 1,
+      inTension: 1,
+    },
+    reviewableAwaitingReview: 3,
+    countsConsistent: true,
+    distinctAudiences: 1,
+    bucketsTruncated: false,
+  };
   testQueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
@@ -598,5 +647,354 @@ describe("queue vitals", () => {
 
     const view = render(createElement(BrainFactsPage), { wrapper: Wrapper });
     await waitFor(() => expect(view.container.textContent).toContain("Couldn't load queue totals"));
+  });
+});
+
+describe("hidden-backlog disclosure (#4825)", () => {
+  test("stays silent when this reader can review the whole workspace", async () => {
+    // The baseline, and it has to be asserted: a panel that always claimed
+    // something was hidden would "pass" every test below while telling every
+    // admin in every workspace something untrue.
+    const view = await renderPage([candidate()]);
+    // Wait for a marker the panel ALWAYS renders once its query resolves.
+    // `renderPage` only waits on the list query, so a bare negative here could
+    // not tell "loaded and correctly silent" from "not mounted yet" — and would
+    // pass with <OversightPanel /> deleted from the page outright.
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("Workspace breakdown"),
+    );
+    expect(view.container.textContent ?? "").not.toContain("not in your queue");
+  });
+
+  test("states the delta when the workspace holds drafts this reader cannot see", async () => {
+    // The 26 / 32 soak reading, at the surface an admin actually looks at.
+    oversight = {
+      buckets: [
+        {
+          key: "org",
+          kind: "org",
+          label: "org",
+          labelPolicy: "intrinsic",
+          awaitingReview: 26,
+          published: 40,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 32,
+        published: 40,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 26,
+      countsConsistent: true,
+      distinctAudiences: 1,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "6 drafts awaiting review are not in your queue",
+      ),
+    );
+    // And it says publish reaches them anyway — the half that changes what the
+    // admin does next. A number with no consequence attached is trivia.
+    expect(view.container.textContent ?? "").toContain("workspace-wide");
+  });
+
+  test("renders a withheld audience as an opaque handle with its counts", async () => {
+    // The well-behaved payload: the API sends no id at all, so the panel has
+    // nothing to leak. This pins that it does not invent one from `key` or from
+    // the kind, and that the COUNTS still get through — an oversight row that
+    // withheld the number as well as the name would disclose nothing at all.
+    oversight = {
+      buckets: [
+        {
+          key: "discovered-1",
+          kind: "audience",
+          labelPolicy: "discovered",
+          awaitingReview: 6,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 9,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 3,
+      countsConsistent: true,
+      distinctAudiences: 1,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("not in your queue"));
+    clickButton(view, /Workspace breakdown/i);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("discovered-1"));
+    // The counts are there; the channel is not.
+    expect(view.container.textContent ?? "").toContain("6");
+    expect(view.container.textContent ?? "").not.toContain("chat-channel");
+  });
+
+  test("names a configured audience, and explains each withheld kind", async () => {
+    // The nameable arm has no coverage otherwise — every other fixture is `org`
+    // (which takes the "Everyone in the workspace" branch) or `discovered`. A
+    // regression that opaque-handled EVERYTHING would pass every other test in
+    // this file while making the breakdown useless, which is the same
+    // "satisfied by a component that discloses nothing" failure the API-side
+    // header warns about, one layer out.
+    const bucket = (over: Record<string, unknown>) => ({
+      awaitingReview: 1,
+      published: 0,
+      retracted: 0,
+      provisional: 0,
+      inTension: 0,
+      ...over,
+    });
+    oversight = {
+      buckets: [
+        bucket({ key: "org", kind: "org", labelPolicy: "intrinsic", label: "org" }),
+        bucket({
+          key: "audience:chat-channel:slack:C0PRIVATE1",
+          kind: "audience",
+          labelPolicy: "configured",
+          label: "audience:chat-channel:slack:C0PRIVATE1",
+        }),
+        bucket({ key: "discovered-1", kind: "user", labelPolicy: "discovered" }),
+        bucket({ key: "discovered-2", kind: "malformed", labelPolicy: "discovered" }),
+      ],
+      workspaceTotals: {
+        awaitingReview: 4,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 4,
+      countsConsistent: true,
+      distinctAudiences: 4,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("Workspace breakdown"));
+    clickButton(view, /Workspace breakdown/i);
+    // The channel the admin configured IS named — that is the whole point of
+    // the configured/discovered split.
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "audience:chat-channel:slack:C0PRIVATE1",
+      ),
+    );
+    // And the two withheld kinds render their handles, not their tokens.
+    expect(view.container.textContent ?? "").toContain("discovered-1");
+    expect(view.container.textContent ?? "").toContain("discovered-2");
+    // THE non-vacuity guard. On the disclosable arms `key === label`, so the
+    // assertions above are ALSO satisfied by a component that opaque-handled
+    // everything — the exact regression this test claims to catch. The `org`
+    // arm's prose has no such twin: it renders only when the branch genuinely
+    // took the disclosable path.
+    expect(view.container.textContent ?? "").toContain("Everyone in the workspace");
+  });
+
+  test("refuses to render a withheld bucket that smuggles its label", async () => {
+    // The HOSTILE payload — a `discovered` bucket carrying the very id the
+    // policy withheld, i.e. what a producer regressed to a flat
+    // `label: string | null` would emit. The BUCKET schema stays strict on the
+    // client (only the envelope is additive-tolerant) precisely so this fails
+    // closed: the panel drops to its error state and the token never reaches
+    // the DOM. An admin losing a breakdown is recoverable; a leaked private
+    // channel name is not.
+    oversight = {
+      buckets: [
+        {
+          key: "discovered-1",
+          kind: "audience",
+          labelPolicy: "discovered",
+          label: "audience:chat-channel:slack:C0SECRET99",
+          awaitingReview: 6,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 9,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 3,
+      countsConsistent: true,
+      distinctAudiences: 1,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "can't tell you whether drafts exist outside your queue",
+      ),
+    );
+    expect(view.container.textContent ?? "").not.toContain("C0SECRET99");
+    expect(view.container.textContent ?? "").not.toContain("chat-channel");
+  });
+
+  test("tolerates an ADDITIVE envelope field rather than blanking the disclosure", async () => {
+    // The other half of the strict/loose split. During an api/web deploy skew a
+    // new envelope field must not take the hidden-backlog alert down with it —
+    // failing closed for confidentiality there would mean failing OPEN for the
+    // disclosure, which is the thing this whole surface exists to make.
+    oversight = {
+      buckets: [],
+      workspaceTotals: {
+        awaitingReview: 32,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 26,
+      countsConsistent: true,
+      distinctAudiences: 1,
+      bucketsTruncated: false,
+      someFutureField: "added by a newer API",
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "6 drafts awaiting review are not in your queue",
+      ),
+    );
+  });
+
+  test("says it cannot compute the delta rather than clamping it to a reassuring zero", async () => {
+    // The producer refuses to clamp; the first cut of the panel undid that with
+    // `Math.max(0, …)` and rendered a clean page out of a state that proves
+    // nothing — #4825's defect reproduced by its own fix.
+    oversight = {
+      buckets: [],
+      workspaceTotals: {
+        awaitingReview: 5,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 9,
+      countsConsistent: false,
+      distinctAudiences: 0,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("two counts of the same workspace"),
+    );
+    // And it must NOT quietly claim the all-clear.
+    expect(view.container.textContent ?? "").not.toContain("not in your queue");
+  });
+
+  test("reports the true audience count when the breakdown is clipped", async () => {
+    // `buckets.length` would read "1 audience" over a workspace with 250, with
+    // the correction hidden behind a collapsed disclosure triangle.
+    oversight = {
+      buckets: [
+        {
+          key: "org",
+          kind: "org",
+          label: "org",
+          labelPolicy: "intrinsic",
+          awaitingReview: 1,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 1,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 1,
+      countsConsistent: true,
+      distinctAudiences: 250,
+      bucketsTruncated: true,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("250 audiences"));
+    clickButton(view, /Workspace breakdown/i);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("more distinct audiences"),
+    );
+  });
+
+  test("the publish modal states the withheld count BEFORE the confirm button", async () => {
+    // The acceptance criterion in as many words: an admin must not learn the
+    // blast radius from the response.
+    withheldFacts = 6;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("6 brain facts here aren't shown to you"),
+    );
+    // Folded into the button, so the number the admin confirms is the real one.
+    // Exact, not `toContain("6")`: the button reads "Publish all (0)" without
+    // the fold, and "0" would not match, but neither would a coincidental 6
+    // somewhere else in the label.
+    const confirm = Array.from(document.body.querySelectorAll("button")).find((b) =>
+      /Publish all/.test(b.textContent ?? ""),
+    );
+    expect(confirm?.textContent?.trim()).toBe("Publish all (6)");
+  });
+
+  test("offers a retry that actually refetches, not an inert instruction", async () => {
+    // The degraded arm is a 200, so the modal's error-path Retry never renders,
+    // and "close and reopen this dialog" is inert inside TanStack's 30s
+    // staleTime — it replays the identical degraded response during exactly the
+    // window a transient fault would have cleared. So the button has to be real.
+    withheldFacts = 4;
+    scopeUnavailable = true;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("couldn't work out which of these"),
+    );
+
+    const before = requested.filter((r) => r.url.includes("publish-preview")).length;
+    const retry = Array.from(document.body.querySelectorAll("button")).find(
+      (b) => /Try again/.test(b.textContent ?? ""),
+    );
+    expect(retry).toBeTruthy();
+    fireEvent.click(retry!);
+    await waitFor(() =>
+      expect(requested.filter((r) => r.url.includes("publish-preview")).length).toBeGreaterThan(
+        before,
+      ),
+    );
+  });
+
+  test("says an Atlas fault is an Atlas fault, not a channel-membership boundary", async () => {
+    // Both causes withhold everything, and only one is about Slack. Printing the
+    // audience explanation over an infrastructure fault tells an admin who can
+    // read every fact in the workspace that none of them are theirs to see.
+    withheldFacts = 4;
+    scopeUnavailable = true;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("couldn't work out which of these"),
+    );
+    expect(document.body.textContent).not.toContain("audience you're not part of");
   });
 });

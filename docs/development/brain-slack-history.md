@@ -97,6 +97,93 @@ nobody anything and — once episodes become facts — would be refused at every
 publish forever by #4769's `GRANT_UNUSABLE` classifier, with no repair UI until
 #4772. That refusal is meant to be defence in depth, not a live trap.
 
+## Publish scope (#4825)
+
+**Publish is workspace-scoped. The review queue is reader-scoped. Both are
+deliberate, and the pairing is the decision.**
+
+`promoteBrainFacts(tx, orgId)` takes no reader and `DRAFT_FACTS_SQL` carries no
+ACL clause, so publishing promotes every live draft in the workspace — including
+ones the admin who pressed the button was never shown. `/admin/brain-facts`
+composes `aclVisibilityClause` and shows only what that reader may see. So
+`queue < what publish promotes` is the **correct** state, not a bug.
+
+The 2026-07-26 staging soak read **26 / 32** — 26 reviewable drafts against 32
+in the workspace, the delta being six facts from a private channel the admin was
+not a resolved member of. Each number was right; together they were
+inexplicable from the UI, which is what this section exists to fix.
+`oversight-pg.test.ts` reproduces that split against a live database.
+
+### Why not reader-scoped publish
+
+It was considered and rejected. There is no free lunch here:
+
+| | outcome |
+|---|---|
+| **unscoped publish** (today) | nothing strands; facts reach `published` without the admin having read them |
+| **reader-scoped publish** | everything published was genuinely reviewed; a private channel's facts strand **permanently** whenever no member of it is an Atlas reviewer |
+
+The second is worse. `role:platform_admin` is refused by the grant grammar
+(`acl.ts`) and a platform role resolves to `role: null`, so there is no
+escalation path that could ever clear the backlog — the drafts badge stays lit
+forever. That is the unclearable-banner shape #4771 closed for grants,
+reappearing through identity resolution.
+
+### So the fix is disclosure, not scoping
+
+- **Before the click.** `/api/v1/admin/publish-preview` returns brain-fact
+  labels **ACL-scoped to the reader** — the label *is* the claim, and an
+  unscoped one handed an admin exactly what the review queue had just withheld
+  — plus `brainFactsWithheld`, the count of drafts publish will promote and this
+  admin may not read. The publish modal folds that count into its button total
+  and states the reason above it. The unscoped half comes from
+  `brainFactsCountSql`, the same statement behind `/api/v1/mode`
+  `draftCounts.brainFacts`, so `shown + withheld` equals the pending badge by
+  construction.
+- **Standing view.** `GET /api/v1/admin/brain-facts/oversight`
+  (`lib/brain/oversight.ts`) reports per-audience counts by state — awaiting
+  review, published, retracted, provisional, in tension — for the whole
+  workspace, unscoped, **with no claim, evidence, provenance, or fact id**. It
+  carries the reader's own reviewable total in the same *response*, so the
+  hidden backlog cannot flicker between two client fetches. The statements are
+  not transactionally consistent (a pool, no enclosing transaction), so a brief
+  ingest race can invert them; `countsConsistent: false` says so rather than
+  clamping the delta to a reassuring zero, and `distinctAudiences` carries the
+  true cardinality even when the bucket list is capped.
+
+  Note this is **not** ADR-0036's audit override. That is a reason-gated,
+  owner/admin-only, logged bypass over *content*, and this path deliberately
+  does not use it — no reason, no audit row, no `AclAuditOverride`. It is a
+  narrower thing: an unscoped **count**.
+
+An admin learns that facts exist they cannot see — a number, never content.
+
+### The audience-labelling rule
+
+Per-audience counts can leak by their *label*: the existence and activity level
+of `#project-severance` is sensitive even with zero content attached. The rule,
+stated now so M3's sources inherit it deliberately rather than by accident:
+
+> **An audience the admin CONFIGURED may be named. An audience Atlas DISCOVERED
+> gets an opaque handle.**
+
+- **Configured → named.** The install config (`workspace_plugins.config` →
+  `{"channels": [...]}`) is the record of what the admin typed into the form,
+  and is already admin-readable. Showing a channel id back discloses nothing.
+- **Discovered → opaque.** Anything else: an audience in a namespace
+  `parseChatChannelAudienceId` cannot read, a channel absent from the config, a
+  `user:` grant (Atlas resolved that person from a source roster; no admin named
+  them), or a token outside the grammar. Rendered as `discovered-N` — a
+  positional handle, deliberately **not** a hash of the id, since a ten-character
+  Slack channel id salted with a workspace id the admin already holds is a
+  brute-force range rather than a one-way function.
+- **`org` and `role:*` → named, policy `intrinsic`.** A fixed public vocabulary
+  naming no channel and no person. A third arm rather than stretching
+  "configured", so the rule stays sharp where it matters.
+
+The fail-closed direction is built in: a source whose audience ids this module
+cannot parse gets opaque handles without anyone deciding, and an install-config
+read fault withholds every label while leaving the counts intact.
 ### The corroboration rule — the grant a REPEATED claim ends up with
 
 A company Slack restates the same claim across channels constantly, and the two

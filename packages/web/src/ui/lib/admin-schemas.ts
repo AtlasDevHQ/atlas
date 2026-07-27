@@ -52,6 +52,7 @@ export {
   BrainFactCandidateSchema,
   BrainFactCandidateListResponseSchema,
   BrainFactCandidateSummarySchema,
+  BrainFactOversightClientSchema,
   BrainFactRetractResponseSchema,
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,

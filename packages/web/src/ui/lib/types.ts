@@ -16,6 +16,8 @@ export type {
   BrainFactCandidate,
   BrainFactReviewStatus,
   BrainFactEpisodeView,
+  BrainFactOversight,
+  BrainFactOversightBucket,
   BrainFactProvenanceView,
   BrainFactTensionView,
   AdminRole,

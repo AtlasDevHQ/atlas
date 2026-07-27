@@ -2,10 +2,11 @@
  * Admin fact-review routes — the human end of the company-brain wedge
  * (#4772, ADR-0036).
  *
- * Mounted under `/api/v1/admin/brain-facts`. Three verbs and no fourth:
+ * Mounted under `/api/v1/admin/brain-facts`. Four verbs and no fifth:
  *
  *   GET  /          — the review queue, paginated and filterable
  *   GET  /summary   — queue vitals for the stats bar
+ *   GET  /oversight — per-audience counts, workspace-wide, with no content
  *   POST /:id/retract — reject a candidate
  *
  * ## There is no approve verb here, and that is the design
@@ -32,6 +33,17 @@
  * that silently granted one would show an admin evidence from private channels
  * as a matter of routine. An admin who needs that has to invoke the override
  * through a surface that records a reason.
+ *
+ * ## `/oversight` is the ONE unscoped read here, and it carries no content
+ *
+ * `GET /oversight` (#4825) counts every fact in the workspace regardless of
+ * reader, which is the point: publish is workspace-scoped, so an admin needs to
+ * be able to tell a clean queue from a hidden backlog before they press the
+ * button. It is not a widening of the override above — it never returns a
+ * claim, an episode, or a provenance chain, only numbers and the grant tokens
+ * `lib/brain/oversight.ts` rules disclosable. That module's header states the
+ * rule; `z.strictObject` on its wire schema plus `checked()` below are what
+ * make a producer that broke it fail here rather than at the browser.
  */
 
 import { Effect } from "effect";
@@ -47,6 +59,7 @@ import {
   loadFactCandidates,
   retractFactCandidate,
 } from "@atlas/api/lib/brain/candidates";
+import { loadFactOversight } from "@atlas/api/lib/brain/oversight";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
@@ -54,6 +67,7 @@ import {
   BRAIN_FACT_STATUS_FILTERS,
   BrainFactCandidateListResponseSchema,
   BrainFactCandidateSummarySchema,
+  BrainFactOversightSchema,
   BrainFactRetractResponseSchema,
   isBrainFactStatusFilter,
 } from "@useatlas/schemas";
@@ -209,6 +223,25 @@ const summaryRoute = createRoute({
   },
 });
 
+const oversightRoute = createRoute({
+  method: "get",
+  path: "/oversight",
+  tags: ["Admin — Brain Facts"],
+  summary: "Where the workspace's facts stand, as counts",
+  description:
+    "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. " +
+    "Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. " +
+    "A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. " +
+    "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped.",
+  responses: {
+    200: {
+      description: "Per-audience counts by state, plus workspace totals",
+      content: { "application/json": { schema: BrainFactOversightSchema } },
+    },
+    ...commonResponses,
+  },
+});
+
 const retractRoute = createRoute({
   method: "post",
   path: "/{id}/retract",
@@ -311,6 +344,31 @@ adminBrainFacts.openapi(summaryRoute, async (c) => {
       return c.json(checked(BrainFactCandidateSummarySchema, summary), 200);
     }),
     { label: "load brain fact review vitals" },
+  );
+});
+
+adminBrainFacts.openapi(oversightRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      // The reader context is resolved even though the WORKSPACE counts do not
+      // use it. Two jobs: it produces the one scoped number
+      // (`reviewableAwaitingReview`), and it makes an unresolvable identity a
+      // 500 rather than a workspace shape served to a session Atlas could not
+      // identify.
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+      const oversight = yield* Effect.tryPromise({
+        try: () => loadFactOversight(getInternalDB(), ctx, requestId),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      return c.json(checked(BrainFactOversightSchema, oversight), 200);
+    }),
+    { label: "load brain fact oversight counts" },
   );
 });
 

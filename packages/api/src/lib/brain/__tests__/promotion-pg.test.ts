@@ -33,6 +33,7 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import {
+  brainFactPreviewSql,
   brainFactsCountSql,
   promoteBrainFacts,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
@@ -560,17 +561,23 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       const counted = await pool.query<{ n: number }>(brainFactsCountSql("$1"), [ws]);
       expect(counted.rows[0]!.n).toBe(1);
 
-      // (2) the publish preview projection, run against the live schema. The
-      // route has no unit test, so a bad column here 500s it in production
+      // (2) the publish preview projection, run against the live schema — and
+      // now THE statement the route ships rather than a hand-copy of it, which
+      // is how this assertion silently outlived the shape it was written for.
+      // The route has no unit test, so a bad column here 500s it in production
       // (the #4209 lesson from the knowledge surface).
+      const previewAcl = aclVisibilityClause(
+        await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u-preview",
+          resolvedRole: { role: "admin", orgId: ws },
+        }),
+        { table: "brain_facts", alias: "f", paramIndex: 1 },
+      );
       const previewed = await pool.query<{ id: string; label: string }>(
-        `SELECT id::text AS id,
-                subject || ' ' || predicate || ' ' || object AS label,
-                updated_at
-           FROM brain_facts
-          WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
-          ORDER BY updated_at DESC`,
-        [ws],
+        brainFactPreviewSql(previewAcl.sql),
+        [...previewAcl.params],
       );
       expect(previewed.rows.map((r) => r.id)).toEqual([live]);
       expect(previewed.rows[0]!.label).toBe("live-draft is thing");

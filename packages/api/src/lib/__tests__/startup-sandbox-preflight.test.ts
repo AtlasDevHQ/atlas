@@ -304,10 +304,13 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     // so the pin alone still reports available) and "just-bash" (the pin will
     // not degrade to it). The pre-flight must say the tool is unavailable.
     //
-    // Critically, the pre-flight must NOT call markNsjailFailed() to force the
-    // resolver's hand: planSandboxSelection only emits the hard-fail step while
-    // `!nsjailFailed`, so setting the flag would DELETE the pin's hard-fail
-    // contract and silently degrade the box to unsandboxed just-bash.
+    // The pre-flight must NOT call markNsjailFailed() here. The original reason
+    // — that setting the flag would delete the pin's hard-fail step — was
+    // removed by #4829; the step now stands unconditionally. What survives is
+    // the narrower distinction #4824 pinned: `_nsjailFailed` records a RUNTIME
+    // failure, and an absent binary is a configuration state, so boot must not
+    // fabricate one. The assertion below is unchanged and still load-bearing;
+    // only its justification moved.
     process.env.ATLAS_SANDBOX = "nsjail";
     mockNsjailBinaryPath = null;
 
@@ -317,11 +320,17 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     expect(claimedNoIsolation()).toBe(false);
     expect(
       logCalls.some((c) =>
-        c.args.some((a) => typeof a === "string" && a.includes("Explore tool: unavailable")),
+        c.args.some((a) => typeof a === "string" && a.includes("Explore tool: UNAVAILABLE")),
       ),
     ).toBe(true);
-    // The hard-fail step must survive — this is the security-critical assertion.
+    // #4824's regression assertion — boot does not fabricate a runtime failure.
     expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
+    // The consequence, pinned so it is visible rather than merely true: with the
+    // flag clear the bare pin still reads as available, so health names `nsjail`
+    // for a process where explore refuses every request. Pre-dates #4829/#4828
+    // and is tracked as #4834 — this line documents the gap, it does not
+    // bless it.
+    expect(getExploreBackendType()).toBe("nsjail");
   });
 
   it("reports fail-closed when the nsjail pin's namespaces are broken (#4829)", async () => {

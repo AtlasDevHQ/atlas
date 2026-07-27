@@ -73,11 +73,16 @@ const PluginItemHealthSchema = z.object({
   latencyMs: z.number().int().nonnegative().optional(),
 });
 
-// Plugin aggregate is never `down` — that path is reserved for the
-// datasource (#1981 / SaaS-503 contract). Narrowing the inherited
+// Plugin aggregate is never `down` — a plugin fault must not read as an
+// outage on the plugins aggregate. Narrowing the inherited
 // `ComponentHealthSchema` enum to `healthy | degraded | disabled` encodes
 // that invariant in the wire format and prevents a future contributor
 // from setting `pluginsComponent.status = "down"`.
+//
+// NB `down` on a component does NOT imply the 503 contract: only the
+// datasource / SaaS internal DB promote the top-level status to `error`
+// (#1981). `provider` and `sandbox` both set component-level `down` while
+// the region keeps serving 200.
 const PluginsComponentSchema = ComponentHealthSchema.omit({
   status: true,
   model: true,
@@ -142,10 +147,11 @@ export const HealthResponseSchema = z.object({
     }),
     explore: z.object({
       // `fail-closed` is not a backend — it means no backend will construct and
-      // explore throws on every request (an unusable ATLAS_SANDBOX=nsjail pin, or
-      // a sandbox.priority pin with no just-bash fallback). Additive member:
-      // before #4828 that state was reported as `just-bash`, i.e. a working but
-      // unsandboxed deploy, which is the opposite of the truth.
+      // explore throws on every request (a sandbox.priority pin with no just-bash
+      // fallback, or an ATLAS_SANDBOX=nsjail pin whose backend was marked failed).
+      // Additive member: before #4828 that state was reported as `just-bash`,
+      // i.e. a working but unsandboxed deploy, the opposite of the truth. See
+      // `getExploreBackendType` for the one pinned case NOT covered here.
       backend: z.enum(["nsjail", "sidecar", "vercel-sandbox", "just-bash", "plugin", "fail-closed"]),
       isolated: z.boolean(),
       isolationVerified: z.boolean().optional(),
@@ -319,9 +325,10 @@ health.openapi(healthRoute, async (c) => {
     const entityCount = getWhitelistedTables().size;
     const exploreBackend = getExploreBackendType();
     // Not a backend but a total outage of the explore tool: no backend will
-    // construct and every request throws. Kept as a named local because it is
-    // the discriminator that keeps `BACKEND_ISOLATION[...]` well-typed below —
-    // that table is keyed by real backends, so the compiler forces this branch
+    // construct and every request throws. Named because it is used at three
+    // sites; it is the `=== "fail-closed"` comparison that narrows
+    // `exploreBackend` so `BACKEND_ISOLATION[...]` stays well-typed below. That
+    // table is keyed by real backends only, so the compiler forces this branch
     // rather than letting the state fall through as "not unsandboxed" (#4828).
     const exploreFailClosed = exploreBackend === "fail-closed";
     const authMode = detectAuthMode();

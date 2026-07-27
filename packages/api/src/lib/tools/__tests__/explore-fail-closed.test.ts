@@ -13,25 +13,23 @@
  * build from a broken one.
  *
  * The mechanism that makes these tests honest: `ATLAS_SEMANTIC_ROOT` points at a
- * real temp dir, so the just-bash backend genuinely executes `echo`. If the
- * fail-open regressed, the chain would reach just-bash and MARKER would appear
- * in the output — so `expect(result).not.toContain(MARKER)` fails loudly rather
- * than passing on a technicality. Asserting only on the error string would stay
- * green against a build that ran the command AND logged an error.
+ * real temp dir, so the just-bash backend genuinely executes `echo`. The
+ * regression this guards is a fall-through to just-bash, which RETURNS the
+ * command's output — so `expect(result).not.toContain(MARKER)` goes red on the
+ * actual fail-open rather than passing on a technicality. (It proves no backend
+ * produced the output, not that no process ever ran; for the fall-through class
+ * of regression those coincide.)
+ *
+ * The positive control that keeps those negative assertions from being vacuous
+ * is "still reports just-bash for a pin that genuinely permits it" in the second
+ * describe — it asserts MARKER DOES appear. Deleting or skipping it silently
+ * turns every `not.toContain(MARKER)` here into a tautology.
  */
-import { describe, expect, it, beforeEach, afterEach, spyOn, mock } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _setConfigForTest, _resetConfig, type ResolvedConfig } from "@atlas/api/lib/config";
-
-// Only reached by the config-priority case; throwing keeps that branch
-// deterministic without a live Vercel SDK.
-void mock.module("@atlas/api/lib/tools/explore-sandbox", () => ({
-  createSandboxBackend: async (): Promise<never> => {
-    throw new Error("vercel sandbox unreachable (test)");
-  },
-}));
 
 const MARKER = "atlas_fail_closed_marker";
 
@@ -84,10 +82,11 @@ describe("ATLAS_SANDBOX=nsjail refuses rather than degrading (#4829)", () => {
     // module without needing to boot.
     mod.markNsjailFailed();
 
-    // "on EVERY request" is part of the acceptance criterion, and the backend
-    // cache makes the first and subsequent calls structurally different paths —
-    // a fix that only refused once would leave the deployment exposed from the
-    // second request onward.
+    // "on EVERY request" is part of the acceptance criterion. The refusal must be
+    // monotonic: `getExploreBackend`'s promise `.catch` deletes the failed cache
+    // entry, so each attempt re-walks the plan from scratch rather than replaying
+    // a cached rejection. A fix that refused once and then let a later walk fall
+    // through would leave the deployment exposed from the second request onward.
     for (const attempt of [1, 2, 3]) {
       const result = await runExplore(mod);
 
@@ -120,6 +119,15 @@ describe("ATLAS_SANDBOX=nsjail refuses rather than degrading (#4829)", () => {
     // Guarding it here means a future "simplification" that collapses the two
     // arms into one fails this file rather than silently reintroducing the
     // divergence #4824 closed.
+    //
+    // KNOWN GAP, pinned here deliberately rather than left unstated: this arm
+    // reports `nsjail` (and therefore `/api/health` reports `isolated: true`,
+    // `sandbox.status: "healthy"`) while explore refuses every request — the
+    // assertions below show both halves. It is the same shape as #4828 one arm
+    // over, it PRE-DATES this change (main behaves identically), and closing it
+    // means either marking the failure here — which #4824's regression test
+    // forbids — or redefining `isBackendAvailable` as constructibility. Tracked
+    // separately; do not "fix" it by weakening #4824.
     const fs = await import("fs");
     const spy = spyOn(fs, "accessSync").mockImplementation(() => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });

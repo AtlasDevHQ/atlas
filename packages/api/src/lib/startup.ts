@@ -877,12 +877,19 @@ async function checkSandboxPreFlight(): Promise<void> {
       break;
     case "hard-fail":
       // Naming a backend would be wrong in both directions: "nsjail active" is
-      // false, and "just-bash" is not what the pin resolves to at boot. Say
-      // nothing about per-request behaviour — tryCreateBackend sets
-      // _nsjailFailed on its first failure, after which the chain degrades.
+      // false, and "just-bash" is not what the pin resolves to.
+      //
+      // Note the reporting gap this leaves, unchanged by #4829 and pre-dating
+      // it: `_nsjailFailed` is untouched here, and `isBackendAvailable("nsjail")`
+      // treats the bare pin as available, so `/api/health` names `nsjail` and
+      // reports `isolated: true` until the first explore request trips the flag —
+      // while explore in fact refuses every request. Boot says "UNAVAILABLE",
+      // health says "nsjail". Closing that needs `isBackendAvailable` to mean
+      // constructibility (or this arm to mark the failure), both of which change
+      // the contract #4824 pinned. Tracked as #4834.
       log.error(
-        "Explore tool: unavailable — ATLAS_SANDBOX=nsjail is pinned but the nsjail binary was not found. " +
-          "Install nsjail or set ATLAS_NSJAIL_PATH; until then explore cannot start under the pin.",
+        "Explore tool: UNAVAILABLE — ATLAS_SANDBOX=nsjail is pinned but the nsjail binary was not found. " +
+          "Install nsjail or set ATLAS_NSJAIL_PATH; until then explore refuses every request under the pin.",
       );
       break;
     case "unverified":
@@ -925,6 +932,23 @@ async function checkSandboxPreFlight(): Promise<void> {
  * request, and saying the latter would be #4824's false claim at inverted
  * polarity (#4828).
  */
+/**
+ * Deploy mode for operator ADVICE only, falling back to the env var when
+ * `loadConfig()` has not resolved yet.
+ *
+ * The one thing this changes is whether the fail-closed message offers "add
+ * 'just-bash' to the priority list". That escape hatch does not exist on SaaS,
+ * so an unresolved config must not be allowed to suggest it — `undefined` alone
+ * would. `/api/health` falls back to the same env var for the same fail-closed
+ * reason (#1981).
+ */
+function resolveDeployModeForAdvice(
+  configured: "saas" | "self-hosted" | undefined,
+): "saas" | "self-hosted" | undefined {
+  if (configured) return configured;
+  return process.env.ATLAS_DEPLOY_MODE === "saas" ? "saas" : undefined;
+}
+
 async function logResolvedExploreBackend(): Promise<void> {
   try {
     const { getExploreBackendType, snapshotExploreSandboxEnv } = await import(
@@ -939,13 +963,30 @@ async function logResolvedExploreBackend(): Promise<void> {
       // startup warning (not just a log line) because it is a total tool outage,
       // and /api/health reports the same `fail-closed` from the same resolver.
       //
-      // The message is rebuilt from the SAME plan the resolver used rather than
-      // reaching for the generic "install nsjail or configure ATLAS_SANDBOX_URL"
-      // advice: under a `sandbox.priority` pin that excludes both, that advice is
-      // impossible to act on and hides the real cause (#4828).
-      const { getConfig: getAtlasConfig } = await import("@atlas/api/lib/config");
-      const plan = planSandboxSelection(snapshotExploreSandboxEnv());
-      const msg = formatSandboxFailClosed(plan, getAtlasConfig()?.deployMode);
+      // The detailed advice is built from a freshly-planned snapshot rather than
+      // from the generic "install nsjail or configure ATLAS_SANDBOX_URL" line:
+      // under a `sandbox.priority` pin that excludes both, that advice is
+      // impossible to act on and hides the real cause (#4828). It equals the plan
+      // the resolver used because `planSandboxSelection` is pure and nothing
+      // mutates the snapshot between the two calls.
+      //
+      // Formatting gets its OWN try: the resolution is already known to be
+      // fail-closed, and letting a message-building throw fall to the outer catch
+      // would downgrade the single most severe state to "posture UNKNOWN" — a
+      // vaguer claim with misdirecting remediation, and one that is simply false
+      // here (health reports fail-closed correctly from the resolver alone; it
+      // never calls this formatter).
+      let msg: string;
+      try {
+        const { getConfig: getAtlasConfig } = await import("@atlas/api/lib/config");
+        const plan = planSandboxSelection(snapshotExploreSandboxEnv());
+        msg = formatSandboxFailClosed(plan, resolveDeployModeForAdvice(getAtlasConfig()?.deployMode));
+      } catch (err) {
+        msg =
+          "Explore tool: UNAVAILABLE — no sandbox backend will construct, so every explore " +
+          `request is refused. Detailed remediation could not be built: ${errorMessage(err)}. ` +
+          "Check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts.";
+      }
       log.error({ backend }, msg);
       if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       return;
@@ -976,13 +1017,17 @@ async function logResolvedExploreBackend(): Promise<void> {
 
 /**
  * Outcome of probing the explicitly pinned nsjail backend. A boolean collapsed
- * three states whose operator advice differs — and, worse, made boot claim
- * "explore will fail" on the one path where it actually degrades and runs.
+ * states whose operator advice differs: binary missing, namespaces denied, probe
+ * inconclusive. Since #4829 all of them REFUSE rather than degrade — they differ
+ * only in what the operator has to fix, and in what boot can honestly name.
  */
 type PinnedNsjailOutcome =
   /** Namespaces verified; the pin holds. */
   | "usable"
-  /** Binary absent. `_nsjailFailed` untouched, so the hard-fail step survives. */
+  /**
+   * Binary absent. The pin's hard-fail step stands (it always does since #4829),
+   * but `_nsjailFailed` is untouched, so reporting still names `nsjail`.
+   */
   | "hard-fail"
   /**
    * Binary present, namespaces broken. `markNsjailFailed()` has run, which marks
@@ -1028,10 +1073,17 @@ async function checkExplicitNsjail(): Promise<PinnedNsjailOutcome> {
         if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       }
     } else {
-      // Deliberately does NOT call markNsjailFailed(): planSandboxSelection only
-      // emits the hard-fail step while `!nsjailFailed`, so setting the flag here
-      // would delete the pin's hard-fail contract at boot and degrade the
-      // deployment to unsandboxed just-bash before a single request arrives.
+      // Deliberately does NOT call markNsjailFailed(). The original reason (it
+      // would delete the pin's hard-fail step and degrade the box to unsandboxed
+      // just-bash) was removed by #4829 — the step now stands regardless. The
+      // reason that still holds is narrower: the flag means "this backend broke
+      // at RUNTIME", and an absent binary is a configuration state, not a runtime
+      // failure. #4824 pins that distinction.
+      //
+      // Consequence, and it is a real one: `isBackendAvailable("nsjail")` stays
+      // true on the bare pin, so `/api/health` reports `nsjail` / `isolated:true`
+      // for a deployment that refuses every request, until the first request
+      // trips the flag. See the `hard-fail` switch arm above.
       outcome = "hard-fail";
       const msg =
         "ATLAS_SANDBOX=nsjail is set but nsjail binary was not found. " +

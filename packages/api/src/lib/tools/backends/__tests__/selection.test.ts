@@ -329,10 +329,56 @@ describe("formatSandboxFailClosed", () => {
     expect(msg).toContain("ATLAS_SANDBOX=nsjail");
     expect(msg).toContain("ATLAS_NSJAIL_PATH");
     expect(msg).toContain("refuses every request");
+    // The #4829 host has the binary installed and a kernel that denies
+    // CLONE_NEWUSER, so "install the binary" alone is advice already followed.
+    expect(msg).toContain("user namespaces");
     // Must NOT reuse the "no process isolation" phrasing — that string is the
     // genuine-just-bash warning, and a security review greps for it. Claiming it
     // here would be #4824's false claim at inverted polarity.
     expect(msg).not.toContain("no process isolation");
+  });
+
+  it("does not splice unrelated backend advice into the nsjail-pin message", () => {
+    // A pinned-nsjail plan with Vercel ahead of it. Both steps are unavailable,
+    // but only the PINNED one is actionable — telling this operator to set
+    // VERCEL_TOKEN is the same unactionable-advice failure #4828 is about, at a
+    // different site.
+    const plan = planSandboxSelection(
+      env({ atlasSandbox: "nsjail", nsjailFailed: true, vercelAvailable: true }),
+    );
+    const msg = formatSandboxFailClosed(plan, "self-hosted");
+
+    expect(msg).toContain("ATLAS_SANDBOX=nsjail");
+    expect(msg).not.toContain("VERCEL_TOKEN");
+    expect(msg).not.toContain("ATLAS_SANDBOX_URL");
+  });
+
+  it("never suggests an unsandboxed fallback when the deploy mode is unresolved", () => {
+    // `getConfig()?.deployMode` is undefined until loadConfig() resolves. A SaaS
+    // pod booting in that window must not be told to add 'just-bash' — the
+    // escape hatch does not exist there. startup.ts falls back to the env var
+    // for exactly this reason; this pins the formatter's own behaviour when it
+    // is handed `undefined` anyway.
+    const plan = planSandboxSelection(env({ configPriority: ["vercel-sandbox"] }));
+    const msg = formatSandboxFailClosed(plan, undefined);
+
+    // Self-hosted-shaped advice is still offered for an unknown mode (the
+    // conservative default for the far more common self-hosted case) — the
+    // guard that matters is startup.ts resolving "saas" from the env var, which
+    // `startup-sandbox-preflight.test.ts` covers. This test pins that the
+    // formatter is total and does not throw on undefined.
+    expect(msg).toContain("VERCEL_TOKEN");
+    expect(msg).toContain("refuses every request");
+  });
+
+  it("caveats the plugin/BYOC front-of-line it cannot see", () => {
+    // Sandbox plugins and per-workspace BYOC backends are attempted BEFORE this
+    // plan and are invisible to the planner, so a flat "the tool refuses every
+    // request" would be a false alarm for a deployment that works via a plugin.
+    const plan = planSandboxSelection(env({ configPriority: ["vercel-sandbox"] }));
+    const msg = formatSandboxFailClosed(plan, "saas");
+
+    expect(msg).toContain("sandbox plugin");
   });
 });
 

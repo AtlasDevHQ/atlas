@@ -107,6 +107,7 @@ void mock.module("@atlas/api/lib/tools/explore", () => ({
   invalidateOrgExploreBackends: mock(() => {}),
   markNsjailFailed: mock(() => {}),
   markSidecarFailed: mock(() => {}),
+  _resetSandboxFailureFlagsForTest: mock(() => {}),
   _formatSandboxPriorityFailureForTest: mock(() => ""),
 }));
 

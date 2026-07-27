@@ -399,12 +399,15 @@ export function SaasSandboxView({
   // Collapsed to one value rather than an `isActive` + `isDown` pair so
   // "selected but down" cannot be spelled as `{ isActive: false, isDown: true }`
   // — an incoherent card the type system would otherwise permit.
+  //
+  // `down` is checked FIRST and independently of selection. The card offers
+  // "follow the platform default"; if that default constructs nothing the option
+  // is down whether or not this workspace currently sits on it. Gating down-ness
+  // on selection left the un-selected case reading "Available" with a live
+  // "Use this" button — one click moving the workspace off a working BYOC
+  // backend and onto the outage.
   const managedState: ManagedState =
-    isManagedSelected && status.platformDefault === null
-      ? "down"
-      : isManagedSelected
-        ? "live"
-        : "available";
+    status.platformDefault === null ? "down" : isManagedSelected ? "live" : "available";
 
   return (
     <>
@@ -825,7 +828,7 @@ type SelfHostedFormValues = {
  * Exported for `__tests__/fail-closed-outage.test.tsx` — this view owns the row
  * #4837 is literally named after (`Active: fail-closed` in the monospace slot),
  * and self-hosted reaches fail-closed through the `ATLAS_SANDBOX=nsjail` pin
- * with no usable binary (#4829). Same footing as `SaasSandboxView` below.
+ * with no usable binary (#4829). Same footing as `SaasSandboxView` above.
  */
 export function SelfHostedSandboxView({
   onSelectBackend,
@@ -953,10 +956,10 @@ export function SelfHostedSandboxView({
         }
       >
         <DetailList>
-          {/* In this detail list `mono` is reserved for values that ARE ids. A
-              null renders as worded destructive text instead, so the outage can
-              never be mistaken for one more id in the same monospace slot — the
-              exact misreading #4837 is about. */}
+          {/* `mono` marks machine literals (ids, URLs). A null renders as worded
+              destructive text instead, so the outage can never be mistaken for
+              one more id in the same monospace slot — the exact misreading
+              #4837 is about. */}
           <DetailRow
             label="Active"
             value={

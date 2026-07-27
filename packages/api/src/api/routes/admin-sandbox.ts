@@ -26,6 +26,8 @@ import {
   describeSandboxFailClosed,
 } from "@atlas/api/lib/tools/backends/selection";
 import type { SandboxBackendName } from "@atlas/api/lib/config";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import type { SandboxFailClosed } from "@useatlas/schemas";
 import { useVercelSandbox, useSidecar } from "@atlas/api/lib/tools/backends/detect";
 import {
   getSandboxCredentials,
@@ -302,15 +304,16 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           .map((cred) => SANDBOX_PROVIDER_BACKEND_IDS[cred.provider]),
       );
 
-      // The ONE expression for the platform default that goes on the wire, so
-      // the schema's "`failClosed` present iff `platformDefault === null`" is
-      // true by construction rather than by coincidence. It was previously
-      // re-derived at the response literal while `failClosed` came off
-      // `platformResolution`: two expressions for one invariant, agreeing only
-      // because `getExploreBackendType()` happens to return `"plugin"` before it
-      // can return `"fail-closed"` and because no `await` separated the two
-      // reads of the lazily-set `_activeSandboxPluginId`. Both are facts about
-      // another module; neither belongs in this invariant's proof.
+      // The ONE expression for the platform default that goes on the wire — the
+      // outage block, `activeBackend`, and the response field all read it — so
+      // the schema's "`failClosed` present iff `platformDefault === null`" holds
+      // by construction.
+      //
+      // Deriving them separately instead would make that invariant rest on two
+      // facts about ANOTHER module: that `getExploreBackendType()` returns
+      // `"plugin"` before it can return `"fail-closed"`, and that no `await`
+      // separates the two reads of the lazily-set `_activeSandboxPluginId`. Both
+      // are true today; neither belongs in this invariant's proof.
       const reportedPlatformDefault = activePluginId ?? platformDefault;
 
       // Resolve the effective active backend. `null` means this workspace has
@@ -370,7 +373,7 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       // A message-building fault degrades the WORDS, never the state —
       // `describeSandboxFailClosed` always returns a fail-closed message — and
       // `failureDetail` is log-only, never interpolated into the response.
-      let failClosed: { remediation: string } | undefined;
+      let failClosed: SandboxFailClosed | undefined;
       if (reportedPlatformDefault === null) {
         // The inputs are gathered through dynamic imports, inside the seam's own
         // try: the shared test factory (`__mocks__/api-test-mocks.ts`) partially
@@ -395,11 +398,13 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           }),
         );
         if (failureDetail) {
-          // `requestId` correlates this line with the payload the operator is
-          // looking at — it is the one log they will grep when the page shows the
-          // generic remediation instead of the specific one.
+          // Scrubbed HERE rather than inside the seam, whose catch arm is
+          // contracted never to throw and so takes no imports. This is the log
+          // line an operator greps when the page shows the generic remediation
+          // instead of the specific one; `orgId`/`requestId` tie it back to the
+          // request that produced that payload.
           log.warn(
-            { err: failureDetail, orgId, requestId: c.get("requestId") },
+            { err: errorMessage(failureDetail), orgId, requestId: c.get("requestId") },
             "Sandbox is fail-closed but the detailed remediation could not be built — reporting the generic outage message",
           );
         }

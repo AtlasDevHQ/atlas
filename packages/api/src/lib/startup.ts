@@ -990,7 +990,11 @@ async function logResolvedExploreBackend(): Promise<void> {
           deployMode: getAtlasConfig()?.deployMode,
         };
       });
-      log.error({ backend, ...(failureDetail && { err: failureDetail }) }, msg);
+      // Scrubbed here, not in the seam: `describeSandboxFailClosed`'s catch arm
+      // is contracted never to throw, so it takes no imports and returns the raw
+      // text. A pg/better-auth error echoing a connection string is exactly what
+      // `errorMessage` exists to keep out of this field.
+      log.error({ backend, ...(failureDetail && { err: errorMessage(failureDetail) }) }, msg);
       if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       return;
     }

@@ -492,7 +492,7 @@ export const BACKEND_ISOLATION = {
 } as const satisfies Record<SandboxBackendName | "plugin", SandboxIsolationPosture>;
 
 /** The inputs {@link formatSandboxFailClosed} needs, gathered by the caller. */
-interface Inputs {
+export interface SandboxFailClosedInputs {
   readonly plan: SandboxPlan;
   readonly env: SandboxSelectionEnv;
   readonly deployMode: "saas" | "self-hosted" | undefined;
@@ -553,7 +553,7 @@ interface Inputs {
  * already resolved `"fail-closed"`.
  */
 export async function describeSandboxFailClosed(
-  resolveInputs: () => Inputs | PromiseLike<Inputs>,
+  resolveInputs: () => SandboxFailClosedInputs | PromiseLike<SandboxFailClosedInputs>,
 ): Promise<{ readonly message: string; readonly failureDetail?: string }> {
   try {
     const { plan, env, deployMode } = await resolveInputs();
@@ -564,12 +564,17 @@ export async function describeSandboxFailClosed(
         "Explore tool: UNAVAILABLE — no sandbox backend will construct, so every explore " +
         "request is refused. Detailed remediation could not be built — see the server log " +
         "for the cause. Check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts.",
-      // Inlined rather than routed through `errorMessage` on purpose: this catch
-      // must stay total (see "Never rejects" above), and `lib/audit/error-scrub`
-      // is itself partially `mock.module()`d in a dozen test files — a mock that
-      // omits the export would make the error path throw. Scrubbing is not
-      // needed here either, now that this value only ever reaches a log.
-      // @atlas-ok-ternary: keeps the catch arm dependency-free and total
+      // Inlined rather than routed through `errorMessage` so this catch stays
+      // total (see "Never rejects" above): `lib/audit/error-scrub` is itself
+      // partially `mock.module()`d in 8 test files, and a mock that omitted the
+      // export would make the error path itself throw.
+      //
+      // This value is therefore RAW — unscrubbed and untruncated. Both callers
+      // run it through `errorMessage` at their `log` call before it goes
+      // anywhere, which is where scrubbing belongs anyway: the hazard
+      // `error-scrub` exists for (a pg/better-auth error echoing a connection
+      // string) lands in a log field, not here.
+      // @atlas-ok-ternary: the catch arm of a function contracted never to throw
       failureDetail: err instanceof Error ? err.message : String(err),
     };
   }

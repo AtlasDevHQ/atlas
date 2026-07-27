@@ -132,8 +132,13 @@ const { validateEnvironment, resetStartupCache, getStartupWarnings } = await imp
 );
 const { getExploreBackendType, snapshotExploreSandboxEnv, _resetSandboxFailureFlagsForTest } =
   await import("@atlas/api/lib/tools/explore");
-const { _setConfigForTest, _resetConfig, configFromEnv } = await import(
+const { _setConfigForTest, _resetConfig, configFromEnv, getConfig } = await import(
   "@atlas/api/lib/config"
+);
+// Real policy module, mocked nowhere — the boot↔admin byte-parity anchor below
+// compares the logged warning against this exact formatter (#4837).
+const { planSandboxSelection, formatSandboxFailClosed } = await import(
+  "@atlas/api/lib/tools/backends/selection"
 );
 
 // ---------------------------------------------------------------------------
@@ -409,6 +414,18 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     expect(
       getStartupWarnings().some((w) => w.includes("Explore tool: UNAVAILABLE")),
     ).toBe(true);
+
+    // Byte-pinned to the SHARED formatter, not just to substrings (#4837).
+    // `/admin/sandbox` composes its remediation from the same
+    // `describeSandboxFailClosed`, and the substring assertions above would all
+    // still pass if boot forked back to its own hand-rolled wording — which is
+    // exactly the drift that made #4828's advice wrong on one surface and right
+    // on another. This is the boot half of that anchor; the admin half lives in
+    // `api/__tests__/admin-sandbox-fail-closed.test.ts`.
+    const env = snapshotExploreSandboxEnv();
+    expect(text).toBe(
+      formatSandboxFailClosed(planSandboxSelection(env), env, getConfig()?.deployMode),
+    );
   });
 
   // ── AC4 — boot and /api/health cannot disagree ────────────────────────────

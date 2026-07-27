@@ -464,7 +464,8 @@ describe("describeSandboxFailClosed — the degraded arm (#4837)", () => {
   it("never rejects — the Effect.promise precondition at the admin call site", async () => {
     // `admin-sandbox.ts` calls this under `Effect.promise`, where a rejection
     // becomes a defect: a 500 on the very page opened to diagnose the outage.
-    // A non-Error throw is the case a naive `err.message` would break on.
+    // A non-Error throw is the case a naive `err.message` would silently report
+    // as `undefined` — CLAUDE.md's type-narrowed-catch rule, pinned.
     const r = await describeSandboxFailClosed(() => {
       throw "a bare string, not an Error";
     });

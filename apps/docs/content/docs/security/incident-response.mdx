@@ -1,0 +1,484 @@
+---
+title: Incident Response
+description: How Atlas detects, contains, and communicates a security incident, organized around the 48-hour customer-notification commitment in the DPA. Includes the regional blast-radius model and the Art. 33(3) notification contents.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+This page is the operational runbook for **Atlas operators**. Customers
+looking for the contractual commitment should read
+[useatlas.dev/dpa](https://useatlas.dev/dpa) § "Personal Data Breach"; to
+report a suspected issue, see
+[useatlas.dev/.well-known/security.txt](https://useatlas.dev/.well-known/security.txt)
+(RFC 9116) or email `security@useatlas.dev`.
+</Callout>
+
+Atlas commits, in the DPA, to notifying an affected Customer **without undue
+delay and in any event within 48 hours** of becoming aware of a Personal Data
+Breach affecting Customer Data. That is tighter than the 72 hours GDPR Art.
+33(1) allows a controller, and it is the deadline this entire runbook is
+organized around: every phase below has to fit inside it, and the phases are
+ordered so that the notification decision is never the thing waiting on
+forensics.
+
+The clock starts at **awareness**, not at detection tooling firing. A page from
+an automated probe, a report to `security@useatlas.dev`, and a customer email
+all start it equally.
+
+## The 48-hour timeline
+
+| Phase | Target | Gate to leave the phase |
+|---|---|---|
+| [Detect](#phase-1-detect) | T+0 | Signal acknowledged, incident opened, severity assigned |
+| [Scope](#phase-2-scope) | T+0 → T+4h | Affected region(s), data classes, and time window identified |
+| [Contain](#phase-3-contain) | T+0 → T+8h | Ongoing access stopped; evidence preserved |
+| [Assess notifiability](#phase-4-assess-notifiability) | by T+24h | Decision recorded: is this a Personal Data Breach? |
+| [Notify](#phase-5-notify) | by T+48h | Customer notification sent with Art. 33(3) content |
+| [Recover](#phase-6-recover) | parallel | Service restored, integrity verified |
+| [Post-incident](#phase-7-post-incident) | T+7d | Written review complete |
+
+Containment and recovery run in parallel with the notification track on
+purpose. The 48-hour commitment is **not** conditional on the incident being
+resolved — Art. 33(3) explicitly contemplates notifying with the information
+"then known", and the DPA commits Atlas to ongoing updates as facts develop.
+Waiting for a complete picture is the most common way to miss the deadline.
+
+<Callout type="warn" title="DECISION NEEDED — severity tiers">
+The phase targets above assume a single "security incident" severity. Real
+triage needs tiers, and the thresholds are a maintainer judgement that has not
+been made:
+
+- How many tiers, and what are their names?
+- What distinguishes them — number of affected workspaces, data classes
+  touched (credentials vs. conversation content vs. query results), confirmed
+  exfiltration vs. possible exposure, or regulatory exposure?
+- Which tiers get the timeline above, and which get a relaxed one?
+- Does a **self-hosted** deployment's incident have a tier at all? Atlas has no
+  access to a self-hosted customer's data or logs, so the obligation is
+  different in kind, not just in degree.
+
+Until this is decided, treat every confirmed incident as if it is the highest
+tier. That is the safe failure mode, and it is what the timeline above
+encodes.
+</Callout>
+
+<Callout type="warn" title="DECISION NEEDED — on-call and contact tree">
+Atlas is a solo-founder operation. A conventional on-call rotation, escalation
+tree, and follow-the-sun handoff do not exist and cannot be invented into
+existence by writing them here.
+
+What needs deciding:
+
+- What is the acknowledgement target for an automated page, and does it differ
+  between working hours and overnight?
+- What happens when the sole operator is unavailable — genuinely unreachable,
+  not merely asleep? Is there a delegate, and what access do they hold?
+- Which alerting channels are considered reliable enough to carry a page, and
+  is any one of them the system of record?
+- Is there a retained external party (counsel, a DFIR firm) to bring in above
+  some severity, and at what point are they contacted rather than considered?
+
+This gap is load-bearing: the 48-hour clock runs on wall-clock time and does
+not pause for availability. An incident that begins on a Friday evening
+consumes most of its budget before it is seen.
+</Callout>
+
+## Phase 1: Detect
+
+Every mechanism below exists in the system today. Nothing here describes
+tooling Atlas does not have.
+
+### The health endpoint's component model
+
+`/api/health` reports a top-level status alongside per-component statuses, and
+the distinction between them is the first triage signal.
+
+Top-level status is one of `ok`, `degraded`, or `error`. The endpoint returns
+**HTTP 200 for `ok` and `degraded`**, and **503 only for `error`**. The 503
+contract is deliberately narrow: only the datasource and, in SaaS mode, the
+internal database can promote the top-level status to `error` and pull a region
+out of the load balancer. That narrowness is the useful part — a 503 means
+platform-critical infrastructure is unreachable, not that some optional
+integration is unhappy.
+
+Per-component statuses are `healthy`, `degraded`, `down`, or `disabled`, and
+several components can report `down` **without** 503-ing the region. The LLM
+provider and the sandbox both behave this way. So do plugins, whose aggregate
+status omits `down` from its enum entirely so that one faulty plugin can never
+read as a platform outage.
+
+For incident response the reading is:
+
+- **503 / `error`** — platform-critical component unreachable. Availability
+  incident; may or may not be a security incident.
+- **200 / `degraded`** — something is wrong and the region is still serving.
+  This is the status that matters most here, because it is the one a naive
+  uptime check treats as success.
+- **Component `down` under a 200** — a specific subsystem has failed while the
+  region stays live. Worth reading the component out explicitly rather than
+  trusting the top-level status.
+
+A deploy-mode downgrade — SaaS requested but enterprise not enabled, so every
+SaaS contract silently switched off — surfaces here as at least `degraded`,
+beyond the CRITICAL boot log. Treat that as a security-relevant signal, not a
+configuration nit: it means contracts you believe are enforced are not.
+
+### Fail-closed boot guards
+
+In SaaS mode a family of boot guards fails the boot layer **before any HTTP
+listener starts** when a security-critical contract is violated. They cover, among
+others: a missing or malformed encryption keyset, an absent internal database,
+an absent per-user rate limit, and a requested-but-unavailable SaaS mode.
+
+Each guard exists because the corresponding misconfiguration previously caused
+a silent downgrade — a pod that booted, accepted traffic, and surfaced the
+problem at first I/O, first write, or never. The encryption guard is the
+sharpest example: without it, every newly stored credential would land in
+plaintext through a passthrough path, and nothing would have complained.
+
+Operationally, a guard failure looks like a **process that exits during boot
+and never binds a port** — not an error response. In a rolling deploy that
+presents as a region that fails to come up while the previous version keeps
+serving. The distinction from a crash-loop matters during triage:
+
+- Guard failure — process exits before the listener binds; connections are
+  refused rather than answered.
+- Runtime fault — listener is up; `/api/health` answers with `error` or a
+  `down` component.
+
+<Callout type="warn">
+These guards relax to a no-op when the deployment environment is
+`development`, so a SaaS-mode process can boot locally without production
+secrets. That relaxation is gated solely on the environment value. A
+customer-facing deployment running with `development` set has **no fail-closed
+guarantees at all**, and confirming that value is one of the first things to
+check when a guard "should have" fired and did not.
+</Callout>
+
+### The scheduled-backup tripwire
+
+Backup automation can be silently absent while the process boots green — the
+enterprise layer failed to load, the gate is misconfigured, the dump tool is
+missing, the scratch database is broken. The tripwire answers one question
+from the database, independently of the fiber that performs backups: **is the
+newest verified backup older than the cadence window?**
+
+If it is, or if no verified backup exists at all, the `backups` component
+reports `degraded` — never `down`, because a backup problem must not 503 a
+region or pull it from the load balancer.
+
+The cadence semantics matter when reading this during an incident. The
+schedule is interpreted as a **cadence window** (length plus anchor offset),
+not as a cron tick-matcher: every window gets at most one backup attempt,
+claimed atomically so exactly one runs across replicas whenever any replica is
+up during the window. This is restart-safe — a window is not skipped merely
+because the process was down or deploying at the matching minute. An
+unrecognized schedule falls back to a daily default **with a warning rather
+than silently disabling backups**, and the fallback is visible to callers.
+
+The practical consequence: `backups: degraded` means recovery capability is
+already impaired *before* you need it. Read it as a precondition on
+[Phase 6](#phase-6-recover), not as a low-priority warning.
+
+### Administrative audit logging
+
+Administrative operations are written to an append-only admin action log
+against a typed catalog of action types in `domain.verb` form
+(`workspace.suspend`, `workspace.purge`, `connection.create`, and so on).
+Retention is configurable per workspace, and **changes to retention are
+themselves logged** — specifically so that a compromised administrator cannot
+shrink the retention window to hide their tracks without leaving a record of
+having done so.
+
+What this log is good for during an incident: reconstructing what a privileged
+account did, and when. What it is **not**: a general-purpose access log. It
+captures administrative actions, not ordinary end-user reads. Do not infer
+"no data was accessed" from its absence of entries — that is a
+different question, and this log does not answer it.
+
+### Externally reported signals
+
+Two inbound paths carry reports Atlas did not detect itself: the address and
+disclosure policy published at `/.well-known/security.txt` (RFC 9116, with a
+PGP key for encrypted reports), and direct customer contact. Both start the
+48-hour clock on receipt if the report is credible. Neither is throttled by
+triage capacity, so both need to be checked on a cadence that matches the
+acknowledgement target the on-call decision above will set.
+
+## Phase 2: Scope
+
+### Regional blast radius
+
+Under [ADR-0024](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md),
+**residency isolates the entire workspace, identity included**. Each of the
+three regions — EU, US, APAC — is a fully independent stack: its own internal
+database, its own authentication instance, its own process. There is no shared
+identity control plane and no cross-region replication.
+
+Two properties follow, and they are the ones that determine blast radius:
+
+1. **The process *is* the region.** Region is a deploy-time constant, not a
+   per-request routing decision. A regional process boots against one
+   database, and every row it can touch belongs to that region because no
+   other database exists in the process.
+2. **A human's identity does not span regions.** The same email address in two
+   regions is two independent accounts with separate identifiers and separate
+   credentials, related only by the string. There is no global session.
+
+So: **an incident confined to one region's stack is confined to that region's
+workspaces.** A compromise of the EU internal database does not expose US or
+APAC identities, because those rows are not present in it.
+
+To determine which regions an incident touches, work from the mechanism
+outward rather than from the customer list inward:
+
+- **Region-scoped by construction** — anything reached through one region's
+  internal database or authentication instance. Scope is that region only.
+- **Cross-region by construction** — anything in shared build or delivery
+  infrastructure. A compromised container image, dependency, or deploy
+  credential reaches every region that consumed it, and region isolation
+  provides no protection at all.
+- **Determined by the customer's own configuration** — datasource credentials
+  point at customer-controlled infrastructure. Blast radius is the customer's
+  topology, not Atlas's.
+
+<Callout type="warn">
+**One documented exception to regional isolation.** Sandboxed tool execution —
+the explore and Python tools — currently runs in the **United States for all
+regions**, because the sandbox sub-processor exposes no region primitive. This
+is disclosed in the DPA and in the data-residency documentation.
+
+An incident in the sandbox execution layer is therefore **cross-regional by
+construction**, even though every other part of an EU workspace is EU-resident.
+Do not scope a sandbox incident by region — scope it by which workspaces
+executed tools in the affected window.
+</Callout>
+
+### Data classes
+
+Scope by what a mechanism can reach, and keep these separate — they carry
+different notification consequences:
+
+- **Identity data** — account records, credentials, sessions. Region-scoped.
+- **Integration credentials and connection strings** — encrypted at rest in
+  the internal database with versioned key rotation. Region-scoped. Exposure
+  of ciphertext and exposure of a decryption key are materially different
+  findings; establish which one occurred before characterizing the incident.
+- **Conversation content and query results** — customer business data,
+  region-scoped, and the class most likely to contain personal data the
+  Customer is controller for.
+- **Customer analytics data** — lives in the customer's own datasource, which
+  Atlas connects to read-only. Atlas is not the custodian; a datasource
+  incident may still be notifiable, but the containment actions belong to the
+  customer.
+
+## Phase 3: Contain
+
+Containment priority is: **stop ongoing access, then preserve evidence, then
+restore service.** Restoring service first is the common mistake — a redeploy
+can destroy exactly the process state needed to establish scope, and scope is
+what the notification content in Phase 5 depends on.
+
+Available levers, described by capability:
+
+- **Credential rotation.** Integration credentials and connection strings are
+  encrypted at rest with versioned key rotation, so credentials can be
+  re-encrypted under a new key version without re-collecting them from
+  customers. Rotating the customer-side secret is a separate action requiring
+  customer cooperation, and it is the one that actually revokes access.
+- **Workspace suspension.** Suspend, and its reinstate counterpart, are
+  logged administrative actions. Suspension is the blunt lever when a specific
+  workspace is implicated and the mechanism is not yet understood.
+- **Regional isolation as a containment tool.** Because the process is the
+  region, taking one region out of service does not degrade the others. This
+  is available as a deliberate containment action, not only as a failure mode.
+- **Fail-closed by configuration.** The boot guards mean a
+  deliberately-invalidated security-critical configuration value results in a
+  region that refuses to boot rather than one that boots degraded. This is a
+  legitimate emergency stop.
+
+Evidence preservation, before any restorative action: capture the current
+`/api/health` response including per-component detail, capture process logs
+before they roll, and note the deployed revision. The admin action log is
+append-only and retained by configuration, but the retention window is
+finite — if the relevant window is near its edge, export before it ages out.
+
+## Phase 4: Assess notifiability
+
+By **T+24h**, a recorded decision: is this a Personal Data Breach affecting
+Customer Data?
+
+The threshold is a breach of security leading to accidental or unlawful
+destruction, loss, alteration, unauthorised disclosure of, or access to
+personal data. Note that **destruction and loss qualify** — an incident with no
+disclosure at all can still be notifiable. Availability incidents are not
+automatically excluded.
+
+Record the decision either way, with reasoning and timestamp. A documented
+"assessed, not notifiable, because —" is a defensible position; an
+undocumented one is indistinguishable from having never assessed it.
+
+<Callout type="warn" title="DECISION NEEDED — who authorizes notification">
+Sending a breach notification to a customer is a legally consequential act
+with contractual and regulatory weight. In a solo-founder operation the
+operator, the decision-maker, and the signatory are the same person, which
+removes the usual separation but does not remove the need for the decision to
+be deliberate and recorded.
+
+What needs deciding:
+
+- Who authorizes a customer notification, and is that authority delegable when
+  the operator is unavailable? Note that the 48-hour clock does not pause for
+  availability, so "nobody can authorize it right now" is a path to breaching
+  the commitment.
+- Is external counsel consulted before notification above some severity, and
+  is that consultation blocking or advisory?
+- Who authorizes notification to a **supervisory authority** where Atlas is
+  controller rather than processor, and is that a separate decision from the
+  customer notification?
+- Is there a bias to disclose when the assessment is genuinely uncertain? A
+  stated default here is worth more than a case-by-case judgement made under
+  time pressure.
+</Callout>
+
+## Phase 5: Notify
+
+By **T+48h from awareness**, the affected Customer receives a notification
+containing the information GDPR **Art. 33(3)** requires, to the extent known
+at the time:
+
+1. **The nature of the personal data breach** — including, where possible, the
+   categories and approximate number of data subjects concerned, and the
+   categories and approximate number of personal data records concerned.
+2. **The name and contact details** of the data protection officer or other
+   contact point where more information can be obtained.
+3. **The likely consequences** of the personal data breach.
+4. **The measures taken or proposed** to address the breach, including, where
+   appropriate, measures to mitigate its possible adverse effects.
+
+Send on incomplete information rather than late. "Approximate" and "where
+possible" are in the regulation's own text, and the DPA commits Atlas to
+providing ongoing updates as facts develop. Each of the four elements should
+carry its current confidence — an honest "scope still being established;
+current assessment is N workspaces in the EU region" satisfies Art. 33(3)(a)
+in a way that silence does not.
+
+Notification goes to the Customer's designated contact. Where the incident is
+public-facing or affects availability, the status page and the in-app incident
+banner carry the operational narrative in parallel — but they do **not**
+substitute for the Art. 33(3) notification, which is a direct, per-Customer
+communication.
+
+### Customer-facing communication surfaces
+
+The web application polls the status feed on a five-minute interval and
+renders an **incident banner** for any unresolved report. Reports move through
+`investigating` → `identified` → `monitoring` → `resolved`, and each report
+carries a timestamped update history.
+
+Those four states are the public vocabulary, and they map onto this runbook:
+
+| Status page state | Runbook phase |
+|---|---|
+| `investigating` | [Detect](#phase-1-detect) / [Scope](#phase-2-scope) — signal confirmed, cause unknown |
+| `identified` | [Scope](#phase-2-scope) complete — mechanism understood |
+| `monitoring` | [Contain](#phase-3-contain) / [Recover](#phase-6-recover) — fix applied, watching |
+| `resolved` | Service restored; [Phase 7](#phase-7-post-incident) begins |
+
+Because the banner clears when the report resolves, and the five-minute poll
+means customers see state changes promptly, **status transitions are customer
+communications**. Moving a report to `resolved` while notification is still
+outstanding sends a contradictory signal. Keep the two tracks consistent.
+
+## Phase 6: Recover
+
+The recovery mechanism for the internal database is **scheduled backups plus
+verification**. The tripwire described in [Phase 1](#phase-1-detect) reports on
+the newest *verified* backup, not merely the newest attempted one — the
+distinction is the whole point, since an unverified backup is a hypothesis
+about recoverability rather than a recovery capability.
+
+Before restoring:
+
+1. **Confirm containment.** Restoring into an environment where the access
+   path is still open reproduces the incident against fresh data.
+2. **Check the tripwire first.** If `backups` was already `degraded` before the
+   incident, the newest verified backup is older than the cadence window and
+   the recovery point is further back than the schedule suggests.
+3. **Establish the recovery point relative to the incident window.** A restore
+   that predates the compromise loses legitimate data; one that postdates it
+   restores the compromise.
+4. **Preserve the pre-restore state** as evidence, per [Phase 3](#phase-3-contain).
+
+Recovery is region-scoped like everything else: restoring one region's
+internal database does not touch the others, and does not require taking them
+out of service.
+
+## Phase 7: Post-incident
+
+Within **7 days** of resolution, a written review covering: the timeline from
+first signal to resolution, how it was detected and whether an existing
+mechanism should have caught it earlier, blast radius as finally established,
+what was notified and when, and the corrective actions with owners.
+
+The most valuable question is usually the second one. Every detection
+mechanism in [Phase 1](#phase-1-detect) exists because something previously
+failed silently; an incident that no existing tripwire caught is evidence for
+the next one.
+
+<Callout type="warn" title="DECISION NEEDED — incident-record retention">
+Incident records — the timeline, the notifiability assessment, notification
+copies, and the post-incident review — are themselves a data class, and their
+retention has not been decided.
+
+What needs deciding:
+
+- How long are incident records retained, and does that differ for incidents
+  assessed as notifiable versus not?
+- Where do they live? They must survive the incident, which rules out storing
+  them only in the systems they concern. Note that incident records will
+  frequently *contain* personal data (affected data subjects, reporter
+  identity), so wherever they live inherits residency and retention
+  obligations of its own.
+- How does incident-record retention interact with the configurable audit-log
+  retention window? A post-incident review referencing audit entries that have
+  since aged out is a review that cannot be re-verified.
+- Are records subject to a legal hold once notification has been sent, and who
+  applies it?
+
+Note the interaction with the DPA's audit right: Customers may audit Atlas's
+processing once per year. Incident records are the natural evidence for such
+an audit, and a retention period shorter than the audit cycle makes that
+evidence unavailable.
+</Callout>
+
+## What this document deliberately omits
+
+This runbook is public, and a public incident-response document is itself an
+attack surface — it tells an attacker what is monitored, how quickly, and what
+the response looks like.
+
+Accordingly it describes detection and containment **by capability rather than
+by mechanism**: no internal endpoint paths, no credential or key storage
+locations, no operator tooling invocations, no alerting thresholds, and no
+specifics about which signals are and are not monitored in real time. The
+public health endpoint is named because it is already a documented, public
+part of the API surface.
+
+Operators needing the concrete commands and paths should work from the
+internal deployment documentation. Nothing in this document should be
+extended with that detail — if a future edit needs a specific path or command
+to make sense, that is a signal the content belongs in the internal runbook
+instead.
+
+## Related
+
+- [useatlas.dev/dpa](https://useatlas.dev/dpa) — the 48-hour commitment and
+  the Annex II measures this runbook operationalizes
+- [useatlas.dev/privacy](https://useatlas.dev/privacy) § 9 — the security
+  program summary
+- [Security headers](./security-headers) — transport and browser-side controls
+- [Two-factor authentication](./two-factor-auth) and
+  [Passkeys](./passkeys) — administrative account controls
+- [SQL validation](./sql-validation) — the SELECT-only query pipeline

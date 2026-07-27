@@ -1,7 +1,7 @@
 <h1 align="center">Atlas</h1>
 
 <p align="center">
-  Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a YAML semantic layer that humans author and AI agents consume.
+  Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs — grounded in a semantic layer you author, a Knowledge Base of your own docs, and the query patterns it learns as your team approves them.
 </p>
 
 <p align="center">
@@ -22,9 +22,32 @@
 
 ## What is Atlas?
 
-Atlas turns a directory of YAML files into a complete semantic layer for analytics — entities, dimensions, measures, joins, virtual dimensions, query patterns, glossary terms, and authoritative metrics. Humans author the YAML. AI agents consume it through a built-in chat UI, an embeddable widget, six chat platforms (Slack one-click, or connect your own bot for Teams, Discord, Telegram, and WhatsApp — Google Chat coming soon), or the **Model Context Protocol (MCP)** for Claude Desktop / Cursor / Continue — all returning deterministic, validated, read-only SQL.
+Ask two tools what revenue was last quarter and you can get two different numbers. Atlas reads *your* definitions first.
+
+### What grounds an answer
+
+Three context surfaces, each with a different job — and a boundary between them that Atlas enforces rather than trusts:
+
+| | What it is | Its job |
+|---|---|---|
+| **Semantic layer** | YAML on disk — entities, dimensions, measures, joins, glossary terms, pinned metrics | The **sole authoritative** surface. The table whitelist, pinned metric SQL, and glossary gating are *enforced*, not suggested |
+| **Knowledge Base** | Your own docs — mirrored through ten vendor connectors (Notion, Confluence, GitBook, Zendesk, Salesforce, Intercom, Front, Help Scout, Freshdesk) or uploaded directly | **Descriptive only.** Runbooks, definitions, policies. Never queried as data, never extends the whitelist, never gates the agent ([ADR-0028](docs/adr/0028-knowledge-base-fourth-pillar.md)) |
+| **Learned patterns** | The query shapes Atlas keeps as your team approves them | The canonical joins for your domain — earned from real use rather than authored up front |
+
+That descriptive-vs-authoritative split is the point: a runbook can *inform* an answer, but only the semantic layer can *authorize* the SQL behind it.
 
 Every YAML field exists because an LLM needs it to write correct SQL: `sample_values` ground the agent in real data, `glossary.status: ambiguous` forces clarifying questions, `metrics.objective` picks `MAX` vs `MIN`, `query_patterns` teach the canonical join shapes for your domain.
+
+### Where the answer shows up
+
+The same grounded agent, reachable however your team already works:
+
+- **Chat UI** — built in, with the SQL on display behind every answer
+- **Dashboards** — draft-first and publish-gated, so private work stays private until you ship it ([ADR-0029](docs/adr/0029-dashboards-draft-first-editing.md))
+- **MCP server** — Claude Desktop, Cursor, Continue, or any MCP client, over stdio or OAuth 2.1
+- **Embeddable widget** — script tag or React component, in your own app
+- **Chat platforms** — six, Slack one-click; Teams, Discord, Telegram, and WhatsApp with your own bot (Google Chat coming soon)
+- **REST API + CLI** — headless, typed, scriptable
 
 Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, and Salesforce.
 
@@ -130,6 +153,8 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 | | Atlas | Traditional BI | Other text-to-SQL |
 |---|---|---|---|
 | **Semantic layer** | YAML on disk — `query_patterns`, `virtual_dimensions`, `glossary.status: ambiguous`, `metrics.objective` are all first-class | Proprietary metadata, GUI-authored | None or limited |
+| **Your docs as context** | Knowledge Base pillar — ten vendor connectors, descriptive-only by construction (never extends the SQL whitelist) | Separate wiki, unlinked | None |
+| **Dashboards** | Draft-first, publish-gated — built from chat answers, private until you ship | Core product, GUI-authored | Rare |
 | **Agent-native** | MCP server first — Claude Desktop, Cursor, Continue with `bunx @useatlas/mcp init` | Bolted-on AI feature | Standalone chat UI |
 | **Embeddable** | Script tag, React component, headless API, MCP, 6 chat platforms (Slack one-click; Teams/Discord/Telegram/WhatsApp bring-your-own-bot; Google Chat coming soon) | Standalone app | Standalone app |
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
@@ -236,6 +261,8 @@ See [`.env.example`](.env.example) for all options.
 ## Documentation
 
 - [The Semantic Layer](https://docs.useatlas.dev/getting-started/semantic-layer) — Entities, dimensions, measures, joins, glossary, metrics — the YAML format reference
+- [Knowledge Base](https://docs.useatlas.dev/guides/knowledge-base) — Mirror your own docs as descriptive context, via connectors or upload
+- [Dashboards](https://docs.useatlas.dev/guides/dashboards) — Draft-first, publish-gated dashboards built from chat answers
 - [MCP Server](https://docs.useatlas.dev/guides/mcp) — Use Atlas from Claude Desktop, Cursor, Continue
 - [Quick Start](https://docs.useatlas.dev/getting-started/quick-start) — Local dev from zero to asking questions
 - [Demo Dataset](https://docs.useatlas.dev/getting-started/demo-datasets) — NovaMart e-commerce dataset and canonical questions

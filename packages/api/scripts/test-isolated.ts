@@ -17,6 +17,7 @@
  */
 
 import { Glob } from "bun";
+import { appendFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { resolve, relative } from "node:path";
 import { runFileWithSignalRetry } from "./signal-retry";
@@ -221,6 +222,38 @@ console.log(
     `  |  Time: ${totalMs}ms`,
 );
 console.log("─".repeat(60));
+
+// GitHub Actions job summary — renders on the run page, so a red shard names
+// the failing suite (and its duration, which is what identifies a setup-budget
+// timeout) without anyone downloading raw job logs first (#4844).
+const stepSummary = process.env.GITHUB_STEP_SUMMARY;
+if (stepSummary) {
+  const heading = shardTotal > 1 ? `api-tests (${shardIndex + 1}/${shardTotal})` : "api-tests";
+  const lines = [
+    `### ${failed > 0 ? "❌" : "✅"} ${heading}`,
+    "",
+    `${results.length} files · ${passed} passed · ${failed} failed` +
+      (totalRetries > 0 ? ` · ${totalRetries} signal retries` : "") +
+      ` · ${totalMs}ms`,
+  ];
+  if (failed > 0) {
+    lines.push("", "| Failed suite | Duration | Signal |", "| --- | --- | --- |");
+    for (const r of results.filter((r) => r.exitCode !== 0)) {
+      lines.push(
+        `| \`${relative(ROOT, r.file)}\` | ${r.durationMs.toFixed(0)}ms | ${r.signalCode ?? "—"} |`,
+      );
+    }
+  }
+  try {
+    // Append, not overwrite — GITHUB_STEP_SUMMARY is shared across a job's steps.
+    appendFileSync(stepSummary, lines.join("\n") + "\n");
+  } catch (err) {
+    // Never let a summary-write problem mask the real test result.
+    console.warn(
+      `Could not write GITHUB_STEP_SUMMARY: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
 if (failed > 0) {
   console.log("\nFailed files:");

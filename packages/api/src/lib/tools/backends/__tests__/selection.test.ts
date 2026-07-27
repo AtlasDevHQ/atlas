@@ -300,8 +300,8 @@ describe("formatSandboxPriorityFailure", () => {
 
 describe("formatSandboxFailClosed", () => {
   it("names the pinned backend and its missing credential, not 'install nsjail' (#4828)", () => {
-    const plan = planSandboxSelection(env({ configPriority: ["vercel-sandbox"] }));
-    const msg = formatSandboxFailClosed(plan, "saas");
+    const e = env({ configPriority: ["vercel-sandbox"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "saas");
 
     expect(msg).toContain("vercel-sandbox");
     expect(msg).toContain("VERCEL_TOKEN");
@@ -315,16 +315,16 @@ describe("formatSandboxFailClosed", () => {
   });
 
   it("offers the just-bash escape hatch to a self-hosted operator", () => {
-    const plan = planSandboxSelection(env({ configPriority: ["sidecar"] }));
-    const msg = formatSandboxFailClosed(plan, "self-hosted");
+    const e = env({ configPriority: ["sidecar"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
 
     expect(msg).toContain("ATLAS_SANDBOX_URL");
     expect(msg).toContain("Add 'just-bash'");
   });
 
   it("explains the nsjail pin as hard-fail rather than as a degradation", () => {
-    const plan = planSandboxSelection(env({ atlasSandbox: "nsjail", nsjailFailed: true }));
-    const msg = formatSandboxFailClosed(plan, "self-hosted");
+    const e = env({ atlasSandbox: "nsjail", nsjailFailed: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
 
     expect(msg).toContain("ATLAS_SANDBOX=nsjail");
     expect(msg).toContain("ATLAS_NSJAIL_PATH");
@@ -343,30 +343,28 @@ describe("formatSandboxFailClosed", () => {
     // but only the PINNED one is actionable — telling this operator to set
     // VERCEL_TOKEN is the same unactionable-advice failure #4828 is about, at a
     // different site.
-    const plan = planSandboxSelection(
-      env({ atlasSandbox: "nsjail", nsjailFailed: true, vercelAvailable: true }),
-    );
-    const msg = formatSandboxFailClosed(plan, "self-hosted");
+    const e = env({ atlasSandbox: "nsjail", nsjailFailed: true, vercelAvailable: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
 
     expect(msg).toContain("ATLAS_SANDBOX=nsjail");
     expect(msg).not.toContain("VERCEL_TOKEN");
     expect(msg).not.toContain("ATLAS_SANDBOX_URL");
   });
 
-  it("never suggests an unsandboxed fallback when the deploy mode is unresolved", () => {
-    // `getConfig()?.deployMode` is undefined until loadConfig() resolves. A SaaS
-    // pod booting in that window must not be told to add 'just-bash' — the
-    // escape hatch does not exist there. startup.ts falls back to the env var
-    // for exactly this reason; this pins the formatter's own behaviour when it
-    // is handed `undefined` anyway.
-    const plan = planSandboxSelection(env({ configPriority: ["vercel-sandbox"] }));
-    const msg = formatSandboxFailClosed(plan, undefined);
+  it("is total for an unresolved deploy mode and still names the missing credential", () => {
+    // `deployMode` is only ever `undefined` if `getConfig()` is null — and the
+    // branch that reads it (the just-bash escape hatch) is reachable only via
+    // `configPriority`, which requires a non-null config. So this shape does not
+    // arise in production; the test pins that the formatter is nonetheless total
+    // and still produces actionable advice rather than throwing.
+    //
+    // It deliberately does NOT assert the absence of the just-bash suggestion:
+    // with `undefined` the message DOES offer it (self-hosted is the safer
+    // default for an unknown mode). The SaaS suppression is asserted where it is
+    // actually guaranteed — "suppresses the just-bash suggestion in SaaS mode".
+    const e = env({ configPriority: ["vercel-sandbox"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, undefined);
 
-    // Self-hosted-shaped advice is still offered for an unknown mode (the
-    // conservative default for the far more common self-hosted case) — the
-    // guard that matters is startup.ts resolving "saas" from the env var, which
-    // `startup-sandbox-preflight.test.ts` covers. This test pins that the
-    // formatter is total and does not throw on undefined.
     expect(msg).toContain("VERCEL_TOKEN");
     expect(msg).toContain("refuses every request");
   });
@@ -375,10 +373,33 @@ describe("formatSandboxFailClosed", () => {
     // Sandbox plugins and per-workspace BYOC backends are attempted BEFORE this
     // plan and are invisible to the planner, so a flat "the tool refuses every
     // request" would be a false alarm for a deployment that works via a plugin.
-    const plan = planSandboxSelection(env({ configPriority: ["vercel-sandbox"] }));
-    const msg = formatSandboxFailClosed(plan, "saas");
+    const e = env({ configPriority: ["vercel-sandbox"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "saas");
 
     expect(msg).toContain("sandbox plugin");
+  });
+
+  it("does NOT promise plugin priority under the nsjail pin, which skips plugins", () => {
+    // explore gates its plugin front-of-line on `ATLAS_SANDBOX !== "nsjail"` —
+    // the pin means "nsjail only". Offering "maybe a plugin is handling it" here
+    // would invite an operator to dismiss a real total outage on the strength of
+    // a mechanism the pin has disabled.
+    const e = env({ atlasSandbox: "nsjail", nsjailFailed: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
+
+    expect(msg).toContain("skipped entirely under the pin");
+    expect(msg).toContain("BYOC");
+  });
+
+  it("refuses to invent a pin when the precondition is violated", () => {
+    // A degradable default chain should never reach this function. If it does,
+    // fabricating "ATLAS_SANDBOX=nsjail is pinned" is the silent lie that reading
+    // the backend off the hard-fail step exists to prevent.
+    const e = env({ sidecarAvailable: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
+
+    expect(msg).toContain("No pinned backend could be identified");
+    expect(msg).not.toContain("ATLAS_SANDBOX=nsjail is pinned");
   });
 });
 

@@ -324,12 +324,12 @@ health.openapi(healthRoute, async (c) => {
     const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
     const entityCount = getWhitelistedTables().size;
     const exploreBackend = getExploreBackendType();
-    // Not a backend but a total outage of the explore tool: no backend will
-    // construct and every request throws. Named because it is used at three
-    // sites; it is the `=== "fail-closed"` comparison that narrows
-    // `exploreBackend` so `BACKEND_ISOLATION[...]` stays well-typed below. That
-    // table is keyed by real backends only, so the compiler forces this branch
-    // rather than letting the state fall through as "not unsandboxed" (#4828).
+    // Named because it is used at three sites below; it is the `=== "fail-closed"`
+    // comparison that narrows `exploreBackend` so `BACKEND_ISOLATION[...]` stays
+    // well-typed. That table is keyed by real backends only, so the compiler
+    // forces the branch rather than letting the state fall through as "not
+    // unsandboxed". See the `checks.explore.backend` enum above for what the
+    // state means.
     const exploreFailClosed = exploreBackend === "fail-closed";
     const authMode = detectAuthMode();
 
@@ -659,17 +659,21 @@ health.openapi(healthRoute, async (c) => {
       // report degraded so operators know; posture comes from BACKEND_ISOLATION
       // rather than a `=== "just-bash"` comparison, so a future unsandboxed
       // backend cannot report itself healthy by not being named here (#4824).
-      // Fail-closed is worse than degraded and different in kind: the tool is
-      // DOWN, not weakened, so it gets `down` rather than being flattened into
-      // the unsandboxed bucket it is the opposite of (#4828).
+      // Fail-closed is DOWN, not weakened — the tool is out, so it must not be
+      // flattened into the unsandboxed bucket.
       sandbox: exploreFailClosed
         ? {
             status: "down" as const,
             backend: exploreBackend,
             lastCheckedAt: now,
+            // "no CONFIGURED backend" deliberately: a sandbox plugin or a
+            // per-workspace BYOC backend sits ahead of the resolved plan and is
+            // invisible to it until the first explore call, so an unqualified
+            // "every request is refused" would contradict the same hedge the
+            // boot warning carries.
             message:
-              "Explore tool unavailable — the configured sandbox cannot be constructed and " +
-              "the deployment is pinned fail-closed, so every explore request is refused. " +
+              "Explore tool unavailable — no configured sandbox backend can be constructed and " +
+              "the deployment is pinned fail-closed, so explore requests are refused. " +
               "See the startup warnings for the specific backend and credential.",
           }
         : {

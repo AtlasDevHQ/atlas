@@ -147,12 +147,13 @@ let _sidecarFailed = false;
  * modelled as a distinct value rather than collapsed into `"just-bash"`.
  *
  * Widening this union makes the distinction a compile error at every consumer
- * that indexes `BACKEND_ISOLATION` (`health.ts` twice, `startup.ts`), because
- * that table is keyed by real backends only. Consumers that treat the value as
- * an opaque string are NOT caught — `api/routes/admin-sandbox.ts` types
- * `activeBackend` as `string` and will surface `"fail-closed"` to the admin UI
- * as though it were a selectable backend id. Truthful, but untreated; check such
- * consumers by hand.
+ * that indexes `BACKEND_ISOLATION` (three sites: `health.ts`'s `sandbox`
+ * component and `checks.explore.isolated`, plus `startup.ts`), because that
+ * table is keyed by real backends only. Consumers that treat the value as an
+ * opaque string are NOT caught — `api/routes/admin-sandbox.ts` types both
+ * `activeBackend` and `platformDefault` as `string` and will surface
+ * `"fail-closed"` to the admin UI as though it were a selectable backend id.
+ * Truthful, but untreated (#4834); check such consumers by hand.
  */
 export type ExploreBackendType = SandboxBackendName | "plugin" | "fail-closed";
 
@@ -442,7 +443,8 @@ export function markNsjailFailed(): void {
 }
 
 /** Permanently mark the sidecar as failed so health stops naming it. What it
- *  reports instead depends on the plan: the default chain degrades to
+ *  reports instead depends on the plan: the default chain names the next
+ *  available step (nsjail auto-detect, when a binary is on PATH) and only then
  *  "just-bash"; a `sandbox.priority` pin without `just-bash` reports
  *  "fail-closed".
  *  Called from startup.ts when the sidecar health check fails. */

@@ -382,16 +382,27 @@ function credentialGuidance(backends: readonly SandboxBackendName[]): string[] {
  */
 export function formatSandboxFailClosed(
   plan: SandboxPlan,
+  env: SandboxSelectionEnv,
   deployMode: "saas" | "self-hosted" | undefined,
 ): string {
-  // A sandbox plugin or a per-workspace BYOC override sits AHEAD of this plan in
-  // both tools and is invisible to the planner, so append it as a caveat rather
-  // than asserting a total outage the deployment may not have.
-  const pluginCaveat =
-    " If a sandbox plugin or workspace BYOC backend is configured it takes priority and is " +
-    "not visible to this check until the first explore request.";
-
-  const hardFailStep = plan.steps.find((s) => s.hardFail);
+  // Backends that sit AHEAD of this plan and are invisible to the planner, so a
+  // flat "every request is refused" would be a false alarm for a deployment that
+  // actually works through one of them.
+  //
+  // The two are gated differently and the caveat must not overstate either. The
+  // per-workspace BYOC override (explore's priority -1) always applies. Operator
+  // sandbox PLUGINS are skipped outright when `ATLAS_SANDBOX=nsjail` — explore
+  // gates its plugin front-of-line on that env var precisely because the pin
+  // means "nsjail only" — so on the pin the plugin half is guaranteed false, and
+  // saying it would invite an operator to dismiss a real total outage as
+  // "probably my plugin". Sandbox plugins are also explore-only; python has no
+  // plugin front-of-line at all.
+  const pinnedNsjail = env.atlasSandbox === "nsjail";
+  const aheadCaveat = pinnedNsjail
+    ? " A per-workspace BYOC backend, if configured, still takes priority and is not visible " +
+      "to this check; operator sandbox plugins are skipped entirely under the pin."
+    : " If a sandbox plugin (explore only) or a workspace BYOC backend is configured it takes " +
+      "priority and is not visible to this check until the first explore request.";
 
   if (plan.source === "config-priority") {
     // No hard-fail step exists on this arm (config steps are all soft), so every
@@ -406,7 +417,7 @@ export function formatSandboxFailClosed(
       `(${plan.configPriority.join(", ")}) is unavailable and the pin has no 'just-bash' ` +
       `fallback, so the tool fails closed and refuses every request. ` +
       `Unavailable: ${unavailable.join(", ")}. ${guidance.join(" ")}` +
-      pluginCaveat
+      aheadCaveat
     );
   }
 
@@ -414,7 +425,20 @@ export function formatSandboxFailClosed(
   // hard-fail step. Read the backend off the STEP rather than assuming nsjail:
   // that is true today (nsjail is the only `hardFail: true` step) but a second
   // one would otherwise make this message silently lie.
-  const pinned = hardFailStep?.kind ?? "nsjail";
+  const hardFailStep = plan.steps.find((s) => s.hardFail);
+  if (!hardFailStep) {
+    // Precondition violated — a degradable default chain was passed here. Refuse
+    // to invent a pin rather than defaulting to "nsjail": fabricating
+    // `ATLAS_SANDBOX=nsjail is pinned` is precisely the silent lie the
+    // read-it-off-the-step change above exists to prevent.
+    return (
+      "Explore tool: UNAVAILABLE — no sandbox backend is available and the plan cannot " +
+      "degrade, so every explore request is refused. No pinned backend could be identified; " +
+      "check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts." +
+      aheadCaveat
+    );
+  }
+  const pinned = hardFailStep.kind;
   // Guidance is scoped to the pinned backend alone. The earlier soft steps are
   // unavailable too, but naming their credentials here would splice, say, Vercel
   // advice into an nsjail-pin message — the same unactionable-advice failure
@@ -426,7 +450,7 @@ export function formatSandboxFailClosed(
     `by contract — it does not degrade to an unsandboxed backend). ` +
     `${guidance.join(" ")} ` +
     `Or unset ATLAS_SANDBOX to allow the normal fallback chain.` +
-    pluginCaveat
+    aheadCaveat
   );
 }
 

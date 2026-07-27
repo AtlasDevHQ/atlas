@@ -3,7 +3,8 @@
  * healthy-but-unsandboxed `just-bash` deploy.
  *
  * `deploy/api/atlas.config.ts` pins `priority: ["vercel-sandbox"]` with no
- * `just-bash`, so staging and all three prod regions are fail-closed. Drop
+ * `just-bash`, so staging and all three prod regions are PINNED fail-closed
+ * (the posture, not the outage — the distinction this file exists to keep). Drop
  * `VERCEL_TOKEN` on one regional service — a per-service Railway secret that
  * shared vars do not inherit — and explore throws on every request. Health used
  * to describe that region as `backend: "just-bash"`, `isolated: false`,

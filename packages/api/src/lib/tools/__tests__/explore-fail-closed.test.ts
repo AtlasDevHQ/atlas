@@ -127,7 +127,7 @@ describe("ATLAS_SANDBOX=nsjail refuses rather than degrading (#4829)", () => {
     // over, it PRE-DATES this change (main behaves identically), and closing it
     // means either marking the failure here — which #4824's regression test
     // forbids — or redefining `isBackendAvailable` as constructibility. Tracked
-    // separately; do not "fix" it by weakening #4824.
+    // as #4834; do not "fix" it by weakening #4824.
     const fs = await import("fs");
     const spy = spyOn(fs, "accessSync").mockImplementation(() => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });

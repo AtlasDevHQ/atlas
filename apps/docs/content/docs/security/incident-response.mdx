@@ -76,14 +76,18 @@ runs from the *original* awareness, not from the reclassification. Tiers never
 ratchet down mid-incident; a resolved incident may be recorded as having been
 over-classified, which is the harmless direction.
 
-**Self-hosted deployments are out of tier entirely.** Atlas has no access to a
-self-hosted customer's data, logs, or infrastructure, so the obligation is
-different in kind rather than degree: Atlas's duty is to disclose the
-vulnerability and ship a fix, not to investigate an environment it cannot see.
-A vulnerability affecting self-hosted deployments is handled as a coordinated
-disclosure through
-[security.txt](https://useatlas.dev/.well-known/security.txt), not as an
-incident under this runbook.
+**Self-hosted deployments are outside this runbook entirely.** Where Atlas is
+not the operator, Atlas is not a processor of that deployment's data, no DPA
+applies, and no notification obligation arises. Atlas has no access to the
+environment, its data, or its logs. Incident response for a self-hosted
+deployment — detection, containment, assessment, and any notification the
+operator owes its own users — belongs to whoever runs it.
+
+That is separate from vulnerability handling. A security defect in Atlas
+software is reported and fixed like any other, through
+[security.txt](https://useatlas.dev/.well-known/security.txt), and fixes ship
+to everyone. Receiving a vulnerability report is not the same thing as
+responding to an incident, and this runbook governs only the latter.
 
 ## Roles
 

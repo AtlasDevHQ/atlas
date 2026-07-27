@@ -81,6 +81,11 @@ void mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
+// The sandbox backend union, used to type the priority shapes the
+// `SandboxCredsGuardLive` sweep enumerates. Type-only, so it is unaffected by
+// the dynamic-import dance the block below describes.
+import type { SandboxBackendName } from "@atlas/api/lib/config";
+
 // Type-only imports for the tagged error classes and the `Config` Tag
 // type — needed because the runtime values are pulled in via dynamic
 // `await import(...)` after the logger mock is installed, which gives
@@ -177,6 +182,13 @@ const {
 } = await import("../saas-guards");
 const { Config, Migration, Settings } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
+// The planner that `SandboxCredsGuardLive` derives its fail-closed determination
+// from (#4838), plus the backend table its sweep enumerates. Imported here so
+// the divergence test computes expectations from the SAME source of truth the
+// guard consults, rather than hardcoding outcomes.
+const { planSandboxSelection, BACKEND_ISOLATION } = await import(
+  "@atlas/api/lib/tools/backends/selection"
+);
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -980,6 +992,143 @@ describe("SandboxCredsGuardLive", () => {
         expect(Exit.isSuccess(exit)).toBe(true);
       }),
     );
+  });
+
+  // ── Divergence detector (#4838) ────────────────────────────────────────
+  //
+  // The guard DERIVES "does this pin fail closed?" from `planSandboxSelection`
+  // instead of restating the rule, and this test is what stops a second copy
+  // growing back. It hardcodes no outcomes: for every priority shape it computes
+  // the expectation by calling the planner directly and reading `onExhausted`,
+  // then asserts the guard agrees. A re-hand-rolled copy therefore fails here on
+  // the first shape where the two disagree — including the silent direction
+  // (planner says fail-closed, guard says "not pinned", region boots green with
+  // explore refusing every request). The named cases above pin today's four
+  // documented shapes and cannot catch a rewrite that diverges only outside
+  // them, which is why they are not sufficient on their own.
+  //
+  // If you deliberately change the guard's vercel half, do NOT mirror the edit
+  // into the expectation below — that silently restores agreement and retires
+  // the check. Add a named case instead.
+  //
+  // The space is every ORDERING of every subset of the backend names, not just
+  // every subset: `sandbox.priority` is `z.array(z.enum(...)).min(1)` with no
+  // ordering constraint, and a mirror keyed on position rather than membership
+  // (`priority[0] !== "vercel-sandbox"`, or "the fallback goes last") agrees
+  // with the planner on every canonically-ordered subset while diverging in
+  // production on `["sidecar", "vercel-sandbox"]`.
+  //
+  // Names are read off `BACKEND_ISOLATION`, whose
+  // `satisfies Record<SandboxBackendName | "plugin">` makes a newly-added
+  // backend a compile error until it is classified there — so a new backend
+  // widens this enumeration automatically rather than silently leaving its
+  // shapes untested. (`plugin` is excluded: it is an isolation posture for the
+  // front-of-line plugin seam, never a `sandbox.priority` entry. That exclusion
+  // is hand-maintained — a second non-priority key would need adding here.)
+  test("fail-closed determination cannot drift from planSandboxSelection (every priority ordering)", async () => {
+    const backends = (
+      Object.keys(BACKEND_ISOLATION) as Array<keyof typeof BACKEND_ISOLATION>
+    ).filter((name): name is SandboxBackendName => name !== "plugin");
+
+    const orderings = (items: readonly SandboxBackendName[]): SandboxBackendName[][] =>
+      items.length === 0
+        ? [[]]
+        : items.flatMap((item, i) =>
+            orderings([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]),
+          );
+    const subsets = backends.reduce<SandboxBackendName[][]>(
+      (acc, name) => [...acc, ...acc.map((subset) => [...subset, name])],
+      [[]],
+    );
+    // `undefined` (no `sandbox` block at all) alongside every ordering, so the
+    // absent-priority shape is covered next to the empty-array one. `[]` is
+    // schema-unreachable (`.min(1)`) but cheap to pin.
+    const shapes: Array<readonly SandboxBackendName[] | undefined> = [
+      undefined,
+      ...subsets.flatMap(orderings),
+    ];
+
+    // The guard feeds the planner a fabricated "nothing detected" availability
+    // snapshot. That is sound only while the config-priority arm ignores
+    // availability entirely — and the sweep below could never catch that
+    // assumption breaking, because it fabricates the SAME snapshot. So assert
+    // the invariance directly: if a future planner change lets `atlasSandbox` or
+    // a detection flag reach the config-priority arm, this fails rather than
+    // letting the guard's fiction quietly become a wrong model of production.
+    const ALT_AVAILABILITY = [
+      { atlasSandbox: "nsjail", vercelAvailable: true, sidecarAvailable: true, nsjailAvailable: true, nsjailFailed: false },
+      { atlasSandbox: undefined, vercelAvailable: true, sidecarAvailable: false, nsjailAvailable: true, nsjailFailed: true },
+    ] as const;
+
+    const observed: Array<{
+      priority: readonly SandboxBackendName[] | undefined;
+      guardFired: boolean;
+      plannerFailsClosedOnVercel: boolean;
+    }> = [];
+
+    await withCleanEnv(() =>
+      // Every Vercel credential absent, so the guard fires if and only if its
+      // pin determination says to — making `guardFired` a faithful readout of
+      // the determination rather than of credential presence.
+      withVercelIds({}, async () => {
+        for (const priority of shapes) {
+          const baseEnv = {
+            configPriority: priority,
+            atlasSandbox: undefined,
+            vercelAvailable: false,
+            sidecarAvailable: false,
+            nsjailAvailable: false,
+            nsjailFailed: false,
+          } as const;
+          const plan = planSandboxSelection(baseEnv);
+          const plannerFailsClosedOnVercel =
+            plan.onExhausted === "fail-closed" &&
+            plan.configPriority.includes("vercel-sandbox");
+
+          for (const availability of ALT_AVAILABILITY) {
+            const alt = planSandboxSelection({ configPriority: priority, ...availability });
+            expect({ priority, source: alt.source, onExhausted: alt.onExhausted }).toEqual({
+              priority,
+              source: plan.source,
+              onExhausted: plan.onExhausted,
+            });
+          }
+
+          const exit = await Effect.runPromiseExit(
+            Effect.void.pipe(
+              Effect.provide(
+                SandboxCredsGuardLive.pipe(
+                  Layer.provide(
+                    makeTestConfigLayer({
+                      deployMode: "saas",
+                      ...(priority !== undefined && { sandbox: { priority } }),
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          );
+          observed.push({
+            priority,
+            guardFired: Exit.isFailure(exit),
+            plannerFailsClosedOnVercel,
+          });
+        }
+      }),
+    );
+
+    // Reported as a list so a failure names every diverging shape at once.
+    const divergent = observed.filter((o) => o.guardFired !== o.plannerFailsClosedOnVercel);
+    expect(divergent).toEqual([]);
+
+    // Anti-vacuity: a determination stuck at one constant would agree with a
+    // co-broken copy trivially, so require the sweep to have actually reached
+    // the fail-closed outcome before its agreement counts for anything. (The
+    // negative outcome is guaranteed by `undefined` always taking the
+    // `default-chain` arm, so the second line documents the pairing rather than
+    // being independently falsifiable.)
+    expect(observed.some((o) => o.plannerFailsClosedOnVercel)).toBe(true);
+    expect(observed.some((o) => !o.plannerFailsClosedOnVercel)).toBe(true);
   });
 });
 

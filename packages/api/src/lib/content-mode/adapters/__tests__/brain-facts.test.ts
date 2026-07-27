@@ -27,10 +27,17 @@ interface Call {
   readonly params: readonly unknown[];
 }
 
-/** A transaction double that answers the draft SELECT and records every call. */
+/**
+ * A transaction double that answers the draft SELECT and the evidence-grants
+ * SELECT (#4823), and records every call.
+ *
+ * Routed on the SQL rather than on call ORDER: the adapter now issues up to
+ * four statements and an index-keyed double would silently feed draft rows to
+ * the evidence query the moment the plan changed again.
+ */
 function txWithDrafts(
   drafts: readonly unknown[],
-  opts: { readonly failOnUpdate?: boolean } = {},
+  opts: { readonly failOnUpdate?: boolean; readonly evidence?: readonly unknown[] } = {},
 ): { tx: ModeTxClient; calls: Call[] } {
   const calls: Call[] = [];
   const tx: ModeTxClient = {
@@ -38,17 +45,38 @@ function txWithDrafts(
       calls.push({ sql, params });
       if (/^\s*UPDATE/i.test(sql)) {
         if (opts.failOnUpdate) throw new Error("update exploded");
-        // Emulate `pg`: a non-RETURNING UPDATE reports through `rowCount`.
-        const ids = (params[1] ?? []) as readonly string[];
-        return { rows: [], rowCount: ids.length };
+        // Emulate `pg`: a non-RETURNING UPDATE reports through `rowCount`. The
+        // plain statement binds an id array; the widening one binds a jsonb
+        // string of `{id, grant}` entries.
+        const target = params[1];
+        const rowCount = Array.isArray(target)
+          ? target.length
+          : (JSON.parse(String(target)) as readonly unknown[]).length;
+        return { rows: [], rowCount };
       }
-      return { rows: [...drafts] };
+      if (sql.includes("brain_edges")) return { rows: [...(opts.evidence ?? [])] };
+      if (sql.includes("FOR UPDATE")) return { rows: [...drafts] };
+      // Not a catch-all: a future fifth statement must FAIL here rather than
+      // silently receive draft rows, which is how a shape mismatch would hide.
+      throw new Error(`unrecognised statement in the tx double: ${sql}`);
     },
   };
   return { tx, calls };
 }
 
+/** The UPDATE statements the adapter issued, in order. */
+const updates = (calls: readonly Call[]): Call[] =>
+  calls.filter((c) => /^\s*UPDATE/i.test(c.sql));
+
+/** One `EVIDENCE_GRANTS_SQL` row: an episode grant attached to a draft fact. */
+function evidenceFor(factId: string, visibleTo: readonly (string | null)[]) {
+  return { fact_id: factId, visible_to: [...visibleTo] };
+}
+
 const EPISODE = "22222222-2222-4222-8222-222222222222";
+
+/** A private channel's grant — one `org` is strictly wider than. */
+const PRIVATE = "audience:chat-channel:slack:C0BKTMEDUN9";
 
 function draft(id: string, over: Record<string, unknown> = {}) {
   return {
@@ -70,10 +98,13 @@ describe("promoteBrainFacts", () => {
     const { tx, calls } = txWithDrafts([draft("fact-a"), draft("fact-b")]);
     const report = await run(promoteBrainFacts(tx, "ws-1"));
 
-    expect(report).toEqual({ table: "brain_facts", promoted: 2, refused: [] });
-    expect(calls).toHaveLength(2);
+    expect(report).toEqual({ table: "brain_facts", promoted: 2, refused: [], widened: [] });
+    // draft SELECT → evidence SELECT → one UPDATE (nothing widened).
+    expect(calls).toHaveLength(3);
     expect(calls[0].params).toEqual(["ws-1"]);
     expect(calls[1].params).toEqual(["ws-1", ["fact-a", "fact-b"]]);
+    expect(updates(calls)).toHaveLength(1);
+    expect(updates(calls)[0].params).toEqual(["ws-1", ["fact-a", "fact-b"]]);
   });
 
   it("promotes the good drafts and refuses only the bad one", async () => {
@@ -89,6 +120,9 @@ describe("promoteBrainFacts", () => {
     expect(report.refused?.map((r) => r.rowId)).toEqual(["ungranted"]);
     // The refused id is absent from the UPDATE's id list — the refusal is
     // enforced by what we ask Postgres to touch, not by a later filter.
+    expect(updates(calls)[0].params[1]).toEqual(["good"]);
+    // …and it is absent from the evidence lookup too, so a refused row's
+    // episodes cannot widen anything.
     expect(calls[1].params[1]).toEqual(["good"]);
   });
 
@@ -106,16 +140,17 @@ describe("promoteBrainFacts", () => {
     const { tx, calls } = txWithDrafts([]);
     const report = await run(promoteBrainFacts(tx, "ws-1"));
 
-    expect(report).toEqual({ table: "brain_facts", promoted: 0, refused: [] });
+    expect(report).toEqual({ table: "brain_facts", promoted: 0, refused: [], widened: [] });
     expect(calls).toHaveLength(1);
   });
 
-  it("reports `refused: []` rather than omitting it when nothing was refused", async () => {
-    // `undefined` means "this table cannot refuse"; `[]` means "it can, and
-    // refused nothing this run". `admin-publish.ts` distinguishes them.
+  it("reports `refused: []` / `widened: []` rather than omitting them", async () => {
+    // `undefined` means "this table has no such concept"; `[]` means "it does,
+    // and nothing happened this run". `admin-publish.ts` distinguishes them.
     const { tx } = txWithDrafts([draft("ok")]);
     const report = await run(promoteBrainFacts(tx, "ws-1"));
     expect(report.refused).toEqual([]);
+    expect(report.widened).toEqual([]);
   });
 
   it("takes the draft-selection lock — read-then-write needs FOR UPDATE", async () => {
@@ -126,8 +161,13 @@ describe("promoteBrainFacts", () => {
     expect(calls[0].sql).toMatch(/FOR UPDATE/i);
   });
 
-  it("scopes both statements to the workspace", async () => {
-    const { tx, calls } = txWithDrafts([draft("a")]);
+  it("scopes every statement to the workspace", async () => {
+    // Including the evidence lookup, which is the one query whose output can
+    // WIDEN a grant — an unscoped join there would let another tenant's episode
+    // decide who can read this tenant's fact.
+    const { tx, calls } = txWithDrafts([draft("a")], {
+      evidence: [evidenceFor("a", ["org"])],
+    });
     await run(promoteBrainFacts(tx, "ws-1"));
     for (const call of calls) {
       expect(call.sql).toContain("workspace_id = $1");
@@ -135,21 +175,39 @@ describe("promoteBrainFacts", () => {
     }
   });
 
-  it("only ever promotes rows that are still drafts", async () => {
-    const { tx, calls } = txWithDrafts([draft("a")]);
+  it("only ever promotes rows that are still drafts — on BOTH promote statements", async () => {
+    // The widening statement carries extra weight here: `status = 'draft'` is
+    // what stops a republish from rewriting an already-published fact's grant,
+    // which ADR-0036 §T5 makes immutable per version.
+    const { tx, calls } = txWithDrafts(
+      [draft("plain"), draft("wide", { visible_to: [PRIVATE] })],
+      { evidence: [evidenceFor("wide", ["org"])] },
+    );
     await run(promoteBrainFacts(tx, "ws-1"));
-    expect(calls[1].sql).toContain("status = 'draft'");
+    const updateCalls = updates(calls);
+    expect(updateCalls).toHaveLength(2);
+    for (const call of updateCalls) expect(call.sql).toContain("status = 'draft'");
   });
 
-  it("excludes RETRACTED drafts from both statements", async () => {
+  it("excludes RETRACTED drafts from the select and both promote statements", async () => {
     // A fact with `invalidated_at` set is a retracted claim; promoting it would
     // stamp "reviewed and trusted" on something already withdrawn. Excluded in
-    // the SELECT *and* the UPDATE so the two cannot disagree, and — critically —
+    // the SELECT *and* the UPDATEs so they cannot disagree, and — critically —
     // in `brainFactsCountSql` too, so an excluded row does not become a
     // permanent unpromotable backlog nobody is told about.
-    const { tx, calls } = txWithDrafts([draft("a")]);
+    //
+    // The evidence lookup is exempt by construction, not by omission: it is
+    // keyed by the ids the SELECT already filtered, and `brain_edges` /
+    // `brain_episodes` have no `invalidated_at` to filter on.
+    const { tx, calls } = txWithDrafts(
+      [draft("plain"), draft("wide", { visible_to: [PRIVATE] })],
+      { evidence: [evidenceFor("wide", ["org"])] },
+    );
     await run(promoteBrainFacts(tx, "ws-1"));
-    for (const call of calls) expect(call.sql).toContain("invalidated_at IS NULL");
+    for (const call of calls) {
+      if (call.sql.includes("brain_edges")) continue;
+      expect(call.sql).toContain("invalidated_at IS NULL");
+    }
   });
 
   it("keeps the draft count in lockstep with what promotion considers", () => {
@@ -171,13 +229,141 @@ describe("promoteBrainFacts", () => {
   it("falls back to rows.length when the driver omits rowCount", async () => {
     // Test doubles that populate only `rows` must not report a false zero.
     const tx: ModeTxClient = {
-      query: async (sql) =>
-        /^\s*UPDATE/i.test(sql)
-          ? { rows: [{ id: "a" }, { id: "b" }] }
-          : { rows: [draft("a"), draft("b")] },
+      query: async (sql) => {
+        if (/^\s*UPDATE/i.test(sql)) return { rows: [{ id: "a" }, { id: "b" }] };
+        if (sql.includes("brain_edges")) return { rows: [] };
+        return { rows: [draft("a"), draft("b")] };
+      },
     };
     const report = await run(promoteBrainFacts(tx, "ws-1"));
     expect(report.promoted).toBe(2);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Publish-time grant widening (#4823)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("promoteBrainFacts — grant widening from evidence", () => {
+  it("publishes with the UNION when an evidence episode is granted more widely", async () => {
+    const { tx, calls } = txWithDrafts([draft("c3", { visible_to: [PRIVATE] })], {
+      evidence: [evidenceFor("c3", [PRIVATE]), evidenceFor("c3", ["org"])],
+    });
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(report.promoted).toBe(1);
+    // Reported, not only logged: `admin-publish.ts` writes this into the
+    // durable audit row, because a widened grant permanently changed who can
+    // read a claim and no later publish revisits it.
+    expect(report.widened).toEqual([{ rowId: "c3", added: ["org"] }]);
+    const [update] = updates(calls);
+    expect(update.sql).toContain("visible_to");
+    // Append-only: the original token keeps its place, `org` follows it. The
+    // pair is deliberate — collapsing to `['org']` would discard the record
+    // that the claim was also made privately.
+    expect(JSON.parse(String(update.params[1]))).toEqual([
+      { id: "c3", grant: [PRIVATE, "org"] },
+    ]);
+  });
+
+  it("never DROPS a token — a narrower episode cannot displace `org`", async () => {
+    // The direction `reconcile.ts` was already safe in. It must stay a no-op:
+    // a private restatement of a public claim cannot un-publish it.
+    const { tx, calls } = txWithDrafts([draft("wide", { visible_to: ["org"] })], {
+      evidence: [evidenceFor("wide", ["org"]), evidenceFor("wide", [PRIVATE])],
+    });
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    // It DID widen — `org` plus the audience — because widening is a union and
+    // the audience token is one more principal, not a replacement. What must
+    // never happen is `org` disappearing.
+    const [update] = updates(calls);
+    const payload = JSON.parse(String(update.params[1])) as { grant: string[] }[];
+    expect(payload[0].grant[0]).toBe("org");
+    expect(payload[0].grant).toContain(PRIVATE);
+  });
+
+  it("splits the promote so only the widened rows are rewritten", async () => {
+    const { tx, calls } = txWithDrafts(
+      [draft("plain"), draft("wide", { visible_to: [PRIVATE] })],
+      { evidence: [evidenceFor("wide", ["org"])] },
+    );
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(report.promoted).toBe(2);
+    const [plain, wide] = updates(calls);
+    expect(plain.params[1]).toEqual(["plain"]);
+    expect(plain.sql).not.toContain("visible_to");
+    expect(JSON.parse(String(wide.params[1]))).toEqual([
+      { id: "wide", grant: [PRIVATE, "org"] },
+    ]);
+  });
+
+  it("does not copy MALFORMED evidence tokens into the fact's grant", async () => {
+    // `everyone` grants nobody anything (`acl.ts`). Propagating it would spread
+    // a grant anomaly into a second row for no reader's benefit.
+    const { tx, calls } = txWithDrafts([draft("f", { visible_to: [PRIVATE] })], {
+      evidence: [evidenceFor("f", ["everyone", "org", null])],
+    });
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(JSON.parse(String(updates(calls)[0].params[1]))).toEqual([
+      { id: "f", grant: [PRIVATE, "org"] },
+    ]);
+  });
+
+  it("adds a repeated evidence token only once", async () => {
+    const { tx, calls } = txWithDrafts([draft("f", { visible_to: [PRIVATE] })], {
+      evidence: [evidenceFor("f", ["org"]), evidenceFor("f", ["org", "role:admin"])],
+    });
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(JSON.parse(String(updates(calls)[0].params[1]))).toEqual([
+      { id: "f", grant: [PRIVATE, "org", "role:admin"] },
+    ]);
+  });
+
+  it("attributes evidence per fact — one draft's episodes never widen another's", async () => {
+    const { tx, calls } = txWithDrafts(
+      [draft("mine", { visible_to: [PRIVATE] }), draft("theirs", { visible_to: [PRIVATE] })],
+      { evidence: [evidenceFor("mine", ["org"])] },
+    );
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    const [plain, wide] = updates(calls);
+    expect(plain.params[1]).toEqual(["theirs"]);
+    expect(JSON.parse(String(wide.params[1]))).toEqual([
+      { id: "mine", grant: [PRIVATE, "org"] },
+    ]);
+  });
+
+  it("still promotes — with the narrower grant — when an evidence row is unusable", async () => {
+    // Query drift on the evidence side is fail-CLOSED and must not fail the
+    // phase: the fact publishes with its own grant, counted and accounted for.
+    // (`brain-facts-logging.test.ts` asserts the warning that goes with it.)
+    const { tx, calls } = txWithDrafts([draft("f", { visible_to: [PRIVATE] })], {
+      evidence: [{ fact_id: "f", visible_to: "org" }, null],
+    });
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(report.promoted).toBe(1);
+    expect(report.refused).toEqual([]);
+    expect(updates(calls)[0].params[1]).toEqual(["f"]);
+  });
+
+  it("wraps a failing evidence lookup as a PublishPhaseError", async () => {
+    const tx: ModeTxClient = {
+      query: async (sql) => {
+        if (sql.includes("brain_edges")) throw new Error("evidence exploded");
+        return { rows: [draft("a")] };
+      },
+    };
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
+    expect(exit._tag).toBe("Left");
+    if (exit._tag === "Left") {
+      expect(exit.left).toBeInstanceOf(PublishPhaseError);
+      expect(exit.left.phase).toBe("promote");
+    }
   });
 });
 

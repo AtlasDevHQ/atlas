@@ -15,6 +15,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import {
   collectRefusals,
+  collectWidenings,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode/promoted";
 import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
@@ -98,6 +99,9 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
   ],
   promotedCountsFromReports,
   collectRefusals,
+  // Re-exported through the real implementation, not a stub: the point of the
+  // #4823 audit assertions is that the ROUTE's sweep is the shared one.
+  collectWidenings,
   makeService: () => ({
     runPublishPhases: () =>
       Effect.try({
@@ -327,6 +331,49 @@ describe("POST /api/v1/admin/publish — refused drafts (#4769)", () => {
       refusedDrafts: [
         { id: "fact-1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"] },
       ],
+    });
+  });
+
+  it("records a WIDENED grant in the durable audit row (#4823)", async () => {
+    // The whole reason `PromotionReport.widened` exists rather than being
+    // log-only. A widening permanently changed who can read a claim and
+    // nothing re-offers it, so "why can the whole org see this?" months later
+    // is answerable only from `audit_log`. Uncapped: this is a jsonb column.
+    REPORTS = [
+      {
+        table: "brain_facts",
+        promoted: 2,
+        refused: [],
+        widened: [
+          { rowId: "fact-a", added: ["org"] },
+          { rowId: "fact-b", added: ["audience:chat-channel:slack:C1", "role:admin"] },
+        ],
+      },
+    ];
+    const res = await publish();
+
+    expect(auditCalls[0].metadata).toMatchObject({
+      widenedGrantCount: 2,
+      widenedGrants: [
+        { surface: "brain_facts", id: "fact-a", added: ["org"] },
+        {
+          surface: "brain_facts",
+          id: "fact-b",
+          added: ["audience:chat-channel:slack:C1", "role:admin"],
+        },
+      ],
+    });
+    // Deliberately absent from the RESPONSE: unlike a refusal it asks nothing
+    // of the admin, and the tokens are principal ids.
+    expect(await res.json()).not.toHaveProperty("widenedGrants");
+  });
+
+  it("distinguishes 'no ACL changed' from the field having regressed", async () => {
+    REPORTS = [{ table: "brain_facts", promoted: 5, refused: [] }];
+    await publish();
+    expect(auditCalls[0].metadata).toMatchObject({
+      widenedGrantCount: 0,
+      widenedGrants: [],
     });
   });
 });

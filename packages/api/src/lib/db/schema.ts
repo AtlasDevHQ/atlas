@@ -3284,8 +3284,13 @@ export const brainFacts = pgTable(
     // Self-contained principal set, derived at ingest, evaluated read-time
     // local. Grammar (parser in #4768):
     //   org | role:{owner,admin,member} | user:<id> | audience:<source-derived>
-    // Per-version IMMUTABLE — a column rather than a join to a policy table,
-    // because a policy table would retroactively rewrite who could see history.
+    // Written TWICE at most: once at ingest, and once at the draft→published
+    // transition, where `promoteBrainFacts` unions in the grants of the
+    // episodes on this fact's `provenance` edges (#4823, ADR-0036 §T5
+    // amendment). Immutable thereafter — the widening UPDATE keeps
+    // `status = 'draft'`, so no later publish revisits a published grant. A
+    // column rather than a join to a policy table, because a policy table would
+    // retroactively rewrite who could see history.
     visibleTo: text("visible_to").array().notNull(),
     // The supersede-vs-coexist switch M2 needs, landing now so M2 adds an
     // engine and not a column. `single` supersedes, `multi` coexists +

@@ -1086,6 +1086,12 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     // the next cycle with no re-ingest and no rewrite. That asymmetry is the
     // whole reason ADR-0036 routes sensitive facts through an `audience:`
     // instead of baking principals into the grant.
+    // The grant survives publish UNCHANGED here only because every episode
+    // behind this fact was posted in the exec channel: #4823's publish-time
+    // widening unions in the grants of the fact's `provenance` evidence, so
+    // restating this claim in a public channel would legitimately make this
+    // `[EXEC_GRANT_TOKEN, 'org']`. Stated because the coupling to the corpus's
+    // channel choice is invisible otherwise.
     const stored = (await facts()).find((f) => f.subject === "acquisition target");
     expect(stored).toMatchObject({ status: "published", visible_to: [EXEC_GRANT_TOKEN] });
 

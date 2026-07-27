@@ -32,6 +32,7 @@ import {
   CONTENT_MODE_TABLES,
   makeService,
   collectRefusals,
+  collectWidenings,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
@@ -318,6 +319,26 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
           })),
         },
         "Publish committed, but the review gate refused to promote one or more drafts — they remain drafts",
+      );
+    }
+
+    // Grants this publish widened (#4823). Swept with the SAME helper the REST
+    // route uses, for `collectRefusals`' reason: both seams run the identical
+    // `runPublishPhases`, so an ACL change recorded by one and dropped by the
+    // other is a difference nothing would keep in sync.
+    //
+    // Recorded here as a log line and NOT in `audit_log`, and that asymmetry is
+    // worth naming rather than leaving as an apparent oversight: this seam
+    // writes no audit row for ANYTHING — not for refusals, not for promotions —
+    // so a widening-only row would be the single audited event on a path with
+    // no audit trail to sit in. `admin-publish.ts` is where the durable record
+    // lives. Uncapped here on purpose: the adapter's own line is sampled, and
+    // on this path nothing else enumerates the rows.
+    const widened = collectWidenings(reports);
+    if (widened.length > 0) {
+      log.warn(
+        { orgId, widenedCount: widened.length, widened },
+        "Publish committed and WIDENED one or more grants to cover their evidence — who can read those claims has changed permanently, and on this seam no audit row records it",
       );
     }
 

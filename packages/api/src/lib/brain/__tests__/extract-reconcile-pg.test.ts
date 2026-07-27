@@ -634,6 +634,45 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect((await edges()).filter((e) => e.edge_type === "provenance")).toHaveLength(2);
   });
 
+  it("corroborates ACROSS grants and leaves the fact's own grant alone", async () => {
+    // The premise #4823's publish-time widening rests on, proved at the stage
+    // that produces it: the same claim in a private channel and then a public
+    // one must land as ONE fact with TWO provenance edges, and reconcile must
+    // not touch the grant — widening at an unattended ingest pass is exactly
+    // what ADR-0036 §T5 forbids. If `CORROBORATION_LOOKUP_SQL` ever gained a
+    // grant filter, the second episode would mint a duplicate instead, the
+    // wider edge would never exist, and the publish-side widening would have
+    // nothing to find — while every test in `promotion-pg.test.ts` stayed green
+    // on its hand-seeded edges.
+    const priv = await insertEpisode({
+      sourceId: "C0BK:cross-1",
+      visibleTo: ["audience:chat-channel:slack:C0BK"],
+    });
+    const pub = await insertEpisode({ sourceId: "C0BB:cross-2", visibleTo: ["org"] });
+    await reconcileFacts({ episode: priv, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+
+    const report = await reconcileFacts({
+      episode: pub,
+      candidates: [candidate()],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    expect(report.corroborated).toBe(1);
+    const stored = await facts();
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.visible_to).toEqual(["audience:chat-channel:slack:C0BK"]);
+    const provenance = (await edges()).filter((e) => e.edge_type === "provenance");
+    expect(provenance).toHaveLength(2);
+    // Sorted with an explicit comparator: uuids are strings, but a bare
+    // `.sort()` stringifies through `toString()` and the type-aware lint gate
+    // refuses it (`require-array-sort-compare`).
+    const byString = (a: string, b: string) => a.localeCompare(b);
+    expect(
+      provenance.map((e) => e.to_episode_id ?? "").sort(byString),
+    ).toEqual([priv.id, pub.id].sort(byString));
+  });
+
   it("does not let a RETRACTED fact absorb a re-observation", async () => {
     // `invalidated_at IS NULL` in the lookup. A tombstoned claim corroborating
     // a fresh observation would resurrect a belief by side-effect — and, worse,

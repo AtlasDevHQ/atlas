@@ -1,6 +1,6 @@
 ---
 title: Incident Response
-description: How Atlas detects, contains, and communicates a security incident, organized around the 48-hour customer-notification commitment in the DPA. Includes the regional blast-radius model and the Art. 33(3) notification contents.
+description: How Atlas detects, contains, and communicates a security incident, organized around the 48-hour customer-notification commitment in the DPA. Covers the three severity tiers, the regional blast-radius model, the Art. 33(3) notification contents, and the standing bias to disclose under uncertainty.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -38,51 +38,70 @@ all start it equally.
 | [Recover](#phase-6-recover) | parallel | Service restored, integrity verified |
 | [Post-incident](#phase-7-post-incident) | T+7d | Written review complete |
 
+These targets apply to **SEV1 and SEV2** (see [Severity](#severity)). SEV3 has
+no clock — but note that the tier is assigned at the end of Detect, so the
+early phases run at this pace until the assessment says otherwise. Slow triage
+of something that turns out to be SEV1 spends budget that cannot be recovered.
+
 Containment and recovery run in parallel with the notification track on
 purpose. The 48-hour commitment is **not** conditional on the incident being
 resolved — Art. 33(3) explicitly contemplates notifying with the information
 "then known", and the DPA commits Atlas to ongoing updates as facts develop.
 Waiting for a complete picture is the most common way to miss the deadline.
 
-<Callout type="warn" title="DECISION NEEDED — severity tiers">
-The phase targets above assume a single "security incident" severity. Real
-triage needs tiers, and the thresholds are a maintainer judgement that has not
-been made:
+## Severity
 
-- How many tiers, and what are their names?
-- What distinguishes them — number of affected workspaces, data classes
-  touched (credentials vs. conversation content vs. query results), confirmed
-  exfiltration vs. possible exposure, or regulatory exposure?
-- Which tiers get the timeline above, and which get a relaxed one?
-- Does a **self-hosted** deployment's incident have a tier at all? Atlas has no
-  access to a self-hosted customer's data or logs, so the obligation is
-  different in kind, not just in degree.
+Three tiers, split on **what class of data is involved** and **whether access
+is confirmed or merely possible**. Those two questions are answerable in the
+first hour; "how many records" and "was anything exfiltrated" usually are not,
+so they do not gate the tier.
 
-Until this is decided, treat every confirmed incident as if it is the highest
-tier. That is the safe failure mode, and it is what the timeline above
-encodes.
-</Callout>
+| Tier | Definition | Track |
+|---|---|---|
+| **SEV1** | Confirmed unauthorised access to Customer Data or to integration credentials | Full 48-hour track; notification presumed |
+| **SEV2** | Possible exposure of Customer Data with scope not yet established, **or** confirmed access to non-customer data | Full 48-hour track; notifiability assessed |
+| **SEV3** | Security-relevant fault with no identified exposure path — a boot guard firing, the backups tripwire degrading, a failed probe | Best effort; no clock |
 
-<Callout type="warn" title="DECISION NEEDED — on-call and contact tree">
-Atlas is a solo-founder operation. A conventional on-call rotation, escalation
-tree, and follow-the-sun handoff do not exist and cannot be invented into
-existence by writing them here.
+Two things follow from this shape:
 
-What needs deciding:
+**SEV2 runs the same clock as SEV1.** Unestablished scope is not a reason to
+start slower — it is the ordinary state of an incident in its first hours, and
+the 48-hour commitment runs from awareness regardless. A SEV2 that resolves to
+"no customer data involved" is closed with a recorded assessment; one that
+resolves upward was already on the right track.
 
-- What is the acknowledgement target for an automated page, and does it differ
-  between working hours and overnight?
-- What happens when the sole operator is unavailable — genuinely unreachable,
-  not merely asleep? Is there a delegate, and what access do they hold?
-- Which alerting channels are considered reliable enough to carry a page, and
-  is any one of them the system of record?
-- Is there a retained external party (counsel, a DFIR firm) to bring in above
-  some severity, and at what point are they contacted rather than considered?
+**Escalation is one-way and immediate.** A SEV3 that turns out to have an
+exposure path becomes SEV1 or SEV2 from the moment that is known, and the clock
+runs from the *original* awareness, not from the reclassification. Tiers never
+ratchet down mid-incident; a resolved incident may be recorded as having been
+over-classified, which is the harmless direction.
 
-This gap is load-bearing: the 48-hour clock runs on wall-clock time and does
-not pause for availability. An incident that begins on a Friday evening
-consumes most of its budget before it is seen.
-</Callout>
+**Self-hosted deployments are out of tier entirely.** Atlas has no access to a
+self-hosted customer's data, logs, or infrastructure, so the obligation is
+different in kind rather than degree: Atlas's duty is to disclose the
+vulnerability and ship a fix, not to investigate an environment it cannot see.
+A vulnerability affecting self-hosted deployments is handled as a coordinated
+disclosure through
+[security.txt](https://useatlas.dev/.well-known/security.txt), not as an
+incident under this runbook.
+
+## Roles
+
+At Atlas's current scale these are functions, not headcount — one person may
+hold all of them in a given incident:
+
+- **Responder** — acknowledges the signal, opens the incident record, assigns
+  the tier, and owns containment.
+- **Assessor** — determines blast radius and makes the notifiability call
+  recorded in [Phase 4](#phase-4-assess-notifiability).
+- **Authorizer** — approves customer notification (see below).
+
+The operational escalation path — alerting channels, acknowledgement targets,
+and who is reached when — is deliberately not published here. It is a
+detail no customer commitment depends on, and publishing a response-timing
+profile lowers the cost of timing an attack. The commitment that *does* bind
+is the 48-hour notification deadline, which runs on wall-clock time from
+awareness and is stated in the DPA.
 
 ## Phase 1: Detect
 
@@ -204,7 +223,7 @@ disclosure policy published at `/.well-known/security.txt` (RFC 9116, with a
 PGP key for encrypted reports), and direct customer contact. Both start the
 48-hour clock on receipt if the report is credible. Neither is throttled by
 triage capacity, so both need to be checked on a cadence that matches the
-acknowledgement target the on-call decision above will set.
+acknowledgement cadence that applies to automated signals.
 
 ## Phase 2: Scope
 
@@ -319,28 +338,26 @@ Record the decision either way, with reasoning and timestamp. A documented
 "assessed, not notifiable, because —" is a defensible position; an
 undocumented one is indistinguishable from having never assessed it.
 
-<Callout type="warn" title="DECISION NEEDED — who authorizes notification">
-Sending a breach notification to a customer is a legally consequential act
-with contractual and regulatory weight. In a solo-founder operation the
-operator, the decision-maker, and the signatory are the same person, which
-removes the usual separation but does not remove the need for the decision to
-be deliberate and recorded.
+### Authorization, and the default when uncertain
 
-What needs deciding:
+Notification is authorized by the Atlas operator. **No internal sign-off gates
+it**, and external counsel is advisory rather than blocking — a deliberate
+choice, because the 48-hour clock does not pause for anyone's availability, and
+a blocking consultation puts someone else's calendar inside a contractual
+deadline.
 
-- Who authorizes a customer notification, and is that authority delegable when
-  the operator is unavailable? Note that the 48-hour clock does not pause for
-  availability, so "nobody can authorize it right now" is a path to breaching
-  the commitment.
-- Is external counsel consulted before notification above some severity, and
-  is that consultation blocking or advisory?
-- Who authorizes notification to a **supervisory authority** where Atlas is
-  controller rather than processor, and is that a separate decision from the
-  customer notification?
-- Is there a bias to disclose when the assessment is genuinely uncertain? A
-  stated default here is worth more than a case-by-case judgement made under
-  time pressure.
-</Callout>
+**Where the assessment is genuinely uncertain, the default is to notify.**
+
+That default is recorded here, in advance, precisely so it is not a judgement
+call made at hour 40 under time pressure — which is the condition under which
+people reliably talk themselves out of disclosing. An unnecessary notification
+costs a customer some alarm and Atlas some credibility; a missed one is a
+breach of the DPA and of Art. 33. Those are not symmetric, and the runbook does
+not pretend they are.
+
+Where Atlas is **controller** rather than processor, notification to a
+supervisory authority is a separate assessment against Art. 33's own 72-hour
+deadline, made on the same bias.
 
 ## Phase 5: Notify
 
@@ -427,31 +444,36 @@ mechanism in [Phase 1](#phase-1-detect) exists because something previously
 failed silently; an incident that no existing tripwire caught is evidence for
 the next one.
 
-<Callout type="warn" title="DECISION NEEDED — incident-record retention">
-Incident records — the timeline, the notifiability assessment, notification
-copies, and the post-incident review — are themselves a data class, and their
-retention has not been decided.
+### Record retention
 
-What needs deciding:
+Incident records — the timeline, the notifiability assessment with its
+reasoning, copies of any notification sent, and the post-incident review — are
+retained for **7 years** from resolution, at the same period whether or not the
+incident was assessed as notifiable. A "not notifiable" assessment is precisely
+the record most likely to be questioned later, so retaining it for less time
+than a notifiable one would be backwards.
 
-- How long are incident records retained, and does that differ for incidents
-  assessed as notifiable versus not?
-- Where do they live? They must survive the incident, which rules out storing
-  them only in the systems they concern. Note that incident records will
-  frequently *contain* personal data (affected data subjects, reporter
-  identity), so wherever they live inherits residency and retention
-  obligations of its own.
-- How does incident-record retention interact with the configurable audit-log
-  retention window? A post-incident review referencing audit entries that have
-  since aged out is a review that cannot be re-verified.
-- Are records subject to a legal hold once notification has been sent, and who
-  applies it?
+Seven years outlives the DPA's annual audit cycle and the limitation periods
+under which a claim from an old incident could surface. Incident records are
+the natural evidence for a Customer audit, and evidence that has aged out is
+evidence that does not exist.
 
-Note the interaction with the DPA's audit right: Customers may audit Atlas's
-processing once per year. Incident records are the natural evidence for such
-an audit, and a retention period shorter than the audit cycle makes that
-evidence unavailable.
-</Callout>
+They are stored **outside the production stack**. A record of an incident that
+lives only in the systems the incident concerned is a record that may not
+survive it — and restoring from backup to read your own incident timeline is
+not a position worth designing into.
+
+Two consequences worth stating:
+
+- **Incident records frequently contain personal data** — affected data
+  subjects, reporter identity, extracts of logs. Wherever they are stored
+  inherits residency, access-control, and data-subject-rights obligations of
+  its own. They are not exempt from the rules they document.
+- **A legal hold applies from the moment a notification is sent**, suspending
+  deletion until the matter is closed. The operator applies it. This matters
+  most against the configurable audit-log retention window: if a review cites
+  audit entries, those entries need to outlive the review, or the review cannot
+  be re-verified by anyone including its author.
 
 ## What this document deliberately omits
 
@@ -465,6 +487,13 @@ locations, no operator tooling invocations, no alerting thresholds, and no
 specifics about which signals are and are not monitored in real time. The
 public health endpoint is named because it is already a documented, public
 part of the API surface.
+
+The same reasoning covers the escalation path in [Roles](#roles). Alerting
+channels, acknowledgement targets, and staffing are omitted because a published
+response-timing profile tells an attacker when the response is slowest, and no
+customer commitment rests on those details. What binds Atlas is the 48-hour
+deadline, which is stated here and in the DPA and is measured from awareness on
+wall-clock time — it does not widen out of hours.
 
 Operators needing the concrete commands and paths should work from the
 internal deployment documentation. Nothing in this document should be

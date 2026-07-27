@@ -368,6 +368,27 @@ export function invalidateOrgExploreBackends(orgId: string): void {
   }
 }
 
+/**
+ * Clear the process-lifetime backend degradation flags. Testing only.
+ *
+ * `_nsjailFailed` / `_sidecarFailed` are deliberately monotonic in production —
+ * a backend that failed once must not be retried into the request path. That
+ * makes them leak across cases in a test file, so a suite exercising several
+ * env shapes would otherwise depend on test ORDER to stay honest, and the
+ * failure mode is a still-passing test that no longer proves what it claims.
+ *
+ * Also clears the `_nsjailAvailable` binary-detection memo (`useNsjail()`'s
+ * cache) — not a failure flag, but cached on first read, so a suite that varies
+ * `PATH` / `ATLAS_NSJAIL_PATH` between cases needs it dropped too. Does NOT
+ * clear `_activeSandboxPluginId` or `backendCache`; a suite that exercises a
+ * plugin backend must handle those itself.
+ */
+export function _resetSandboxFailureFlagsForTest(): void {
+  _nsjailFailed = false;
+  _sidecarFailed = false;
+  _nsjailAvailable = null;
+}
+
 /** Permanently mark nsjail as failed and clear the backend cache.
  *  Called from explore-nsjail.ts on exit code 109 (sandbox setup failure). */
 export function markNsjailFailed(): void {

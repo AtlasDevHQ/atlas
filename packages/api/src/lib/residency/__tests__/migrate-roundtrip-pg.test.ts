@@ -161,11 +161,13 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     await pool.query(
       `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from,
                                 ingested_at, extracted_at, source_episode_id, provenance,
-                                status, visible_to, predicate_cardinality)
+                                status, visible_to, pre_widening_visible_to,
+                                predicate_cardinality)
        VALUES ($1, $2, 'acme:pro-plan', 'price_per_seat', '49',
                '2026-06-01T00:00:00Z', '2026-06-01T00:05:00Z', '2026-06-01T00:05:00Z', $3,
                '{"actor":"U-alice","episode":"C123/1700000000.1"}'::jsonb,
-               'published', ARRAY['org'], 'single')`,
+               'published', ARRAY['org'], ARRAY['audience:chat-channel:slack:C-FOUNDERS'],
+               'single')`,
       [FACT_ID, SOURCE_ORG, EPISODE_ID],
     );
     await pool.query(
@@ -291,13 +293,14 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         object: string;
         status: string;
         visible_to: string[];
+        pre_widening_visible_to: string[] | null;
         provenance: Record<string, unknown>;
         predicate_cardinality: string;
         invalidated_at: Date | null;
         source_episode_id: string;
       }>(
-        `SELECT object, status, visible_to, provenance, predicate_cardinality,
-                invalidated_at, source_episode_id
+        `SELECT object, status, visible_to, pre_widening_visible_to, provenance,
+                predicate_cardinality, invalidated_at, source_episode_id
            FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
         [FACT_ID, TARGET_ORG],
       );
@@ -305,6 +308,17 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(brainFact.rows[0].object).toBe("49");
       expect(brainFact.rows[0].status).toBe("published");
       expect(brainFact.rows[0].visible_to).toEqual(["org"]);
+      // BOTH grants travel, not just the live one (#4836). `visible_to` gates
+      // the CLAIM; `pre_widening_visible_to` gates its ATTRIBUTION, and it
+      // cannot be reconstructed in the target region — the import writes
+      // `status` verbatim, so the fact never re-publishes and the widening
+      // UPDATE that is its only writer never runs again. Drop it from the
+      // bundle and every widened fact lands reading as never-widened, which
+      // discloses its first episode's actor, channel and timestamp to the
+      // whole org: #4836's exact leak, restored by a supported path, silently.
+      expect(brainFact.rows[0].pre_widening_visible_to).toEqual([
+        "audience:chat-channel:slack:C-FOUNDERS",
+      ]);
       expect(brainFact.rows[0].provenance).toEqual({
         actor: "U-alice",
         episode: "C123/1700000000.1",
@@ -318,13 +332,24 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // EXACT instant, not merely non-null — an importer that stamped
       // `new Date()` instead of forwarding the source value would pass a
       // non-null check while silently rewriting bi-temporal history.
-      const superseded = await pool.query<{ invalidated_at: Date | null; valid_to: Date | null }>(
-        `SELECT invalidated_at, valid_to FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+      const superseded = await pool.query<{
+        invalidated_at: Date | null;
+        valid_to: Date | null;
+        pre_widening_visible_to: string[] | null;
+      }>(
+        `SELECT invalidated_at, valid_to, pre_widening_visible_to
+           FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
         [SUPERSEDED_FACT_ID, TARGET_ORG],
       );
       expect(superseded.rows).toHaveLength(1);
       expect(superseded.rows[0].invalidated_at?.toISOString()).toBe("2026-06-01T00:00:00.000Z");
       expect(superseded.rows[0].valid_to?.toISOString()).toBe("2026-06-01T00:00:00.000Z");
+      // The negative for the assertion above: this fact was never widened, and
+      // must arrive NULL rather than inheriting a grant from anywhere. NULL is
+      // what the read path treats as "disclose", so an importer that
+      // defaulted it to the live grant would withhold attribution across the
+      // whole imported corpus — the opposite failure, equally silent.
+      expect(superseded.rows[0].pre_widening_visible_to).toBeNull();
 
       // The episode's grant (including its audience arm) and its extraction
       // stamp travel — the latter so the target doesn't re-queue an episode a

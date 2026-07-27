@@ -299,6 +299,41 @@ describe("promoteBrainFacts — grant widening from evidence", () => {
     ]);
   });
 
+  it("records the pre-widening grant on the same UPDATE that overwrites it", async () => {
+    // The WRITE half of #4836, asserted where it always runs. `promotion-pg`
+    // proves the Postgres semantics (SET expressions evaluate against the OLD
+    // row) but SKIPS silently without `TEST_DATABASE_URL` — so without this,
+    // deleting the SET expression leaves the whole local suite green while the
+    // fix becomes a no-op: the column stays NULL forever, which the read path
+    // reads as "never widened" and discloses.
+    //
+    // COALESCE rather than a bare assignment: a region import writes `status`
+    // verbatim (ADR-0024) and can land an already-widened fact back in
+    // `draft`, and overwriting would then record the WIDER grant as the
+    // original — disclosing to readers the first widening admitted.
+    const { tx, calls } = txWithDrafts([draft("f", { visible_to: [PRIVATE] })], {
+      evidence: [evidenceFor("f", ["org"])],
+    });
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    const [widening] = updates(calls);
+    expect(widening.sql).toContain(
+      "pre_widening_visible_to = COALESCE(f.pre_widening_visible_to, f.visible_to)",
+    );
+  });
+
+  it("leaves the pre-widening column alone on the plain promote", async () => {
+    // The negative, and it is load-bearing rather than tidy: NULL is what the
+    // read path treats as "disclose". A plain promote that started stamping
+    // this column would withhold attribution across the entire corpus and
+    // still pass the assertion above.
+    const { tx, calls } = txWithDrafts([draft("plain")], { evidence: [] });
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    const [plain] = updates(calls);
+    expect(plain.sql).not.toContain("pre_widening_visible_to");
+  });
+
   it("does not copy MALFORMED evidence tokens into the fact's grant", async () => {
     // `everyone` grants nobody anything (`acl.ts`). Propagating it would spread
     // a grant anomaly into a second row for no reader's benefit.

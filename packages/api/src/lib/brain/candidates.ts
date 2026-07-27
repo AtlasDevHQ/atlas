@@ -59,10 +59,15 @@ import {
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
+import {
+  attributionDecision,
+  type BrainAttributionDecision,
+} from "@atlas/api/lib/brain/attribution";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
 import { BRAIN_FACT_REVIEW_STATUSES, type BrainFactStatusFilter } from "@useatlas/schemas";
 import type {
   BrainEntityRole,
+  BrainFactAttributionView,
   BrainFactCandidate,
   BrainFactCandidateListResponse,
   BrainFactCandidateSummary,
@@ -212,19 +217,53 @@ function isParsableTimestamp(value: unknown): boolean {
  * enforcing it, so a renamed key or an `occurredAt: "yesterday"` would
  * otherwise surface as a silently blank field in a reviewer's UI — which reads
  * as "the producer recorded nothing" rather than "Atlas lost track of it".
+ *
+ * ## `attribution` — the one argument that is an ACL decision (#4836)
+ *
+ * `"withhold"` replaces the `sourceId` / `actor` / `occurredAt` triple with the
+ * `visible: false` variant, which structurally cannot carry them. The decision
+ * itself is NOT made here — this function still has no reader context, by
+ * design; `attributionDecision` (`lib/brain/attribution.ts`) makes it from the
+ * row's `pre_widening_visible_to` and the reader's principals, and this is
+ * where it lands.
+ *
+ * REQUIRED, with no default, and that is the safety property. A defaulted
+ * parameter would make every future call site disclose by omission — including
+ * one added to a surface nobody thought of — so the compiler is what forces a
+ * new read path to answer the question. Three call sites today: the review
+ * queue, its tension counterparts, and `searchBrain`.
+ *
+ * Withholding never touches `payloadComplete`, which is computed over the
+ * stored payload and reports data integrity, not entitlement. Both appear on
+ * the wire and they mean different things.
  */
 export function projectProvenance(
   value: unknown,
-  expectedEpisodeId?: string | null,
+  expectedEpisodeId: string | null | undefined,
+  attribution: BrainAttributionDecision,
 ): BrainFactProvenanceView {
+  // The attribution the unparseable-payload arm below returns, and the value
+  // the ordinary arm falls back to. Computed once, from a decision that does
+  // not depend on the payload, so the two arms cannot disagree about
+  // entitlement — on `disclose` it is all-null, which is exactly what a
+  // payload we could not read has to say.
+  //
+  // Tested against "disclose", not against "withhold", and that polarity is
+  // the safety property: if `BrainAttributionDecision` ever grows a third arm
+  // (an audit-override arm is the obvious candidate — see `attribution.ts`),
+  // this takes the WITHHELD branch until somebody deliberately handles it,
+  // instead of silently disclosing to it.
+  const fallbackAttribution: BrainFactAttributionView =
+    attribution === "disclose"
+      ? { visible: true, sourceId: null, actor: null, occurredAt: null }
+      : { visible: false };
+
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return {
       source: null,
-      sourceId: null,
       episodeId: null,
-      actor: null,
       producer: null,
-      occurredAt: null,
+      attribution: fallbackAttribution,
       extractedAt: null,
       reconciledAt: null,
       provisional: false,
@@ -268,11 +307,17 @@ export function projectProvenance(
 
   return {
     source: asString(p.source),
-    sourceId: asString(p.sourceId),
     episodeId: asString(p.episodeId),
-    actor: asString(p.actor),
     producer: asString(p.producer),
-    occurredAt: asString(p.occurredAt),
+    attribution:
+      attribution === "disclose"
+        ? {
+            visible: true,
+            sourceId: asString(p.sourceId),
+            actor: asString(p.actor),
+            occurredAt: asString(p.occurredAt),
+          }
+        : fallbackAttribution,
     extractedAt: asString(p.extractedAt),
     reconciledAt: asString(p.reconciledAt),
     provisional,
@@ -351,6 +396,7 @@ const CANDIDATE_COLUMNS = `f.id::text AS id,
          f.status,
          f.predicate_cardinality,
          f.visible_to,
+         f.pre_widening_visible_to,
          f.provenance,
          f.source_episode_id::text AS source_episode_id,
          f.valid_from,
@@ -392,6 +438,8 @@ interface FactRow {
   readonly status: string;
   readonly predicate_cardinality: string;
   readonly visible_to: unknown;
+  /** ACL input for provenance attribution — see `AttributionRow` (#4836). */
+  readonly pre_widening_visible_to: unknown;
   readonly provenance: unknown;
   readonly source_episode_id: string | null;
   readonly valid_from: unknown;
@@ -715,7 +763,15 @@ export async function loadFactCandidates(
       malformedGrantIndices: grant?.malformed ?? [],
       grantReadable: grant?.readable ?? false,
       corroborationCount: count(row.corroboration_count),
-      provenance: projectProvenance(row.provenance, row.source_episode_id),
+      provenance: projectProvenance(
+        row.provenance,
+        row.source_episode_id,
+        // `FactRow` structurally satisfies `AttributionRow`, so the column is
+        // INTERPRETED once, in the module that owns the decision. Each surface
+        // still names it in its own SELECT — which is what the `undefined` arm
+        // of `attributionDecision` exists to catch.
+        attributionDecision(row, ctx, requestId),
+      ),
       // `source_episode_id uuid NOT NULL` + the composite FK make the `null`
       // arm unreachable from the database, so it is defense in depth. The FK's
       // ON DELETE RESTRICT is also what keeps `withheldEpisode` honest: a
@@ -956,7 +1012,15 @@ async function loadTensions(
           ingestedAt: iso(row.ingested_at),
           invalidatedAt: iso(row.invalidated_at),
           corroborationCount: count(row.corroboration_count),
-          provenance: projectProvenance(row.provenance, row.source_episode_id),
+          // Decided per COUNTERPART, off its own row. A tension counterpart is
+          // a fact in its own right and was fetched through its own ACL
+          // predicate, so inheriting the owner's decision would be a guess
+          // about a different row's grant.
+          provenance: projectProvenance(
+            row.provenance,
+            row.source_episode_id,
+            attributionDecision(row, ctx, requestId),
+          ),
         }
       : { visible: false, factId: pair.other, edgeDirection: pair.direction };
     const list = out.get(pair.owner);

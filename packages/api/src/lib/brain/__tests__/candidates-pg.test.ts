@@ -136,12 +136,14 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     status?: "draft" | "published";
     cardinality?: "single" | "multi";
     provenance?: Record<string, unknown>;
+    /** The grant before publish-time widening; omit for a never-widened fact. */
+    preWideningVisibleTo?: readonly (string | null)[];
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, predicate_cardinality)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9)
+          status, visible_to, pre_widening_visible_to, predicate_cardinality)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9::text[], $10)
        RETURNING id`,
       [
         WS,
@@ -152,6 +154,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         JSON.stringify(opts.provenance ?? { source: "slack", actor: "U1" }),
         opts.status ?? "draft",
         opts.visibleTo ?? ["org"],
+        opts.preWideningVisibleTo ?? null,
         opts.cardinality ?? "multi",
       ],
     );
@@ -521,6 +524,126 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     async () => {
       const absent = "00000000-0000-4000-8000-000000000000";
       expect(await retractFactCandidate(pool, { ctx: reviewer(), factId: absent })).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ══════════════════════════════════════════════════════════════════
+  // Provenance attribution against the live schema (#4836)
+  // ══════════════════════════════════════════════════════════════════
+
+  it(
+    "withholds attribution from a widened reader and keeps it for the original audience",
+    async () => {
+      // Everything else about #4836 is proven against hand-built mock rows
+      // that supply `pre_widening_visible_to` as a JS array. This is the only
+      // place the value makes the round trip through a real `text[]` column
+      // and back out through the real SELECT — which matters because the
+      // failure is silent in BOTH directions: a value `isUnknownArray`
+      // rejected would withhold from everyone (degrading the review surface
+      // exactly the way #4836 refuses), and a `text[]` that came back as `[]`
+      // rather than SQL NULL would do the same to every never-widened fact in
+      // the workspace.
+      const episode = await seedEpisode({
+        sourceId: "C-FOUNDERS:1799999999.001",
+        visibleTo: ["audience:private-channel"],
+      });
+      const factId = await seedFact({
+        subject: "widened-claim",
+        episodeId: episode,
+        status: "published",
+        // Published with the union — the §C3 shape.
+        visibleTo: ["audience:private-channel", "org"],
+        preWideningVisibleTo: ["audience:private-channel"],
+        provenance: {
+          source: "slack",
+          sourceId: "C-FOUNDERS:1799999999.001",
+          episodeId: episode,
+          actor: "U-FOUNDER",
+          producer: "extraction:v1",
+          occurredAt: "2026-05-30T00:00:00.000Z",
+          extractedAt: "2026-05-30T00:05:00.000Z",
+          reconciledAt: "2026-05-30T00:06:00.000Z",
+        },
+      });
+
+      const asOrgReader = await loadFactCandidates(pool, {
+        ctx: reviewer(),
+        limit: 50,
+        offset: 0,
+        status: "published",
+      });
+      const widened = asOrgReader.candidates.find((c) => c.id === factId);
+      expect(widened).toBeDefined();
+      // The CLAIM is served — that is the point of #4823 and stays.
+      expect(widened!.subject).toBe("widened-claim");
+      // Its attribution is not.
+      expect(widened!.provenance.attribution).toEqual({ visible: false });
+      // Nor is the private episode, off its own independent predicate — the
+      // two withholdings are correlated on a widened fact, and this is the
+      // pairing production actually produces.
+      expect(widened!.episode).toEqual({ visible: false, id: episode });
+      expect(JSON.stringify(widened!.provenance)).not.toContain("C-FOUNDERS");
+      expect(JSON.stringify(widened!.provenance)).not.toContain("U-FOUNDER");
+
+      // The half that must not regress: a member of the original audience is
+      // exactly the reviewer who can act on this claim.
+      const asInsider = await loadFactCandidates(pool, {
+        ctx: insider(),
+        limit: 50,
+        offset: 0,
+        status: "published",
+      });
+      const forInsider = asInsider.candidates.find((c) => c.id === factId);
+      expect(forInsider).toBeDefined();
+      expect(forInsider!.provenance.attribution).toEqual({
+        visible: true,
+        sourceId: "C-FOUNDERS:1799999999.001",
+        actor: "U-FOUNDER",
+        occurredAt: "2026-05-30T00:00:00.000Z",
+      });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves a never-widened fact fully attributed through the live column",
+    async () => {
+      // The negative, against real Postgres: a NULL `text[]` must arrive as
+      // `null` (not `[]`, not `"{}"`) or the read path would misread it as a
+      // grant matching nobody and withhold from everyone.
+      const episode = await seedEpisode({ sourceId: "C-ENG:1799999999.002" });
+      const factId = await seedFact({
+        subject: "plain-claim",
+        episodeId: episode,
+        status: "published",
+        visibleTo: ["org"],
+        provenance: {
+          source: "slack",
+          sourceId: "C-ENG:1799999999.002",
+          episodeId: episode,
+          actor: "U-ENG",
+          producer: "extraction:v1",
+          occurredAt: "2026-05-30T00:00:00.000Z",
+          extractedAt: "2026-05-30T00:05:00.000Z",
+          reconciledAt: "2026-05-30T00:06:00.000Z",
+        },
+      });
+
+      const page = await loadFactCandidates(pool, {
+        ctx: reviewer(),
+        limit: 50,
+        offset: 0,
+        status: "published",
+      });
+      const plain = page.candidates.find((c) => c.id === factId);
+      expect(plain).toBeDefined();
+      expect(plain!.provenance.attribution).toEqual({
+        visible: true,
+        sourceId: "C-ENG:1799999999.002",
+        actor: "U-ENG",
+        occurredAt: "2026-05-30T00:00:00.000Z",
+      });
     },
     PG_TEST_TIMEOUT_MS,
   );

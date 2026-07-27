@@ -34,7 +34,10 @@ import {
   type BrainCandidateReader,
 } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import { BrainFactCandidateListResponseSchema } from "@useatlas/schemas";
+import {
+  BrainFactCandidateListResponseSchema,
+  BrainFactProvenanceViewSchema,
+} from "@useatlas/schemas";
 
 const WS = "ws-candidates-test";
 
@@ -85,6 +88,7 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     status: "draft",
     predicate_cardinality: "multi",
     visible_to: ["org"],
+    pre_widening_visible_to: null,
     provenance: {
       source: "slack",
       sourceId: "C1/17",
@@ -112,42 +116,50 @@ describe("projectProvenance", () => {
   it("flags provisional on key PRESENCE, not truthiness", () => {
     // `provisional` is written only when true, so a filter keyed on the value
     // would be defeated the moment a producer started writing `false`.
-    expect(projectProvenance({ provisional: true }).provisional).toBe(true);
-    expect(projectProvenance({}).provisional).toBe(false);
-    expect(projectProvenance({ provisional: false }).provisional).toBe(false);
+    expect(projectProvenance({ provisional: true }, null, "disclose").provisional).toBe(true);
+    expect(projectProvenance({}, null, "disclose").provisional).toBe(false);
+    expect(projectProvenance({ provisional: false }, null, "disclose").provisional).toBe(false);
   });
 
   it("reports an incomplete payload rather than rendering blanks", () => {
-    const complete = projectProvenance(factRow().provenance);
+    const complete = projectProvenance(factRow().provenance, null, "disclose");
     expect(complete.payloadComplete).toBe(true);
 
     // A renamed key must not read as "the producer recorded nothing".
-    const renamed = projectProvenance({ ...(factRow().provenance as object), producer: undefined });
+    const renamed = projectProvenance(
+      { ...(factRow().provenance as object), producer: undefined },
+      null,
+      "disclose",
+    );
     expect(renamed.payloadComplete).toBe(false);
     expect(renamed.producer).toBeNull();
   });
 
   it("treats a null actor as present, since a source may have no author", () => {
-    const p = projectProvenance({ ...(factRow().provenance as object), actor: null });
+    const p = projectProvenance(
+      { ...(factRow().provenance as object), actor: null },
+      null,
+      "disclose",
+    );
     expect(p.payloadComplete).toBe(true);
-    expect(p.actor).toBeNull();
+    expect(p.attribution).toEqual({ visible: true, sourceId: "C1/17", actor: null, occurredAt: ISO });
   });
 
   it("degrades a non-object payload to all-null instead of throwing", () => {
-    const p = projectProvenance("not an object");
+    const p = projectProvenance("not an object", null, "disclose");
     expect(p.payloadComplete).toBe(false);
     expect(p.episodeId).toBeNull();
   });
 
   it("keeps only real entity roles out of `unresolved`", () => {
-    const p = projectProvenance({ provisional: true, unresolved: ["subject", "elbow"] });
+    const p = projectProvenance({ provisional: true, unresolved: ["subject", "elbow"] }, null, "disclose");
     expect(p.unresolved).toEqual(["subject"]);
   });
 
   it("derives provisional from a side-list carrying no flag", () => {
     // Reachable through a region-import bundle. Without the OR it would present
     // as "resolved, but here are the unresolved sides".
-    const p = projectProvenance({ unresolved: ["object"] });
+    const p = projectProvenance({ unresolved: ["object"] }, null, "disclose");
     expect(p.provisional).toBe(true);
   });
 
@@ -155,25 +167,29 @@ describe("projectProvenance", () => {
     // The jsonb copy and `source_episode_id` naming different evidence for the
     // same claim is a real integrity failure on a provenance surface — and the
     // jsonb copy's only capability, absent this check, is to disagree.
-    const p = projectProvenance(factRow().provenance, "some-other-episode");
+    const p = projectProvenance(factRow().provenance, "some-other-episode", "disclose");
     expect(p.payloadComplete).toBe(false);
   });
 
   it("skips the episode cross-check when the caller has nothing to compare", () => {
-    expect(projectProvenance(factRow().provenance).payloadComplete).toBe(true);
-    expect(projectProvenance(factRow().provenance, "ep-1").payloadComplete).toBe(true);
+    expect(projectProvenance(factRow().provenance, undefined, "disclose").payloadComplete).toBe(true);
+    expect(projectProvenance(factRow().provenance, "ep-1", "disclose").payloadComplete).toBe(true);
   });
 
   it("reports an unparseable timestamp as an incomplete payload", () => {
     // Otherwise "Said at" renders a dash with no hint, which reads as "the
     // producer recorded nothing" rather than "Atlas lost track of it".
-    const p = projectProvenance({ ...(factRow().provenance as object), occurredAt: "yesterday" });
+    const p = projectProvenance(
+      { ...(factRow().provenance as object), occurredAt: "yesterday" },
+      null,
+      "disclose",
+    );
     expect(p.payloadComplete).toBe(false);
   });
 
   it("treats a dropped nullable key as incomplete, not as a legitimate null", () => {
     const { occurredAt: _dropped, ...withoutKey } = factRow().provenance as Record<string, unknown>;
-    expect(projectProvenance(withoutKey).payloadComplete).toBe(false);
+    expect(projectProvenance(withoutKey, null, "disclose").payloadComplete).toBe(false);
   });
 });
 
@@ -624,5 +640,215 @@ describe("retractFactCandidate", () => {
     await expect(retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" })).rejects.toThrow(
       /cannot be reported/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provenance attribution on a widened fact (#4836)
+// ---------------------------------------------------------------------------
+
+/**
+ * The review-queue half of #4836. `search.test.ts` covers the agent read path,
+ * which is the one that makes this a user-visible disclosure; this one covers
+ * the surface the reviewer looks at, plus the tension counterparts — which are
+ * facts in their own right and were the easiest place for the decision to be
+ * inherited from the wrong row.
+ */
+describe("loadFactCandidates — attribution on a widened fact (#4836)", () => {
+  const PRIVATE = "audience:chat-channel:slack:C-FOUNDERS";
+
+  /** First stated privately, restated publicly, published with the union. */
+  const widened = (overrides: Record<string, unknown> = {}) =>
+    factRow({
+      visible_to: [PRIVATE, "org"],
+      pre_widening_visible_to: [PRIVATE],
+      ...overrides,
+    });
+
+  async function candidateFor(context: BrainPrincipalContext, row: Record<string, unknown>) {
+    const db = reader([
+      { match: "FROM brain_facts f", rows: [row] },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: context, limit: 50, offset: 0 });
+    const candidate = page.candidates[0];
+    if (!candidate) throw new Error("expected one candidate");
+    return candidate;
+  }
+
+  it("withholds the attribution triple from a reader gained by widening", async () => {
+    const c = await candidateFor(ctx(), widened());
+    expect(c.provenance.attribution).toEqual({ visible: false });
+    // The claim itself is still served — that is the point. Only who said it
+    // first, where, and when are withheld.
+    expect(c.subject).toBe("Acme");
+    expect(JSON.stringify(c.provenance)).not.toContain("C1/17");
+    expect(JSON.stringify(c.provenance)).not.toContain("U1");
+  });
+
+  it("gives a member of the ORIGINAL audience full attribution", async () => {
+    const c = await candidateFor(
+      ctx({ audienceIds: ["chat-channel:slack:C-FOUNDERS"] }),
+      widened(),
+    );
+    expect(c.provenance.attribution).toEqual({
+      visible: true,
+      sourceId: "C1/17",
+      actor: "U1",
+      occurredAt: ISO,
+    });
+  });
+
+  it("leaves a fact that was never widened untouched", async () => {
+    // The negative: nothing widened, so nobody gained access through widening,
+    // and full attribution still flows.
+    const c = await candidateFor(ctx(), factRow());
+    expect(c.provenance.attribution).toEqual({
+      visible: true,
+      sourceId: "C1/17",
+      actor: "U1",
+      occurredAt: ISO,
+    });
+  });
+
+  it("still reports `visibleTo` as the grant that is actually in force", async () => {
+    // The narrowing is about PROVENANCE, not about the grant. A reviewer must
+    // still see that this fact is readable org-wide — hiding that would make
+    // the ACL column lie in the other direction.
+    const c = await candidateFor(ctx(), widened());
+    expect(c.visibleTo).toEqual([PRIVATE, "org"]);
+    expect(c.grantReadable).toBe(true);
+  });
+
+  it("selects the pre-widening grant, so the decision has an input at all", async () => {
+    const db = reader([{ match: "FROM brain_facts f", rows: [] }]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(db.calls[0]?.sql).toContain("f.pre_widening_visible_to");
+  });
+
+  it("decides per TENSION COUNTERPART, off that row's own grant", async () => {
+    // A counterpart is a fact fetched through its own ACL predicate, so
+    // inheriting the owner's decision would be a guess about a different row.
+    // Here the owner was never widened and the rival was — the arrangement
+    // that a shared decision silently gets wrong.
+    const db = reader([
+      { match: "FROM brain_facts f\n   WHERE", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      { match: "edge_type = 'in-tension-with'", rows: [{ from_id: "fact-1", to_id: "rival-1" }] },
+      {
+        match: "AND f.id = ANY(",
+        rows: [widened({ id: "rival-1", object: "MySQL" })],
+      },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    const owner = page.candidates[0];
+    if (!owner) throw new Error("expected one candidate");
+    // Owner: never widened, full attribution.
+    expect(owner.provenance.attribution.visible).toBe(true);
+    const tension = owner.tensions[0];
+    if (!tension || !tension.visible) throw new Error("expected a visible counterpart");
+    // Counterpart: widened, attribution withheld.
+    expect(tension.provenance.attribution).toEqual({ visible: false });
+  });
+});
+
+describe("projectProvenance — the withheld arm (#4836)", () => {
+  it("replaces the triple with a variant that cannot carry it", () => {
+    const p = projectProvenance(factRow().provenance, "ep-1", "withhold");
+    expect(p.attribution).toEqual({ visible: false });
+    expect(Object.keys(p.attribution)).toEqual(["visible"]);
+  });
+
+  it("withholds on an unparseable payload too, rather than defaulting open", () => {
+    // The degraded arm returns before the payload is read at all. If it built
+    // its own attribution independently, the two arms could disagree about
+    // entitlement — and the arm that disagrees is the one reached by drift.
+    const p = projectProvenance("not an object", null, "withhold");
+    expect(p.attribution).toEqual({ visible: false });
+  });
+
+  it("keeps `payloadComplete` a statement about the STORED payload", () => {
+    // Entitlement and integrity are two different answers on the wire and must
+    // stay independent: withheld-but-well-formed, and disclosed-but-drifted,
+    // are both real states a reviewer has to be able to tell apart.
+    expect(projectProvenance(factRow().provenance, "ep-1", "withhold").payloadComplete).toBe(true);
+    expect(projectProvenance({ actor: null }, null, "withhold").payloadComplete).toBe(false);
+  });
+
+  it("still projects source, producer and the pipeline timestamps", () => {
+    // Withholding is scoped to the three fields that name a person and a
+    // place. `extractedAt` / `reconciledAt` are Atlas's own batch-scheduled
+    // pipeline clocks, not the moment anything was said.
+    const p = projectProvenance(factRow().provenance, "ep-1", "withhold");
+    expect(p.source).toBe("slack");
+    expect(p.producer).toBe("extraction:v1");
+    expect(p.episodeId).toBe("ep-1");
+    expect(p.extractedAt).toBe(ISO);
+    expect(p.reconciledAt).toBe(ISO);
+  });
+});
+
+describe("BrainFactAttributionViewSchema — the withheld arm is enforced, not conventional (#4836)", () => {
+  // The type's `visible: false` arm has no fields, but TypeScript's
+  // excess-property check covers OBJECT LITERALS only: a spread, or a widened
+  // variable, assigns straight through. `satisfies z.ZodType<…>` does not see
+  // strictness either — it is output-assignability, and a withheld arm that
+  // carried `actor` would still be assignable to the union. So `z.strictObject`
+  // is the actual enforcement, and these are what pin it.
+
+  const provenance = (attribution: unknown) => ({
+    source: "slack",
+    episodeId: "ep-1",
+    producer: "extraction:v1",
+    attribution,
+    extractedAt: ISO,
+    reconciledAt: ISO,
+    provisional: false,
+    unresolved: [],
+    payloadComplete: true,
+  });
+
+  it("REFUSES a withheld arm that smuggles the triple back in", () => {
+    // The regression this exists to catch: a second producer builds the
+    // withheld arm by spreading the disclosed one and nulling nothing.
+    for (const leak of [
+      { visible: false, actor: "U-FOUNDER" },
+      { visible: false, sourceId: "C-FOUNDERS:1799999999.001" },
+      { visible: false, occurredAt: ISO },
+      { visible: false, sourceId: null, actor: null, occurredAt: null },
+    ]) {
+      const parsed = BrainFactProvenanceViewSchema.safeParse(provenance(leak));
+      expect(parsed.success).toBe(false);
+    }
+  });
+
+  it("accepts the empty withheld arm and the full disclosed arm", () => {
+    expect(BrainFactProvenanceViewSchema.safeParse(provenance({ visible: false })).success).toBe(
+      true,
+    );
+    expect(
+      BrainFactProvenanceViewSchema.safeParse(
+        provenance({ visible: true, sourceId: "C1/17", actor: "U1", occurredAt: ISO }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("REFUSES a disclosed arm missing the fields it promises", () => {
+    // The other direction: `visible: true` with the triple omitted would let a
+    // producer express "disclosed but blank", which is the collapse the
+    // variant exists to prevent.
+    expect(BrainFactProvenanceViewSchema.safeParse(provenance({ visible: true })).success).toBe(
+      false,
+    );
+  });
+
+  it("passes what `projectProvenance` actually builds, on both arms", () => {
+    // Keeps the schema and the single constructor from drifting apart — the
+    // pairing matters because `searchBrain` has no response parse, so on that
+    // path the projection IS the guarantee.
+    for (const decision of ["disclose", "withhold"] as const) {
+      const built = projectProvenance(factRow().provenance, "ep-1", decision);
+      expect(BrainFactProvenanceViewSchema.safeParse(built).success).toBe(true);
+    }
   });
 });

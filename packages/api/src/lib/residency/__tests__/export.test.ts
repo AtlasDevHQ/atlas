@@ -428,3 +428,106 @@ describe("exportWorkspaceBundle", () => {
     await expect(exportWorkspaceBundle("org-1")).rejects.toThrow("connection refused");
   });
 });
+
+/**
+ * The bundle half of #4836 — a widened fact's ACL input has to reach the target
+ * region, and nothing except a `-pg` test (which skips silently without a
+ * database) otherwise notices when it stops.
+ *
+ * This is the gap that let round 1's CRITICAL exist: the bundle-scope tripwire
+ * gates new TABLES, not new COLUMNS, so an ACL column added to an
+ * already-exported table can be dropped from the SELECT with every always-run
+ * gate green. TypeScript cannot see it either — the projection is `unknown`-in.
+ */
+describe("brain facts — the pre-widening grant travels (#4836)", () => {
+  beforeEach(resetMocks);
+
+  /** One `brain_facts` export row, as the SELECT would hand it back. */
+  function factRow(preWidening: unknown) {
+    return {
+      id: "fact-1",
+      source_episode_id: "ep-1",
+      subject: "acme",
+      predicate: "uses",
+      object: "Postgres",
+      valid_from: null,
+      valid_to: null,
+      ingested_at: "2026-06-01T00:00:00Z",
+      invalidated_at: null,
+      extracted_at: "2026-06-01T00:05:00Z",
+      provenance: { actor: "U-FOUNDER" },
+      status: "published",
+      visible_to: ["audience:chat-channel:slack:C-FOUNDERS", "org"],
+      pre_widening_visible_to: preWidening,
+      predicate_cardinality: "single",
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:05:00Z",
+    };
+  }
+
+  function seed(preWidening: unknown) {
+    mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+      rows: [
+        {
+          id: "ep-1",
+          source: "slack",
+          source_id: "C-FOUNDERS:1799999999.001",
+          source_actor: "U-FOUNDER",
+          body: "…",
+          locator: null,
+          occurred_at: "2026-06-01T00:00:00Z",
+          ingested_at: "2026-06-01T00:00:00Z",
+          extracted_at: "2026-06-01T00:05:00Z",
+          visible_to: ["audience:chat-channel:slack:C-FOUNDERS"],
+          created_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+    };
+    mockPoolQueryResults["FROM brain_facts f"] = { rows: [factRow(preWidening)] };
+  }
+
+  const exportedFact = async () => {
+    const bundle = await exportWorkspaceBundle("org-1");
+    return bundle.brainEpisodes![0]!.facts[0]!;
+  };
+
+  it("SELECTs the column at all", async () => {
+    seed(null);
+    await exportWorkspaceBundle("org-1");
+    const factQuery = recordedQueries.find((q) => q.sql.includes("FROM brain_facts f"));
+    expect(factQuery).toBeDefined();
+    // Without this the projection reads `undefined` and — before the narrowing
+    // below existed — exported `null`, i.e. "never widened", for every fact.
+    expect(factQuery!.sql).toContain("f.pre_widening_visible_to");
+  });
+
+  it("carries a widened fact's original grant into the bundle", async () => {
+    seed(["audience:chat-channel:slack:C-FOUNDERS"]);
+    expect((await exportedFact()).preWideningVisibleTo).toEqual([
+      "audience:chat-channel:slack:C-FOUNDERS",
+    ]);
+  });
+
+  it("carries NULL through as null, so a never-widened fact stays disclosed", async () => {
+    // The negative. An exporter that defaulted this to the live grant would
+    // withhold attribution across the whole imported corpus — the opposite
+    // failure, equally silent, and the one #4836 explicitly refuses.
+    seed(null);
+    expect((await exportedFact()).preWideningVisibleTo).toBeNull();
+  });
+
+  it("degrades DRIFT to an empty grant, not to null", async () => {
+    // `null` means "never widened" and DISCLOSES in the target region. A
+    // column the SELECT dropped arrives `undefined`, and a driver that stopped
+    // decoding `text[]` arrives as a string — neither is evidence that nothing
+    // widened. Folding them into `null` is precisely the fail-open this
+    // module's read-side twin (`attributionDecision`) refuses, with a blast
+    // radius of a whole region and no way back. `[]` overlaps no reader token,
+    // so the target withholds from everyone: visible, and recoverable.
+    for (const drift of [undefined, "{org}", 42, {}]) {
+      resetMocks();
+      seed(drift);
+      expect((await exportedFact()).preWideningVisibleTo).toEqual([]);
+    }
+  });
+});

@@ -549,6 +549,7 @@ describe("migrateAuthTables", () => {
             // "all applied" test sees zero new migrations.
             { name: "0181_brain_fts.sql" },
             { name: "0182_audience_member_synced_at.sql" },
+            { name: "0183_brain_facts_pre_widening_grant.sql" },
           ],
         };
       }

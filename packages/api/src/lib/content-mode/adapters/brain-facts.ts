@@ -247,10 +247,37 @@ export const EVIDENCE_GRANTS_SQL = `
  * reason — it makes the statement correct on its own terms. `DRAFT_FACTS_SQL`
  * is what actually keeps a published id out of the payload; this is the second
  * lock on the same door, and on this statement the door is an immutable grant.
+ *
+ * ## `pre_widening_visible_to` — the reason this statement is now load-bearing
+ * ## twice (#4836)
+ *
+ * This is the only place the pre-widening grant is DERIVED, and the only
+ * chance to capture it: the next expression in the same SET list destroys it.
+ * (It is not the only writer — the region import restores the column verbatim
+ * from the bundle, `admin-migrate.ts`. That path carries a value; this one
+ * computes it.) Postgres evaluates every SET expression against the OLD row, so
+ * `f.visible_to` here is the grant before this statement's own overwrite — no
+ * ordering dependency between the two assignments, and none is available to
+ * depend on.
+ *
+ * Without it, nothing at rest could tell "visible to org because it always was"
+ * from "visible to org because evidence widened it", and `projectProvenance`
+ * would have no input for the narrowing #4836 requires. `EvidenceWidenedGrant`
+ * knows the answer in memory and is discarded one statement later.
+ *
+ * `COALESCE` keeps the FIRST pre-widening grant rather than the latest. The
+ * `status = 'draft'` predicate plus the `status = 'published'` write make a
+ * second widening unreachable on the normal path — but a region import writes
+ * `status` verbatim (ADR-0024) and can legitimately land an already-widened
+ * fact back in `draft`. Overwriting would then record the WIDER grant as the
+ * original and disclose attribution to readers the first widening admitted;
+ * COALESCE degrades to over-withholding instead, which is the direction this
+ * column exists to fail in.
  */
 export const WIDEN_AND_PROMOTE_FACTS_SQL = `
   UPDATE brain_facts f
      SET status = 'published',
+         pre_widening_visible_to = COALESCE(f.pre_widening_visible_to, f.visible_to),
          visible_to = ARRAY(SELECT jsonb_array_elements_text(w.grant)),
          updated_at = now()
     FROM (

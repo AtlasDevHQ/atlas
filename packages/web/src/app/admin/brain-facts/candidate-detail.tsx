@@ -31,18 +31,70 @@ function orDash(value: string | null): React.ReactNode {
   return value ?? <span className="text-muted-foreground">{EM_DASH}</span>;
 }
 
+/**
+ * Rendered in place of the three attribution fields when the reader reaches
+ * this fact only through publish-time grant widening (#4836).
+ *
+ * Says WHY, rather than rendering three em-dashes. An em-dash here would read
+ * as "the evidence has no author and no timestamp", which is a statement about
+ * the data and is false — and it is the kind of statement a reviewer acts on.
+ *
+ * The copy is deliberately about the AUDIENCE rather than about channel
+ * membership. The dominant case is a private chat channel, but the withheld
+ * arm is also reachable when the original grant was a `role:` the reader
+ * lacks, or a `user:`, so "you are not in that channel" would be wrong some of
+ * the time. "An audience you are not part of" is true of every ENTITLEMENT arm.
+ * It is not true of the two drift arms (`attributionDecision` also withholds
+ * when the column is missing from the SELECT or does not decode as an array) —
+ * accepted, because those are unreachable-by-construction states that mean
+ * Atlas has a defect, and inventing a fourth message for them would trade a
+ * rare wrong sentence for a permanent confusing one.
+ *
+ * It promises WHO and WHEN, and deliberately not WHERE. The Grant panel below
+ * renders `visibleTo` verbatim, which on a widened fact still names the
+ * originating `audience:chat-channel:slack:<id>` — by design, and asserted by
+ * test: a reviewer must be able to see the grant actually in force, and
+ * `malformedGrantIndices` indexes into that list positionally. So the audience
+ * is not secret on this surface; who spoke into it, and when, are. Do not
+ * "fix" this by hiding the grant. (`searchBrain` carries no grant at all, so
+ * the agent path discloses neither.)
+ */
+function AttributionRestricted() {
+  return (
+    <div className="col-span-2 flex items-start gap-2 rounded-md border border-dashed p-3">
+      <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <p className="text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Attribution restricted.</span> This claim was
+        first recorded under an audience you are not part of, and reaches you only because it was
+        later restated under one you are. Who stated it first, and when, stay with that audience.
+      </p>
+    </div>
+  );
+}
+
 function ProvenanceGrid({ provenance }: { provenance: BrainFactProvenanceView }) {
+  const { attribution } = provenance;
   return (
     <div className="grid grid-cols-2 gap-4">
       <Field label="Source">{orDash(provenance.source)}</Field>
-      <Field label="Asserted by">{orDash(provenance.actor)}</Field>
       <Field label="Producer">{orDash(provenance.producer)}</Field>
-      <Field label="Source ID">
-        <span className="font-mono break-all">{orDash(provenance.sourceId)}</span>
-      </Field>
-      <Field label="Said at">
-        {provenance.occurredAt ? <RelativeTimestamp iso={provenance.occurredAt} /> : orDash(null)}
-      </Field>
+      {attribution.visible ? (
+        <>
+          <Field label="Asserted by">{orDash(attribution.actor)}</Field>
+          <Field label="Source ID">
+            <span className="font-mono break-all">{orDash(attribution.sourceId)}</span>
+          </Field>
+          <Field label="Said at">
+            {attribution.occurredAt ? (
+              <RelativeTimestamp iso={attribution.occurredAt} />
+            ) : (
+              orDash(null)
+            )}
+          </Field>
+        </>
+      ) : (
+        <AttributionRestricted />
+      )}
       <Field label="Extracted">
         {provenance.extractedAt ? <RelativeTimestamp iso={provenance.extractedAt} /> : orDash(null)}
       </Field>

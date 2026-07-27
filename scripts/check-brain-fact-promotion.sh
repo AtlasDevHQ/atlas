@@ -39,7 +39,7 @@
 #     both of the patterns above until it was called out.
 #   - `INSERT INTO brain_facts VALUES (…)` with NO column list — positional, so
 #     whether it sets `status` is unknowable by grep. Refused on principle:
-#     a positional insert into a 17-column table is unreviewable anyway.
+#     a positional insert into an 18-column table is unreviewable anyway.
 #   - `db.update([schema.]brainFacts).set({ status … })` and
 #     `db.insert([schema.]brainFacts).values({ … status … })` — both Drizzle
 #     write-builder halves, including the `.onConflictDoUpdate({ set: { status
@@ -91,6 +91,15 @@
 #     would re-queue a human's completed review work at every region cutover.
 #     It is a restore of a prior gate decision, not a new one; the import's own
 #     `grantProblem` validation is paired with the 0180 CHECK.
+#     It also restores `pre_widening_visible_to` (#4836) — necessarily, since
+#     the column cannot be re-derived in the target region (the import writes
+#     `status` verbatim, so the fact never re-publishes and the widening UPDATE
+#     that derives it never runs again). `validateBundle` checks that column's
+#     SHAPE only, not `grantProblem`: absent-or-empty is legitimate there
+#     (`null` = never widened, `[]` = the source could not vouch for it), and
+#     the fail direction is opposite to `visible_to`'s — a bad pre-widening
+#     grant over-WITHHOLDS attribution, which is recoverable, where a bad
+#     `visible_to` would over-disclose.
 #
 # Comments are stripped before matching so an explanatory comment in a source
 # file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in
@@ -200,8 +209,20 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # that MUTATES an existing fact's grant: ADR-0036 §T5 permits widening only at
 # the review gate, and unlike the `status` gate the failure direction here is
 # DISCLOSURE rather than fail-closed over-restriction.
-UPDATE_GATED_COLUMNS='(status|visible_to)'
-ORM_UPDATE_GATED_COLUMNS='(status|visibleTo)'
+#
+# `pre_widening_visible_to` (#4836) joins it on the same terms, and the `\b`
+# subtlety is why it needs naming rather than inheriting: `_` and `v` are both
+# word characters, so `\bvisible_to\b` does NOT match inside
+# `pre_widening_visible_to`. The widening UPDATE trips the guard today only
+# because it also sets `visible_to` — a future statement touching ONLY the
+# pre-widening column would be invisible to this gate, and corrupting that
+# column is silent in both directions: set it to the widened grant (or NULL)
+# and #4836's disclosure returns in full; set it to `[]` and attribution is
+# withheld corpus-wide. A "backfill the pre-widening grant from evidence edges"
+# script — which migration 0183's header explicitly forecloses — is exactly the
+# shape that would otherwise slip through.
+UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to)'
+ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo)'
 
 # Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
 # ECHOES which one — the two have completely different remedies, and a message
@@ -218,7 +239,7 @@ statement_writes_gated_column() {
       echo status
       return 0
     fi
-    if grep -qiE '\bvisible_to\b' <<<"$stmt"; then
+    if grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
       echo visible_to
       return 0
     fi
@@ -246,13 +267,13 @@ statement_writes_gated_column() {
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
     && grep -qiE 'ON[[:space:]]+CONFLICT' <<<"$stmt" \
     && grep -qiE 'DO[[:space:]]+UPDATE' <<<"$stmt" \
-    && grep -qiE '\bvisible_to\b' <<<"$stmt"; then
+    && grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
     echo visible_to
     return 0
   fi
 
   # Raw SQL — a column-less positional INSERT. Neither column can appear by
-  # name, so this is refused on shape: a positional insert into a 17-column
+  # name, so this is refused on shape: a positional insert into an 18-column
   # table is unreviewable regardless of what it happens to set.
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then
     echo status
@@ -268,7 +289,7 @@ statement_writes_gated_column() {
       echo status
       return 0
     fi
-    if grep -qE '\bvisibleTo\b' <<<"$stmt"; then
+    if grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
       echo visible_to
       return 0
     fi
@@ -282,7 +303,7 @@ statement_writes_gated_column() {
   # `.insert().values({visibleTo})` is legal, `.onConflictDoUpdate` of it is not.
   if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
     && grep -qE '\.onConflictDoUpdate\(' <<<"$stmt" \
-    && grep -qE '\bvisibleTo\b' <<<"$stmt"; then
+    && grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
     echo visible_to
     return 0
   fi

@@ -350,10 +350,22 @@ export interface EvidenceWidenedGrant {
  *   That last part is the safety argument, and it is about the CLAIM only —
  *   ADR-0036 §T5 has provenance ride the fact's grant, and a fact's provenance
  *   names its FIRST episode (`sourceId`, `actor`, `occurredAt`). So a reader
- *   gained by widening learns nothing new about the claim and does learn who
- *   said it first, in which channel, and when. That is a deliberate,
- *   ADR-recorded consequence, not an oversight; do not restate this rule as
- *   "no information gain".
+ *   gained by widening learns nothing new about the claim, and WOULD learn who
+ *   said it first, in which channel, and when. #4823 accepted that price;
+ *   #4836 no longer does. The attribution triple is now narrowed at READ time:
+ *   `attributionDecision` (`lib/brain/attribution.ts`) withholds it from any
+ *   reader who does not match `brain_facts.pre_widening_visible_to` — the
+ *   grant THIS function's output overwrites. See ADR-0036 §T5's
+ *   `Amendment (2026-07-27, #4836)`.
+ *
+ *   Two obligations follow for anyone editing here. First, that column is
+ *   written by `WIDEN_AND_PROMOTE_FACTS_SQL` on the same UPDATE that
+ *   overwrites `visible_to`, and this function's non-null return is the only
+ *   thing that selects that statement — so a change that widens through some
+ *   other path must carry the same write, or the disclosure returns silently
+ *   and nothing fails. Second, "no information gain" still must not be
+ *   restated as a property of the widening alone: it is a property of the
+ *   widening PLUS the read-time narrowing, which live in different files.
  * - **No `org` collapse.** `['audience:X', 'org']` is left as-is rather than
  *   reduced to `['org']`, even though `org` subsumes everything. The pair
  *   records that the claim was made both privately and publicly; collapsing

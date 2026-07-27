@@ -27,6 +27,7 @@ import { z } from "zod";
 import type {
   BrainEntityRole,
   BrainFactCandidate,
+  BrainFactAttributionView,
   BrainFactCandidateListResponse,
   BrainFactCandidateSummary,
   BrainFactEpisodeView,
@@ -140,13 +141,43 @@ export function isBrainFactStatusFilter(value: unknown): value is BrainFactStatu
   );
 }
 
+/**
+ * Discriminated on `visible`, for {@link BrainFactEpisodeViewSchema}'s reason
+ * and with the same `z.strictObject` on the withheld arm — this is an ACL
+ * boundary (#4836), so the withheld shape must be incapable of carrying
+ * `sourceId` / `actor` / `occurredAt`, and a producer that started attaching
+ * them anyway must fail the response check rather than ship them.
+ *
+ * A fact's provenance names its FIRST episode; a Slack `sourceId` is
+ * `<channelId>:<ts>`. Publish-time grant widening (#4823) can therefore hand a
+ * reader who only ever saw the claim restated in public the identity of whoever
+ * said it first in private, and when. That triple travels together because it
+ * is one disclosure, so it is withheld together.
+ *
+ * SCOPE, because "fails the response check" is easy to over-read: this schema
+ * runs on the REST surface, where `admin-brain-facts.ts` pipes every response
+ * through `checked()`. `searchBrain` — the path that reaches agent chat — has
+ * no response parse at all, so on that side the guarantee is the discriminated
+ * union plus `projectProvenance` being the single constructor, not a runtime
+ * check. Both are covered by test; only one is covered by Zod.
+ */
+export const BrainFactAttributionViewSchema = z.discriminatedUnion("visible", [
+  z.object({
+    visible: z.literal(true),
+    sourceId: z.string().nullable(),
+    actor: z.string().nullable(),
+    occurredAt: z.string().nullable(),
+  }),
+  z.strictObject({
+    visible: z.literal(false),
+  }),
+]) satisfies z.ZodType<BrainFactAttributionView, unknown>;
+
 export const BrainFactProvenanceViewSchema = z.object({
   source: z.string().nullable(),
-  sourceId: z.string().nullable(),
   episodeId: z.string().nullable(),
-  actor: z.string().nullable(),
   producer: z.string().nullable(),
-  occurredAt: z.string().nullable(),
+  attribution: BrainFactAttributionViewSchema,
   extractedAt: z.string().nullable(),
   reconciledAt: z.string().nullable(),
   provisional: z.boolean(),

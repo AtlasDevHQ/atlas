@@ -113,8 +113,8 @@ export function getBrainFactColumns(
           <div className="min-w-0">
             <p className="truncate text-xs">
               {provenance.source ?? <span className="text-muted-foreground">unknown source</span>}
-              {provenance.actor && (
-                <span className="text-muted-foreground"> · {provenance.actor}</span>
+              {provenance.attribution.visible && provenance.attribution.actor && (
+                <span className="text-muted-foreground"> · {provenance.attribution.actor}</span>
               )}
             </p>
             {/* Evidence withheld is stated, never blank: a reviewer who cannot
@@ -123,6 +123,21 @@ export function getBrainFactColumns(
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                 <ShieldAlert className="size-3" aria-hidden />
                 Evidence restricted
+              </span>
+            )}
+            {/* A DIFFERENT withholding from the one above — that one is the
+                episode's own grant, this one the fact's pre-widening grant
+                (#4836) — and on a widened fact the two will nearly ALWAYS fire
+                together, because a fact's provenance names the very episode
+                whose grant it was widened out of. Labelled separately anyway:
+                they carry the same icon, and the remedies differ (join the
+                channel vs. ask the original audience), so collapsing them
+                would leave a reviewer inferring that a missing author and a
+                missing message are one fact. */}
+            {!provenance.attribution.visible && (
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <ShieldAlert className="size-3" aria-hidden />
+                Attribution restricted
               </span>
             )}
             {!provenance.payloadComplete && (

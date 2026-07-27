@@ -119,7 +119,6 @@ import type { SlackHistoryMessage } from "@atlas/api/lib/slack/api";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type {
   BrainEpisodeResult,
-  BrainFactProvenanceView,
   BrainFactResult,
   BrainSearchResult,
 } from "@useatlas/types";
@@ -250,7 +249,12 @@ type FactRow = {
   readonly object: string;
   readonly status: string;
   readonly visible_to: string[];
-  readonly provenance: BrainFactProvenanceView & Record<string, unknown>;
+  // The AT-REST shape (`BrainFactProvenance` in `lib/brain/types.ts`), not the
+  // wire projection — this row comes straight off the jsonb column. They were
+  // never the same type, and since #4836 they are visibly different: the wire
+  // view nests the attribution triple behind a discriminated variant, which
+  // the stored payload never carries.
+  readonly provenance: Record<string, unknown>;
 };
 
 type EpisodeRow = {
@@ -1098,7 +1102,22 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     CHANNEL_ROSTER = { ...CHANNEL_ROSTER, [EXEC_CHANNEL]: ["U_ALAN", "U_BOT", "U_GRACE"] };
     const third = await syncAudiences();
     expect(third.membersAdded).toBe(1);
-    expect(subjectsOf((await search(await execMember())).results)).toContain("acquisition target");
+    const restored = await search(await execMember());
+    expect(subjectsOf(restored.results)).toContain("acquisition target");
+
+    // …and because nothing widened this fact, #4836's narrowing is inert on
+    // it: the restored member gets FULL attribution through the real
+    // `searchBrain` path. The negative at the INTEGRATION level — whole loop,
+    // real Postgres, real ACL predicate — where a fix that withheld across the
+    // board would surface as an agent that can no longer say who decided
+    // anything. (The widened arm is covered in `candidates-pg.test.ts`; here
+    // every episode behind this claim was posted in the exec channel, so
+    // `pre_widening_visible_to` is NULL by construction — see the note above.)
+    const acquisition = restored.results.find(
+      (r) => r.tier === "fact" && r.subject === "acquisition target",
+    );
+    if (acquisition?.tier !== "fact") throw new Error("expected an acquisition fact result");
+    expect(acquisition.provenance.attribution.visible).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
   it("surfaces an un-drained episode as `extraction: pending`", async () => {

@@ -332,6 +332,31 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
         }
         const factGrantError = grantProblem(f.visibleTo);
         if (factGrantError) return { ok: false, error: `${at}.visibleTo: ${factGrantError}` };
+        // Deliberately NOT `grantProblem`, which is the wrong validator here:
+        // it requires at least one usable principal, and absent-or-empty is
+        // legitimate for this column (#4836 — `null` means the fact was never
+        // widened, `[]` means the source region could not vouch for the grant
+        // and wanted the target to withhold). What must be rejected is a shape
+        // Postgres would either abort the whole cutover on (`"org"` →
+        // `malformed array literal`, after every earlier pillar is written) or
+        // silently coerce into a real ACL value (`{}` stringifies to `{}`,
+        // which parses as a legal empty `text[]`).
+        if (
+          f.preWideningVisibleTo !== undefined &&
+          f.preWideningVisibleTo !== null &&
+          (!Array.isArray(f.preWideningVisibleTo) ||
+            f.preWideningVisibleTo.some((t) => t !== null && typeof t !== "string"))
+        ) {
+          return {
+            ok: false,
+            // NULL ELEMENTS are accepted on purpose, and the message says so:
+            // `text[]` admits them, 0180's CHECK only requires one USABLE
+            // principal, and `isVisibleTo` treats a null token as inert. A
+            // maintainer who "tightened" this to reject them would refuse rows
+            // Postgres legally holds and strand that workspace in its region.
+            error: `${at}.preWideningVisibleTo: must be absent, null, or an array of strings (null elements allowed).`,
+          };
+        }
         // No-provenance-no-promotion. `{}` is rejected at rest by the table,
         // so reject it here rather than aborting the transaction on it.
         if (!f.provenance || typeof f.provenance !== "object" || Array.isArray(f.provenance) || Object.keys(f.provenance).length === 0) {
@@ -949,7 +974,7 @@ export async function importBundle(
   // fail the FK; writing edges before both would fail theirs.
   //
   // Everything that makes a fact trustworthy is carried verbatim — provenance,
-  // grant, review status, all four temporal columns. Nothing is defaulted: a
+  // grant, review status, all four temporal columns. Nothing is defaulted except the bundle-version fallback on `preWideningVisibleTo` (#4836, see below): a
   // permissive fallback here would manufacture the very rows the table's
   // CHECKs exist to refuse, and would do it while claiming a successful
   // migration.
@@ -1049,8 +1074,14 @@ export async function importBundle(
       }
 
       await client.query(
-        `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, predicate_cardinality, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        // `pre_widening_visible_to` travels or the target region re-opens the
+        // #4836 disclosure: absent, every widened fact reads as never-widened
+        // and hands its first episode's actor, channel and timestamp to the
+        // whole org. It cannot be re-derived here — the import writes `status`
+        // verbatim, so the fact never re-publishes and the widening UPDATE
+        // that is its only writer never runs again.
+        `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, pre_widening_visible_to, predicate_cardinality, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [
           fact.id,
           orgId,
@@ -1066,6 +1097,12 @@ export async function importBundle(
           JSON.stringify(fact.provenance),
           fact.status,
           fact.visibleTo,
+          // `?? null` is the BUNDLE-VERSION fallback, not a permissive one: a
+          // pre-#4836 bundle carries no RECORDED pre-widening grants, because
+          // the source region had no column to record them in. Facts widened
+          // in the #4823-to-0183 window therefore land disclosing — migration
+          // 0183's accepted residual, reappearing for cross-region moves.
+          fact.preWideningVisibleTo ?? null,
           fact.predicateCardinality,
           fact.createdAt,
           fact.updatedAt,

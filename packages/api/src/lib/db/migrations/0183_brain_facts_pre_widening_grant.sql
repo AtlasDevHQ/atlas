@@ -1,0 +1,72 @@
+-- 0183 — remember the grant a fact had BEFORE publish-time widening, so its
+-- provenance attribution can be narrowed to the readers who always had it
+-- (#4836, ADR-0036 §T5).
+--
+-- #4823 (0182-era code, no migration of its own) publishes a draft fact with
+-- the union of its own grant and every grammar-valid principal named by the
+-- episodes on its `provenance` edges. That is correct for the CLAIM: a reader
+-- gained by widening was, by construction, already told the claim somewhere
+-- else, so they learn nothing new about it.
+--
+-- It is not correct for the fact's PROVENANCE. ADR-0036 §T5 has provenance ride
+-- the fact's grant, and a fact's provenance names its FIRST episode — for Slack
+-- `sourceId` is `<channelId>:<ts>`. So a claim first stated in a private
+-- channel and later restated publicly publishes as
+-- `{audience:chat-channel:slack:<id>, org}` and then tells every org member who
+-- said it first, in which private channel, and when. That is private-channel
+-- MEMBERSHIP, which is exactly what the `audience:` grant model exists to
+-- protect, and it is not derivable from the claim the reader already had.
+--
+-- ## Why a column and not a read-time computation
+--
+-- The narrowing needs to distinguish "visible to org because it always was"
+-- from "visible to org because evidence widened it". Nothing at rest could tell
+-- those apart: `visible_to` is OVERWRITTEN in place by
+-- `WIDEN_AND_PROMOTE_FACTS_SQL`, and `EvidenceWidenedGrant`
+-- (`lib/brain/promotion.ts`) is a transient return value chosen between two
+-- promote statements and never persisted. Re-deriving it at read time from the
+-- live evidence edges would also be wrong in a way that is worse than useless:
+-- evidence arriving AFTER publish does not re-open a published grant, so the
+-- derivation would drift from the grant that actually shipped.
+--
+-- ## What NULL means, and why that is the safe default
+--
+-- NULL means NO RECORDED PRE-WIDENING GRANT. For everything promoted after
+-- this migration that is the same thing as "never widened" — the overwhelming
+-- majority, including every fact taking the plain `PROMOTE_FACTS_SQL` path —
+-- and disclosing full attribution is then correct: nothing widened, so every
+-- reader who can see the fact could always see it.
+--
+-- For a fact widened in the #4823-to-0183 window it is NOT the same thing. NULL
+-- there is an unknown that reads as never-widened and therefore discloses. That
+-- is the accepted residual below, not a correctness claim.
+--
+-- Backfilling is not possible and not attempted. For a fact published before
+-- this column existed, the pre-widening grant is simply gone — it was
+-- overwritten. Guessing it from today's evidence edges would invent an ACL
+-- boundary from data that post-dates the decision. Brain extraction is enabled
+-- on `api-staging` only and no customer's private Slack has been ingested
+-- (#4836), so there is no real pre-existing disclosure to remediate; the honest
+-- record is "unknown, therefore not widened", and it is the state the column
+-- already has.
+--
+-- ## Shape
+--
+-- `text[]`, NULLABLE, deliberately NOT mirroring `visible_to`'s `NOT NULL` +
+-- CHECK. `visible_to`'s CHECK requires at least one usable principal because a
+-- fact nobody can see is a bug; this column carries the OPPOSITE meaning when
+-- absent, so a NOT NULL default would have to invent a grant, and any grant it
+-- invented would either withhold attribution from everyone (degrading the
+-- review surface for the people who need it — refused by #4836) or from nobody
+-- (a no-op column). The three-valued column says what is true.
+--
+-- Additive only — no DROP, no RENAME, so the two-phase-drop discipline does not
+-- apply. Mirrored in db/schema.ts in the same commit so a later `drizzle-kit
+-- generate` cannot emit a DROP.
+--
+-- No index. It is never a predicate: every read that consults it has already
+-- selected the row through `aclVisibilityClause` and is deciding what to
+-- project INSIDE that row, so the column is only ever read by the row's own
+-- fetch. `grant-sweep.ts`'s anomaly sweep scans `visible_to`, not this.
+ALTER TABLE brain_facts
+  ADD COLUMN IF NOT EXISTS pre_widening_visible_to text[];

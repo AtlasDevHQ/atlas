@@ -103,7 +103,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * EXTRA field is stripped rather than refused (the envelope schemas are
  * `z.object`), so this catches drift in one direction only.
  *
- * It also makes the withheld-episode / withheld-counterpart arms enforceable
+ * It also makes the three withheld arms (episode, tension counterpart, attribution) enforceable
  * rather than conventional: both are `z.strictObject`, so a future producer
  * that attached a body to a `visible: false` variant fails HERE — at the ACL
  * boundary — instead of shipping the payload it was supposed to withhold.
@@ -175,6 +175,7 @@ const listRoute = createRoute({
   description:
     "Returns a paginated page of company-brain fact candidates with everything the reconcile stage attached: the SPO claim, the provenance chain back to its episode, the derived grant, the corroboration count (distinct provenance edges), provisional-entity flags, and advisory in-tension-with hints. " +
     "Results are gated by the reviewer's own fail-closed visibility predicate; the provenance episode is gated INDEPENDENTLY, so evidence a reviewer is not entitled to is reported as withheld rather than omitted. " +
+    "`provenance.attribution` is gated on a THIRD grant — the one the fact held before publish-time widening. A reviewer who can see a claim only because it was restated under some principal they hold receives `{ visible: false }` instead of its first episode's `sourceId`, `actor` and `occurredAt`; anyone entitled to the original grant receives all three. " +
     "Block-class extraction failures (no provenance, no usable grant, unattributable actor, malformed claim) never appear here — they were refused upstream. Retracted facts are excluded.",
   request: {
     query: z.object({

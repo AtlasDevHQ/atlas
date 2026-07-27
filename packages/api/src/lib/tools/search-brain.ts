@@ -151,6 +151,7 @@ Use the searchBrain tool for decisions, rationale, ownership, policy, and histor
 - Pass a natural-language \`query\`; narrow the document store with \`type\`, \`tags\`, \`collection\`, or \`since\`, and narrow the stores themselves with \`include\`
 - Every result is labelled: \`tier: "fact"\` (reviewed claim), \`"raw-episode"\` (the source record), \`"document"\` (hosted knowledge). Cite the tier and the provenance when you use one — a raw episode is what someone SAID, not what is true
 - An episode tagged \`extraction: "pending"\` has not been distilled into facts yet; quote it as raw evidence
+- A fact whose \`provenance.attribution\` is \`{ "visible": false }\` is one you may read but whose author, source id, and original timestamp are withheld from this reader. Use the claim; say attribution is restricted if asked who said it. Do NOT report it as anonymous, undated, or unsourced — and never infer the author from anything else in the response
 - \`tensions\` lists conflicting claims in both directions and is deliberately unranked — surface both sides, never pick a winner
 - If the response carries \`unavailable\`, the brain could NOT be searched (e.g. no workspace is bound). Say so — do NOT report it as "nothing is known"
 - Read-only, and never the SQL whitelist, metrics, or glossary. For quantitative current state use \`executeSQL\`; for the on-disk semantic layer use \`explore\``;

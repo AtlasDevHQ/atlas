@@ -54,6 +54,35 @@ function toISOOrNull(value: unknown): string | null {
 }
 
 /**
+ * Narrow `brain_facts.pre_widening_visible_to` for the bundle — the ACL input
+ * that decides whether the TARGET region discloses a claim's first speaker
+ * (#4836).
+ *
+ * Fails CLOSED, and that is the whole reason it is a function rather than a
+ * ternary. `null` is a real value here ("never widened", so every reader is an
+ * original reader and full attribution is correct). Anything else non-array is
+ * the column missing from the projection or the driver no longer decoding it —
+ * and folding that into `null` would tell the target region "never widened"
+ * about facts that were, disclosing them to the whole org with no error and no
+ * way back: the import writes `status` verbatim, so the widening UPDATE that
+ * is the column's only deriver never runs again.
+ *
+ * `[]` is the deny sentinel. This column has no `cardinality > 0` CHECK
+ * (unlike `visible_to`, where an empty grant IS a defect), and an empty grant
+ * overlaps no reader token, so the target withholds from everyone — visibly
+ * wrong to an operator, and recoverable, which disclosure is not.
+ */
+function preWideningGrant(value: unknown, factId: unknown): string[] | null {
+  if (value === null) return null;
+  if (Array.isArray(value)) return value as string[];
+  log.warn(
+    { factId, actualType: value === undefined ? "undefined" : typeof value },
+    "region export: `pre_widening_visible_to` did not decode as an array — exporting an empty grant so the target region WITHHOLDS provenance attribution rather than disclosing it (#4836)",
+  );
+  return [];
+}
+
+/**
  * Org scoping for a bundle export. The region-migration executor always
  * passes a concrete org id; the `atlas-operator export` CLI passes `null`
  * for a no-auth self-hosted instance whose rows carry `org_id IS NULL`.
@@ -230,10 +259,18 @@ export async function exportWorkspaceBundle(
     // --- 9. Company brain: episodes, facts, edges, audiences (#4767, ADR-0036) ---
     // The whole substrate moves. A workspace's brain is the same class of
     // asset as its knowledge base, and everything that makes a fact
-    // TRUSTWORTHY travels with it — provenance, grant, review status, and all
-    // four temporal columns. Exporting facts without those would land
+    // TRUSTWORTHY travels with it — provenance, BOTH grants, review status,
+    // and all four temporal columns. Exporting facts without those would land
     // unprovenanced, ungated claims in the target region, which is strictly
     // worse than not migrating them at all.
+    //
+    // "Both grants" is the easy one to miss, and missing it is a DISCLOSURE
+    // rather than an over-restriction: `visible_to` gates the claim,
+    // `pre_widening_visible_to` gates its attribution (#4836). Drop the second
+    // and every widened fact lands in the target reading as never-widened,
+    // handing its first episode's actor, channel and timestamp to the whole
+    // org — irreversibly, since the import writes `status` verbatim so the
+    // widening UPDATE that derives the column never runs again.
     //
     // Structurally empty on the `orgScope === null` path (the no-auth
     // self-hosted / CLI export): all four brain tables declare `workspace_id
@@ -257,6 +294,7 @@ export async function exportWorkspaceBundle(
       `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
               f.valid_from, f.valid_to, f.ingested_at, f.invalidated_at,
               f.extracted_at, f.provenance, f.status, f.visible_to,
+              f.pre_widening_visible_to,
               f.predicate_cardinality, f.created_at, f.updated_at
        FROM brain_facts f
        JOIN brain_episodes e ON e.id = f.source_episode_id
@@ -515,6 +553,21 @@ export async function exportWorkspaceBundle(
       provenance: f.provenance,
       status: f.status as ExportedBrainFact["status"],
       visibleTo: f.visible_to as string[],
+      // NULLABLE, unlike every other column in this block — `null` means the
+      // fact was never widened, which is the common case and a real value
+      // rather than a missing one (#4836).
+      //
+      // THREE states, not two, for the same reason `attributionDecision` keeps
+      // them apart: SQL NULL is "never widened" and discloses in the target
+      // region; anything else non-array means the SELECT dropped the column or
+      // the driver stopped decoding it, and entitlement is then unknown. An
+      // `Array.isArray(x) ? x : null` here would collapse the second into the
+      // first and silently disclose every widened fact in the target region —
+      // permanently, since the import writes `status` verbatim so the widening
+      // UPDATE never re-runs to repair it. Drift degrades to `[]` instead,
+      // which overlaps no reader token and therefore withholds from everyone:
+      // over-withholding is recoverable, disclosure is not.
+      preWideningVisibleTo: preWideningGrant(f.pre_widening_visible_to, f.id),
       predicateCardinality: f.predicate_cardinality as ExportedBrainFact["predicateCardinality"],
       createdAt: toISO(f.created_at),
       updatedAt: toISO(f.updated_at),

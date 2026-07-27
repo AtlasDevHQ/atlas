@@ -93,6 +93,7 @@ import {
 } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
+import { attributionDecision } from "@atlas/api/lib/brain/attribution";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
 import { brainFactStatusClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
@@ -272,6 +273,7 @@ const FACT_COLUMNS = `f.id::text AS id,
          f.status,
          f.predicate_cardinality,
          f.visible_to,
+         f.pre_widening_visible_to,
          f.provenance,
          f.source_episode_id::text AS source_episode_id,
          f.valid_from,
@@ -420,6 +422,8 @@ interface FactRow {
   readonly status: unknown;
   readonly predicate_cardinality: unknown;
   readonly visible_to: unknown;
+  /** ACL input for provenance attribution — see `AttributionRow` (#4836). */
+  readonly pre_widening_visible_to: unknown;
   readonly provenance: unknown;
   readonly source_episode_id: string | null;
   readonly valid_from: unknown;
@@ -434,12 +438,22 @@ interface FactRow {
  * `tier` and `trustTier` are written here, at the one seam every fact row
  * passes through. The type makes an unlabeled row unrepresentable; this makes
  * it unconstructible in practice too.
+ *
+ * Takes the whole reader CONTEXT rather than a bare `workspaceId`, which it
+ * used to, because provenance attribution is now an entitlement decision
+ * (#4836) and not a projection. This is the surface that makes #4836 a
+ * user-visible disclosure rather than an admin-queue one: `searchBrain` feeds
+ * agent chat answers, so a widened fact reaching an org reader here would hand
+ * them a private channel's first speaker without anyone opening
+ * `/admin/brain-facts`.
  */
 function toFactResult(
   row: FactRow,
-  workspaceId: string,
+  ctx: BrainPrincipalContext,
   tensions: readonly BrainSearchTensionView[],
+  requestId?: string,
 ): BrainFactResult {
+  const workspaceId = ctx.workspaceId;
   return {
     tier: "fact",
     trustTier: 2,
@@ -453,7 +467,11 @@ function toFactResult(
     validTo: iso(row.valid_to),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    provenance: projectProvenance(row.provenance, row.source_episode_id),
+    provenance: projectProvenance(
+      row.provenance,
+      row.source_episode_id,
+      attributionDecision(row, ctx, requestId),
+    ),
     corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
     tensions,
   };
@@ -840,7 +858,7 @@ export async function searchBrainCore(
         "brain search: fact `visible_to` did not decode as an array — the grant could not be inspected",
       );
     }
-    return toFactResult(row, ctx.workspaceId, tensions.views.get(row.id) ?? []);
+    return toFactResult(row, ctx, tensions.views.get(row.id) ?? [], requestId);
   });
 
   const episodeResults: BrainEpisodeResult[] = [];

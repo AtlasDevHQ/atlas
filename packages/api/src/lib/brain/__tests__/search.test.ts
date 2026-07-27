@@ -91,6 +91,7 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     status: "published",
     predicate_cardinality: "single",
     visible_to: ["org"],
+    pre_widening_visible_to: null,
     provenance: { source: "slack", sourceId: "m-1", episodeId: "ep-1" },
     source_episode_id: "ep-1",
     valid_from: null,
@@ -662,5 +663,156 @@ describe("in-tension-with", () => {
       expand: false,
     });
     expect(db.calls.filter((c) => c.sql.includes(SQL.tensionEdges))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provenance attribution on a widened fact (#4836)
+// ---------------------------------------------------------------------------
+
+/**
+ * `searchBrain` is what makes #4836 a user-visible disclosure rather than an
+ * admin-queue one: it feeds agent chat answers, so a widened fact reaching an
+ * org reader here hands them a private channel's first speaker without anybody
+ * opening `/admin/brain-facts`. That is why this suite covers it and not only
+ * `candidates.test.ts`.
+ *
+ * The reader-visible SELECT is deliberately NOT what is asserted — the row came
+ * back through `aclVisibilityClause` and it is supposed to, because the CLAIM is
+ * legitimately visible. What is asserted is what the projection does with it.
+ */
+describe("provenance attribution — the widened-fact disclosure (#4836)", () => {
+  /** The Slack private channel a claim was first stated in. */
+  const PRIVATE = "audience:chat-channel:slack:C-FOUNDERS";
+
+  /**
+   * Stated first in `#atlas-founders`, restated publicly, published with the
+   * union — the §C3 shape from the soak corpus. `sourceId` is
+   * `<channelId>:<ts>`, which is where the channel id leaks.
+   */
+  const widenedRow = () =>
+    factRow({
+      visible_to: [PRIVATE, "org"],
+      pre_widening_visible_to: [PRIVATE],
+      provenance: {
+        source: "slack",
+        sourceId: "C-FOUNDERS:1799999999.001",
+        episodeId: "ep-1",
+        actor: "U-FOUNDER",
+        producer: "extraction:v1",
+        occurredAt: "2026-05-30T00:00:00.000Z",
+        extractedAt: "2026-05-30T00:05:00.000Z",
+        reconciledAt: "2026-05-30T00:06:00.000Z",
+      },
+    });
+
+  async function provenanceFor(context: BrainPrincipalContext, row: Record<string, unknown>) {
+    const db = reader([
+      { match: SQL.factPage, rows: [row] },
+      { match: SQL.tensionEdges, rows: [] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: context,
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    return (res.results[0] as BrainFactResult).provenance;
+  }
+
+  it("withholds actor, sourceId and occurredAt from a reader gained by widening", async () => {
+    const p = await provenanceFor(ctx(), widenedRow());
+    expect(p.attribution).toEqual({ visible: false });
+    // Asserted on the SERIALIZED row too, not just the union arm. The point of
+    // a discriminated variant over three nulled fields is that the withheld
+    // shape cannot carry the payload — so the leak must be absent from the
+    // object, not merely unreachable through the type.
+    expect(JSON.stringify(p)).not.toContain("C-FOUNDERS");
+    expect(JSON.stringify(p)).not.toContain("U-FOUNDER");
+  });
+
+  it("still discloses the non-attributing half of the payload", async () => {
+    // Withholding the triple must not blank the row. `source` is a connector
+    // CLASS and `producer` a pipeline stage — neither names a person or a
+    // place, and an agent that lost them could no longer say where a claim
+    // came from at all.
+    const p = await provenanceFor(ctx(), widenedRow());
+    expect(p.source).toBe("slack");
+    expect(p.producer).toBe("extraction:v1");
+    expect(p.episodeId).toBe("ep-1");
+  });
+
+  it("does not report withholding as a drifted payload", async () => {
+    // `payloadComplete` answers "did the producer write a well-formed record",
+    // and the stored record here is perfect. Letting an ACL decision flip it
+    // would tell every org reader Atlas has a data-integrity problem.
+    const p = await provenanceFor(ctx(), widenedRow());
+    expect(p.payloadComplete).toBe(true);
+  });
+
+  it("gives a member of the ORIGINAL audience full attribution", async () => {
+    // The half that must not regress: the private channel's own members are
+    // exactly the readers who can act on this claim.
+    const p = await provenanceFor(
+      ctx({ audienceIds: ["chat-channel:slack:C-FOUNDERS"] }),
+      widenedRow(),
+    );
+    expect(p.attribution).toEqual({
+      visible: true,
+      sourceId: "C-FOUNDERS:1799999999.001",
+      actor: "U-FOUNDER",
+      occurredAt: "2026-05-30T00:00:00.000Z",
+    });
+  });
+
+  it("leaves a fact that was NEVER widened untouched", async () => {
+    // The negative. `pre_widening_visible_to IS NULL` is the overwhelming
+    // majority of any corpus, and a fix that quietly withheld across the board
+    // would satisfy every assertion above.
+    const p = await provenanceFor(
+      ctx(),
+      factRow({
+        visible_to: ["org"],
+        pre_widening_visible_to: null,
+        provenance: {
+          source: "slack",
+          sourceId: "C-ENG:1799999999.002",
+          episodeId: "ep-1",
+          actor: "U-ENG",
+          producer: "extraction:v1",
+          occurredAt: "2026-05-30T00:00:00.000Z",
+          extractedAt: "2026-05-30T00:05:00.000Z",
+          reconciledAt: "2026-05-30T00:06:00.000Z",
+        },
+      }),
+    );
+    expect(p.attribution).toEqual({
+      visible: true,
+      sourceId: "C-ENG:1799999999.002",
+      actor: "U-ENG",
+      occurredAt: "2026-05-30T00:00:00.000Z",
+    });
+  });
+
+  it("selects the pre-widening grant, so the decision has an input at all", async () => {
+    // Cheap to assert, and it is what keeps every test above non-vacuous: the
+    // mocked rows supply `pre_widening_visible_to` themselves, so without this
+    // the suite would pass against a SELECT that never asked for it.
+    //
+    // Dropping the column is not a DISCLOSURE — `attributionDecision` treats
+    // the resulting `undefined` as drift and withholds. It is the opposite
+    // failure: attribution withheld across the entire corpus, degrading the
+    // review surface for exactly the people #4836 refuses to degrade it for.
+    // Silent either way, which is why it is pinned.
+    const db = reader([{ match: SQL.factPage, rows: [] }]);
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    expect(db.calls[0]?.sql).toContain("f.pre_widening_visible_to");
   });
 });

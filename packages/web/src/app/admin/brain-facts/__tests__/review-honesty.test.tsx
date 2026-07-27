@@ -69,17 +69,21 @@ const ISO = "2026-07-01T00:00:00.000Z";
 
 const PROVENANCE = {
   source: "slack",
-  sourceId: "C1/17",
   episodeId: "ep-1",
-  actor: "U1",
   producer: "extraction:v1",
-  occurredAt: ISO,
+  // The attribution triple travels as a discriminated variant (#4836) — who
+  // stated the claim first, where, and when, withheld as a unit from a reader
+  // who reaches the fact only through publish-time grant widening.
+  attribution: { visible: true, sourceId: "C1/17", actor: "U1", occurredAt: ISO },
   extractedAt: ISO,
   reconciledAt: ISO,
   provisional: false,
   unresolved: [],
   payloadComplete: true,
 };
+
+/** The same payload as seen by a reader gained by widening. */
+const WITHHELD_ATTRIBUTION = { ...PROVENANCE, attribution: { visible: false } };
 
 function candidate(overrides: Record<string, unknown> = {}) {
   return {
@@ -386,6 +390,114 @@ describe("withheld evidence is named, never blank", () => {
     fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
     await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
     expect(document.body.textContent).toContain("separate grants");
+  });
+});
+
+describe("withheld attribution is named, never blank (#4836)", () => {
+  test("labels the restricted attribution in the list", async () => {
+    const view = await renderPage([candidate({ provenance: WITHHELD_ATTRIBUTION })]);
+    expect(view.container.textContent).toContain("Attribution restricted");
+  });
+
+  test("does not render the author slot as an em-dash", async () => {
+    // The whole reason the wire carries a variant rather than three nulls: a
+    // dash reads as "the evidence has no author", which is a claim about the
+    // DATA and is false. The reviewer has to be able to tell "nobody recorded
+    // this" from "you are not entitled to it".
+    const view = await renderPage([candidate({ provenance: WITHHELD_ATTRIBUTION })]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Attribution restricted");
+    // The three withheld field labels are gone entirely, not blanked.
+    expect(text).not.toContain("Asserted by");
+    expect(text).not.toContain("Source ID");
+    expect(text).not.toContain("Said at");
+  });
+
+  test("leaks nothing when paired with the withheld episode production always pairs it with", async () => {
+    // The two withholdings are near-perfectly CORRELATED, not independent: a
+    // fact's provenance names its first episode, and that episode's grant IS
+    // the fact's pre-widening grant — so a reader who fails the attribution
+    // check fails the episode check too, off `loadEpisodes`' own predicate.
+    // This is therefore the shape production actually produces, and the only
+    // one where "no value leaked anywhere on the page" is a meaningful claim.
+    //
+    // Asserted as a pair on purpose. The inverse fixture (withheld attribution
+    // + VISIBLE episode) is unreachable for a widened fact, and in it `U1`
+    // legitimately renders in the episode panel — the episode is separately
+    // ACL-gated, so a reader entitled to the evidence is entitled to its
+    // author. Withholding there would be the fact's grant overriding the
+    // episode's, which is exactly the coupling `candidates.ts` refuses.
+    const view = await renderPage([
+      candidate({
+        provenance: WITHHELD_ATTRIBUTION,
+        episode: { visible: false, id: "ep-1" },
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Attribution restricted");
+    expect(text).not.toContain("C1/17");
+    expect(text).not.toContain("U1");
+  });
+
+  test("keeps the non-attributing half of the provenance visible", async () => {
+    // Withholding the triple must not blank the row: `source` is a connector
+    // class and `producer` a pipeline stage, and a reviewer who lost them
+    // could no longer say where the claim came from at all.
+    const view = await renderPage([candidate({ provenance: WITHHELD_ATTRIBUTION })]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("slack");
+    expect(text).toContain("extraction:v1");
+  });
+
+  test("distinguishes restricted ATTRIBUTION from restricted EVIDENCE", async () => {
+    // Two different withholdings off two different grants — the fact's
+    // pre-widening grant and the episode's own — that on a widened fact will
+    // usually fire together. They carry the same icon, so if the labels ever
+    // collapsed into one a reviewer would lose the distinction entirely, and
+    // the two have different remedies.
+    const view = await renderPage([
+      candidate({
+        provenance: WITHHELD_ATTRIBUTION,
+        episode: { visible: false, id: "ep-1" },
+      }),
+    ]);
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("Attribution restricted");
+    expect(text).toContain("Evidence restricted");
+  });
+
+  test("reports a drifted payload and a withheld attribution as separate facts", async () => {
+    // `payloadComplete` is about the record at rest; attribution is about the
+    // reader. Collapsing either into the other tells the reviewer something
+    // false — that Atlas has a data-integrity problem, or that it does not.
+    const view = await renderPage([
+      candidate({ provenance: { ...WITHHELD_ATTRIBUTION, payloadComplete: false } }),
+    ]);
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("Attribution restricted");
+    expect(text).toContain("Incomplete provenance");
+  });
+
+  test("leaves a disclosed candidate showing full attribution", async () => {
+    // The negative. A fix that withheld across the board would satisfy every
+    // assertion above.
+    const view = await renderPage([candidate()]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("Attribution restricted");
+    expect(text).toContain("Asserted by");
+    expect(text).toContain("C1/17");
   });
 });
 

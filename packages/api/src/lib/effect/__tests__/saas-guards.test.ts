@@ -1026,9 +1026,12 @@ describe("SandboxCredsGuardLive", () => {
   // front-of-line plugin seam, never a `sandbox.priority` entry. That exclusion
   // is hand-maintained — a second non-priority key would need adding here.)
   test("fail-closed determination cannot drift from planSandboxSelection (every priority ordering)", async () => {
+    // No explicit type predicate on the filter: TS infers `SandboxBackendName[]`
+    // here, and an inferred narrowing is checked where a hand-written
+    // `name is SandboxBackendName` would be an unchecked assertion.
     const backends = (
       Object.keys(BACKEND_ISOLATION) as Array<keyof typeof BACKEND_ISOLATION>
-    ).filter((name): name is SandboxBackendName => name !== "plugin");
+    ).filter((name) => name !== "plugin");
 
     const orderings = (items: readonly SandboxBackendName[]): SandboxBackendName[][] =>
       items.length === 0
@@ -1055,6 +1058,12 @@ describe("SandboxCredsGuardLive", () => {
     // the invariance directly: if a future planner change lets `atlasSandbox` or
     // a detection flag reach the config-priority arm, this fails rather than
     // letting the guard's fiction quietly become a wrong model of production.
+    //
+    // The fiction is NOT self-evidently harmless: `useVercelSandbox()` returns
+    // true on `process.env.VERCEL` alone, so a Vercel-hosted region really does
+    // have `vercelAvailable: true` while its explicit creds are incomplete.
+    // Nothing about "creds missing" implies "vercel unavailable" — this
+    // assertion is what licenses the snapshot, not any such equivalence.
     const ALT_AVAILABILITY = [
       { atlasSandbox: "nsjail", vercelAvailable: true, sidecarAvailable: true, nsjailAvailable: true, nsjailFailed: false },
       { atlasSandbox: undefined, vercelAvailable: true, sidecarAvailable: false, nsjailAvailable: true, nsjailFailed: true },
@@ -1087,11 +1096,23 @@ describe("SandboxCredsGuardLive", () => {
 
           for (const availability of ALT_AVAILABILITY) {
             const alt = planSandboxSelection({ configPriority: priority, ...availability });
-            expect({ priority, source: alt.source, onExhausted: alt.onExhausted }).toEqual({
-              priority,
-              source: plan.source,
-              onExhausted: plan.onExhausted,
-            });
+            if (plan.source === "config-priority") {
+              // The guard reads BOTH `onExhausted` and `configPriority`, so the
+              // WHOLE arm has to be availability-invariant — not just the two
+              // fields the decision branches on. A planner that reordered or
+              // filtered `configPriority` by availability would otherwise slip
+              // through here and hand the guard a different list than the one
+              // the region actually runs.
+              expect({ priority, alt }).toEqual({ priority, alt: plan });
+            } else {
+              // The default chain's `steps` are legitimately availability-driven;
+              // only the two fields the guard consults must hold steady.
+              expect({ priority, source: alt.source, onExhausted: alt.onExhausted }).toEqual({
+                priority,
+                source: plan.source,
+                onExhausted: plan.onExhausted,
+              });
+            }
           }
 
           const exit = await Effect.runPromiseExit(
@@ -1121,12 +1142,14 @@ describe("SandboxCredsGuardLive", () => {
     const divergent = observed.filter((o) => o.guardFired !== o.plannerFailsClosedOnVercel);
     expect(divergent).toEqual([]);
 
-    // Anti-vacuity: a determination stuck at one constant would agree with a
-    // co-broken copy trivially, so require the sweep to have actually reached
-    // the fail-closed outcome before its agreement counts for anything. (The
-    // negative outcome is guaranteed by `undefined` always taking the
-    // `default-chain` arm, so the second line documents the pairing rather than
-    // being independently falsifiable.)
+    // Anti-vacuity, and load-bearing rather than decorative: a determination
+    // stuck at one constant would agree with a co-broken copy trivially. The
+    // first line is what catches the SILENT-INERT direction — a planner that
+    // stopped classifying any pin as fail-closed would empty `divergent` (guard
+    // and planner both go quiet, region boots green, explore refuses every
+    // request) and this is the only assertion that notices. Do not delete it as
+    // redundant. The second line cannot fail independently — `undefined` always
+    // takes the `default-chain` arm — and documents the pairing.
     expect(observed.some((o) => o.plannerFailsClosedOnVercel)).toBe(true);
     expect(observed.some((o) => !o.plannerFailsClosedOnVercel)).toBe(true);
   });

@@ -1195,14 +1195,25 @@ describe("SandboxCredsGuardLive", () => {
     // Anti-vacuity, and load-bearing rather than decorative: a determination
     // stuck at one constant would agree with a co-broken copy trivially.
     //
-    // The first line catches the SILENT-INERT direction. A planner that stopped
-    // classifying any pin as fail-closed empties `divergent` — guard and planner
-    // go quiet together — and the deny-all pin then degrades to the unsandboxed
-    // `just-bash` fallback (`explore.ts`, `case "exhausted"`), i.e. agent shell
-    // on the host, while boot and `/health` stay green. It is the only assertion
-    // IN THIS SWEEP that notices; the named `["vercel-sandbox"]` cases above
-    // would also go red, but nothing inside the loop would. Do not delete it as
-    // redundant.
+    // The first line catches the SILENT-INERT direction. Everything in this
+    // paragraph describes that HYPOTHETICAL REGRESSION, not current behaviour —
+    // today a deny-all pin correctly yields `onExhausted: "fail-closed"`
+    // (`selection.ts`), so `runSandboxPlan` returns `kind: "fail-closed"` and
+    // `explore.ts` THROWS. The `case "exhausted"` arm is unreachable for it.
+    //
+    // Under the regression, though: a planner that stopped classifying any pin
+    // as fail-closed empties `divergent` — guard and planner go quiet together —
+    // and the deny-all pin now takes `onExhausted: "just-bash"`, so exhaustion
+    // returns `kind: "exhausted"` and `explore.ts` builds the unsandboxed
+    // fallback. Agent shell on the host, for the pin that exists to forbid it.
+    // Boot stays green because the guard went inert; `/health` reports
+    // `backend: "just-bash"`, `sandbox.status: "degraded"` — truthful about the
+    // isolation loss, but describing a working unsandboxed deploy rather than a
+    // violated deny-all pin, so nothing names the actual regression.
+    //
+    // It is the only assertion IN THIS SWEEP that notices; the named
+    // `["vercel-sandbox"]` cases above would also go red, but nothing inside the
+    // loop would. Do not delete it as redundant.
     //
     // The second line is unlikely to fail alone — `undefined`, any non-vercel
     // pin, and any list containing `just-bash` all satisfy it — so it mostly

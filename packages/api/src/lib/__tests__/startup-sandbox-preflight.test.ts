@@ -127,7 +127,9 @@ void mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
   },
 }));
 
-const { validateEnvironment, resetStartupCache } = await import("@atlas/api/lib/startup");
+const { validateEnvironment, resetStartupCache, getStartupWarnings } = await import(
+  "@atlas/api/lib/startup"
+);
 const { getExploreBackendType, snapshotExploreSandboxEnv, _resetSandboxFailureFlagsForTest } =
   await import("@atlas/api/lib/tools/explore");
 const { _setConfigForTest, _resetConfig, configFromEnv } = await import(
@@ -302,10 +304,13 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     // so the pin alone still reports available) and "just-bash" (the pin will
     // not degrade to it). The pre-flight must say the tool is unavailable.
     //
-    // Critically, the pre-flight must NOT call markNsjailFailed() to force the
-    // resolver's hand: planSandboxSelection only emits the hard-fail step while
-    // `!nsjailFailed`, so setting the flag would DELETE the pin's hard-fail
-    // contract and silently degrade the box to unsandboxed just-bash.
+    // The pre-flight must NOT call markNsjailFailed() here. The original reason
+    // — that setting the flag would delete the pin's hard-fail step — was
+    // removed by #4829; the step now stands unconditionally. What survives is
+    // the narrower distinction #4824 pinned: `_nsjailFailed` records a RUNTIME
+    // failure, and an absent binary is a configuration state, so boot must not
+    // fabricate one. The assertion below is unchanged and still load-bearing;
+    // only its justification moved.
     process.env.ATLAS_SANDBOX = "nsjail";
     mockNsjailBinaryPath = null;
 
@@ -315,23 +320,30 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     expect(claimedNoIsolation()).toBe(false);
     expect(
       logCalls.some((c) =>
-        c.args.some((a) => typeof a === "string" && a.includes("Explore tool: unavailable")),
+        c.args.some((a) => typeof a === "string" && a.includes("Explore tool: UNAVAILABLE")),
       ),
     ).toBe(true);
-    // The hard-fail step must survive — this is the security-critical assertion.
+    // #4824's regression assertion — boot does not fabricate a runtime failure.
     expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
+    // The consequence, pinned so it is visible rather than merely true: with the
+    // flag clear the bare pin still reads as available, so health names `nsjail`
+    // for a process where explore refuses every request. Pre-dates #4829/#4828
+    // and is tracked as #4834 — this line documents the gap, it does not
+    // bless it.
+    expect(getExploreBackendType()).toBe("nsjail");
   });
 
-  it("admits no isolation when the nsjail pin degrades on broken namespaces", async () => {
+  it("reports fail-closed when the nsjail pin's namespaces are broken (#4829)", async () => {
     // The sibling of the case above, and the realistic container shape: the
     // binary is present but CLONE_NEWUSER is denied. checkExplicitNsjail() calls
-    // markNsjailFailed() here (pre-existing, #4829), which DELETES the pin's
-    // hard-fail step — so the pin does NOT hold and explore runs unsandboxed.
+    // markNsjailFailed() here — which USED to delete the pin's hard-fail step, so
+    // the pin silently stopped holding and explore ran agent shell on the host.
     //
-    // Boot must therefore say "no process isolation" and name just-bash, exactly
-    // as /api/health does. Claiming the deployment is fail-closed here would be
-    // #4824's false claim at inverted polarity: reassuring an operator that
-    // explore refuses to run while it is executing agent shell on the host.
+    // This case previously asserted `just-bash` + "no process isolation", i.e. it
+    // encoded the fail-open as correct. It was a LOG-level assertion, which is
+    // why a security-critical degradation shipped past a green suite; the runtime
+    // consequence now has its own coverage in
+    // `lib/tools/__tests__/explore-fail-closed.test.ts`.
     process.env.ATLAS_SANDBOX = "nsjail";
     mockNsjailBinaryPath = "/usr/local/bin/nsjail";
     mockCapabilityResult = { ok: false, error: "clone failed: EPERM" };
@@ -339,10 +351,64 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     await runPreFlight();
 
     expect(nsjailProbeRan).toBe(true);
+    // The flag still records the runtime degradation — that meaning is intact,
+    // and `autoDetectNsjail()` depends on it (see the last case in this file).
     expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(true);
-    expect(loggedBackend()).toBe("just-bash");
-    expect(getExploreBackendType()).toBe("just-bash");
-    expect(claimedNoIsolation()).toBe(true);
+
+    // …but it no longer doubles as permission to run unsandboxed.
+    expect(loggedBackend()).toBe("fail-closed");
+    expect(getExploreBackendType()).toBe("fail-closed");
+    // Boot must not claim the deployment is an unsandboxed-but-working box: it
+    // runs nothing at all. Saying "no process isolation" here would be #4824's
+    // false claim at inverted polarity.
+    expect(claimedNoIsolation()).toBe(false);
+
+    // The advice must name the pin, not the generic install-nsjail line.
+    expect(
+      logCalls.some((c) =>
+        c.args.some(
+          (a) =>
+            typeof a === "string" &&
+            a.includes("ATLAS_SANDBOX=nsjail") &&
+            a.includes("refuses every request"),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("reports fail-closed when a sandbox.priority pin loses its credential (#4828)", async () => {
+    // deploy/api/atlas.config.ts pins ["vercel-sandbox"] with no just-bash, so
+    // dropping VERCEL_TOKEN on one regional service leaves explore throwing on
+    // every request. Boot used to log "just-bash (no process isolation). Install
+    // nsjail or configure ATLAS_SANDBOX_URL…" — false, and unactionable, since
+    // the pin excludes both of the backends it recommends.
+    _setConfigForTest({
+      ...configFromEnv(),
+      sandbox: { priority: ["vercel-sandbox"] },
+    });
+    // No VERCEL_* vars set — useVercelSandbox() is false, exactly the shape a
+    // missing per-service Railway secret produces.
+
+    await runPreFlight();
+
+    expect(loggedBackend()).toBe("fail-closed");
+    expect(getExploreBackendType()).toBe("fail-closed");
+    expect(claimedNoIsolation()).toBe(false);
+
+    // Names the pinned backend and the credential that is actually missing.
+    const advice = logCalls.find((c) =>
+      c.args.some((a) => typeof a === "string" && a.includes("Explore tool: UNAVAILABLE")),
+    );
+    const text = advice?.args.find((a): a is string => typeof a === "string") ?? "";
+    expect(text).toContain("vercel-sandbox");
+    expect(text).toContain("VERCEL_TOKEN");
+    expect(text).not.toContain("Install nsjail");
+
+    // A total explore outage is worth surfacing beyond the log — /api/health
+    // echoes startup warnings.
+    expect(
+      getStartupWarnings().some((w) => w.includes("Explore tool: UNAVAILABLE")),
+    ).toBe(true);
   });
 
   // ── AC4 — boot and /api/health cannot disagree ────────────────────────────

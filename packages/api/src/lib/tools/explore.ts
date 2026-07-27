@@ -34,7 +34,7 @@ import { capOutput, markCappedStream } from "./backends/shared";
 import {
   planSandboxSelection,
   runSandboxPlan,
-  firstAvailableBackend,
+  resolveSandboxBackend,
   formatSandboxPriorityFailure,
   assertNever,
   type SandboxSelectionEnv,
@@ -123,13 +123,39 @@ function useNsjail(): boolean {
   return _nsjailAvailable ?? false;
 }
 
-/** Track nsjail init failures to avoid infinite retry loops. */
+/**
+ * Track nsjail init failures to avoid infinite retry loops.
+ *
+ * Strictly a runtime-degradation flag: "this backend is broken, do not retry
+ * it". It is read by `isBackendAvailable` (reporting) and `tryCreateBackend`
+ * (construction), and reaches the planner only via the soft auto-detect branch.
+ * It must never be read as "the operator's pin no longer applies" — that
+ * conflation is what let a failed capability probe silently drop
+ * `ATLAS_SANDBOX=nsjail` to unsandboxed just-bash (#4829). Under the pin,
+ * setting this flag now makes explore fail CLOSED.
+ */
 let _nsjailFailed = false;
 
 /** Track sidecar init failures so the health endpoint reports accurately. */
 let _sidecarFailed = false;
 
-export type ExploreBackendType = SandboxBackendName | "plugin";
+/**
+ * What explore resolves to for reporting purposes.
+ *
+ * `"fail-closed"` is not a backend: it means no backend will construct and
+ * explore throws on every request. See {@link SandboxResolution} for why that is
+ * modelled as a distinct value rather than collapsed into `"just-bash"`.
+ *
+ * Widening this union makes the distinction a compile error at every consumer
+ * that indexes `BACKEND_ISOLATION` (three sites: `health.ts`'s `sandbox`
+ * component and `checks.explore.isolated`, plus `startup.ts`), because that
+ * table is keyed by real backends only. Consumers that treat the value as an
+ * opaque string are NOT caught — `api/routes/admin-sandbox.ts` types both
+ * `activeBackend` and `platformDefault` as `string` and will surface
+ * `"fail-closed"` to the admin UI as though it were a selectable backend id.
+ * Truthful, but untreated (#4834); check such consumers by hand.
+ */
+export type ExploreBackendType = SandboxBackendName | "plugin" | "fail-closed";
 
 /** Name of the active sandbox plugin (if any). Set during backend init. */
 let _activeSandboxPluginId: string | null = null;
@@ -160,7 +186,7 @@ function isBackendAvailable(name: SandboxBackendName): boolean {
  * Snapshot the env + config inputs that drive backend selection into the
  * immutable shape the shared pure planner ({@link planSandboxSelection})
  * consumes. Captures explore's runtime failure flag (`_nsjailFailed`) so the
- * degraded chain matches health reporting. The Python tool builds the same
+ * resolved chain matches health reporting. The Python tool builds the same
  * snapshot shape, which is what makes the two tools resolve the same backend.
  */
 export function snapshotExploreSandboxEnv(): SandboxSelectionEnv {
@@ -186,11 +212,22 @@ export function snapshotExploreSandboxEnv(): SandboxSelectionEnv {
  *
  * When `sandbox.priority` is configured, the first available backend in the
  * priority list is returned instead of the default chain.
+ *
+ * Returns `"fail-closed"` when the resolved plan cannot yield any backend and is
+ * not allowed to degrade — a `sandbox.priority` pin without `just-bash`, or an
+ * `ATLAS_SANDBOX=nsjail` pin whose backend has been MARKED FAILED (by the boot
+ * capability probe or a prior construction failure). Explore throws on every
+ * request in that state; it is emphatically not a `just-bash` deployment.
+ *
+ * Caveat: a pinned-but-missing nsjail binary is NOT reported as fail-closed.
+ * `isBackendAvailable` treats the bare pin as available, so this returns
+ * `"nsjail"` until the first request marks it failed, even though explore
+ * refuses throughout. Pre-dates #4829/#4828; tracked as #4834.
  */
 export function getExploreBackendType(): ExploreBackendType {
   if (_activeSandboxPluginId) return "plugin";
   const plan = planSandboxSelection(snapshotExploreSandboxEnv());
-  return firstAvailableBackend(plan, isBackendAvailable) ?? "just-bash";
+  return resolveSandboxBackend(plan, isBackendAvailable);
 }
 
 /**
@@ -390,7 +427,12 @@ export function _resetSandboxFailureFlagsForTest(): void {
 }
 
 /** Permanently mark nsjail as failed and clear the backend cache.
- *  Called from explore-nsjail.ts on exit code 109 (sandbox setup failure). */
+ *  Called from explore-nsjail.ts on exit code 109 (sandbox setup failure), and
+ *  from the startup capability probe.
+ *
+ *  Under `ATLAS_SANDBOX=nsjail` this makes explore fail CLOSED (the pin's
+ *  hard-fail step stands and can no longer construct), not degrade — see
+ *  `_nsjailFailed`. */
 export function markNsjailFailed(): void {
   _nsjailFailed = true;
   for (const [key, cached] of backendCache) {
@@ -400,7 +442,11 @@ export function markNsjailFailed(): void {
   orgBackendKeys.clear();
 }
 
-/** Permanently mark the sidecar as failed so health reports "just-bash".
+/** Permanently mark the sidecar as failed so health stops naming it. What it
+ *  reports instead depends on the plan: the default chain names the next
+ *  available step (nsjail auto-detect, when a binary is on PATH) and only then
+ *  "just-bash"; a `sandbox.priority` pin without `just-bash` reports
+ *  "fail-closed".
  *  Called from startup.ts when the sidecar health check fails. */
 export function markSidecarFailed(): void {
   _sidecarFailed = true;
@@ -556,8 +602,12 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
 
         case "fail-closed":
           // Config-priority pin with no `just-bash` fallback (the SaaS deny-all
-          // posture) — respect the operator's intent and fail closed. `fail-closed`
-          // only arises from the config-priority arm, which carries the pin.
+          // posture) — respect the operator's intent and fail closed. This
+          // `runSandboxPlan` OUTCOME only arises from the config-priority arm,
+          // which carries the pin. (Not to be confused with the same spelling as
+          // a `resolveSandboxBackend` RESOLUTION, which is broader: it also
+          // covers the default chain's unavailable hard-fail step, which arrives
+          // here as `"hard-fail"` instead.)
           throw new Error(
             formatSandboxPriorityFailure(
               plan.source === "config-priority" ? plan.configPriority : [],

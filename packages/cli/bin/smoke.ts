@@ -226,14 +226,31 @@ function checkSubsystems(health: HealthResponse): CheckResult[] {
     return { name: "Semantic layer loaded", phase: "Subsystems", status: "FAIL" as const, durationMs: 0, error: sl.error ?? "unavailable" };
   })());
 
-  // Explore backend
-  results.push({
-    name: "Explore backend available",
-    phase: "Subsystems",
-    status: "PASS",
-    durationMs: 0,
-    detail: health.checks.explore.backend,
-  });
+  // Explore backend. `fail-closed` is not a backend — it means no backend will
+  // construct and explore refuses every request (#4828). Reporting PASS for it
+  // would make the smoke run green on a deployment whose explore tool is
+  // entirely down, which is the failure this check exists to catch.
+  const exploreBackend = health.checks.explore.backend;
+  results.push(
+    exploreBackend === "fail-closed"
+      ? {
+          name: "Explore backend available",
+          phase: "Subsystems",
+          status: "FAIL" as const,
+          durationMs: 0,
+          error:
+            "fail-closed — no sandbox backend will construct, so every explore request is " +
+            "refused. Check the deployment's startup warnings for the pinned backend and " +
+            "the missing credential.",
+        }
+      : {
+          name: "Explore backend available",
+          phase: "Subsystems",
+          status: "PASS" as const,
+          durationMs: 0,
+          detail: exploreBackend,
+        },
+  );
 
   return results;
 }

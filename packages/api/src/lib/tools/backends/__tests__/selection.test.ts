@@ -2,8 +2,9 @@ import { describe, expect, it } from "bun:test";
 import {
   planSandboxSelection,
   runSandboxPlan,
-  firstAvailableBackend,
+  resolveSandboxBackend,
   formatSandboxPriorityFailure,
+  formatSandboxFailClosed,
   type SandboxSelectionEnv,
   type SandboxStep,
   type StepAttempt,
@@ -65,13 +66,28 @@ describe("planSandboxSelection — default chain", () => {
     expect(plan.steps[1]!.hardFail).toBe(true);
   });
 
-  it("excludes nsjail entirely once it is marked failed — even when explicitly pinned", () => {
+  it("KEEPS the pin's hard-fail step when nsjail is marked failed (#4829)", () => {
+    // The security-critical inversion. `nsjailFailed` used to delete this step,
+    // so a failed capability probe silently converted `ATLAS_SANDBOX=nsjail`
+    // into an unsandboxed just-bash deployment: the flag meant "do not retry
+    // this backend" at one call site and "the operator's pin no longer applies"
+    // at another.
+    //
+    // A broken backend is never permission to weaken the posture. The step
+    // stands and simply cannot construct, which is how the refusal is expressed.
     const explicit = planSandboxSelection(
       env({ atlasSandbox: "nsjail", sidecarAvailable: true, nsjailAvailable: true, nsjailFailed: true }),
     );
-    // Degraded: explicit nsjail is skipped, falls through to sidecar.
-    expect(kinds(explicit.steps)).toEqual(["sidecar"]);
+    expect(kinds(explicit.steps)).toEqual(["nsjail"]);
+    expect(explicit.steps[0]!.hardFail).toBe(true);
+    // Emphatically NOT a fall-through to the sidecar sitting right there.
+    expect(kinds(explicit.steps)).not.toContain("sidecar");
+  });
 
+  it("still skips nsjail on the SOFT auto-detect branch once marked failed", () => {
+    // The legitimate meaning of the flag, preserved: with no pin, a backend that
+    // failed once must not be retried into the request path. Narrowing #4829's
+    // fix to the pin branch is what keeps this true.
     const auto = planSandboxSelection(env({ nsjailAvailable: true, nsjailFailed: true }));
     expect(auto.steps).toHaveLength(0);
   });
@@ -104,16 +120,82 @@ describe("planSandboxSelection — config priority", () => {
   });
 });
 
-describe("firstAvailableBackend", () => {
+describe("resolveSandboxBackend", () => {
+  const none = () => false;
+
   it("returns the first step whose kind reports available", () => {
     const plan = planSandboxSelection(env({ vercelAvailable: true, sidecarAvailable: true }));
     // Vercel unavailable at report time → sidecar is named.
-    expect(firstAvailableBackend(plan, (k) => k === "sidecar")).toBe("sidecar");
+    expect(resolveSandboxBackend(plan, (k: SandboxBackendName) => k === "sidecar")).toBe("sidecar");
   });
 
-  it("returns null when no step is available (caller reports just-bash)", () => {
+  it("degrades to just-bash when a degradable plan is exhausted", () => {
     const plan = planSandboxSelection(env({ sidecarAvailable: true }));
-    expect(firstAvailableBackend(plan, () => false)).toBeNull();
+    expect(resolveSandboxBackend(plan, none)).toBe("just-bash");
+  });
+
+  it("reports fail-closed for an exhausted pin with no just-bash (#4828)", () => {
+    // The staging/prod shape: `priority: ["vercel-sandbox"]` and a dropped
+    // VERCEL_TOKEN. This used to collapse to `just-bash` — a WORKING but
+    // unsandboxed deploy — for a region where explore throws on every request.
+    // The two states are opposites, so reporting one as the other is not an
+    // imprecision, it inverts the operator's remediation.
+    const plan = planSandboxSelection(env({ configPriority: ["vercel-sandbox"] }));
+    expect(resolveSandboxBackend(plan, none)).toBe("fail-closed");
+  });
+
+  it("reports just-bash when the operator kept it in the pin", () => {
+    // The control for the case above: `onExhausted` is the discriminator, not
+    // "nothing was available". An operator who listed just-bash really is
+    // running unsandboxed and must keep being told so.
+    const plan = planSandboxSelection(env({ configPriority: ["sidecar", "just-bash"] }));
+    expect(resolveSandboxBackend(plan, none)).toBe("just-bash");
+  });
+
+  it("short-circuits at an unavailable hard-fail step (#4829)", () => {
+    // Mirrors runSandboxPlan: nothing after a hard-fail step is reachable, so
+    // the reporter must not name a later backend the runner would never build.
+    const plan = planSandboxSelection(env({ atlasSandbox: "nsjail", nsjailFailed: true }));
+    expect(resolveSandboxBackend(plan, none)).toBe("fail-closed");
+  });
+
+  it("names the hard-fail step's backend while it IS available", () => {
+    const plan = planSandboxSelection(env({ atlasSandbox: "nsjail" }));
+    expect(resolveSandboxBackend(plan, (k: SandboxBackendName) => k === "nsjail")).toBe("nsjail");
+  });
+
+  it("prefers an available soft step ahead of the hard-fail step", () => {
+    // Vercel outranks the nsjail pin; reaching fail-closed requires the earlier
+    // steps to be unavailable too.
+    const plan = planSandboxSelection(env({ atlasSandbox: "nsjail", vercelAvailable: true }));
+    expect(resolveSandboxBackend(plan, (k: SandboxBackendName) => k === "vercel-sandbox")).toBe(
+      "vercel-sandbox",
+    );
+    expect(resolveSandboxBackend(plan, none)).toBe("fail-closed");
+  });
+
+  it("agrees with runSandboxPlan's outcome for the same plan and predicate", async () => {
+    // The invariant that keeps boot, /api/health, and the request path from
+    // disagreeing (#4824). Reporting `just-bash` for a plan the runner
+    // fail-closes is exactly the divergence #4828 filed.
+    const cases: readonly SandboxSelectionEnv[] = [
+      env({ configPriority: ["vercel-sandbox"] }),
+      env({ configPriority: ["sidecar", "just-bash"] }),
+      env({ atlasSandbox: "nsjail", nsjailFailed: true }),
+      env({ atlasSandbox: "nsjail", vercelAvailable: true }),
+      env({ sidecarAvailable: true }),
+    ];
+
+    for (const e of cases) {
+      const plan = planSandboxSelection(e);
+      const reported = resolveSandboxBackend(plan, none);
+      // Nothing constructs, matching the `none` availability predicate.
+      const outcome = await runSandboxPlan<string>(plan, async (step) => ({
+        failure: { name: step.kind, reason: "unavailable" },
+      }));
+      const runnerRefuses = outcome.kind === "fail-closed" || outcome.kind === "hard-fail";
+      expect(reported === "fail-closed", JSON.stringify(e)).toBe(runnerRefuses);
+    }
   });
 });
 
@@ -213,6 +295,111 @@ describe("formatSandboxPriorityFailure", () => {
       "saas",
     );
     expect(msg).not.toContain("Add 'just-bash'");
+  });
+});
+
+describe("formatSandboxFailClosed", () => {
+  it("names the pinned backend and its missing credential, not 'install nsjail' (#4828)", () => {
+    const e = env({ configPriority: ["vercel-sandbox"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "saas");
+
+    expect(msg).toContain("vercel-sandbox");
+    expect(msg).toContain("VERCEL_TOKEN");
+    // The remediation the pin makes IMPOSSIBLE to act on. `sandbox.priority`
+    // excludes nsjail and the sidecar, so an operator following the old generic
+    // advice changes nothing while the real cause goes unnamed.
+    expect(msg).not.toContain("Install nsjail");
+    expect(msg).not.toContain("ATLAS_SANDBOX_URL");
+    // SaaS cannot opt into an unsandboxed fallback.
+    expect(msg).not.toContain("Add 'just-bash'");
+  });
+
+  it("offers the just-bash escape hatch to a self-hosted operator", () => {
+    const e = env({ configPriority: ["sidecar"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
+
+    expect(msg).toContain("ATLAS_SANDBOX_URL");
+    expect(msg).toContain("Add 'just-bash'");
+  });
+
+  it("explains the nsjail pin as hard-fail rather than as a degradation", () => {
+    const e = env({ atlasSandbox: "nsjail", nsjailFailed: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
+
+    expect(msg).toContain("ATLAS_SANDBOX=nsjail");
+    expect(msg).toContain("ATLAS_NSJAIL_PATH");
+    expect(msg).toContain("refuses every request");
+    // The #4829 host has the binary installed and a kernel that denies
+    // CLONE_NEWUSER, so "install the binary" alone is advice already followed.
+    expect(msg).toContain("user namespaces");
+    // Must NOT reuse the "no process isolation" phrasing — that string is the
+    // genuine-just-bash warning, and a security review greps for it. Claiming it
+    // here would be #4824's false claim at inverted polarity.
+    expect(msg).not.toContain("no process isolation");
+  });
+
+  it("does not splice unrelated backend advice into the nsjail-pin message", () => {
+    // A pinned-nsjail plan with Vercel ahead of it. Both steps are unavailable,
+    // but only the PINNED one is actionable — telling this operator to set
+    // VERCEL_TOKEN is the same unactionable-advice failure #4828 is about, at a
+    // different site.
+    const e = env({ atlasSandbox: "nsjail", nsjailFailed: true, vercelAvailable: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
+
+    expect(msg).toContain("ATLAS_SANDBOX=nsjail");
+    expect(msg).not.toContain("VERCEL_TOKEN");
+    expect(msg).not.toContain("ATLAS_SANDBOX_URL");
+  });
+
+  it("is total for an unresolved deploy mode and still names the missing credential", () => {
+    // `deployMode` is only ever `undefined` if `getConfig()` is null — and the
+    // branch that reads it (the just-bash escape hatch) is reachable only via
+    // `configPriority`, which requires a non-null config. So this shape does not
+    // arise in production; the test pins that the formatter is nonetheless total
+    // and still produces actionable advice rather than throwing.
+    //
+    // It deliberately does NOT assert the absence of the just-bash suggestion:
+    // with `undefined` the message DOES offer it (self-hosted is the safer
+    // default for an unknown mode). The SaaS suppression is asserted where it is
+    // actually guaranteed — "suppresses the just-bash suggestion in SaaS mode".
+    const e = env({ configPriority: ["vercel-sandbox"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, undefined);
+
+    expect(msg).toContain("VERCEL_TOKEN");
+    expect(msg).toContain("refuses every request");
+  });
+
+  it("caveats the plugin/BYOC front-of-line it cannot see", () => {
+    // Sandbox plugins and per-workspace BYOC backends are attempted BEFORE this
+    // plan and are invisible to the planner, so a flat "the tool refuses every
+    // request" would be a false alarm for a deployment that works via a plugin.
+    const e = env({ configPriority: ["vercel-sandbox"] });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "saas");
+
+    expect(msg).toContain("sandbox plugin");
+  });
+
+  it("does NOT promise plugin priority under the nsjail pin, which skips plugins", () => {
+    // explore gates its plugin front-of-line on `ATLAS_SANDBOX !== "nsjail"` —
+    // the pin means "nsjail only". Offering "maybe a plugin is handling it" here
+    // would invite an operator to dismiss a real total outage on the strength of
+    // a mechanism the pin has disabled.
+    const e = env({ atlasSandbox: "nsjail", nsjailFailed: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
+
+    expect(msg).toContain("skipped entirely under the pin");
+    expect(msg).toContain("BYOC");
+  });
+
+  it("refuses to invent a pin when the precondition is violated", () => {
+    // A degradable default chain should never reach this function. If it does,
+    // fabricating "ATLAS_SANDBOX=nsjail is pinned" is the silent lie that reading
+    // the backend off the hard-fail step exists to prevent.
+    const e = env({ sidecarAvailable: true });
+    const msg = formatSandboxFailClosed(planSandboxSelection(e), e, "self-hosted");
+
+    expect(msg).toContain("No pinned backend could be identified");
+    expect(msg).not.toContain("ATLAS_SANDBOX=nsjail is pinned");
   });
 });
 

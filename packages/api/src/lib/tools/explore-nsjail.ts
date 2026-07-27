@@ -37,7 +37,9 @@ export async function createNsjailBackend(
   if (!nsjailPath) {
     throw new Error(
       "nsjail binary not found. Install nsjail or set ATLAS_NSJAIL_PATH. " +
-        "In non-production environments, the system will fall back to just-bash.",
+        "Under ATLAS_SANDBOX=nsjail this is hard-fail — explore refuses every request " +
+        "rather than falling back (#4829); without the pin the chain continues to the " +
+        "next backend.",
     );
   }
 

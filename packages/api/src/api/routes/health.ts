@@ -73,11 +73,16 @@ const PluginItemHealthSchema = z.object({
   latencyMs: z.number().int().nonnegative().optional(),
 });
 
-// Plugin aggregate is never `down` — that path is reserved for the
-// datasource (#1981 / SaaS-503 contract). Narrowing the inherited
+// Plugin aggregate is never `down` — a plugin fault must not read as an
+// outage on the plugins aggregate. Narrowing the inherited
 // `ComponentHealthSchema` enum to `healthy | degraded | disabled` encodes
 // that invariant in the wire format and prevents a future contributor
 // from setting `pluginsComponent.status = "down"`.
+//
+// NB `down` on a component does NOT imply the 503 contract: only the
+// datasource / SaaS internal DB promote the top-level status to `error`
+// (#1981). `provider` and `sandbox` both set component-level `down` while
+// the region keeps serving 200.
 const PluginsComponentSchema = ComponentHealthSchema.omit({
   status: true,
   model: true,
@@ -141,7 +146,13 @@ export const HealthResponseSchema = z.object({
       error: z.string().optional(),
     }),
     explore: z.object({
-      backend: z.enum(["nsjail", "sidecar", "vercel-sandbox", "just-bash", "plugin"]),
+      // `fail-closed` is not a backend — it means no backend will construct and
+      // explore throws on every request (a sandbox.priority pin with no just-bash
+      // fallback, or an ATLAS_SANDBOX=nsjail pin whose backend was marked failed).
+      // Additive member: before #4828 that state was reported as `just-bash`,
+      // i.e. a working but unsandboxed deploy, the opposite of the truth. See
+      // `getExploreBackendType` for the one pinned case NOT covered here.
+      backend: z.enum(["nsjail", "sidecar", "vercel-sandbox", "just-bash", "plugin", "fail-closed"]),
       isolated: z.boolean(),
       isolationVerified: z.boolean().optional(),
       pluginId: z.string().optional(),
@@ -313,6 +324,13 @@ health.openapi(healthRoute, async (c) => {
     const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
     const entityCount = getWhitelistedTables().size;
     const exploreBackend = getExploreBackendType();
+    // Named because it is used at three sites below; it is the `=== "fail-closed"`
+    // comparison that narrows `exploreBackend` so `BACKEND_ISOLATION[...]` stays
+    // well-typed. That table is keyed by real backends only, so the compiler
+    // forces the branch rather than letting the state fall through as "not
+    // unsandboxed". See the `checks.explore.backend` enum above for what the
+    // state means.
+    const exploreFailClosed = exploreBackend === "fail-closed";
     const authMode = detectAuthMode();
 
     // Datasource is unhealthy if: no URL, diagnostics flagged it, OR the live probe failed
@@ -360,6 +378,17 @@ health.openapi(healthRoute, async (c) => {
     )
       status = "degraded";
     else status = "ok";
+
+    // A fail-closed sandbox is a total outage of the explore tool, so it must
+    // not leave the top-level status `ok` — before #4828 it did, and reported
+    // the deploy as a working just-bash box on top of that.
+    //
+    // Promotes ok → degraded and never → error, matching the plugins/backups
+    // precedent below. `error` means 503, and 503 pulls the region out of the
+    // load balancer: that path is reserved for the datasource / SaaS internal DB
+    // (#1981). Chat, SQL, and every other route still serve correctly here — the
+    // explore tool refusing to run is not grounds for taking the region down.
+    if (exploreFailClosed && status === "ok") status = "degraded";
 
     const warnings = [...getStartupWarnings()];
 
@@ -626,21 +655,38 @@ health.openapi(healthRoute, async (c) => {
         status: schedulerEnabled ? "healthy" as const : "disabled" as const,
         lastCheckedAt: now,
       },
-      // An unsandboxed backend means no isolation — report degraded so operators
-      // know. Posture comes from BACKEND_ISOLATION rather than a `=== "just-bash"`
-      // comparison, so a future unsandboxed backend cannot report itself healthy
-      // by not being named here (#4824).
-      sandbox: {
-        status:
-          BACKEND_ISOLATION[exploreBackend] === "unsandboxed"
-            ? "degraded" as const
-            : "healthy" as const,
-        backend: exploreBackend,
-        lastCheckedAt: now,
-        ...(BACKEND_ISOLATION[exploreBackend] === "unsandboxed" && {
-          message: `No sandbox isolation — using ${exploreBackend} fallback`,
-        }),
-      },
+      // Three states, not two. An unsandboxed backend means no isolation —
+      // report degraded so operators know; posture comes from BACKEND_ISOLATION
+      // rather than a `=== "just-bash"` comparison, so a future unsandboxed
+      // backend cannot report itself healthy by not being named here (#4824).
+      // Fail-closed is DOWN, not weakened — the tool is out, so it must not be
+      // flattened into the unsandboxed bucket.
+      sandbox: exploreFailClosed
+        ? {
+            status: "down" as const,
+            backend: exploreBackend,
+            lastCheckedAt: now,
+            // "no CONFIGURED backend" deliberately: a sandbox plugin or a
+            // per-workspace BYOC backend sits ahead of the resolved plan and is
+            // invisible to it until the first explore call, so an unqualified
+            // "every request is refused" would contradict the same hedge the
+            // boot warning carries.
+            message:
+              "Explore tool unavailable — no configured sandbox backend can be constructed and " +
+              "the deployment is pinned fail-closed, so explore requests are refused. " +
+              "See the startup warnings for the specific backend and credential.",
+          }
+        : {
+            status:
+              BACKEND_ISOLATION[exploreBackend] === "unsandboxed"
+                ? "degraded" as const
+                : "healthy" as const,
+            backend: exploreBackend,
+            lastCheckedAt: now,
+            ...(BACKEND_ISOLATION[exploreBackend] === "unsandboxed" && {
+              message: `No sandbox isolation — using ${exploreBackend} fallback`,
+            }),
+          },
       plugins: pluginsComponent,
       backups: backupsComponent,
     };
@@ -714,7 +760,16 @@ health.openapi(healthRoute, async (c) => {
           // `!== "unsandboxed"` (not `=== "isolated"`) so a plugin backend keeps
           // reporting isolated:true as it always has — its `isolationVerified:
           // false` below is what says Atlas has not confirmed the claim.
-          isolated: BACKEND_ISOLATION[exploreBackend] !== "unsandboxed",
+          //
+          // Fail-closed reports `false`. Nothing unsandboxed runs, so `true` is
+          // arguably defensible — but this field is what monitors alert on, and
+          // a totally broken explore tool must not read as green. When the two
+          // readings conflict, the one that raises the alarm is the correct
+          // default on an isolation surface; `backend: "fail-closed"` carries
+          // the precise state.
+          isolated: exploreFailClosed
+            ? false
+            : BACKEND_ISOLATION[exploreBackend] !== "unsandboxed",
           ...(exploreBackend === "plugin" && { isolationVerified: false }),
           ...(() => {
             const pluginId = exploreBackend === "plugin" ? getActiveSandboxPluginId() : null;

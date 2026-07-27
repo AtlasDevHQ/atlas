@@ -137,18 +137,21 @@ export type ExploreBackendType =
   | "vercel-sandbox"  // Tier 1
   | "nsjail"          // Tier 2
   | "sidecar"         // Tier 3
-  | "just-bash";      // Tier 4
+  | "just-bash"       // Tier 4
+  | "fail-closed";    // Not a backend — nothing will construct and explore
+                      // refuses every request (#4828)
 
+// Illustrative. Since #4187 the priority policy is not a hand-rolled if-chain:
+// `planSandboxSelection` turns an env snapshot into an ordered plan and
+// `resolveSandboxBackend` walks it, so explore and python cannot diverge. See
+// lib/tools/backends/selection.ts for the real thing.
 function getExploreBackendType(): ExploreBackendType {
   if (activeSandboxPlugin) return "plugin";
-  if (useVercelSandbox()) return "vercel-sandbox";
-  // Explicit nsjail (ATLAS_SANDBOX=nsjail) -- hard-fail if unavailable
-  if (process.env.ATLAS_SANDBOX === "nsjail") return "nsjail";
-  // Sidecar (ATLAS_SANDBOX_URL set)
-  if (useSidecar()) return "sidecar";
-  // nsjail auto-detect (binary on PATH)
-  if (useNsjail()) return "nsjail";
-  return "just-bash";
+  const plan = planSandboxSelection(snapshotExploreSandboxEnv());
+  // Ordered: vercel-sandbox > nsjail (explicit, hard-fail) > sidecar >
+  // nsjail (auto-detect). Returns "fail-closed" when the plan can yield no
+  // backend and is not allowed to degrade; "just-bash" only when it is.
+  return resolveSandboxBackend(plan, isBackendAvailable);
 }
 ```
 

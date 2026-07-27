@@ -93,6 +93,7 @@ import {
 } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
+import { attributionDecision } from "@atlas/api/lib/brain/attribution";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
 import { brainFactStatusClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
@@ -272,6 +273,7 @@ const FACT_COLUMNS = `f.id::text AS id,
          f.status,
          f.predicate_cardinality,
          f.visible_to,
+         f.pre_widening_visible_to,
          f.provenance,
          f.source_episode_id::text AS source_episode_id,
          f.valid_from,
@@ -420,6 +422,12 @@ interface FactRow {
   readonly status: unknown;
   readonly predicate_cardinality: unknown;
   readonly visible_to: unknown;
+  /**
+   * The grant before publish-time widening, `null` when it never widened
+   * (#4836). An ACL input, never projected: the only thing read off it is
+   * whether this reader gets `provenance.attribution`.
+   */
+  readonly pre_widening_visible_to: unknown;
   readonly provenance: unknown;
   readonly source_episode_id: string | null;
   readonly valid_from: unknown;
@@ -437,9 +445,10 @@ interface FactRow {
  */
 function toFactResult(
   row: FactRow,
-  workspaceId: string,
+  ctx: BrainPrincipalContext,
   tensions: readonly BrainSearchTensionView[],
 ): BrainFactResult {
+  const workspaceId = ctx.workspaceId;
   return {
     tier: "fact",
     trustTier: 2,
@@ -453,7 +462,19 @@ function toFactResult(
     validTo: iso(row.valid_to),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    provenance: projectProvenance(row.provenance, row.source_episode_id),
+    // Takes the whole reader context, not just `workspaceId`, because THIS is
+    // the surface the disclosure actually rides (#4836): `searchBrain` feeds
+    // agent chat answers, so a widened fact reaching an org reader here would
+    // hand them a private channel's first-speaker without anyone opening
+    // `/admin/brain-facts`.
+    provenance: projectProvenance(
+      row.provenance,
+      row.source_episode_id,
+      attributionDecision(
+        { factId: row.id, preWideningVisibleTo: row.pre_widening_visible_to },
+        ctx,
+      ),
+    ),
     corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
     tensions,
   };
@@ -840,7 +861,7 @@ export async function searchBrainCore(
         "brain search: fact `visible_to` did not decode as an array — the grant could not be inspected",
       );
     }
-    return toFactResult(row, ctx.workspaceId, tensions.views.get(row.id) ?? []);
+    return toFactResult(row, ctx, tensions.views.get(row.id) ?? []);
   });
 
   const episodeResults: BrainEpisodeResult[] = [];

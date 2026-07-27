@@ -3292,6 +3292,23 @@ export const brainFacts = pgTable(
     // column rather than a join to a policy table, because a policy table would
     // retroactively rewrite who could see history.
     visibleTo: text("visible_to").array().notNull(),
+    // The grant this fact held BEFORE publish-time widening overwrote
+    // `visible_to` — NULL when it was never widened (#4836, migration 0183).
+    //
+    // Not a history column and not an audit trail: it is the ACL input for
+    // PROVENANCE attribution. ADR-0036 §T5 has provenance ride the fact's
+    // grant, and a fact's provenance names its FIRST episode, so a reader
+    // gained by widening would otherwise learn who said the claim first, where,
+    // and when. `projectProvenance` withholds that triple from any reader who
+    // does not match THIS grant, which is precisely the set that could always
+    // see the fact. NULL therefore means "disclose": nothing widened, so every
+    // reader of the fact is an original reader.
+    //
+    // Nullable, unlike `visible_to` — absence is the meaningful, common state
+    // and no invented default could express it. Written once, by
+    // `WIDEN_AND_PROMOTE_FACTS_SQL` only, and COALESCE-guarded there so a
+    // re-widened draft keeps the NARROWEST grant it ever had.
+    preWideningVisibleTo: text("pre_widening_visible_to").array(),
     // The supersede-vs-coexist switch M2 needs, landing now so M2 adds an
     // engine and not a column. `single` supersedes, `multi` coexists +
     // corroborates. Defaults to the conservative arm: coexisting is

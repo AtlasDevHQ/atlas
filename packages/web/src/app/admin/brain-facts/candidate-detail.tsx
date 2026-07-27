@@ -31,18 +31,50 @@ function orDash(value: string | null): React.ReactNode {
   return value ?? <span className="text-muted-foreground">{EM_DASH}</span>;
 }
 
+/**
+ * Rendered in place of the three attribution fields when the reader reaches
+ * this fact only through publish-time grant widening (#4836).
+ *
+ * Says WHY, rather than rendering three em-dashes. An em-dash here would read
+ * as "the evidence has no author and no timestamp", which is a statement about
+ * the data and is false — and it is the kind of statement a reviewer acts on.
+ */
+function AttributionRestricted() {
+  return (
+    <div className="col-span-2 flex items-start gap-2 rounded-md border border-dashed p-3">
+      <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <p className="text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">Attribution restricted.</span> This claim was
+        first stated somewhere you are not a member of, and reaches you only because it was later
+        restated where you are. Who said it first, where, and when stay with that audience.
+      </p>
+    </div>
+  );
+}
+
 function ProvenanceGrid({ provenance }: { provenance: BrainFactProvenanceView }) {
+  const { attribution } = provenance;
   return (
     <div className="grid grid-cols-2 gap-4">
       <Field label="Source">{orDash(provenance.source)}</Field>
-      <Field label="Asserted by">{orDash(provenance.actor)}</Field>
       <Field label="Producer">{orDash(provenance.producer)}</Field>
-      <Field label="Source ID">
-        <span className="font-mono break-all">{orDash(provenance.sourceId)}</span>
-      </Field>
-      <Field label="Said at">
-        {provenance.occurredAt ? <RelativeTimestamp iso={provenance.occurredAt} /> : orDash(null)}
-      </Field>
+      {attribution.visible ? (
+        <>
+          <Field label="Asserted by">{orDash(attribution.actor)}</Field>
+          <Field label="Source ID">
+            <span className="font-mono break-all">{orDash(attribution.sourceId)}</span>
+          </Field>
+          <Field label="Said at">
+            {attribution.occurredAt ? (
+              <RelativeTimestamp iso={attribution.occurredAt} />
+            ) : (
+              orDash(null)
+            )}
+          </Field>
+        </>
+      ) : (
+        <AttributionRestricted />
+      )}
       <Field label="Extracted">
         {provenance.extractedAt ? <RelativeTimestamp iso={provenance.extractedAt} /> : orDash(null)}
       </Field>

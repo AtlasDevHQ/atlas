@@ -1109,4 +1109,114 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  // -------------------------------------------------------------------------
+  // The pre-widening grant is PERSISTED (#4836)
+  // -------------------------------------------------------------------------
+
+  /** `brain_facts.pre_widening_visible_to` — `null` when it was never widened. */
+  async function preWideningGrantOf(id: string): Promise<readonly (string | null)[] | null> {
+    const { rows } = await pool.query<{ pre_widening_visible_to: (string | null)[] | null }>(
+      `SELECT pre_widening_visible_to FROM brain_facts WHERE id = $1`,
+      [id],
+    );
+    return rows[0]!.pre_widening_visible_to;
+  }
+
+  it(
+    "records the pre-widening grant on the same UPDATE that overwrites it",
+    async () => {
+      // #4836's whole premise: nothing at rest could tell "visible to org
+      // because it always was" from "visible to org because evidence widened
+      // it". `EvidenceWidenedGrant` knows in memory and is discarded one
+      // statement later, and `visible_to` is overwritten in place — so this
+      // column is the only surviving copy, and this test is the only place
+      // Postgres's OLD-row evaluation of the SET list is actually proven.
+      const ws = "ws-4836-persist";
+      const privateEp = await seedEpisode(ws, "4836-private", [PRIVATE_GRANT]);
+      const publicEp = await seedEpisode(ws, "4836-public", ["org"]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "widened-claim",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, fact, privateEp);
+      await seedProvenanceEdge(ws, fact, publicEp);
+
+      // Nothing recorded before publish — widening happens at the review gate.
+      expect(await preWideningGrantOf(fact)).toBeNull();
+
+      expect((await publish(ws)).promoted).toBe(1);
+
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT, "org"]);
+      // The narrow grant survived its own overwrite. Without this the read
+      // path has no input and discloses to everyone.
+      expect(await preWideningGrantOf(fact)).toEqual([PRIVATE_GRANT]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves the column NULL for a fact nothing widened",
+    async () => {
+      // The negative, and it is load-bearing rather than tidy: NULL is what
+      // the read path treats as "disclose". A `PROMOTE_FACTS_SQL` that started
+      // stamping this column would withhold attribution across the entire
+      // corpus and pass every positive assertion above.
+      const ws = "ws-4836-plain";
+      const ep = await seedEpisode(ws, "4836-plain", ["org"]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "plain-claim",
+        visibleTo: ["org"],
+      });
+      await seedProvenanceEdge(ws, fact, ep);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      expect(await grantOf(fact)).toEqual(["org"]);
+      expect(await preWideningGrantOf(fact)).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps the NARROWEST pre-widening grant when a fact is widened twice",
+    async () => {
+      // Unreachable on the normal path — the widening UPDATE writes
+      // `status = 'published'` under a `status = 'draft'` predicate. But a
+      // region import writes `status` verbatim (ADR-0024) and can legitimately
+      // land an already-widened fact back in `draft`. Overwriting would then
+      // record the WIDER grant as the original and disclose attribution to
+      // readers the FIRST widening admitted, which is the failure this column
+      // exists to prevent — so `COALESCE` keeps the first.
+      const ws = "ws-4836-rewiden";
+      const audienceB = "audience:chat-channel:slack:CBBBBBBBB";
+      const privateEp = await seedEpisode(ws, "rewiden-private", [PRIVATE_GRANT]);
+      const secondEp = await seedEpisode(ws, "rewiden-second", [audienceB]);
+      const fact = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: privateEp,
+        subject: "rewidened-claim",
+        visibleTo: [PRIVATE_GRANT],
+      });
+      await seedProvenanceEdge(ws, fact, privateEp);
+      await seedProvenanceEdge(ws, fact, secondEp);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      expect(await preWideningGrantOf(fact)).toEqual([PRIVATE_GRANT]);
+
+      // A region import demotes it and a third episode arrives, wider again.
+      const thirdEp = await seedEpisode(ws, "rewiden-third", ["org"]);
+      await seedProvenanceEdge(ws, fact, thirdEp);
+      await pool.query(`UPDATE brain_facts SET status = 'draft' WHERE id = $1`, [fact]);
+
+      expect((await publish(ws)).promoted).toBe(1);
+      expect(await grantOf(fact)).toEqual([PRIVATE_GRANT, audienceB, "org"]);
+      // Still the FIRST grant, not `[PRIVATE_GRANT, audienceB]`.
+      expect(await preWideningGrantOf(fact)).toEqual([PRIVATE_GRANT]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
 });

@@ -38,6 +38,61 @@ export type BrainEntityRole = "subject" | "object";
 export type BrainFactReviewStatus = "draft" | "published" | "archived";
 
 /**
+ * WHO said the claim first, WHERE, and WHEN — the three provenance fields that
+ * name a person and a place, split out from the rest so they can be withheld
+ * as a unit.
+ *
+ * ## Why these three and not the whole payload
+ *
+ * A fact's provenance names its FIRST episode, and for Slack `sourceId` is
+ * `<channelId>:<ts>`. Together with `actor` and `occurredAt` that is *who said
+ * it first, in which channel, and when* — private-channel MEMBERSHIP, which is
+ * exactly what the `audience:` grant model exists to protect (#4836).
+ *
+ * The rest of {@link BrainFactProvenanceView} stays disclosed because none of
+ * it names a principal or a place: `source` is a connector CLASS (`slack`),
+ * `producer` a pipeline stage (`extraction:v1`), `episodeId` an opaque uuid
+ * whose row is ACL-gated in its own right (same reasoning that lets
+ * {@link BrainFactEpisodeWithheld} carry an id), and `extractedAt` /
+ * `reconciledAt` are Atlas's own batch-scheduled pipeline clocks, not the
+ * moment anything was said.
+ */
+export interface BrainFactAttributionVisible {
+  readonly visible: true;
+  /** The source's own stable id for the evidence. Slack: `<channelId>:<ts>`. */
+  readonly sourceId: string | null;
+  /** The principal that asserted the claim. */
+  readonly actor: string | null;
+  /** When the claim was asserted at the source. */
+  readonly occurredAt: string | null;
+}
+
+/**
+ * The reader can see this fact ONLY because publish-time grant widening
+ * (#4823) added a principal they hold, so its first episode's attribution is
+ * withheld from them.
+ *
+ * Carries nothing — not by convention, but because the variant has no fields
+ * to carry, which is the same reason {@link BrainFactEpisodeWithheld} has none.
+ *
+ * This is the THIRD reason an attribution field can be absent, and it had to be
+ * nameable rather than folded into either of the first two.
+ * {@link BrainFactProvenanceView.payloadComplete} already separates "the
+ * producer recorded nothing" (`true`, field `null`) from "Atlas lost track of
+ * it" (`false`) — and withheld-by-ACL is neither. Collapsing it into the first
+ * would tell a reviewer the evidence has no author; into the second, that Atlas
+ * has a data-integrity problem. Both are false, and both are exactly the kind
+ * of thing a reviewer acts on.
+ */
+export interface BrainFactAttributionWithheld {
+  readonly visible: false;
+}
+
+export type BrainFactAttributionView =
+  | BrainFactAttributionVisible
+  | BrainFactAttributionWithheld;
+
+/**
  * The evidence trail attached to one claim, flattened for rendering.
  *
  * Sourced from `brain_facts.provenance`. `provisional` is written at rest ONLY
@@ -47,14 +102,15 @@ export type BrainFactReviewStatus = "draft" | "published" | "archived";
 export interface BrainFactProvenanceView {
   /** Connector class of the evidence — `slack`, `warehouse`, `human`. */
   readonly source: string | null;
-  /** The source's own stable id for the evidence. */
-  readonly sourceId: string | null;
   readonly episodeId: string | null;
-  /** The principal that asserted the claim. */
-  readonly actor: string | null;
   /** What produced the candidate — `extraction:v1`, `write-back`, `human`. */
   readonly producer: string | null;
-  readonly occurredAt: string | null;
+  /**
+   * Who asserted the claim first, where, and when — or a marker that the reader
+   * is not entitled to that, because they reach this fact only through #4823's
+   * publish-time widening. See {@link BrainFactAttributionWithheld}.
+   */
+  readonly attribution: BrainFactAttributionView;
   readonly extractedAt: string | null;
   readonly reconciledAt: string | null;
   /**
@@ -76,6 +132,12 @@ export interface BrainFactProvenanceView {
    * wrong type for one, or held an unparseable timestamp. The claim is still
    * reviewable — but a reviewer seeing an empty "Producer" needs to know
    * whether the producer wrote nothing or the payload drifted.
+   *
+   * Reports the payload AT REST and is therefore unaffected by
+   * {@link attribution} being withheld. Deliberate: withholding is an
+   * entitlement fact about the reader, and letting it flip this flag would
+   * report an ACL decision as data corruption to every reader outside the
+   * original grant.
    */
   readonly payloadComplete: boolean;
 }

@@ -24449,19 +24449,7 @@
                                   "null"
                                 ]
                               },
-                              "sourceId": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
                               "episodeId": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
-                              "actor": {
                                 "type": [
                                   "string",
                                   "null"
@@ -24473,10 +24461,58 @@
                                   "null"
                                 ]
                               },
-                              "occurredAt": {
-                                "type": [
-                                  "string",
-                                  "null"
+                              "attribution": {
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "visible": {
+                                        "type": "boolean",
+                                        "enum": [
+                                          true
+                                        ]
+                                      },
+                                      "sourceId": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "actor": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "occurredAt": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "visible",
+                                      "sourceId",
+                                      "actor",
+                                      "occurredAt"
+                                    ]
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "visible": {
+                                        "type": "boolean",
+                                        "enum": [
+                                          false
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "visible"
+                                    ],
+                                    "additionalProperties": false
+                                  }
                                 ]
                               },
                               "extractedAt": {
@@ -24510,11 +24546,9 @@
                             },
                             "required": [
                               "source",
-                              "sourceId",
                               "episodeId",
-                              "actor",
                               "producer",
-                              "occurredAt",
+                              "attribution",
                               "extractedAt",
                               "reconciledAt",
                               "provisional",
@@ -24690,19 +24724,7 @@
                                             "null"
                                           ]
                                         },
-                                        "sourceId": {
-                                          "type": [
-                                            "string",
-                                            "null"
-                                          ]
-                                        },
                                         "episodeId": {
-                                          "type": [
-                                            "string",
-                                            "null"
-                                          ]
-                                        },
-                                        "actor": {
                                           "type": [
                                             "string",
                                             "null"
@@ -24714,10 +24736,58 @@
                                             "null"
                                           ]
                                         },
-                                        "occurredAt": {
-                                          "type": [
-                                            "string",
-                                            "null"
+                                        "attribution": {
+                                          "oneOf": [
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "visible": {
+                                                  "type": "boolean",
+                                                  "enum": [
+                                                    true
+                                                  ]
+                                                },
+                                                "sourceId": {
+                                                  "type": [
+                                                    "string",
+                                                    "null"
+                                                  ]
+                                                },
+                                                "actor": {
+                                                  "type": [
+                                                    "string",
+                                                    "null"
+                                                  ]
+                                                },
+                                                "occurredAt": {
+                                                  "type": [
+                                                    "string",
+                                                    "null"
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "visible",
+                                                "sourceId",
+                                                "actor",
+                                                "occurredAt"
+                                              ]
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "visible": {
+                                                  "type": "boolean",
+                                                  "enum": [
+                                                    false
+                                                  ]
+                                                }
+                                              },
+                                              "required": [
+                                                "visible"
+                                              ],
+                                              "additionalProperties": false
+                                            }
                                           ]
                                         },
                                         "extractedAt": {
@@ -24751,11 +24821,9 @@
                                       },
                                       "required": [
                                         "source",
-                                        "sourceId",
                                         "episodeId",
-                                        "actor",
                                         "producer",
-                                        "occurredAt",
+                                        "attribution",
                                         "extractedAt",
                                         "reconciledAt",
                                         "provisional",

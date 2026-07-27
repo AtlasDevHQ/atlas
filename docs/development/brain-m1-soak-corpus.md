@@ -97,7 +97,23 @@ select ep.visible_to from brain_edges e join brain_episodes ep on ep.id = e.to_e
  where e.from_fact_id = (select id from brain_facts where object = '/release');
 ```
 
-> **Provenance disclosure — read before running §D.** Widening carries the fact's provenance with it, so a fact widened out of a private channel newly discloses its **first** episode's `sourceId` (a Slack `source_id` is `<channelId>:<ts>`), `actor` and `occurredAt` — i.e. *who said it first, where, and when*. Not the episode body: `brain_episodes` stays ACL-gated in its own right. Recorded as an accepted price in ADR-0036 §T5's `Amendment (2026-07-26, #4823)`; narrowing attribution on a widened fact is a separate decision nobody has made, and the seam for it is `projectProvenance` in `lib/brain/candidates.ts`. **This means C3 and §D interact:** if you run C3 on a `#atlas-founders` claim, the widened fact tells every org member that its author is in the private channel. Use S1 (a public claim restated privately) for C3, not P1/P2/P3.
+> **Provenance attribution is now NARROWED on a widened fact ([#4836](https://github.com/AtlasDevHQ/atlas/issues/4836)) — this is the check to run, not a caveat to work around.** Widening carries the fact's provenance with it, so a fact widened out of a private channel *would* disclose its **first** episode's `sourceId` (a Slack `source_id` is `<channelId>:<ts>`), `actor` and `occurredAt` — *who said it first, where, and when*, i.e. private-channel membership. #4836 withholds exactly that triple from any reader who reaches the fact only because it was widened, and leaves it intact for anyone entitled to the fact's grant **before** widening. The episode body was never at risk either way: `brain_episodes` is ACL-gated in its own right. ADR-0036 §T5, `Amendment (2026-07-27, #4836)`, supersedes the accepted-price paragraph in the `#4823` amendment above it.
+>
+> **So C3 is now runnable on a PRIVATE claim, and that is the interesting direction.** The old guidance ("use S1, a public claim restated privately") existed only to avoid the disclosure; it now under-tests the fix. Run C3 both ways:
+>
+> | C3 variant | Reader | Expected |
+> |---|---|---|
+> | S1 public → restated privately | anyone | full attribution — the original grant was `org`, so nobody gained access by widening |
+> | P-style private → restated publicly | **B** (not in `#atlas-founders`) | claim visible, `provenance.attribution` = `{ "visible": false }`; the queue shows **Attribution restricted** |
+> | same | **A** (in `#atlas-founders`) | claim visible **with** full `actor` / `sourceId` / `occurredAt` |
+>
+> Both reader rows are needed: withholding from everybody would pass the first and is a regression, not a fix. Check the agent path too — `searchBrain` feeds chat answers, so ask a question that returns the widened fact as **B** and confirm the answer names no author and no channel.
+>
+> ```sql
+> -- Did publish record the pre-widening grant? NULL means "never widened".
+> select subject, visible_to, pre_widening_visible_to, status
+>   from brain_facts where object = '/release';
+> ```
 
 ---
 
@@ -178,6 +194,8 @@ R3 and R5 are the two that would let unreviewed or withdrawn claims reach a user
 | C1 | duplicate beliefs from verbatim repost | 0 | |
 | C2 | separate belief from paraphrase | 1 (expected limitation) | |
 | C3 | one fact survives cross-grant; both edges recorded | yes; narrow at draft, **union** at publish (#4823) | |
+| C3 | `pre_widening_visible_to` records the narrow grant at publish | non-NULL on the widened fact, NULL elsewhere (#4836) | |
+| C3 | attribution withheld from a reader gained by widening, kept for the original audience | both, in `/admin/brain-facts` **and** a `searchBrain` answer (#4836) | |
 | X1 | contradiction surfaced, S1 not overwritten | yes | |
 | D | B denied on all 3 private facts | yes | |
 | D | revocation within one interval | yes | |

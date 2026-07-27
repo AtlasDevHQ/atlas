@@ -655,6 +655,165 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
   });
 });
 
+// #4854 — a deployment with NO process-level analytics datasource degraded
+// forever, because the rollup could not tell an intentional absence (a
+// multi-tenant SaaS region, a knowledge-only self-host) from an operator who
+// forgot ATLAS_DATASOURCE_URL. The declaration fixes the first WITHOUT greening
+// the second — which is what the negative cases here pin.
+describe("GET /api/health — datasource expectation declaration (#4854)", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+  const origDatabaseUrl = process.env.DATABASE_URL;
+  const origExpected = process.env.ATLAS_DATASOURCE_EXPECTED;
+
+  // Staging's exact shape: DATABASE_URL set, ATLAS_DATASOURCE_URL unset, which
+  // makes checkDatasourceUrlPresence raise MISSING_DATASOURCE_URL as an ERROR
+  // (not a warning). So hasDsError is true here even though nothing is broken —
+  // the condition that made the `disabled` component carry an error code.
+  const MISSING_DS_DIAGNOSTIC = {
+    code: "MISSING_DATASOURCE_URL",
+    message: "DATABASE_URL is set but ATLAS_DATASOURCE_URL is not.",
+  };
+
+  beforeEach(() => {
+    delete process.env.ATLAS_DATASOURCE_URL;
+    delete process.env.ATLAS_DATASOURCE_EXPECTED;
+    process.env.DATABASE_URL = "postgresql://internal:internal@localhost:5432/atlas";
+    connMetadata = [];
+    pluginMetadata = [];
+    pluginDescribeImpl = () => [];
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
+    internalDBQueryImpl = () => Promise.resolve({ rows: [{ "?column?": 1 }] });
+    mockValidateEnvironment.mockReset();
+    mockValidateEnvironment.mockResolvedValue([MISSING_DS_DIAGNOSTIC]);
+    mockGetStartupWarnings.mockReset();
+    mockGetStartupWarnings.mockReturnValue([]);
+    backupHealthImpl = () => Promise.resolve({ expected: false });
+  });
+
+  afterEach(async () => {
+    if (origDatasource !== undefined) process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
+    if (origExpected !== undefined) process.env.ATLAS_DATASOURCE_EXPECTED = origExpected;
+    else delete process.env.ATLAS_DATASOURCE_EXPECTED;
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest(null);
+    const expectation = await import("@atlas/api/lib/db/datasource-expectation");
+    expectation._resetDatasourceExpectationWarning();
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
+  });
+
+  it("declared not-expected: component 'disabled' and the rollup stays ok", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("ok");
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("disabled");
+  });
+
+  it("declared not-expected: the disabled component no longer carries MISSING_DATASOURCE_URL", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, Record<string, unknown>>;
+
+    expect(components.datasource?.message).not.toBe("MISSING_DATASOURCE_URL");
+    expect(components.datasource?.message).toContain("none is expected");
+  });
+
+  // THE NEGATIVE. A fix that simply stopped counting a missing datasource would
+  // pass every positive test above and silently green a self-hosted box that
+  // meant to set ATLAS_DATASOURCE_URL. Intent must be declared, never inferred
+  // from the absence.
+  it("UNDECLARED with no datasource still degrades — unchanged from before #4854", async () => {
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("degraded");
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("disabled");
+    // The undeclared absence is a finding, so it keeps the diagnostic code.
+    expect(components.datasource?.message).toBe("MISSING_DATASOURCE_URL");
+  });
+
+  it("an unrecognized declaration is treated as undeclared — still degrades", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "nope";
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("degraded");
+  });
+
+  // #1981 — the LB-eviction path. A CONFIGURED datasource that fails its probe
+  // must still 503, or the region stays in rotation while queries are dead.
+  it("a configured datasource that fails still reports error + 503", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    mockValidateEnvironment.mockResolvedValue([]);
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("error");
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("down");
+  });
+
+  // The declaration answers "is one expected here?", never "is the configured
+  // one healthy?". Declaring none expected while one IS configured and failing
+  // must not buy silence — otherwise the declaration becomes a mute switch for
+  // real outages.
+  it("declared not-expected CANNOT green a configured datasource that fails", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    mockValidateEnvironment.mockResolvedValue([]);
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("error");
+  });
+
+  it("accepts the declaration from atlas.config.ts", async () => {
+    const config = await import("@atlas/api/lib/config");
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
+    config._setConfigForTest({ datasourceExpected: false } as any);
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("ok");
+  });
+
+  // api-staging builds from the PROD atlas.config.ts (#3958), so the env var has
+  // to be able to override the shared file in BOTH directions — otherwise one
+  // service's declaration silently speaks for every service sharing the image.
+  it("ATLAS_DATASOURCE_EXPECTED=true overrides a config file that says false", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "true";
+    const config = await import("@atlas/api/lib/config");
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
+    config._setConfigForTest({ datasourceExpected: false } as any);
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("degraded");
+  });
+});
+
 // #1987 — plugin healthcheck must surface in /health.
 // Plugin failures should NOT escalate to 503 (only datasource + SaaS internal-DB
 // do that). A degraded plugin is observable but does not page oncall.

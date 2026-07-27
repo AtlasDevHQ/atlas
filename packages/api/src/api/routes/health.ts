@@ -24,6 +24,7 @@ import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 import { getConfig } from "@atlas/api/lib/config";
+import { isDatasourceExpected } from "@atlas/api/lib/db/datasource-expectation";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { getUserRole } from "@atlas/api/lib/auth/permissions";
 import type { PluginStatus } from "@atlas/api/lib/plugins/registry";
@@ -343,6 +344,14 @@ health.openapi(healthRoute, async (c) => {
     );
     const hasDsError = !!dsDiagnostic || !!dsProbeError;
     const dsNotConfigured = !hasDatasource;
+    // #4854 — the absence is only *intentional* when the deployment declares it.
+    // Narrowed by `dsNotConfigured` on purpose: the declaration answers "is one
+    // expected here?", never "is the configured one healthy?", so it is unreachable
+    // on any deployment that has a datasource and therefore cannot touch the
+    // error/503 arm below. Undeclared keeps degrading — see
+    // `lib/db/datasource-expectation.ts` for why intent is never inferred from
+    // the absence itself.
+    const dsIntentionallyAbsent = dsNotConfigured && !isDatasourceExpected();
     const hasKeyError = !!findDiagnostic(diagnostics, "MISSING_API_KEY");
     const hasSemanticError = !!findDiagnostic(
       diagnostics,
@@ -372,7 +381,12 @@ health.openapi(healthRoute, async (c) => {
     let status: "ok" | "degraded" | "error";
     if ((hasDsError && !dsNotConfigured) || internalDbBlocksProbe) status = "error";
     else if (
-      dsNotConfigured ||
+      // A missing datasource degrades unless the deployment declared it wasn't
+      // expected (#4854). The declaration is deliberately absent from the
+      // `error` arm above: that arm requires `!dsNotConfigured`, so a CONFIGURED
+      // datasource that fails still 503s and still leaves the LB (#1981) no
+      // matter what the deployment declares.
+      (dsNotConfigured && !dsIntentionallyAbsent) ||
       hasKeyError ||
       hasSemanticError ||
       hasInternalDbError ||
@@ -622,9 +636,20 @@ health.openapi(healthRoute, async (c) => {
             : ("healthy" as const),
         ...(dsLatencyMs !== undefined && { latencyMs: dsLatencyMs }),
         lastCheckedAt: now,
-        ...(hasDsError && {
-          message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
-        }),
+        // A declared-absent deployment must not carry `MISSING_DATASOURCE_URL`
+        // on a `disabled` component (#4854) — the diagnostic still fires, since
+        // `checkDatasourceUrlPresence` raises it whenever DATABASE_URL is set
+        // without ATLAS_DATASOURCE_URL, but showing an error code for a state the
+        // operator deliberately configured is what made the dashboard read as
+        // broken. An UNDECLARED absence keeps the code: there it is the finding.
+        ...(dsIntentionallyAbsent
+          ? {
+              message:
+                "No analytics datasource is configured, and this deployment declares that none is expected.",
+            }
+          : hasDsError && {
+              message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
+            }),
       },
       internalDb: {
         status: !process.env.DATABASE_URL

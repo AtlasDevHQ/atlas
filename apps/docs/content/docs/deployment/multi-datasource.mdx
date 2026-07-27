@@ -395,6 +395,44 @@ view) but does **not** change the aggregate `status` or trip a 503. This keeps o
 workspace's misconfigured connection from pulling the whole shared region out of
 the load balancer.
 
+### Deployments with no datasource at all
+
+Some deployments legitimately have no process-level analytics datasource: a
+multi-tenant deploy where every connection is registered per workspace, or a
+knowledge-only / brain-only box that answers from the Knowledge Base and Company
+Brain. By default Atlas reports a missing datasource as `degraded` — that is what
+makes a forgotten `ATLAS_DATASOURCE_URL` visible instead of silent.
+
+Declare the absence so the aggregate status stays usable:
+
+```bash
+ATLAS_DATASOURCE_EXPECTED=false
+```
+
+or, in `atlas.config.ts`:
+
+```ts
+export default defineConfig({
+  datasourceExpected: false,
+});
+```
+
+`/api/health` then reports `components.datasource.status: "disabled"` — the state
+that means *intentionally absent* — and leaves the top-level `status` at `ok`.
+Three things this deliberately does **not** do:
+
+- It does not infer intent from the absence. Leave it unset and a missing
+  datasource still degrades, exactly as before.
+- It does not silence a datasource that **is** configured and failing. That is
+  still `status: "error"` + HTTP 503, and the region still leaves the load
+  balancer.
+- It does not disable anything. `ATLAS_DATASOURCE_EXPECTED` only describes what
+  this deployment expects; it never changes which connections are registered.
+
+Set the env var per service when several services share one `atlas.config.ts` —
+it overrides the config field in both directions, so one shared file cannot
+declare an expectation on another service's behalf.
+
 ---
 
 ## Troubleshooting

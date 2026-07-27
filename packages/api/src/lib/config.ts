@@ -481,6 +481,20 @@ const AtlasConfigSchema = z.object({
   datasources: z.record(z.string(), DatasourceConfigSchema).optional(),
 
   /**
+   * Whether this deployment is expected to have a process-level analytics
+   * datasource at all (#4854). Set `false` on a deployment that intentionally
+   * has none — a multi-tenant SaaS region whose connections live per-workspace,
+   * or a knowledge-only / brain-only self-host — so `/health` reports the
+   * `datasource` component as `disabled` without degrading the top-level rollup.
+   *
+   * Omitted means **expected**: a box that simply forgot `ATLAS_DATASOURCE_URL`
+   * must keep degrading rather than silently reading green. `ATLAS_DATASOURCE_EXPECTED`
+   * overrides this per-service — required when several services share one config
+   * file (see `lib/db/datasource-expectation.ts`).
+   */
+  datasourceExpected: z.boolean().optional(),
+
+  /**
    * Tool names to enable. When omitted, defaults to the two core tools
    * (explore, executeSQL).
    */
@@ -701,6 +715,12 @@ export { AtlasConfigSchema, RateLimitConfigSchema, RLSConditionSchema, RLSPolicy
  */
 export interface ResolvedConfig {
   datasources: Record<string, DatasourceConfig>;
+  /**
+   * Whether a process-level analytics datasource is expected on this deployment
+   * (#4854). Absent means expected — see `lib/db/datasource-expectation.ts`,
+   * which owns the resolution and the env-var override.
+   */
+  datasourceExpected?: boolean;
   tools: string[];
   auth: AuthConfig;
   semanticLayer: string;
@@ -1320,6 +1340,12 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
 
   return {
     datasources: config.datasources ?? {},
+    // Conditional spread, not `?? true`: "undeclared" must stay distinguishable
+    // from "declared expected" so the resolver here never becomes a second
+    // source of truth for the default (`isDatasourceExpected()` owns it).
+    ...(config.datasourceExpected !== undefined
+      ? { datasourceExpected: config.datasourceExpected }
+      : {}),
     tools: config.tools ?? ["explore", "executeSQL"],
     auth: config.auth ?? "auto",
     semanticLayer: config.semanticLayer ?? "./semantic",

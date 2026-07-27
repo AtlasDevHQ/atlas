@@ -89,6 +89,11 @@ import { Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 import type { SandboxBackendName } from "@atlas/api/lib/config";
+// Static (not lazy-imported like the other guards' dependencies): `selection.ts`
+// is pure policy whose only import is a `import type`, so it pulls in no runtime
+// graph to wall off — and it is mocked nowhere, so a static value import here
+// can't be erased by another test file's partial `mock.module()`.
+import { planSandboxSelection } from "@atlas/api/lib/tools/backends/selection";
 import { Config, Settings } from "./layers";
 import { Migration, PluginRegistry } from "./services";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
@@ -773,26 +778,56 @@ export const TurnstileGuardLive: Layer.Layer<never, TurnstileSecretRequiredError
 // ══════════════════════════════════════════════════════════════════════
 
 /**
- * Whether the resolved sandbox priority pins `vercel-sandbox` as a required
- * backend with no unsandboxed fallback — the SaaS deny-all posture
- * (`sandbox.priority: ["vercel-sandbox"]` in `deploy/api/atlas.config.ts`).
+ * The pinned priority list when it requires `vercel-sandbox` with no unsandboxed
+ * fallback — the SaaS deny-all posture (`sandbox.priority: ["vercel-sandbox"]`
+ * in `deploy/api/atlas.config.ts`) — or `null` when this guard stays inert.
  *
- * Mirrors `planSandboxSelection`'s fail-closed determination
- * (`lib/tools/backends/selection.ts`): a `just-bash` entry means the deploy
- * opted into degrade-on-exhaustion, so a missing credential is NOT fatal and
- * the guard must not fire. Absent `vercel-sandbox` from the list entirely
- * (self-hosted, a sidecar/nsjail-pinned deploy) → not pinned, so a differently
- * -configured deploy is never blocked by this guard.
+ * The fail-closed half is **derived** from {@link planSandboxSelection}
+ * (`lib/tools/backends/selection.ts`), never restated here. That planner is the
+ * single statement of the priority policy; this guard used to keep a second
+ * hand-written copy of its rule, which could drift silently (#4838). Deleting
+ * the copy is what removes that — the every-ordering sweep in
+ * `saas-guards.test.ts` is what stops it growing back, and carries the argument.
+ *
+ * Only the vercel half is this guard's own question, and it is deliberately
+ * MEMBERSHIP rather than need: a `["sidecar", "vercel-sandbox"]` pin still fails
+ * boot on absent Vercel credentials even though sidecar would serve every
+ * request, because the operator asked for a backend this region cannot
+ * construct. A pin that never names `vercel-sandbox` is never blocked by a
+ * missing Vercel token.
+ *
+ * Returning the planner's own list rather than the caller's keeps the boot error
+ * naming the exact list the decision was made on, should the planner ever
+ * normalize what it is handed.
+ *
+ * Comparing `onExhausted` narrows `SandboxPlan` to the `config-priority` arm —
+ * the `default-chain` arm types that field as the literal `"just-bash"` — which
+ * is why `plan.configPriority` type-checks below. That is load-bearing: if the
+ * default chain ever gains a fail-closed exhaustion, the narrowing stops and
+ * this becomes a compile error instead of quietly widening which deploys the
+ * guard fires on. (The default chain's *other* route to a refusal — an
+ * unavailable `ATLAS_SANDBOX=nsjail` hard-fail step — is a runtime availability
+ * fact about nsjail, not a Vercel-credential contract, and is correctly out of
+ * scope here.)
  */
-function sandboxPriorityPinsVercel(
+function pinnedVercelPriority(
   priority: readonly SandboxBackendName[] | undefined,
-): boolean {
-  if (!priority || priority.length === 0) return false;
-  if (!priority.includes("vercel-sandbox")) return false;
-  // `just-bash` in the list ⇒ an unsandboxed fallback is allowed, so a missing
-  // VERCEL_TOKEN degrades rather than hard-fails — don't fail boot.
-  if (priority.includes("just-bash")) return false;
-  return true;
+): readonly SandboxBackendName[] | null {
+  const plan = planSandboxSelection({
+    // `configPriority` is the only input that reaches the config-priority arm:
+    // the planner gives it absolute precedence and returns before consulting any
+    // availability field. The rest are a "nothing detected" fiction, supplied
+    // because every `SandboxSelectionEnv` field is required — and asserted to
+    // stay harmless by the sweep's invariance check rather than assumed.
+    configPriority: priority,
+    atlasSandbox: undefined,
+    vercelAvailable: false,
+    sidecarAvailable: false,
+    nsjailAvailable: false,
+    nsjailFailed: false,
+  });
+  if (plan.onExhausted !== "fail-closed") return null;
+  return plan.configPriority.includes("vercel-sandbox") ? plan.configPriority : null;
 }
 
 /**
@@ -825,8 +860,8 @@ export const SandboxCredsGuardLive: Layer.Layer<never, SandboxCredentialsMissing
     if (config.deployMode !== "saas") return;
     if (relaxSaasGuardForDev("SandboxCreds")) return;
 
-    const priority = config.sandbox?.priority;
-    if (!sandboxPriorityPinsVercel(priority)) return;
+    const pinned = pinnedVercelPriority(config.sandbox?.priority);
+    if (pinned === null) return;
 
     const { vercelSandboxCredentialStatus } = yield* Effect.promise(
       () => import("@atlas/api/lib/tools/backends/detect"),
@@ -841,7 +876,7 @@ export const SandboxCredsGuardLive: Layer.Layer<never, SandboxCredentialsMissing
 
     yield* Effect.fail(
       new SandboxCredentialsMissingError({
-        priority: [...(priority ?? [])],
+        priority: [...pinned],
         missing,
         message:
           `SaaS region booted with sandbox.priority pinned to vercel-sandbox (the deny-all posture — ` +

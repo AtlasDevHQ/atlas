@@ -17,10 +17,10 @@
  */
 
 import { Glob } from "bun";
-import { readFileSync } from "node:fs";
 import { cpus } from "node:os";
-import { resolve, relative, basename } from "node:path";
+import { resolve, relative } from "node:path";
 import { runFileWithSignalRetry } from "./signal-retry";
+import { collectAffectedTests } from "./affected";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SRC = resolve(ROOT, "src");
@@ -65,7 +65,7 @@ for (let i = 0; i < args.length; i++) {
 }
 
 // --- Affected-mode helpers ---
-async function gitDiffNames(...cmd: string[]): Promise<string[]> {
+async function gitLines(...cmd: string[]): Promise<string[]> {
   const proc = Bun.spawn(cmd, { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
   const [out, err] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -83,86 +83,26 @@ async function gitDiffNames(...cmd: string[]): Promise<string[]> {
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
+// The repo root — what git's `--name-only` paths are relative to. Asked of git
+// rather than derived as `resolve(ROOT, "../..")` so a package move can't
+// silently reintroduce the path-doubling bug this replaced (#4851).
+async function gitRepoRoot(): Promise<string> {
+  const [top] = await gitLines("git", "rev-parse", "--show-toplevel");
+  if (!top) throw new Error("git rev-parse --show-toplevel returned no output");
+  return top;
+}
+
 // All repo files changed on the branch: committed since base + staged +
 // unstaged + untracked. Paths are repo-root-relative.
 async function collectChangedFiles(base: string): Promise<string[]> {
   const out = new Set<string>();
   const buckets = await Promise.all([
-    gitDiffNames("git", "diff", "--name-only", `${base}...HEAD`),
-    gitDiffNames("git", "diff", "--name-only", "HEAD"),
-    gitDiffNames("git", "ls-files", "--others", "--exclude-standard"),
+    gitLines("git", "diff", "--name-only", `${base}...HEAD`),
+    gitLines("git", "diff", "--name-only", "HEAD"),
+    gitLines("git", "ls-files", "--others", "--exclude-standard"),
   ]);
   for (const bucket of buckets) for (const f of bucket) out.add(f);
   return [...out];
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Map changed source files → test files whose content looks like it imports them.
-// Test files that changed directly are always included.
-function collectAffectedTests(changed: string[], allTests: Set<string>): string[] {
-  const affected = new Set<string>();
-  const sourceTokens = new Set<string>();
-  const API_PREFIX = relative(ROOT, SRC) + "/";
-
-  for (const rel of changed) {
-    if (!rel.endsWith(".ts") && !rel.endsWith(".tsx")) continue;
-    const abs = resolve(ROOT, rel);
-    if (rel.endsWith(".test.ts")) {
-      if (allTests.has(abs)) affected.add(abs);
-      continue;
-    }
-    // Source files outside packages/api/src contribute just a basename
-    // token. Source files inside packages/api/src contribute multiple
-    // tokens to catch both direct imports (`from "../admin"`) and barrel
-    // imports (`from "@atlas/api/lib/audit"`) that land in tests via
-    // mock.module(). Over-triggering is preferred to false negatives.
-    const stemBase = basename(rel).replace(/\.(ts|tsx)$/, "");
-    if (stemBase && stemBase !== "index") sourceTokens.add(stemBase);
-    if (rel.startsWith(API_PREFIX)) {
-      const relFromSrc = rel.slice(API_PREFIX.length).replace(/\.(ts|tsx)$/, "");
-      const segments = relFromSrc.split("/");
-      // Full stem from src root (`lib/audit/admin`)
-      if (stemBase !== "index") sourceTokens.add(relFromSrc);
-      // Parent dir stem for barrel imports (`lib/audit`) — applies to
-      // both regular files and index.ts files. Skip the bare parent
-      // basename (e.g. `audit`) because short, generic names like `db`,
-      // `types`, `config`, `utils`, `middleware`, `errors`, `auth` would
-      // match nearly every test in the suite via `@scope/pkg/.../db` etc.
-      // The full parent stem (`lib/db`) still catches fully-qualified
-      // barrel imports without the over-match.
-      if (segments.length >= 2) {
-        const parentStem = segments.slice(0, -1).join("/");
-        sourceTokens.add(parentStem);
-      }
-    }
-  }
-
-  if (sourceTokens.size === 0) return [...affected];
-
-  // Build one combined regex so we read each test file once.
-  // Match any quoted module-specifier-shaped string ending in a token:
-  // `"<prefix-ending-in-slash><token>"`. Catches static `from "..."`,
-  // dynamic `import("...")`, and runtime `mock.module("...", ...)` —
-  // the last form is heavily used in api tests so we can't restrict to
-  // static imports. Requires `/` or start-of-specifier before the token
-  // so `admin` doesn't false-positive on `"./admin-like"`.
-  const pattern = new RegExp(
-    `["'](?:[^"']*/)?(${[...sourceTokens].map(escapeRegex).join("|")})["']`,
-    "m",
-  );
-
-  for (const testFile of allTests) {
-    if (affected.has(testFile)) continue;
-    const text = readFileSync(testFile, "utf8");
-    if (pattern.test(text)) {
-      affected.add(testFile);
-    }
-  }
-
-  return [...affected];
 }
 
 // --- Discover test files ---
@@ -178,13 +118,17 @@ if (filter) {
 }
 
 if (affected) {
-  const changed = await collectChangedFiles(since);
+  const [repoRoot, changed] = await Promise.all([gitRepoRoot(), collectChangedFiles(since)]);
   if (changed.length === 0) {
     console.log(`No changed files vs ${since} — nothing to test.`);
     process.exit(0);
   }
   const testSet = new Set(files);
-  files = collectAffectedTests(changed, testSet);
+  files = collectAffectedTests(changed, testSet, {
+    repoRoot,
+    packageRoot: ROOT,
+    srcRoot: SRC,
+  });
   if (files.length === 0) {
     console.log(
       `Affected-mode: ${changed.length} changed files vs ${since}, but no tests import them.\n` +

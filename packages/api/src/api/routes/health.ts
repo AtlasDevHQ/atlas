@@ -24,6 +24,10 @@ import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 import { getConfig } from "@atlas/api/lib/config";
+import {
+  resolveDatasourceExpectation,
+  datasourceExpectationWarning,
+} from "@atlas/api/lib/db/datasource-expectation";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { getUserRole } from "@atlas/api/lib/auth/permissions";
 import type { PluginStatus } from "@atlas/api/lib/plugins/registry";
@@ -343,6 +347,15 @@ health.openapi(healthRoute, async (c) => {
     );
     const hasDsError = !!dsDiagnostic || !!dsProbeError;
     const dsNotConfigured = !hasDatasource;
+    // #4854 — the absence is only *intentional* when the deployment declares it.
+    // Narrowed by `dsNotConfigured` on purpose: the declaration answers "is one
+    // expected here?", never "is the configured one healthy?", so it is unreachable
+    // on any deployment that has a datasource and therefore cannot touch the
+    // error/503 arm below. Undeclared keeps degrading — see
+    // `lib/db/datasource-expectation.ts` for why intent is never inferred from
+    // the absence itself.
+    const dsExpectation = resolveDatasourceExpectation();
+    const dsIntentionallyAbsent = dsNotConfigured && !dsExpectation.expected;
     const hasKeyError = !!findDiagnostic(diagnostics, "MISSING_API_KEY");
     const hasSemanticError = !!findDiagnostic(
       diagnostics,
@@ -372,7 +385,10 @@ health.openapi(healthRoute, async (c) => {
     let status: "ok" | "degraded" | "error";
     if ((hasDsError && !dsNotConfigured) || internalDbBlocksProbe) status = "error";
     else if (
-      dsNotConfigured ||
+      // A missing datasource degrades unless the deployment declared it wasn't
+      // expected (#4854) — see the narrowing where `dsIntentionallyAbsent` is
+      // defined for why this cannot reach the `error` arm above.
+      (dsNotConfigured && !dsIntentionallyAbsent) ||
       hasKeyError ||
       hasSemanticError ||
       hasInternalDbError ||
@@ -393,6 +409,15 @@ health.openapi(healthRoute, async (c) => {
     if (exploreFailClosed && status === "ok") status = "degraded";
 
     const warnings = [...getStartupWarnings()];
+
+    // #4854 — an unparseable ATLAS_DATASOURCE_EXPECTED is logged once per
+    // process, which is the right volume for a public polled endpoint but the
+    // wrong surface: by the time an operator wonders why their declaration did
+    // nothing, that line has scrolled away. Surface it where they set it. The
+    // deployment is treated as expecting a datasource, so this rides alongside a
+    // `degraded` status rather than explaining an `ok` one.
+    const expectationWarning = datasourceExpectationWarning(dsExpectation);
+    if (expectationWarning) warnings.push(expectationWarning);
 
     // Per-source health from ConnectionRegistry. The bare `describe()`
     // enumerates only native/bare pools; published plugin datasources
@@ -622,9 +647,22 @@ health.openapi(healthRoute, async (c) => {
             : ("healthy" as const),
         ...(dsLatencyMs !== undefined && { latencyMs: dsLatencyMs }),
         lastCheckedAt: now,
-        ...(hasDsError && {
-          message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
-        }),
+        // A declared-absent deployment must not carry `MISSING_DATASOURCE_URL`
+        // on a `disabled` component (#4854) — the diagnostic still fires
+        // (`checkDatasourceUrlPresence` in `startup.ts` raises it when no
+        // datasource URL resolves and DATABASE_URL is set), but showing an error
+        // code for a state the operator deliberately configured is what made the
+        // dashboard read as broken: `component-health-tiles.tsx` renders this
+        // field verbatim. An UNDECLARED absence keeps the code — there it is the
+        // finding, and `status` stays `disabled` either way.
+        ...(dsIntentionallyAbsent
+          ? {
+              message:
+                "No analytics datasource is configured, and this deployment declares that none is expected.",
+            }
+          : hasDsError && {
+              message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
+            }),
       },
       internalDb: {
         status: !process.env.DATABASE_URL

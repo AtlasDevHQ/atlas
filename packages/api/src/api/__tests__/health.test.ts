@@ -564,8 +564,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
     ]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(503);
@@ -580,8 +579,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
     internalDBQueryImpl = () => Promise.reject(new Error("connection refused"));
     mockValidateEnvironment.mockResolvedValue([]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(503);
@@ -610,8 +608,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
     ]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "self-hosted" } as any);
+    config._setConfigForTest({ deployMode: "self-hosted" });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(200);
@@ -631,8 +628,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       deployModeDowngraded: {
         reason: 'atlas.config.ts requested deployMode "saas" but enterprise is not enabled — see #1978',
       },
-      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
-    } as any);
+    });
 
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(200);
@@ -646,12 +642,242 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
   it("omits deployModeDowngraded on a normal boot (#3184)", async () => {
     mockValidateEnvironment.mockResolvedValue([]);
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "self-hosted" } as any);
+    config._setConfigForTest({ deployMode: "self-hosted" });
 
     const response = await app.fetch(healthRequest());
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.deployModeDowngraded).toBeUndefined();
+  });
+});
+
+// #4854 — a deployment with NO process-level analytics datasource degraded
+// forever, because the rollup could not tell an intentional absence (a
+// multi-tenant SaaS region, a knowledge-only self-host) from an operator who
+// forgot ATLAS_DATASOURCE_URL. The declaration fixes the first WITHOUT greening
+// the second — which is what the negative cases here pin.
+describe("GET /api/health — datasource expectation declaration (#4854)", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+  const origDatabaseUrl = process.env.DATABASE_URL;
+  const origExpected = process.env.ATLAS_DATASOURCE_EXPECTED;
+  const origDemoData = process.env.ATLAS_DEMO_DATA;
+  const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
+
+  // Staging's exact shape: DATABASE_URL set, ATLAS_DATASOURCE_URL unset, which
+  // makes checkDatasourceUrlPresence raise MISSING_DATASOURCE_URL as an ERROR
+  // (not a warning). So hasDsError is true here even though nothing is broken —
+  // the condition that made the `disabled` component carry an error code.
+  const MISSING_DS_DIAGNOSTIC = {
+    code: "MISSING_DATASOURCE_URL",
+    message: "DATABASE_URL is set but ATLAS_DATASOURCE_URL is not.",
+  };
+
+  beforeEach(() => {
+    delete process.env.ATLAS_DATASOURCE_URL;
+    delete process.env.ATLAS_DATASOURCE_EXPECTED;
+    delete process.env.ATLAS_DEMO_DATA;
+    delete process.env.ATLAS_DEPLOY_MODE;
+    process.env.DATABASE_URL = "postgresql://internal:internal@localhost:5432/atlas";
+    connMetadata = [];
+    pluginMetadata = [];
+    pluginDescribeImpl = () => [];
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
+    internalDBQueryImpl = () => Promise.resolve({ rows: [{ "?column?": 1 }] });
+    mockValidateEnvironment.mockReset();
+    mockValidateEnvironment.mockResolvedValue([MISSING_DS_DIAGNOSTIC]);
+    mockGetStartupWarnings.mockReset();
+    mockGetStartupWarnings.mockReturnValue([]);
+    backupHealthImpl = () => Promise.resolve({ expected: false });
+  });
+
+  afterEach(async () => {
+    if (origDatasource !== undefined) process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
+    if (origExpected !== undefined) process.env.ATLAS_DATASOURCE_EXPECTED = origExpected;
+    else delete process.env.ATLAS_DATASOURCE_EXPECTED;
+    if (origDemoData !== undefined) process.env.ATLAS_DEMO_DATA = origDemoData;
+    else delete process.env.ATLAS_DEMO_DATA;
+    if (origDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+    else delete process.env.ATLAS_DEPLOY_MODE;
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest(null);
+    const expectation = await import("@atlas/api/lib/db/datasource-expectation");
+    expectation._resetDatasourceExpectationWarning();
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
+  });
+
+  it("declared not-expected: component 'disabled' and the rollup stays ok", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("ok");
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("disabled");
+  });
+
+  it("declared not-expected: the disabled component no longer carries MISSING_DATASOURCE_URL", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const components = body.components as Record<string, Record<string, unknown>>;
+
+    expect(components.datasource?.message).not.toBe("MISSING_DATASOURCE_URL");
+    expect(components.datasource?.message).toContain("none is expected");
+  });
+
+  // THE NEGATIVE. A fix that simply stopped counting a missing datasource would
+  // pass every positive test above and silently green a self-hosted box that
+  // meant to set ATLAS_DATASOURCE_URL. Intent must be declared, never inferred
+  // from the absence.
+  it("UNDECLARED with no datasource still degrades — unchanged from before #4854", async () => {
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("degraded");
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("disabled");
+    // The undeclared absence is a finding, so it keeps the diagnostic code.
+    expect(components.datasource?.message).toBe("MISSING_DATASOURCE_URL");
+    // The legacy `checks` surface is unchanged by the declaration in either
+    // direction — it has always reported the configuration fact, not intent.
+    const checks = body.checks as Record<string, Record<string, unknown>>;
+    expect(checks.datasource?.status).toBe("not_configured");
+  });
+
+  it("an unrecognized declaration still degrades, and says so in warnings[]", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "nope";
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("degraded");
+    // The typo has to be visible on the surface the operator set it from — a
+    // once-per-process log line has scrolled away by the time they look.
+    const warnings = body.warnings as string[];
+    expect(warnings.some((w) => w.includes("ATLAS_DATASOURCE_EXPECTED"))).toBe(true);
+    // …without echoing the operator-supplied value: /health is public.
+    expect(warnings.some((w) => w.includes("nope"))).toBe(false);
+  });
+
+  it("adds no expectation warning when the declaration parses", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.warnings).toBeUndefined();
+  });
+
+  // The declaration changes the ROLLUP, not the other signals. A deployment
+  // with neither URL still carries the startup warning, and it must keep
+  // carrying it: suppressing warnings to make a dashboard look clean is the
+  // failure mode #4854 is about, pointed the other way.
+  it("does not suppress the startup warning on a declared-absent deployment", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+    delete process.env.DATABASE_URL;
+    mockValidateEnvironment.mockResolvedValue([]);
+    mockGetStartupWarnings.mockReturnValue([
+      "ATLAS_DATASOURCE_URL is not set. Atlas can start without an analytics datasource, but queries will not work.",
+    ]);
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("ok");
+    expect(body.warnings).toEqual([
+      "ATLAS_DATASOURCE_URL is not set. Atlas can start without an analytics datasource, but queries will not work.",
+    ]);
+  });
+
+  // The LB-eviction path (#1981 for the internal-DB half, #3907 for the
+  // primary-datasource isolation contract). A CONFIGURED datasource that fails
+  // its probe must still 503, or the region stays in rotation while queries are
+  // dead.
+  it("a configured datasource that fails still reports error + 503", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    mockValidateEnvironment.mockResolvedValue([]);
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("error");
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("down");
+  });
+
+  // The declaration answers "is one expected here?", never "is the configured
+  // one healthy?". Declaring none expected while one IS configured and failing
+  // must not buy silence — otherwise the declaration becomes a mute switch for
+  // real outages.
+  it("declared not-expected CANNOT green a configured datasource that fails", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    mockValidateEnvironment.mockResolvedValue([]);
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("error");
+    // Pins the `dsNotConfigured &&` half of the narrowing, not just the rollup:
+    // drop it and the component reads "down" while claiming no datasource is
+    // expected — a self-contradicting tile shown mid-outage. The rollup
+    // assertion above survives that mutation; this one doesn't.
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("down");
+    expect(components.datasource?.message).not.toContain("none is expected");
+  });
+
+  // `hasDatasource` has two arms — the env var and a `default` in the
+  // ConnectionRegistry. The multi-tenant shape this feature targets is more
+  // likely to register `default` from atlas.config.ts than to set the env var,
+  // so pin the declaration as inert against the registry arm too.
+  it("declared not-expected is inert when 'default' comes from the registry", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+    connMetadata = [{ id: "default", dbType: "postgres" }];
+    mockValidateEnvironment.mockResolvedValue([]);
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("error");
+  });
+
+  it("accepts the declaration from atlas.config.ts", async () => {
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest({ datasourceExpected: false });
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("ok");
+  });
+
+  // api-staging builds from the PROD atlas.config.ts (#3958), so the env var has
+  // to be able to override the shared file in BOTH directions — otherwise one
+  // service's declaration silently speaks for every service sharing the image.
+  it("ATLAS_DATASOURCE_EXPECTED=true overrides a config file that says false", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "true";
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest({ datasourceExpected: false });
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("degraded");
   });
 });
 
@@ -753,8 +979,7 @@ describe("GET /api/health — plugin component", () => {
     // Plugin failures are observable in the dashboard but never page oncall.
     process.env.ATLAS_DEPLOY_MODE = "saas";
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     pluginDescribeImpl = () => [
       { id: "p1", types: ["action"], version: "1.0.0", name: "P1", status: "unhealthy", enabled: true },
@@ -1166,8 +1391,7 @@ describe("GET /api/health — backups component (#4457)", () => {
     // an overdue backup must never pull the region from the LB.
     process.env.ATLAS_DEPLOY_MODE = "saas";
     const config = await import("@atlas/api/lib/config");
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-    config._setConfigForTest({ deployMode: "saas" } as any);
+    config._setConfigForTest({ deployMode: "saas" });
 
     backupHealthImpl = () =>
       Promise.resolve({

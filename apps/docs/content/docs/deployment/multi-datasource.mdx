@@ -395,6 +395,61 @@ view) but does **not** change the aggregate `status` or trip a 503. This keeps o
 workspace's misconfigured connection from pulling the whole shared region out of
 the load balancer.
 
+### Deployments with no datasource at all
+
+Some deployments legitimately have no process-level analytics datasource: a
+multi-tenant deploy where every connection is registered per workspace, or a
+knowledge-only / brain-only box that answers from the Knowledge Base and Company
+Brain. By default Atlas reports a missing datasource as `degraded` — that is what
+makes a forgotten `ATLAS_DATASOURCE_URL` visible instead of silent.
+
+Declare the absence so the aggregate status stays usable:
+
+```bash
+ATLAS_DATASOURCE_EXPECTED=false
+```
+
+or, in `atlas.config.ts`:
+
+```ts
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasourceExpected: false,
+});
+```
+
+The missing datasource then stops degrading the top-level `status` (anything else
+unhealthy still does). `components.datasource.status` stays `"disabled"`, which
+has always meant simply *no datasource is configured* — an undeclared deployment
+reports `"disabled"` too. What changes is that the component stops carrying the
+`MISSING_DATASOURCE_URL` code, so the admin dashboard no longer shows an error
+for a deliberate state. Four things this deliberately does **not** do:
+
+- It does not infer intent from the absence. Leave it unset and a missing
+  datasource still degrades, exactly as before.
+- It does not silence a datasource that **is** configured and failing. That is
+  still `status: "error"` + HTTP 503, and the region still leaves the load
+  balancer.
+- It does not disable anything. `ATLAS_DATASOURCE_EXPECTED` only describes what
+  this deployment expects; it never changes which connections are registered.
+- It does not clear the other signals. `checks.datasource` still reports
+  `{ "status": "not_configured" }`, and a deployment with neither
+  `ATLAS_DATASOURCE_URL` nor `DATABASE_URL` still carries the startup warning
+  "ATLAS_DATASOURCE_URL is not set…" in `warnings[]`. Both are accurate and stay
+  visible by design; only the aggregate `status` changes.
+
+`ATLAS_DEMO_DATA=true` overrides the declaration — it is itself a statement that
+this deployment expects a datasource, so a demo database that never provisioned
+still degrades. Any value of `ATLAS_DATASOURCE_EXPECTED` other than
+`true`/`false`/`1`/`0` is treated as a failed declaration: Atlas logs a warning
+and falls back to expecting a datasource, so a typo leaves `/health` noisy rather
+than silently green.
+
+Set the env var per service when several services share one `atlas.config.ts` —
+it overrides the config field in both directions, so one shared file cannot
+declare an expectation on another service's behalf.
+
 ---
 
 ## Troubleshooting

@@ -41,8 +41,7 @@ function setDeployModeForTest(mode: "saas" | "self-hosted" | undefined) {
     _setConfigForTest(null);
     return;
   }
-  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-  _setConfigForTest({ deployMode: mode } as any);
+  _setConfigForTest({ deployMode: mode });
 }
 
 // Well-known.ts dynamically imports the auth instance + the

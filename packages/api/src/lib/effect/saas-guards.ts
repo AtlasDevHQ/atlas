@@ -784,12 +784,10 @@ export const TurnstileGuardLive: Layer.Layer<never, TurnstileSecretRequiredError
  *
  * The fail-closed half is **derived** from {@link planSandboxSelection}
  * (`lib/tools/backends/selection.ts`), never restated here. That planner is the
- * single statement of the priority policy, and this guard used to keep a second
- * hand-written copy of its rule (#4838). A second copy can drift *silently*:
- * the planner deciding fail-closed while the guard decides "not pinned" is the
- * outage described below with no boot error at all. Deleting the copy is what
- * removes that; the powerset sweep in `saas-guards.test.ts` is what stops it
- * growing back.
+ * single statement of the priority policy; this guard used to keep a second
+ * hand-written copy of its rule, which could drift silently (#4838). Deleting
+ * the copy is what removes that — the every-ordering sweep in
+ * `saas-guards.test.ts` is what stops it growing back, and carries the argument.
  *
  * Only the vercel half is this guard's own question, and it is deliberately
  * MEMBERSHIP rather than need: a `["sidecar", "vercel-sandbox"]` pin still fails

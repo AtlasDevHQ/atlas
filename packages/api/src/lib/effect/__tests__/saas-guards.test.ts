@@ -81,9 +81,7 @@ void mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-// The sandbox backend union, used to type the priority shapes the
-// `SandboxCredsGuardLive` sweep enumerates. Type-only, so it is unaffected by
-// the dynamic-import dance the block below describes.
+// Type-only, so unaffected by the dynamic-import dance the block below describes.
 import type { SandboxBackendName } from "@atlas/api/lib/config";
 
 // Type-only imports for the tagged error classes and the `Config` Tag
@@ -899,6 +897,39 @@ describe("SandboxCredsGuardLive", () => {
     );
   });
 
+  // The reported `priority` comes from the PLANNER's list, not the caller's
+  // (#4838). Identical today — the planner returns what it was handed — so this
+  // pins the operator-facing consequence rather than current mechanics: an
+  // operator debugging a boot failure must see every backend the decision
+  // covered, not just the one the guard checks credentials for.
+  test("reports the whole pinned list, not just vercel-sandbox, on a multi-backend pin", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({}, async () => {
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(
+                Layer.provide(
+                  makeTestConfigLayer({
+                    deployMode: "saas",
+                    sandbox: { priority: ["sidecar", "vercel-sandbox"] },
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(SandboxCredentialsMissingError);
+        expect((failure as TSandboxCredentialsMissingError).priority).toEqual([
+          "sidecar",
+          "vercel-sandbox",
+        ]);
+      }),
+    );
+  });
+
   test("succeeds in SaaS when all Vercel credentials are present", async () => {
     await withCleanEnv(() =>
       withVercelIds({ teamId: "team_x", projectId: "prj_x" }, async () => {
@@ -1001,9 +1032,9 @@ describe("SandboxCredsGuardLive", () => {
   // growing back. It hardcodes no outcomes: for every priority shape it computes
   // the expectation by calling the planner directly and reading `onExhausted`,
   // then asserts the guard agrees. A re-hand-rolled copy therefore fails here on
-  // the first shape where the two disagree — including the silent direction
-  // (planner says fail-closed, guard says "not pinned", region boots green with
-  // explore refusing every request). The named cases above pin today's four
+  // any shape where the two disagree — including the silent direction (planner
+  // says fail-closed, guard says "not pinned", so the region boots green with a
+  // deny-all pin nothing enforces). The named cases above pin today's four
   // documented shapes and cannot catch a rewrite that diverges only outside
   // them, which is why they are not sufficient on their own.
   //
@@ -1013,22 +1044,28 @@ describe("SandboxCredsGuardLive", () => {
   //
   // The space is every ORDERING of every subset of the backend names, not just
   // every subset: `sandbox.priority` is `z.array(z.enum(...)).min(1)` with no
-  // ordering constraint, and a mirror keyed on position rather than membership
-  // (`priority[0] !== "vercel-sandbox"`, or "the fallback goes last") agrees
-  // with the planner on every canonically-ordered subset while diverging in
-  // production on `["sidecar", "vercel-sandbox"]`.
+  // ordering constraint, so a mirror keyed on position rather than membership
+  // agrees with the planner on every canonically-ordered subset while diverging
+  // in production. Each such mirror needs its own counterexample:
+  // `priority[0] !== "vercel-sandbox"` diverges on `["sidecar","vercel-sandbox"]`,
+  // "the fallback goes last" on `["just-bash","vercel-sandbox"]`.
   //
   // Names are read off `BACKEND_ISOLATION`, whose
-  // `satisfies Record<SandboxBackendName | "plugin">` makes a newly-added
-  // backend a compile error until it is classified there — so a new backend
-  // widens this enumeration automatically rather than silently leaving its
-  // shapes untested. (`plugin` is excluded: it is an isolation posture for the
-  // front-of-line plugin seam, never a `sandbox.priority` entry. That exclusion
-  // is hand-maintained — a second non-priority key would need adding here.)
+  // `satisfies Record<SandboxBackendName | "plugin", SandboxIsolationPosture>`
+  // makes a newly-added backend a compile error until it is classified there —
+  // so a new backend widens this enumeration automatically rather than silently
+  // leaving its shapes untested. (`plugin` is excluded: it is an isolation
+  // posture for the front-of-line plugin seam, never a `sandbox.priority` entry.
+  // That exclusion is hand-maintained — a second non-priority key would need
+  // adding here.) Widening is not free: the sweep is Σ C(n,k)·k!, so 65 shapes
+  // at 4 backends but 327 at 5 and 1957 at 6 — a 6th backend wants capping
+  // (sampling, or subsets of size ≤ 3) rather than a straight enumeration.
   test("fail-closed determination cannot drift from planSandboxSelection (every priority ordering)", async () => {
     // No explicit type predicate on the filter: TS infers `SandboxBackendName[]`
     // here, and an inferred narrowing is checked where a hand-written
-    // `name is SandboxBackendName` would be an unchecked assertion.
+    // `name is SandboxBackendName` would be an unchecked assertion. The
+    // `Object.keys` cast is the one unchecked step, sound because the table is a
+    // closed `as const` literal.
     const backends = (
       Object.keys(BACKEND_ISOLATION) as Array<keyof typeof BACKEND_ISOLATION>
     ).filter((name) => name !== "plugin");
@@ -1064,9 +1101,22 @@ describe("SandboxCredsGuardLive", () => {
     // have `vercelAvailable: true` while its explicit creds are incomplete.
     // Nothing about "creds missing" implies "vercel unavailable" — this
     // assertion is what licenses the snapshot, not any such equivalence.
+    // Between them these snapshots differ from the base in EVERY field, and no
+    // pair of fields is left at a constant combination — so a dependence on any
+    // single field, or on a conjunction of two, is caught. Keep both properties
+    // if you edit them: with only the first two entries a planner gating on
+    // `sidecarAvailable && nsjailFailed` slipped through, since that pair was
+    // never (true, true).
+    //
+    // Residual, deliberately not chased: `atlasSandbox` is a string, so sampling
+    // cannot close a planner that gates on some third literal. That direction is
+    // loud rather than silent — the guard would fail boot on a region that would
+    // in fact have degraded — and a source/arm flip is caught structurally by
+    // the whole-plan branch below.
     const ALT_AVAILABILITY = [
       { atlasSandbox: "nsjail", vercelAvailable: true, sidecarAvailable: true, nsjailAvailable: true, nsjailFailed: false },
       { atlasSandbox: undefined, vercelAvailable: true, sidecarAvailable: false, nsjailAvailable: true, nsjailFailed: true },
+      { atlasSandbox: undefined, vercelAvailable: false, sidecarAvailable: true, nsjailAvailable: false, nsjailFailed: true },
     ] as const;
 
     const observed: Array<{
@@ -1143,13 +1193,22 @@ describe("SandboxCredsGuardLive", () => {
     expect(divergent).toEqual([]);
 
     // Anti-vacuity, and load-bearing rather than decorative: a determination
-    // stuck at one constant would agree with a co-broken copy trivially. The
-    // first line is what catches the SILENT-INERT direction — a planner that
-    // stopped classifying any pin as fail-closed would empty `divergent` (guard
-    // and planner both go quiet, region boots green, explore refuses every
-    // request) and this is the only assertion that notices. Do not delete it as
-    // redundant. The second line cannot fail independently — `undefined` always
-    // takes the `default-chain` arm — and documents the pairing.
+    // stuck at one constant would agree with a co-broken copy trivially.
+    //
+    // The first line catches the SILENT-INERT direction. A planner that stopped
+    // classifying any pin as fail-closed empties `divergent` — guard and planner
+    // go quiet together — and the deny-all pin then degrades to the unsandboxed
+    // `just-bash` fallback (`explore.ts`, `case "exhausted"`), i.e. agent shell
+    // on the host, while boot and `/health` stay green. It is the only assertion
+    // IN THIS SWEEP that notices; the named `["vercel-sandbox"]` cases above
+    // would also go red, but nothing inside the loop would. Do not delete it as
+    // redundant.
+    //
+    // The second line is unlikely to fail alone — `undefined`, any non-vercel
+    // pin, and any list containing `just-bash` all satisfy it — so it mostly
+    // documents the pairing. It would still catch the inverse regression, a
+    // planner classifying EVERYTHING as fail-closed-on-vercel, which blocks boot
+    // on every deploy.
     expect(observed.some((o) => o.plannerFailsClosedOnVercel)).toBe(true);
     expect(observed.some((o) => !o.plannerFailsClosedOnVercel)).toBe(true);
   });

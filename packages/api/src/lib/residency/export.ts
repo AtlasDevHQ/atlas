@@ -257,6 +257,7 @@ export async function exportWorkspaceBundle(
       `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
               f.valid_from, f.valid_to, f.ingested_at, f.invalidated_at,
               f.extracted_at, f.provenance, f.status, f.visible_to,
+              f.pre_widening_visible_to,
               f.predicate_cardinality, f.created_at, f.updated_at
        FROM brain_facts f
        JOIN brain_episodes e ON e.id = f.source_episode_id
@@ -515,6 +516,16 @@ export async function exportWorkspaceBundle(
       provenance: f.provenance,
       status: f.status as ExportedBrainFact["status"],
       visibleTo: f.visible_to as string[],
+      // NULLABLE, unlike every other column in this block — `null` means the
+      // fact was never widened, which is the common case and a real value
+      // rather than a missing one (#4836). Narrowed rather than cast, because
+      // this is the ACL input that decides whether the target region discloses
+      // the claim's first speaker: a non-array arriving through query drift
+      // must land as `null`-the-value, not as an array-shaped thing the
+      // importer writes into a `text[]`.
+      preWideningVisibleTo: Array.isArray(f.pre_widening_visible_to)
+        ? (f.pre_widening_visible_to as string[])
+        : null,
       predicateCardinality: f.predicate_cardinality as ExportedBrainFact["predicateCardinality"],
       createdAt: toISO(f.created_at),
       updatedAt: toISO(f.updated_at),

@@ -246,10 +246,17 @@ export function projectProvenance(
   // unparseable-payload arm below and the ordinary arm cannot disagree about
   // entitlement. On `disclose` this is the all-null attribution the
   // unparseable arm wants; the ordinary arm rebuilds it with the real values.
+  //
+  //
+  // Tested against "disclose", not against "withhold", and that polarity is
+  // the safety property: if `BrainAttributionDecision` ever grows a third arm
+  // (an audit-override arm is the obvious candidate — see `attribution.ts`),
+  // this takes the WITHHELD branch until somebody deliberately handles it,
+  // instead of silently disclosing to it.
   const emptyAttribution: BrainFactAttributionView =
-    attribution === "withhold"
-      ? { visible: false }
-      : { visible: true, sourceId: null, actor: null, occurredAt: null };
+    attribution === "disclose"
+      ? { visible: true, sourceId: null, actor: null, occurredAt: null }
+      : { visible: false };
 
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return {
@@ -303,35 +310,20 @@ export function projectProvenance(
     episodeId: asString(p.episodeId),
     producer: asString(p.producer),
     attribution:
-      attribution === "withhold"
-        ? emptyAttribution
-        : {
+      attribution === "disclose"
+        ? {
             visible: true,
             sourceId: asString(p.sourceId),
             actor: asString(p.actor),
             occurredAt: asString(p.occurredAt),
-          },
+          }
+        : emptyAttribution,
     extractedAt: asString(p.extractedAt),
     reconciledAt: asString(p.reconciledAt),
     provisional,
     unresolved,
     payloadComplete,
   };
-}
-
-/**
- * `attributionDecision` in this module's row vocabulary — a `FactRow` plus the
- * reader, since both call sites here hold exactly that.
- *
- * Exists so the two of them cannot drift on which column feeds the decision;
- * naming `pre_widening_visible_to` twice is how one of them ends up reading
- * `visible_to` after a rename and disclosing to everybody.
- */
-function factAttribution(row: FactRow, ctx: BrainPrincipalContext): BrainAttributionDecision {
-  return attributionDecision(
-    { factId: row.id, preWideningVisibleTo: row.pre_widening_visible_to },
-    ctx,
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -446,11 +438,7 @@ interface FactRow {
   readonly status: string;
   readonly predicate_cardinality: string;
   readonly visible_to: unknown;
-  /**
-   * The grant before publish-time widening, or `null` when it never widened
-   * (#4836). NOT projected to the wire — it is an ACL input, and the only
-   * thing derived from it is whether `provenance.attribution` is disclosed.
-   */
+  /** ACL input for provenance attribution — see `AttributionRow` (#4836). */
   readonly pre_widening_visible_to: unknown;
   readonly provenance: unknown;
   readonly source_episode_id: string | null;
@@ -778,7 +766,9 @@ export async function loadFactCandidates(
       provenance: projectProvenance(
         row.provenance,
         row.source_episode_id,
-        factAttribution(row, ctx),
+        // `FactRow` structurally satisfies `AttributionRow`, so the column is
+        // named once — in the module that owns the decision.
+        attributionDecision(row, ctx, requestId),
       ),
       // `source_episode_id uuid NOT NULL` + the composite FK make the `null`
       // arm unreachable from the database, so it is defense in depth. The FK's
@@ -1027,7 +1017,7 @@ async function loadTensions(
           provenance: projectProvenance(
             row.provenance,
             row.source_episode_id,
-            factAttribution(row, ctx),
+            attributionDecision(row, ctx, requestId),
           ),
         }
       : { visible: false, factId: pair.other, edgeDirection: pair.direction };

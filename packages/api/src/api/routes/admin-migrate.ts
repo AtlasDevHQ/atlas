@@ -1049,8 +1049,14 @@ export async function importBundle(
       }
 
       await client.query(
-        `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, predicate_cardinality, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        // `pre_widening_visible_to` travels or the target region re-opens the
+        // #4836 disclosure: absent, every widened fact reads as never-widened
+        // and hands its first episode's actor, channel and timestamp to the
+        // whole org. It cannot be re-derived here — the import writes `status`
+        // verbatim, so the fact never re-publishes and the widening UPDATE
+        // that is its only writer never runs again.
+        `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, pre_widening_visible_to, predicate_cardinality, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [
           fact.id,
           orgId,
@@ -1066,6 +1072,10 @@ export async function importBundle(
           JSON.stringify(fact.provenance),
           fact.status,
           fact.visibleTo,
+          // `?? null` is the BUNDLE-VERSION fallback, not a permissive one: a
+          // bundle written before #4836 carries no widened facts this could
+          // describe, and `null` is already what those facts mean.
+          fact.preWideningVisibleTo ?? null,
           fact.predicateCardinality,
           fact.createdAt,
           fact.updatedAt,

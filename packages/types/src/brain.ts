@@ -13,7 +13,9 @@
  * differences are deliberate and load-bearing:
  *
  *   1. Every timestamp is an ISO-8601 `string`, not a `Date`.
- *   2. Provenance is FLATTENED and fully nullable. At rest it is `jsonb` with
+ *   2. Provenance is FLATTENED and fully nullable, EXCEPT where point 3
+ *      applies — the attribution triple is nested behind a discriminated
+ *      variant because it is an ACL boundary. At rest it is `jsonb` with
  *      one writer and a named shape (`BrainFactProvenance`), but nothing
  *      enforces that shape in the database — so a reader that types it
  *      optimistically renders a blank field when a key is renamed. Nullable
@@ -72,8 +74,19 @@ export interface BrainFactAttributionVisible {
  * (#4823) added a principal they hold, so its first episode's attribution is
  * withheld from them.
  *
- * Carries nothing — not by convention, but because the variant has no fields
- * to carry, which is the same reason {@link BrainFactEpisodeWithheld} has none.
+ * Carries nothing at all — and unlike {@link BrainFactEpisodeWithheld}, which
+ * keeps an `id`, there is nothing it COULD keep. That asymmetry is the honest
+ * reading of the two: an episode id is an opaque uuid whose row is separately
+ * ACL-gated, so handing it over costs nothing and gives a reviewer a handle.
+ * Attribution has no equivalent non-identifying half — every field in it names
+ * a person, a place, or a moment — so the withheld arm is empty.
+ *
+ * The emptiness is enforced, not merely intended: the mirror in
+ * `@useatlas/schemas` uses `z.strictObject`, so a producer that attached the
+ * triple to a `visible: false` variant fails the response check with a 500
+ * rather than shipping it. TypeScript's excess-property check is the first
+ * line of defence and covers object literals only — a spread or a widened
+ * variable slips past it, which is why the schema is the one that counts.
  *
  * This is the THIRD reason an attribution field can be absent, and it had to be
  * nameable rather than folded into either of the first two.
@@ -138,6 +151,12 @@ export interface BrainFactProvenanceView {
    * entitlement fact about the reader, and letting it flip this flag would
    * report an ACL decision as data corruption to every reader outside the
    * original grant.
+   *
+   * The accepted consequence, stated so nobody "closes" it later: a withheld
+   * reader can infer from `payloadComplete: true` that an `actor` key exists
+   * and that `occurredAt` parses. That is the one place the withheld arm is
+   * not information-free, and it is the right trade — the alternative reports
+   * a healthy record as corrupt to precisely the readers who cannot check.
    */
   readonly payloadComplete: boolean;
 }

@@ -207,11 +207,17 @@ grant — and it only ever adds a principal some episode's grant *already* named
 so a reader who gains the fact had already been told the claim. Once a fact is
 published its grant is sealed: later evidence does not re-open it.
 
-One thing it *does* newly disclose: provenance rides the fact's grant, and a
-fact's provenance names its **first** episode — for Slack, `<channelId>:<ts>`
-plus the actor. So a fact widened out of `#atlas-founders` tells its new readers
-that the claim was first made there, and when. Accepted deliberately (see the
-ADR-0036 §T5 amendment), not overlooked.
+One thing it *would* newly disclose, and no longer does: provenance rides the
+fact's grant, and a fact's provenance names its **first** episode — for Slack,
+`<channelId>:<ts>` plus the actor. So a fact widened out of `#atlas-founders`
+would tell its new readers that the claim was first made there, and when.
+[#4823](https://github.com/AtlasDevHQ/atlas/issues/4823) accepted that as the
+price of the fix; [#4836](https://github.com/AtlasDevHQ/atlas/issues/4836)
+narrowed it instead. The attribution triple (`sourceId`, `actor`, `occurredAt`)
+is now withheld from any reader who reaches the fact *only* because it widened,
+and kept intact for anyone entitled to the grant it had beforehand — so
+enabling private-channel ingest does not leak channel membership through the
+fact layer. See ADR-0036 §T5, `Amendment (2026-07-27, #4836)`.
 
 Before that landed, a publicly-restated private claim stayed private. That was
 fail-closed and never a leak, but it made org-wide information invisible to the

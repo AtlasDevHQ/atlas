@@ -246,7 +246,11 @@ describe("runMigrations", () => {
     //   Plus 0182 (fact_audience_member.synced_at + its staleness index — the
     //   "last VERIFIED" clock that bounds how long a permanently-failing
     //   roster read can keep granting access, #4808) = 183.
-    expect(count).toBe(183);
+    //   Plus 0183 (brain_facts.pre_widening_visible_to — the grant a fact held
+    //   BEFORE publish-time widening, the ACL input that decides whether a
+    //   reader gained by widening sees who stated the claim first, where and
+    //   when, ADR-0036 §T5 amendment 2026-07-27, #4836) = 184.
+    expect(count).toBe(184);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -458,6 +462,7 @@ describe("runMigrations", () => {
         "0180_brain_substrate.sql",
         "0181_brain_fts.sql",
         "0182_audience_member_synced_at.sql",
+        "0183_brain_facts_pre_widening_grant.sql",
       ],
     });
 

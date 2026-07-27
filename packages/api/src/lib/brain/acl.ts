@@ -794,11 +794,19 @@ export function isVisibleTo(row: AclGatedRow, ctx: BrainPrincipalContext): boole
     // below stays silent on purpose: it is the common case, per row.
     //
     // This condition is per READER, not per row, so a caller looping a result
-    // set emits one identical line per row. That is bounded (this is the
-    // mirror, used by review surfaces and exporters over a page of rows — the
-    // hot retrieval path is the SQL predicate, which logs once) and it is a
-    // signal you want loud. A caller that loops should still hoist
+    // set emits one identical line per row. That is bounded and it is a signal
+    // you want loud. A caller that loops should still hoist
     // `principalTokens(ctx).length === 0` above the loop and skip it entirely.
+    //
+    // The bound used to rest on "this mirror is only used by review surfaces
+    // and exporters; the hot retrieval path is the SQL predicate". #4836 added
+    // a second class of caller — `attributionDecision`, once per fact result
+    // including on `searchBrain` — so that is no longer the whole story. It
+    // stays bounded for two other reasons: both read surfaces throw
+    // `BrainReaderUnresolvedError` on `deny-all` before projecting any row, so
+    // a zero-principal reader never reaches the loop; and that caller
+    // short-circuits on a NULL pre-widening grant, so only WIDENED facts —
+    // rare by construction — reach here at all.
     log.warn(
       { table: row.table, workspaceId: ctx.workspaceId, origin: ctx.origin, userId: ctx.userId },
       "brain ACL: reader resolved to no principals — denying",

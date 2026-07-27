@@ -101,11 +101,13 @@ select ep.visible_to from brain_edges e join brain_episodes ep on ep.id = e.to_e
 >
 > **So C3 is now runnable on a PRIVATE claim, and that is the interesting direction.** The old guidance ("use S1, a public claim restated privately") existed only to avoid the disclosure; it now under-tests the fix. Run C3 both ways:
 >
-> | C3 variant | Reader | Expected |
-> |---|---|---|
-> | S1 public → restated privately | anyone | full attribution — the original grant was `org`, so nobody gained access by widening |
-> | P-style private → restated publicly | **B** (not in `#atlas-founders`) | claim visible, `provenance.attribution` = `{ "visible": false }`; the queue shows **Attribution restricted** |
-> | same | **A** (in `#atlas-founders`) | claim visible **with** full `actor` / `sourceId` / `occurredAt` |
+> | C3 variant | Reader | `pre_widening_visible_to` | Expected |
+> |---|---|---|---|
+> | S1 public → restated privately | anyone | `{org}` — **non-NULL**; this widens too (`org` ∪ `audience:X`) | full attribution: everyone matches `org` on the original grant, so nobody gained access by widening |
+> | P-style private → restated publicly | **B** (not in `#atlas-founders`) | `{audience:chat-channel:slack:<id>}` | claim visible, `provenance.attribution` = `{ "visible": false }`; the queue shows **Attribution restricted** |
+> | same | **A** (in `#atlas-founders`) | same | claim visible **with** full `actor` / `sourceId` / `occurredAt` |
+>
+> Read the middle column before concluding anything: a non-NULL value is **not** by itself a withholding. S1 widens and still discloses to everyone, because the grant it widened *from* was already `org`. Only NULL means "never widened".
 >
 > Both reader rows are needed: withholding from everybody would pass the first and is a regression, not a fix. Check the agent path too — `searchBrain` feeds chat answers, so ask a question that returns the widened fact as **B** and confirm the answer names no author and no channel.
 >

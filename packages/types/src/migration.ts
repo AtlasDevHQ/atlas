@@ -322,9 +322,15 @@ export interface ExportedAgentSessionMemory {
  * the importer its FK ordering for free (episode, then facts, then edges).
  *
  * Everything that makes the claim trustworthy travels with it — provenance,
- * the grant, review `status`, and all four temporal columns. A brain fact
+ * BOTH grants, review `status`, and all four temporal columns. A brain fact
  * stripped of any of those would arrive in the target region as an
  * unprovenanced, ungated claim, which is worse than not arriving at all.
+ *
+ * "Both grants" is the part that is easy to get wrong: `visibleTo` gates the
+ * CLAIM and {@link ExportedBrainFact.preWideningVisibleTo} gates its
+ * ATTRIBUTION (#4836). Carrying only the first would land every widened fact
+ * in the target region reading as never-widened — which discloses in full, and
+ * is the exact leak #4836 closed, silently restored by a supported path.
  */
 export interface ExportedBrainFact {
   /** Original UUID, preserved so edge endpoints survive the import. */
@@ -344,6 +350,22 @@ export interface ExportedBrainFact {
   status: "draft" | "published" | "archived";
   /** The grant principal set. Never empty (`cardinality > 0` is a CHECK). */
   visibleTo: string[];
+  /**
+   * The grant this fact held BEFORE publish-time widening, or `null` when it
+   * was never widened (#4836).
+   *
+   * The ACL input for provenance ATTRIBUTION, not a history field. It has to
+   * travel because it cannot be reconstructed: the widening UPDATE overwrote
+   * `visibleTo` in place, and the import writes `status` verbatim, so the
+   * target region never re-publishes the fact and never re-derives it. Absent,
+   * every widened fact reads as never-widened in the target and discloses its
+   * first episode's actor, channel and timestamp to the whole org.
+   *
+   * `null` is a legitimate value, not a missing one — a bundle written before
+   * this field existed carries no widened facts this can describe, and `null`
+   * is what those facts already mean.
+   */
+  preWideningVisibleTo: string[] | null;
   predicateCardinality: "single" | "multi";
   createdAt: string;
   updatedAt: string;

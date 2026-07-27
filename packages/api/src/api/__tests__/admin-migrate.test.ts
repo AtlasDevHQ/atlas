@@ -864,6 +864,9 @@ describe("validateBundle — company brain (#4767)", () => {
               provenance: { actor: "U-alice" },
               status: "published",
               visibleTo: ["org"],
+              // Never widened — the common case, and what the read path treats
+              // as "disclose" (#4836).
+              preWideningVisibleTo: null,
               predicateCardinality: "single",
               createdAt: "2026-06-01T00:05:00Z",
               updatedAt: "2026-06-01T00:05:00Z",

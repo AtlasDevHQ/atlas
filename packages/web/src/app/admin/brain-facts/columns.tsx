@@ -125,11 +125,15 @@ export function getBrainFactColumns(
                 Evidence restricted
               </span>
             )}
-            {/* A DIFFERENT withholding from the one above, and they co-occur
-                only by coincidence: that one is the episode's own grant, this
-                one is the fact's pre-widening grant (#4836). Labelled
-                separately so a reviewer is not left inferring that a missing
-                author is the same fact as a missing message. */}
+            {/* A DIFFERENT withholding from the one above — that one is the
+                episode's own grant, this one the fact's pre-widening grant
+                (#4836) — and on a widened fact the two will nearly ALWAYS fire
+                together, because a fact's provenance names the very episode
+                whose grant it was widened out of. Labelled separately anyway:
+                they carry the same icon, and the remedies differ (join the
+                channel vs. ask the original audience), so collapsing them
+                would leave a reviewer inferring that a missing author and a
+                missing message are one fact. */}
             {!provenance.attribution.visible && (
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                 <ShieldAlert className="size-3" aria-hidden />

@@ -32,7 +32,7 @@ function ctx(
   };
 }
 
-const row = (preWideningVisibleTo: unknown) => ({ factId: "fact-1", preWideningVisibleTo });
+const row = (pre_widening_visible_to: unknown) => ({ id: "fact-1", pre_widening_visible_to });
 
 describe("attributionDecision — the widened-fact disclosure (#4836)", () => {
   it("withholds from a reader who reaches the fact ONLY through widening", () => {
@@ -56,7 +56,17 @@ describe("attributionDecision — the widened-fact disclosure (#4836)", () => {
     // `PROMOTE_FACTS_SQL`, and every fact published before migration 0183.
     // Nobody gained access through widening, so every reader is an original.
     expect(attributionDecision(row(null), ctx())).toBe("disclose");
-    expect(attributionDecision(row(undefined), ctx())).toBe("disclose");
+  });
+
+  it("WITHHOLDS when the column is absent from the row, rather than reading it as NULL", () => {
+    // The distinction this module most had to get right. `pg` returns `null`
+    // for SQL NULL and `undefined` only when the column was not SELECTed, so
+    // `undefined` means the query drifted rather than that the fact is
+    // unwidened. Collapsing the two would hand a new read surface that forgot
+    // `f.pre_widening_visible_to` silent full disclosure: the required third
+    // argument to `projectProvenance` forces a new surface to ASK the
+    // question, but nothing forces it to select the column.
+    expect(attributionDecision(row(undefined), ctx({ role: "owner" }))).toBe("withhold");
   });
 
   it("discloses when the original grant already covered the reader by role", () => {
@@ -85,10 +95,27 @@ describe("attributionDecision — the widened-fact disclosure (#4836)", () => {
     }
   });
 
+  it("ignores NULL elements in the stored grant rather than matching on them", () => {
+    // `text[]` admits NULL elements and migration 0180's CHECK only requires
+    // one USABLE principal, so `[null, PRIVATE]` is legal at rest. The null
+    // must be inert: matching on it would make every reader an original reader.
+    expect(attributionDecision(row([null, PRIVATE]), ctx())).toBe("withhold");
+    expect(
+      attributionDecision(
+        row([null, PRIVATE]),
+        ctx({ audienceIds: ["chat-channel:slack:C-FOUNDERS"] }),
+      ),
+    ).toBe("disclose");
+    // A grant of nothing but nulls grants nobody anything.
+    expect(attributionDecision(row([null, null]), ctx({ role: "owner" }))).toBe("withhold");
+  });
+
   it("withholds an EMPTY original grant from everyone, including an owner", () => {
-    // `[]` matches no token, so nobody was entitled before the widening. It is
-    // also what a fully-malformed grant degrades to under `parseGrant`, and
-    // the two must agree: the grant granted nobody, so it discloses to nobody.
+    // `[]` overlaps nothing, so nobody was entitled before the widening. The
+    // check is array-overlap-shaped (via `isVisibleTo`) rather than
+    // parse-based, deliberately — what it must agree with is Postgres's `&&`.
+    // A fully-malformed grant lands here identically: it overlaps nothing, so
+    // it discloses to nobody.
     expect(attributionDecision(row([]), ctx({ role: "owner" }))).toBe("withhold");
   });
 

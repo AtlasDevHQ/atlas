@@ -153,6 +153,13 @@ export function isBrainFactStatusFilter(value: unknown): value is BrainFactStatu
  * reader who only ever saw the claim restated in public the identity of whoever
  * said it first in private, and when. That triple travels together because it
  * is one disclosure, so it is withheld together.
+ *
+ * SCOPE, because "fails the response check" is easy to over-read: this schema
+ * runs on the REST surface, where `admin-brain-facts.ts` pipes every response
+ * through `checked()`. `searchBrain` — the path that reaches agent chat — has
+ * no response parse at all, so on that side the guarantee is the discriminated
+ * union plus `projectProvenance` being the single constructor, not a runtime
+ * check. Both are covered by test; only one is covered by Zod.
  */
 export const BrainFactAttributionViewSchema = z.discriminatedUnion("visible", [
   z.object({

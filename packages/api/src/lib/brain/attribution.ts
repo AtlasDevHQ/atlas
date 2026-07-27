@@ -12,8 +12,8 @@
  * It is wrong for the fact's PROVENANCE. ADR-0036 §T5 has provenance ride the
  * fact's grant, and a fact's provenance names its FIRST episode — for Slack
  * `sourceId` is `<channelId>:<ts>`. So a claim first stated in a private
- * channel and later restated publicly published as
- * `{audience:chat-channel:slack:<id>, org}` and then told every org member who
+ * channel and later restated publicly publishes as
+ * `{audience:chat-channel:slack:<id>, org}` and would then tell every org member who
  * said it first, in which private channel, and when. That is private-channel
  * membership, which is precisely what the `audience:` grant model exists to
  * protect, and it is not derivable from the claim the reader already had.
@@ -32,23 +32,36 @@
  * that overwrites `visible_to`.
  *
  * Re-deriving it from today's evidence edges would be the obvious-looking
- * alternative and is wrong twice over: the widening UPDATE keeps
- * `status = 'draft'`, so evidence arriving after publish never re-opened the
- * grant — a derivation would drift from the grant that actually shipped — and
+ * alternative and is wrong twice over: the widening UPDATE keeps the
+ * `status = 'draft'` PREDICATE, so evidence arriving after publish never
+ * re-opened the grant — a derivation would drift from what actually shipped — and
  * it would put a multi-row query on the retrieval hot path to answer a question
  * one column already answers.
  *
- * ## Fail-closed, in the two directions that differ
+ * ## Three input states, and only one of them discloses
  *
- * NULL means NEVER WIDENED and discloses. That is not a fallback: a fact whose
- * grant was never widened has no reader who gained access through widening, so
- * every reader of it is an original reader. It is also the pre-#4836 behaviour
- * for every already-published fact, which is correct for the same reason.
+ * **SQL NULL** means NEVER WIDENED and discloses. That is not a fallback: a
+ * fact whose grant was never widened has no reader who gained access through
+ * widening, so every reader of it is an original reader.
  *
- * A NON-NULL value that does not decode as an array is DRIFT, and withholds.
- * The column is `text[]`, so this is unreachable from the database; if it ever
- * happens the reader's entitlement is unknown, and unknown entitlement on an
- * ACL boundary is a deny.
+ * **`undefined`** means the column was not in the SELECT — `pg` never produces
+ * it for a column a query asked for. Entitlement is unknown, so it withholds
+ * and logs. Keeping it distinct from NULL is the point: the required third
+ * argument to `projectProvenance` forces a new read surface to ask the
+ * question, but nothing forces it to select the column, and collapsing the two
+ * would hand that surface silent full disclosure.
+ *
+ * **A non-array** is drift and withholds. The column is `text[]`, so this is
+ * unreachable from the database; unknown entitlement on an ACL boundary is a
+ * deny.
+ *
+ * ## One residual, stated rather than papered over
+ *
+ * A fact widened BEFORE migration 0183 has NULL here and discloses, because
+ * its pre-widening grant was overwritten and is genuinely gone. That is an
+ * accepted residual, not a correctness claim — see 0183's own header. It is
+ * survivable only because brain extraction is staging-only today (#4836); once
+ * a customer is onboarded there is no equivalent escape.
  *
  * ## What this deliberately does not model
  *
@@ -75,42 +88,88 @@ const log = createLogger("brain-attribution");
  */
 export type BrainAttributionDecision = "disclose" | "withhold";
 
-/** A fact row's attribution inputs, as they arrive off `pg`. */
+/**
+ * A fact row, in the DATABASE's vocabulary rather than the wire's.
+ *
+ * Snake_case on purpose. Both read surfaces already hold a row of exactly this
+ * shape off `pg` (`FactRow` in `candidates.ts` and in `search.ts`), so taking
+ * it structurally means `pre_widening_visible_to` is named ONCE — here, in the
+ * module that owns the decision. An adapter per call site would reintroduce
+ * the hazard it was written to prevent: `{ preWideningVisibleTo: row.visible_to }`
+ * type-checks, and it discloses to everybody.
+ */
 export interface AttributionRow {
-  /** `brain_facts.id`, for the drift log line. */
-  readonly factId: string;
-  /** `brain_facts.pre_widening_visible_to` — `null` when never widened. */
-  readonly preWideningVisibleTo: unknown;
+  /** `brain_facts.id`, for the drift log lines. */
+  readonly id: string;
+  /**
+   * `brain_facts.pre_widening_visible_to`.
+   *
+   * `null` is SQL NULL — never widened. `undefined` is a DIFFERENT fact about
+   * the world: `pg` produces it only when the column was absent from the
+   * SELECT, so it means the query drifted, not that the fact is unwidened.
+   * The two are handled separately for that reason; see
+   * {@link attributionDecision}.
+   */
+  readonly pre_widening_visible_to: unknown;
 }
 
 /**
  * May this reader see the fact's first-episode attribution?
  *
- * Pure apart from one `log.warn` on the unreachable drift arm. The caller holds
- * the row already — this adds no query, which is why it can sit on the
- * `searchBrain` hot path.
+ * Adds no query — the caller already holds the row — which is what lets it sit
+ * on the `searchBrain` hot path.
  *
- * `ctx.workspaceId` is the containment boundary and is passed through to
- * {@link isVisibleTo} verbatim: the row came back from a workspace-scoped,
- * ACL-gated SELECT against `brain_facts`, so it is the reader's workspace by
- * construction, and `isVisibleTo` denies (and logs) if that ever stops being
- * true.
+ * ## Two things this does NOT do, stated because both look like they do
+ *
+ * **It is not tenant containment.** The row's workspace is taken from `ctx`,
+ * so {@link isVisibleTo}'s cross-workspace arm is inert here and cannot fire.
+ * Containment rests entirely on the caller: every row reaching this function
+ * came back from a workspace-scoped, ACL-gated SELECT against `brain_facts`.
+ * `isVisibleTo` is used for its GRANT-MATCH arm only — specifically so role
+ * implication and audience matching agree byte-for-byte with the push-down
+ * predicate rather than being re-derived here.
+ *
+ * **It is not pure.** It logs on both drift arms, and `isVisibleTo` logs on
+ * two of its own three denies. `acl.ts` warns that its zero-principal warn is
+ * per-reader and would repeat per row in a loop; that is unreachable from the
+ * two read surfaces, which throw `BrainReaderUnresolvedError` on `deny-all`
+ * before any row is projected. The per-row cost is bounded for a second
+ * reason: NULL short-circuits above, so only WIDENED facts — rare by
+ * construction — reach `isVisibleTo` at all.
  */
 export function attributionDecision(
   row: AttributionRow,
   ctx: BrainPrincipalContext,
+  requestId?: string,
 ): BrainAttributionDecision {
-  const grant = row.preWideningVisibleTo;
-  // The common case by a wide margin: nothing widened, so nobody reached this
-  // fact through widening.
-  if (grant === null || grant === undefined) return "disclose";
+  const grant = row.pre_widening_visible_to;
+
+  // SQL NULL — the common case by a wide margin. Nothing widened, so nobody
+  // reached this fact through widening.
+  if (grant === null) return "disclose";
+
+  // NOT the same as NULL, and conflating them was the fail-open this module
+  // most had to avoid. `pg` never yields `undefined` for a column it selected,
+  // so this means the column is missing from the projection — a new read
+  // surface, a rewritten SELECT, a row object built by hand. The required
+  // third argument to `projectProvenance` forces a new surface to ASK the
+  // question; nothing forces it to select the column, so this is where that
+  // omission has to be caught. Entitlement is unknown, so it is a deny.
+  if (grant === undefined) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, rowId: row.id, origin: ctx.origin, requestId },
+      "brain attribution: `pre_widening_visible_to` absent from the row — the query does not select it, so a widened fact would read as never-widened; withholding provenance attribution",
+    );
+    return "withhold";
+  }
 
   if (!isUnknownArray(grant)) {
     log.warn(
       {
         workspaceId: ctx.workspaceId,
-        rowId: row.factId,
+        rowId: row.id,
         origin: ctx.origin,
+        requestId,
         actualType: typeof grant,
       },
       "brain attribution: `pre_widening_visible_to` did not decode as an array — withholding provenance attribution rather than guessing entitlement",

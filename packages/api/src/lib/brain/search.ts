@@ -422,11 +422,7 @@ interface FactRow {
   readonly status: unknown;
   readonly predicate_cardinality: unknown;
   readonly visible_to: unknown;
-  /**
-   * The grant before publish-time widening, `null` when it never widened
-   * (#4836). An ACL input, never projected: the only thing read off it is
-   * whether this reader gets `provenance.attribution`.
-   */
+  /** ACL input for provenance attribution — see `AttributionRow` (#4836). */
   readonly pre_widening_visible_to: unknown;
   readonly provenance: unknown;
   readonly source_episode_id: string | null;
@@ -442,11 +438,20 @@ interface FactRow {
  * `tier` and `trustTier` are written here, at the one seam every fact row
  * passes through. The type makes an unlabeled row unrepresentable; this makes
  * it unconstructible in practice too.
+ *
+ * Takes the whole reader CONTEXT rather than a bare `workspaceId`, which it
+ * used to, because provenance attribution is now an entitlement decision
+ * (#4836) and not a projection. This is the surface that makes #4836 a
+ * user-visible disclosure rather than an admin-queue one: `searchBrain` feeds
+ * agent chat answers, so a widened fact reaching an org reader here would hand
+ * them a private channel's first speaker without anyone opening
+ * `/admin/brain-facts`.
  */
 function toFactResult(
   row: FactRow,
   ctx: BrainPrincipalContext,
   tensions: readonly BrainSearchTensionView[],
+  requestId?: string,
 ): BrainFactResult {
   const workspaceId = ctx.workspaceId;
   return {
@@ -462,18 +467,10 @@ function toFactResult(
     validTo: iso(row.valid_to),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    // Takes the whole reader context, not just `workspaceId`, because THIS is
-    // the surface the disclosure actually rides (#4836): `searchBrain` feeds
-    // agent chat answers, so a widened fact reaching an org reader here would
-    // hand them a private channel's first-speaker without anyone opening
-    // `/admin/brain-facts`.
     provenance: projectProvenance(
       row.provenance,
       row.source_episode_id,
-      attributionDecision(
-        { factId: row.id, preWideningVisibleTo: row.pre_widening_visible_to },
-        ctx,
-      ),
+      attributionDecision(row, ctx, requestId),
     ),
     corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
     tensions,
@@ -861,7 +858,7 @@ export async function searchBrainCore(
         "brain search: fact `visible_to` did not decode as an array — the grant could not be inspected",
       );
     }
-    return toFactResult(row, ctx, tensions.views.get(row.id) ?? []);
+    return toFactResult(row, ctx, tensions.views.get(row.id) ?? [], requestId);
   });
 
   const episodeResults: BrainEpisodeResult[] = [];

@@ -34,7 +34,10 @@ import {
   type BrainCandidateReader,
 } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import { BrainFactCandidateListResponseSchema } from "@useatlas/schemas";
+import {
+  BrainFactCandidateListResponseSchema,
+  BrainFactProvenanceViewSchema,
+} from "@useatlas/schemas";
 
 const WS = "ws-candidates-test";
 
@@ -782,5 +785,70 @@ describe("projectProvenance — the withheld arm (#4836)", () => {
     expect(p.episodeId).toBe("ep-1");
     expect(p.extractedAt).toBe(ISO);
     expect(p.reconciledAt).toBe(ISO);
+  });
+});
+
+describe("BrainFactAttributionViewSchema — the withheld arm is enforced, not conventional (#4836)", () => {
+  // The type's `visible: false` arm has no fields, but TypeScript's
+  // excess-property check covers OBJECT LITERALS only: a spread, or a widened
+  // variable, assigns straight through. `satisfies z.ZodType<…>` does not see
+  // strictness either — it is output-assignability, and a withheld arm that
+  // carried `actor` would still be assignable to the union. So `z.strictObject`
+  // is the actual enforcement, and these are what pin it.
+
+  const provenance = (attribution: unknown) => ({
+    source: "slack",
+    episodeId: "ep-1",
+    producer: "extraction:v1",
+    attribution,
+    extractedAt: ISO,
+    reconciledAt: ISO,
+    provisional: false,
+    unresolved: [],
+    payloadComplete: true,
+  });
+
+  it("REFUSES a withheld arm that smuggles the triple back in", () => {
+    // The regression this exists to catch: a second producer builds the
+    // withheld arm by spreading the disclosed one and nulling nothing.
+    for (const leak of [
+      { visible: false, actor: "U-FOUNDER" },
+      { visible: false, sourceId: "C-FOUNDERS:1799999999.001" },
+      { visible: false, occurredAt: ISO },
+      { visible: false, sourceId: null, actor: null, occurredAt: null },
+    ]) {
+      const parsed = BrainFactProvenanceViewSchema.safeParse(provenance(leak));
+      expect(parsed.success).toBe(false);
+    }
+  });
+
+  it("accepts the empty withheld arm and the full disclosed arm", () => {
+    expect(BrainFactProvenanceViewSchema.safeParse(provenance({ visible: false })).success).toBe(
+      true,
+    );
+    expect(
+      BrainFactProvenanceViewSchema.safeParse(
+        provenance({ visible: true, sourceId: "C1/17", actor: "U1", occurredAt: ISO }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("REFUSES a disclosed arm missing the fields it promises", () => {
+    // The other direction: `visible: true` with the triple omitted would let a
+    // producer express "disclosed but blank", which is the collapse the
+    // variant exists to prevent.
+    expect(BrainFactProvenanceViewSchema.safeParse(provenance({ visible: true })).success).toBe(
+      false,
+    );
+  });
+
+  it("passes what `projectProvenance` actually builds, on both arms", () => {
+    // Keeps the schema and the single constructor from drifting apart — the
+    // pairing matters because `searchBrain` has no response parse, so on that
+    // path the projection IS the guarantee.
+    for (const decision of ["disclose", "withhold"] as const) {
+      const built = projectProvenance(factRow().provenance, "ep-1", decision);
+      expect(BrainFactProvenanceViewSchema.safeParse(built).success).toBe(true);
+    }
   });
 });

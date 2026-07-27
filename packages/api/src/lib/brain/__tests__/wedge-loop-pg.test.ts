@@ -119,7 +119,6 @@ import type { SlackHistoryMessage } from "@atlas/api/lib/slack/api";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type {
   BrainEpisodeResult,
-  BrainFactProvenanceView,
   BrainFactResult,
   BrainSearchResult,
 } from "@useatlas/types";
@@ -250,7 +249,12 @@ type FactRow = {
   readonly object: string;
   readonly status: string;
   readonly visible_to: string[];
-  readonly provenance: BrainFactProvenanceView & Record<string, unknown>;
+  // The AT-REST shape (`BrainFactProvenance` in `lib/brain/types.ts`), not the
+  // wire projection — this row comes straight off the jsonb column. They were
+  // never the same type, and since #4836 they are visibly different: the wire
+  // view nests the attribution triple behind a discriminated variant, which
+  // the stored payload never carries.
+  readonly provenance: Record<string, unknown>;
 };
 
 type EpisodeRow = {

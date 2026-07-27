@@ -38,6 +38,12 @@ function orDash(value: string | null): React.ReactNode {
  * Says WHY, rather than rendering three em-dashes. An em-dash here would read
  * as "the evidence has no author and no timestamp", which is a statement about
  * the data and is false — and it is the kind of statement a reviewer acts on.
+ *
+ * The copy is deliberately about the AUDIENCE rather than about channel
+ * membership. The dominant case is a private chat channel, but the withheld
+ * arm is also reachable when the original grant was a `role:` the reader
+ * lacks, or a `user:`, so "you are not in that channel" would be wrong some of
+ * the time. "An audience you are not part of" is true of every arm.
  */
 function AttributionRestricted() {
   return (
@@ -45,8 +51,9 @@ function AttributionRestricted() {
       <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       <p className="text-xs text-muted-foreground">
         <span className="font-medium text-foreground">Attribution restricted.</span> This claim was
-        first stated somewhere you are not a member of, and reaches you only because it was later
-        restated where you are. Who said it first, where, and when stay with that audience.
+        first recorded under an audience you are not part of, and reaches you only because it was
+        later restated under one you are. Who stated it first, where, and when stay with that
+        audience.
       </p>
     </div>
   );

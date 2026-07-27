@@ -34,7 +34,7 @@ import { capOutput, markCappedStream } from "./backends/shared";
 import {
   planSandboxSelection,
   runSandboxPlan,
-  firstAvailableBackend,
+  resolveSandboxBackend,
   formatSandboxPriorityFailure,
   assertNever,
   type SandboxSelectionEnv,
@@ -123,13 +123,33 @@ function useNsjail(): boolean {
   return _nsjailAvailable ?? false;
 }
 
-/** Track nsjail init failures to avoid infinite retry loops. */
+/**
+ * Track nsjail init failures to avoid infinite retry loops.
+ *
+ * Strictly a runtime-degradation flag: "this backend is broken, do not retry
+ * it". It is read by `isBackendAvailable` (reporting) and `tryCreateBackend`
+ * (construction), and reaches the planner only via the soft auto-detect branch.
+ * It must never be read as "the operator's pin no longer applies" — that
+ * conflation is what let a failed capability probe silently drop
+ * `ATLAS_SANDBOX=nsjail` to unsandboxed just-bash (#4829). Under the pin,
+ * setting this flag now makes explore fail CLOSED.
+ */
 let _nsjailFailed = false;
 
 /** Track sidecar init failures so the health endpoint reports accurately. */
 let _sidecarFailed = false;
 
-export type ExploreBackendType = SandboxBackendName | "plugin";
+/**
+ * What explore resolves to for reporting purposes.
+ *
+ * `"fail-closed"` is not a backend: it means no backend will construct and
+ * explore throws on every request. Widening this union (rather than collapsing
+ * the state into `"just-bash"`) is what makes the distinction a COMPILE error at
+ * every consumer — `BACKEND_ISOLATION` is keyed by real backends only, so a
+ * surface that indexes it must now branch on fail-closed instead of silently
+ * reporting an unsandboxed-but-working deployment (#4828).
+ */
+export type ExploreBackendType = SandboxBackendName | "plugin" | "fail-closed";
 
 /** Name of the active sandbox plugin (if any). Set during backend init. */
 let _activeSandboxPluginId: string | null = null;
@@ -186,11 +206,16 @@ export function snapshotExploreSandboxEnv(): SandboxSelectionEnv {
  *
  * When `sandbox.priority` is configured, the first available backend in the
  * priority list is returned instead of the default chain.
+ *
+ * Returns `"fail-closed"` when the resolved plan cannot yield any backend and
+ * is not allowed to degrade — a `sandbox.priority` pin without `just-bash`, or
+ * an unusable `ATLAS_SANDBOX=nsjail` pin. Explore throws on every request in
+ * that state; it is emphatically not a `just-bash` deployment.
  */
 export function getExploreBackendType(): ExploreBackendType {
   if (_activeSandboxPluginId) return "plugin";
   const plan = planSandboxSelection(snapshotExploreSandboxEnv());
-  return firstAvailableBackend(plan, isBackendAvailable) ?? "just-bash";
+  return resolveSandboxBackend(plan, isBackendAvailable);
 }
 
 /**
@@ -390,7 +415,12 @@ export function _resetSandboxFailureFlagsForTest(): void {
 }
 
 /** Permanently mark nsjail as failed and clear the backend cache.
- *  Called from explore-nsjail.ts on exit code 109 (sandbox setup failure). */
+ *  Called from explore-nsjail.ts on exit code 109 (sandbox setup failure), and
+ *  from the startup capability probe.
+ *
+ *  Under `ATLAS_SANDBOX=nsjail` this makes explore fail CLOSED (the pin's
+ *  hard-fail step stands and can no longer construct), not degrade — see
+ *  `_nsjailFailed`. */
 export function markNsjailFailed(): void {
   _nsjailFailed = true;
   for (const [key, cached] of backendCache) {

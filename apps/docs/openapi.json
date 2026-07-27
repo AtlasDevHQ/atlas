@@ -1504,7 +1504,8 @@
                                 "sidecar",
                                 "vercel-sandbox",
                                 "just-bash",
-                                "plugin"
+                                "plugin",
+                                "fail-closed"
                               ]
                             },
                             "isolated": {
@@ -2054,7 +2055,8 @@
                                     "sidecar",
                                     "vercel-sandbox",
                                     "just-bash",
-                                    "plugin"
+                                    "plugin",
+                                    "fail-closed"
                                   ]
                                 },
                                 "isolated": {

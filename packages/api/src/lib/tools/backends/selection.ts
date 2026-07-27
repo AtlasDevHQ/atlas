@@ -45,7 +45,18 @@ export interface SandboxSelectionEnv {
    * detection, so the pin-inclusive and pure-detection producers agree there.
    */
   readonly nsjailAvailable: boolean;
-  /** nsjail permanently marked failed this process (exit 109 / hard init failure). */
+  /**
+   * nsjail permanently marked failed this process (exit 109 / hard init
+   * failure). This is a RUNTIME-DEGRADATION signal only — "do not retry this
+   * backend" — and the planner consults it exclusively on the SOFT auto-detect
+   * branch, where skipping a known-broken backend is the whole point.
+   *
+   * It deliberately does NOT reach the explicit-pin branch. Letting it delete
+   * the pin's hard-fail step made a failed nsjail read as permission to run
+   * unsandboxed: `ATLAS_SANDBOX=nsjail` degraded silently to just-bash the
+   * moment the boot capability probe failed (#4829). A backend that broke is
+   * never a reason to weaken the operator's posture.
+   */
   readonly nsjailFailed: boolean;
   /**
    * Operator-configured backend priority. Sourced from `getConfig().sandbox
@@ -123,10 +134,18 @@ export function planSandboxSelection(env: SandboxSelectionEnv): SandboxPlan {
     steps.push({ kind: "vercel-sandbox", hardFail: false });
   }
 
-  if (env.atlasSandbox === "nsjail" && !env.nsjailFailed) {
+  if (env.atlasSandbox === "nsjail") {
     // Explicit nsjail is hard-fail by contract; nothing after it is reachable.
     // (Vercel still precedes it: an operator on Vercel with ATLAS_SANDBOX=nsjail
     // gets Vercel first, matching the long-standing explore behavior.)
+    //
+    // `nsjailFailed` is NOT consulted here (#4829). The step stands whether or
+    // not nsjail is currently usable: an unusable pinned backend must make the
+    // tool REFUSE, and a step that is present-but-unconstructible is exactly how
+    // that refusal is expressed (`runSandboxPlan` short-circuits to
+    // `"hard-fail"`, `resolveSandboxBackend` reports `"fail-closed"`). Gating it
+    // on the flag deleted the step instead, which turned a broken sandbox into
+    // an unsandboxed one.
     steps.push({ kind: "nsjail", hardFail: true });
   } else {
     // Sidecar takes priority over nsjail auto-detection (Railway sets
@@ -143,19 +162,45 @@ export function planSandboxSelection(env: SandboxSelectionEnv): SandboxPlan {
 }
 
 /**
- * The backend a health/status reporter would name for this plan: the first step
- * whose kind reports available, else `null` (⇒ the caller reports the fallback,
- * typically `"just-bash"`). Kept separate from {@link runSandboxPlan} because
- * reporting must not actually construct backends.
+ * What a status surface should report for a plan.
+ *
+ * `"fail-closed"` is NOT a backend — it means no backend will construct and the
+ * tool refuses every request. It is a distinct member rather than a collapse
+ * into `"just-bash"` precisely because those two states are opposites: one runs
+ * agent shell on the host with no isolation, the other runs nothing at all.
+ * Reporting the second as the first told operators their deployment was
+ * unsandboxed-but-working when it was fail-closed-and-broken (#4828).
  */
-export function firstAvailableBackend(
+export type SandboxResolution = SandboxBackendName | "fail-closed";
+
+/**
+ * The backend a health/status reporter should name for this plan, resolved
+ * WITHOUT constructing anything (reporting must have no side effects, which is
+ * why this is separate from {@link runSandboxPlan}).
+ *
+ * The walk mirrors `runSandboxPlan`'s exactly, and that correspondence is the
+ * whole contract — boot, `/api/health`, and the request path must not be able to
+ * disagree about the same inputs (the #4824 invariant):
+ *
+ * - first available step wins, same as the first step that constructs;
+ * - an UNAVAILABLE hard-fail step short-circuits, same as `runSandboxPlan`
+ *   returning `"hard-fail"` there. Nothing after it is reachable, so naming a
+ *   later backend would describe a fall-through that cannot happen;
+ * - exhaustion defers to `plan.onExhausted`, so a fail-closed pin reports
+ *   `"fail-closed"` and only a genuinely degrading plan reports `"just-bash"`.
+ *
+ * Total by construction: every plan maps to a backend or to `"fail-closed"`, so
+ * callers have no `?? "just-bash"` fallback to get wrong.
+ */
+export function resolveSandboxBackend(
   plan: SandboxPlan,
   isAvailable: (kind: SandboxBackendName) => boolean,
-): SandboxBackendName | null {
+): SandboxResolution {
   for (const step of plan.steps) {
     if (isAvailable(step.kind)) return step.kind;
+    if (step.hardFail) return "fail-closed";
   }
-  return null;
+  return plan.onExhausted === "fail-closed" ? "fail-closed" : "just-bash";
 }
 
 /** A backend that could not be constructed, with a sanitized operator-facing reason. */
@@ -257,21 +302,91 @@ export function formatSandboxPriorityFailure(
     failures.length > 0
       ? ` Failed backends: ${failures.map((f) => `${f.name}: ${f.reason}`).join("; ")}.`
       : "";
+  const guidance = [
+    ...credentialGuidance(priority),
+    ...(deployMode !== "saas"
+      ? ["Add 'just-bash' to the priority list if you want an unsandboxed fallback."]
+      : []),
+    "Fix the backend configuration.",
+  ];
+
+  return `All backends in sandbox.priority (${priority.join(", ")}) failed to initialize.${summary} ${guidance.join(" ")}`;
+}
+
+/**
+ * Per-backend remediation naming the credential each one actually needs.
+ *
+ * Scoped to the backends in play, which is the point: under a
+ * `priority: ["vercel-sandbox"]` pin the generic "install nsjail or configure
+ * ATLAS_SANDBOX_URL" advice is not merely unhelpful, it is impossible to act on
+ * — the pin excludes both, so an operator who follows it changes nothing while
+ * the real cause (a missing `VERCEL_TOKEN`) goes unnamed (#4828).
+ */
+function credentialGuidance(backends: readonly SandboxBackendName[]): string[] {
   const guidance: string[] = [];
-  if (priority.includes("vercel-sandbox")) {
+  if (backends.includes("vercel-sandbox")) {
     guidance.push(
       "For Vercel Sandbox off-Vercel, set VERCEL_TEAM_ID, VERCEL_PROJECT_ID, and VERCEL_TOKEN.",
     );
   }
-  if (priority.includes("sidecar")) {
+  if (backends.includes("sidecar")) {
     guidance.push("For sidecar, set ATLAS_SANDBOX_URL.");
   }
-  if (deployMode !== "saas") {
-    guidance.push("Add 'just-bash' to the priority list if you want an unsandboxed fallback.");
+  if (backends.includes("nsjail")) {
+    guidance.push("For nsjail, install the binary or set ATLAS_NSJAIL_PATH.");
   }
-  guidance.push("Fix the backend configuration.");
+  return guidance;
+}
 
-  return `All backends in sandbox.priority (${priority.join(", ")}) failed to initialize.${summary} ${guidance.join(" ")}`;
+/**
+ * Operator-facing explanation of a plan that {@link resolveSandboxBackend}
+ * reports as `"fail-closed"` — every request to the tool will be refused.
+ *
+ * Reports availability rather than construction failure because the caller is a
+ * REPORTING surface: it never constructed anything, so it must not claim
+ * backends "failed to initialize". The distinction matters to the operator —
+ * "never configured" and "configured but broken" have different fixes.
+ *
+ * Takes no availability predicate: given the documented precondition, every step
+ * the resolver CONSIDERED is by definition unavailable (an available one would
+ * have been returned instead), up to and including the hard-fail step that
+ * short-circuited the walk. Deriving that from the plan keeps this callable from
+ * `startup.ts` without exporting explore's private `isBackendAvailable`, which
+ * would be `undefined` under the partial `mock.module()` of `explore.ts` used by
+ * 40+ test files.
+ *
+ * Precondition: `resolveSandboxBackend(plan, …)` returned `"fail-closed"`.
+ */
+export function formatSandboxFailClosed(
+  plan: SandboxPlan,
+  deployMode: "saas" | "self-hosted" | undefined,
+): string {
+  const hardFailAt = plan.steps.findIndex((s) => s.hardFail);
+  const considered = hardFailAt === -1 ? plan.steps : plan.steps.slice(0, hardFailAt + 1);
+  const unavailable = considered.map((s) => s.kind);
+  const guidance = credentialGuidance(unavailable);
+
+  if (plan.source === "config-priority") {
+    if (deployMode !== "saas") {
+      guidance.push("Add 'just-bash' to sandbox.priority if you want an unsandboxed fallback.");
+    }
+    return (
+      `Explore tool: UNAVAILABLE — every backend in sandbox.priority ` +
+      `(${plan.configPriority.join(", ")}) is unavailable and the pin has no 'just-bash' ` +
+      `fallback, so the tool fails closed and refuses every request. ` +
+      `Unavailable: ${unavailable.join(", ")}. ${guidance.join(" ")}`
+    );
+  }
+
+  // Default chain — the only way here is an unavailable hard-fail step, which
+  // today means the ATLAS_SANDBOX=nsjail pin.
+  return (
+    `Explore tool: UNAVAILABLE — ATLAS_SANDBOX=nsjail is pinned but nsjail is not usable ` +
+    `on this host, so the tool fails closed and refuses every request (the pin is hard-fail ` +
+    `by contract — it does not degrade to an unsandboxed backend). ` +
+    `${guidance.join(" ")} ` +
+    `Or unset ATLAS_SANDBOX to allow the normal fallback chain.`
+  );
 }
 
 /** Isolation posture of a sandbox backend. */

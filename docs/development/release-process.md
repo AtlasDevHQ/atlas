@@ -98,6 +98,66 @@ The two key rules:
 
 If a regression slips out and the fix isn't ready yet, the rollback move is to tag the previous tag's SHA as the next patch: `git tag -a v0.1.4 <SHA-of-v0.1.3> -m "rollback to v0.1.3"`. The new prod deploy boots the prior code; ship a forward fix afterward.
 
+### When `main` is NOT a safe hotfix source
+
+The flow above assumes **`main` ≈ prod + your fix**. That assumption breaks whenever an unreleased arc has landed on `main` — the first real instance was Brain M1, merged 2026-07-26 while prod sat on `v0.1.0` and the `v0.2.0` tag was deliberately held.
+
+Neither documented escape hatch works in that state. "Tag anyway" ships the whole unreleased arc; "revert the in-flight commits" means reverting a thirteen-issue milestone merge under time pressure. So there is a third lane — **branch from the tag `prod` is on, not from `main`** — dry-run verified 2026-07-27.
+
+**Check first.** If this returns 0, use the normal flow above; this section is for when it doesn't:
+
+```bash
+git fetch origin main prod
+git rev-list --count origin/prod..origin/main   # commits on main that prod has never seen
+```
+
+**The lane:**
+
+```bash
+# 1. Branch from the tag prod is actually serving — NOT from main.
+git fetch origin prod --tags
+git worktree add .claude/worktrees/hotfix -b hotfix/<slug> v0.1.0
+
+# 2. Fix, commit. Verify you're on the prod tree, not main's:
+git rev-list --count origin/prod..HEAD          # should be exactly your commits
+
+# 3. Get CI onto THIS SHA — see the CI gap below. Push the branch, then:
+git push -u origin hotfix/<slug>
+gh workflow run ci.yml -R AtlasDevHQ/atlas --ref hotfix/<slug>
+gh run list -R AtlasDevHQ/atlas --branch hotfix/<slug> --limit 1   # watch it green
+
+# 4. Tag the hotfix branch head. Annotated, always.
+git tag -a v0.1.1 -m "hotfix: <what broke, one line>"
+git push origin v0.1.1
+
+# 5. Advance prod. `^{}` dereferences the tag object to its commit.
+git push origin v0.1.1^{}:prod --force-with-lease
+
+# 6. Verify each prod service is serving the new SHA (Step 9 of /release applies unchanged).
+
+# 7. Backport to main with a MERGE commit, not a squash — see below.
+gh pr create --base main --head hotfix/<slug> --title "..."
+gh pr merge <PR> --merge          # NOT --squash
+```
+
+**Four things the dry run surfaced. Read them before you need them.**
+
+1. **`/release` cannot do this.** Its Step 1 refuses to run off `main` by design, and Step 6 pushes `main`'s SHA to `prod`. The lane above is manual on purpose — don't try to talk `/release` into it.
+
+2. **CI does not run on `hotfix/**` branches.** `ci.yml` triggers only on `push`/`pull_request` for `[main, "milestone/**"]`, so a plain push to a hotfix branch gets **zero checks**. Worse, opening a PR into `main` doesn't fix it: GitHub tests the *merge result* (`main` + your fix, including the unreleased arc), which is not the tree going to prod. Step 3's `workflow_dispatch` is the lever that runs CI against the hotfix SHA itself — it exists precisely for this. **Do not skip it**: without it the exact tree you ship to prod is never tested.
+
+3. **CodeQL will not run.** `Analyze (javascript-typescript)` is default-setup and `main`-only; it cannot be branch-filtered. Same caveat already documented for `milestone/**` branches. A hotfix ships without it — accept it consciously, and keep the diff small enough that the gap is defensible.
+
+4. **A squash backport orphans the tag.** Every release tag to date is reachable from `main`, because every one was cut from `main`. Squash-merging the backport creates a *new* SHA, leaving the tagged commit outside `main`'s ancestry — `git tag --merged main` would stop listing it, and `git describe` on `main` would skip it. Merging with `--merge` keeps the tagged commit in the ancestry and preserves that invariant. Verify after backporting:
+
+   ```bash
+   git merge-base --is-ancestor v0.1.1^{} origin/main && echo "tag still on main"
+   ```
+
+**What stays identical to the normal flow:** the annotated-tag rule, `^{}` dereferencing, `--force-with-lease` (the hotfix descends from the tag `prod` is on, so the push is a clean fast-forward), the per-service commit-hash verification, and the changelog entry.
+
+Once the held tag ships and `origin/prod..origin/main` returns to 0, this lane goes dormant and the normal flow applies again.
+
 ## What gets a major vs minor vs patch
 
 See [ADR-0008 § Semver discipline](../adr/0008-versioning-and-release-tags.md#semver-discipline-rules-for-git-tags) for the table. Quick reference:
@@ -130,11 +190,12 @@ We don't have pre-release tags (see ADR-0008). Use staging as the soak environme
 Tags are unique — the second `git push origin <version>` fails. The losing party re-runs `/release` against the current state of `main` and gets the next patch. The `--force-with-lease` on the prod-branch push provides a second safety net: even if both releases somehow created different tags, the second prod-push refuses to rewind a `prod` advanced by the first.
 
 **"I need to ship to prod but `main` has half-finished work."**
-This is the hotfix-batching problem. Two options:
+This is the hotfix-batching problem. Three options:
 1. Tag anyway — the in-flight work ships. If it's behind a flag or doesn't break boot, this is fine.
 2. Revert the in-flight commits on `main`, tag, then re-land them. Costs a revert + re-merge but cleanly isolates the hotfix.
+3. **Branch from the tag `prod` is on** — see [When `main` is NOT a safe hotfix source](#when-main-is-not-a-safe-hotfix-source). Use this when the in-flight work is too large to revert and too risky to ship, which is exactly the case a held minor tag creates.
 
-A release branch would solve this; we don't have one because for a solo maintainer the cost outweighs the benefit. Reassess if the team grows.
+Option 3 is the release-branch pattern applied on demand rather than standing. We don't keep a permanent release branch because for a solo maintainer the ongoing cost outweighs the benefit — but a held tag makes the *temporary* version of it necessary, so the lane is documented rather than improvised.
 
 ## References
 

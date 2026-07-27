@@ -78,20 +78,26 @@ Post these in `#atlas-eng` too. Each should produce an **episode** but **no fact
 |---|---|---|
 | C1 | Re-post **S2 verbatim**, same wording, an hour later | New episode, **byte-exact same SPO** → corroborates the existing belief rather than minting a second one. Two separate drafts here is the dedupe failing |
 | C2 | `Atlas's package manager is bun.` | Same *claim* as S2, different words → **expected to mint a separate belief**. Known M1 limitation (the entity resolver ships as a passthrough), so record it and do not file it as a bug |
-| C3 | Post **S1 verbatim into the private channel too**, a few minutes after the public copy | **Cross-grant corroboration.** Byte-exact same SPO, two different grants → the second episode corroborates rather than creating, and only ONE fact survives. Record **which grant it keeps** and confirm `brain_edges` holds *both* episodes |
+| C3 | Post **S1 verbatim into the private channel too**, a few minutes after the public copy | **Cross-grant corroboration.** Byte-exact same SPO, two different grants → the second episode corroborates rather than creating, and only ONE fact survives. At ingest the fact keeps its **first-seen** grant; at publish it is promoted with the **union** of its own grant and those of its `provenance` evidence. `brain_edges` holds *both* episodes throughout |
 | X1 | `Correction: the prod branch is now advanced by the deploy bot, not /release.` | Conflicts with **S1** on a **single**-cardinality predicate → should surface as a contradiction counterpart in the review UI, not silently overwrite S1 |
 
 X1 is the highest-value single message in this corpus. Silent overwrite of a conflicting single-cardinality claim would be a real defect and is exactly what the review surface exists to catch.
 
-C3 was added after the 2026-07-26 soak found it by accident (a double-post). It matters because a real company Slack repeats the same claim across channels constantly. Confirmed behaviour as of M1: **the first-seen grant wins**, so a publicly-restated claim stays locked to the private audience it was first seen in — fail-closed, but it makes public information invisible. Tracked as [#4823](https://github.com/AtlasDevHQ/atlas/issues/4823); until that lands, C3's expected result is "keeps the narrower grant", not a failure. Verify with:
+C3 was added after the 2026-07-26 soak found it by accident (a double-post). It matters because a real company Slack repeats the same claim across channels constantly. The original M1 behaviour was **first-seen grant wins**, so a publicly-restated claim stayed locked to the private audience it was first seen in — fail-closed, but it made public information invisible. [#4823](https://github.com/AtlasDevHQ/atlas/issues/4823) fixed that at the publish seam (merged `d195a83fb`), so a claim first seen in `#atlas-founders` and restated in `#atlas-eng` now publishes as `{audience:chat-channel:slack:<id>, org}`.
+
+**Run C3 in two stages — the stages have different expected answers, and collapsing them hides the bug.** Before publishing, the draft must still carry only the private grant (widening at ingest would be an unattended ACL mutation). After publishing, it must carry both.
 
 ```sql
--- one fact, which grant?
-select subject, predicate, object, visible_to from brain_facts where object = '/release';
--- both episodes recorded as evidence?
+-- STAGE 1, before publish: exactly one fact, still narrowly granted?
+select subject, predicate, object, visible_to, status from brain_facts where object = '/release';
+-- STAGE 2, after publish: same single row, now the UNION of both grants?
+select subject, predicate, object, visible_to, status from brain_facts where object = '/release';
+-- both episodes recorded as evidence, at both stages?
 select ep.visible_to from brain_edges e join brain_episodes ep on ep.id = e.to_episode_id
  where e.from_fact_id = (select id from brain_facts where object = '/release');
 ```
+
+> **Provenance disclosure — read before running §D.** Widening carries the fact's provenance with it, so a fact widened out of a private channel newly discloses its **first** episode's `sourceId` (a Slack `source_id` is `<channelId>:<ts>`), `actor` and `occurredAt` — i.e. *who said it first, where, and when*. Not the episode body: `brain_episodes` stays ACL-gated in its own right. Recorded as an accepted price in ADR-0036 §T5's `Amendment (2026-07-26, #4823)`; narrowing attribution on a widened fact is a separate decision nobody has made, and the seam for it is `projectProvenance` in `lib/brain/candidates.ts`. **This means C3 and §D interact:** if you run C3 on a `#atlas-founders` claim, the widened fact tells every org member that its author is in the private channel. Use S1 (a public claim restated privately) for C3, not P1/P2/P3.
 
 ---
 
@@ -171,7 +177,7 @@ R3 and R5 are the two that would let unreviewed or withdrawn claims reach a user
 | B | **false positives / 12** | 0–1 | |
 | C1 | duplicate beliefs from verbatim repost | 0 | |
 | C2 | separate belief from paraphrase | 1 (expected limitation) | |
-| C3 | one fact survives cross-grant; both edges recorded | yes; keeps narrower grant (#4823) | |
+| C3 | one fact survives cross-grant; both edges recorded | yes; narrow at draft, **union** at publish (#4823) | |
 | X1 | contradiction surfaced, S1 not overwritten | yes | |
 | D | B denied on all 3 private facts | yes | |
 | D | revocation within one interval | yes | |

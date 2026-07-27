@@ -664,6 +664,8 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
   const origDatasource = process.env.ATLAS_DATASOURCE_URL;
   const origDatabaseUrl = process.env.DATABASE_URL;
   const origExpected = process.env.ATLAS_DATASOURCE_EXPECTED;
+  const origDemoData = process.env.ATLAS_DEMO_DATA;
+  const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
 
   // Staging's exact shape: DATABASE_URL set, ATLAS_DATASOURCE_URL unset, which
   // makes checkDatasourceUrlPresence raise MISSING_DATASOURCE_URL as an ERROR
@@ -677,6 +679,8 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
   beforeEach(() => {
     delete process.env.ATLAS_DATASOURCE_URL;
     delete process.env.ATLAS_DATASOURCE_EXPECTED;
+    delete process.env.ATLAS_DEMO_DATA;
+    delete process.env.ATLAS_DEPLOY_MODE;
     process.env.DATABASE_URL = "postgresql://internal:internal@localhost:5432/atlas";
     connMetadata = [];
     pluginMetadata = [];
@@ -698,6 +702,10 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
     else delete process.env.DATABASE_URL;
     if (origExpected !== undefined) process.env.ATLAS_DATASOURCE_EXPECTED = origExpected;
     else delete process.env.ATLAS_DATASOURCE_EXPECTED;
+    if (origDemoData !== undefined) process.env.ATLAS_DEMO_DATA = origDemoData;
+    else delete process.env.ATLAS_DEMO_DATA;
+    if (origDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+    else delete process.env.ATLAS_DEPLOY_MODE;
     const config = await import("@atlas/api/lib/config");
     config._setConfigForTest(null);
     const expectation = await import("@atlas/api/lib/db/datasource-expectation");
@@ -743,6 +751,10 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
     expect(components.datasource?.status).toBe("disabled");
     // The undeclared absence is a finding, so it keeps the diagnostic code.
     expect(components.datasource?.message).toBe("MISSING_DATASOURCE_URL");
+    // The legacy `checks` surface is unchanged by the declaration in either
+    // direction — it has always reported the configuration fact, not intent.
+    const checks = body.checks as Record<string, Record<string, unknown>>;
+    expect(checks.datasource?.status).toBe("not_configured");
   });
 
   it("an unrecognized declaration is treated as undeclared — still degrades", async () => {
@@ -777,6 +789,30 @@ describe("GET /api/health — datasource expectation declaration (#4854)", () =>
   it("declared not-expected CANNOT green a configured datasource that fails", async () => {
     process.env.ATLAS_DATASOURCE_EXPECTED = "false";
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    mockValidateEnvironment.mockResolvedValue([]);
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.status).toBe("error");
+    // Pins the `dsNotConfigured &&` half of the narrowing, not just the rollup:
+    // drop it and the component reads "down" while claiming no datasource is
+    // expected — a self-contradicting tile shown mid-outage. The rollup
+    // assertion above survives that mutation; this one doesn't.
+    const components = body.components as Record<string, Record<string, unknown>>;
+    expect(components.datasource?.status).toBe("down");
+    expect(components.datasource?.message).not.toContain("none is expected");
+  });
+
+  // `hasDatasource` has two arms — the env var and a `default` in the
+  // ConnectionRegistry. The multi-tenant shape this feature targets is more
+  // likely to register `default` from atlas.config.ts than to set the env var,
+  // so pin the declaration as inert against the registry arm too.
+  it("declared not-expected is inert when 'default' comes from the registry", async () => {
+    process.env.ATLAS_DATASOURCE_EXPECTED = "false";
+    connMetadata = [{ id: "default", dbType: "postgres" }];
     mockValidateEnvironment.mockResolvedValue([]);
     dsQueryImpl = () => Promise.reject(new Error("connection refused"));
 

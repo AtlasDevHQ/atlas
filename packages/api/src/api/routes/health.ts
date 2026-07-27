@@ -382,10 +382,8 @@ health.openapi(healthRoute, async (c) => {
     if ((hasDsError && !dsNotConfigured) || internalDbBlocksProbe) status = "error";
     else if (
       // A missing datasource degrades unless the deployment declared it wasn't
-      // expected (#4854). The declaration is deliberately absent from the
-      // `error` arm above: that arm requires `!dsNotConfigured`, so a CONFIGURED
-      // datasource that fails still 503s and still leaves the LB (#1981) no
-      // matter what the deployment declares.
+      // expected (#4854) — see the narrowing where `dsIntentionallyAbsent` is
+      // defined for why this cannot reach the `error` arm above.
       (dsNotConfigured && !dsIntentionallyAbsent) ||
       hasKeyError ||
       hasSemanticError ||
@@ -637,11 +635,13 @@ health.openapi(healthRoute, async (c) => {
         ...(dsLatencyMs !== undefined && { latencyMs: dsLatencyMs }),
         lastCheckedAt: now,
         // A declared-absent deployment must not carry `MISSING_DATASOURCE_URL`
-        // on a `disabled` component (#4854) — the diagnostic still fires, since
-        // `checkDatasourceUrlPresence` raises it whenever DATABASE_URL is set
-        // without ATLAS_DATASOURCE_URL, but showing an error code for a state the
-        // operator deliberately configured is what made the dashboard read as
-        // broken. An UNDECLARED absence keeps the code: there it is the finding.
+        // on a `disabled` component (#4854) — the diagnostic still fires
+        // (`checkDatasourceUrlPresence` in `startup.ts` raises it when no
+        // datasource URL resolves and DATABASE_URL is set), but showing an error
+        // code for a state the operator deliberately configured is what made the
+        // dashboard read as broken: `component-health-tiles.tsx` renders this
+        // field verbatim. An UNDECLARED absence keeps the code — there it is the
+        // finding, and `status` stays `disabled` either way.
         ...(dsIntentionallyAbsent
           ? {
               message:

@@ -223,6 +223,32 @@ describe("validateAndResolve", () => {
     expect(resolved.datasources.default.description).toBeUndefined();
   });
 
+  // #4854 — the config-file half of the datasource-expectation declaration.
+  // Both readers (`isDatasourceExpected`) inject a pre-resolved config in their
+  // own tests, so without these the Zod field and the resolver spread could
+  // both be deleted with every other test still green — and a self-hoster
+  // following the docs would get a silently stripped field.
+  it("carries datasourceExpected through", () => {
+    expect(validateAndResolve({ datasourceExpected: false }).datasourceExpected).toBe(false);
+    expect(validateAndResolve({ datasourceExpected: true }).datasourceExpected).toBe(true);
+  });
+
+  // The tri-state invariant: `undeclared` must not collapse into `declared
+  // expected`. Rewriting the resolver's conditional spread as `?? true` is
+  // behaviour-preserving for today's only reader (which tests `=== false`), so
+  // this assertion is the only thing that would catch it.
+  it("omits datasourceExpected entirely when undeclared", () => {
+    const resolved = validateAndResolve({});
+    expect(resolved.datasourceExpected).toBeUndefined();
+    expect("datasourceExpected" in resolved).toBe(false);
+  });
+
+  it("rejects a non-boolean datasourceExpected", () => {
+    expect(() => validateAndResolve({ datasourceExpected: "false" })).toThrow(
+      /datasourceExpected/,
+    );
+  });
+
   it("throws on invalid auth value", () => {
     expect(() => validateAndResolve({ auth: "invalid-mode" })).toThrow(
       "Invalid atlas.config.ts",

@@ -959,7 +959,7 @@ async function logResolvedExploreBackend(): Promise<void> {
       // impossible to act on and hides the real cause (#4828). This second plan
       // equals the one the resolver used because `planSandboxSelection` is pure
       // and nothing mutates its inputs (`process.env`, `getConfig()`,
-      // `_nsjailFailed`) across the intervening await.
+      // `_nsjailFailed`) across the intervening awaits.
       //
       // `deployMode` is passed straight through, undefined and all: `loadConfig`
       // assigns `_resolved` only after `applyDeployMode`, so a non-null
@@ -967,15 +967,20 @@ async function logResolvedExploreBackend(): Promise<void> {
       // reads it (the just-bash escape hatch) is reachable only via
       // `configPriority`, which itself requires a non-null config.
       //
-      // Message building keeps its own failure arm, inside
-      // `describeSandboxFailClosed` rather than a local try: the resolution is
-      // already known to be fail-closed, and letting a message-building throw
-      // fall to the outer catch would downgrade the single most severe state to
-      // "posture UNKNOWN" — a vaguer claim with misdirecting remediation, and one
-      // that is simply false here (health reports fail-closed correctly from the
-      // resolver alone; it never calls this formatter). That arm now lives in
-      // `selection.ts` so `/admin/sandbox`, which reports the same outage on the
-      // same inputs, degrades to the same words (#4837).
+      // `describeSandboxFailClosed` owns the failure arm for message building —
+      // shared with `/admin/sandbox`, which reports the same outage on the same
+      // inputs and must degrade to the same words (#4837). Keeping that arm out
+      // of the outer catch is the point: the resolution is already known to be
+      // fail-closed, and letting a message-building throw fall through would
+      // downgrade the single most severe state to "posture UNKNOWN" — a vaguer
+      // claim with misdirecting remediation, and one that is simply false here
+      // (health reports fail-closed correctly from the resolver alone; it never
+      // calls this formatter).
+      //
+      // The config read sits inside the thunk for that reason. The explore
+      // import above does NOT, deliberately: it precedes
+      // `getExploreBackendType()`, so if it fails there is no known state to
+      // downgrade and "posture UNKNOWN" is the honest report.
       const { message: msg, failureDetail } = await describeSandboxFailClosed(async () => {
         const { getConfig: getAtlasConfig } = await import("@atlas/api/lib/config");
         const env = snapshotExploreSandboxEnv();

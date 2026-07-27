@@ -46,7 +46,6 @@ import {
   SANDBOX_PROVIDER_BACKEND_IDS,
   SandboxStatusSchema,
   type SandboxConnectedProvider as ConnectedProvider,
-  type SandboxFailClosed,
   type SandboxProviderKey,
   type SandboxStatus,
 } from "@/ui/lib/admin-schemas";
@@ -158,20 +157,18 @@ function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
  * The deployment's sandbox plan constructs nothing, so explore refuses every
  * request. Presented as an OUTAGE, above both views, because that is what it is
  * — this is the page an operator opens to diagnose sandboxing, and before #4837
- * the state arrived here as the string `"fail-closed"` rendered in the same
- * monospace "Active" slot as `vercel-sandbox`, reading as one more backend id.
+ * neither view said so. The self-hosted view rendered the string `"fail-closed"`
+ * in the same monospace "Active" slot as `vercel-sandbox`, reading as one more
+ * backend id; the SaaS view never rendered `activeBackend` at all and showed
+ * "Atlas Cloud Sandbox · Live", which is the worse half of the bug.
  *
- * Reachable in SaaS production, not just in theory: `deploy/api/atlas.config.ts`
- * pins `priority: ["vercel-sandbox"]` with no `just-bash` on staging and all
- * three prod regions, and `VERCEL_TOKEN` is a per-service Railway secret that
- * shared vars do not inherit — drop it on one regional service and that region
- * is here.
+ * Reachable in SaaS production, not just in theory (#4828 — see
+ * `formatSandboxFailClosed`, which composes the message this renders).
  *
  * `remediation` is rendered verbatim, never paraphrased or supplemented: the
  * server composed it from the resolved plan, so it names the pinned backend and
  * the credential it actually needs. Local copy would either duplicate that
- * derivation or regress to the generic "install nsjail" advice that a pin
- * excluding nsjail makes impossible to act on (#4828).
+ * derivation or regress to generic advice a priority pin makes unactionable.
  *
  * Exported for `__tests__/fail-closed-outage.test.tsx`, on the same footing as
  * `SaasSandboxView` below: it renders from the page shell (above BOTH views), so
@@ -179,10 +176,17 @@ function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
  * hooks to assert copy that has nothing to do with either.
  */
 export function SandboxOutageNotice({
-  failClosed,
+  remediation,
   workspaceStillRunning,
 }: {
-  failClosed: SandboxFailClosed;
+  /**
+   * Nullable on purpose. The headline is driven by the outage STATE
+   * (`platformDefault === null`), not by this string, so a payload that somehow
+   * arrives without a `failClosed` block still raises the alarm — it just cannot
+   * say how to fix it. Losing the remediation must never downgrade the reported
+   * state, and this is where that principle meets the DOM.
+   */
+  remediation: string | null;
   /**
    * A workspace BYOC override resolved despite the platform outage. It sits
    * ahead of the platform plan, so this workspace's explore still works — the
@@ -206,7 +210,14 @@ export function SandboxOutageNotice({
             ? "No platform sandbox backend can be constructed on this deployment. This workspace's own connected backend still runs, but any workspace falling back to the platform default has no working sandbox."
             : "No sandbox backend can be constructed on this deployment, and it is configured to refuse rather than run unsandboxed. Explore tool calls fail until this is fixed."}
         </p>
-        <p className="font-mono text-xs leading-relaxed">{failClosed.remediation}</p>
+        {remediation ? (
+          <p className="font-mono text-xs leading-relaxed">{remediation}</p>
+        ) : (
+          <p>
+            No remediation was reported — check the API startup warnings for the
+            pinned backend and its missing credential.
+          </p>
+        )}
       </AlertDescription>
     </Alert>
   );
@@ -298,11 +309,12 @@ export default function SandboxPage() {
               onRetry={clearMutationError}
             />
 
-            {/* Above BOTH views: the outage is deploy-mode-independent, and the
-                SaaS view is where it is actually reachable in production. */}
-            {data?.failClosed && (
+            {/* Gated on the outage STATE, not on the optional `failClosed`
+                block: the banner is the loudest signal on the page, so it must
+                not be the thing that disappears if the block ever goes missing. */}
+            {data && data.platformDefault === null && (
               <SandboxOutageNotice
-                failClosed={data.failClosed}
+                remediation={data.failClosed?.remediation || null}
                 workspaceStillRunning={data.activeBackend !== null}
               />
             )}
@@ -379,11 +391,20 @@ export function SaasSandboxView({
   const isManagedSelected = !connected.some((p) => p.isActive);
   // Selected is not the same as running. "Managed" means *follow the platform
   // default*, and a null `platformDefault` is the deployment saying it has no
-  // default to follow (#4837). Without this split, the SaaS view — the one that
-  // never rendered `activeBackend` at all, so the issue's `Active: fail-closed`
-  // row could not even warn here — showed "Atlas Cloud Sandbox · Live" on a
-  // region where explore was refusing every request.
-  const isManagedDown = isManagedSelected && status.platformDefault === null;
+  // default to follow (#4837). Without this third state the SaaS view — which
+  // never rendered `activeBackend` at all, so the self-hosted view's
+  // `Active: fail-closed` row could not even warn here — showed
+  // "Atlas Cloud Sandbox · Live" on a region refusing every explore request.
+  //
+  // Collapsed to one value rather than an `isActive` + `isDown` pair so
+  // "selected but down" cannot be spelled as `{ isActive: false, isDown: true }`
+  // — an incoherent card the type system would otherwise permit.
+  const managedState: ManagedState =
+    isManagedSelected && status.platformDefault === null
+      ? "down"
+      : isManagedSelected
+        ? "live"
+        : "available";
 
   return (
     <>
@@ -393,8 +414,7 @@ export function SaasSandboxView({
           description="Atlas-hosted sandbox. No setup — always available."
         />
         <ManagedSandboxShell
-          isActive={isManagedSelected}
-          isDown={isManagedDown}
+          state={managedState}
           // "Managed" means *follow the platform default* (the SaaS
           // `vercel-sandbox` pin in deploy/api/atlas.config.ts), so it
           // clears the workspace override rather than writing a value —
@@ -442,47 +462,48 @@ export function SaasSandboxView({
 
 // ── Managed Sandbox ───────────────────────────────────────────────
 
+/**
+ * The three readings of the managed card, as one value.
+ *
+ * `"live"` and `"down"` are the pair this card must never confuse — that
+ * confusion IS #4837 — and `"available"` (not selected, still offerable) is a
+ * third thing rather than the negation of either.
+ */
+type ManagedState = "available" | "live" | "down";
+
+const MANAGED_PRESENTATION: Record<
+  ManagedState,
+  { status: StatusKind; label: string }
+> = {
+  available: { status: "ready", label: "Available" },
+  live: { status: "connected", label: "Live" },
+  // `unavailable` is the closest existing StatusKind; the destructive banner
+  // above carries the alarm, this pill just must not read as "Live".
+  down: { status: "unavailable", label: "Down" },
+};
+
 function ManagedSandboxShell({
-  isActive,
-  isDown,
+  state,
   onSelect,
   saving,
 }: {
-  isActive: boolean;
-  /**
-   * Selected but not running — the platform default failed closed (#4837).
-   * Only meaningful together with `isActive`; the caller derives it that way.
-   * "Live" and "Down" are the two readings this card must never confuse, so the
-   * down state wins over the active state everywhere below.
-   */
-  isDown: boolean;
+  state: ManagedState;
   onSelect: () => Promise<unknown>;
   saving: boolean;
 }) {
-  const status: StatusKind = isDown
-    ? "unavailable"
-    : isActive
-      ? "connected"
-      : "ready";
+  const { status, label } = MANAGED_PRESENTATION[state];
   return (
     <Shell
       icon={Cloud}
       title="Atlas Cloud Sandbox"
       description="Managed Firecracker microVM with network isolation. Recommended for most workspaces."
       status={status}
-      trailing={
-        isDown ? (
-          <StatusPill kind="unavailable" label="Down" />
-        ) : isActive ? (
-          <StatusPill kind="connected" label="Live" />
-        ) : (
-          <StatusPill kind="ready" label="Available" />
-        )
-      }
+      trailing={<StatusPill kind={status} label={label} />}
       actions={
-        // No "Use this" while it is down: selecting the platform default is
-        // exactly what is already in effect and broken.
-        !isActive && !isDown && (
+        // Offered only when selecting it would change something. Not while live
+        // (already in effect) and not while down — selecting the platform
+        // default is exactly what is in effect and broken.
+        state === "available" && (
           <Button size="sm" onClick={onSelect} disabled={saving}>
             {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
             Use this
@@ -490,17 +511,17 @@ function ManagedSandboxShell({
         )
       }
     >
-      {isDown ? (
+      {state === "down" ? (
         <p className="text-xs text-destructive">
           This deployment has no working sandbox backend — see the outage above.
           Connect your own cloud below to restore the explore tool for this
           workspace.
         </p>
-      ) : isActive ? null : (
+      ) : state === "available" ? (
         <p className="text-xs text-muted-foreground">
           Switch back here anytime — no credentials required.
         </p>
-      )}
+      ) : null}
     </Shell>
   );
 }
@@ -800,7 +821,13 @@ type SelfHostedFormValues = {
   sidecarUrl: string;
 };
 
-function SelfHostedSandboxView({
+/**
+ * Exported for `__tests__/fail-closed-outage.test.tsx` — this view owns the row
+ * #4837 is literally named after (`Active: fail-closed` in the monospace slot),
+ * and self-hosted reaches fail-closed through the `ATLAS_SANDBOX=nsjail` pin
+ * with no usable binary (#4829). Same footing as `SaasSandboxView` below.
+ */
+export function SelfHostedSandboxView({
   onSelectBackend,
   onSetSidecarUrl,
   onReset,
@@ -837,11 +864,11 @@ function SelfHostedSandboxView({
   if (!status || !fields || !values) return null;
 
   const availableBackends = status.availableBackends.filter((b) => b.available);
-  // `activeBackend` is `string | null`, so a fail-closed deployment can no
-  // longer match a backend id here — the comparison audit AC3 asks for. It was
-  // already correct by accident (`"fail-closed" !== "sidecar"`); it is now
-  // correct by construction, and the same holds for every other id comparison
-  // on this page.
+  // This is the ONLY place on the page that compares `activeBackend` against a
+  // backend id, and it is the one #4837 asks to audit ("audit every consumer
+  // that compares `activeBackend` against a backend id"). It was already correct
+  // by accident — `"fail-closed" !== "sidecar"` — and is now correct by
+  // construction, since the sentinel can no longer reach this value at all.
   const showSidecarUrl =
     values.backend === "sidecar" ||
     (!values.backend && status.activeBackend === "sidecar");
@@ -926,10 +953,10 @@ function SelfHostedSandboxView({
         }
       >
         <DetailList>
-          {/* `mono` is reserved for real backend ids. A null renders as worded
-              destructive text instead, so the outage can never be mistaken for
-              one more id in the same monospace slot — the exact misreading
-              #4837 is about. */}
+          {/* In this detail list `mono` is reserved for values that ARE ids. A
+              null renders as worded destructive text instead, so the outage can
+              never be mistaken for one more id in the same monospace slot — the
+              exact misreading #4837 is about. */}
           <DetailRow
             label="Active"
             value={

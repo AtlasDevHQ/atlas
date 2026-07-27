@@ -22,7 +22,6 @@
  */
 
 import type { SandboxBackendName } from "@atlas/api/lib/config";
-import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 /**
  * Immutable snapshot of the environment + config inputs that decide which
@@ -492,9 +491,17 @@ export const BACKEND_ISOLATION = {
   plugin: "plugin-declared",
 } as const satisfies Record<SandboxBackendName | "plugin", SandboxIsolationPosture>;
 
+/** The inputs {@link formatSandboxFailClosed} needs, gathered by the caller. */
+interface Inputs {
+  readonly plan: SandboxPlan;
+  readonly env: SandboxSelectionEnv;
+  readonly deployMode: "saas" | "self-hosted" | undefined;
+}
+
 /**
- * {@link formatSandboxFailClosed} plus the degraded message for when its inputs
- * cannot be gathered — the one place both fail-closed reporters get their prose.
+ * {@link formatSandboxFailClosed}, plus the degraded message for when the inputs
+ * cannot be gathered OR the formatter itself throws — the one place both
+ * fail-closed reporters get their prose.
  *
  * Two surfaces must say the same thing about the same outage: the boot warning
  * (`startup.ts`) and `/admin/sandbox` (`admin-sandbox.ts`). They reach it by
@@ -502,7 +509,9 @@ export const BACKEND_ISOLATION = {
  * the admin route on each request — so "share the formatter" was not enough:
  * each also needed the fallback for a formatter that throws, and two hand-rolled
  * fallbacks are two messages that drift. #4837 made that concrete by adding the
- * second caller.
+ * second caller. `/api/health` is deliberately NOT a third caller: it reports the
+ * same fail-closed STATE from the same resolver but keeps its own, more hedged
+ * message (`health.ts`) and no remediation at all.
  *
  * The fallback is deliberately NOT the generic "install nsjail or configure
  * ATLAS_SANDBOX_URL" advice. Under the SaaS `priority: ["vercel-sandbox"]` pin
@@ -512,39 +521,56 @@ export const BACKEND_ISOLATION = {
  *
  * Losing the remediation must never downgrade the reported STATE: the caller
  * already knows the resolution is `"fail-closed"`, and this returns a
- * fail-closed message either way. `failureDetail` is set only on the degraded
- * arm, so the caller can log why (never swallowed) without the reader of the
- * message having to care.
+ * fail-closed message either way.
  *
- * `resolveInputs` is an (optionally async) thunk rather than three parameters
- * because gathering the inputs is itself what can throw: both callers reach
- * `lib/tools/explore` through a dynamic `import()` — that module is partially
- * mocked in ~26 test files, so a static import of a rarely-used export there is
- * a module LINK error in every one of them regardless of whether they run this
- * branch. Taking a thunk keeps that import, and the env/config reads after it,
- * inside this `try` instead of leaving the hazard at each call site.
+ * `failureDetail` is set only on the degraded arm and is **log-only** — it is
+ * deliberately NOT interpolated into `message`. `message` reaches an admin HTTP
+ * response body via `failClosed.remediation`, and reaches the UNAUTHENTICATED
+ * `/api/health` through `startup.ts`'s `_startupWarnings`. A caught error's text
+ * is arbitrary (module-resolution paths, config fragments, third-party client
+ * errors echoing URLs or tokens), so putting it there would ship exactly the
+ * "no stack traces / secrets to the user" hazard CLAUDE.md forbids. The caller
+ * logs it instead; nothing is swallowed.
+ *
+ * **Never rejects.** `admin-sandbox.ts` calls this under `Effect.promise`, where
+ * a rejection becomes a defect — a 500 on the very page an operator opened to
+ * diagnose the outage. Both arms return, and the catch arm stays total (no
+ * `await`, no logging, no imported helper) so it cannot itself throw. Keep it
+ * that way if you touch this.
+ *
+ * `resolveInputs` is a thunk rather than three parameters because gathering the
+ * inputs is itself what can throw. `admin-sandbox.ts` reaches
+ * `lib/tools/explore` through a dynamic `import()` inside the thunk — the shared
+ * test factory `packages/api/src/__mocks__/api-test-mocks.ts` partially mocks
+ * that module for every test built on `createApiTestMocks`, so a STATIC import
+ * of a rarely-used export there is a module LINK error in all of them, whether
+ * or not they ever run this branch. (`startup.ts` differs: it imports explore in
+ * its own outer try, where an import failure legitimately means "posture
+ * unknown", and defers only the config read into the thunk.) Either way the
+ * throw lands in this `try` and still produces a fail-closed message.
  *
  * Precondition (inherited from {@link formatSandboxFailClosed}): the caller has
  * already resolved `"fail-closed"`.
  */
 export async function describeSandboxFailClosed(
-  resolveInputs: () => PromiseLike<{
-    readonly plan: SandboxPlan;
-    readonly env: SandboxSelectionEnv;
-    readonly deployMode: "saas" | "self-hosted" | undefined;
-  }>,
+  resolveInputs: () => Inputs | PromiseLike<Inputs>,
 ): Promise<{ readonly message: string; readonly failureDetail?: string }> {
   try {
     const { plan, env, deployMode } = await resolveInputs();
     return { message: formatSandboxFailClosed(plan, env, deployMode) };
   } catch (err) {
-    const failureDetail = errorMessage(err);
     return {
       message:
         "Explore tool: UNAVAILABLE — no sandbox backend will construct, so every explore " +
-        `request is refused. Detailed remediation could not be built: ${failureDetail}. ` +
-        "Check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts.",
-      failureDetail,
+        "request is refused. Detailed remediation could not be built — see the server log " +
+        "for the cause. Check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts.",
+      // Inlined rather than routed through `errorMessage` on purpose: this catch
+      // must stay total (see "Never rejects" above), and `lib/audit/error-scrub`
+      // is itself partially `mock.module()`d in a dozen test files — a mock that
+      // omits the export would make the error path throw. Scrubbing is not
+      // needed here either, now that this value only ever reaches a log.
+      // @atlas-ok-ternary: keeps the catch arm dependency-free and total
+      failureDetail: err instanceof Error ? err.message : String(err),
     };
   }
 }

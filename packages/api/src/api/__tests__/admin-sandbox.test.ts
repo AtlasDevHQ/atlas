@@ -286,6 +286,19 @@ describe("GET /api/v1/admin/sandbox/status — vocabulary normalization", () => 
       expect.objectContaining({ provider: "vercel", isActive: false }),
     ]);
   });
+
+  it("a healthy deployment omits the failClosed key entirely (#4837)", async () => {
+    // The wire-compat half of #4837: `failClosed` is optional rather than
+    // nullable so a healthy payload keeps its pre-#4837 shape and an older web
+    // bundle parsing a newer API keeps working. That only holds if the route
+    // OMITS the key rather than sending `null` — which is what this asserts, and
+    // which the schema-side test in `@useatlas/schemas` cannot.
+    const status = (await getStatus()) as unknown as Record<string, unknown>;
+
+    expect("failClosed" in status).toBe(false);
+    expect(status.activeBackend).toBe("vercel-sandbox");
+    expect(status.platformDefault).toBe("vercel-sandbox");
+  });
 });
 
 describe("GET /api/v1/admin/sandbox/status — BYOC runtime resolution (#3370)", () => {

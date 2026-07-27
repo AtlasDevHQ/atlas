@@ -5,6 +5,7 @@ import {
   resolveSandboxBackend,
   formatSandboxPriorityFailure,
   formatSandboxFailClosed,
+  describeSandboxFailClosed,
   type SandboxSelectionEnv,
   type SandboxStep,
   type StepAttempt,
@@ -400,6 +401,76 @@ describe("formatSandboxFailClosed", () => {
 
     expect(msg).toContain("No pinned backend could be identified");
     expect(msg).not.toContain("ATLAS_SANDBOX=nsjail is pinned");
+  });
+});
+
+describe("describeSandboxFailClosed — the degraded arm (#4837)", () => {
+  const saasPin = env({ configPriority: ["vercel-sandbox"] });
+
+  it("returns the detailed remediation when the inputs resolve", () => {
+    // The happy arm must be the shared formatter verbatim, not a paraphrase —
+    // this is what makes the boot warning and /admin/sandbox byte-identical.
+    return describeSandboxFailClosed(() => ({
+      plan: planSandboxSelection(saasPin),
+      env: saasPin,
+      deployMode: "saas",
+    })).then((r) => {
+      expect(r.message).toBe(
+        formatSandboxFailClosed(planSandboxSelection(saasPin), saasPin, "saas"),
+      );
+      expect(r.failureDetail).toBeUndefined();
+    });
+  });
+
+  // The arm the whole function exists for. It is on BOTH the boot path and the
+  // admin path, so a regression here hits every fail-closed deployment twice.
+  it.each([
+    ["a rejected thunk", () => Promise.reject(new Error("boom"))],
+    [
+      "a synchronously throwing thunk",
+      () => {
+        throw new Error("boom");
+      },
+    ],
+  ])("still reports the OUTAGE on %s — losing the words never downgrades the state", async (
+    _label,
+    thunk,
+  ) => {
+    const r = await describeSandboxFailClosed(
+      thunk as () => never,
+    );
+
+    expect(r.message).toContain("UNAVAILABLE");
+    expect(r.message).toContain("every explore");
+    // Never swallowed — the caller logs this.
+    expect(r.failureDetail).toBe("boom");
+  });
+
+  it("keeps the caught error OUT of the message", async () => {
+    // `message` reaches an admin response body and, via `_startupWarnings`, the
+    // UNAUTHENTICATED /api/health. A caught error's text is arbitrary — module
+    // paths, config fragments, third-party client errors echoing URLs or tokens
+    // — so it belongs in the log and nowhere else (CLAUDE.md: no secrets or
+    // stack traces in responses).
+    const r = await describeSandboxFailClosed(() => {
+      throw new Error("postgres://user:hunter2@db.internal:5432 unreachable");
+    });
+
+    expect(r.message).not.toContain("hunter2");
+    expect(r.message).not.toContain("db.internal");
+    expect(r.message).toContain("see the server log");
+  });
+
+  it("never rejects — the Effect.promise precondition at the admin call site", async () => {
+    // `admin-sandbox.ts` calls this under `Effect.promise`, where a rejection
+    // becomes a defect: a 500 on the very page opened to diagnose the outage.
+    // A non-Error throw is the case a naive `err.message` would break on.
+    const r = await describeSandboxFailClosed(() => {
+      throw "a bare string, not an Error";
+    });
+
+    expect(r.message).toContain("UNAVAILABLE");
+    expect(r.failureDetail).toBe("a bare string, not an Error");
   });
 });
 

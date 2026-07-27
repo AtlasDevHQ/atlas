@@ -29,9 +29,11 @@ import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import {
   planSandboxSelection,
   runSandboxPlan,
+  resolveSandboxBackend,
   formatSandboxFailClosed,
   type SandboxSelectionEnv,
 } from "@atlas/api/lib/tools/backends/selection";
+import type { SandboxBackendName } from "@atlas/api/lib/config";
 
 const mocks = createApiTestMocks({
   authUser: {
@@ -59,10 +61,19 @@ const SAAS_PIN_ENV: SandboxSelectionEnv = {
 };
 
 // --- Settings mock (overrides the factory's) ---
+//
+// `mock.module` is last-write-wins for the WHOLE module, so this replaces the
+// shared factory's settings mock rather than extending it. `getSettingOverride`
+// and `isSaasModeForGuard` are carried over deliberately: nothing in the
+// `adminSandbox` sub-router's graph reaches them today, but the failure mode
+// when that stops being true is an `Export named '…' not found` link error at
+// module load, which reads as entirely unrelated to this file.
 
 const mockSettings = new Map<string, string>();
 
 void mock.module("@atlas/api/lib/settings", () => ({
+  getSettingOverride: mock(async () => null),
+  isSaasModeForGuard: mock(async () => true),
   getSetting: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingAuto: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingLive: async (key: string, _orgId?: string) => mockSettings.get(key),
@@ -203,6 +214,28 @@ async function getParsedStatus() {
   return parsed.data;
 }
 
+/**
+ * Availability derived from `SAAS_PIN_ENV` itself, so the fixture's
+ * `vercelAvailable: false` — the field that REPRESENTS the missing
+ * `VERCEL_TOKEN` — is load-bearing rather than decorative. Without this, every
+ * assertion below still passed with `vercelAvailable: true`, i.e. with a fixture
+ * describing a perfectly healthy region while the route claimed a total outage.
+ */
+function availableInFixture(kind: SandboxBackendName): boolean {
+  switch (kind) {
+    case "vercel-sandbox":
+      return SAAS_PIN_ENV.vercelAvailable;
+    case "sidecar":
+      return SAAS_PIN_ENV.sidecarAvailable;
+    case "nsjail":
+      return SAAS_PIN_ENV.nsjailAvailable;
+    case "just-bash":
+      // Always constructible — which is precisely why a pin that OMITS it fails
+      // closed instead of falling through to an unsandboxed shell.
+      return true;
+  }
+}
+
 afterAll(() => {
   mocks.cleanup();
 });
@@ -220,10 +253,13 @@ describe("GET /admin/sandbox/status — fail-closed region (#4837)", () => {
 
     expect(status.activeBackend).toBeNull();
     expect(status.platformDefault).toBeNull();
-    // The regression itself: the sentinel must not survive anywhere an id lives.
-    // A `toBeNull` alone would still pass if some later change reintroduced the
-    // string under a different id field.
-    expect(JSON.stringify(status)).not.toContain('"fail-closed"');
+
+    // The regression itself: the sentinel must not survive anywhere on the wire.
+    // Scanned against the RAW response, not the parsed object — `z.object()`
+    // strips unknown keys, so a sentinel reintroduced under a field not yet in
+    // the schema would be invisible in `status`. This is the assertion that
+    // catches it resurfacing under a future id field.
+    expect(JSON.stringify(await getStatus())).not.toContain("fail-closed");
   });
 
   it("carries a failClosed block whose remediation names the pinned backend and its credential", async () => {
@@ -258,19 +294,48 @@ describe("GET /admin/sandbox/status — fail-closed region (#4837)", () => {
     expect(status.failClosed?.remediation).toBe(expected);
   });
 
-  it("agrees with the runtime consequence — the same plan refuses to construct anything", async () => {
+  it("agrees with the runtime consequence — the same inputs refuse to construct anything", async () => {
     const status = await getParsedStatus();
+    const plan = planSandboxSelection(SAAS_PIN_ENV);
 
-    // The admin surface claims an outage; this is the outage. Walking the plan
-    // the route reported on, with every step failing to construct (the missing
-    // VERCEL_TOKEN), yields `fail-closed` — explore has no backend to run and
-    // throws on every request. Payload and runtime, one set of inputs.
-    const outcome = await runSandboxPlan(planSandboxSelection(SAAS_PIN_ENV), async (step) => ({
-      failure: { name: step.kind, reason: "not configured" },
-    }));
+    // Reporting side: the resolver run against the fixture's OWN availability
+    // must independently reach `fail-closed`. This is what ties the mocked
+    // `getExploreBackendType()` to the env snapshot the remediation is built
+    // from — without it the two could describe different deployments.
+    expect(resolveSandboxBackend(plan, availableInFixture)).toBe("fail-closed");
+
+    // Runtime side: walking the same plan, constructing exactly what the fixture
+    // says is available (nothing — `VERCEL_TOKEN` is gone), yields `fail-closed`
+    // rather than `exhausted`. That distinction is the whole safety property:
+    // `exhausted` is the arm explore degrades to an unsandboxed bash backend on,
+    // and a pin without `just-bash` must never reach it.
+    const outcome = await runSandboxPlan(plan, async (step) =>
+      availableInFixture(step.kind)
+        ? { backend: {} }
+        : { failure: { name: step.kind, reason: "not configured" } },
+    );
 
     expect(outcome.kind).toBe("fail-closed");
     expect(status.activeBackend).toBeNull();
+  });
+
+  it("a pin that DOES include just-bash degrades instead — the negative control", async () => {
+    // Proves the assertion above is about the pin's contents, not a property of
+    // `runSandboxPlan` that holds either way. Adding `just-bash` flips
+    // `onExhausted` and the outcome becomes `exhausted`, the degrade-to-
+    // unsandboxed arm. SaaS deliberately omits it (`deploy/api/atlas.config.ts`).
+    const degradablePin = planSandboxSelection({
+      ...SAAS_PIN_ENV,
+      configPriority: ["vercel-sandbox", "just-bash"],
+    });
+    const outcome = await runSandboxPlan(degradablePin, async (step) =>
+      step.kind === "just-bash"
+        ? { failure: { name: step.kind, reason: "stubbed — not constructed in this test" } }
+        : { failure: { name: step.kind, reason: "not configured" } },
+    );
+
+    expect(degradablePin.onExhausted).toBe("just-bash");
+    expect(outcome.kind).toBe("exhausted");
   });
 
   it("marks no connected BYOC provider active when the platform has failed closed", async () => {

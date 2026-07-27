@@ -25,6 +25,7 @@ import {
   planSandboxSelection,
   describeSandboxFailClosed,
 } from "@atlas/api/lib/tools/backends/selection";
+import type { SandboxBackendName } from "@atlas/api/lib/config";
 import { useVercelSandbox, useSidecar } from "@atlas/api/lib/tools/backends/detect";
 import {
   getSandboxCredentials,
@@ -260,12 +261,23 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       // Platform default (the backend that would be used without any workspace
       // override). `ExploreBackendType` includes `"fail-closed"`, which is NOT a
       // backend id — split it out here, once, so nothing downstream can leak the
-      // sentinel into a backend-id field. Every id field on the wire is
-      // `string | null` precisely so this narrowing cannot be skipped: assigning
-      // `platformResolution` directly is a compile error (#4837).
+      // sentinel into a backend-id field (#4837).
+      //
+      // The `satisfies` is the actual guard, and it guards the case that matters.
+      // Nullability alone would NOT: `"fail-closed"` is a string, so assigning
+      // `platformResolution` straight to `string | null` compiles fine — nullable
+      // wire types create an obligation for READERS, not for this writer. What
+      // `satisfies` pins is the next non-backend member: add one to
+      // `ExploreBackendType` (the pinned-but-missing-nsjail case in #4834 is a
+      // live candidate) and this line stops compiling, instead of the new
+      // sentinel silently rendering as an id exactly as `"fail-closed"` did. That
+      // is #4835's `BACKEND_ISOLATION` precedent — make the compiler reject the
+      // unclassified value — applied to the producer.
       const platformResolution = getExploreBackendType();
       const platformFailClosed = platformResolution === "fail-closed";
-      const platformDefault: string | null = platformFailClosed ? null : platformResolution;
+      const platformDefault: string | null = platformFailClosed
+        ? null
+        : (platformResolution satisfies SandboxBackendName | "plugin");
       const activePluginId = getActiveSandboxPluginId();
       const [allBackends, credentials, runtimeAvailability] = yield* Effect.promise(() =>
         Promise.all([
@@ -290,6 +302,17 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           .map((cred) => SANDBOX_PROVIDER_BACKEND_IDS[cred.provider]),
       );
 
+      // The ONE expression for the platform default that goes on the wire, so
+      // the schema's "`failClosed` present iff `platformDefault === null`" is
+      // true by construction rather than by coincidence. It was previously
+      // re-derived at the response literal while `failClosed` came off
+      // `platformResolution`: two expressions for one invariant, agreeing only
+      // because `getExploreBackendType()` happens to return `"plugin"` before it
+      // can return `"fail-closed"` and because no `await` separated the two
+      // reads of the lazily-set `_activeSandboxPluginId`. Both are facts about
+      // another module; neither belongs in this invariant's proof.
+      const reportedPlatformDefault = activePluginId ?? platformDefault;
+
       // Resolve the effective active backend. `null` means this workspace has
       // none — explore refuses its requests — which is a different question from
       // whether the PLATFORM failed closed: a usable BYOC override sits ahead of
@@ -302,9 +325,9 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
         const found = allBackends.find((b) => b.id === workspaceOverride && b.available);
         activeBackend = found || usableByocBackendIds.has(workspaceOverride)
           ? workspaceOverride
-          : platformDefault;
+          : reportedPlatformDefault;
       } else {
-        activeBackend = activePluginId ?? platformDefault;
+        activeBackend = reportedPlatformDefault;
       }
 
       // Build connected providers list. `isActive` requires BOTH the
@@ -346,19 +369,21 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       //
       // A message-building fault degrades the WORDS, never the state —
       // `describeSandboxFailClosed` always returns a fail-closed message — and
-      // `failureDetail` is logged rather than swallowed or sent to the client.
+      // `failureDetail` is log-only, never interpolated into the response.
       let failClosed: { remediation: string } | undefined;
-      if (platformFailClosed) {
+      if (reportedPlatformDefault === null) {
         // The inputs are gathered through dynamic imports, inside the seam's own
-        // try: `lib/tools/explore` is partially mocked in ~26 test files, and a
-        // static import of `snapshotExploreSandboxEnv` here is a module LINK
-        // error in every test that mounts this router — even the ones that never
-        // reach this branch. `startup.ts` reaches the same module the same way.
+        // try: the shared test factory (`__mocks__/api-test-mocks.ts`) partially
+        // mocks `lib/tools/explore` for every test built on it, so a STATIC
+        // import of `snapshotExploreSandboxEnv` here is a module LINK error in
+        // every test that mounts this router — even the ones that never reach
+        // this branch.
         //
         // `Effect.promise` (which turns a rejection into a defect) is safe here
-        // because `describeSandboxFailClosed` cannot reject: the thunk, its
+        // because `describeSandboxFailClosed` never rejects: the thunk, its
         // imports included, runs inside that function's own `try`, and both arms
-        // return a message.
+        // return a message. That contract is stated at its definition — a
+        // rejection would 500 the page an operator opened to diagnose the outage.
         const { message, failureDetail } = yield* Effect.promise(() =>
           describeSandboxFailClosed(async () => {
             const [{ snapshotExploreSandboxEnv }, { getConfig }] = await Promise.all([
@@ -370,8 +395,11 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           }),
         );
         if (failureDetail) {
+          // `requestId` correlates this line with the payload the operator is
+          // looking at — it is the one log they will grep when the page shows the
+          // generic remediation instead of the specific one.
           log.warn(
-            { err: failureDetail },
+            { err: failureDetail, orgId, requestId: c.get("requestId") },
             "Sandbox is fail-closed but the detailed remediation could not be built — reporting the generic outage message",
           );
         }
@@ -381,7 +409,7 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       return c.json(
         {
           activeBackend,
-          platformDefault: activePluginId ?? platformDefault,
+          platformDefault: reportedPlatformDefault,
           workspaceOverride,
           workspaceSidecarUrl,
           availableBackends: allBackends,

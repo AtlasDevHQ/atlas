@@ -1,0 +1,66 @@
+name: Setup Trivy
+description: >-
+  Install a pinned, checksum-verified Trivy binary and warm its vulnerability
+  database cache.
+
+# Why not aquasecurity/setup-trivy or aquasecurity/trivy-action:
+#
+# This workflow's entire purpose is supply-chain hygiene. Pulling a third-party
+# action to do it widens the supply chain in the same motion — the action runs
+# with the job's token and can be re-tagged upstream. A pinned tarball plus a
+# checksum is a smaller, auditable surface, and it makes a compromised release
+# fail loudly at the sha256 check rather than silently.
+#
+# Bump `version` and `sha256` together in the caller. Checksums come from the
+# release's trivy_<version>_checksums.txt.
+
+inputs:
+  version:
+    description: Trivy version, without the leading v
+    required: true
+  sha256:
+    description: SHA-256 of trivy_<version>_Linux-64bit.tar.gz
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Trivy ${{ inputs.version }}
+      shell: bash
+      env:
+        TRIVY_VERSION: ${{ inputs.version }}
+        TRIVY_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+        url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
+
+        tmp="$(mktemp -d)"
+        curl -sfL --retry 3 --retry-delay 5 "$url" -o "$tmp/$tarball"
+
+        echo "${TRIVY_SHA256}  $tmp/$tarball" | sha256sum -c - || {
+          echo "::error::Trivy checksum mismatch for $tarball — refusing to install"
+          echo "::error::Expected ${TRIVY_SHA256}, got $(sha256sum "$tmp/$tarball" | cut -d' ' -f1)"
+          exit 1
+        }
+
+        tar -xzf "$tmp/$tarball" -C "$tmp" trivy
+        install -m 0755 "$tmp/trivy" /usr/local/bin/trivy
+        rm -rf "$tmp"
+        trivy --version
+
+    # The DB is ~50MB and Trivy re-downloads it per job otherwise. Cached by
+    # date so it refreshes daily — a stale vulnerability DB is a gate that
+    # silently stops finding new CVEs, which is worse than a slow one.
+    - name: Compute DB cache key
+      id: dbkey
+      shell: bash
+      run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Trivy vulnerability DB
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.cache/trivy
+        key: trivy-db-${{ inputs.version }}-${{ steps.dbkey.outputs.date }}
+        restore-keys: |
+          trivy-db-${{ inputs.version }}-

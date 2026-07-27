@@ -1,10 +1,12 @@
 # Audit commands: shared conventions
 
-Conventions shared by the `-audit` family — `/docs-audit` (docs vs code), `/www-audit` (marketing/legal vs reality), `/prod-audit` (runtime readiness vs prod requirements), `/contracts-audit` (code vs stability commitments — semver evidence for `/release`). Each command reads this file before spawning its agents.
+Conventions shared by the `audit-*` family — `/audit-docs` (docs vs code), `/audit-www` (marketing/legal vs reality), `/audit-readme` (the repo front door vs the shipped product), `/audit-prod` (runtime readiness vs prod requirements), `/audit-contracts` (code vs stability commitments — semver evidence for `/release`). Each command reads this file before spawning its agents.
+
+**Naming:** the family was renamed from `<surface>-audit` to `audit-<surface>` on 2026-07-27 so the commands sort and autocomplete together. Historical references in `.claude/research/` and `docs/adr/` keep the old names on purpose — they record what was run at the time.
 
 **A borrower, not a member:** `/elevate` (feature elevation audits, Phase 1 of `workflow.md`) reads this file and applies Step 0, discover-don't-enumerate, snapshot-decay, and cite-don't-refile — but it is **not** in the `-audit` family or the pre-tag battery. Its job is elevation (find what's beneath potential), not verification (check claims against reality), and its report discipline differs: findings stay in a `.claude/research/` doc for a grill session; issues are filed only when the fix is invariant under the grill's outcome.
 
-**The pre-tag battery:** at the end of a code cycle, before `/release`: `/docs-audit` (with Part K) + `/contracts-audit` always; `/www-audit` when the window touched pricing/legal/marketing surfaces; `/prod-audit` (with Part F, the security seam sweep) when it touched infra, boot, or security seams. `/contracts-audit`'s output — the semver recommendation and any policy violations — feeds the tag decision directly.
+**The pre-tag battery:** at the end of a code cycle, before `/release`: `/audit-docs` (with Part K) + `/audit-contracts` always; `/audit-www` when the window touched pricing/legal/marketing surfaces; `/audit-prod` (with Part F, the security seam sweep) when it touched infra, boot, or security seams; `/audit-readme` when the window **shipped a pillar** — the README drifts by omission, so a new subsystem is exactly the trigger it will otherwise miss. `/audit-contracts`'s output — the semver recommendation and any policy violations — feeds the tag decision directly.
 
 **Why this file exists:** a 2026-07 sweep found all three commands had drifted from the codebase — dead file paths, shipped features still described as open issues, checks that silently matched nothing (a grep against a file that no longer contained the pattern), and a security check whose success criterion was inverted for SaaS. Audit commands are snapshots of reality, and reality moves. These conventions are the mechanics that make drift self-announcing instead of silent.
 
@@ -66,7 +68,7 @@ Commands may cite session-memory files (`memory/railway.md`, `reference_openstat
 
 ## The docs three-tree layout
 
-Referenced by `/docs-audit` and `/www-audit`'s docs cross-checks. Roots are disjoint (`CONTENT_ROOTS` in `apps/docs/src/lib/audience-taxonomy.ts`); a build-time gate enforces placement, but content-level audience drift is audit work.
+Referenced by `/audit-docs` and `/audit-www`'s docs cross-checks. Roots are disjoint (`CONTENT_ROOTS` in `apps/docs/src/lib/audience-taxonomy.ts`); a build-time gate enforces placement, but content-level audience drift is audit work.
 
 | Tree | Audience class | Served at |
 |------|---------------|-----------|
@@ -85,7 +87,7 @@ git fetch --tags origin        # remote/ephemeral clones often lack tags
 LAST_TAG=$(git describe --tags --abbrev=0)
 ```
 
-Reference-drift parts (does the docs table match the code) still run unscoped — drift accumulates regardless of when it was introduced. `/docs-audit` Part K is the worked example.
+Reference-drift parts (does the docs table match the code) still run unscoped — drift accumulates regardless of when it was introduced. `/audit-docs` Part K is the worked example.
 
 ## Report discipline
 

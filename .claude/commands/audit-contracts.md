@@ -8,7 +8,7 @@ Diff every **committed contract surface** against the last release tag, classify
 
 **Mode:** Read-only audit — generate a classification report. Fix trivial issues (< 5 lines, e.g. a missed `stability.mdx` note) directly. File GH issues for larger gaps.
 
-**Why this is its own command:** /docs-audit checks that docs *describe* the code; this command checks that the code *kept its promises*. The source of truth is [apps/docs/content/shared/reference/stability.mdx](../../apps/docs/content/shared/reference/stability.mdx) — the per-surface stability contract — plus [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md)'s semver rules. Its output feeds two decisions: the tag's semver position, and whether any change violates the v0.x additive-only policy.
+**Why this is its own command:** /audit-docs checks that docs *describe* the code; this command checks that the code *kept its promises*. The source of truth is [apps/docs/content/shared/reference/stability.mdx](../../apps/docs/content/shared/reference/stability.mdx) — the per-surface stability contract — plus [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md)'s semver rules. Its output feeds two decisions: the tag's semver position, and whether any change violates the v0.x additive-only policy.
 
 **Before starting:** read [docs/agents/audits.md](../../docs/agents/audits.md) (shared audit conventions) and run its **Step 0 self-check** against this command file. *Last verified against the codebase: 2026-07-09.*
 
@@ -90,7 +90,7 @@ Every part below diffs `$LAST_TAG..HEAD` on its surface's files. A surface with 
    git diff "$LAST_TAG"..HEAD -- packages/plugin-sdk/src/
    ```
 2. Classify: removed/renamed export, hook signature change, required field added to `AtlasPlugin` → **BREAKING** (out-of-tree plugin authors compile against this). New optional hook/capability → **ADDITIVE**.
-3. **Chat-plugin contract doc** — if the window touched `plugins/chat/src/`, `packages/api/src/lib/slack/`, or `packages/api/src/lib/integrations/install/*-oauth-handler.ts`, the table in [docs/architecture/chat-plugin-atlas-contract.md](../../docs/architecture/chat-plugin-atlas-contract.md) must have been updated in the same commits, and open ⚠ rows block closeout (shared check with /docs-audit K4 — don't double-report, cross-reference).
+3. **Chat-plugin contract doc** — if the window touched `plugins/chat/src/`, `packages/api/src/lib/slack/`, or `packages/api/src/lib/integrations/install/*-oauth-handler.ts`, the table in [docs/architecture/chat-plugin-atlas-contract.md](../../docs/architecture/chat-plugin-atlas-contract.md) must have been updated in the same commits, and open ⚠ rows block closeout (shared check with /audit-docs K4 — don't double-report, cross-reference).
 
 ---
 

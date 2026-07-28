@@ -6,8 +6,21 @@
 // Ordering is newest-first, with one deliberate exception: the launch-week
 // run (Jul 27–31) is led by "Atlas is public" and then reads forward Mon→Fri,
 // so the index opens on the launch announcement rather than on Friday's post.
-// The static export (`output: "export"`) renders every entry at build time —
-// there is no date gate, so a future-dated post is live the moment it merges.
+//
+// DO NOT add an entry here before the day it should publish. The static export
+// (`output: "export"`) renders every entry at build time and there is no date
+// gate, so a post in this array is LIVE the moment it merges — a future
+// `isoDate` does NOT hold it back. This bit us on 2026-07-28, when the whole
+// Jul 29–31 launch-week run was publicly readable on day two.
+//
+// A request-time filter cannot retrofit a gate. Each post's title and
+// description ship in Next's inline RSC hydration payload as well as in the
+// visible markup, so stripping rows from the served HTML would still leak the
+// content in the payload, and React would re-render the stripped row back on
+// hydration. Verified against the live page 2026-07-28.
+//
+// The publish gate is therefore the merge itself: to run a drip, keep the
+// unpublished posts off `main` and land one per day.
 // ---------------------------------------------------------------------------
 
 export interface Post {

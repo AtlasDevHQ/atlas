@@ -132,14 +132,6 @@ export interface BillingUsage {
   queryCount: number;
   /** Raw token spend for the period (input + output tokens). */
   tokenCount: number;
-  /**
-   * Output-equivalent (model-weighted) token spend for the period (#3989).
-   * Retained for display only: since #4038 enforcement denominates in dollars
-   * (`costUsd`), not tokens, and the at-cost OverageMeter repoint (#4039) bills
-   * overage in provider-cost cents, so no billing path reads this figure.
-   * Optional for older-bundle tolerance; falls back to `tokenCount` when absent.
-   */
-  weightedTokenCount?: number;
   seatCount: number;
   /**
    * #4038 — at-cost provider spend (USD) this period, the SAME `costUsd`
@@ -284,7 +276,6 @@ export const BillingLimitsSchema = z.object({
 export const BillingUsageSchema = z.object({
   queryCount: z.number(),
   tokenCount: z.number(),
-  weightedTokenCount: z.number().optional(),
   seatCount: z.number(),
   costUsd: z.number(),
   usageDollarsPercent: z.number(),

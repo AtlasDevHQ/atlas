@@ -512,7 +512,6 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       usage: {
         queryCount: usage.queryCount,
         tokenCount: usage.tokenCount,
-        weightedTokenCount: usage.weightedTokenCount,
         seatCount,
         // At-cost dollar usage (#4038) — the enforced gauge. BYOT/free/locked
         // surface 0% / "ok" because enforcesBudget gates the classification.

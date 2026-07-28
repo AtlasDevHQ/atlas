@@ -7,6 +7,7 @@ import {
   peekModelContextWindow,
   warmGatewayCatalog,
   isSelectableGatewayModel,
+  peekModelPricing,
 } from "../gateway-catalog";
 
 type FetchFn = typeof globalThis.fetch;
@@ -487,6 +488,57 @@ describe("gateway-catalog", () => {
       expect(peekModelContextWindow("a/no-window")).toBeNull();
       expect(peekModelContextWindow("not/in-catalog")).toBeNull();
       expect(peekModelContextWindow(undefined)).toBeNull();
+    });
+  });
+
+  describe("peekModelPricing (#4869 follow-up)", () => {
+    test("returns null on a cold cache and never fetches", () => {
+      const fetchMock = mock(async () => new Response("{}", { status: 200 }));
+      globalThis.fetch = fetchMock as unknown as FetchFn;
+      expect(peekModelPricing("a/one")).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(0);
+    });
+
+    test("normalizes per-token strings to USD per million tokens", async () => {
+      globalThis.fetch = mockFetchOk({
+        data: [
+          {
+            id: "anthropic/claude-sonnet-5",
+            type: "language",
+            pricing: {
+              input: "0.000002",
+              output: "0.00001",
+              input_cache_read: "0.0000002",
+              input_cache_write: "0.0000025",
+            },
+          },
+        ],
+      });
+      await getGatewayCatalog();
+      const rate = peekModelPricing("anthropic/claude-sonnet-5");
+      expect(rate?.inputPerMTok).toBeCloseTo(2, 10);
+      expect(rate?.outputPerMTok).toBeCloseTo(10, 10);
+      expect(rate?.cacheReadPerMTok).toBeCloseTo(0.2, 10);
+      expect(rate?.cacheWritePerMTok).toBeCloseTo(2.5, 10);
+    });
+
+    test("pricing stays off the wire", async () => {
+      // The cache read/write split is server-side detail for the cost
+      // estimator; the picker gets the headline input/output price it already
+      // had. Keeping it off the response holds this module's stated line that
+      // pricing detail stays on the server (and keeps the payload lean).
+      globalThis.fetch = mockFetchOk({
+        data: [
+          {
+            id: "a/one",
+            type: "language",
+            pricing: { input: "0.000001", output: "0.000005", input_cache_read: "0.0000001" },
+          },
+        ],
+      });
+      const res = await getGatewayCatalog();
+      expect(res.models[0]).not.toHaveProperty("cacheReadPerMTok");
+      expect(res.models[0]?.inputPrice).toBe("0.000001");
     });
   });
 });

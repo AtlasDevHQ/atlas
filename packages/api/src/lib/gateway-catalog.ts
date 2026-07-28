@@ -127,8 +127,57 @@ interface RawCatalogEntry {
   supported_parameters?: unknown;
 }
 
+/**
+ * USD per MILLION tokens — a branded number, not a bare one (#4869 review).
+ *
+ * This module handles the same fact in two units six lines apart: the wire
+ * fields `inputPrice`/`outputPrice` are per-TOKEN strings straight from the
+ * gateway, while `CatalogModelPricing` is per-MILLION-token numbers. The
+ * conversion is a factor of 1e6, and with both sides typed `number` a
+ * per-token value assigned into a per-MTok slot type-checks cleanly and
+ * under-reports cost by a million times.
+ *
+ * The brand makes that assignment a compile error. `asPerMTok` is the only
+ * constructor, so the multiplication happens exactly once and anything that
+ * skips it can't reach a `CatalogModelPricing` field.
+ *
+ * Consumers do arithmetic on it normally (a branded number IS a number); only
+ * ASSIGNMENT into a per-MTok slot is gated.
+ */
+export type UsdPerMTok = number & { readonly __brand: "UsdPerMTok" };
+
+/**
+ * Per-model rates in USD per MILLION tokens, normalized from the catalog's
+ * per-token strings.
+ *
+ * Server-side only — deliberately NOT part of `GatewayCatalogModel` and never
+ * on the wire. The picker needs the headline input/output price it already
+ * gets; this is the fuller breakdown the operator cost estimator needs, and
+ * keeping it off the response holds to this module's original line that
+ * "pricing tiers and architecture detail stay on the server".
+ *
+ * Only the BASE rate is read. The gateway also publishes `regional` overrides,
+ * `*_tiers` (long-context step pricing) and `service_tiers` (priority/flex) —
+ * all real, all refinements on top of a number that is already an estimate for
+ * an operator dashboard. Modelling them would imply a precision this signal
+ * doesn't have; `token-pricing.ts` is explicit that it is not a billing source
+ * of truth (`gateway_cost_usd` is).
+ */
+export interface CatalogModelPricing {
+  /** USD per million fresh (uncached) input tokens. */
+  readonly inputPerMTok: UsdPerMTok;
+  /** USD per million output tokens. */
+  readonly outputPerMTok: UsdPerMTok;
+  /** USD per million cache-read input tokens; `null` when unpublished. */
+  readonly cacheReadPerMTok: UsdPerMTok | null;
+  /** USD per million cache-write input tokens; `null` when unpublished. */
+  readonly cacheWritePerMTok: UsdPerMTok | null;
+}
+
 interface CatalogCacheEntry {
   models: GatewayCatalogModel[];
+  /** Model id → normalized rates. Empty on the bundled fallback. */
+  prices: Map<string, CatalogModelPricing>;
   fetchedAt: string;
   fallback: boolean;
   expiresAt: number;
@@ -201,6 +250,54 @@ function readToolSupport(raw: RawCatalogEntry): boolean | null {
   // `null` (unknown), matching the documented fail-open contract.
   if (!raw.supported_parameters.every((p) => typeof p === "string")) return null;
   return raw.supported_parameters.includes("tools");
+}
+
+const TOKENS_PER_MILLION = 1_000_000;
+
+/**
+ * A per-token price string/number → USD per million tokens.
+ *
+ * `0` is a REAL price, not a missing one (#4869 review). Three live language
+ * models publish `input: "0", output: "0"` — `inclusionai/ling-3.0-flash-free`,
+ * `poolside/laguna-s-2.1-free`, `zai/glm-4.6v-flash` — and they are genuinely
+ * free. Folding them into "unpriced" made the demo page render "—" when the
+ * true answer is $0.00, and permanently flipped `costComplete: false` on any
+ * rollup containing one. Only a NEGATIVE rate is nonsense; absence is absence.
+ */
+function asPerMTok(value: unknown): UsdPerMTok | null {
+  const raw = asString(value);
+  if (raw === null) return null;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  // The ONE place the per-token → per-MTok conversion happens, and the only
+  // place the brand is minted.
+  return (parsed * TOKENS_PER_MILLION) as UsdPerMTok;
+}
+
+/**
+ * Normalized rates for one entry, or `null` when the catalog publishes no
+ * usable input/output pair (3 of 204 language models — the `perplexity/sonar*`
+ * trio, which publish no `pricing` values at all — plus the non-language
+ * types). Both base rates are required: a half-priced model would silently
+ * under-report, which is worse than falling back.
+ *
+ * Measured 2026-07-28: NO live model publishes exactly one of input/output, so
+ * this guard costs nothing today. It stays as a forward guard. (An earlier
+ * version of this comment said "3 of 204" while also counting the three
+ * zero-priced models as unpriced — those are now correctly priced at $0.)
+ */
+function normalizePricing(raw: RawCatalogEntry): CatalogModelPricing | null {
+  if (!raw.pricing || typeof raw.pricing !== "object") return null;
+  const p = raw.pricing as Record<string, unknown>;
+  const inputPerMTok = asPerMTok(p.input);
+  const outputPerMTok = asPerMTok(p.output);
+  if (inputPerMTok === null || outputPerMTok === null) return null;
+  return {
+    inputPerMTok,
+    outputPerMTok,
+    cacheReadPerMTok: asPerMTok(p.input_cache_read),
+    cacheWritePerMTok: asPerMTok(p.input_cache_write),
+  };
 }
 
 function normalizeEntry(raw: RawCatalogEntry): GatewayCatalogModel | null {
@@ -339,7 +436,12 @@ function warnStaleShortlistOnce(stale: string[], configured: number): void {
   );
 }
 
-async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
+interface LiveCatalog {
+  models: GatewayCatalogModel[];
+  prices: Map<string, CatalogModelPricing>;
+}
+
+async function fetchLiveCatalog(): Promise<LiveCatalog> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -357,16 +459,21 @@ async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
     const normalized: GatewayCatalogModel[] = [];
     const droppedIds: string[] = [];
     const unknownTypes = new Set<string>();
+    const prices = new Map<string, CatalogModelPricing>();
     for (const entry of body.data) {
       const raw = entry && typeof entry === "object" ? (entry as RawCatalogEntry) : null;
       const model = raw ? normalizeEntry(raw) : null;
-      if (model) {
+      if (model && raw) {
         normalized.push(model);
+        // Priced separately from the wire entry: `prices` carries the cache
+        // read/write split the estimator needs and the picker doesn't.
+        const rate = normalizePricing(raw);
+        if (rate) prices.set(model.id, rate);
         // Recorded from the RAW value: `model.type` has already been collapsed
         // to `other`, so only the pre-normalization value names the new type.
         if (
           model.type === "other" &&
-          typeof raw?.type === "string" &&
+          typeof raw.type === "string" &&
           !(GATEWAY_MODEL_TYPES as readonly string[]).includes(raw.type)
         ) {
           unknownTypes.add(raw.type);
@@ -390,7 +497,7 @@ async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
         "gateway-catalog: upstream published model type(s) Atlas does not know — mapped to `other` and hidden from the picker; add them to GATEWAY_MODEL_TYPES if they should be selectable",
       );
     }
-    return normalized;
+    return { models: normalized, prices };
   } finally {
     clearTimeout(timeout);
   }
@@ -399,9 +506,10 @@ async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
 async function load(): Promise<CatalogCacheEntry> {
   const now = Date.now();
   try {
-    const models = await fetchLiveCatalog();
+    const { models, prices } = await fetchLiveCatalog();
     return {
       models,
+      prices,
       fetchedAt: new Date(now).toISOString(),
       fallback: false,
       expiresAt: now + ttlMs(),
@@ -413,6 +521,10 @@ async function load(): Promise<CatalogCacheEntry> {
     );
     return {
       models: FALLBACK_MODELS,
+      // The bundled fallback carries no pricing on purpose (the live catalog is
+      // authoritative for cost), so the estimator falls back to its static
+      // family rates rather than pricing off stale bundled numbers.
+      prices: new Map(),
       fetchedAt: new Date(now).toISOString(),
       fallback: true,
       // Short TTL on fallback so we retry sooner than a healthy cache cycle.
@@ -476,6 +588,24 @@ export function peekModelContextWindow(modelId: string | undefined): number | nu
   if (!modelId || !cache || cache.fallback || cache.expiresAt <= Date.now()) return null;
   const hit = cache.models.find((m) => m.id === modelId);
   return hit?.contextWindow ?? null;
+}
+
+/**
+ * Synchronous, non-fetching lookup of a model's rates from whatever catalog is
+ * already in memory. Returns `null` when the cache is cold, stale, or has no
+ * priced entry for `modelId`.
+ *
+ * Same contract and rationale as {@link peekModelContextWindow}: sync so the
+ * caller keeps its own sync signature, and a stale cache reads as a miss
+ * because a price that moved between catalog revisions is worse than no price.
+ */
+export function peekModelPricing(modelId: string | undefined): CatalogModelPricing | null {
+  // `cache.fallback` is checked explicitly even though the fallback's `prices`
+  // map is empty today, so it already returns null. Stating it keeps the two
+  // peeks symmetric and stops a future "let's ship prices in the fallback too"
+  // from silently pricing off redeploy-gated constants (#4869 review).
+  if (!modelId || !cache || cache.fallback || cache.expiresAt <= Date.now()) return null;
+  return cache.prices.get(modelId) ?? null;
 }
 
 /**

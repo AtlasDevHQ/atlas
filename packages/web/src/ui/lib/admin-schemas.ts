@@ -615,6 +615,13 @@ const DemoTokenRollupSchema = z.object({
   cacheWriteTokens: z.number().int(),
   avgLatencyMs: z.number().nullable(),
   estimatedCostUsd: z.number().nullable(),
+  /**
+   * True when any model in this rollup was priced from the offline static
+   * family table rather than the live gateway catalog (#4869 review). The UI
+   * marks the figure approximate rather than rendering it as confidently as a
+   * catalog-derived one.
+   */
+  costEstimated: z.boolean(),
 });
 export type DemoTokenRollup = z.infer<typeof DemoTokenRollupSchema>;
 

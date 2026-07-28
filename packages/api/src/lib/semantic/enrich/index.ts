@@ -19,7 +19,7 @@ import {
   resolveDialectSpecialist,
 } from "@atlas/api/lib/dialect-specialist";
 import { pluginDialectModules } from "@atlas/api/lib/plugins/tools";
-import type { RawTokenCounts } from "@atlas/api/lib/billing/token-weighting";
+import type { RawTokenCounts } from "@atlas/api/lib/metering";
 import type { TableProfile } from "@useatlas/types";
 import * as fs from "fs";
 import * as path from "path";
@@ -199,8 +199,8 @@ export interface EnrichEntityYamlResult {
   /**
    * Raw token spend of THIS enrichment call (#4489), surfaced so an API caller
    * (the wizard `/enrich` route) can meter it against the workspace budget via
-   * `logUsageEvent` — the same {@link RawTokenCounts} shape `toOutputEquivalentTokens`
-   * consumes, so it feeds the budget weighting without a re-pack. Present on BOTH
+   * `logUsageEvent` — the same {@link RawTokenCounts} shape the metering event
+   * carries, so it meters without a re-pack. Present on BOTH
    * the merged and the unparseable-response paths — tokens are spent whenever the
    * LLM call itself succeeds, regardless of whether the output was mergeable.
    * Distinct from the optional {@link TokenUsage} accumulator param, which is the

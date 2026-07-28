@@ -195,6 +195,7 @@ const { runAgent } = await import("@atlas/api/lib/agent");
 const { invalidateExploreBackend } = await import("@atlas/api/lib/tools/explore");
 const { COMPACTION_SUMMARY_PREFIX, COMPACTION_STREAM_PART_TYPE } = await import("@atlas/api/lib/agent-compaction");
 const { _resetSettingsCache } = await import("@atlas/api/lib/settings");
+const { __resetGatewayCatalogCacheForTests } = await import("@atlas/api/lib/gateway-catalog");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
 const { setStreamWriter, clearStreamWriter } = await import("@atlas/api/lib/tools/python-stream");
 
@@ -528,6 +529,49 @@ describe("agent compaction — per-model context window at the runAgent seam (#3
     // 1000-token override pins the budget low enough that it does.
     expect(summarizerCalls).toBeGreaterThanOrEqual(1);
     expect(JSON.stringify(capturedPrompts)).toContain(COMPACTION_SUMMARY_PREFIX);
+  });
+
+  it("resolves the gateway catalog ONCE PER TURN, not once per step (#4872)", async () => {
+    // The acceptance criterion with no other coverage: the await added in #4872
+    // must stay in `runAgent`'s setup and never migrate into `prepareStep`,
+    // which re-runs on every step of every turn.
+    //
+    // Discriminated via a 1ms catalog TTL. Per-step lookups are SEQUENTIAL
+    // awaits, so the inflight-promise dedup never applies to them — what would
+    // otherwise collapse five of them into one fetch is the 30-minute TTL
+    // cache. Expiring it immediately makes every RESOLUTION a fresh fetch, so
+    // the fetch count IS the resolution count. This turn runs 5 steps.
+    const origTtl = process.env.ATLAS_GATEWAY_CATALOG_TTL_MS;
+    const realFetch = globalThis.fetch;
+    process.env.ATLAS_GATEWAY_CATALOG_TTL_MS = "1";
+    __resetGatewayCatalogCacheForTests();
+
+    let catalogFetches = 0;
+    globalThis.fetch = (async () => {
+      catalogFetches += 1;
+      return new Response(
+        JSON.stringify({
+          data: [{ id: "anthropic/claude-opus-4.8", type: "language", context_window: 1_000_000 }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      enablePerModelCompaction();
+      // Gateway-shaped id, so the air-gap gate lets the lookup through.
+      mockModel = buildModel("anthropic/claude-opus-4.8");
+      const result = await runAgent({ messages: userMessages(BIG_QUESTION) });
+      const steps = await result.steps;
+
+      expect(steps.length).toBe(5);
+      expect(catalogFetches).toBe(1);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (origTtl === undefined) delete process.env.ATLAS_GATEWAY_CATALOG_TTL_MS;
+      else process.env.ATLAS_GATEWAY_CATALOG_TTL_MS = origTtl;
+      __resetGatewayCatalogCacheForTests();
+    }
   });
 });
 

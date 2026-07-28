@@ -6,6 +6,7 @@ import {
 } from "@atlas/api/lib/token-pricing";
 import {
   getGatewayCatalog,
+  primeGatewayCatalog,
   __resetGatewayCatalogCacheForTests,
 } from "@atlas/api/lib/gateway-catalog";
 
@@ -333,35 +334,56 @@ describe("resolveRate — catalog tier", () => {
     expect(Number(rate?.outputPerMTok)).toBe(25);
   });
 
-  it("WARMS the catalog for an Anthropic id, which used to skip the warm", async () => {
-    // The regression: the warm sat inside the `!family` branch, and
-    // `resolveModelFamily` substring-matches haiku/sonnet/opus — so every
-    // Anthropic id resolved a family and never warmed. The catalog tier never
-    // activated for them and the static table answered forever, which is what
-    // turned a stale rate into a PERMANENT over-report rather than a
-    // one-turn cold-start artifact.
+  it("never fetches — the catalog tier is a pure memory read (#4872)", async () => {
+    // `resolveRate` runs per ROW inside `foldUsage`, so it stays sync and must
+    // never reach the network itself. It used to fire a fire-and-forget warm
+    // from this line; that moved to an awaited `primeGatewayCatalog` in the
+    // `/platform/demo` handlers, which is what makes the catalog tier
+    // authoritative on the FIRST render instead of the second.
     let fetches = 0;
     globalThis.fetch = (async () => {
       fetches += 1;
-      return new Response(JSON.stringify({ data: [] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "anthropic/claude-opus-4.8",
+              type: "language",
+              pricing: { input: "0.000004", output: "0.00002" },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
     }) as unknown as typeof globalThis.fetch;
 
+    // Cold: the static family table answers, and nothing is fetched.
     expect(resolveRate("anthropic/claude-opus-4.8")?.source).toBe("family");
     await Promise.resolve();
+    expect(fetches).toBe(0);
+
+    // Primed: the SAME sync call now resolves from the live catalog. The
+    // regression this replaces (#4869 review): `resolveModelFamily`
+    // substring-matches haiku/sonnet/opus, so every Anthropic id resolved a
+    // family and skipped the warm — the catalog tier never activated for them
+    // and the static table answered forever, turning a stale rate into a
+    // PERMANENT over-report rather than a cold-start artifact.
+    await primeGatewayCatalog(["anthropic/claude-opus-4.8"]);
+    const primed = resolveRate("anthropic/claude-opus-4.8");
+    expect(primed?.source).toBe("catalog");
+    expect(Number(primed?.inputPerMTok)).toBeCloseTo(4, 10);
     expect(fetches).toBe(1);
   });
 
-  it("does NOT warm for a slashless direct/BYOT id", () => {
+  it("primes NOTHING for a slashless direct/BYOT id (air gap)", async () => {
     let fetches = 0;
     globalThis.fetch = (async () => {
       fetches += 1;
       return new Response(JSON.stringify({ data: [] }), { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    resolveRate("claude-opus-4-8");
+    await primeGatewayCatalog(["claude-opus-4-8"]);
+    expect(resolveRate("claude-opus-4-8")?.source).toBe("family");
     expect(fetches).toBe(0);
   });
 

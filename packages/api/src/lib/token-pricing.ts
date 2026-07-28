@@ -22,13 +22,12 @@
  * this module knew three families and returned `null` for everything else — so
  * the operator spend page went blank the moment a workspace ran a non-Anthropic
  * model, which is exactly the set the model picker now exposes.
+ *
+ * The catalog tier reads from memory and does NOT fetch — see {@link resolveRate}
+ * for why this stays sync and who is responsible for priming it (#4872).
  */
 
-import {
-  peekModelPricing,
-  warmGatewayCatalog,
-  type UsdPerMTok,
-} from "@atlas/api/lib/gateway-catalog";
+import { peekModelPricing, type UsdPerMTok } from "@atlas/api/lib/gateway-catalog";
 
 export interface TokenCounts {
   /** Total input tokens (AI-SDK `inputTokens`, inclusive of the cache split). */
@@ -116,6 +115,26 @@ export interface ResolvedRate {
  *
  * Order matters: catalog wins even for Anthropic models, because it tracks
  * price changes and the static table does not.
+ *
+ * SYNC on purpose (#4872). This runs per ROW inside `foldUsage`'s loop, so the
+ * catalog is fetched by ONE awaited `primeGatewayCatalog(models)` in the
+ * `/platform/demo` route handlers before the fold, and read from memory here.
+ * It replaced a fire-and-forget `warmGatewayCatalog()` call that used to sit on
+ * this line: correct, but authoritative only from the SECOND page load, and
+ * split across two call sites in a way that let a tier reordering strand it
+ * (#4869 review — an earlier iteration had the warm inside the `!family` branch
+ * below, which `resolveModelFamily`'s haiku/sonnet/opus substring match made
+ * unreachable for every Anthropic gateway id).
+ *
+ * A forgotten prime never yields a confidently-wrong number, but it does NOT
+ * degrade uniformly — the two halves land in different places:
+ *  - Anthropic ids fall to `FAMILY_RATES`; the rollup flags `costEstimated`,
+ *    and the spend page explains the figure came from the offline table.
+ *  - Everything else (GLM, Kimi, Grok, DeepSeek — the models #4869 added the
+ *    catalog tier FOR) returns `null` here, so those rows drop out of the total
+ *    and `costComplete` goes false. On an all-non-Anthropic workspace
+ *    `estimatedCostUsd` is null, and BOTH banners are gated on it being
+ *    non-null, so the page renders a bare "—+" with no explanation at all.
  */
 export function resolveRate(model: string | null | undefined): ResolvedRate | null {
   const fromCatalog = peekModelPricing(model ?? undefined);
@@ -128,18 +147,6 @@ export function resolveRate(model: string | null | undefined): ResolvedRate | nu
       source: "catalog",
     };
   }
-
-  // Warm BEFORE the family lookup, not inside the `!family` branch (#4869
-  // review). `resolveModelFamily` substring-matches haiku/sonnet/opus, so every
-  // Anthropic gateway id resolved a family and skipped the warm entirely — the
-  // catalog tier never activated for them, and the static table below answered
-  // forever. That's what made the stale `opus` rate a permanent 3x over-report
-  // rather than a one-turn cold-start artifact.
-  //
-  // Fire-and-forget, deduped by the catalog's inflight promise, no-op when
-  // already warm. Gated on a gateway-shaped id so a direct/BYOT model id never
-  // triggers an outbound fetch.
-  if (model?.includes("/")) warmGatewayCatalog();
 
   const family = resolveModelFamily(model);
   if (!family) return null;

@@ -4,8 +4,8 @@ import {
   __resetGatewayCatalogCacheForTests,
   __getRecommendedIdsForTests,
   getGatewayCatalog,
-  peekModelContextWindow,
-  warmGatewayCatalog,
+  lookupModelContextWindow,
+  primeGatewayCatalog,
   isSelectableGatewayModel,
   peekModelPricing,
 } from "../gateway-catalog";
@@ -242,7 +242,7 @@ describe("gateway-catalog", () => {
     expect(res.models.map((m) => m.type)).toEqual(["transcription", "realtime", "speech"]);
   });
 
-  describe("warmGatewayCatalog (#4869 review)", () => {
+  describe("primeGatewayCatalog (#4872)", () => {
     test("is a no-op when the cache is already fresh", async () => {
       let fetches = 0;
       globalThis.fetch = (async () => {
@@ -256,15 +256,12 @@ describe("gateway-catalog", () => {
       await getGatewayCatalog();
       expect(fetches).toBe(1);
 
-      warmGatewayCatalog();
-      warmGatewayCatalog();
-      await Promise.resolve();
-      // The early return is load-bearing: this runs on every agent step for a
-      // gateway-shaped id, so a regression here is one fetch PER STEP.
+      await primeGatewayCatalog(["a/b"]);
+      await primeGatewayCatalog(["a/b"]);
       expect(fetches).toBe(1);
     });
 
-    test("does not stampede — concurrent warms share one inflight fetch", async () => {
+    test("does not stampede — concurrent primes share one inflight fetch", async () => {
       let fetches = 0;
       globalThis.fetch = (async () => {
         fetches += 1;
@@ -275,18 +272,64 @@ describe("gateway-catalog", () => {
         });
       }) as unknown as FetchFn;
 
-      for (let i = 0; i < 25; i += 1) warmGatewayCatalog();
+      await Promise.all(Array.from({ length: 25 }, () => primeGatewayCatalog(["a/b"])));
       await getGatewayCatalog();
       expect(fetches).toBe(1);
     });
 
-    test("never throws from its synchronous call site, even when fetch rejects", () => {
+    test("never rejects, even when fetch throws synchronously", async () => {
       globalThis.fetch = (() => {
         throw new Error("network stack exploded");
       }) as unknown as FetchFn;
-      // Called from `prepareStep`-adjacent sync code — a throw here would take
-      // the turn down.
-      expect(() => warmGatewayCatalog()).not.toThrow();
+      // A rejection here would 500 the operator spend page over a gateway
+      // outage that has a perfectly good static fallback.
+      expect(await primeGatewayCatalog(["a/b"]).then(() => "resolved")).toBe("resolved");
+    });
+
+    test("makes NO outbound call when no id is gateway-shaped (air gap)", async () => {
+      // Air-gapped self-hosted deploys use hyphen-format ids with no slash. The
+      // gate is per-CALL, not per-id: one gateway-shaped row is enough to
+      // justify the fetch, none at all means the network is never touched.
+      const fetchMock = mock(async () => new Response("{}", { status: 200 }));
+      globalThis.fetch = fetchMock as unknown as FetchFn;
+      await primeGatewayCatalog(["claude-opus-4-8", "gpt-4o", null, undefined]);
+      expect(fetchMock).toHaveBeenCalledTimes(0);
+
+      await primeGatewayCatalog(["claude-opus-4-8", "anthropic/claude-opus-5"]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("gives up at the budget and leaves the load running for the next caller", async () => {
+      let resolveFetch: ((r: Response) => void) | undefined;
+      const gate = new Promise<Response>((r) => {
+        resolveFetch = r;
+      });
+      let fetches = 0;
+      globalThis.fetch = (async () => {
+        fetches += 1;
+        return gate;
+      }) as unknown as FetchFn;
+
+      const started = Date.now();
+      await primeGatewayCatalog(["zai/glm-5.2"], 25);
+      // Returned on the budget, NOT on the 10s fetch timeout.
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(peekModelPricing("zai/glm-5.2")).toBeNull();
+
+      // The abandoned load was not cancelled: when it lands it populates the
+      // shared cache, so the next caller reads it for free.
+      resolveFetch?.(
+        new Response(
+          JSON.stringify({
+            data: [{ id: "zai/glm-5.2", type: "language", pricing: { input: "0.000001", output: "0.000002" } }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      await primeGatewayCatalog(["zai/glm-5.2"], 5_000);
+      expect(peekModelPricing("zai/glm-5.2")?.inputPerMTok).toBeCloseTo(1, 10);
+      // Re-used the SAME inflight load rather than starting a second one.
+      expect(fetches).toBe(1);
     });
   });
 
@@ -342,16 +385,31 @@ describe("gateway-catalog", () => {
       return getGatewayCatalog();
     }
 
-    test("peekModelContextWindow returns null off a fallback cache", async () => {
+    test("lookupModelContextWindow returns null off a fallback cache", async () => {
       const res = await forceFallback();
       expect(res.fallback).toBe(true);
-      // sonnet-5 IS in FALLBACK_MODELS with a contextWindow, so a naive peek
-      // would happily return it. Four hand-maintained constants must not size
+      // sonnet-5 IS in FALLBACK_MODELS with a contextWindow, so a naive read
+      // would happily return it. Hand-maintained constants must not size
       // compaction — the manifest had opus-4.8 at 200k against a real 1M.
-      expect(peekModelContextWindow("anthropic/claude-sonnet-5")).toBeNull();
-      expect(peekModelContextWindow("anthropic/claude-opus-4.8")).toBeNull();
+      expect(await lookupModelContextWindow("anthropic/claude-sonnet-5")).toBeNull();
+      expect(await lookupModelContextWindow("anthropic/claude-opus-4.8")).toBeNull();
     });
 
+    test("a fresh fallback cache short-circuits — no retry storm while the gateway is down", async () => {
+      const fetchMock = mock(async () => new Response("down", { status: 503 }));
+      globalThis.fetch = fetchMock as unknown as FetchFn;
+
+      await lookupModelContextWindow("anthropic/claude-sonnet-5");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // The fallback entry carries a short (60s) TTL precisely so we retry
+      // sooner than a healthy cycle — but WITHIN it, every turn must read the
+      // cached failure instead of paying the hot-path budget again.
+      for (let i = 0; i < 5; i += 1) {
+        expect(await lookupModelContextWindow("anthropic/claude-sonnet-5")).toBeNull();
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("tool-calling capability (#4869)", () => {
@@ -466,28 +524,109 @@ describe("gateway-catalog", () => {
     });
   });
 
-  describe("peekModelContextWindow (#4869)", () => {
-    test("returns null on a cold cache and never fetches", () => {
+  describe("lookupModelContextWindow (#4869, #4872)", () => {
+    test("FETCHES on a cold cache and answers from it — no prior warm needed", async () => {
+      // The #4872 premise: this is awaited once per turn from an async scope,
+      // so turn 1 gets the live window. The predecessor (`peekModelContextWindow`)
+      // could only ever answer from turn 2 onward.
+      const fetchMock = mock(
+        async () =>
+          new Response(
+            JSON.stringify({ data: [{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      );
+      globalThis.fetch = fetchMock as unknown as FetchFn;
+
+      expect(await lookupModelContextWindow("zai/glm-5.2")).toBe(1_040_000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("serves the per-model window from a warm catalog without re-fetching", async () => {
+      const fetchMock = mock(
+        async () =>
+          new Response(
+            JSON.stringify({
+              data: [
+                { id: "zai/glm-5.2", type: "language", context_window: 1_040_000 },
+                { id: "a/no-window", type: "language" },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      );
+      globalThis.fetch = fetchMock as unknown as FetchFn;
+
+      await getGatewayCatalog();
+      expect(await lookupModelContextWindow("zai/glm-5.2")).toBe(1_040_000);
+      // Present in the catalog but with no window published → still a miss, so
+      // the caller falls through to its static table rather than to `0`.
+      expect(await lookupModelContextWindow("a/no-window")).toBeNull();
+      expect(await lookupModelContextWindow("not/in-catalog")).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("REFRESHES a TTL-expired entry instead of serving the stale window", async () => {
+      // The opposite contract to the pricing path's "expired ⇒ miss": here an
+      // expired entry must be re-fetched and the NEW window returned. A model's
+      // window changes between catalog revisions and compaction sizing is where
+      // a stale number does damage — so deleting the freshness check would pin
+      // a workspace to whatever the window was at process start, forever.
+      // Driven through the real TTL knob rather than a clock mock.
+      const origTtl = process.env.ATLAS_GATEWAY_CATALOG_TTL_MS;
+      process.env.ATLAS_GATEWAY_CATALOG_TTL_MS = "1";
+      let windows = [200_000, 1_000_000];
+      let fetches = 0;
+      globalThis.fetch = (async () => {
+        const contextWindow = windows[Math.min(fetches, windows.length - 1)];
+        fetches += 1;
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "anthropic/claude-sonnet-5", type: "language", context_window: contextWindow }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as unknown as FetchFn;
+
+      try {
+        expect(await lookupModelContextWindow("anthropic/claude-sonnet-5")).toBe(200_000);
+        await new Promise((r) => setTimeout(r, 25)); // outlive the 1ms TTL
+        expect(await lookupModelContextWindow("anthropic/claude-sonnet-5")).toBe(1_000_000);
+        expect(fetches).toBe(2);
+      } finally {
+        if (origTtl === undefined) delete process.env.ATLAS_GATEWAY_CATALOG_TTL_MS;
+        else process.env.ATLAS_GATEWAY_CATALOG_TTL_MS = origTtl;
+        windows = [];
+      }
+    });
+
+    test("never fetches for a slashless BYOT id, warm or cold (air gap)", async () => {
       const fetchMock = mock(async () => new Response("{}", { status: 200 }));
       globalThis.fetch = fetchMock as unknown as FetchFn;
-      expect(peekModelContextWindow("a/one")).toBeNull();
+      expect(await lookupModelContextWindow("claude-opus-4-8")).toBeNull();
+      expect(await lookupModelContextWindow(undefined)).toBeNull();
+      expect(await lookupModelContextWindow("")).toBeNull();
       expect(fetchMock).toHaveBeenCalledTimes(0);
     });
 
-    test("serves the per-model window once the catalog is warm", async () => {
-      globalThis.fetch = mockFetchOk({
-        data: [
-          { id: "zai/glm-5.2", type: "language", context_window: 1_040_000 },
-          { id: "a/no-window", type: "language" },
-        ],
-      });
-      await getGatewayCatalog();
-      expect(peekModelContextWindow("zai/glm-5.2")).toBe(1_040_000);
-      // Present in the catalog but with no window published → still a miss, so
-      // the caller falls through to its static table rather than to `0`.
-      expect(peekModelContextWindow("a/no-window")).toBeNull();
-      expect(peekModelContextWindow("not/in-catalog")).toBeNull();
-      expect(peekModelContextWindow(undefined)).toBeNull();
+    test("returns null at the budget rather than waiting out the slow fetch", async () => {
+      // A slow gateway must not hold a turn open. The fetch below eventually
+      // succeeds WITH the real window — the assertion is that the turn didn't
+      // wait for it, so a passing test can't be explained by the fetch failing.
+      globalThis.fetch = (async () => {
+        await new Promise((r) => setTimeout(r, 400));
+        return new Response(
+          JSON.stringify({ data: [{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as unknown as FetchFn;
+
+      const started = Date.now();
+      expect(await lookupModelContextWindow("zai/glm-5.2", 25)).toBeNull();
+      expect(Date.now() - started).toBeLessThan(300);
+
+      // ...and the abandoned load still lands, so the next turn gets it.
+      expect(await lookupModelContextWindow("zai/glm-5.2", 5_000)).toBe(1_040_000);
     });
   });
 

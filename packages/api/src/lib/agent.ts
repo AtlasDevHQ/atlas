@@ -1794,7 +1794,13 @@ export async function runAgent({
   // identical older slice is reused verbatim, and a grown one folds only the
   // newly-aged-out delta into the prior summary (rolling summary) — keeping the
   // per-step summarization cost bounded instead of O(full older slice).
-  const compactionSettings = resolveCompactionSettings(resolvedModelId, orgId);
+  // Awaited (#4872): tier 2 of the window resolution is the live gateway
+  // catalog, so this is where the turn pays for a cold catalog — bounded by
+  // `HOT_PATH_BUDGET_MS`, once per cache fill, degrading to the static family
+  // table rather than failing. Free when compaction is off (the default), which
+  // skips the network tier outright. `prepareStep` below reads the resolved
+  // value; nothing new is awaited per STEP.
+  const compactionSettings = await resolveCompactionSettings(resolvedModelId, orgId);
   let compactionSummaryMemo: { olderCount: number; text: string } | undefined;
 
   // #3761 — optional cheaper summary model. When `ATLAS_COMPACTION_SUMMARY_MODEL`
@@ -2118,6 +2124,11 @@ export async function runAgent({
                     pinnedMessages: compacted.pinnedMessageCount,
                     fillFraction: compactionSettings.fillFraction,
                     contextWindowTokens: compactionSettings.contextWindowTokens,
+                    // Which tier produced that window (#4872). Without it a
+                    // logged `200000` can't be told apart from the coarse
+                    // static floor — which is exactly how the live tier stayed
+                    // silently dead for the SaaS default models.
+                    contextWindowSource: compactionSettings.contextWindowSource,
                   },
                   "context compaction pass ran",
                 );

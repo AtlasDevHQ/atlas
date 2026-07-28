@@ -62,16 +62,6 @@ export const POSTS: Post[] = [
     tag: "How it works",
   },
   {
-    slug: "the-process-is-the-region",
-    title: "Yours, anywhere: the process is the region",
-    description:
-      "Self-hosted Atlas is free and your data never leaves. On Atlas Cloud, residency is enforced by topology rather than by a filter: each region is its own deployment holding no route to any other, so a cross-region query is unexpressible rather than blocked. Plus the carve-out I couldn't engineer away.",
-    isoDate: "2026-07-31",
-    dateLabel: "July 31, 2026",
-    readingTime: "5 min read",
-    tag: "How it works",
-  },
-  {
     slug: "the-last-mile",
     title: "The last mile",
     description:

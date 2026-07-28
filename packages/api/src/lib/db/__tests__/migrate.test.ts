@@ -237,7 +237,20 @@ describe("runMigrations", () => {
     //   Plus 0179 (drop conversations.notebook_state — notebook retirement
     //   phase 2 of the two-phase drop, readers/writers removed by #4587 in
     //   v0.0.47, ADR-0035, #4588) = 180.
-    expect(count).toBe(180);
+    //   Plus 0184 (seals ownerless personal SCIM providers by stamping a
+    //   reserved owner id — the residual half of GHSA-j8v8-g9cx-5qf4, which has
+    //   no fix on the @better-auth/scim 1.6.x line; `providerOwnership` only
+    //   binds providers created after it is enabled) = 181.
+    //
+    //   NOTE — the number is 0184, not 0180, even though this branch's last
+    //   migration is 0179. This is the hotfix lane off v0.1.0; 0180-0183 exist
+    //   on `main` (the unreleased Brain M1 arc) and are absent here, so the
+    //   count is 181 rather than main's 185. Reusing 0180 would collide with
+    //   main's 0180_brain_substrate.sql on the backport — two different
+    //   migrations sharing a number, with a database that ran one silently
+    //   skipping the other. Keeping 0184 makes the backport a clean no-op and
+    //   leaves a harmless numbering gap (nothing enforces contiguity).
+    expect(count).toBe(181);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -446,6 +459,10 @@ describe("runMigrations", () => {
         "0177_backups_scheduled_window.sql",
         "0178_region_migrations_source_cleaned_at.sql",
         "0179_drop_conversations_notebook_state.sql",
+        // 0180-0183 are main-only (the unreleased Brain M1 arc) and absent from
+        // this v0.1.0-based hotfix lane — see the count note above for why 0184
+        // keeps its number across the gap.
+        "0184_scim_provider_seal_ownerless.sql",
       ],
     });
 

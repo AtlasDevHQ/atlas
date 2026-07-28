@@ -2893,6 +2893,33 @@ export function buildPlugins() {
     plugins.push(
       scim({
         storeSCIMToken: "encrypted",
+        // GHSA-j8v8-g9cx-5qf4 (HIGH) — without this, a non-organization
+        // ("personal") SCIM provider is created with no owner, and the
+        // plugin's management access check is
+        //
+        //   } else if (provider.userId && provider.userId !== userId) throw
+        //
+        // so a NULL `userId` short-circuits and ANY authenticated user can
+        // read, list, delete, or regenerate the token of someone else's
+        // provider. `organizationId` is `.optional()` on the plugin's
+        // generate-token body, so personal providers are reachable here even
+        // though the Atlas admin surface is org-scoped.
+        //
+        // The 1.6.x stable line is NOT patched — the only upstream fix is the
+        // breaking 1.7.0-beta.4+ (removes this option, makes binding
+        // mandatory, adds a permanent column). This flag is the advisory's
+        // supported workaround: it stamps `userId` on every personal provider
+        // at creation, so the check above actually fires.
+        //
+        // It is only HALF the fix. The column is nullable and nothing
+        // backfills it, so providers created before this flag stay ownerless
+        // forever — migration 0184 seals those, and explains why it stamps a
+        // sentinel rather than deleting. Both halves are required.
+        //
+        // Enabling this adds `scimProvider.userId`; Better Auth's schema-diff
+        // auto-migrate creates it at boot, before the Atlas migration runner,
+        // so 0184 can rely on it being present.
+        providerOwnership: { enabled: true },
         async beforeSCIMTokenGenerated(data) {
           // Cast needed: the admin plugin adds `role` to the user
           // object but the SCIM plugin's hook type only includes base

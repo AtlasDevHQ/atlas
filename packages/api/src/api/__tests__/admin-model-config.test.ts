@@ -452,8 +452,14 @@ const mockGetGatewayCatalog: Mock<() => unknown> = mock(async () => ({
   fallback: false,
 }));
 
+// mock.module replaces the WHOLE module — every export the real file has must
+// be listed here or an unrelated importer (agent-compaction imports
+// peekModelContextWindow/warmGatewayCatalog) dies with a link-time
+// "Export named 'x' not found". Add new gateway-catalog exports here too.
 void mock.module("@atlas/api/lib/gateway-catalog", () => ({
   getGatewayCatalog: mockGetGatewayCatalog,
+  peekModelContextWindow: mock(() => null),
+  warmGatewayCatalog: mock(() => {}),
   __resetGatewayCatalogCacheForTests: mock(() => {}),
   __getRecommendedIdsForTests: mock(() => new Set<string>()),
 }));

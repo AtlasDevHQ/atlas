@@ -173,6 +173,10 @@ function normalizeModel(model: {
     inputPrice: null,
     outputPrice: null,
     recommended: RECOMMENDED_MODEL_IDS.has(model.modelId),
+    // Bedrock's ListFoundationModels does carry an `inferenceTypesSupported` /
+    // modality surface, but nothing that states tool-calling — UNKNOWN, not
+    // "no". See the anthropic-catalog note.
+    supportsTools: null,
   };
 }
 

@@ -145,6 +145,9 @@ function normalizeEntry(raw: RawOpenAIModel): GatewayCatalogModel | null {
     inputPrice: null,
     outputPrice: null,
     recommended: RECOMMENDED_MODEL_IDS.has(id),
+    // OpenAI's /v1/models publishes no capability data — UNKNOWN, not "no".
+    // See the anthropic-catalog note; `null` keeps BYOT models selectable.
+    supportsTools: null,
   };
 }
 

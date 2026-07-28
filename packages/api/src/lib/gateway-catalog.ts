@@ -26,6 +26,7 @@ import type {
 } from "@useatlas/types";
 import { GATEWAY_MODEL_TYPES } from "@useatlas/types";
 import { createLogger } from "./logger";
+import { getSetting } from "./settings";
 
 const log = createLogger("gateway-catalog");
 
@@ -34,24 +35,44 @@ const DEFAULT_TTL_MS = 30 * 60 * 1_000; // 30 minutes
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
- * Curated subset surfaced as "recommended" in the picker. IDs must match the
- * gateway model `id` field exactly (gateway uses dot-version like
- * `anthropic/claude-opus-4.6`, not hyphen-version). Curation policy: anchor on
- * a flagship + a cheap-fast pair per major provider; keep the list under ~10
- * so the recommended group fits without scrolling.
+ * The shortlist starred at the top of the picker, read from the
+ * `ATLAS_RECOMMENDED_MODELS` setting (#4869). IDs must match the gateway model
+ * `id` field exactly — the gateway uses dot-version (`anthropic/claude-opus-5`),
+ * not hyphen-version.
+ *
+ * Read per call rather than memoized: the setting is hot-reloadable, and the
+ * whole point of moving it out of source was that curation shouldn't wait for a
+ * deploy. It shouldn't wait for a cache TTL either, so this is resolved at
+ * response time and overlaid onto the cached catalog (which stores only
+ * upstream facts — pricing, capability, context window).
+ *
+ * A blank setting means "no Recommended group", not "fall back to a default" —
+ * an operator who clears the list gets an empty group, which is what they asked
+ * for. The registry default seeds a sensible starting shortlist.
  */
-const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
-  "anthropic/claude-opus-4.8",
-  "anthropic/claude-sonnet-5",
-  "openai/gpt-4o",
-  "openai/gpt-4o-mini",
-  "google/gemini-2.0-flash",
-]);
+function recommendedModelIds(): ReadonlySet<string> {
+  const raw = getSetting("ATLAS_RECOMMENDED_MODELS");
+  if (raw === undefined) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0),
+  );
+}
 
 /**
  * Minimal bundled fallback. Used only when the live fetch fails so the
  * picker still functions; pricing fields are intentionally omitted —
- * the live catalog is authoritative for cost.
+ * the live catalog is authoritative for cost. Every entry is hand-picked
+ * and tool-calling, hence `supportsTools: true` rather than `null`: these
+ * must survive the picker's capability filter or a gateway outage would
+ * leave the admin with an empty picker.
+ *
+ * `recommended: false` on every entry is not an oversight — the flag is
+ * overlaid from `ATLAS_RECOMMENDED_MODELS` by `applyRecommended()` like any
+ * other catalog entry, so a fallback model is starred iff the operator listed
+ * it. Hardcoding `true` here would put a star on models the operator removed.
  */
 const FALLBACK_MODELS: GatewayCatalogModel[] = [
   {
@@ -63,7 +84,8 @@ const FALLBACK_MODELS: GatewayCatalogModel[] = [
     maxOutputTokens: 32_000,
     inputPrice: null,
     outputPrice: null,
-    recommended: true,
+    recommended: false,
+    supportsTools: true,
   },
   {
     id: "anthropic/claude-sonnet-5",
@@ -74,7 +96,8 @@ const FALLBACK_MODELS: GatewayCatalogModel[] = [
     maxOutputTokens: 128_000,
     inputPrice: null,
     outputPrice: null,
-    recommended: true,
+    recommended: false,
+    supportsTools: true,
   },
   {
     id: "openai/gpt-4o",
@@ -85,7 +108,8 @@ const FALLBACK_MODELS: GatewayCatalogModel[] = [
     maxOutputTokens: 16_000,
     inputPrice: null,
     outputPrice: null,
-    recommended: true,
+    recommended: false,
+    supportsTools: true,
   },
   {
     id: "openai/gpt-4o-mini",
@@ -96,7 +120,8 @@ const FALLBACK_MODELS: GatewayCatalogModel[] = [
     maxOutputTokens: 16_000,
     inputPrice: null,
     outputPrice: null,
-    recommended: true,
+    recommended: false,
+    supportsTools: true,
   },
 ];
 
@@ -107,6 +132,7 @@ interface RawCatalogEntry {
   context_window?: unknown;
   max_tokens?: unknown;
   pricing?: unknown;
+  supported_parameters?: unknown;
 }
 
 interface CatalogCacheEntry {
@@ -152,6 +178,24 @@ function asGatewayModelType(value: unknown): GatewayModelType {
     : "language";
 }
 
+/**
+ * Whether the entry advertises tool-calling.
+ *
+ * The gateway publishes two equivalent signals — a `tool-use` member of `tags`
+ * and a `tools` member of `supported_parameters`. Measured against the live
+ * catalog (2026-07-28, 306 entries) the two agree on 204/204 language models,
+ * but `supported_parameters` is present on all 204 while `tags` is missing on
+ * 2 — so `supported_parameters` is the one to trust.
+ *
+ * Returns `null` (unknown) when the field is absent entirely, so a future
+ * upstream schema change degrades to "don't filter" instead of hiding the
+ * whole catalog. Only an explicit, parseable array yields `false`.
+ */
+function readToolSupport(raw: RawCatalogEntry): boolean | null {
+  if (!Array.isArray(raw.supported_parameters)) return null;
+  return raw.supported_parameters.includes("tools");
+}
+
 function normalizeEntry(raw: RawCatalogEntry): GatewayCatalogModel | null {
   const id = asString(raw.id);
   if (!id) return null;
@@ -168,8 +212,41 @@ function normalizeEntry(raw: RawCatalogEntry): GatewayCatalogModel | null {
     maxOutputTokens: asPositiveInt(raw.max_tokens),
     inputPrice: asString(pricing.input),
     outputPrice: asString(pricing.output),
-    recommended: RECOMMENDED_MODEL_IDS.has(id),
+    // Always false here. `recommended` is not an upstream fact — it's local
+    // curation from a hot-reloadable setting, so it's overlaid at response
+    // time by `applyRecommended()`. Stamping it into the cached entry would
+    // pin an operator's edit behind the 30-minute catalog TTL.
+    recommended: false,
+    supportsTools: readToolSupport(raw),
   };
+}
+
+/**
+ * Overlay the operator's curated shortlist onto a cached catalog.
+ *
+ * Returns fresh objects rather than mutating: the cache entry is shared across
+ * concurrent callers, and stamping it in place would leak one request's
+ * resolved shortlist into the next.
+ */
+function applyRecommended(models: GatewayCatalogModel[]): GatewayCatalogModel[] {
+  const ids = recommendedModelIds();
+  if (ids.size === 0) return models;
+
+  // A curated ID the gateway no longer serves can't be caught by a type-check
+  // or a unit test — it only shows up against the live catalog, and it fails
+  // silently (the Recommended group just renders short). `google/gemini-2.0-flash`
+  // sat dead in the old hardcoded list until it was found by hand. Warn so the
+  // next one surfaces in logs rather than in a screenshot.
+  const liveIds = new Set(models.map((m) => m.id));
+  const stale = [...ids].filter((id) => !liveIds.has(id));
+  if (stale.length > 0) {
+    log.warn(
+      { stale, configured: ids.size },
+      "gateway-catalog: ATLAS_RECOMMENDED_MODELS names model(s) the gateway does not serve — they are skipped; prune or replace them",
+    );
+  }
+
+  return models.map((m) => (ids.has(m.id) ? { ...m, recommended: true } : m));
 }
 
 async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
@@ -238,7 +315,11 @@ async function load(): Promise<CatalogCacheEntry> {
  */
 export async function getGatewayCatalog(): Promise<GatewayCatalogResponse> {
   if (cache && cache.expiresAt > Date.now()) {
-    return { models: cache.models, fetchedAt: cache.fetchedAt, fallback: cache.fallback };
+    return {
+      models: applyRecommended(cache.models),
+      fetchedAt: cache.fetchedAt,
+      fallback: cache.fallback,
+    };
   }
   if (!inflight) {
     inflight = load().finally(() => {
@@ -247,7 +328,54 @@ export async function getGatewayCatalog(): Promise<GatewayCatalogResponse> {
   }
   const entry = await inflight;
   cache = entry;
-  return { models: entry.models, fetchedAt: entry.fetchedAt, fallback: entry.fallback };
+  return {
+    models: applyRecommended(entry.models),
+    fetchedAt: entry.fetchedAt,
+    fallback: entry.fallback,
+  };
+}
+
+/**
+ * Synchronous, non-fetching lookup of a model's context window from whatever
+ * catalog is already in memory. Returns `null` when the cache is cold, stale,
+ * or has no entry for `modelId`.
+ *
+ * Exists for the compaction trigger, which runs inside `prepareStep` on every
+ * agent step and therefore CANNOT await a network fetch. That constraint is why
+ * `agent-compaction.ts` carries a static family→window table at all; this lets
+ * it prefer the authoritative per-model number when we happen to have it,
+ * without changing its sync contract.
+ *
+ * Deliberately does NOT trigger a refresh: a cold cache must stay cheap and
+ * silent on the hot path. Callers fall back to the static table, and the cache
+ * warms via {@link warmGatewayCatalog} or the first admin who opens the picker.
+ *
+ * A stale (TTL-expired) cache is treated as a miss rather than served: a model's
+ * context window can change between catalog revisions, and compaction sizing is
+ * exactly where a stale number does damage.
+ */
+export function peekModelContextWindow(modelId: string | undefined): number | null {
+  if (!modelId || !cache || cache.expiresAt <= Date.now()) return null;
+  const hit = cache.models.find((m) => m.id === modelId);
+  return hit?.contextWindow ?? null;
+}
+
+/**
+ * Fire-and-forget cache warm. Safe to call from a non-async context: it never
+ * throws (`load()` resolves even on fetch failure) and concurrent calls share
+ * the single inflight promise, so it can't stampede the gateway.
+ */
+export function warmGatewayCatalog(): void {
+  if (cache && cache.expiresAt > Date.now()) return;
+  void getGatewayCatalog().catch((err) => {
+    // Unreachable in practice — `load()` swallows fetch failures into the
+    // bundled fallback — but an unhandled rejection here would be a process
+    // -level event, so it stays explicitly handled rather than assumed away.
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "gateway-catalog: background warm failed",
+    );
+  });
 }
 
 /** Test-only: clears the cache so each test sees a clean fetch path. */
@@ -256,7 +384,7 @@ export function __resetGatewayCatalogCacheForTests(): void {
   inflight = null;
 }
 
-/** Test-only: inspect the curated recommended list. */
+/** Test-only: the shortlist as currently resolved from settings. */
 export function __getRecommendedIdsForTests(): ReadonlySet<string> {
-  return RECOMMENDED_MODEL_IDS;
+  return recommendedModelIds();
 }

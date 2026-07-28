@@ -48,6 +48,7 @@ import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { Attributes } from "@opentelemetry/api";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
+import { peekModelContextWindow, warmGatewayCatalog } from "./gateway-catalog";
 
 const log = createLogger("agent:compaction");
 
@@ -256,14 +257,34 @@ function resolveContextWindow(
     );
   }
 
-  // Tier 2 — static per-model catalog.
+  // Tier 2 — the live gateway catalog, if a fetch has already populated it
+  // (#4869). Authoritative and per-model rather than per-family, which matters
+  // now that the picker exposes the whole gateway: the static table below knows
+  // Claude/GPT/Gemini/Mistral/Llama families and nothing else, so a workspace on
+  // GLM, Kimi, Grok or DeepSeek would otherwise fall straight through to the
+  // safe default and compact far earlier than it needs to.
+  //
+  // `peek` is a pure cache read — this runs inside `prepareStep` on every step
+  // and cannot await. A cold cache returns null and we fall through, so this
+  // tier is an upgrade when available, never a dependency.
+  const fromLiveCatalog = peekModelContextWindow(modelId);
+  if (fromLiveCatalog !== null) {
+    return { contextWindowTokens: fromLiveCatalog, contextWindowSource: "catalog" };
+  }
+
+  // Tier 3 — static per-family catalog.
   const fromCatalog = resolveModelContextWindow(modelId);
   if (fromCatalog !== null) {
     return { contextWindowTokens: fromCatalog, contextWindowSource: "catalog" };
   }
 
-  // Tier 3 — safe default. The catalog has no entry for this model and there is
-  // no override; the turn proceeds on the default window rather than failing.
+  // Tier 4 — safe default. Neither catalog has an entry for this model and
+  // there is no override; the turn proceeds on the default window rather than
+  // failing. Warm the gateway catalog in the background so a gateway-format id
+  // that missed here resolves from tier 2 on a later turn — fire-and-forget,
+  // deduped by the catalog's inflight promise, and a no-op on a warm cache.
+  if (modelId?.includes("/")) warmGatewayCatalog();
+
   // Logged unconditionally — a blank/undefined modelId is self-documenting in the
   // payload (it's the value that produced the miss), so the empty case isn't silent.
   log.debug(

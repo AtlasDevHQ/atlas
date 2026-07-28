@@ -6,13 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -37,6 +30,9 @@ import {
 } from "@/ui/components/admin/trial-countdown-banner";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
+import { GatewayModelPicker } from "@/ui/components/admin/gateway-model-picker";
+import { GatewayCatalogResponseSchema } from "@useatlas/schemas";
+import type { GatewayCatalogModel } from "@/ui/lib/types";
 import { formatDate, formatNumber } from "@/lib/format";
 import { consumePlanIntent, PAID_TIERS } from "@/lib/billing/plan-intent";
 import { effectiveTrialEnd, isTrialEndPast } from "@/lib/billing/trial-copy";
@@ -134,48 +130,41 @@ function formatDollars(amount: number): string {
   return `$${amount.toFixed(2)}`;
 }
 
-// Values are Vercel AI Gateway model IDs (slash+dot) — SaaS resolves
-// through the gateway, so the picker must write IDs the gateway will
-// recognize. Older hyphen-format settings (`claude-opus-4-6`) are
-// migrated lazily by `modelLabel` and the equivalence check below so
-// existing workspaces don't lose their selection on first load.
-const MODEL_OPTIONS = [
-  { value: "anthropic/claude-haiku-4.5", label: "Haiku 4.5", hint: "fastest, lowest cost" },
-  { value: "anthropic/claude-sonnet-5", label: "Sonnet 5", hint: "balanced" },
-  { value: "anthropic/claude-opus-4.8", label: "Opus 4.8", hint: "most capable" },
-] as const;
-
 // Atlas previously stored model settings in the Anthropic-direct hyphen
 // format (`claude-opus-4-6`); the gateway accepts the slash+dot form
-// (`anthropic/claude-opus-4.6`). When we see a legacy hyphen value
-// stored in `ATLAS_MODEL`, map it to the canonical gateway ID so the
-// picker selects the right row and the agent loop sees a working ID.
+// (`anthropic/claude-opus-4.6`). When we see a legacy hyphen value stored in
+// `ATLAS_MODEL`, map it to the canonical gateway ID so the picker selects the
+// right row and the agent loop sees a working ID.
 //
-// Two kinds of migration live here:
-//   1. Format canonicalization — hyphen → slash+dot (e.g. `claude-sonnet-4-6`).
-//   2. Version roll-forward — a deprecated version that no longer has its own
-//      picker row (Opus 4.6/4.7, the prior Opus defaults; Sonnet 4.6, the
-//      prior Sonnet default) is mapped to the current flagship
-//      (`anthropic/claude-opus-4.8`, `anthropic/claude-sonnet-5`). This is a
-//      version upgrade, not just a format change, so the Select highlights a
-//      valid option instead of rendering blank for workspaces still on the
-//      old default (#3076).
+// FORMAT ONLY — no version roll-forward (#4869). This map used to also bump
+// deprecated versions to the current flagship (Opus 4.6/4.7 → 4.8, Sonnet 4.6
+// → 5) because the picker had exactly three hardcoded rows and an old version
+// had nowhere to land, so it rendered blank (#3076). Now that the picker lists
+// the live catalog, every one of those versions has its own real row — and
+// silently relabelling a workspace's configured 4.7 as "4.8" would be the same
+// class of lie as a cosmetic default that disagrees with the resolver (see the
+// SSOT note in ModelRow). Each entry now maps to its OWN version.
 const LEGACY_MODEL_ALIASES: Record<string, string> = {
   "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
-  "claude-sonnet-4-6": "anthropic/claude-sonnet-5",
-  "anthropic/claude-sonnet-4.6": "anthropic/claude-sonnet-5",
-  "claude-opus-4-6": "anthropic/claude-opus-4.8",
-  "claude-opus-4-7": "anthropic/claude-opus-4.8",
-  "anthropic/claude-opus-4.7": "anthropic/claude-opus-4.8",
+  "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+  "claude-opus-4-6": "anthropic/claude-opus-4.6",
+  "claude-opus-4-7": "anthropic/claude-opus-4.7",
 };
 
 function canonicalizeModel(value: string): string {
   return LEGACY_MODEL_ALIASES[value] ?? value;
 }
 
-function modelLabel(value: string): string {
+/**
+ * Display name for a gateway model ID, resolved from the live catalog.
+ *
+ * Falls back to the raw ID — which is the honest thing to show for a model the
+ * catalog doesn't carry (a retired version a workspace is still pinned to, or
+ * any ID during a cold/failed catalog fetch). Never invents a friendly name.
+ */
+function modelLabel(value: string, models: GatewayCatalogModel[]): string {
   const canonical = canonicalizeModel(value);
-  return MODEL_OPTIONS.find((o) => o.value === canonical)?.label ?? canonical;
+  return models.find((m) => m.id === canonical)?.name ?? canonical;
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -937,15 +926,29 @@ function ResourceValue({ count, max }: { count: number; max: number | null }) {
 // ── Model row (progressive disclosure) ────────────────────────────
 
 function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void }) {
+  // The live Vercel AI Gateway catalog (#4869) — the same server-cached,
+  // anonymous endpoint the BYOT provider section uses. Fetched eagerly rather
+  // than on expand so the collapsed row can show a real display name instead
+  // of a raw ID; the normalized response is ~69 KB, ~6 KB gzipped.
+  const {
+    data: catalog,
+    loading: catalogLoading,
+    refetch: refetchCatalog,
+  } = useAdminFetch("/api/v1/admin/model-config/catalog", {
+    schema: GatewayCatalogResponseSchema,
+  });
+  const catalogModels: GatewayCatalogModel[] = catalog?.models ?? [];
+
   // SSOT (#3098): the API resolves `currentModel` to exactly what the agent
   // runs when nothing is saved — the same value the gateway provider default
   // produces — so display it verbatim. NO hardcoded fallback here: a cosmetic
   // default that disagrees with the resolver is the exact bug this fixes
   // (the row showed "Sonnet 4.6" while unset workspaces ran Opus 4.8).
-  // canonicalize() only maps legacy-hyphen / deprecated-version values onto a
-  // picker row so an older `claude-sonnet-4-6` setting still highlights its row.
+  // canonicalize() only rewrites the legacy hyphen FORMAT onto its own
+  // slash+dot ID so an older `claude-sonnet-4-6` setting resolves to a real
+  // catalog row — it never changes which version is shown.
   const currentModel = canonicalizeModel(data.currentModel);
-  const currentLabel = modelLabel(currentModel);
+  const currentLabel = modelLabel(currentModel, catalogModels);
 
   // #4645 — the pick writes a per-workspace gateway row on platform credits
   // (`workspace_model_config`), the same seam the agent loop resolves first.
@@ -1012,19 +1015,15 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
       status="disconnected"
       onCollapse={collapse}
     >
-      <Select value={currentModel} onValueChange={handleModelChange} disabled={saving}>
-        <SelectTrigger aria-label="AI model">
-          <SelectValue placeholder="Select a model" />
-        </SelectTrigger>
-        <SelectContent>
-          {MODEL_OPTIONS.map((opt) => (
-            <SelectItem key={opt.value} value={opt.value}>
-              <span className="font-medium">{opt.label}</span>
-              <span className="ml-2 text-xs text-muted-foreground">— {opt.hint}</span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <GatewayModelPicker
+        models={catalogModels}
+        value={currentModel}
+        onChange={handleModelChange}
+        loading={catalogLoading}
+        fallback={catalog?.fallback}
+        onRetry={refetchCatalog}
+        disabled={saving}
+      />
       {saving && (
         <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />

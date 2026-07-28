@@ -128,6 +128,13 @@ export const GatewayCatalogModelSchema = z.object({
   inputPrice: z.string().nullable(),
   outputPrice: z.string().nullable(),
   recommended: z.boolean(),
+  // `.default(null)` rather than a bare `.nullable()`: web and api deploy as
+  // separate Railway services, so there is a window where the browser holds new
+  // code and the API still serves catalog entries without this field. A hard
+  // parse failure there would blank the whole picker; defaulting to `null`
+  // (= "capability unknown, don't filter") degrades to today's behavior for the
+  // length of the skew. The `type` filter is unaffected — that field is old.
+  supportsTools: z.boolean().nullable().default(null),
 }) satisfies z.ZodType<GatewayCatalogModel, unknown>;
 
 export const GatewayCatalogResponseSchema = z.object({

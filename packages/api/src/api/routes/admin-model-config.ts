@@ -139,6 +139,10 @@ const GatewayCatalogModelSchema = z.object({
   inputPrice: z.string().nullable(),
   outputPrice: z.string().nullable(),
   recommended: z.boolean(),
+  supportsTools: z.boolean().nullable().openapi({
+    description:
+      "Whether the model can call tools, i.e. whether it can drive the agent loop. `null` means unknown — the BYOT direct-provider catalogs publish no capability data — and must be treated as 'do not filter out', not as `false`.",
+  }),
 });
 
 const GatewayCatalogResponseSchema = z.object({

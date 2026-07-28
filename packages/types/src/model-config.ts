@@ -235,8 +235,25 @@ export interface TestModelConfigResponse {
 
 // ── Gateway catalog ─────────────────────────────────────────────────
 
-/** Closed set of model types Vercel's gateway publishes. */
-export const GATEWAY_MODEL_TYPES = ["language", "embedding", "image", "video", "reranking"] as const;
+/**
+ * Closed set of model types Vercel's gateway publishes.
+ *
+ * `transcription` / `realtime` / `speech` were added after the initial five:
+ * the gateway serves 13 such entries, and because the normalizer falls back to
+ * `language` on an unrecognized type, omitting them silently mislabeled every
+ * one of them as a chat model. Keep this in lockstep with the live catalog —
+ * an unlisted type is a fail-OPEN, not a fail-closed.
+ */
+export const GATEWAY_MODEL_TYPES = [
+  "language",
+  "embedding",
+  "image",
+  "video",
+  "reranking",
+  "transcription",
+  "realtime",
+  "speech",
+] as const;
 export type GatewayModelType = (typeof GATEWAY_MODEL_TYPES)[number];
 
 /**
@@ -263,6 +280,21 @@ export interface GatewayCatalogModel {
   outputPrice: string | null;
   /** Whether this entry is in Atlas's curated "recommended" subset. */
   recommended: boolean;
+  /**
+   * Whether the model can call tools, i.e. whether it can drive Atlas's agent
+   * loop at all (SQL execution, semantic layer, knowledge search). A model
+   * without tool-calling produces an agent that can only chat.
+   *
+   * Three-valued on purpose:
+   *   - `true` / `false` — the catalog stated it (the gateway publishes
+   *     `supported_parameters`, which is present on 100% of its language
+   *     entries).
+   *   - `null` — UNKNOWN, not "no". The BYOT direct-provider catalogs
+   *     (Anthropic/OpenAI/Bedrock `/v1/models`) don't publish capability data,
+   *     so they set `null` and consumers must not filter them out. Collapsing
+   *     `null` to `false` would empty every BYOT picker.
+   */
+  supportsTools: boolean | null;
 }
 
 export interface GatewayCatalogResponse {

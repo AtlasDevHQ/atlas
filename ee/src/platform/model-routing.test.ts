@@ -581,6 +581,8 @@ describe("reconcileModelDeprecation", () => {
       inputPrice: null,
       outputPrice: null,
       recommended: false,
+      // BYOT direct-provider catalogs publish no capability data (#4869).
+      supportsTools: null,
     };
   }
 

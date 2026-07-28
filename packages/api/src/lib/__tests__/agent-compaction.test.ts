@@ -26,6 +26,10 @@ import {
   COMPACTION_STREAM_PART_TYPE,
   type CompactionSettings,
 } from "@atlas/api/lib/agent-compaction";
+import {
+  getGatewayCatalog,
+  __resetGatewayCatalogCacheForTests,
+} from "@atlas/api/lib/gateway-catalog";
 import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 
@@ -484,6 +488,87 @@ describe("resolveCompactionSettings — per-model window + override (#3760)", ()
     const s = resolveCompactionSettings("claude-opus-4-8");
     expect(s.contextWindowSource).toBe("catalog");
     expect(s.contextWindowTokens).toBe(200_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live gateway catalog tier (#4869)
+// ---------------------------------------------------------------------------
+
+describe("resolveCompactionSettings — live gateway catalog tier (#4869)", () => {
+  const origDbUrl = process.env.DATABASE_URL;
+  const realFetch = globalThis.fetch;
+
+  function warmCatalogWith(entries: unknown[]): Promise<unknown> {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: entries }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    return getGatewayCatalog();
+  }
+
+  beforeEach(() => {
+    delete process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS;
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+    _resetSettingsCache();
+    __resetGatewayCatalogCacheForTests();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    delete process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS;
+    if (origDbUrl !== undefined) process.env.DATABASE_URL = origDbUrl;
+    else delete process.env.DATABASE_URL;
+    _resetPool(null);
+    _resetSettingsCache();
+    __resetGatewayCatalogCacheForTests();
+  });
+
+  it("resolves a real window for a family the static table has never heard of", async () => {
+    // The point of the whole change: the picker now exposes the full gateway,
+    // and the static table only knows Claude/GPT/Gemini/Mistral/Llama. Before
+    // this tier, a GLM workspace silently compacted against the safe default.
+    const cold = resolveCompactionSettings("zai/glm-5.2");
+    expect(cold.contextWindowSource).toBe("default");
+
+    await warmCatalogWith([{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }]);
+
+    const warm = resolveCompactionSettings("zai/glm-5.2");
+    expect(warm.contextWindowTokens).toBe(1_040_000);
+    expect(warm.contextWindowSource).toBe("catalog");
+  });
+
+  it("prefers the per-model live window over the per-family static guess", async () => {
+    // The static table maps every `claude` id to 200k. Opus 4.8 is really 1M —
+    // a per-family table cannot express that, so compaction fired ~5x too early.
+    expect(resolveCompactionSettings("anthropic/claude-opus-4.8").contextWindowTokens).toBe(
+      200_000,
+    );
+
+    await warmCatalogWith([
+      { id: "anthropic/claude-opus-4.8", type: "language", context_window: 1_000_000 },
+    ]);
+
+    expect(resolveCompactionSettings("anthropic/claude-opus-4.8").contextWindowTokens).toBe(
+      1_000_000,
+    );
+  });
+
+  it("still lets an explicit operator override win over the live catalog", async () => {
+    await warmCatalogWith([{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }]);
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "50000";
+    const s = resolveCompactionSettings("zai/glm-5.2");
+    expect(s.contextWindowTokens).toBe(50_000);
+    expect(s.contextWindowSource).toBe("override");
+  });
+
+  it("falls through to the static table when the live catalog lacks the id", async () => {
+    await warmCatalogWith([{ id: "some/other-model", type: "language", context_window: 999 }]);
+    const s = resolveCompactionSettings("gpt-4o");
+    expect(s.contextWindowTokens).toBe(128_000);
+    expect(s.contextWindowSource).toBe("catalog");
   });
 });
 

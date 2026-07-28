@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronsUpDown, Sparkles, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, ChevronsUpDown, Sparkles, Loader2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,6 +46,32 @@ function groupByProvider(models: GatewayCatalogModel[]): ProviderGroup[] {
     .sort((a, b) => a.provider.localeCompare(b.provider));
 }
 
+/**
+ * Models that can actually drive Atlas's agent loop (#4869).
+ *
+ * Two gates, both fail-safe toward showing a model rather than hiding it:
+ *
+ *  - `type === "language"` — the gateway also serves embedding, image, video,
+ *    reranking, transcription, realtime and speech models. Every BYOT
+ *    direct-provider catalog hardcodes `"language"`, so this is a no-op there.
+ *  - `supportsTools !== false` — Atlas is tool-driven (SQL, semantic layer,
+ *    knowledge search); a chat-only model yields an agent that can't answer
+ *    anything. `null` means the catalog didn't say, which is NOT the same as
+ *    "no" — the BYOT catalogs publish no capability data at all, so `null`
+ *    must stay visible or those pickers go empty.
+ *
+ * Filtering here rather than at the call sites keeps every picker (billing,
+ * BYOT gateway, BYOT direct) on one definition of "usable".
+ *
+ * Exported for direct unit testing: this predicate is the whole guard against
+ * a workspace pinning its agent to an embedding model or a chat-only model,
+ * and it deserves assertions that don't depend on driving a Radix combobox
+ * open in jsdom.
+ */
+export function isSelectable(model: GatewayCatalogModel): boolean {
+  return model.type === "language" && model.supportsTools !== false;
+}
+
 function formatContext(tokens: number | null): string | null {
   if (tokens === null) return null;
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
@@ -71,10 +97,17 @@ export function GatewayModelPicker({
 }: GatewayModelPickerProps) {
   const [open, setOpen] = useState(false);
 
-  const recommended = models.filter((m) => m.recommended);
-  const others = models.filter((m) => !m.recommended);
+  const selectable = models.filter(isSelectable);
+  const recommended = selectable.filter((m) => m.recommended);
+  const others = selectable.filter((m) => !m.recommended);
   const grouped = groupByProvider(others);
+  // Resolved against the FULL list, not `selectable`: a workspace that saved a
+  // model before this filter existed (or via the API directly) must still see
+  // its own selection rendered by name instead of degrading to a raw ID.
   const selected = models.find((m) => m.id === value) ?? null;
+  // ...and if that saved model can't drive the agent loop, say so. Silently
+  // hiding it from the list while leaving it configured is the worst of both.
+  const selectedUnusable = selected !== null && !isSelectable(selected);
 
   const buttonLabel = selected
     ? selected.name
@@ -153,6 +186,15 @@ export function GatewayModelPicker({
           </Command>
         </PopoverContent>
       </Popover>
+      {selectedUnusable && (
+        <p className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-px size-3 shrink-0" />
+          <span>
+            <span className="font-mono">{selected?.id}</span> can&apos;t call tools, so it
+            can&apos;t run queries or read the semantic layer. Pick another model.
+          </span>
+        </p>
+      )}
       {fallback && (
         <div className="flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-400">
           <RefreshCw className="size-3" />

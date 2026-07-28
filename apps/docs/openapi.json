@@ -39054,6 +39054,13 @@
                           },
                           "recommended": {
                             "type": "boolean"
+                          },
+                          "supportsTools": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ],
+                            "description": "Whether the model can call tools, i.e. whether it can drive the agent loop. `null` means unknown — the BYOT direct-provider catalogs publish no capability data — and must be treated as 'do not filter out', not as `false`."
                           }
                         },
                         "required": [
@@ -39065,7 +39072,8 @@
                           "maxOutputTokens",
                           "inputPrice",
                           "outputPrice",
-                          "recommended"
+                          "recommended",
+                          "supportsTools"
                         ]
                       }
                     },

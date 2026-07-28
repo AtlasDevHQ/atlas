@@ -18,7 +18,7 @@ import { ModelConfigError } from "@atlas/api/lib/model-routing/errors";
 import type { RawWorkspaceModelConfig } from "@atlas/api/lib/auth/credentials";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
+import { getGatewayCatalog, isSelectableGatewayModel } from "@atlas/api/lib/gateway-catalog";
 import {
   AnthropicCatalogRateLimited,
   AnthropicCatalogUnauthorized,
@@ -40,7 +40,6 @@ import {
 import {
   BEDROCK_REGIONS,
   GATEWAY_MODEL_TYPES,
-  isSelectableGatewayModel,
   type BedrockCredentialBundle,
   type BedrockRegion,
   type GatewayCatalogModel,

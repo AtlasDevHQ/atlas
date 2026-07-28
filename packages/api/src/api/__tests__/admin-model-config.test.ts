@@ -459,6 +459,11 @@ const mockGetGatewayCatalog: Mock<() => unknown> = mock(async () => ({
 void mock.module("@atlas/api/lib/gateway-catalog", () => ({
   getGatewayCatalog: mockGetGatewayCatalog,
   peekModelContextWindow: mock(() => null),
+  // Real implementation, not a stub: the route's capability gate is the thing
+  // under test in the PUT cases, and a stubbed predicate would assert the mock
+  // rather than the rule (#4869 review).
+  isSelectableGatewayModel: (m: { type: string; supportsTools: boolean | null }) =>
+    m.type === "language" && m.supportsTools !== false,
   warmGatewayCatalog: mock(() => {}),
   __resetGatewayCatalogCacheForTests: mock(() => {}),
   __getRecommendedIdsForTests: mock(() => new Set<string>()),

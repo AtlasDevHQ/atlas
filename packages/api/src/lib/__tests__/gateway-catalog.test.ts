@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test, mock } from "bun:test";
-import { isSelectableGatewayModel } from "@useatlas/types";
 
 import {
   __resetGatewayCatalogCacheForTests,
@@ -7,6 +6,7 @@ import {
   getGatewayCatalog,
   peekModelContextWindow,
   warmGatewayCatalog,
+  isSelectableGatewayModel,
 } from "../gateway-catalog";
 
 type FetchFn = typeof globalThis.fetch;

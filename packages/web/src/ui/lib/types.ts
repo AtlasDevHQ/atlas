@@ -81,9 +81,6 @@ export type {
   WizardInferredForeignKey,
   WizardTableEntry,
 } from "@useatlas/types";
-// Runtime value, not just a type: the shared capability predicate the picker
-// filters on and the API enforces server-side (#4869 review).
-export { isSelectableGatewayModel } from "@useatlas/types";
 export type {
   ModelConfigProvider,
   WorkspaceModelConfig,

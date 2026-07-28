@@ -24,7 +24,7 @@ import type {
   GatewayCatalogResponse,
   GatewayModelType,
 } from "@useatlas/types";
-import { GATEWAY_MODEL_TYPES, isSelectableGatewayModel } from "@useatlas/types";
+import { GATEWAY_MODEL_TYPES } from "@useatlas/types";
 import { createLogger } from "./logger";
 import { getSetting } from "./settings";
 
@@ -226,6 +226,27 @@ function normalizeEntry(raw: RawCatalogEntry): GatewayCatalogModel | null {
     recommended: false,
     supportsTools: readToolSupport(raw),
   };
+}
+
+/**
+ * Whether a catalog entry can actually drive Atlas's agent loop.
+ *
+ * Server-side twin of `isSelectable` in
+ * `packages/web/src/ui/components/admin/gateway-model-picker.tsx`. Kept in sync
+ * by hand and by matching behavior tests on both sides — see the note in
+ * `@useatlas/types`' model-config for why this can't be shared from there yet
+ * (published-package pinning in the scaffold templates).
+ *
+ * Two gates:
+ *  - `type === "language"` — the gateway also serves embedding, image, video,
+ *    reranking, transcription, realtime, speech, and anything it adds next
+ *    (normalized to `other`, which is why the type fallback must fail closed).
+ *  - `supportsTools !== false` — Atlas is tool-driven. `null` means the catalog
+ *    didn't say, which is NOT "no": the BYOT direct-provider catalogs publish
+ *    no capability data, so `null` must stay visible.
+ */
+export function isSelectableGatewayModel(model: GatewayCatalogModel): boolean {
+  return model.type === "language" && model.supportsTools !== false;
 }
 
 /**

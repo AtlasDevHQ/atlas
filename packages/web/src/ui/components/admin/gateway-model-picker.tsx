@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { GatewayCatalogModel } from "@/ui/lib/types";
-import { isSelectableGatewayModel } from "@/ui/lib/types";
 
 interface GatewayModelPickerProps {
   models: GatewayCatalogModel[];
@@ -58,14 +57,30 @@ function groupByProvider(models: GatewayCatalogModel[]): ProviderGroup[] {
 /**
  * Models that can actually drive Atlas's agent loop (#4869).
  *
- * Re-exported from `@useatlas/types` rather than defined here. It used to live
- * in this component, which made it a BROWSER-only filter while
- * `PUT /admin/model-config` accepted any string — so the comment calling it
- * "the whole guard" was wrong. The API now applies the same predicate
- * server-side; this alias keeps the existing local call sites and tests
- * working against the one shared definition (#4869 review).
+ * NOT the only enforcement point any more. This used to be a browser-only
+ * filter while `PUT /admin/model-config` accepted any string, so the old
+ * comment calling it "the whole guard" was wrong; the API now applies the same
+ * predicate server-side (#4869 review).
+ *
+ * Deliberately duplicated rather than shared through `@useatlas/types`: that
+ * package is published and the scaffold templates pin a released range, so a
+ * symbol added in an unpublished version fails the scaffold smoke tests. The
+ * server-side twin is `isSelectableGatewayModel` in
+ * `packages/api/src/lib/gateway-catalog.ts`; both carry the same behavior
+ * tests, so a drift fails a test rather than shipping a picker that offers a
+ * model the API rejects.
+ *
+ * Two gates:
+ *  - `type === "language"` — the gateway also serves embedding, image, video,
+ *    reranking, transcription, realtime, speech, and anything it adds next
+ *    (normalized to `other`). Every BYOT direct-provider catalog hardcodes
+ *    `"language"`, so this is a no-op there.
+ *  - `supportsTools !== false` — `null` means the catalog didn't say, which is
+ *    NOT "no"; the BYOT catalogs publish no capability data at all.
  */
-export { isSelectableGatewayModel as isSelectable } from "@/ui/lib/types";
+export function isSelectable(model: GatewayCatalogModel): boolean {
+  return model.type === "language" && model.supportsTools !== false;
+}
 
 function formatContext(tokens: number | null): string | null {
   if (tokens === null) return null;
@@ -93,7 +108,7 @@ export function GatewayModelPicker({
 }: GatewayModelPickerProps) {
   const [open, setOpen] = useState(false);
 
-  const selectable = models.filter(isSelectableGatewayModel);
+  const selectable = models.filter(isSelectable);
   const recommended = selectable.filter((m) => m.recommended);
   const others = selectable.filter((m) => !m.recommended);
   const grouped = groupByProvider(others);
@@ -103,7 +118,7 @@ export function GatewayModelPicker({
   const selected = models.find((m) => m.id === value) ?? null;
   // ...and if that saved model can't drive the agent loop, say so. Silently
   // hiding it from the list while leaving it configured is the worst of both.
-  const selectedUnusable = selected !== null && !isSelectableGatewayModel(selected);
+  const selectedUnusable = selected !== null && !isSelectable(selected);
   // A configured id the LIVE catalog doesn't carry: a version the gateway has
   // retired, which every turn will now fail on. #4870 removed the version
   // roll-forward that used to paper over this (correctly — silently relabelling

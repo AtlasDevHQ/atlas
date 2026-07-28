@@ -38,6 +38,8 @@ const getGatewayCatalogMock = mock(async () => ({
 mock.module("@atlas/api/lib/gateway-catalog", () => ({
   getGatewayCatalog: getGatewayCatalogMock,
   peekModelContextWindow: () => null,
+  isSelectableGatewayModel: (m: { type: string; supportsTools: boolean | null }) =>
+    m.type === "language" && m.supportsTools !== false,
   warmGatewayCatalog: () => {},
   __resetGatewayCatalogCacheForTests: () => {},
   __getRecommendedIdsForTests: () => [] as readonly string[],

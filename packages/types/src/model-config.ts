@@ -311,28 +311,23 @@ export interface GatewayCatalogModel {
 }
 
 /**
- * Whether a catalog entry can actually drive Atlas's agent loop.
+ * NOTE: the "can this model drive the agent loop" predicate deliberately does
+ * NOT live here, despite being shared by the API and the web picker.
  *
- * THE canonical definition, shared by the browser picker and the API's
- * `PUT /admin/model-config` capability gate (#4869 review). It lived only in
- * the React component, which meant it was a cosmetic filter: the endpoint took
- * `model: z.string().min(1)` and never consulted the catalog, so a stale tab
- * or a direct API call could pin the agent to an embedding model. Ships here
- * because `@useatlas/types` already emits runtime values (`GATEWAY_MODEL_TYPES`)
- * and both sides depend on it.
+ * `@useatlas/types` is PUBLISHED, and `create-atlas/templates/*` pin a released
+ * range (`^0.5.0`). Scaffold-bound source — which includes `packages/api` — is
+ * type-checked against that published tarball, so importing a symbol added in
+ * an unpublished version fails `Scaffold (docker)` / `Scaffold (vercel)`
+ * (`scripts/check-published-symbols.ts`). Adding it here would have required
+ * the full publish-then-bump sequence.
  *
- * Two gates:
- *  - `type === "language"` — the gateway also serves embedding, image, video,
- *    reranking, transcription, realtime, speech, and anything it adds next
- *    (normalized to `other`). Every BYOT direct-provider catalog hardcodes
- *    `"language"`, so this is a no-op there.
- *  - `supportsTools !== false` — Atlas is tool-driven. `null` means the catalog
- *    didn't say, which is NOT "no": the BYOT catalogs publish no capability
- *    data at all, so `null` must stay visible or those pickers go empty.
+ * It is therefore defined twice, once per side, each pointing at the other:
+ *   - `packages/api/src/lib/gateway-catalog.ts` → `isSelectableGatewayModel`
+ *   - `packages/web/src/ui/components/admin/gateway-model-picker.tsx` → `isSelectable`
+ * Both are covered by behavior tests asserting the same table, so a drift
+ * shows up as a failing test rather than as a picker that offers a model the
+ * API rejects. Consolidate here once a `@useatlas/types` release ships.
  */
-export function isSelectableGatewayModel(model: GatewayCatalogModel): boolean {
-  return model.type === "language" && model.supportsTools !== false;
-}
 
 export interface GatewayCatalogResponse {
   models: GatewayCatalogModel[];

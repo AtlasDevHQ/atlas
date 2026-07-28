@@ -14,25 +14,42 @@ import { resolveDeviceVerificationUri } from "../device-verification-uri";
  */
 describe("deviceAuthorization plugin contract (#4043)", () => {
   it("token endpoint path equals DEVICE_TOKEN_ENDPOINT_PATH (the cli-detection signal)", () => {
-    const plugin = deviceAuthorization({ verificationUri: "/device", schema: {} });
+    const plugin = deviceAuthorization({ verificationUri: "/device" });
     expect(plugin.endpoints?.deviceToken?.path).toBe(DEVICE_TOKEN_ENDPOINT_PATH);
   });
 
-  it("requires the `schema: {}` workaround under zod v4 (bare call throws)", () => {
-    // better-auth 1.6.20 × zod 4.4.3: the options schema declares
-    // `schema: z.custom(() => true)` WITHOUT `.optional()`, so the bare call
-    // throws at construction (a RUNTIME zod error — the TS option type marks
-    // `schema` optional, so no `@ts-expect-error` is needed). If this STOPS
-    // throwing after a bump, the workaround in server.ts buildPlugins() can go.
-    expect(() => deviceAuthorization({ verificationUri: "/device" })).toThrow();
+  it("bare call no longer throws under zod v4 (the `schema: {}` workaround is retired)", () => {
+    // Was: better-auth 1.6.20 × zod 4.4.3 declared `schema: z.custom(() =>
+    // true)` WITHOUT `.optional()`, so zod v4 treated a missing field as
+    // `nonoptional` and the bare call threw at construction. The 1.6.25 bump
+    // (security advisories GHSA-rjg6-39jm-rgg4 / GHSA-qq9h-g4jm-xgf3) fixed it,
+    // so server.ts buildPlugins() dropped the `schema: {}` override.
+    //
+    // Kept as a REGRESSION pin in the opposite direction: if a future bump
+    // reintroduces the zod-options bug, the bare call throws here and goes RED
+    // instead of taking down auth-server construction at boot.
+    expect(() => deviceAuthorization({ verificationUri: "/device" })).not.toThrow();
   });
 
-  it("schema:{} preserves the deviceCode table + all device endpoints", () => {
-    const plugin = deviceAuthorization({ verificationUri: "/device", schema: {} });
+  it("the bare call preserves the deviceCode table + all device endpoints", () => {
+    const plugin = deviceAuthorization({ verificationUri: "/device" });
     expect(plugin.schema?.deviceCode?.fields).toBeDefined();
     expect(Object.keys(plugin.endpoints ?? {})).toEqual(
       expect.arrayContaining(["deviceCode", "deviceToken", "deviceVerify", "deviceApprove", "deviceDeny"]),
     );
+  });
+
+  it("dropping `schema: {}` is a no-op — bare and overridden plugins are identical", () => {
+    // The override was only ever a parse workaround, never a schema change.
+    // This pins that removing it changed nothing observable, so the diff in
+    // server.ts is provably behaviour-preserving rather than merely untested.
+    const shape = (p: ReturnType<typeof deviceAuthorization>) => JSON.stringify({
+      schema: p.schema,
+      endpoints: Object.keys(p.endpoints ?? {}).sort(),
+      tokenPath: p.endpoints?.deviceToken?.path,
+    });
+    expect(shape(deviceAuthorization({ verificationUri: "/device" })))
+      .toBe(shape(deviceAuthorization({ verificationUri: "/device", schema: {} })));
   });
 });
 

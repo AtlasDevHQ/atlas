@@ -11,7 +11,7 @@
   "dependencies": {
     "@atlas/api": "workspace:*",
     "@atlas/web": "workspace:*",
-    "@better-auth/api-key": "^1.6.20",
+    "@better-auth/api-key": "^1.6.25",
     "@tanstack/react-query": "^5.101.1",
     "better-auth": "^1.6.16",
     "next": "^16.2.9",

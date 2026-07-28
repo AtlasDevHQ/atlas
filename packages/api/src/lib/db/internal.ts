@@ -1019,6 +1019,12 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Auth's auto-migrate never re-adds the column (see server.ts / the migration
   // header).
   "0159_drop_user_stripe_customer_id.sql",
+  // Seals ownerless personal SCIM providers (GHSA-j8v8-g9cx-5qf4). MANAGED_AUTH
+  // because it UPDATEs the @better-auth/scim plugin's "scimProvider" table,
+  // which only exists in managed mode with EE SCIM enabled. The migration is
+  // additionally guarded on both the table and the "userId" column, so it
+  // no-ops rather than erroring where SCIM was never turned on.
+  "0184_scim_provider_seal_ownerless.sql",
 ];
 
 /**

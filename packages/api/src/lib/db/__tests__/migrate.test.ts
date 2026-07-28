@@ -250,7 +250,11 @@ describe("runMigrations", () => {
     //   BEFORE publish-time widening, the ACL input that decides whether a
     //   reader gained by widening sees who stated the claim first, where and
     //   when, ADR-0036 §T5 amendment 2026-07-27, #4836) = 184.
-    expect(count).toBe(184);
+    //   Plus 0184 (seals ownerless personal SCIM providers by stamping a
+    //   reserved owner id — the residual half of GHSA-j8v8-g9cx-5qf4, which has
+    //   no fix on the @better-auth/scim 1.6.x line; `providerOwnership` only
+    //   binds providers created after it is enabled) = 185.
+    expect(count).toBe(185);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -463,6 +467,7 @@ describe("runMigrations", () => {
         "0181_brain_fts.sql",
         "0182_audience_member_synced_at.sql",
         "0183_brain_facts_pre_widening_grant.sql",
+        "0184_scim_provider_seal_ownerless.sql",
       ],
     });
 

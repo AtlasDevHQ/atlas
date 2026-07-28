@@ -2859,16 +2859,12 @@ export function buildPlugins() {
       // the WEB origin, so this MUST be absolute or the CLI-printed URL 404s on
       // the API host (#4167). See `resolveDeviceVerificationUri` for why.
       verificationUri: resolveDeviceVerificationUri(getWebOrigin()),
-      // `schema: {}` works around a better-auth 1.6.20 × zod 4.4.3
-      // incompatibility: the plugin's options schema declares
-      // `schema: z.custom(() => true)` WITHOUT `.optional()`, and zod v4
-      // treats a missing `z.custom` field as `nonoptional` → the bare
-      // `deviceAuthorization({ verificationUri })` call throws
-      // "expected nonoptional, received undefined" at construction. Passing an
-      // empty schema override satisfies the parse; `mergeSchema(pluginSchema,
-      // {})` is a verified no-op (the `deviceCode` table + all fields survive).
-      // Remove once better-auth marks the option optional. (#4043)
-      schema: {},
+      // The `schema: {}` workaround for the better-auth 1.6.20 × zod 4.4.3
+      // incompatibility is GONE as of the 1.6.25 bump (#4043 said "remove once
+      // better-auth marks the option optional" — it now does). The bare call no
+      // longer throws, and bare vs `schema: {}` were verified to produce an
+      // identical plugin (same `deviceCode` fields, same endpoints, same
+      // `/device/token` path). The contract tests pin that.
     }),
   );
 

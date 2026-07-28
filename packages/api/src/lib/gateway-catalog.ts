@@ -80,8 +80,12 @@ const FALLBACK_MODELS: GatewayCatalogModel[] = [
     name: "Claude Opus 4.8",
     provider: "anthropic",
     type: "language",
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
+    // 1M / 128k verified against the live catalog 2026-07-28. This said
+    // 200_000 / 32_000, which was wrong and — because `peekModelContextWindow`
+    // did not check `cache.fallback` — silently drove compaction sizing during
+    // a gateway outage. Both fixed (#4869 review).
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
     inputPrice: null,
     outputPrice: null,
     recommended: false,
@@ -171,11 +175,19 @@ function deriveProvider(id: string): string {
 }
 
 function asGatewayModelType(value: unknown): GatewayModelType {
-  // Closed set per Vercel docs; fall back to `language` on unknown so a
-  // forward-compat schema change doesn't break the picker.
+  // Unrecognized types fail CLOSED to `other`, never to `language` (#4869
+  // review). `language` is the one value that passes the picker's type gate, so
+  // falling back to it meant a type the gateway adds tomorrow would be offered
+  // as a selectable chat model. The capability gate is not a sufficient
+  // backstop: `supported_parameters` is absent on 97 of the 101 current
+  // non-language entries, so such an entry gets `supportsTools: null`
+  // ("unknown") and `null !== false` passes.
+  //
+  // Unknown types are collected by the caller and logged ONCE per fetch rather
+  // than per entry — a new type typically arrives as a whole family at once.
   return (GATEWAY_MODEL_TYPES as readonly string[]).includes(value as string)
     ? (value as GatewayModelType)
-    : "language";
+    : "other";
 }
 
 /**
@@ -193,6 +205,13 @@ function asGatewayModelType(value: unknown): GatewayModelType {
  */
 function readToolSupport(raw: RawCatalogEntry): boolean | null {
   if (!Array.isArray(raw.supported_parameters)) return null;
+  // Element shape is checked, not just the array-ness (#4869 review). Without
+  // this, an upstream reshape from `["tools"]` to `[{name:"tools"}]` would make
+  // `.includes("tools")` return false for EVERY language model — fail-closed,
+  // emptying the picker with `fallback: false` so not even the outage banner
+  // fires. A non-string element means "shape changed, we can't read it" →
+  // `null` (unknown), matching the documented fail-open contract.
+  if (!raw.supported_parameters.every((p) => typeof p === "string")) return null;
   return raw.supported_parameters.includes("tools");
 }
 
@@ -228,7 +247,10 @@ function normalizeEntry(raw: RawCatalogEntry): GatewayCatalogModel | null {
  * concurrent callers, and stamping it in place would leak one request's
  * resolved shortlist into the next.
  */
-function applyRecommended(models: GatewayCatalogModel[]): GatewayCatalogModel[] {
+function applyRecommended(
+  models: GatewayCatalogModel[],
+  fallback: boolean,
+): GatewayCatalogModel[] {
   const ids = recommendedModelIds();
   if (ids.size === 0) return models;
 
@@ -237,16 +259,41 @@ function applyRecommended(models: GatewayCatalogModel[]): GatewayCatalogModel[] 
   // silently (the Recommended group just renders short). `google/gemini-2.0-flash`
   // sat dead in the old hardcoded list until it was found by hand. Warn so the
   // next one surfaces in logs rather than in a screenshot.
-  const liveIds = new Set(models.map((m) => m.id));
-  const stale = [...ids].filter((id) => !liveIds.has(id));
-  if (stale.length > 0) {
-    log.warn(
-      { stale, configured: ids.size },
-      "gateway-catalog: ATLAS_RECOMMENDED_MODELS names model(s) the gateway does not serve — they are skipped; prune or replace them",
-    );
+  //
+  // NEVER warn off the bundled fallback (#4869 review). It carries 4 models
+  // while the shipped shortlist names 9, so during a gateway outage this
+  // accused 8 of 9 CORRECT ids of being retired and told the operator to
+  // "prune or replace them" — once per request, at 60s fallback TTL, for the
+  // duration of the incident. An operator who complied would destroy a valid
+  // shortlist. Absence from a 4-model emergency manifest is not evidence.
+  if (!fallback) {
+    const liveIds = new Set(models.map((m) => m.id));
+    const stale = [...ids].filter((id) => !liveIds.has(id));
+    if (stale.length > 0) {
+      warnStaleShortlistOnce(stale, ids.size);
+    }
   }
 
   return models.map((m) => (ids.has(m.id) ? { ...m, recommended: true } : m));
+}
+
+/**
+ * De-duplicated stale-shortlist warning.
+ *
+ * `applyRecommended` runs on every catalog read (several per admin page load),
+ * so an un-deduped warn buries the one genuinely-stale ID that matters under
+ * repeats. Keyed on the sorted ID set so a CHANGED shortlist warns again.
+ * Mirrors `warnInvalidOnce` in `agent-compaction.ts`.
+ */
+const warnedStaleShortlists = new Set<string>();
+function warnStaleShortlistOnce(stale: string[], configured: number): void {
+  const sig = [...stale].sort().join(",");
+  if (warnedStaleShortlists.has(sig)) return;
+  warnedStaleShortlists.add(sig);
+  log.warn(
+    { stale, configured },
+    "gateway-catalog: ATLAS_RECOMMENDED_MODELS names model(s) the live gateway does not serve — they are skipped; prune or replace them",
+  );
 }
 
 async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
@@ -265,17 +312,39 @@ async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
       throw new Error("gateway catalog response missing `data` array");
     }
     const normalized: GatewayCatalogModel[] = [];
-    let dropped = 0;
+    const droppedIds: string[] = [];
+    const unknownTypes = new Set<string>();
     for (const entry of body.data) {
-      const model =
-        entry && typeof entry === "object" ? normalizeEntry(entry as RawCatalogEntry) : null;
-      if (model) normalized.push(model);
-      else dropped += 1;
+      const raw = entry && typeof entry === "object" ? (entry as RawCatalogEntry) : null;
+      const model = raw ? normalizeEntry(raw) : null;
+      if (model) {
+        normalized.push(model);
+        // Recorded from the RAW value: `model.type` has already been collapsed
+        // to `other`, so only the pre-normalization value names the new type.
+        if (
+          model.type === "other" &&
+          typeof raw?.type === "string" &&
+          !(GATEWAY_MODEL_TYPES as readonly string[]).includes(raw.type)
+        ) {
+          unknownTypes.add(raw.type);
+        }
+      } else {
+        // The IDs, not just a count (#4869 review) — a count alone can't tell
+        // you whether the workspace's own saved model was one of the casualties.
+        const id = raw ? asString(raw.id) : null;
+        droppedIds.push(id ?? "<no id>");
+      }
     }
-    if (dropped > 0) {
+    if (droppedIds.length > 0) {
       log.warn(
-        { dropped, kept: normalized.length },
+        { dropped: droppedIds.length, droppedIds: droppedIds.slice(0, 20), kept: normalized.length },
         "gateway-catalog: dropped malformed entries from upstream",
+      );
+    }
+    if (unknownTypes.size > 0) {
+      log.warn(
+        { unknownTypes: [...unknownTypes] },
+        "gateway-catalog: upstream published model type(s) Atlas does not know — mapped to `other` and hidden from the picker; add them to GATEWAY_MODEL_TYPES if they should be selectable",
       );
     }
     return normalized;
@@ -316,7 +385,7 @@ async function load(): Promise<CatalogCacheEntry> {
 export async function getGatewayCatalog(): Promise<GatewayCatalogResponse> {
   if (cache && cache.expiresAt > Date.now()) {
     return {
-      models: applyRecommended(cache.models),
+      models: applyRecommended(cache.models, cache.fallback),
       fetchedAt: cache.fetchedAt,
       fallback: cache.fallback,
     };
@@ -329,7 +398,7 @@ export async function getGatewayCatalog(): Promise<GatewayCatalogResponse> {
   const entry = await inflight;
   cache = entry;
   return {
-    models: applyRecommended(entry.models),
+    models: applyRecommended(entry.models, entry.fallback),
     fetchedAt: entry.fetchedAt,
     fallback: entry.fallback,
   };
@@ -340,11 +409,11 @@ export async function getGatewayCatalog(): Promise<GatewayCatalogResponse> {
  * catalog is already in memory. Returns `null` when the cache is cold, stale,
  * or has no entry for `modelId`.
  *
- * Exists for the compaction trigger, which runs inside `prepareStep` on every
- * agent step and therefore CANNOT await a network fetch. That constraint is why
- * `agent-compaction.ts` carries a static family→window table at all; this lets
- * it prefer the authoritative per-model number when we happen to have it,
- * without changing its sync contract.
+ * Exists for the compaction trigger, which resolves its settings once per turn
+ * and keeps a sync signature. NOTE: `resolveCompactionSettings` is called from
+ * an async scope in `agent.ts`, so awaiting the catalog there IS possible and
+ * would make this peek unnecessary — see the tier-2 comment in
+ * `agent-compaction.ts`. This stays sync for now as the smaller change.
  *
  * Deliberately does NOT trigger a refresh: a cold cache must stay cheap and
  * silent on the hot path. Callers fall back to the static table, and the cache
@@ -353,9 +422,15 @@ export async function getGatewayCatalog(): Promise<GatewayCatalogResponse> {
  * A stale (TTL-expired) cache is treated as a miss rather than served: a model's
  * context window can change between catalog revisions, and compaction sizing is
  * exactly where a stale number does damage.
+ *
+ * A FALLBACK cache is also a miss (#4869 review). The bundled manifest is four
+ * hand-maintained constants that were never fetched from anywhere — strictly
+ * worse than a stale real number, and worse still because it reported as
+ * `contextWindowSource: "catalog"`. It had `opus-4.8` at 200k against a real
+ * 1M, so a gateway outage silently changed a workspace's compaction threshold.
  */
 export function peekModelContextWindow(modelId: string | undefined): number | null {
-  if (!modelId || !cache || cache.expiresAt <= Date.now()) return null;
+  if (!modelId || !cache || cache.fallback || cache.expiresAt <= Date.now()) return null;
   const hit = cache.models.find((m) => m.id === modelId);
   return hit?.contextWindow ?? null;
 }
@@ -368,9 +443,11 @@ export function peekModelContextWindow(modelId: string | undefined): number | nu
 export function warmGatewayCatalog(): void {
   if (cache && cache.expiresAt > Date.now()) return;
   void getGatewayCatalog().catch((err) => {
-    // Unreachable in practice — `load()` swallows fetch failures into the
-    // bundled fallback — but an unhandled rejection here would be a process
-    // -level event, so it stays explicitly handled rather than assumed away.
+    // REACHABLE, despite `load()` swallowing fetch failures (#4869 review):
+    // `getGatewayCatalog` runs `applyRecommended()` → `recommendedModelIds()`
+    // → `getSetting()` AFTER `await inflight`, entirely outside `load()`'s try.
+    // Anything that throws there rejects this promise. The module header's
+    // "never rejects" invariant is about `load()` specifically, not this.
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },
       "gateway-catalog: background warm failed",
@@ -378,10 +455,16 @@ export function warmGatewayCatalog(): void {
   });
 }
 
-/** Test-only: clears the cache so each test sees a clean fetch path. */
+/**
+ * Test-only: clears the cache so each test sees a clean fetch path.
+ *
+ * Also clears the stale-shortlist warn dedup — that Set is module-level and
+ * would otherwise let one test's warning suppress the next test's assertion.
+ */
 export function __resetGatewayCatalogCacheForTests(): void {
   cache = null;
   inflight = null;
+  warnedStaleShortlists.clear();
 }
 
 /** Test-only: the shortlist as currently resolved from settings. */

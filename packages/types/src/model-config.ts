@@ -236,13 +236,25 @@ export interface TestModelConfigResponse {
 // ── Gateway catalog ─────────────────────────────────────────────────
 
 /**
- * Closed set of model types Vercel's gateway publishes.
+ * Model types Vercel's gateway publishes, plus an explicit `other` escape.
  *
  * `transcription` / `realtime` / `speech` were added after the initial five:
- * the gateway serves 13 such entries, and because the normalizer falls back to
- * `language` on an unrecognized type, omitting them silently mislabeled every
- * one of them as a chat model. Keep this in lockstep with the live catalog —
- * an unlisted type is a fail-OPEN, not a fail-closed.
+ * the gateway serves 13 such entries, and the normalizer used to fall back to
+ * `language` on an unrecognized type, which silently mislabeled every one of
+ * them as a chat model.
+ *
+ * `other` closes that hole for good. It is NOT a gateway value — it is what
+ * `asGatewayModelType` returns for anything it doesn't recognize, so an
+ * unlisted type now fails CLOSED (the picker's `type === "language"` gate
+ * rejects it) instead of fail-open. Adding the next real type here remains
+ * worthwhile for display, but forgetting to is no longer a correctness bug.
+ *
+ * Deploy-order note: widening this union widens `z.enum(GATEWAY_MODEL_TYPES)`
+ * in `@useatlas/schemas`. A web bundle built before the widening rejects the
+ * new value and — because it sits inside `z.array()` — discards the WHOLE
+ * catalog response. The schema now carries `.catch("other")` so future
+ * widenings degrade gracefully, but that only protects bundles built from this
+ * commit forward. For THIS promote, deploy web before api.
  */
 export const GATEWAY_MODEL_TYPES = [
   "language",
@@ -253,6 +265,7 @@ export const GATEWAY_MODEL_TYPES = [
   "transcription",
   "realtime",
   "speech",
+  "other",
 ] as const;
 export type GatewayModelType = (typeof GATEWAY_MODEL_TYPES)[number];
 
@@ -295,6 +308,30 @@ export interface GatewayCatalogModel {
    *     `null` to `false` would empty every BYOT picker.
    */
   supportsTools: boolean | null;
+}
+
+/**
+ * Whether a catalog entry can actually drive Atlas's agent loop.
+ *
+ * THE canonical definition, shared by the browser picker and the API's
+ * `PUT /admin/model-config` capability gate (#4869 review). It lived only in
+ * the React component, which meant it was a cosmetic filter: the endpoint took
+ * `model: z.string().min(1)` and never consulted the catalog, so a stale tab
+ * or a direct API call could pin the agent to an embedding model. Ships here
+ * because `@useatlas/types` already emits runtime values (`GATEWAY_MODEL_TYPES`)
+ * and both sides depend on it.
+ *
+ * Two gates:
+ *  - `type === "language"` — the gateway also serves embedding, image, video,
+ *    reranking, transcription, realtime, speech, and anything it adds next
+ *    (normalized to `other`). Every BYOT direct-provider catalog hardcodes
+ *    `"language"`, so this is a no-op there.
+ *  - `supportsTools !== false` — Atlas is tool-driven. `null` means the catalog
+ *    didn't say, which is NOT "no": the BYOT catalogs publish no capability
+ *    data at all, so `null` must stay visible or those pickers go empty.
+ */
+export function isSelectableGatewayModel(model: GatewayCatalogModel): boolean {
+  return model.type === "language" && model.supportsTools !== false;
 }
 
 export interface GatewayCatalogResponse {

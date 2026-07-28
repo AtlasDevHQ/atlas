@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, mock } from "bun:test";
+import { isSelectableGatewayModel } from "@useatlas/types";
+
 import {
   __resetGatewayCatalogCacheForTests,
   __getRecommendedIdsForTests,
@@ -169,12 +171,31 @@ describe("gateway-catalog", () => {
     expect(entry?.outputPrice).toBe("0.000075");
   });
 
-  test("unknown type values fall back to 'language'", async () => {
+  test("an unknown type fails CLOSED to 'other', never to 'language'", async () => {
+    // The old behavior mapped an unrecognized type to `language` — the ONE
+    // value that passes the picker's type gate — so a type the gateway adds
+    // tomorrow would be offered as a selectable chat model. The capability
+    // gate can't backstop it: `supported_parameters` is absent on 97 of the
+    // 101 current non-language entries, so such an entry gets
+    // `supportsTools: null` and `null !== false` passes (#4869 review).
     globalThis.fetch = mockFetchOk({
       data: [{ id: "x/audio-model", type: "audio" }],
     });
     const res = await getGatewayCatalog();
-    expect(res.models[0]?.type).toBe("language");
+    expect(res.models[0]?.type).toBe("other");
+  });
+
+  test("an unknown-typed entry is NOT selectable, even with no capability data", async () => {
+    // The end-to-end version of the above: this is the property that actually
+    // matters, asserted through the shared predicate the picker filters on and
+    // the API enforces — not through the normalizer's internals.
+    globalThis.fetch = mockFetchOk({
+      data: [{ id: "x/audio-model", type: "audio" }],
+    });
+    const res = await getGatewayCatalog();
+    const entry = res.models[0]!;
+    expect(entry.supportsTools).toBeNull(); // no supported_parameters ⇒ unknown
+    expect(isSelectableGatewayModel(entry)).toBe(false);
   });
 
   test("the types the gateway actually serves are NOT swept into 'language'", async () => {
@@ -191,6 +212,24 @@ describe("gateway-catalog", () => {
     });
     const res = await getGatewayCatalog();
     expect(res.models.map((m) => m.type)).toEqual(["transcription", "realtime", "speech"]);
+  });
+
+  describe("bundled fallback is never treated as authoritative (#4869 review)", () => {
+    async function forceFallback() {
+      globalThis.fetch = mock(async () => new Response("down", { status: 503 })) as unknown as FetchFn;
+      return getGatewayCatalog();
+    }
+
+    test("peekModelContextWindow returns null off a fallback cache", async () => {
+      const res = await forceFallback();
+      expect(res.fallback).toBe(true);
+      // sonnet-5 IS in FALLBACK_MODELS with a contextWindow, so a naive peek
+      // would happily return it. Four hand-maintained constants must not size
+      // compaction — the manifest had opus-4.8 at 200k against a real 1M.
+      expect(peekModelContextWindow("anthropic/claude-sonnet-5")).toBeNull();
+      expect(peekModelContextWindow("anthropic/claude-opus-4.8")).toBeNull();
+    });
+
   });
 
   describe("tool-calling capability (#4869)", () => {

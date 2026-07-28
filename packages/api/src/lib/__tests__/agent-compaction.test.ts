@@ -564,6 +564,49 @@ describe("resolveCompactionSettings — live gateway catalog tier (#4869)", () =
     expect(s.contextWindowSource).toBe("override");
   });
 
+  it("WARMS the catalog for a Claude id, whose static-table hit used to skip the warm", async () => {
+    // The regression this guards (#4869 review): `warmGatewayCatalog()` sat in
+    // the tier-4 branch, below the static family table. The table's `claude`
+    // rule matches every Anthropic id, so tier 4 was unreachable for them and
+    // the warm never fired — meaning tier 2 never populated for the SaaS
+    // DEFAULT models and `anthropic/claude-sonnet-5` sized compaction at the
+    // static 200k against a real 1M window, on every turn, indefinitely.
+    //
+    // Asserted via the outbound fetch because that IS the observable effect of
+    // the warm; asserting the returned window would pass either way on a cold
+    // cache (both paths return 200k on turn 1 — the bug is that turn 2 also
+    // returns 200k, forever).
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const s = resolveCompactionSettings("anthropic/claude-sonnet-5");
+    // Still 200k on THIS turn — the peek is sync and the cache was cold.
+    expect(s.contextWindowTokens).toBe(200_000);
+    // ...but the warm fired, so a later turn resolves from tier 2.
+    await Promise.resolve();
+    expect(fetches).toBe(1);
+  });
+
+  it("does NOT warm for a slashless BYOT/self-hosted id", async () => {
+    // Air-gapped self-hosted deploys use hyphen-format ids. They must never
+    // trigger an outbound call to the gateway.
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    resolveCompactionSettings("claude-opus-4-8");
+    await Promise.resolve();
+    expect(fetches).toBe(0);
+  });
+
   it("falls through to the static table when the live catalog lacks the id", async () => {
     await warmCatalogWith([{ id: "some/other-model", type: "language", context_window: 999 }]);
     const s = resolveCompactionSettings("gpt-4o");

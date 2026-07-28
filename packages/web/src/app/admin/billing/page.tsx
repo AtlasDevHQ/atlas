@@ -933,11 +933,19 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
   const {
     data: catalog,
     loading: catalogLoading,
+    error: catalogError,
     refetch: refetchCatalog,
   } = useAdminFetch("/api/v1/admin/model-config/catalog", {
     schema: GatewayCatalogResponseSchema,
   });
   const catalogModels: GatewayCatalogModel[] = catalog?.models ?? [];
+  // `error` was previously discarded (#4869 review). On a 401/500/schema
+  // mismatch the picker rendered enabled, opened to "No models match.", and
+  // showed no banner and no Retry — the Retry is gated on `fallback`, which is
+  // `undefined` when the fetch never returned a body. A regression against the
+  // pre-#4869 hardcoded options, which always rendered. `fallback` covers
+  // "gateway is down"; this covers "we couldn't reach our own API".
+  const catalogFailed = !catalogLoading && catalogError !== null && catalog === undefined;
 
   // SSOT (#3098): the API resolves `currentModel` to exactly what the agent
   // runs when nothing is saved — the same value the gateway provider default
@@ -1021,6 +1029,7 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
         onChange={handleModelChange}
         loading={catalogLoading}
         fallback={catalog?.fallback}
+        failed={catalogFailed}
         onRetry={refetchCatalog}
         disabled={saving}
       />

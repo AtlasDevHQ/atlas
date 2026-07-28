@@ -39026,7 +39026,18 @@
                             "type": "string"
                           },
                           "type": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "language",
+                              "embedding",
+                              "image",
+                              "video",
+                              "reranking",
+                              "transcription",
+                              "realtime",
+                              "speech",
+                              "other"
+                            ]
                           },
                           "contextWindow": {
                             "type": [

@@ -14,15 +14,24 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { GatewayCatalogModel } from "@/ui/lib/types";
+import { isSelectableGatewayModel } from "@/ui/lib/types";
 
 interface GatewayModelPickerProps {
   models: GatewayCatalogModel[];
   value: string;
   onChange: (modelId: string) => void;
   loading?: boolean;
+  /** Gateway unreachable — the server returned its bundled subset. */
   fallback?: boolean;
+  /**
+   * The catalog request itself failed (auth, 5xx, schema mismatch), so there
+   * is no list at all. Distinct from `fallback`, which still yields a usable
+   * short list. Without this the picker rendered enabled and empty with no
+   * explanation (#4869 review).
+   */
+  failed?: boolean;
   disabled?: boolean;
-  /** Optional retry handler — surfaced when `fallback` is true. */
+  /** Optional retry handler — surfaced when `fallback` or `failed` is true. */
   onRetry?: () => void;
 }
 
@@ -49,28 +58,14 @@ function groupByProvider(models: GatewayCatalogModel[]): ProviderGroup[] {
 /**
  * Models that can actually drive Atlas's agent loop (#4869).
  *
- * Two gates, both fail-safe toward showing a model rather than hiding it:
- *
- *  - `type === "language"` — the gateway also serves embedding, image, video,
- *    reranking, transcription, realtime and speech models. Every BYOT
- *    direct-provider catalog hardcodes `"language"`, so this is a no-op there.
- *  - `supportsTools !== false` — Atlas is tool-driven (SQL, semantic layer,
- *    knowledge search); a chat-only model yields an agent that can't answer
- *    anything. `null` means the catalog didn't say, which is NOT the same as
- *    "no" — the BYOT catalogs publish no capability data at all, so `null`
- *    must stay visible or those pickers go empty.
- *
- * Filtering here rather than at the call sites keeps every picker (billing,
- * BYOT gateway, BYOT direct) on one definition of "usable".
- *
- * Exported for direct unit testing: this predicate is the whole guard against
- * a workspace pinning its agent to an embedding model or a chat-only model,
- * and it deserves assertions that don't depend on driving a Radix combobox
- * open in jsdom.
+ * Re-exported from `@useatlas/types` rather than defined here. It used to live
+ * in this component, which made it a BROWSER-only filter while
+ * `PUT /admin/model-config` accepted any string — so the comment calling it
+ * "the whole guard" was wrong. The API now applies the same predicate
+ * server-side; this alias keeps the existing local call sites and tests
+ * working against the one shared definition (#4869 review).
  */
-export function isSelectable(model: GatewayCatalogModel): boolean {
-  return model.type === "language" && model.supportsTools !== false;
-}
+export { isSelectableGatewayModel as isSelectable } from "@/ui/lib/types";
 
 function formatContext(tokens: number | null): string | null {
   if (tokens === null) return null;
@@ -92,12 +87,13 @@ export function GatewayModelPicker({
   onChange,
   loading,
   fallback,
+  failed,
   disabled,
   onRetry,
 }: GatewayModelPickerProps) {
   const [open, setOpen] = useState(false);
 
-  const selectable = models.filter(isSelectable);
+  const selectable = models.filter(isSelectableGatewayModel);
   const recommended = selectable.filter((m) => m.recommended);
   const others = selectable.filter((m) => !m.recommended);
   const grouped = groupByProvider(others);
@@ -107,7 +103,7 @@ export function GatewayModelPicker({
   const selected = models.find((m) => m.id === value) ?? null;
   // ...and if that saved model can't drive the agent loop, say so. Silently
   // hiding it from the list while leaving it configured is the worst of both.
-  const selectedUnusable = selected !== null && !isSelectable(selected);
+  const selectedUnusable = selected !== null && !isSelectableGatewayModel(selected);
 
   const buttonLabel = selected
     ? selected.name
@@ -126,7 +122,8 @@ export function GatewayModelPicker({
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            disabled={disabled || loading}
+            aria-label="AI model"
+            disabled={disabled || loading || failed}
             className="w-full justify-between font-mono text-sm"
           >
             <span className={cn("truncate", !selected && !value && "text-muted-foreground")}>
@@ -195,7 +192,22 @@ export function GatewayModelPicker({
           </span>
         </p>
       )}
-      {fallback && (
+      {failed && (
+        <div className="flex items-center gap-2 text-[11px] text-destructive">
+          <AlertTriangle className="size-3 shrink-0" />
+          <span>Couldn&apos;t load the model catalog. Your current model is unchanged.</span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="font-medium underline-offset-2 hover:underline"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+      {!failed && fallback && (
         <div className="flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-400">
           <RefreshCw className="size-3" />
           <span>Catalog couldn't reach the gateway — showing a curated subset.</span>

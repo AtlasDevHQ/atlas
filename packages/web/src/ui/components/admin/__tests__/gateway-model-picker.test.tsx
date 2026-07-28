@@ -59,6 +59,14 @@ describe("isSelectable", () => {
     expect(isSelectable(model({ id: "perplexity/sonar", supportsTools: false }))).toBe(false);
   });
 
+  test("rejects an unknown-typed model (fail-closed, #4869 review)", () => {
+    // The normalizer maps a type it doesn't recognize to `other`, NOT to
+    // `language`. Before that change it mapped to `language` — the one value
+    // that passes this gate — so a type the gateway adds tomorrow would be
+    // offered as a selectable chat model with `supportsTools: null`.
+    expect(isSelectable(model({ type: "other", id: "x/future", supportsTools: null }))).toBe(false);
+  });
+
   test("ACCEPTS a model whose tool support is unknown", () => {
     // `null` means "the catalog didn't say", not "no". The BYOT direct-provider
     // catalogs (Anthropic/OpenAI/Bedrock /v1/models) publish no capability data

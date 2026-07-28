@@ -6,6 +6,7 @@ import {
   __getRecommendedIdsForTests,
   getGatewayCatalog,
   peekModelContextWindow,
+  warmGatewayCatalog,
 } from "../gateway-catalog";
 
 type FetchFn = typeof globalThis.fetch;
@@ -86,12 +87,38 @@ describe("gateway-catalog", () => {
     const res = await getGatewayCatalog();
     expect(res.fallback).toBe(true);
     expect(res.models.length).toBeGreaterThan(0);
-    // Every fallback entry must be usable by the agent loop — a gateway outage
-    // must not leave the picker's capability filter with nothing to show.
+    // Every fallback entry must survive the REAL predicate, not a hand-copied
+    // restatement of it (#4869 review). This asserted `type === "language" &&
+    // supportsTools === true`, which is just FALLBACK_MODELS' own literals read
+    // back — it would stay green if `isSelectableGatewayModel` grew a third
+    // gate, and a gateway outage would then empty the picker, the exact
+    // scenario the assertion claims to guard.
     for (const model of res.models) {
-      expect(model.type).toBe("language");
-      expect(model.supportsTools).toBe(true);
+      expect(isSelectableGatewayModel(model)).toBe(true);
     }
+    // The fallback must also carry the platform default, or an outage forces a
+    // downgrade to change models at all.
+    const ids = res.models.map((m) => m.id);
+    expect(ids).toContain("anthropic/claude-opus-5");
+  });
+
+  test("the bundled fallback covers the shipped ATLAS_RECOMMENDED_MODELS default", async () => {
+    // Drift guard: the manifest and the registry default are two hand-written
+    // lists of the same intent, and they had silently diverged by a whole
+    // model generation (#4869 review). Reads the registry default rather than
+    // restating it, so curation changes surface here instead of in a
+    // screenshot during the next outage.
+    delete process.env.ATLAS_RECOMMENDED_MODELS;
+    const shortlist = __getRecommendedIdsForTests();
+    expect(shortlist.length).toBeGreaterThan(0);
+
+    globalThis.fetch = mockFetchFail(503);
+    const res = await getGatewayCatalog();
+    expect(res.fallback).toBe(true);
+
+    const ids = new Set(res.models.map((m) => m.id));
+    const missing = shortlist.filter((id) => !ids.has(id));
+    expect(missing).toEqual([]);
   });
 
   test("caches the catalog within a TTL window", async () => {
@@ -212,6 +239,100 @@ describe("gateway-catalog", () => {
     });
     const res = await getGatewayCatalog();
     expect(res.models.map((m) => m.type)).toEqual(["transcription", "realtime", "speech"]);
+  });
+
+  describe("warmGatewayCatalog (#4869 review)", () => {
+    test("is a no-op when the cache is already fresh", async () => {
+      let fetches = 0;
+      globalThis.fetch = (async () => {
+        fetches += 1;
+        return new Response(JSON.stringify({ data: [{ id: "a/b", type: "language" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as FetchFn;
+
+      await getGatewayCatalog();
+      expect(fetches).toBe(1);
+
+      warmGatewayCatalog();
+      warmGatewayCatalog();
+      await Promise.resolve();
+      // The early return is load-bearing: this runs on every agent step for a
+      // gateway-shaped id, so a regression here is one fetch PER STEP.
+      expect(fetches).toBe(1);
+    });
+
+    test("does not stampede — concurrent warms share one inflight fetch", async () => {
+      let fetches = 0;
+      globalThis.fetch = (async () => {
+        fetches += 1;
+        await new Promise((r) => setTimeout(r, 20));
+        return new Response(JSON.stringify({ data: [{ id: "a/b", type: "language" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as FetchFn;
+
+      for (let i = 0; i < 25; i += 1) warmGatewayCatalog();
+      await getGatewayCatalog();
+      expect(fetches).toBe(1);
+    });
+
+    test("never throws from its synchronous call site, even when fetch rejects", () => {
+      globalThis.fetch = (() => {
+        throw new Error("network stack exploded");
+      }) as unknown as FetchFn;
+      // Called from `prepareStep`-adjacent sync code — a throw here would take
+      // the turn down.
+      expect(() => warmGatewayCatalog()).not.toThrow();
+    });
+  });
+
+  describe("Recommended group ordering (#4869 review)", () => {
+    test("renders the shortlist in the OPERATOR's order, not catalog order", async () => {
+      // The setting is a RANKED shortlist — the first entry is the house
+      // default. `applyRecommended` used to return catalog order, silently
+      // discarding that curation.
+      process.env.ATLAS_RECOMMENDED_MODELS = "c/third,a/first,b/second";
+      globalThis.fetch = mockFetchOk({
+        data: [
+          { id: "a/first", type: "language" },
+          { id: "b/second", type: "language" },
+          { id: "c/third", type: "language" },
+          { id: "z/unlisted", type: "language" },
+        ],
+      });
+      const res = await getGatewayCatalog();
+      const recommended = res.models.filter((m) => m.recommended).map((m) => m.id);
+      expect(recommended).toEqual(["c/third", "a/first", "b/second"]);
+    });
+
+    test("keeps non-recommended models present after the shortlist", async () => {
+      process.env.ATLAS_RECOMMENDED_MODELS = "b/second";
+      globalThis.fetch = mockFetchOk({
+        data: [
+          { id: "a/first", type: "language" },
+          { id: "b/second", type: "language" },
+        ],
+      });
+      const res = await getGatewayCatalog();
+      expect(res.models.map((m) => m.id)).toEqual(["b/second", "a/first"]);
+      // ...and nothing is dropped or duplicated by the reordering.
+      expect(res.models).toHaveLength(2);
+    });
+
+    test("de-duplicates a repeated id in the setting", async () => {
+      process.env.ATLAS_RECOMMENDED_MODELS = "a/one,a/one,b/two";
+      globalThis.fetch = mockFetchOk({
+        data: [
+          { id: "a/one", type: "language" },
+          { id: "b/two", type: "language" },
+        ],
+      });
+      const res = await getGatewayCatalog();
+      expect(res.models.map((m) => m.id)).toEqual(["a/one", "b/two"]);
+    });
   });
 
   describe("bundled fallback is never treated as authoritative (#4869 review)", () => {

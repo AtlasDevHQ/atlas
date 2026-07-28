@@ -152,7 +152,7 @@ const GatewayCatalogModelSchema = z.object({
     description:
       "Whether the model can call tools, i.e. whether it can drive the agent loop. `null` means unknown — the BYOT direct-provider catalogs publish no capability data — and must be treated as 'do not filter out', not as `false`.",
   }),
-});
+}) satisfies z.ZodType<GatewayCatalogModel, unknown>;
 
 const GatewayCatalogResponseSchema = z.object({
   models: z.array(GatewayCatalogModelSchema),

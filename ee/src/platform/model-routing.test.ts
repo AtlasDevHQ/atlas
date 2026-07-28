@@ -31,8 +31,16 @@ const getGatewayCatalogMock = mock(async () => ({
   fetchedAt: "2026-05-10T00:00:00.000Z",
   fallback: false,
 }));
+// Mock ALL exports (repo rule). A partial factory means the next module in
+// this graph to import a gateway-catalog export gets `undefined` and fails at
+// call time, not at import — the failure surfaces far from the cause (#4869
+// review).
 mock.module("@atlas/api/lib/gateway-catalog", () => ({
   getGatewayCatalog: getGatewayCatalogMock,
+  peekModelContextWindow: () => null,
+  warmGatewayCatalog: () => {},
+  __resetGatewayCatalogCacheForTests: () => {},
+  __getRecommendedIdsForTests: () => [] as readonly string[],
 }));
 
 // Import after mocks

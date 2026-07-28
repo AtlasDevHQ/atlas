@@ -24,7 +24,7 @@ import type {
   GatewayCatalogResponse,
   GatewayModelType,
 } from "@useatlas/types";
-import { GATEWAY_MODEL_TYPES } from "@useatlas/types";
+import { GATEWAY_MODEL_TYPES, isSelectableGatewayModel } from "@useatlas/types";
 import { createLogger } from "./logger";
 import { getSetting } from "./settings";
 
@@ -50,15 +50,35 @@ const FETCH_TIMEOUT_MS = 10_000;
  * an operator who clears the list gets an empty group, which is what they asked
  * for. The registry default seeds a sensible starting shortlist.
  */
-function recommendedModelIds(): ReadonlySet<string> {
+function recommendedModelIds(): readonly string[] {
   const raw = getSetting("ATLAS_RECOMMENDED_MODELS");
-  if (raw === undefined) return new Set();
-  return new Set(
-    raw
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0),
-  );
+  if (raw === undefined) return [];
+  // Ordered, not a Set (#4869 review): the Recommended group used to render in
+  // CATALOG order, silently discarding the operator's curation order — the
+  // setting is a ranked shortlist and the first entry is the house default.
+  // De-duplicated while preserving first-seen position.
+  return [...new Set(raw.split(",").map((id) => id.trim()).filter((id) => id.length > 0))];
+}
+
+/** Terse constructor for {@link FALLBACK_MODELS} — every entry shares 8 of 10 fields. */
+function fallbackModel(
+  id: string,
+  name: string,
+  contextWindow: number,
+  maxOutputTokens: number,
+): GatewayCatalogModel {
+  return {
+    id,
+    name,
+    provider: deriveProvider(id),
+    type: "language",
+    contextWindow,
+    maxOutputTokens,
+    inputPrice: null,
+    outputPrice: null,
+    recommended: false,
+    supportsTools: true,
+  };
 }
 
 /**
@@ -73,60 +93,28 @@ function recommendedModelIds(): ReadonlySet<string> {
  * overlaid from `ATLAS_RECOMMENDED_MODELS` by `applyRecommended()` like any
  * other catalog entry, so a fallback model is starred iff the operator listed
  * it. Hardcoding `true` here would put a star on models the operator removed.
+ *
+ * KEEP IN SYNC with the `ATLAS_RECOMMENDED_MODELS` registry default in
+ * `settings.ts` (#4869 review). This list previously predated the shipped
+ * shortlist entirely — opus-4.8 / sonnet-5 / gpt-4o / gpt-4o-mini against a
+ * shortlist of opus-5 / gpt-5.6-* / fable-5 / glm-5.2 / kimi-k3. During an
+ * outage an admin on `anthropic/claude-opus-5` saw their own model as a raw ID
+ * and every selectable option a generation behind, so the only way to change
+ * models was to downgrade. Context windows verified against the live catalog
+ * 2026-07-28; a value here that is WRONG is worse than one that is missing,
+ * which is why `peekModelContextWindow` refuses to read this manifest at all.
  */
 const FALLBACK_MODELS: GatewayCatalogModel[] = [
-  {
-    id: "anthropic/claude-opus-4.8",
-    name: "Claude Opus 4.8",
-    provider: "anthropic",
-    type: "language",
-    // 1M / 128k verified against the live catalog 2026-07-28. This said
-    // 200_000 / 32_000, which was wrong and — because `peekModelContextWindow`
-    // did not check `cache.fallback` — silently drove compaction sizing during
-    // a gateway outage. Both fixed (#4869 review).
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    inputPrice: null,
-    outputPrice: null,
-    recommended: false,
-    supportsTools: true,
-  },
-  {
-    id: "anthropic/claude-sonnet-5",
-    name: "Claude Sonnet 5",
-    provider: "anthropic",
-    type: "language",
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    inputPrice: null,
-    outputPrice: null,
-    recommended: false,
-    supportsTools: true,
-  },
-  {
-    id: "openai/gpt-4o",
-    name: "GPT-4o",
-    provider: "openai",
-    type: "language",
-    contextWindow: 128_000,
-    maxOutputTokens: 16_000,
-    inputPrice: null,
-    outputPrice: null,
-    recommended: false,
-    supportsTools: true,
-  },
-  {
-    id: "openai/gpt-4o-mini",
-    name: "GPT-4o mini",
-    provider: "openai",
-    type: "language",
-    contextWindow: 128_000,
-    maxOutputTokens: 16_000,
-    inputPrice: null,
-    outputPrice: null,
-    recommended: false,
-    supportsTools: true,
-  },
+  fallbackModel("anthropic/claude-opus-5", "Claude Opus 5", 1_000_000, 128_000),
+  fallbackModel("anthropic/claude-sonnet-5", "Claude Sonnet 5", 1_000_000, 128_000),
+  fallbackModel("anthropic/claude-fable-5", "Claude Fable 5", 1_000_000, 128_000),
+  fallbackModel("anthropic/claude-haiku-4.5", "Claude Haiku 4.5", 200_000, 64_000),
+  fallbackModel("anthropic/claude-opus-4.8", "Claude Opus 4.8", 1_000_000, 128_000),
+  fallbackModel("openai/gpt-5.6-sol", "GPT-5.6 Sol", 1_050_000, 128_000),
+  fallbackModel("openai/gpt-5.6-terra", "GPT-5.6 Terra", 1_050_000, 128_000),
+  fallbackModel("openai/gpt-5.6-luna", "GPT-5.6 Luna", 1_050_000, 128_000),
+  fallbackModel("zai/glm-5.2", "GLM-5.2", 204_800, 128_000),
+  fallbackModel("moonshotai/kimi-k3", "Kimi K3", 262_144, 128_000),
 ];
 
 interface RawCatalogEntry {
@@ -252,7 +240,8 @@ function applyRecommended(
   fallback: boolean,
 ): GatewayCatalogModel[] {
   const ids = recommendedModelIds();
-  if (ids.size === 0) return models;
+  if (ids.length === 0) return models;
+  const idSet = new Set(ids);
 
   // A curated ID the gateway no longer serves can't be caught by a type-check
   // or a unit test — it only shows up against the live catalog, and it fails
@@ -260,21 +249,42 @@ function applyRecommended(
   // sat dead in the old hardcoded list until it was found by hand. Warn so the
   // next one surfaces in logs rather than in a screenshot.
   //
-  // NEVER warn off the bundled fallback (#4869 review). It carries 4 models
-  // while the shipped shortlist names 9, so during a gateway outage this
-  // accused 8 of 9 CORRECT ids of being retired and told the operator to
-  // "prune or replace them" — once per request, at 60s fallback TTL, for the
-  // duration of the incident. An operator who complied would destroy a valid
-  // shortlist. Absence from a 4-model emergency manifest is not evidence.
+  // NEVER warn off the bundled fallback (#4869 review). It is a small emergency
+  // manifest, so during a gateway outage this accused CORRECT ids of being
+  // retired and told the operator to "prune or replace them" — once per
+  // request, at 60s fallback TTL, for the duration of the incident. An
+  // operator who complied would destroy a valid shortlist. Absence from the
+  // fallback is not evidence.
   if (!fallback) {
-    const liveIds = new Set(models.map((m) => m.id));
-    const stale = [...ids].filter((id) => !liveIds.has(id));
-    if (stale.length > 0) {
-      warnStaleShortlistOnce(stale, ids.size);
-    }
+    const byId = new Map(models.map((m) => [m.id, m]));
+    const stale = ids.filter((id) => !byId.has(id));
+    if (stale.length > 0) warnStaleShortlistOnce(stale, ids.length);
+
+    // Distinct failure, distinct message: the id IS served, but it can't drive
+    // the agent loop, so the picker filters it out. Without this the operator
+    // sees a short Recommended group and no explanation anywhere.
+    const unusable = ids.filter((id) => {
+      const hit = byId.get(id);
+      return hit !== undefined && !isSelectableGatewayModel(hit);
+    });
+    if (unusable.length > 0) warnUnusableShortlistOnce(unusable);
   }
 
-  return models.map((m) => (ids.has(m.id) ? { ...m, recommended: true } : m));
+  // Recommended entries first, in the operator's configured order, then the
+  // rest in catalog order. The picker splits on the `recommended` flag and
+  // preserves relative order within each group, so ordering here is what makes
+  // the shortlist ranked rather than alphabetical-by-accident.
+  const recommended: GatewayCatalogModel[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const hit = models.find((m) => m.id === id);
+    if (hit) {
+      recommended.push({ ...hit, recommended: true });
+      seen.add(id);
+    }
+  }
+  const rest = models.filter((m) => !seen.has(m.id));
+  return [...recommended, ...rest];
 }
 
 /**
@@ -286,6 +296,18 @@ function applyRecommended(
  * Mirrors `warnInvalidOnce` in `agent-compaction.ts`.
  */
 const warnedStaleShortlists = new Set<string>();
+const warnedUnusableShortlists = new Set<string>();
+
+/** Same de-dup discipline as {@link warnStaleShortlistOnce}, different fault. */
+function warnUnusableShortlistOnce(unusable: string[]): void {
+  const sig = [...unusable].sort().join(",");
+  if (warnedUnusableShortlists.has(sig)) return;
+  warnedUnusableShortlists.add(sig);
+  log.warn(
+    { unusable },
+    "gateway-catalog: ATLAS_RECOMMENDED_MODELS names model(s) the gateway serves but that cannot call tools — the picker hides them, so the Recommended group renders short",
+  );
+}
 function warnStaleShortlistOnce(stale: string[], configured: number): void {
   const sig = [...stale].sort().join(",");
   if (warnedStaleShortlists.has(sig)) return;
@@ -465,9 +487,10 @@ export function __resetGatewayCatalogCacheForTests(): void {
   cache = null;
   inflight = null;
   warnedStaleShortlists.clear();
+  warnedUnusableShortlists.clear();
 }
 
-/** Test-only: the shortlist as currently resolved from settings. */
-export function __getRecommendedIdsForTests(): ReadonlySet<string> {
+/** Test-only: the shortlist as currently resolved from settings, in order. */
+export function __getRecommendedIdsForTests(): readonly string[] {
   return recommendedModelIds();
 }

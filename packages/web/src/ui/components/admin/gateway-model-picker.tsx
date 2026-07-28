@@ -104,6 +104,15 @@ export function GatewayModelPicker({
   // ...and if that saved model can't drive the agent loop, say so. Silently
   // hiding it from the list while leaving it configured is the worst of both.
   const selectedUnusable = selected !== null && !isSelectableGatewayModel(selected);
+  // A configured id the LIVE catalog doesn't carry: a version the gateway has
+  // retired, which every turn will now fail on. #4870 removed the version
+  // roll-forward that used to paper over this (correctly — silently relabelling
+  // a 4.7 as "4.8" is its own lie), but replaced it with no signal at all, so
+  // the row just showed a raw ID (#4869 review). Suppressed while loading, on
+  // the fallback manifest, and on a failed fetch — in all three cases absence
+  // from `models` says nothing about the model.
+  const selectedMissing =
+    value !== "" && selected === null && !loading && !fallback && !failed && models.length > 0;
 
   const buttonLabel = selected
     ? selected.name
@@ -183,6 +192,16 @@ export function GatewayModelPicker({
           </Command>
         </PopoverContent>
       </Popover>
+      {selectedMissing && (
+        <p className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-px size-3 shrink-0" />
+          <span>
+            <span className="font-mono">{value}</span> isn&apos;t in the gateway catalog
+            any more — it was probably retired. Turns on it will fail until you pick
+            another model.
+          </span>
+        </p>
+      )}
       {selectedUnusable && (
         <p className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
           <AlertTriangle className="mt-px size-3 shrink-0" />

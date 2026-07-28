@@ -97,6 +97,24 @@ describe("applyRecommended — stale-shortlist warning", () => {
     expect(staleWarnings()).toHaveLength(0);
   });
 
+  test("warns distinctly when a shortlisted id IS served but cannot call tools", async () => {
+    // A different fault from "retired", and it was silent: the picker filters
+    // the entry out, so the Recommended group just rendered short with no
+    // explanation anywhere (#4869 review).
+    process.env.ATLAS_RECOMMENDED_MODELS = "a/chat-only";
+    globalThis.fetch = mockFetchOk({
+      data: [{ id: "a/chat-only", type: "language", supported_parameters: ["max_tokens"] }],
+    });
+
+    await getGatewayCatalog();
+
+    const unusable = warnLog.filter((w) => w.msg.includes("cannot call tools"));
+    expect(unusable).toHaveLength(1);
+    expect(JSON.stringify(unusable[0]?.ctx)).toContain("a/chat-only");
+    // ...and it is NOT reported as retired — it is served, just unusable.
+    expect(warnLog.filter((w) => w.msg.includes("prune or replace"))).toHaveLength(0);
+  });
+
   test("de-duplicates the warning across repeated catalog reads", async () => {
     // `applyRecommended` runs on every read (several per admin page load). An
     // un-deduped warn buries the one stale id that matters under repeats.

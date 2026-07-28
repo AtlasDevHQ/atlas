@@ -151,7 +151,7 @@ const LEGACY_MODEL_ALIASES: Record<string, string> = {
   "claude-opus-4-7": "anthropic/claude-opus-4.7",
 };
 
-function canonicalizeModel(value: string): string {
+export function canonicalizeModel(value: string): string {
   return LEGACY_MODEL_ALIASES[value] ?? value;
 }
 
@@ -162,7 +162,7 @@ function canonicalizeModel(value: string): string {
  * catalog doesn't carry (a retired version a workspace is still pinned to, or
  * any ID during a cold/failed catalog fetch). Never invents a friendly name.
  */
-function modelLabel(value: string, models: GatewayCatalogModel[]): string {
+export function modelLabel(value: string, models: GatewayCatalogModel[]): string {
   const canonical = canonicalizeModel(value);
   return models.find((m) => m.id === canonical)?.name ?? canonical;
 }

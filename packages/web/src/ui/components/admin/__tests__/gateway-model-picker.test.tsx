@@ -100,6 +100,47 @@ describe("GatewayModelPicker — unusable saved selection", () => {
     expect(baseElement.textContent).not.toContain("can't call tools");
   });
 
+  test("flags a saved model the live catalog no longer carries (#4869 review)", () => {
+    // #4870 removed the version roll-forward that used to remap a retired
+    // version onto the current flagship. That was right — relabelling a
+    // configured 4.7 as "4.8" is a lie — but it left NO signal, so the row
+    // showed a raw ID while every turn failed at the gateway.
+    const { baseElement } = render(
+      <GatewayModelPicker models={[model()]} value="anthropic/claude-opus-4.1" onChange={noop} />,
+    );
+    expect(baseElement.textContent).toContain("isn't in the gateway catalog");
+  });
+
+  test("does NOT flag a missing model while the catalog is still loading", () => {
+    const { baseElement } = render(
+      <GatewayModelPicker models={[]} value="anthropic/claude-opus-4.1" onChange={noop} loading />,
+    );
+    expect(baseElement.textContent).not.toContain("isn't in the gateway catalog");
+  });
+
+  test("does NOT flag a missing model against the bundled fallback subset", () => {
+    // The fallback is a handful of models; absence from it says nothing about
+    // whether the gateway still serves the configured id.
+    const { baseElement } = render(
+      <GatewayModelPicker
+        models={[model()]}
+        value="anthropic/claude-opus-4.1"
+        onChange={noop}
+        fallback
+      />,
+    );
+    expect(baseElement.textContent).not.toContain("isn't in the gateway catalog");
+  });
+
+  test("does NOT flag a missing model when the catalog fetch failed outright", () => {
+    const { baseElement } = render(
+      <GatewayModelPicker models={[]} value="anthropic/claude-opus-4.1" onChange={noop} failed />,
+    );
+    expect(baseElement.textContent).not.toContain("isn't in the gateway catalog");
+    // ...it says the real thing instead.
+    expect(baseElement.textContent).toContain("Couldn't load the model catalog");
+  });
+
   test("renders a saved model the catalog no longer carries without inventing a name", () => {
     // A retired version a workspace is still pinned to: the trigger shows the
     // raw ID rather than a friendly label, and no false capability warning

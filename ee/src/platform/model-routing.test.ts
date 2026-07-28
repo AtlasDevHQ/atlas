@@ -31,8 +31,18 @@ const getGatewayCatalogMock = mock(async () => ({
   fetchedAt: "2026-05-10T00:00:00.000Z",
   fallback: false,
 }));
+// Mock ALL exports (repo rule). A partial factory means the next module in
+// this graph to import a gateway-catalog export gets `undefined` and fails at
+// call time, not at import — the failure surfaces far from the cause (#4869
+// review).
 mock.module("@atlas/api/lib/gateway-catalog", () => ({
   getGatewayCatalog: getGatewayCatalogMock,
+  peekModelContextWindow: () => null,
+  isSelectableGatewayModel: (m: { type: string; supportsTools: boolean | null }) =>
+    m.type === "language" && m.supportsTools !== false,
+  warmGatewayCatalog: () => {},
+  __resetGatewayCatalogCacheForTests: () => {},
+  __getRecommendedIdsForTests: () => [] as readonly string[],
 }));
 
 // Import after mocks
@@ -581,6 +591,8 @@ describe("reconcileModelDeprecation", () => {
       inputPrice: null,
       outputPrice: null,
       recommended: false,
+      // BYOT direct-provider catalogs publish no capability data (#4869).
+      supportsTools: null,
     };
   }
 

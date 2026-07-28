@@ -48,6 +48,7 @@ import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { Attributes } from "@opentelemetry/api";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
+import { peekModelContextWindow, warmGatewayCatalog } from "./gateway-catalog";
 
 const log = createLogger("agent:compaction");
 
@@ -256,14 +257,49 @@ function resolveContextWindow(
     );
   }
 
-  // Tier 2 — static per-model catalog.
+  // Tier 2 — the live gateway catalog, if a fetch has already populated it
+  // (#4869). Authoritative and per-model rather than per-family, which matters
+  // now that the picker exposes the whole gateway: the static table below knows
+  // Claude/GPT/Gemini/Mistral/Llama families and nothing else, so a workspace on
+  // GLM, Kimi, Grok or DeepSeek would otherwise fall straight through to the
+  // safe default and compact far earlier than it needs to.
+  //
+  // `peek` is a pure cache read, so this stays sync. NOTE: the earlier claim
+  // that it "runs inside prepareStep and cannot await" was wrong — this is
+  // reached once per turn via `resolveCompactionSettings` from an async scope
+  // in `agent.ts`, and `prepareStep` consumes the already-resolved value. A
+  // single `await` there would make the catalog authoritative on turn 1 and
+  // retire the peek/warm pair entirely; deliberately left as follow-up work
+  // rather than changing the agent hot path in a review fix.
+  const fromLiveCatalog = peekModelContextWindow(modelId);
+  if (fromLiveCatalog !== null) {
+    return { contextWindowTokens: fromLiveCatalog, contextWindowSource: "catalog" };
+  }
+
+  // Warm BEFORE the static fallback, not after (#4869 review). This used to sit
+  // in the tier-4 branch, which the static table's `claude` rule made
+  // unreachable for every Anthropic id — so the tier-2 upgrade never activated
+  // for the SaaS default models it was built for. A workspace on
+  // `anthropic/claude-sonnet-5` sized compaction at the static 200k against a
+  // real 1M window, on every turn, forever, unless an admin happened to open
+  // the picker (which warmed it for one 30-minute TTL and no longer).
+  //
+  // Fire-and-forget, deduped by the catalog's inflight promise, and a no-op on
+  // a warm cache. Gated on a gateway-shaped id so a direct/BYOT model id never
+  // triggers an outbound fetch — that keeps air-gapped self-hosted deploys off
+  // the network, since those use hyphen-format ids with no slash.
+  if (modelId?.includes("/")) warmGatewayCatalog();
+
+  // Tier 3 — static per-family catalog.
   const fromCatalog = resolveModelContextWindow(modelId);
   if (fromCatalog !== null) {
     return { contextWindowTokens: fromCatalog, contextWindowSource: "catalog" };
   }
 
-  // Tier 3 — safe default. The catalog has no entry for this model and there is
-  // no override; the turn proceeds on the default window rather than failing.
+  // Tier 4 — safe default. Neither catalog has an entry for this model and
+  // there is no override; the turn proceeds on the default window rather than
+  // failing.
+
   // Logged unconditionally — a blank/undefined modelId is self-documenting in the
   // payload (it's the value that produced the miss), so the empty case isn't silent.
   log.debug(

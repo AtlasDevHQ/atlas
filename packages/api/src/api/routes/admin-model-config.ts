@@ -18,7 +18,7 @@ import { ModelConfigError } from "@atlas/api/lib/model-routing/errors";
 import type { RawWorkspaceModelConfig } from "@atlas/api/lib/auth/credentials";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
+import { getGatewayCatalog, isSelectableGatewayModel } from "@atlas/api/lib/gateway-catalog";
 import {
   AnthropicCatalogRateLimited,
   AnthropicCatalogUnauthorized,
@@ -39,6 +39,7 @@ import {
 } from "@atlas/api/lib/bedrock-catalog";
 import {
   BEDROCK_REGIONS,
+  GATEWAY_MODEL_TYPES,
   type BedrockCredentialBundle,
   type BedrockRegion,
   type GatewayCatalogModel,
@@ -129,17 +130,28 @@ const TestResultSchema = z.object({
   modelName: z.string().optional(),
 });
 
+// Kept route-local for the `.openapi()` annotations, but the shape must not
+// drift from `@useatlas/schemas`' `GatewayCatalogModelSchema` — this one
+// generates `apps/docs/openapi.json`, so a looser field here documents a
+// contract the client actually enforces more strictly. `type` was `z.string()`,
+// which published the enum as a free-form string; the `satisfies` at the
+// bottom now fails the build if the shape and the shared type diverge (#4869
+// review).
 const GatewayCatalogModelSchema = z.object({
   id: z.string(),
   name: z.string(),
   provider: z.string(),
-  type: z.string(),
+  type: z.enum(GATEWAY_MODEL_TYPES),
   contextWindow: z.number().nullable(),
   maxOutputTokens: z.number().nullable(),
   inputPrice: z.string().nullable(),
   outputPrice: z.string().nullable(),
   recommended: z.boolean(),
-});
+  supportsTools: z.boolean().nullable().openapi({
+    description:
+      "Whether the model can call tools, i.e. whether it can drive the agent loop. `null` means unknown — the BYOT direct-provider catalogs publish no capability data — and must be treated as 'do not filter out', not as `false`.",
+  }),
+}) satisfies z.ZodType<GatewayCatalogModel, unknown>;
 
 const GatewayCatalogResponseSchema = z.object({
   models: z.array(GatewayCatalogModelSchema),
@@ -259,6 +271,35 @@ const catalogRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
+
+/**
+ * Verdict on whether a gateway model id may be saved.
+ *
+ * `"unusable"` ONLY when a fresh, live (non-fallback) catalog positively
+ * contains the id and says it can't drive the agent loop. Everything else —
+ * cold cache, gateway outage, id absent from the catalog — returns `"allow"`.
+ * Fail-open is deliberate: rejecting a config write because our cache happened
+ * to be cold is a worse failure than the mis-pin this guards against, and a
+ * workspace legitimately pinned to a retired version must still be able to
+ * re-save its own config.
+ */
+async function classifyGatewayModel(modelId: string): Promise<"allow" | "unusable"> {
+  try {
+    const catalog = await getGatewayCatalog();
+    if (catalog.fallback) return "allow";
+    const hit = catalog.models.find((m) => m.id === modelId);
+    if (!hit) return "allow";
+    return isSelectableGatewayModel(hit) ? "allow" : "unusable";
+  } catch (err) {
+    // Never block a settings write on a catalog problem.
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), modelId },
+      "admin-model-config: gateway capability check unavailable; allowing the write",
+    );
+    return "allow";
+  }
+}
+
 const adminModelConfig = createAdminRouter();
 // F-53 — BYOT model config (provider, key, model) is a settings cluster surface.
 adminModelConfig.use(requirePermission("admin:settings"));
@@ -299,6 +340,32 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     }
 
     const body = c.req.valid("json");
+
+    // Server-side capability gate for gateway models (#4869 review). The
+    // picker's `isSelectable` filter is a BROWSER filter — this endpoint took
+    // `model: z.string().min(1)` and never consulted the catalog, so anything
+    // could be pinned via the API, or via a stale tab, and the workspace would
+    // then run an agent that cannot call tools.
+    //
+    // Deliberately fails OPEN on anything short of a definite answer: only a
+    // FRESH, NON-FALLBACK catalog that actually contains the id can reject it.
+    // A cold cache, a gateway outage, or an id the catalog doesn't carry (a
+    // retired version a workspace is legitimately pinned to) all pass through.
+    // Blocking a config write because our cache was cold would be a worse
+    // failure than the one this prevents.
+    if (body.provider === "gateway") {
+      const verdict = yield* Effect.promise(() => classifyGatewayModel(body.model));
+      if (verdict === "unusable") {
+        return c.json(
+          {
+            error: "validation",
+            message: `"${body.model}" cannot call tools, so it cannot run queries or read the semantic layer. Pick a model that supports tool calling.`,
+            requestId,
+          },
+          400,
+        );
+      }
+    }
 
     // For BYOT providers (anthropic/openai/azure-openai/custom): omitting
     // apiKey is only valid when an existing healthy key can be preserved.

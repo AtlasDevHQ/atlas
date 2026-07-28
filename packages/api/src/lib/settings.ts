@@ -492,6 +492,40 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
   {
+    // #4869 — the shortlist starred at the top of the gateway model picker.
+    //
+    // This used to be a hardcoded `RECOMMENDED_MODEL_IDS` set in
+    // `lib/gateway-catalog.ts`, which made curation redeploy-gated — the exact
+    // property this issue exists to remove — and let entries rot invisibly
+    // (`google/gemini-2.0-flash` sat in it after the gateway retired it; the
+    // group just rendered one row short). As a setting it is hot-reloadable,
+    // editable from /admin, and takes effect on the next catalog read rather
+    // than at the next deploy.
+    //
+    // Platform-scoped: curating the house shortlist is an operator decision,
+    // not a per-workspace one. Every workspace still picks any model it likes
+    // from the full catalog — this only controls what floats to the top.
+    key: "ATLAS_RECOMMENDED_MODELS",
+    section: "Model Catalog",
+    label: "Recommended Models",
+    description:
+      "Comma-separated Vercel AI Gateway model IDs to star at the top of the model picker (e.g. anthropic/claude-opus-5, openai/gpt-5.6-sol). IDs must match the gateway exactly — slash+dot form. Leave blank for no Recommended group; the full catalog stays selectable either way. IDs the gateway no longer serves are logged as a warning and skipped.",
+    type: "string",
+    default: [
+      "openai/gpt-5.6-sol",
+      "openai/gpt-5.6-terra",
+      "openai/gpt-5.6-luna",
+      "anthropic/claude-opus-5",
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-fable-5",
+      "anthropic/claude-haiku-4.5",
+      "zai/glm-5.2",
+      "moonshotai/kimi-k3",
+    ].join(","),
+    envVar: "ATLAS_RECOMMENDED_MODELS",
+    scope: "platform",
+  },
+  {
     // #3761 — optional cheaper summary model. Names a SEPARATE model for the
     // compaction summarization call so reclaiming context need not cost as much
     // as the turn itself. Blank ⇒ the summary runs on the active turn model (the

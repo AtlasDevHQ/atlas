@@ -118,6 +118,10 @@ function normalizeEntry(raw: RawAnthropicModel): GatewayCatalogModel | null {
     inputPrice: null,
     outputPrice: null,
     recommended: RECOMMENDED_MODEL_IDS.has(id),
+    // Anthropic's /v1/models publishes no capability data, so tool support is
+    // UNKNOWN here — not absent. `null` keeps these models visible in the
+    // picker's capability filter; `false` would empty the BYOT picker entirely.
+    supportsTools: null,
   };
 }
 

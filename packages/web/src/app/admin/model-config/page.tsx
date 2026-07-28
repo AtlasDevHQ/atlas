@@ -12,11 +12,16 @@ import {
 import { Cpu, Lock, XCircle } from "lucide-react";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
 
-// Partial by design — unknown model IDs fall back to the raw string so that
-// a new platform model ships without a UI change. Keep in sync with
-// `MODEL_OPTIONS` in `packages/web/src/app/admin/billing/page.tsx` only for
-// the models you want humanized here. New entries should be added in both
-// places at the same time.
+// Humanizes the handful of Anthropic IDs that predate the catalog picker, for
+// the read-only "platform baseline" row below. Partial BY DESIGN and staying
+// that way: unknown IDs fall back to the raw string, which is the correct
+// display for a gateway ID anyway (`zai/glm-5.2` reads fine).
+//
+// Deliberately NOT extended as new models ship (#4869) — a growing hardcoded
+// label map is the same redeploy-gated liability the model picker just shed.
+// The picker itself resolves display names from the live catalog; this row
+// shows one already-resolved ID and doesn't justify a second catalog fetch on
+// this page (ModelProviderSection below already makes one).
 const PLATFORM_MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5": "Haiku 4.5",
   "claude-sonnet-4-6": "Sonnet 4.6",

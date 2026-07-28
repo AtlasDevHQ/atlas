@@ -122,6 +122,8 @@ const ANTHROPIC_PERSISTED: GatewayCatalogModel = {
   inputPrice: null,
   outputPrice: null,
   recommended: true,
+  // BYOT direct-provider catalogs publish no capability data (#4869).
+  supportsTools: null,
 };
 
 const OPENAI_PERSISTED: GatewayCatalogModel = {

@@ -122,12 +122,27 @@ export const GatewayCatalogModelSchema = z.object({
   id: z.string(),
   name: z.string(),
   provider: z.string(),
-  type: z.enum(GATEWAY_MODEL_TYPES),
+  // `.catch("other")` so a future api that publishes a model type this bundle
+  // predates degrades that ONE entry instead of nuking the response (#4869
+  // review). Without it, `z.enum` rejects the unknown value, and because this
+  // object sits inside `z.array()` the whole `models` array fails — a blank
+  // picker with no error, for the length of an api-before-web deploy window.
+  // Exactly the failure `supportsTools`'s `.default(null)` was written to
+  // avoid; `type` needed the same treatment. `other` never passes the picker's
+  // `type === "language"` gate, so an unknown type is hidden, not offered.
+  type: z.enum(GATEWAY_MODEL_TYPES).catch("other"),
   contextWindow: z.number().nullable(),
   maxOutputTokens: z.number().nullable(),
   inputPrice: z.string().nullable(),
   outputPrice: z.string().nullable(),
   recommended: z.boolean(),
+  // `.default(null)` rather than a bare `.nullable()`: web and api deploy as
+  // separate Railway services, so there is a window where the browser holds new
+  // code and the API still serves catalog entries without this field. A hard
+  // parse failure there would blank the whole picker; defaulting to `null`
+  // (= "capability unknown, don't filter") degrades to today's behavior for the
+  // length of the skew. The `type` filter is unaffected — that field is old.
+  supportsTools: z.boolean().nullable().default(null),
 }) satisfies z.ZodType<GatewayCatalogModel, unknown>;
 
 export const GatewayCatalogResponseSchema = z.object({

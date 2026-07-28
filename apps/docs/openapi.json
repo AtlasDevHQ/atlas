@@ -81435,9 +81435,6 @@
                         "tokenCount": {
                           "type": "number"
                         },
-                        "weightedTokenCount": {
-                          "type": "number"
-                        },
                         "seatCount": {
                           "type": "number"
                         },

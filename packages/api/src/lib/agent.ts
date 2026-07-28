@@ -68,7 +68,6 @@ import {
 } from "./durable-state";
 import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
-import { toOutputEquivalentTokens } from "./billing/token-weighting";
 import { summarizeStepGatewayCostUsd } from "./billing/gateway-cost";
 import { buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
 import { resolveOrgKnowledgeSection } from "./learn/org-knowledge-section";
@@ -2353,14 +2352,6 @@ export async function runAgent({
             const inputTokens = totalUsage.inputTokens ?? 0;
             const outputTokens = totalUsage.outputTokens ?? 0;
             const totalTokens = inputTokens + outputTokens;
-            // Output-equivalent (model-weighted) tokens (#3989): normalize the
-            // turn's raw tokens by the per-model weight so budget math can
-            // denominate in output-equivalent tokens. Recorded alongside the raw
-            // `quantity` on the same agent-step accounting event.
-            const weightedTokens = toOutputEquivalentTokens(
-              { inputTokens, outputTokens },
-              resolvedModelId,
-            );
             logUsageEvent({
               workspaceId: orgId ?? null,
               userId: userId ?? null,
@@ -2374,12 +2365,15 @@ export async function runAgent({
                 userId: userId ?? null,
                 eventType: "token",
                 quantity: totalTokens,
-                weightedQuantity: weightedTokens,
-                // At-cost dollars for the turn (#4036) — the future Structure B
-                // billing denominator (enforcement lands in #4038/#4039);
-                // captured now. NULL when the provider isn't the gateway.
+                // At-cost dollars for the turn (#4036) — the LIVE Structure B
+                // billing denominator (#4038/#4039). NULL when the provider
+                // isn't the gateway.
                 gatewayCostUsd,
-                metadata: { input: inputTokens, output: outputTokens, weighted: weightedTokens },
+                // Raw split only. The `weighted` output-equivalent figure that
+                // used to ride here was a haiku/sonnet/opus approximation of
+                // relative cost; `gatewayCostUsd` measures cost exactly, for
+                // any model, so the approximation had nothing left to add.
+                metadata: { input: inputTokens, output: outputTokens },
               });
             }
           } catch (err) {

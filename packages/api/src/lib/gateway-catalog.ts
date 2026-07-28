@@ -127,8 +127,38 @@ interface RawCatalogEntry {
   supported_parameters?: unknown;
 }
 
+/**
+ * Per-model rates in USD per MILLION tokens, normalized from the catalog's
+ * per-token strings.
+ *
+ * Server-side only — deliberately NOT part of `GatewayCatalogModel` and never
+ * on the wire. The picker needs the headline input/output price it already
+ * gets; this is the fuller breakdown the operator cost estimator needs, and
+ * keeping it off the response holds to this module's original line that
+ * "pricing tiers and architecture detail stay on the server".
+ *
+ * Only the BASE rate is read. The gateway also publishes `regional` overrides,
+ * `*_tiers` (long-context step pricing) and `service_tiers` (priority/flex) —
+ * all real, all refinements on top of a number that is already an estimate for
+ * an operator dashboard. Modelling them would imply a precision this signal
+ * doesn't have; `token-pricing.ts` is explicit that it is not a billing source
+ * of truth (`gateway_cost_usd` is).
+ */
+export interface CatalogModelPricing {
+  /** USD per million fresh (uncached) input tokens. */
+  readonly inputPerMTok: number;
+  /** USD per million output tokens. */
+  readonly outputPerMTok: number;
+  /** USD per million cache-read input tokens; `null` when unpublished. */
+  readonly cacheReadPerMTok: number | null;
+  /** USD per million cache-write input tokens; `null` when unpublished. */
+  readonly cacheWritePerMTok: number | null;
+}
+
 interface CatalogCacheEntry {
   models: GatewayCatalogModel[];
+  /** Model id → normalized rates. Empty on the bundled fallback. */
+  prices: Map<string, CatalogModelPricing>;
   fetchedAt: string;
   fallback: boolean;
   expiresAt: number;
@@ -201,6 +231,39 @@ function readToolSupport(raw: RawCatalogEntry): boolean | null {
   // `null` (unknown), matching the documented fail-open contract.
   if (!raw.supported_parameters.every((p) => typeof p === "string")) return null;
   return raw.supported_parameters.includes("tools");
+}
+
+const TOKENS_PER_MILLION = 1_000_000;
+
+/** A per-token price string/number → USD per million tokens. */
+function asPerMTok(value: unknown): number | null {
+  const raw = asString(value);
+  if (raw === null) return null;
+  const parsed = Number.parseFloat(raw);
+  // A zero or negative rate is not a real price — treat it as unpublished so
+  // the caller falls back rather than reporting a confident $0.00.
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed * TOKENS_PER_MILLION;
+}
+
+/**
+ * Normalized rates for one entry, or `null` when the catalog publishes no
+ * usable input/output pair (3 of 204 language models, plus the non-language
+ * types). Both base rates are required — a half-priced model would silently
+ * under-report, which is worse than falling back.
+ */
+function normalizePricing(raw: RawCatalogEntry): CatalogModelPricing | null {
+  if (!raw.pricing || typeof raw.pricing !== "object") return null;
+  const p = raw.pricing as Record<string, unknown>;
+  const inputPerMTok = asPerMTok(p.input);
+  const outputPerMTok = asPerMTok(p.output);
+  if (inputPerMTok === null || outputPerMTok === null) return null;
+  return {
+    inputPerMTok,
+    outputPerMTok,
+    cacheReadPerMTok: asPerMTok(p.input_cache_read),
+    cacheWritePerMTok: asPerMTok(p.input_cache_write),
+  };
 }
 
 function normalizeEntry(raw: RawCatalogEntry): GatewayCatalogModel | null {
@@ -339,7 +402,12 @@ function warnStaleShortlistOnce(stale: string[], configured: number): void {
   );
 }
 
-async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
+interface LiveCatalog {
+  models: GatewayCatalogModel[];
+  prices: Map<string, CatalogModelPricing>;
+}
+
+async function fetchLiveCatalog(): Promise<LiveCatalog> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -357,16 +425,21 @@ async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
     const normalized: GatewayCatalogModel[] = [];
     const droppedIds: string[] = [];
     const unknownTypes = new Set<string>();
+    const prices = new Map<string, CatalogModelPricing>();
     for (const entry of body.data) {
       const raw = entry && typeof entry === "object" ? (entry as RawCatalogEntry) : null;
       const model = raw ? normalizeEntry(raw) : null;
-      if (model) {
+      if (model && raw) {
         normalized.push(model);
+        // Priced separately from the wire entry: `prices` carries the cache
+        // read/write split the estimator needs and the picker doesn't.
+        const rate = normalizePricing(raw);
+        if (rate) prices.set(model.id, rate);
         // Recorded from the RAW value: `model.type` has already been collapsed
         // to `other`, so only the pre-normalization value names the new type.
         if (
           model.type === "other" &&
-          typeof raw?.type === "string" &&
+          typeof raw.type === "string" &&
           !(GATEWAY_MODEL_TYPES as readonly string[]).includes(raw.type)
         ) {
           unknownTypes.add(raw.type);
@@ -390,7 +463,7 @@ async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
         "gateway-catalog: upstream published model type(s) Atlas does not know — mapped to `other` and hidden from the picker; add them to GATEWAY_MODEL_TYPES if they should be selectable",
       );
     }
-    return normalized;
+    return { models: normalized, prices };
   } finally {
     clearTimeout(timeout);
   }
@@ -399,9 +472,10 @@ async function fetchLiveCatalog(): Promise<GatewayCatalogModel[]> {
 async function load(): Promise<CatalogCacheEntry> {
   const now = Date.now();
   try {
-    const models = await fetchLiveCatalog();
+    const { models, prices } = await fetchLiveCatalog();
     return {
       models,
+      prices,
       fetchedAt: new Date(now).toISOString(),
       fallback: false,
       expiresAt: now + ttlMs(),
@@ -413,6 +487,10 @@ async function load(): Promise<CatalogCacheEntry> {
     );
     return {
       models: FALLBACK_MODELS,
+      // The bundled fallback carries no pricing on purpose (the live catalog is
+      // authoritative for cost), so the estimator falls back to its static
+      // family rates rather than pricing off stale bundled numbers.
+      prices: new Map(),
       fetchedAt: new Date(now).toISOString(),
       fallback: true,
       // Short TTL on fallback so we retry sooner than a healthy cache cycle.
@@ -476,6 +554,24 @@ export function peekModelContextWindow(modelId: string | undefined): number | nu
   if (!modelId || !cache || cache.fallback || cache.expiresAt <= Date.now()) return null;
   const hit = cache.models.find((m) => m.id === modelId);
   return hit?.contextWindow ?? null;
+}
+
+/**
+ * Synchronous, non-fetching lookup of a model's rates from whatever catalog is
+ * already in memory. Returns `null` when the cache is cold, stale, or has no
+ * priced entry for `modelId`.
+ *
+ * Same contract and rationale as {@link peekModelContextWindow}: sync so the
+ * caller keeps its own sync signature, and a stale cache reads as a miss
+ * because a price that moved between catalog revisions is worse than no price.
+ */
+export function peekModelPricing(modelId: string | undefined): CatalogModelPricing | null {
+  // `cache.fallback` is checked explicitly even though the fallback's `prices`
+  // map is empty today, so it already returns null. Stating it keeps the two
+  // peeks symmetric and stops a future "let's ship prices in the fallback too"
+  // from silently pricing off redeploy-gated constants (#4869 review).
+  if (!modelId || !cache || cache.fallback || cache.expiresAt <= Date.now()) return null;
+  return cache.prices.get(modelId) ?? null;
 }
 
 /**

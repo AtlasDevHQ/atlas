@@ -472,14 +472,12 @@ describe("POST /api/v1/wizard/enrich — billing gate (#4489)", () => {
       quantity: number;
       workspaceId: string | null;
       userId: string | null;
-      weightedQuantity?: number | null;
       metadata?: Record<string, unknown>;
     };
     expect(event.eventType).toBe("token");
     expect(event.quantity).toBe(80);
     expect(event.workspaceId).toBe("org-alpha");
     expect(event.userId).toBe("user-1");
-    expect(typeof event.weightedQuantity).toBe("number");
     // Metadata is load-bearing for billing attribution — assert the source tag,
     // table, and the input/output split (not just the total).
     expect(event.metadata).toMatchObject({

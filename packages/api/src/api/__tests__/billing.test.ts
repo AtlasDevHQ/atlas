@@ -108,7 +108,6 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 const mockUsage = {
   queryCount: 500,
   tokenCount: 25_000,
-  weightedTokenCount: 25_000,
   costUsd: 0,
   activeUsers: 3,
   periodStart: "2026-03-01T00:00:00.000Z",

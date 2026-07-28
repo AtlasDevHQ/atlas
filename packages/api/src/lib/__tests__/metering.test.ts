@@ -129,7 +129,6 @@ describe("metering", () => {
         "user-1",
         "query",
         1,
-        null, // weighted_quantity — omitted for a non-token event
         null, // gateway_cost_usd — omitted for a non-token event (#4036)
         JSON.stringify({ model: "gpt-4" }),
       ]);
@@ -144,29 +143,29 @@ describe("metering", () => {
       });
 
       expect(queryCalls).toHaveLength(1);
-      expect(queryCalls[0].params).toEqual([null, null, "token", 500, null, null, null]);
+      expect(queryCalls[0].params).toEqual([null, null, "token", 500, null, null]);
     });
 
-    it("persists the weighted (output-equivalent) quantity for a token event (#3989)", () => {
+    it("does NOT write the legacy weighted_quantity column (#4869 follow-up)", () => {
       logUsageEvent({
         workspaceId: "org-1",
         userId: "user-1",
         eventType: "token",
         quantity: 1500,
-        weightedQuantity: 4200,
-        metadata: { input: 500, output: 1000, weighted: 4200 },
+        metadata: { input: 500, output: 1000 },
       });
 
       expect(queryCalls).toHaveLength(1);
-      expect(queryCalls[0].sql).toContain("weighted_quantity");
+      // The weighting was removed (#4869 follow-up) — new rows must not write
+      // the legacy column at all, leaving it NULL for historical contrast.
+      expect(queryCalls[0].sql).not.toContain("weighted_quantity");
       expect(queryCalls[0].params).toEqual([
         "org-1",
         "user-1",
         "token",
         1500,
-        4200,
         null, // gateway_cost_usd — not supplied here
-        JSON.stringify({ input: 500, output: 1000, weighted: 4200 }),
+        JSON.stringify({ input: 500, output: 1000 }),
       ]);
     });
 
@@ -176,9 +175,8 @@ describe("metering", () => {
         userId: "user-1",
         eventType: "token",
         quantity: 1500,
-        weightedQuantity: 4200,
         gatewayCostUsd: 0.2345,
-        metadata: { input: 500, output: 1000, weighted: 4200 },
+        metadata: { input: 500, output: 1000 },
       });
 
       expect(queryCalls).toHaveLength(1);
@@ -188,9 +186,8 @@ describe("metering", () => {
         "user-1",
         "token",
         1500,
-        4200,
         0.2345,
-        JSON.stringify({ input: 500, output: 1000, weighted: 4200 }),
+        JSON.stringify({ input: 500, output: 1000 }),
       ]);
     });
 
@@ -273,8 +270,6 @@ describe("metering", () => {
 
       expect(result.queryCount).toBe(42);
       expect(result.tokenCount).toBe(10000);
-      // Output-equivalent (model-weighted) token spend — the budget denominator (#3989).
-      expect(result.weightedTokenCount).toBe(23000);
       // At-cost provider dollars for the period — the Structure B denominator (#4036).
       expect(result.costUsd).toBe(1.23);
       expect(result.activeUsers).toBe(3);
@@ -282,11 +277,11 @@ describe("metering", () => {
       expect(result.periodEnd).toBeTruthy();
       expect(result.periodSource).toBe("utc-month");
 
-      // The aggregate sums the weighted column with a COALESCE fallback to raw
-      // so token rows predating migration 0152 still contribute.
+      // The rollup no longer reads the weighted column at all (#4869 follow-up)
+      // — raw tokens and at-cost dollars are the only period figures.
       const usageCall = queryCalls.find((c) => c.sql.includes("usage_events"));
-      expect(usageCall?.sql).toContain("COALESCE(weighted_quantity, quantity)");
-      // …and sums the at-cost gateway dollars for the period (#4036).
+      expect(usageCall?.sql).not.toContain("weighted_quantity");
+      // …and it sums the at-cost gateway dollars for the period (#4036).
       expect(usageCall?.sql).toContain("gateway_cost_usd");
     });
 
@@ -321,7 +316,6 @@ describe("metering", () => {
 
       expect(result.queryCount).toBe(0);
       expect(result.tokenCount).toBe(0);
-      expect(result.weightedTokenCount).toBe(0);
       expect(result.activeUsers).toBe(0);
     });
 
@@ -329,7 +323,6 @@ describe("metering", () => {
       mockHasInternalDB = false;
       const result = await getCurrentPeriodUsage("org-1");
       expect(result.queryCount).toBe(0);
-      expect(result.weightedTokenCount).toBe(0);
       expect(result.periodSource).toBe("utc-month");
       expect(queryCalls).toHaveLength(0);
     });

@@ -23,8 +23,6 @@ let mockWorkspace: Record<string, unknown> | null = null;
 let mockUsage: {
   queryCount: number;
   tokenCount: number;
-  /** When set, the budget denominator (#3989); otherwise mirrors `tokenCount`. */
-  weightedTokenCount?: number;
   /**
    * At-cost provider spend (USD) for the period (#4036) — the dollar
    * enforcement denominator (#4038). Defaults to 0 when a test omits it.
@@ -95,10 +93,8 @@ void mock.module("@atlas/api/lib/metering", () => ({
   getCurrentPeriodUsage: async () => {
     if (mockUsageShouldThrow) throw new Error("metering error");
     // Dollar enforcement (#4038) denominates on `costUsd`; the band cases below
-    // drive it directly. `weightedTokenCount` mirrors `tokenCount` (retained for
-    // the token OverageMeter), and `costUsd` defaults to 0 when a case omits it.
+    // drive it directly. `costUsd` defaults to 0 when a case omits it.
     return {
-      weightedTokenCount: mockUsage.tokenCount,
       costUsd: 0,
       ...mockUsage,
     };

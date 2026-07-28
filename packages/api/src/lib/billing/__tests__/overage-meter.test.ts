@@ -364,7 +364,6 @@ describe("reportWorkspaceOverage", () => {
       getCurrentPeriodUsage: async () => ({
         queryCount: 0,
         tokenCount: 5_000_000, // tokens recorded…
-        weightedTokenCount: 5_000_000,
         costUsd: 0, // …but no at-cost basis (non-gateway / pre-#4036 / broken capture)
         activeUsers: 0,
         periodStart: PERIOD_START,
@@ -672,7 +671,6 @@ function usageWithCost(costUsd: number): UsageCurrentPeriod {
   return {
     queryCount: 0,
     tokenCount: 0,
-    weightedTokenCount: 0,
     costUsd,
     activeUsers: 0,
     periodStart: PERIOD_START,

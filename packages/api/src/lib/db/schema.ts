@@ -945,8 +945,14 @@ export const usageEvents = pgTable(
     // migration 0152). Raw tokens normalized by the per-model TokenWeighting
     // table (reference model = 1.0). Nullable, no default: NULL means "not
     // weighted" (non-token events, or token rows predating the migration) —
-    // distinct from 0 ("weighted to zero"). Budget/period summation reads
-    // COALESCE(weighted_quantity, quantity) so legacy token rows still count.
+    // distinct from 0 ("weighted to zero").
+    //
+    // NO LONGER WRITTEN (#4869 follow-up): the output-equivalent weighting was a
+    // haiku/sonnet/opus approximation of relative cost, and `gateway_cost_usd`
+    // now measures cost exactly for any model, so the approximation was dropped
+    // rather than extended to the ~300-model gateway catalog. The column stays
+    // so historical rows keep their values; new rows leave it NULL. Nothing
+    // reads it — do not reintroduce it as a denominator without re-reading why.
     weightedQuantity: integer("weighted_quantity"),
     // Provider-cost USD for a `token` event's turn from the Vercel AI Gateway
     // (providerMetadata.gateway.cost, summed across steps), #4036 / migration

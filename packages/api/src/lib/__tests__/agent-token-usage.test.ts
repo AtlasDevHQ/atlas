@@ -203,10 +203,11 @@ describe("token_usage cache split write path (#3099)", () => {
     const insertParams = tokenUsageInsert()!.params as unknown[];
     expect(insertParams[10]).toBe(0.0123);
 
-    // …and the `token` usage event carries the same at-cost dollars ($6 of 7).
+    // …and the `token` usage event carries the same at-cost dollars ($5 of 6 —
+    // weighted_quantity was dropped from the insert in the #4869 follow-up).
     const event = tokenUsageEvent();
     expect(event).toBeDefined();
-    expect((event!.params as unknown[])[5]).toBe(0.0123);
+    expect((event!.params as unknown[])[4]).toBe(0.0123);
   });
 
   it("writes 0 for the cache split when the provider reports no cache usage", async () => {

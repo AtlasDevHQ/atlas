@@ -31,19 +31,25 @@ const log = createLogger("metering");
 // Login events are emitted from the Better Auth session.create hook in auth/server.ts.
 export type UsageEventType = "query" | "token" | "login";
 
+/**
+ * Raw token counts for a turn (or aggregate), as recorded at agent-step time.
+ *
+ * Lived in `billing/token-weighting.ts` until that module was deleted (#4869
+ * follow-up); the shape itself is just "what the AI SDK reported", so it now
+ * sits next to the metering event that carries it.
+ */
+export interface RawTokenCounts {
+  /** Total input tokens for the turn (AI-SDK `inputTokens`). */
+  readonly inputTokens: number;
+  /** Total output/completion tokens for the turn (AI-SDK `outputTokens`). */
+  readonly outputTokens: number;
+}
+
 export interface UsageEvent {
   workspaceId: string | null;
   userId: string | null;
   eventType: UsageEventType;
   quantity: number;
-  /**
-   * Output-equivalent (model-weighted) token count for `token` events (#3989).
-   * Computed at agent-step accounting time via the TokenWeighting module and
-   * persisted to `usage_events.weighted_quantity` alongside the raw `quantity`,
-   * so budget math can denominate in output-equivalent tokens. Omit (or pass
-   * `null`) for non-token events — the column is NULL for those.
-   */
-  weightedQuantity?: number | null;
   /**
    * Provider-cost USD for a `token` event's turn, from the Vercel AI Gateway
    * (`providerMetadata.gateway.cost`, summed across the turn's steps), #4036.
@@ -103,14 +109,18 @@ export function logUsageEvent(event: UsageEvent): void {
   // after 5 consecutive failures. No try/catch needed here — hasInternalDB()
   // guards against the only synchronous throw path (DATABASE_URL unset).
   internalExecute(
-    `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, weighted_quantity, gateway_cost_usd, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    // `weighted_quantity` is deliberately absent from the column list (#4869
+    // follow-up): the output-equivalent weighting was a per-family (haiku/
+    // sonnet/opus) approximation of relative cost, and `gateway_cost_usd` now
+    // measures cost exactly, for any model. New rows leave the column NULL; it
+    // is retained on the table so historical rows keep their values.
+    `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, gateway_cost_usd, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       event.workspaceId ?? null,
       event.userId ?? null,
       event.eventType,
       event.quantity,
-      event.weightedQuantity ?? null,
       event.gatewayCostUsd ?? null,
       event.metadata ? JSON.stringify(event.metadata) : null,
     ],
@@ -246,21 +256,11 @@ export interface UsageCurrentPeriod {
   /** Raw token spend for the period (sum of `token` event `quantity`). */
   tokenCount: number;
   /**
-   * Output-equivalent (model-weighted) token spend for the period (#3989): the
-   * sum of `COALESCE(weighted_quantity, quantity)` over `token` events. This is
-   * the budget denominator — a turn on a pricier model contributes more here
-   * than its raw `tokenCount`. Token rows predating migration 0152 have a NULL
-   * `weighted_quantity` and fall back to their raw `quantity`, so this is never
-   * less than it should be for un-backfilled history.
-   */
-  weightedTokenCount: number;
-  /**
    * At-cost provider spend in USD for the period (#4036): the sum of
    * `gateway_cost_usd` over `token` events — the EXACT zero-markup dollars Atlas
    * paid the Vercel AI Gateway. This is the LIVE Structure B billing numerator:
    * dollar enforcement (#4038) denominates the included credit ($20/seat) against
    * it, and the at-cost overage meter (#4039) reports `costUsd − credit` in cents.
-   * `weightedTokenCount` above is no longer a billing denominator (display only).
    * Rows with a NULL `gateway_cost_usd` (non-gateway providers, or token rows
    * predating migration 0155) simply don't contribute.
    */
@@ -301,7 +301,6 @@ export async function getCurrentPeriodUsage(
     return {
       queryCount: 0,
       tokenCount: 0,
-      weightedTokenCount: 0,
       costUsd: 0,
       activeUsers: 0,
       periodStart: "",
@@ -315,14 +314,12 @@ export async function getCurrentPeriodUsage(
   const rows = await internalQuery<{
     query_count: number;
     token_count: number;
-    weighted_token_count: number;
     cost_usd: number;
     active_users: number;
   }>(
     `SELECT
        COALESCE(SUM(CASE WHEN event_type = 'query' THEN quantity ELSE 0 END), 0)::int AS query_count,
        COALESCE(SUM(CASE WHEN event_type = 'token' THEN quantity ELSE 0 END), 0)::int AS token_count,
-       COALESCE(SUM(CASE WHEN event_type = 'token' THEN COALESCE(weighted_quantity, quantity) ELSE 0 END), 0)::int AS weighted_token_count,
        COALESCE(SUM(CASE WHEN event_type = 'token' THEN gateway_cost_usd ELSE 0 END), 0)::float8 AS cost_usd,
        COALESCE(COUNT(DISTINCT CASE WHEN event_type = 'login' THEN user_id END), 0)::int AS active_users
      FROM usage_events
@@ -336,7 +333,6 @@ export async function getCurrentPeriodUsage(
   return {
     queryCount: row?.query_count ?? 0,
     tokenCount: row?.token_count ?? 0,
-    weightedTokenCount: row?.weighted_token_count ?? 0,
     // `::float8` so `pg` returns a JS number (not a numeric string). Dollar sums
     // stay well within float8's ~15 significant digits, so no meaningful drift.
     costUsd: row?.cost_usd ?? 0,

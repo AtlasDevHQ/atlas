@@ -71,7 +71,6 @@ import { refreshGroupAutoDescription } from "@atlas/api/lib/source-catalog/looku
 // spend and meters the result against the workspace token budget afterwards.
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { logUsageEvent } from "@atlas/api/lib/metering";
-import { toOutputEquivalentTokens } from "@atlas/api/lib/billing/token-weighting";
 import {
   getModel,
   getMissingModelConfig,
@@ -1048,8 +1047,9 @@ wizard.openapi(enrichRoute, async (c) => {
     // internal DB but no workspace still records a null-workspace row. Only the
     // budget-relevant `token` event is emitted — an admin maintenance enrich is
     // not an end-user "query", so it is intentionally left out of query_count.
-    // Weighted the same way as an agent turn (`toOutputEquivalentTokens`) so the
-    // output-equivalent budget denominator stays consistent across surfaces.
+    // Records raw tokens only — same as an agent turn since the output-equivalent
+    // weighting was removed (#4869 follow-up). No `gatewayCostUsd`: the enrich
+    // call doesn't surface the gateway's per-request cost annotation.
     const usage = data.enriched.usage;
     const totalTokens = usage.inputTokens + usage.outputTokens;
     if (totalTokens > 0) {
@@ -1059,7 +1059,6 @@ wizard.openapi(enrichRoute, async (c) => {
         userId: user?.id ?? null,
         eventType: "token",
         quantity: totalTokens,
-        weightedQuantity: toOutputEquivalentTokens(usage, modelId),
         metadata: {
           source: "wizard_enrich",
           tableName,

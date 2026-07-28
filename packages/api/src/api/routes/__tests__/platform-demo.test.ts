@@ -51,6 +51,52 @@ interface CapturedAudit {
 }
 let auditCalls: CapturedAudit[] = [];
 
+/**
+ * Gateway-catalog stub state (#4872).
+ *
+ * The `/leads` and `/metrics` handlers now `await primeGatewayCatalog(...)`
+ * before folding usage rows, and `token-pricing`'s `resolveRate` reads the
+ * primed catalog synchronously per row. Without this mock the suite makes a
+ * REAL outbound call to `ai-gateway.vercel.sh` and prices its assertions off
+ * Anthropic's live published rates — green today only because the live haiku
+ * price happens to equal the static `FAMILY_RATES.haiku` entry, and red the day
+ * the vendor reprices.
+ *
+ * The two halves are deliberately COUPLED: `peekModelPricing` answers only once
+ * `primeGatewayCatalog` has been called with a gateway-shaped id. That makes the
+ * prime-before-fold contract testable — drop the `yield* Effect.promise(...)`
+ * line from EITHER handler and that handler's catalog-priced test below goes
+ * red. `primeRejects` additionally exercises the path `Effect.promise` cannot
+ * recover from.
+ */
+let catalogPrimed = false;
+let primeRejects = false;
+interface StubRate {
+  inputPerMTok: number;
+  outputPerMTok: number;
+  cacheReadPerMTok: number | null;
+  cacheWritePerMTok: number | null;
+}
+let stubCatalogPrices: Record<string, StubRate> = {};
+
+// mock.module replaces the WHOLE module — list every export of the real file or
+// an unrelated importer in this graph dies with a link-time
+// "Export named 'x' not found".
+void mock.module("@atlas/api/lib/gateway-catalog", () => ({
+  primeGatewayCatalog: async (ids: readonly (string | null | undefined)[]) => {
+    if (primeRejects) throw new Error("gateway catalog exploded");
+    if (ids.some((id) => typeof id === "string" && id.includes("/"))) catalogPrimed = true;
+  },
+  peekModelPricing: (id: string | null | undefined) =>
+    catalogPrimed && id ? (stubCatalogPrices[id] ?? null) : null,
+  lookupModelContextWindow: async () => null,
+  getGatewayCatalog: async () => ({ models: [], fetchedAt: "", fallback: false }),
+  isSelectableGatewayModel: (m: { type: string; supportsTools: boolean | null }) =>
+    m.type === "language" && m.supportsTools !== false,
+  __resetGatewayCatalogCacheForTests: () => {},
+  __getRecommendedIdsForTests: (): readonly string[] => [],
+}));
+
 // Real demoUserId hash so the leads/usage JS join keys line up.
 function realDemoUserId(email: string): string {
   const normalized = email.toLowerCase().trim();
@@ -235,6 +281,9 @@ beforeEach(() => {
   queryCalls = [];
   setSettingCalls = [];
   auditCalls = [];
+  catalogPrimed = false;
+  primeRejects = false;
+  stubCatalogPrices = {};
   demoConfig = {
     model: "",
     maxSteps: 10,
@@ -409,8 +458,64 @@ describe("GET /leads", () => {
     expect(lead.usage.promptTokens).toBe(1000);
     expect(lead.usage.completionTokens).toBe(200);
     expect(lead.usage.avgLatencyMs).toBe(1500);
+    // No catalog price stubbed ⇒ the static family table answers.
     // Haiku: 1000 input * $1/MTok + 200 output * $5/MTok = $0.002.
     expect(lead.usage.estimatedCostUsd).toBeCloseTo(0.002, 9);
+  });
+
+  test("prices from the LIVE catalog, which means priming it before the fold (#4872)", async () => {
+    // The regression guard for the new `primeGatewayCatalog` call site. The
+    // catalog rate is deliberately DIFFERENT from `FAMILY_RATES.haiku`
+    // ($1/$5) — so if the prime is removed, reordered below the fold, or the
+    // handler stops awaiting it, the response falls back to $0.002 and this
+    // goes red. Asserting the resolved DOLLAR figure rather than "a prime
+    // happened" is the lesson from #4869: the earlier shape proved a warm
+    // fired while the value it produced was never actually used.
+    stubCatalogPrices["anthropic/claude-haiku-4.5"] = {
+      inputPerMTok: 10,
+      outputPerMTok: 50,
+      cacheReadPerMTok: null,
+      cacheWritePerMTok: null,
+    };
+    wireLeads();
+
+    const res = await app.request(`${BASE}/leads`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      leads: Array<{ usage: { estimatedCostUsd: number | null } }>;
+    };
+    // 1000 input * $10/MTok + 200 output * $50/MTok = $0.02 — 10x the family
+    // rate, so the two tiers can't be confused for one another.
+    expect(body.leads[0]!.usage.estimatedCostUsd).toBeCloseTo(0.02, 9);
+    expect(catalogPrimed).toBe(true);
+  });
+
+  test("a REJECTING prime still returns the page, priced from the static family table", async () => {
+    // `primeGatewayCatalog` is invoked through `Effect.promise`, which turns a
+    // rejection into an unrecoverable defect — a 500 on the whole spend page
+    // over a pricing tier that has a designed fallback. It cannot reject today
+    // (`catalogWithinBudget` catches), so the route wraps it defensively; this
+    // is the test that the wrapper is actually there. A stubbed rejection, not
+    // just an unprimed cache — those are different paths and only this one
+    // reaches the Effect boundary.
+    primeRejects = true;
+    // A catalog rate IS stubbed, so a passing test can't be explained by the
+    // fold having nothing to read: the assertion below is the family rate,
+    // which only appears because the prime failed.
+    stubCatalogPrices["anthropic/claude-haiku-4.5"] = {
+      inputPerMTok: 10,
+      outputPerMTok: 50,
+      cacheReadPerMTok: null,
+      cacheWritePerMTok: null,
+    };
+    wireLeads();
+
+    const res = await app.request(`${BASE}/leads`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      leads: Array<{ usage: { estimatedCostUsd: number | null } }>;
+    };
+    expect(body.leads[0]!.usage.estimatedCostUsd).toBeCloseTo(0.002, 9);
   });
 
   test("a lead with no demo turns reports a zeroed rollup", async () => {
@@ -485,6 +590,52 @@ describe("GET /metrics", () => {
     expect(body.totals.estimatedCostUsd).not.toBeNull();
     expect(body.perModel).toHaveLength(1);
     expect(body.perModel[0]!.model).toBe("anthropic/claude-haiku-4.5");
+  });
+
+  test("prices from the LIVE catalog, which means priming it before the fold (#4872)", async () => {
+    // The `/metrics` twin of the `/leads` guard. Both handlers got their own
+    // `primeCatalogForPricing` call, so both need their own regression test —
+    // without this one, deleting the metrics prime leaves the suite green
+    // (the assertions above only check `estimatedCostUsd` is non-null, which
+    // the static family table satisfies just as well).
+    stubCatalogPrices["anthropic/claude-haiku-4.5"] = {
+      inputPerMTok: 10,
+      outputPerMTok: 50,
+      cacheReadPerMTok: null,
+      cacheWritePerMTok: null,
+    };
+    queryStub = async (sql: string) => {
+      if (sql.includes("GROUP BY tu.model, tu.provider")) {
+        return [
+          {
+            user_id: "",
+            model: "anthropic/claude-haiku-4.5",
+            provider: "gateway",
+            turns: 4,
+            prompt_tokens: "2000",
+            completion_tokens: "400",
+            cache_read_tokens: "0",
+            cache_write_tokens: "0",
+            avg_latency_ms: 1200,
+            latency_count: 4,
+          },
+        ];
+      }
+      if (sql.includes("lead_count")) return [{ lead_count: 2, session_count: 7 }];
+      return [];
+    };
+
+    const res = await app.request(`${BASE}/metrics`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      totals: { estimatedCostUsd: number | null; costEstimated: boolean };
+    };
+    // Catalog: 2000 * $10/MTok + 400 * $50/MTok = $0.04.
+    // Family table would be 2000 * $1 + 400 * $5 = $0.004 — a 10x gap, so the
+    // two tiers can't be confused for one another.
+    expect(body.totals.estimatedCostUsd).toBeCloseTo(0.04, 9);
+    // Priced entirely from the live catalog ⇒ no offline-table disclaimer.
+    expect(body.totals.costEstimated).toBe(false);
   });
 
   test("flags costComplete=false when a model is unpriced", async () => {

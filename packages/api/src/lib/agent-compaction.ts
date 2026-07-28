@@ -16,12 +16,21 @@
  *
  * Scope:
  * - #3759: the fill-fraction trigger + summarize-older-history pass. Default OFF.
- * - #3760 (this slice): the context window is resolved PER MODEL from a static
- *   catalog (Anthropic 200k vs OpenAI 128k vs …), so the same fill fraction means
- *   the same thing on a 128k model as on a 200k one. A model the catalog doesn't
+ * - #3760: the context window is resolved PER MODEL from a static per-family
+ *   table (Anthropic 200k vs OpenAI 128k vs …), so the same fill fraction means
+ *   the same thing on a 128k model as on a 200k one. A model the table doesn't
  *   cover falls back to a safe default (never errors the turn). An admin can pin
  *   the window explicitly via the `ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS`
- *   settings knob, which takes precedence over the catalog.
+ *   settings knob, which takes precedence over every catalog.
+ *
+ * - #4869 / #4872: the LIVE gateway catalog sits above that static table, so the
+ *   window is per-MODEL rather than per-family — which the static table cannot
+ *   express (it maps every `claude` id to 200k against Sonnet 5's real 1M) and
+ *   which matters now that the model picker exposes the whole gateway. #4872
+ *   made the lookup an `await`, taken ONCE PER TURN in `agent.ts` and bounded by
+ *   a hot-path budget, retiring a sync-peek + fire-and-forget-warm pair that
+ *   could only answer from turn 2 onward. See {@link ContextWindowSource} for
+ *   the four tiers and `resolveContextWindow` for the ordering.
  *
  * - #3761: an optional cheaper summary model (the `ATLAS_COMPACTION_SUMMARY_MODEL`
  *   knob names a SEPARATE model for the summarization call, resolved on the same
@@ -48,7 +57,7 @@ import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { Attributes } from "@opentelemetry/api";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
-import { peekModelContextWindow, warmGatewayCatalog } from "./gateway-catalog";
+import { lookupModelContextWindow } from "./gateway-catalog";
 
 const log = createLogger("agent:compaction");
 
@@ -65,12 +74,35 @@ export interface CompactionSettings {
   /**
    * Context-window size in tokens the fill-fraction trigger computes against.
    * Resolved per model (#3760): the operator override knob if set, else the
-   * static catalog value for the active model, else a safe default.
+   * LIVE gateway catalog (#4869), else the static per-family table, else a safe
+   * default. The gateway tier is skipped entirely when {@link enabled} is false,
+   * so a disabled turn never reports `gateway` — the value is inert anyway.
    */
   readonly contextWindowTokens: number;
-  /** How {@link contextWindowTokens} was resolved — for observability/tests. */
-  readonly contextWindowSource: "override" | "catalog" | "default";
+  /** How {@link contextWindowTokens} was resolved. */
+  readonly contextWindowSource: ContextWindowSource;
 }
+
+/**
+ * Which tier produced {@link CompactionSettings.contextWindowTokens}.
+ *
+ * `gateway` and `static` used to share one `"catalog"` label (#4872 review) —
+ * which meant the same model could resolve 1M on one turn and 200k on the next
+ * and report identically both times, so neither telemetry nor a test could tell
+ * whether the live tier had fired at all. That ambiguity is what let the tier
+ * ordering regress unnoticed in the first place. Draws the same live-vs-offline
+ * distinction as `ResolvedRate.source` in `token-pricing.ts`, under different
+ * labels (`catalog`/`family` there).
+ */
+export type ContextWindowSource =
+  /** The `ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS` knob. */
+  | "override"
+  /** The live gateway catalog — per-model and authoritative. */
+  | "gateway"
+  /** {@link CONTEXT_WINDOW_RULES}, the offline per-family floor. */
+  | "static"
+  /** {@link DEFAULT_CONTEXT_WINDOW_TOKENS} — no tier knew this model. */
+  | "default";
 
 const DEFAULT_FILL_FRACTION = 0.85;
 const DEFAULT_PINNED_RECENT_STEPS = 6;
@@ -96,14 +128,15 @@ const MAX_CONTEXT_WINDOW_TOKENS = 10_000_000;
 
 // ── Per-model context-window catalog (#3760) ─────────────────────────
 //
-// The live provider catalogs (`gateway-catalog`, `anthropic-catalog`,
-// `bedrock-catalog`, `openai-catalog`) carry a `contextWindow` field, but it is
-// either network-backed + async (gateway) or `null` from the upstream
-// discovery endpoint (the BYOT providers' `/v1/models` responses don't return
-// it). The compaction trigger runs synchronously inside `prepareStep` on every
-// step, so it can't await a network fetch. This static table is the synchronous
-// source of truth: a model-family → window map matched by substring against the
-// resolved model id, which is robust across the id shapes the providers use
+// The live gateway catalog is authoritative and IS consulted first (tier 2 in
+// `resolveContextWindow`, awaited once per turn since #4872). This table is the
+// OFFLINE floor underneath it: the BYOT provider catalogs (`anthropic-catalog`,
+// `bedrock-catalog`, `openai-catalog`) return `null` for `contextWindow` from
+// their upstream discovery endpoints, an air-gapped deploy never reaches the
+// gateway at all, and a gateway that is slow or down must not stall a turn. In
+// all three cases the turn still needs a number, and this is it: a
+// model-family → window map matched by substring against the resolved model id,
+// robust across the id shapes the providers use
 // (`claude-opus-4-8`, `anthropic/claude-opus-4.8`, `us.anthropic.claude-…`,
 // `gpt-4o`, `gemini-2.0-flash`, …) without an exact-id table that goes stale on
 // every model release. First match wins, so order most-specific first.
@@ -129,7 +162,11 @@ const CONTEXT_WINDOW_RULES: readonly ContextWindowRule[] = [
   { match: ["gpt-4"], windowTokens: 8_192 },
   { match: ["gpt-3.5-turbo-16k"], windowTokens: 16_384 },
   { match: ["gpt-3.5"], windowTokens: 16_385 },
-  // Anthropic — Claude 2.x through the 4.x line are all 200k.
+  // Anthropic — a deliberate 200k FLOOR for every `claude` id, not a claim that
+  // 200k is right. It is wrong-low for the 5.x line and for opus-4.8, which are
+  // really 1M (verified against the live catalog 2026-07-28); the gateway tier
+  // above is what corrects them. Low is the safe direction here — the trigger
+  // fires early, never late.
   { match: ["claude"], windowTokens: 200_000 },
   // Google Gemini — 1.5/2.x long context.
   { match: ["gemini-1.5-pro", "gemini-2"], windowTokens: 2_000_000 },
@@ -143,8 +180,8 @@ const CONTEXT_WINDOW_RULES: readonly ContextWindowRule[] = [
 /**
  * Resolve the active model's context-window size (tokens) from the static
  * catalog by family-substring match. Returns `null` when no rule matches — the
- * caller falls back to the safe default rather than erroring. Pure + sync so the
- * per-step compaction trigger can call it without awaiting a network fetch.
+ * caller falls back to the safe default rather than erroring. Pure + sync: it
+ * is the offline floor, so it must be answerable with no network and no wait.
  *
  * @param modelId provider model id (any shape: `claude-opus-4-8`,
  *   `anthropic/claude-opus-4.8`, `us.anthropic.claude-…`, `gpt-4o`, …).
@@ -175,15 +212,28 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
  * Resolve the compaction knobs for a turn.
  *
  * `modelId` selects the per-model context window (#3760): the override knob
- * wins if set, else the static catalog value for the model, else a safe
- * default. `orgId` threads the workspace tier (the keys are workspace-scoped);
- * when omitted resolution falls back through platform override > env var >
- * registry default, matching `getAgentMaxSteps`.
+ * wins if set, else the live gateway catalog, else the static family table,
+ * else a safe default. `orgId` threads the workspace tier (the keys are
+ * workspace-scoped); when omitted resolution falls back through platform
+ * override > env var > registry default, matching `getAgentMaxSteps`.
+ *
+ * ASYNC, and called exactly ONCE PER TURN (#4872) — from `runAgent`'s setup in
+ * `agent.ts`, never from `prepareStep`, which consumes the already-resolved
+ * value. The single await is what lets the live catalog answer on turn 1 rather
+ * than from turn 2 onward. It is bounded and fail-soft: see
+ * `HOT_PATH_BUDGET_MS` in `gateway-catalog.ts` — a slow or unreachable gateway
+ * costs at most that budget, once per cache fill, and degrades to the static
+ * table rather than failing the turn.
+ *
+ * It costs NOTHING when compaction is off, which is the shipped default: the
+ * window only exists to size the fill-fraction trigger, so a disabled turn skips
+ * the network tier entirely rather than awaiting a budget for a number nothing
+ * will read (#4872 review).
  */
-export function resolveCompactionSettings(
+export async function resolveCompactionSettings(
   modelId?: string,
   orgId?: string,
-): CompactionSettings {
+): Promise<CompactionSettings> {
   // Fall back to the request-context org when the caller omits it, matching
   // getAgentMaxSteps — so a future caller that forgets to thread orgId still
   // hits the workspace tier instead of silently resolving platform-wide.
@@ -216,29 +266,43 @@ export function resolveCompactionSettings(
     pinnedRecentSteps = DEFAULT_PINNED_RECENT_STEPS;
   }
 
-  // Context window (#3760): override knob > static per-model catalog > default.
-  // The knob's registry default is empty, so an unset/blank value means "resolve
-  // from the catalog"; only an explicit operator value pins the window.
-  const { contextWindowTokens, contextWindowSource } = resolveContextWindow(
+  // Context window (#3760, #4869): override knob > live gateway catalog >
+  // static per-family table > safe default. The knob's registry default is
+  // empty, so an unset/blank value means "resolve from a catalog"; only an
+  // explicit operator value pins the window.
+  const { contextWindowTokens, contextWindowSource } = await resolveContextWindow(
     modelId,
     getSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", effectiveOrgId),
+    enabled,
   );
 
   return { enabled, fillFraction, pinnedRecentSteps, contextWindowTokens, contextWindowSource };
 }
 
 /**
- * Resolve the context window the trigger computes against: an explicit, valid
- * operator override pins it; otherwise the static per-model catalog
- * ({@link resolveModelContextWindow}); otherwise a safe default. A blank/unset
- * override and a catalog miss both fall through cleanly — never throws, so a
- * model the catalog doesn't cover degrades to the default instead of erroring
- * the turn (logged at debug).
+ * Resolve the context window the trigger computes against, in four tiers:
+ * an explicit, valid operator override pins it; otherwise the LIVE gateway
+ * catalog ({@link lookupModelContextWindow}, awaited and budget-bounded since
+ * #4872); otherwise the static per-family table
+ * ({@link resolveModelContextWindow}); otherwise a safe default.
+ *
+ * Every tier falls through cleanly — a blank/unset override, an unreachable
+ * gateway, a family the static table doesn't know. Never throws, so a model no
+ * tier covers degrades to the default instead of erroring the turn.
+ *
+ * `compactionEnabled` gates the NETWORK tier only. The window is meaningless on
+ * a turn that will never compact, and compaction ships off, so a disabled turn
+ * resolves from the sync tiers alone and never waits on the gateway (#4872
+ * review). The tiers it does reach behave identically either way.
  */
-function resolveContextWindow(
+async function resolveContextWindow(
   modelId: string | undefined,
   overrideRaw: string | undefined,
-): { contextWindowTokens: number; contextWindowSource: CompactionSettings["contextWindowSource"] } {
+  compactionEnabled: boolean,
+): Promise<{
+  contextWindowTokens: number;
+  contextWindowSource: ContextWindowSource;
+}> {
   // Tier 1 — explicit operator override (settings registry already applied
   // workspace > platform > env precedence). Blank string ⇒ "use the catalog".
   if (overrideRaw !== undefined && overrideRaw.trim() !== "") {
@@ -257,48 +321,39 @@ function resolveContextWindow(
     );
   }
 
-  // Tier 2 — the live gateway catalog, if a fetch has already populated it
-  // (#4869). Authoritative and per-model rather than per-family, which matters
-  // now that the picker exposes the whole gateway: the static table below knows
-  // Claude/GPT/Gemini/Mistral/Llama families and nothing else, so a workspace on
-  // GLM, Kimi, Grok or DeepSeek would otherwise fall straight through to the
-  // safe default and compact far earlier than it needs to.
+  // Tier 2 — the live gateway catalog (#4869), fetched here if it isn't already
+  // in memory (#4872). Authoritative and per-model rather than per-family, which
+  // matters now that the picker exposes the whole gateway: the static table
+  // below knows Claude/GPT/Gemini/Mistral/Llama families and nothing else, so a
+  // workspace on GLM, Kimi, Grok or DeepSeek would otherwise fall straight
+  // through to the safe default and compact far earlier than it needs to. Even
+  // within a family it knows, the per-family guess can be badly wrong: it maps
+  // every `claude` id to 200k, against Sonnet 5's real 1M.
   //
-  // `peek` is a pure cache read, so this stays sync. NOTE: the earlier claim
-  // that it "runs inside prepareStep and cannot await" was wrong — this is
-  // reached once per turn via `resolveCompactionSettings` from an async scope
-  // in `agent.ts`, and `prepareStep` consumes the already-resolved value. A
-  // single `await` there would make the catalog authoritative on turn 1 and
-  // retire the peek/warm pair entirely; deliberately left as follow-up work
-  // rather than changing the agent hot path in a review fix.
-  const fromLiveCatalog = peekModelContextWindow(modelId);
-  if (fromLiveCatalog !== null) {
-    return { contextWindowTokens: fromLiveCatalog, contextWindowSource: "catalog" };
+  // ONE await, once per turn — never per step. `lookupModelContextWindow` owns
+  // the whole "is the gateway reachable, and how long may we wait" question:
+  // it's air-gap gated on the id shape, bounded by a hot-path budget well under
+  // the fetch timeout, logs the operator-actionable misses, and returns null
+  // instead of throwing on every failure mode. So the tiers below are reached by
+  // a plain fall-through, with no separate warm call that a reordering could
+  // strand (#4869 review: the warm used to sit BELOW the static table, whose
+  // `claude` rule matches every Anthropic id, so the tier this feeds never
+  // activated for the SaaS default models at all).
+  if (compactionEnabled) {
+    const fromLiveCatalog = await lookupModelContextWindow(modelId);
+    if (fromLiveCatalog !== null) {
+      return { contextWindowTokens: fromLiveCatalog, contextWindowSource: "gateway" };
+    }
   }
 
-  // Warm BEFORE the static fallback, not after (#4869 review). This used to sit
-  // in the tier-4 branch, which the static table's `claude` rule made
-  // unreachable for every Anthropic id — so the tier-2 upgrade never activated
-  // for the SaaS default models it was built for. A workspace on
-  // `anthropic/claude-sonnet-5` sized compaction at the static 200k against a
-  // real 1M window, on every turn, forever, unless an admin happened to open
-  // the picker (which warmed it for one 30-minute TTL and no longer).
-  //
-  // Fire-and-forget, deduped by the catalog's inflight promise, and a no-op on
-  // a warm cache. Gated on a gateway-shaped id so a direct/BYOT model id never
-  // triggers an outbound fetch — that keeps air-gapped self-hosted deploys off
-  // the network, since those use hyphen-format ids with no slash.
-  if (modelId?.includes("/")) warmGatewayCatalog();
-
-  // Tier 3 — static per-family catalog.
-  const fromCatalog = resolveModelContextWindow(modelId);
-  if (fromCatalog !== null) {
-    return { contextWindowTokens: fromCatalog, contextWindowSource: "catalog" };
+  // Tier 3 — static per-family table.
+  const fromStaticTable = resolveModelContextWindow(modelId);
+  if (fromStaticTable !== null) {
+    return { contextWindowTokens: fromStaticTable, contextWindowSource: "static" };
   }
 
-  // Tier 4 — safe default. Neither catalog has an entry for this model and
-  // there is no override; the turn proceeds on the default window rather than
-  // failing.
+  // Tier 4 — safe default. No tier has an entry for this model and there is no
+  // override; the turn proceeds on the default window rather than failing.
 
   // Logged unconditionally — a blank/undefined modelId is self-documenting in the
   // payload (it's the value that produced the miss), so the empty case isn't silent.

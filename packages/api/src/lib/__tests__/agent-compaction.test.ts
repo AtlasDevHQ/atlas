@@ -26,10 +26,7 @@ import {
   COMPACTION_STREAM_PART_TYPE,
   type CompactionSettings,
 } from "@atlas/api/lib/agent-compaction";
-import {
-  getGatewayCatalog,
-  __resetGatewayCatalogCacheForTests,
-} from "@atlas/api/lib/gateway-catalog";
+import { __resetGatewayCatalogCacheForTests } from "@atlas/api/lib/gateway-catalog";
 import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 
@@ -284,8 +281,8 @@ describe("resolveCompactionSettings — registry precedence + hot-reload", () =>
     _resetSettingsCache();
   });
 
-  it("defaults to OFF with sane defaults when nothing is set", () => {
-    const s = resolveCompactionSettings();
+  it("defaults to OFF with sane defaults when nothing is set", async () => {
+    const s = await resolveCompactionSettings();
     expect(s.enabled).toBe(false);
     expect(s.fillFraction).toBe(0.85);
     expect(s.pinnedRecentSteps).toBe(6);
@@ -294,11 +291,11 @@ describe("resolveCompactionSettings — registry precedence + hot-reload", () =>
     expect(s.contextWindowSource).toBe("default");
   });
 
-  it("reads the env-var tier (Tier 3)", () => {
+  it("reads the env-var tier (Tier 3)", async () => {
     process.env.ATLAS_COMPACTION_ENABLED = "true";
     process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.5";
     process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "3";
-    const s = resolveCompactionSettings();
+    const s = await resolveCompactionSettings();
     expect(s.enabled).toBe(true);
     expect(s.fillFraction).toBe(0.5);
     expect(s.pinnedRecentSteps).toBe(3);
@@ -309,20 +306,20 @@ describe("resolveCompactionSettings — registry precedence + hot-reload", () =>
     await setSetting("ATLAS_COMPACTION_PINNED_RECENT_STEPS", "10"); // platform
     await setSetting("ATLAS_COMPACTION_PINNED_RECENT_STEPS", "20", "tester", ORG); // workspace
 
-    expect(resolveCompactionSettings(undefined, ORG).pinnedRecentSteps).toBe(20); // workspace wins
-    expect(resolveCompactionSettings().pinnedRecentSteps).toBe(10); // platform wins over env
+    expect((await resolveCompactionSettings(undefined, ORG)).pinnedRecentSteps).toBe(20); // workspace wins
+    expect((await resolveCompactionSettings()).pinnedRecentSteps).toBe(10); // platform wins over env
   });
 
   it("hot-reloads — a new override is visible without restart", async () => {
-    expect(resolveCompactionSettings(undefined, ORG).enabled).toBe(false);
+    expect((await resolveCompactionSettings(undefined, ORG)).enabled).toBe(false);
     await setSetting("ATLAS_COMPACTION_ENABLED", "true", "tester", ORG);
-    expect(resolveCompactionSettings(undefined, ORG).enabled).toBe(true);
+    expect((await resolveCompactionSettings(undefined, ORG)).enabled).toBe(true);
   });
 
-  it("falls back to defaults for out-of-range / unparseable values", () => {
+  it("falls back to defaults for out-of-range / unparseable values", async () => {
     process.env.ATLAS_COMPACTION_FILL_FRACTION = "2"; // > 1
     process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "0"; // < min
-    const s = resolveCompactionSettings();
+    const s = await resolveCompactionSettings();
     expect(s.fillFraction).toBe(0.85);
     expect(s.pinnedRecentSteps).toBe(6);
   });
@@ -378,7 +375,7 @@ describe("resolveModelContextWindow — static catalog (#3760)", () => {
   });
 });
 
-describe("resolveCompactionSettings — per-model window + override (#3760)", () => {
+describe("resolveCompactionSettings — static per-family window + override (#3760)", () => {
   const origDbUrl = process.env.DATABASE_URL;
 
   beforeEach(() => {
@@ -396,16 +393,16 @@ describe("resolveCompactionSettings — per-model window + override (#3760)", ()
     _resetSettingsCache();
   });
 
-  it("resolves the window from the catalog per model (200k vs 128k for the SAME fraction)", () => {
+  it("resolves the window from the static table per family (200k vs 128k for the SAME fraction)", async () => {
     process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.9";
 
-    const opus = resolveCompactionSettings("claude-opus-4-8");
-    const gpt = resolveCompactionSettings("gpt-4o");
+    const opus = await resolveCompactionSettings("claude-opus-4-8");
+    const gpt = await resolveCompactionSettings("gpt-4o");
 
     expect(opus.contextWindowTokens).toBe(200_000);
-    expect(opus.contextWindowSource).toBe("catalog");
+    expect(opus.contextWindowSource).toBe("static");
     expect(gpt.contextWindowTokens).toBe(128_000);
-    expect(gpt.contextWindowSource).toBe("catalog");
+    expect(gpt.contextWindowSource).toBe("static");
 
     // Same fill fraction ⇒ DIFFERENT absolute trigger point per model. This is
     // the whole point of #3760: 0.9 means 180k tokens on Opus but 115.2k on
@@ -427,23 +424,23 @@ describe("resolveCompactionSettings — per-model window + override (#3760)", ()
     delete process.env.ATLAS_COMPACTION_FILL_FRACTION;
   });
 
-  it("falls back to the safe default window for a model absent from the catalog (no throw)", () => {
-    const s = resolveCompactionSettings("some-bespoke-local-model");
+  it("falls back to the safe default window for a model absent from the static table (no throw)", async () => {
+    const s = await resolveCompactionSettings("some-bespoke-local-model");
     expect(s.contextWindowTokens).toBe(200_000);
     expect(s.contextWindowSource).toBe("default");
   });
 
-  it("override knob pins the window and takes precedence over the catalog", async () => {
-    // Catalog would give Opus 200k; the explicit override wins.
+  it("override knob pins the window and takes precedence over every catalog tier", async () => {
+    // The static table would give Opus 200k; the explicit override wins.
     await setSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", "50000");
-    const s = resolveCompactionSettings("claude-opus-4-8");
+    const s = await resolveCompactionSettings("claude-opus-4-8");
     expect(s.contextWindowTokens).toBe(50_000);
     expect(s.contextWindowSource).toBe("override");
   });
 
-  it("override knob covers a model the catalog can't resolve", async () => {
+  it("override knob covers a model no catalog tier can resolve", async () => {
     await setSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", "64000");
-    const s = resolveCompactionSettings("some-bespoke-local-model");
+    const s = await resolveCompactionSettings("some-bespoke-local-model");
     expect(s.contextWindowTokens).toBe(64_000);
     expect(s.contextWindowSource).toBe("override");
   });
@@ -453,63 +450,90 @@ describe("resolveCompactionSettings — per-model window + override (#3760)", ()
     await setSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", "80000"); // platform
     await setSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", "90000", "tester", ORG); // workspace
 
-    expect(resolveCompactionSettings("claude-opus-4-8", ORG).contextWindowTokens).toBe(90_000);
-    expect(resolveCompactionSettings("claude-opus-4-8").contextWindowTokens).toBe(80_000);
+    expect((await resolveCompactionSettings("claude-opus-4-8", ORG)).contextWindowTokens).toBe(90_000);
+    expect((await resolveCompactionSettings("claude-opus-4-8")).contextWindowTokens).toBe(80_000);
   });
 
-  it("ignores an invalid override and resolves from the catalog instead", () => {
+  it("ignores an invalid override and resolves from the static table instead", async () => {
     process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "not-a-number";
-    const s = resolveCompactionSettings("gpt-4o");
+    const s = await resolveCompactionSettings("gpt-4o");
     expect(s.contextWindowTokens).toBe(128_000);
-    expect(s.contextWindowSource).toBe("catalog");
+    expect(s.contextWindowSource).toBe("static");
   });
 
-  it("ignores a numeric-but-too-small override and falls through to the catalog (F4)", () => {
+  it("ignores a numeric-but-too-small override and falls through to the static table (F4)", async () => {
     // A real number below MIN_CONTEXT_WINDOW_TOKENS is distinct from not-a-number:
-    // it parses fine but is out of range, so it must fall through to the catalog.
+    // it parses fine but is out of range, so it must fall through to the static table.
     process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "500";
-    const s = resolveCompactionSettings("gpt-4o");
+    const s = await resolveCompactionSettings("gpt-4o");
     expect(s.contextWindowTokens).toBe(128_000);
-    expect(s.contextWindowSource).toBe("catalog");
+    expect(s.contextWindowSource).toBe("static");
   });
 
-  it("ignores an absurdly-large override and falls through to the catalog (F2 ceiling)", () => {
+  it("ignores an absurdly-large override and falls through to the static table (F2 ceiling)", async () => {
     // No upper bound once let an absurd value silently disable compaction (the
     // trigger never crosses). An out-of-range-HIGH override now falls through to
-    // the catalog like the too-small / not-a-number cases.
+    // the static table like the too-small / not-a-number cases.
     process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "999999999999";
-    const s = resolveCompactionSettings("gpt-4o");
+    const s = await resolveCompactionSettings("gpt-4o");
     expect(s.contextWindowTokens).toBe(128_000);
-    expect(s.contextWindowSource).toBe("catalog");
+    expect(s.contextWindowSource).toBe("static");
   });
 
-  it("treats a blank override as 'use the catalog' (the registry default)", () => {
-    // Default is "" — unset knob ⇒ catalog resolution, never a pinned 0/empty.
-    const s = resolveCompactionSettings("claude-opus-4-8");
-    expect(s.contextWindowSource).toBe("catalog");
+  it("treats a blank override as 'resolve it for me' (the registry default)", async () => {
+    // Default is "" — unset knob ⇒ tier-2/3 resolution, never a pinned 0/empty.
+    const s = await resolveCompactionSettings("claude-opus-4-8");
+    expect(s.contextWindowSource).toBe("static");
     expect(s.contextWindowTokens).toBe(200_000);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Live gateway catalog tier (#4869)
+// Live gateway catalog tier (#4869), awaited once per turn (#4872)
 // ---------------------------------------------------------------------------
 
-describe("resolveCompactionSettings — live gateway catalog tier (#4869)", () => {
+describe("resolveCompactionSettings — live gateway catalog tier (#4869, #4872)", () => {
   const origDbUrl = process.env.DATABASE_URL;
   const realFetch = globalThis.fetch;
+  let fetches = 0;
 
-  function warmCatalogWith(entries: unknown[]): Promise<unknown> {
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ data: entries }), {
+  const origEnabled = process.env.ATLAS_COMPACTION_ENABLED;
+  /** Resolves the pending slow fetch, if the test armed one. */
+  let releaseSlowFetch: (() => void) | undefined;
+
+  /**
+   * Serve `entries` from the gateway WITHOUT pre-warming the cache. Every test
+   * below starts cold on purpose: since #4872 the resolver fetches for itself,
+   * so "cold cache" is the state under test, not a setup step to get past.
+   *
+   * `slow: true` holds the response until `releaseSlowFetch` — a deferred gate
+   * rather than a wall-clock delay, so the test decides when the fetch is
+   * allowed to proceed instead of leaving a real timer pending past its own
+   * `afterEach` (#4872 review).
+   */
+  function serveCatalog(entries: unknown[], opts: { slow?: boolean } = {}): void {
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      if (opts.slow) {
+        await new Promise<void>((resolve) => {
+          releaseSlowFetch = resolve;
+        });
+      }
+      return new Response(JSON.stringify({ data: entries }), {
         status: 200,
         headers: { "content-type": "application/json" },
-      })) as unknown as typeof globalThis.fetch;
-    return getGatewayCatalog();
+      });
+    }) as unknown as typeof globalThis.fetch;
   }
 
   beforeEach(() => {
+    fetches = 0;
+    releaseSlowFetch = undefined;
     delete process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS;
+    // Tier 2 is gated on compaction being ENABLED (#4872 review) — the window
+    // only sizes the trigger, so a disabled turn never pays for the network.
+    // Every test in this block is about that tier, so turn it on.
+    process.env.ATLAS_COMPACTION_ENABLED = "true";
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
     _resetPool(mockPool);
     _resetSettingsCache();
@@ -517,8 +541,17 @@ describe("resolveCompactionSettings — live gateway catalog tier (#4869)", () =
   });
 
   afterEach(() => {
+    // Unblock any gated fetch so its promise can settle rather than dangling to
+    // process exit. This does NOT wait for the load to land — it has several
+    // more ticks of JSON parsing and normalizing to go, and will almost
+    // certainly finish after the reset below. What actually stops it writing
+    // into the next test is `cacheGeneration`, bumped by
+    // `__resetGatewayCatalogCacheForTests`.
+    releaseSlowFetch?.();
     globalThis.fetch = realFetch;
     delete process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS;
+    if (origEnabled !== undefined) process.env.ATLAS_COMPACTION_ENABLED = origEnabled;
+    else delete process.env.ATLAS_COMPACTION_ENABLED;
     if (origDbUrl !== undefined) process.env.DATABASE_URL = origDbUrl;
     else delete process.env.DATABASE_URL;
     _resetPool(null);
@@ -526,92 +559,123 @@ describe("resolveCompactionSettings — live gateway catalog tier (#4869)", () =
     __resetGatewayCatalogCacheForTests();
   });
 
-  it("resolves a real window for a family the static table has never heard of", async () => {
-    // The point of the whole change: the picker now exposes the full gateway,
-    // and the static table only knows Claude/GPT/Gemini/Mistral/Llama. Before
-    // this tier, a GLM workspace silently compacted against the safe default.
-    const cold = resolveCompactionSettings("zai/glm-5.2");
-    expect(cold.contextWindowSource).toBe("default");
-
-    await warmCatalogWith([{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }]);
-
-    const warm = resolveCompactionSettings("zai/glm-5.2");
-    expect(warm.contextWindowTokens).toBe(1_040_000);
-    expect(warm.contextWindowSource).toBe("catalog");
-  });
-
-  it("prefers the per-model live window over the per-family static guess", async () => {
-    // The static table maps every `claude` id to 200k. Opus 4.8 is really 1M —
-    // a per-family table cannot express that, so compaction fired ~5x too early.
-    expect(resolveCompactionSettings("anthropic/claude-opus-4.8").contextWindowTokens).toBe(
-      200_000,
-    );
-
-    await warmCatalogWith([
-      { id: "anthropic/claude-opus-4.8", type: "language", context_window: 1_000_000 },
-    ]);
-
-    expect(resolveCompactionSettings("anthropic/claude-opus-4.8").contextWindowTokens).toBe(
-      1_000_000,
-    );
-  });
-
-  it("still lets an explicit operator override win over the live catalog", async () => {
-    await warmCatalogWith([{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }]);
-    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "50000";
-    const s = resolveCompactionSettings("zai/glm-5.2");
-    expect(s.contextWindowTokens).toBe(50_000);
-    expect(s.contextWindowSource).toBe("override");
-  });
-
-  it("WARMS the catalog for a Claude id, whose static-table hit used to skip the warm", async () => {
-    // The regression this guards (#4869 review): `warmGatewayCatalog()` sat in
-    // the tier-4 branch, below the static family table. The table's `claude`
-    // rule matches every Anthropic id, so tier 4 was unreachable for them and
-    // the warm never fired — meaning tier 2 never populated for the SaaS
-    // DEFAULT models and `anthropic/claude-sonnet-5` sized compaction at the
-    // static 200k against a real 1M window, on every turn, indefinitely.
+  it("resolves the live window on the FIRST turn, from a cold cache", async () => {
+    // The #4872 acceptance criterion, and the guard against the tier-ordering
+    // hazard silently coming back. Before this, tier 2 read a cache some EARLIER
+    // turn had to have warmed, so turn 1 always answered from the static table
+    // (or the safe default) — and when the warm call drifted below the static
+    // tier there was no turn 2 either.
     //
-    // Asserted via the outbound fetch because that IS the observable effect of
-    // the warm; asserting the returned window would pass either way on a cold
-    // cache (both paths return 200k on turn 1 — the bug is that turn 2 also
-    // returns 200k, forever).
-    let fetches = 0;
-    globalThis.fetch = (async () => {
-      fetches += 1;
-      return new Response(JSON.stringify({ data: [] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof globalThis.fetch;
+    // GLM is the sharpest case: the static table knows Claude/GPT/Gemini/
+    // Mistral/Llama and nothing else, so without the catalog this workspace
+    // compacts against the 200k safe default instead of its real 1.04M window.
+    serveCatalog([{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }]);
 
-    const s = resolveCompactionSettings("anthropic/claude-sonnet-5");
-    // Still 200k on THIS turn — the peek is sync and the cache was cold.
-    expect(s.contextWindowTokens).toBe(200_000);
-    // ...but the warm fired, so a later turn resolves from tier 2.
-    await Promise.resolve();
+    const first = await resolveCompactionSettings("zai/glm-5.2");
+    expect(first.contextWindowTokens).toBe(1_040_000);
+    expect(first.contextWindowSource).toBe("gateway");
     expect(fetches).toBe(1);
   });
 
-  it("does NOT warm for a slashless BYOT/self-hosted id", async () => {
-    // Air-gapped self-hosted deploys use hyphen-format ids. They must never
-    // trigger an outbound call to the gateway.
-    let fetches = 0;
-    globalThis.fetch = (async () => {
-      fetches += 1;
-      return new Response(JSON.stringify({ data: [] }), { status: 200 });
-    }) as unknown as typeof globalThis.fetch;
+  it("beats the per-family static guess on turn 1 for the SaaS default models", async () => {
+    // The bug #4872 retires the mechanism behind (#4869 review): the static
+    // table maps EVERY `claude` id to 200k, so the tier-4 warm was unreachable
+    // for Anthropic ids and `anthropic/claude-sonnet-5` sized compaction at
+    // 200k against a real 1M window, on every turn, indefinitely.
+    //
+    // Asserted on the returned WINDOW, not on the fetch count: an assertion
+    // that only proves "a fetch happened" is what let the previous shape look
+    // covered while the value it produced was never used.
+    serveCatalog([{ id: "anthropic/claude-sonnet-5", type: "language", context_window: 1_000_000 }]);
 
-    resolveCompactionSettings("claude-opus-4-8");
-    await Promise.resolve();
+    const s = await resolveCompactionSettings("anthropic/claude-sonnet-5");
+    expect(s.contextWindowTokens).toBe(1_000_000);
+    expect(s.contextWindowSource).toBe("gateway");
+  });
+
+  it("still lets an explicit operator override win over the live catalog", async () => {
+    serveCatalog([{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }]);
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "50000";
+    const s = await resolveCompactionSettings("zai/glm-5.2");
+    expect(s.contextWindowTokens).toBe(50_000);
+    expect(s.contextWindowSource).toBe("override");
+    // Tier 1 short-circuits above the catalog, so the pinned turn doesn't even
+    // reach the network.
     expect(fetches).toBe(0);
   });
 
+  it("makes NO outbound call for a slashless BYOT/self-hosted id", async () => {
+    // Air-gapped self-hosted deploys use hyphen-format ids. They must never
+    // trigger an outbound call to the gateway — the id-shape gate is what
+    // keeps the awaited tier 2 safe for them.
+    serveCatalog([]);
+    const s = await resolveCompactionSettings("claude-opus-4-8");
+    expect(fetches).toBe(0);
+    // ...and they still get a window, from the static table.
+    expect(s.contextWindowTokens).toBe(200_000);
+    expect(s.contextWindowSource).toBe("static");
+  });
+
   it("falls through to the static table when the live catalog lacks the id", async () => {
-    await warmCatalogWith([{ id: "some/other-model", type: "language", context_window: 999 }]);
-    const s = resolveCompactionSettings("gpt-4o");
+    serveCatalog([{ id: "some/other-model", type: "language", context_window: 999 }]);
+    const s = await resolveCompactionSettings("openai/gpt-4o");
     expect(s.contextWindowTokens).toBe(128_000);
-    expect(s.contextWindowSource).toBe("catalog");
+    expect(s.contextWindowSource).toBe("static");
+  });
+
+  it("does not stall the turn on a slow gateway — bounded, then static fallback", async () => {
+    // The failure story (#4872 AC). The catalog fetch's OWN ceiling is 10s,
+    // which must never be spent in the turn path; the resolver bounds its wait
+    // to `HOT_PATH_BUDGET_MS` and degrades to the static table. This gateway
+    // would answer with the real 1M window, so a static-table result can only
+    // mean the turn stopped waiting.
+    serveCatalog(
+      [{ id: "anthropic/claude-sonnet-5", type: "language", context_window: 1_000_000 }],
+      { slow: true },
+    );
+
+    const started = Date.now();
+    const s = await resolveCompactionSettings("anthropic/claude-sonnet-5");
+    const elapsed = Date.now() - started;
+
+    // Two-sided on purpose. The upper bound alone would also pass with the
+    // budget set to 0 or the await deleted — i.e. it can't tell "bounded wait"
+    // from "no wait at all", which is half the contract.
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    expect(elapsed).toBeLessThan(4_000);
+    expect(s.contextWindowTokens).toBe(200_000);
+    expect(s.contextWindowSource).toBe("static");
+  });
+
+  it("does not fail the turn when the gateway is unreachable", async () => {
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof globalThis.fetch;
+
+    const s = await resolveCompactionSettings("anthropic/claude-sonnet-5");
+    // Static table, not an error and not the bundled fallback manifest.
+    expect(s.contextWindowTokens).toBe(200_000);
+    expect(s.contextWindowSource).toBe("static");
+    expect(fetches).toBe(1);
+  });
+
+  it("skips the network entirely when compaction is DISABLED (the shipped default)", async () => {
+    // The window exists only to size the fill-fraction trigger, and compaction
+    // ships off — so a default SaaS deploy must not spend up to
+    // `HOT_PATH_BUDGET_MS` on the agent hot path computing a number that
+    // `shouldCompact` will short-circuit past anyway (#4872 review).
+    process.env.ATLAS_COMPACTION_ENABLED = "false";
+    _resetSettingsCache();
+    serveCatalog([{ id: "zai/glm-5.2", type: "language", context_window: 1_040_000 }]);
+
+    const s = await resolveCompactionSettings("zai/glm-5.2");
+    expect(s.enabled).toBe(false);
+    expect(fetches).toBe(0);
+    // Falls to the safe default — the static table has no `zai` rule — which is
+    // exactly what a disabled turn resolved to before #4872.
+    expect(s.contextWindowTokens).toBe(200_000);
+    expect(s.contextWindowSource).toBe("default");
   });
 });
 
@@ -650,16 +714,16 @@ describe("Compaction 1 invariants are unchanged (#3759 regression)", () => {
     _resetSettingsCache();
   });
 
-  it("default-off: resolution is disabled regardless of model (no behavior change)", () => {
-    expect(resolveCompactionSettings("claude-opus-4-8").enabled).toBe(false);
-    expect(resolveCompactionSettings("gpt-4o").enabled).toBe(false);
-    expect(resolveCompactionSettings().enabled).toBe(false);
+  it("default-off: resolution is disabled regardless of model (no behavior change)", async () => {
+    expect((await resolveCompactionSettings("claude-opus-4-8")).enabled).toBe(false);
+    expect((await resolveCompactionSettings("gpt-4o")).enabled).toBe(false);
+    expect((await resolveCompactionSettings()).enabled).toBe(false);
   });
 
-  it("the coarse default window (200k) is preserved for a model the catalog can't resolve", () => {
+  it("the coarse default window (200k) is preserved for a model no tier can resolve", async () => {
     // #3759 used a flat 200k; an uncatalogued model still resolves to exactly
     // that, so the trigger point for unknown models is byte-for-byte unchanged.
-    const s = resolveCompactionSettings("totally-unknown-model");
+    const s = await resolveCompactionSettings("totally-unknown-model");
     expect(s.contextWindowTokens).toBe(DEFAULT_WINDOW_3759);
   });
 
@@ -671,7 +735,7 @@ describe("Compaction 1 invariants are unchanged (#3759 regression)", () => {
       fillFraction: 0.85,
       pinnedRecentSteps: 6,
       contextWindowTokens: 200_000,
-      contextWindowSource: "catalog",
+      contextWindowSource: "static",
     };
     const threshold = 0.85 * 200_000; // 170k
     expect(shouldCompact(threshold - 1, s)).toBe(false);

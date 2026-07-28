@@ -28,6 +28,7 @@ import { RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { setSetting } from "@atlas/api/lib/settings";
 import { demoUserId, getDemoConfig } from "@atlas/api/lib/demo";
+import { primeGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
 import {
   LEADS_LIMIT,
   TRANSCRIPT_CONVERSATION_LIMIT,
@@ -56,6 +57,43 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-demo");
+
+/**
+ * Load the live gateway catalog into memory before a rollup folds its rows
+ * (#4872).
+ *
+ * `token-pricing`'s `resolveRate` is sync and runs per ROW inside `foldUsage`,
+ * so priming here is what makes the catalog authoritative on the FIRST render
+ * rather than the second. It is bounded by the catalog's hot-path budget and a
+ * miss is not an error: the rollup falls back to the static family table and
+ * flags `costEstimated`, which the page already explains.
+ *
+ * Failure is swallowed on purpose, and this is the one place in the file where
+ * that's right. `primeGatewayCatalog` cannot reject today (`catalogWithinBudget`
+ * catches internally), but the bare `Effect.promise` this started as would
+ * convert any future rejection into an unrecoverable DEFECT — a 500 on the whole
+ * operator spend page over an optional pricing refinement that has a designed
+ * fallback. `tryPromise` + `catchAll` keeps the page rendering; the failure is
+ * logged with the requestId, never rethrown.
+ */
+function primeCatalogForPricing(
+  modelIds: readonly (string | null | undefined)[],
+  requestId: string,
+): Effect.Effect<void> {
+  return Effect.tryPromise({
+    try: () => primeGatewayCatalog(modelIds),
+    catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+  }).pipe(
+    Effect.catchAll((err) =>
+      Effect.sync(() => {
+        log.warn(
+          { requestId, err: err.message },
+          "gateway catalog prime failed; pricing this rollup from the static family table",
+        );
+      }),
+    ),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -360,6 +398,12 @@ platformDemo.openapi(leadsRoute, async (c) => {
         { concurrency: "unbounded" },
       );
 
+      // Fetch the live catalog ONCE before the fold (#4872). `resolveRate` is
+      // sync and runs per usage row inside `foldUsage`, so this is where the
+      // spend page pays for a cold catalog — bounded, and a miss just means the
+      // rollup prices off the static family table and flags `costEstimated`.
+      yield* primeCatalogForPricing(usageRows.map((r) => r.model), requestId);
+
       return c.json({ leads: assembleLeads(leadRows, usageRows, convCountRows) }, 200);
     }),
     { label: "list demo leads" },
@@ -411,6 +455,9 @@ platformDemo.openapi(metricsRoute, async (c) => {
         ],
         { concurrency: "unbounded" },
       );
+
+      // Same prime-once-then-fold contract as GET /leads above (#4872).
+      yield* primeCatalogForPricing(perModelRows.map((r) => r.model), requestId);
 
       return c.json(assembleMetrics(perModelRows, leadCountRows), 200);
     }),

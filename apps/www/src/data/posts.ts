@@ -6,8 +6,21 @@
 // Ordering is newest-first, with one deliberate exception: the launch-week
 // run (Jul 27–31) is led by "Atlas is public" and then reads forward Mon→Fri,
 // so the index opens on the launch announcement rather than on Friday's post.
-// The static export (`output: "export"`) renders every entry at build time —
-// there is no date gate, so a future-dated post is live the moment it merges.
+//
+// DO NOT add an entry here before the day it should publish. The static export
+// (`output: "export"`) renders every entry at build time and there is no date
+// gate, so a post in this array is LIVE the moment it merges — a future
+// `isoDate` does NOT hold it back. This bit us on 2026-07-28, when the whole
+// Jul 29–31 launch-week run was publicly readable on day two.
+//
+// A request-time filter cannot retrofit a gate. Each post's title and
+// description ship in Next's inline RSC hydration payload as well as in the
+// visible markup, so stripping rows from the served HTML would still leak the
+// content in the payload, and React would re-render the stripped row back on
+// hydration. Verified against the live page 2026-07-28.
+//
+// The publish gate is therefore the merge itself: to run a drip, keep the
+// unpublished posts off `main` and land one per day.
 // ---------------------------------------------------------------------------
 
 export interface Post {
@@ -39,36 +52,6 @@ export const POSTS: Post[] = [
     isoDate: "2026-07-28",
     dateLabel: "July 28, 2026",
     readingTime: "6 min read",
-    tag: "How it works",
-  },
-  {
-    slug: "the-live-security-pass",
-    title: "A security pass against the running product",
-    description:
-      "The last blocker before launch was an adversarial pass aimed at a deployed system rather than a source tree. It found an egress guard that validated hostnames while the request used the resolved address, and a containment claim on my own security page that didn't match how the sandbox actually works.",
-    isoDate: "2026-07-29",
-    dateLabel: "July 29, 2026",
-    readingTime: "6 min read",
-    tag: "How it works",
-  },
-  {
-    slug: "a-strangers-agent",
-    title: "Hand a stranger's agent your data",
-    description:
-      "An AI client I've never seen can discover Atlas, provision itself a workspace, and be querying inside a minute with no human in the loop. Here's the model that makes that defensible: two endpoints, one tool versus sixteen, and the same validation pipeline a person gets.",
-    isoDate: "2026-07-30",
-    dateLabel: "July 30, 2026",
-    readingTime: "6 min read",
-    tag: "How it works",
-  },
-  {
-    slug: "the-process-is-the-region",
-    title: "Yours, anywhere: the process is the region",
-    description:
-      "Self-hosted Atlas is free and your data never leaves. On Atlas Cloud, residency is enforced by topology rather than by a filter: each region is its own deployment holding no route to any other, so a cross-region query is unexpressible rather than blocked. Plus the carve-out I couldn't engineer away.",
-    isoDate: "2026-07-31",
-    dateLabel: "July 31, 2026",
-    readingTime: "5 min read",
     tag: "How it works",
   },
   {

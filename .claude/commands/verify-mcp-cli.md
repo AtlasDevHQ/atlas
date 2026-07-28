@@ -1,3 +1,7 @@
+---
+description: "Verify the two non-web front doors on staging — MCP start_trial provisioning, account claim, CLI device-flow login, a REST command. After a release touching MCP onboarding, the CLI, or API-key minting."
+---
+
 # Verify MCP + CLI Signup (Staging-First)
 
 Human-in-the-loop verification that the **two non-web front doors work end-to-end**: a brand-new account is **provisioned through MCP** (`start_trial` → DCR/PKCE connect → a real MCP tool call), the grace account is **claimed**, and then that same account is **driven from the v0.0.35 CLI** (device-flow login → workspace bind → a REST-backed command, plus a workspace **API key** for the unattended path). Together with `/verify-prod-signup` (the web funnel) this covers all three entry points for v0.1.0.

@@ -1,0 +1,834 @@
+/**
+ * #4824 — the startup sandbox pre-flight must name the backend the process
+ * ACTUALLY uses, and must name the same one `/api/health` reports.
+ *
+ * The bug: the pre-flight dispatch asked "are we running ON Vercel"
+ * (`ATLAS_RUNTIME` / `VERCEL`) rather than "are we USING Vercel Sandbox". Since
+ * #2383 a Railway host reaches Vercel Sandbox with `VERCEL_TOKEN` plus a
+ * team/project id from env — or, since #3706, from `sandbox.vercel` in
+ * atlas.config.ts. That shape sets none of the host-detection vars, so boot
+ * fell through to nsjail auto-detect, found no
+ * binary, and logged "no process isolation" on every Railway deploy while
+ * health correctly reported `vercel-sandbox`. Execution was fine; only the log
+ * lied — and it lied in the exact string a security review greps for.
+ *
+ * These tests drive the REAL `lib/tools/explore` module (not a stub) so the
+ * parity assertions compare the pre-flight against the genuine
+ * `getExploreBackendType()` that `/api/health` calls, rather than against a
+ * mock that could agree with anything.
+ *
+ * `explore`'s `_nsjailFailed` / `_sidecarFailed` flags are monotonic in
+ * production, so several cases here would otherwise leak degradation into the
+ * ones after them — and the failure mode is a still-passing test that silently
+ * stopped proving anything. `beforeEach` clears them via
+ * `_resetSandboxFailureFlagsForTest()`, so NO case depends on test order.
+ *
+ * The mocked `fs.accessSync` throws for every candidate EXCEPT
+ * `mockNsjailBinaryPath`, so nsjail's presence is a per-case decision rather
+ * than a property of the host — a dev box with nsjail installed gets the same
+ * results as CI. Use `givenNsjailBinary()` to declare it present.
+ *
+ * That fidelity became load-bearing with #4834. Before it, explore's reporting
+ * predicate short-circuited on the `ATLAS_SANDBOX=nsjail` pin and never probed,
+ * so the pin cases here reported `nsjail` no matter what the filesystem said,
+ * and the mock's blanket-throw was invisible to them. Now `isBackendAvailable`
+ * means CONSTRUCTIBLE and probes the binary, so a case that means "pinned, and
+ * the binary IS there" has to actually make it there — otherwise it silently
+ * becomes a fail-closed case and stops testing what it claims.
+ */
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import type { ExploreBackendType } from "@atlas/api/lib/tools/explore";
+import { createConnectionMock } from "@atlas/api/testing/connection";
+import { mockIsSupportedProvider, mockGetMissingProviderConfig } from "./provider-config-mock";
+
+// ---------------------------------------------------------------------------
+// Log capture — startup.ts binds its logger at module load, so this mock must
+// be installed before the dynamic import below.
+// ---------------------------------------------------------------------------
+
+interface LogCall {
+  readonly level: "debug" | "info" | "warn" | "error";
+  readonly args: readonly unknown[];
+}
+
+const logCalls: LogCall[] = [];
+
+function record(level: LogCall["level"]) {
+  return (...args: unknown[]) => {
+    logCalls.push({ level, args });
+  };
+}
+
+const captureLogger = {
+  debug: record("debug"),
+  info: record("info"),
+  warn: record("warn"),
+  error: record("error"),
+  child: () => captureLogger,
+};
+
+void mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => captureLogger,
+  getLogger: () => captureLogger,
+  getRequestContext: () => undefined,
+}));
+
+// ---------------------------------------------------------------------------
+// Heavy I/O mocks so validateEnvironment() reaches the sandbox pre-flight
+// without touching a database or the filesystem.
+// ---------------------------------------------------------------------------
+
+// findNsjailBinary() checks ATLAS_NSJAIL_PATH first, then walks PATH with
+// accessSync(candidate, constants.X_OK). This stub throws ENOENT for every path
+// EXCEPT `mockNsjailBinaryPath`, so detection is whatever the case declared,
+// regardless of host — the empty PATH in beforeEach is belt-and-braces for the
+// walk, not the mechanism. `givenNsjailBinary()` sets both halves.
+// Supplying `constants` matters anyway: without it the probe throws a TypeError
+// that its catch swallows as "not found", which looks identical but tests
+// nothing about the code under test.
+void mock.module("fs", () => ({
+  existsSync: () => false,
+  readdirSync: () => ["orders.yml"],
+  constants: { F_OK: 0, W_OK: 2, R_OK: 4, X_OK: 1 },
+  // Succeeds only for the path the case declared present, so explore's own
+  // `findNsjailBinary()` agrees with the pre-flight's mocked probe. Before
+  // #4834 this could throw unconditionally, because explore's reporting
+  // predicate never reached the filesystem under the pin.
+  accessSync: (path: unknown) => {
+    if (mockNsjailBinaryPath !== null && path === mockNsjailBinaryPath) return;
+    const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    throw err;
+  },
+}));
+
+void mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
+  }),
+);
+
+void mock.module("@atlas/api/lib/providers", () => ({
+  getDefaultProvider: () => "anthropic",
+  isSupportedProvider: mockIsSupportedProvider,
+  getMissingProviderConfig: mockGetMissingProviderConfig,
+  PROVIDER_KEY_MAP: {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    bedrock: "AWS_ACCESS_KEY_ID",
+    ollama: "",
+    gateway: "AI_GATEWAY_API_KEY",
+  },
+}));
+
+// The nsjail binary probe the pre-flight drives, controlled per-test. It is a
+// SEPARATE seam from explore's own detection, which stays real — but since
+// #4834 the two must AGREE, because explore's detection now decides what gets
+// reported. Setting this alone hands the pre-flight a binary that explore's
+// reporting predicate cannot see, which silently turns a "binary present" case
+// into a fail-closed one. Always go through `givenNsjailBinary()`; assign this
+// directly only to declare the binary ABSENT (`= null`).
+let mockNsjailBinaryPath: string | null = null;
+let mockCapabilityResult: { ok: boolean; error?: string } = { ok: true };
+/**
+ * Makes the capability probe THROW rather than return `{ ok: false }`. The two
+ * are different outcomes, not degrees of the same one: a returned failure is a
+ * verified refusal (`markNsjailFailed()` runs), a throw leaves isolation
+ * UNVERIFIED (the flag stays clear and the pin stays armed). Without this seam
+ * the `unverified` arm is unreachable from a test.
+ *
+ * The throw is SYNTHETIC, and honestly so: the real `testNsjailCapabilities`
+ * and `findNsjailBinary` (`tools/backends/nsjail.ts`) are total — both catch
+ * everything and return. In production `checkExplicitNsjail`'s catch is reached
+ * only via its two dynamic `await import(...)`s or `getDefaultSemanticRoot()`,
+ * and the likeliest of those (importing `lib/tools/explore`) also breaks
+ * `logResolvedExploreBackend`, so boot takes the "posture UNKNOWN" branch
+ * instead — the shape covered by `startup-sandbox-preflight-unresolvable.test
+ * .ts`. This seam therefore pins the ARM's contract, not a reproducible
+ * production incident; keep it for that and don't read it as the latter.
+ */
+let mockCapabilityThrows: Error | null = null;
+let nsjailProbeRan = false;
+
+void mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
+  findNsjailBinary: () => mockNsjailBinaryPath,
+  isNsjailAvailable: () => mockNsjailBinaryPath !== null,
+  testNsjailCapabilities: async () => {
+    nsjailProbeRan = true;
+    if (mockCapabilityThrows) throw mockCapabilityThrows;
+    return mockCapabilityResult;
+  },
+  createNsjailBackend: async () => {
+    throw new Error("not used in this test");
+  },
+}));
+
+const { validateEnvironment, resetStartupCache, getStartupWarnings } = await import(
+  "@atlas/api/lib/startup"
+);
+const { getExploreBackendType, snapshotExploreSandboxEnv, _resetSandboxFailureFlagsForTest } =
+  await import("@atlas/api/lib/tools/explore");
+const { _setConfigForTest, _resetConfig, configFromEnv, getConfig } = await import(
+  "@atlas/api/lib/config"
+);
+// Real policy module, mocked nowhere — the boot↔admin byte-parity anchor below
+// compares the logged warning against this exact formatter (#4837).
+const { planSandboxSelection, formatSandboxFailClosed } = await import(
+  "@atlas/api/lib/tools/backends/selection"
+);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const SANDBOX_VARS = [
+  "ATLAS_RUNTIME",
+  "VERCEL",
+  "VERCEL_TEAM_ID",
+  "VERCEL_PROJECT_ID",
+  "VERCEL_TOKEN",
+  "ATLAS_SANDBOX",
+  "ATLAS_SANDBOX_URL",
+  "ATLAS_SANDBOX_PRIORITY",
+  "ATLAS_NSJAIL_PATH",
+] as const;
+
+/**
+ * Declare the nsjail binary PRESENT at `path`, for both the pre-flight's mocked
+ * probe (`mockNsjailBinaryPath`) and explore's real `findNsjailBinary()`, which
+ * takes the `ATLAS_NSJAIL_PATH` branch and then `accessSync`s it against the fs
+ * mock above. Setting only the first is the trap #4834 introduced: the
+ * pre-flight would see a binary that explore's reporting predicate could not.
+ */
+function givenNsjailBinary(path = "/usr/local/bin/nsjail"): void {
+  mockNsjailBinaryPath = path;
+  process.env.ATLAS_NSJAIL_PATH = path;
+}
+
+/** Every "Explore tool: …" line the pre-flight emitted, in order. */
+function exploreBackendLines(): readonly LogCall[] {
+  return logCalls.filter((c) =>
+    c.args.some((a) => typeof a === "string" && a.startsWith("Explore tool:")),
+  );
+}
+
+/**
+ * The backend name the pre-flight log claims, read from its structured field.
+ *
+ * Scans all "Explore tool: …" lines rather than only the first. Since #4834 the
+ * `unverified` arm emits a caveat line with that prefix and NO structured
+ * backend, then delegates to `logResolvedExploreBackend()` for the line that
+ * carries one — so taking the first would report `undefined` there and quietly
+ * stop testing the delegation. Still requires the prefix, so an unrelated
+ * structured `backend` field (explore's own "Explore backend selected") can't
+ * be mistaken for the pre-flight's claim.
+ */
+function loggedBackend(): ExploreBackendType | undefined {
+  for (const line of exploreBackendLines()) {
+    const meta = line.args[0];
+    if (meta && typeof meta === "object" && "backend" in meta && typeof meta.backend === "string") {
+      return meta.backend as ExploreBackendType;
+    }
+  }
+  return undefined;
+}
+
+/** True when boot asserted the deployment has no process isolation. */
+function claimedNoIsolation(): boolean {
+  return logCalls.some((c) =>
+    c.args.some((a) => typeof a === "string" && a.includes("no process isolation")),
+  );
+}
+
+/**
+ * A `typeof fetch`-compatible stub, built structurally rather than cast: the
+ * lib typings carry `preconnect`, so a bare arrow fails the type gate and the
+ * usual `as unknown as typeof fetch` would erase future signature changes.
+ */
+function healthyFetch(): typeof fetch {
+  return Object.assign(async () => new Response(null, { status: 200 }), {
+    preconnect: () => {},
+  });
+}
+
+async function runPreFlight(): Promise<void> {
+  resetStartupCache();
+  logCalls.length = 0;
+  nsjailProbeRan = false;
+  await validateEnvironment();
+}
+
+describe("startup sandbox pre-flight names the resolved backend (#4824)", () => {
+  const originalEnv = { ...process.env };
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    _resetConfig();
+    _resetSandboxFailureFlagsForTest();
+    for (const v of SANDBOX_VARS) delete process.env[v];
+    // nsjail binary deterministically absent for explore's own detection.
+    process.env.PATH = "";
+    mockNsjailBinaryPath = null;
+    mockCapabilityResult = { ok: true };
+    mockCapabilityThrows = null;
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    globalThis.fetch = originalFetch;
+    _resetConfig();
+    resetStartupCache();
+  });
+
+  // ── AC1 — the reported bug ────────────────────────────────────────────────
+
+  it("does NOT claim 'no process isolation' on a Railway-shaped Vercel Sandbox deploy", async () => {
+    // Railway: Vercel Sandbox reached via env credentials, with none of the
+    // on-Vercel host vars set and no nsjail binary anywhere.
+    process.env.VERCEL_TEAM_ID = "team_test";
+    process.env.VERCEL_PROJECT_ID = "prj_test";
+    process.env.VERCEL_TOKEN = "tok_test";
+
+    await runPreFlight();
+
+    expect(claimedNoIsolation()).toBe(false);
+    expect(loggedBackend()).toBe("vercel-sandbox");
+  });
+
+  it("names vercel-sandbox under the deployed sandbox.priority pin", async () => {
+    // Mirrors deploy/api/atlas.config.ts — the pin that makes this the shape
+    // actually running on staging and all three prod regions.
+    process.env.VERCEL_TEAM_ID = "team_test";
+    process.env.VERCEL_PROJECT_ID = "prj_test";
+    process.env.VERCEL_TOKEN = "tok_test";
+    // A real ResolvedConfig, not a cast-away partial: every required field keeps
+    // its default so anything validateEnvironment() reads stays defined, and the
+    // priority literal is still checked against SandboxBackendName.
+    _setConfigForTest({
+      ...configFromEnv(),
+      sandbox: {
+        priority: ["vercel-sandbox"],
+        // Prod resolves team/project from config, not env — only VERCEL_TOKEN
+        // is a per-service Railway secret. This mirrors that split.
+        vercel: { teamId: "team_test", projectId: "prj_test" },
+      },
+    });
+
+    await runPreFlight();
+
+    expect(claimedNoIsolation()).toBe(false);
+    expect(loggedBackend()).toBe("vercel-sandbox");
+  });
+
+  // ── AC2 — deleting the warning is the tempting wrong fix ──────────────────
+
+  it("STILL warns 'no process isolation' on a genuine just-bash deployment", async () => {
+    // Bare self-hosted box: no Vercel credentials, no sidecar, no nsjail.
+    await runPreFlight();
+
+    expect(loggedBackend()).toBe("just-bash");
+    expect(claimedNoIsolation()).toBe(true);
+  });
+
+  // ── AC3 — the nsjail and sidecar paths keep working ───────────────────────
+
+  it("names vercel-sandbox when running ON Vercel", async () => {
+    process.env.ATLAS_RUNTIME = "vercel";
+
+    await runPreFlight();
+
+    expect(loggedBackend()).toBe("vercel-sandbox");
+    expect(claimedNoIsolation()).toBe(false);
+  });
+
+  it("names sidecar when a healthy sidecar is configured", async () => {
+    process.env.ATLAS_SANDBOX_URL = "http://sidecar.test";
+    globalThis.fetch = healthyFetch();
+
+    await runPreFlight();
+
+    expect(loggedBackend()).toBe("sidecar");
+    expect(claimedNoIsolation()).toBe(false);
+  });
+
+  it("names nsjail when ATLAS_SANDBOX=nsjail and capabilities pass", async () => {
+    process.env.ATLAS_SANDBOX = "nsjail";
+    givenNsjailBinary();
+    mockCapabilityResult = { ok: true };
+
+    await runPreFlight();
+
+    expect(nsjailProbeRan).toBe(true);
+    expect(loggedBackend()).toBe("nsjail");
+    expect(claimedNoIsolation()).toBe(false);
+  });
+
+  it("reports fail-closed when the nsjail pin's binary is missing (#4834)", async () => {
+    // The #4834 fix, and note what it does NOT touch: #4824's assertion below
+    // is unchanged. That is the whole argument for fixing the PREDICATE rather
+    // than marking the failure at boot.
+    //
+    // Boot used to say "Explore tool: UNAVAILABLE" while `/api/health` said
+    // `backend: "nsjail"`, `isolated: true`, `status: "ok"` — for a process
+    // where `tryCreateBackend` throws on EVERY request. The cheap fix was to
+    // call markNsjailFailed() here, which would have forced this case to
+    // re-baseline `nsjailFailed` to `true` and redefined the flag from "broke at
+    // runtime" to "unusable, however detected".
+    //
+    // It was rejected because it only works WHERE THIS PROBE RUNS, and the probe
+    // does not run for every deployment: `checkSandboxPreFlight` skips it on a
+    // Vercel host, and a `sandbox.priority` pin outranks `ATLAS_SANDBOX`
+    // entirely. Honest reporting cannot be contingent on a probe having fired.
+    // `isBackendAvailable` now means CONSTRUCTIBLE and probes the binary itself,
+    // so the resolver reaches `fail-closed` from the filesystem alone.
+    //
+    // The runtime consequence lives in
+    // `lib/tools/__tests__/explore-fail-closed.test.ts` (this file mocks `fs`
+    // wholesale, so a refusal assertion here could pass for the wrong reason).
+    process.env.ATLAS_SANDBOX = "nsjail";
+    mockNsjailBinaryPath = null;
+
+    await runPreFlight();
+
+    // The pin does not degrade — "no process isolation" would be #4824's false
+    // claim at inverted polarity, and just-bash is not what the pin resolves to.
+    expect(claimedNoIsolation()).toBe(false);
+    // Assert the ADVICE, not just that some UNAVAILABLE line exists. The stated
+    // justification for deleting the bespoke `hard-fail` line was that
+    // formatSandboxFailClosed() supplies pin-scoped remediation — so that is the
+    // claim under test. Without this, the formatter could regress into its
+    // "No pinned backend could be identified" fallback (selection.ts) and this
+    // case would stay green while the operator lost every actionable detail.
+    const unavailable = logCalls.find((c) =>
+      c.args.some((a) => typeof a === "string" && a.includes("Explore tool: UNAVAILABLE")),
+    );
+    const advice = unavailable?.args.find((a): a is string => typeof a === "string") ?? "";
+    expect(advice).toContain("ATLAS_SANDBOX=nsjail");
+    expect(advice).toContain("refuses every request");
+    expect(advice).toContain("ATLAS_NSJAIL_PATH");
+
+    // #4824's regression assertion, UNMODIFIED — boot does not fabricate a
+    // runtime failure. Option 1 would have flipped this to `true`; that it is
+    // still `false` while the two assertions below both read `fail-closed` is
+    // the proof that reporting no longer depends on the flag's meaning at all.
+    expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
+    // Boot and health name the SAME thing, and it is the true thing. Both are
+    // load-bearing — `loggedBackend()` is what boot printed,
+    // `getExploreBackendType()` is what /api/health will read.
+    expect(loggedBackend()).toBe("fail-closed");
+    expect(getExploreBackendType()).toBe("fail-closed");
+
+    // The operator still gets the binary-specific remediation; it moved from a
+    // bespoke pre-flight line into the startup warnings, which /api/health
+    // echoes. Losing it silently would trade one honesty gap for another.
+    expect(
+      getStartupWarnings().some(
+        (w) => w.includes("nsjail binary was not found") && w.includes("ATLAS_NSJAIL_PATH"),
+      ),
+    ).toBe(true);
+  });
+
+  it("names the resolved backend when the nsjail probe cannot complete (#4834)", async () => {
+    // The `unverified` arm: the probe THREW, so isolation is neither confirmed
+    // nor refuted. `_nsjailFailed` stays clear here on purpose — unlike the two
+    // arms above, nothing was detected to be wrong — so the pin is still armed
+    // and `/api/health` reports `nsjail`.
+    //
+    // Boot used to log only the UNVERIFIED caveat and name no backend, leaving
+    // health to name one on its own. That is the same boot-vs-health
+    // disagreement one notch softer, and it hid a worse case: a deployment with
+    // BOTH `ATLAS_SANDBOX=nsjail` and a `sandbox.priority` pin never reached the
+    // resolver here at all, so it got nsjail-only advice for a chain where
+    // `configPriority` takes absolute precedence and `ATLAS_SANDBOX` is ignored.
+    process.env.ATLAS_SANDBOX = "nsjail";
+    givenNsjailBinary();
+    mockCapabilityThrows = new Error("probe exploded");
+
+    await runPreFlight();
+
+    // The caveat still LEADS. Order is load-bearing and stated as such in
+    // `checkSandboxPreFlight` — the resolved-backend line is only safe to print
+    // because the caveat qualifies it, so swapping the two statements must fail
+    // this test rather than merely reorder some output.
+    const caveatAt = logCalls.findIndex((c) =>
+      c.args.some((a) => typeof a === "string" && a.includes("isolation UNVERIFIED")),
+    );
+    const resolvedAt = logCalls.findIndex((c) =>
+      c.args.some((a) => typeof a === "string" && a.startsWith("Explore tool: %s selected")),
+    );
+    expect(caveatAt).toBeGreaterThanOrEqual(0);
+    expect(resolvedAt).toBeGreaterThan(caveatAt);
+
+    // …and the resolved backend is now named, agreeing with health.
+    expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
+    expect(loggedBackend()).toBe("nsjail");
+    expect(getExploreBackendType()).toBe("nsjail");
+    expect(claimedNoIsolation()).toBe(false);
+
+    // The structured record self-describes, so field-based alerting cannot read
+    // this as a clean isolated deployment. The adjacent caveat line survives a
+    // grep by prefix; it does not survive a query on `{ backend }`.
+    const resolvedMeta = logCalls[resolvedAt]?.args[0];
+    expect(resolvedMeta).toMatchObject({ backend: "nsjail", isolationVerified: false });
+
+    // /api/health echoes startup warnings, so the UNVERIFIED posture must reach
+    // it. Asserting the push explicitly — deleting it would otherwise be silent.
+    expect(
+      getStartupWarnings().some((w) => w.includes("Isolation is UNVERIFIED")),
+    ).toBe(true);
+  });
+
+  it("does not stamp UNVERIFIED on a backend the nsjail probe never examined (#4834)", async () => {
+    // The guard `probe === "unverified" && backend === "nsjail"` exists because
+    // `checkSandboxPreFlight` probes nsjail whenever `ATLAS_SANDBOX=nsjail`,
+    // INCLUDING when a `sandbox.priority` outranks the pin and nsjail is not in
+    // the resolved chain at all. Without the backend check, a throwing nsjail
+    // probe would stamp `isolationVerified: false` onto a perfectly good
+    // vercel-sandbox deployment — a false alarm on the one field added to be
+    // trustworthy, and the same misattribution the bespoke nsjail-only lines
+    // were removed for.
+    //
+    // Dropping `&& backend === "nsjail"` must fail HERE; nothing else notices.
+    process.env.ATLAS_SANDBOX = "nsjail";
+    process.env.VERCEL_TEAM_ID = "team_test";
+    process.env.VERCEL_PROJECT_ID = "prj_test";
+    process.env.VERCEL_TOKEN = "tok_test";
+    // The binary must be PRESENT for the probe to reach — and throw in —
+    // testNsjailCapabilities; with it absent, checkExplicitNsjail takes the
+    // binary-absent arm and returns "hard-fail" instead of "unverified".
+    givenNsjailBinary();
+    mockCapabilityThrows = new Error("probe exploded");
+    _setConfigForTest({
+      ...configFromEnv(),
+      sandbox: { priority: ["vercel-sandbox"] },
+    });
+
+    await runPreFlight();
+
+    // The probe DID go inconclusive — otherwise this case proves nothing.
+    expect(
+      logCalls.some((c) =>
+        c.args.some((a) => typeof a === "string" && a.includes("isolation UNVERIFIED")),
+      ),
+    ).toBe(true);
+
+    // …but the resolved backend is vercel-sandbox, and it carries no verdict
+    // from a probe that never looked at it.
+    expect(loggedBackend()).toBe("vercel-sandbox");
+    const resolvedMeta = logCalls.find(
+      (c) =>
+        c.args.some((a) => typeof a === "string" && a.startsWith("Explore tool:")) &&
+        typeof c.args[0] === "object",
+    )?.args[0];
+    expect(resolvedMeta).toMatchObject({ backend: "vercel-sandbox" });
+    expect(resolvedMeta).not.toHaveProperty("isolationVerified");
+  });
+
+  it("names fail-closed, not nsjail, when a sandbox.priority pin outranks ATLAS_SANDBOX (#4834)", async () => {
+    // The deployment the bespoke nsjail-only lines misreported.
+    // `planSandboxSelection` gives `configPriority` absolute precedence, so
+    // `ATLAS_SANDBOX=nsjail` is ignored entirely — yet boot probed nsjail, took
+    // the binary-absent arm, and printed nsjail remediation for a chain nsjail
+    // is not even in, while the real resolution went unlogged.
+    process.env.ATLAS_SANDBOX = "nsjail";
+    mockNsjailBinaryPath = null;
+    _setConfigForTest({
+      ...configFromEnv(),
+      sandbox: { priority: ["vercel-sandbox"] },
+    });
+    // No VERCEL_* credentials — the pinned backend is unavailable, so the pin
+    // (no just-bash) fails closed.
+
+    await runPreFlight();
+
+    expect(loggedBackend()).toBe("fail-closed");
+    expect(getExploreBackendType()).toBe("fail-closed");
+    // The `Explore tool:` line names the backend actually pinned, not nsjail.
+    const advice = logCalls.find((c) =>
+      c.args.some((a) => typeof a === "string" && a.includes("Explore tool: UNAVAILABLE")),
+    );
+    const text = advice?.args.find((a): a is string => typeof a === "string") ?? "";
+    expect(text).toContain("vercel-sandbox");
+    expect(text).toContain("VERCEL_TOKEN");
+
+    // ACCEPTED RESIDUE, asserted so it is visible rather than assumed absent:
+    // checkExplicitNsjail() still probes and still warns about the missing
+    // nsjail binary for this deployment, even though nsjail is not in the
+    // resolved chain at all. The probe itself must stay — it is what sets
+    // `_nsjailFailed` — but its warning is scoped to a pin that `configPriority`
+    // outranks. Not made worse by #4834 (the same warning fired before); gating
+    // it needs the probe to know the resolved chain, which is a separate change.
+    // Tracked in the #4834 PR body.
+    expect(
+      getStartupWarnings().some((w) => w.includes("nsjail binary was not found")),
+    ).toBe(true);
+  });
+
+  it("names just-bash, truthfully, when the outranking pin permits degrading (#4834)", async () => {
+    // The fail-OPEN half of the same deployment shape, and the more dangerous
+    // one. `sandbox.priority: ["nsjail", "just-bash"]` makes both steps SOFT, so
+    // an unusable nsjail falls through and explore really does run unsandboxed.
+    //
+    // Before #4834 boot logged "Explore tool: UNAVAILABLE" here — nsjail-shaped
+    // advice for a box that was about to run agent shell on the host — while
+    // `/api/health` reported `nsjail` / `isolated: true`, because the bare pin
+    // read as available. Both were wrong, in opposite directions.
+    process.env.ATLAS_SANDBOX = "nsjail";
+    mockNsjailBinaryPath = null;
+    _setConfigForTest({
+      ...configFromEnv(),
+      sandbox: { priority: ["nsjail", "just-bash"] },
+    });
+
+    await runPreFlight();
+
+    // Now both surfaces say the true thing: this is an unsandboxed deployment.
+    expect(loggedBackend()).toBe("just-bash");
+    expect(getExploreBackendType()).toBe("just-bash");
+    expect(claimedNoIsolation()).toBe(true);
+    // And it is NOT reported as a total outage — explore works here, it just
+    // works without isolation. Collapsing the two would be #4828 inverted.
+    expect(
+      logCalls.some((c) =>
+        c.args.some((a) => typeof a === "string" && a.includes("Explore tool: UNAVAILABLE")),
+      ),
+    ).toBe(false);
+  });
+
+  it("reports fail-closed when the nsjail pin's namespaces are broken (#4829)", async () => {
+    // The sibling of the case above, and the realistic container shape: the
+    // binary is present but CLONE_NEWUSER is denied. checkExplicitNsjail() calls
+    // markNsjailFailed() here — which USED to delete the pin's hard-fail step, so
+    // the pin silently stopped holding and explore ran agent shell on the host.
+    //
+    // This case previously asserted `just-bash` + "no process isolation", i.e. it
+    // encoded the fail-open as correct. It was a LOG-level assertion, which is
+    // why a security-critical degradation shipped past a green suite; the runtime
+    // consequence now has its own coverage in
+    // `lib/tools/__tests__/explore-fail-closed.test.ts`.
+    process.env.ATLAS_SANDBOX = "nsjail";
+    givenNsjailBinary();
+    mockCapabilityResult = { ok: false, error: "clone failed: EPERM" };
+
+    await runPreFlight();
+
+    expect(nsjailProbeRan).toBe(true);
+    // The flag still records the runtime degradation — that meaning is intact,
+    // and `autoDetectNsjail()` depends on it (see the last case in this file).
+    expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(true);
+
+    // …but it no longer doubles as permission to run unsandboxed.
+    expect(loggedBackend()).toBe("fail-closed");
+    expect(getExploreBackendType()).toBe("fail-closed");
+    // Boot must not claim the deployment is an unsandboxed-but-working box: it
+    // runs nothing at all. Saying "no process isolation" here would be #4824's
+    // false claim at inverted polarity.
+    expect(claimedNoIsolation()).toBe(false);
+
+    // The advice must name the pin, not the generic install-nsjail line.
+    expect(
+      logCalls.some((c) =>
+        c.args.some(
+          (a) =>
+            typeof a === "string" &&
+            a.includes("ATLAS_SANDBOX=nsjail") &&
+            a.includes("refuses every request"),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("reports fail-closed when a sandbox.priority pin loses its credential (#4828)", async () => {
+    // deploy/api/atlas.config.ts pins ["vercel-sandbox"] with no just-bash, so
+    // dropping VERCEL_TOKEN on one regional service leaves explore throwing on
+    // every request. Boot used to log "just-bash (no process isolation). Install
+    // nsjail or configure ATLAS_SANDBOX_URL…" — false, and unactionable, since
+    // the pin excludes both of the backends it recommends.
+    _setConfigForTest({
+      ...configFromEnv(),
+      sandbox: { priority: ["vercel-sandbox"] },
+    });
+    // No VERCEL_* vars set — useVercelSandbox() is false, exactly the shape a
+    // missing per-service Railway secret produces.
+
+    await runPreFlight();
+
+    expect(loggedBackend()).toBe("fail-closed");
+    expect(getExploreBackendType()).toBe("fail-closed");
+    expect(claimedNoIsolation()).toBe(false);
+
+    // Names the pinned backend and the credential that is actually missing.
+    const advice = logCalls.find((c) =>
+      c.args.some((a) => typeof a === "string" && a.includes("Explore tool: UNAVAILABLE")),
+    );
+    const text = advice?.args.find((a): a is string => typeof a === "string") ?? "";
+    expect(text).toContain("vercel-sandbox");
+    expect(text).toContain("VERCEL_TOKEN");
+    expect(text).not.toContain("Install nsjail");
+
+    // A total explore outage is worth surfacing beyond the log — /api/health
+    // echoes startup warnings.
+    expect(
+      getStartupWarnings().some((w) => w.includes("Explore tool: UNAVAILABLE")),
+    ).toBe(true);
+
+    // Byte-pinned to the SHARED formatter, not just to substrings (#4837).
+    // `/admin/sandbox` composes its remediation from the same
+    // `describeSandboxFailClosed`, and the substring assertions above would all
+    // still pass if boot forked back to its own hand-rolled wording — which is
+    // exactly the drift that made #4828's advice wrong on one surface and right
+    // on another. This is the boot half of that anchor; the admin half lives in
+    // `api/__tests__/admin-sandbox-fail-closed.test.ts`.
+    const env = snapshotExploreSandboxEnv();
+    expect(text).toBe(
+      formatSandboxFailClosed(planSandboxSelection(env), env, getConfig()?.deployMode),
+    );
+  });
+
+  it("degrades to the generic outage message, with a SCRUBBED log detail, if the remediation cannot be built (#4837)", async () => {
+    // The boot half of `describeSandboxFailClosed`'s failure arm. Two properties
+    // that only this test pins:
+    //
+    //  1. Losing the remediation must NOT downgrade the reported state — boot
+    //     still records a fail-closed startup warning, which /api/health echoes.
+    //  2. The seam returns the caught text RAW (its catch arm takes no imports so
+    //     it cannot itself throw), so scrubbing happens HERE, at the log site.
+    //     Without this assertion, deleting the `errorMessage(...)` wrapper in
+    //     `startup.ts` is silent — and a pg/better-auth error echoing a
+    //     connection string lands in a log field verbatim.
+    // `deployMode` is read ONLY inside the thunk (`getAtlasConfig()?.deployMode`),
+    // so a throwing getter here fails exactly that gathering step and nothing
+    // earlier — the resolution is already known to be fail-closed by then.
+    // Chosen over stubbing `snapshotExploreSandboxEnv` because ESM exports are
+    // readonly and `mock.module` is process-global, which would leak into the
+    // other 11 cases in this file. The password proves the scrub end to end.
+    const cfg: Record<string, unknown> = {
+      ...configFromEnv(),
+      sandbox: { priority: ["vercel-sandbox"] },
+    };
+    Object.defineProperty(cfg, "deployMode", {
+      get() {
+        throw new Error("connect failed: postgres://atlas:hunter2@db.internal:5432/atlas");
+      },
+      enumerable: true,
+    });
+    _setConfigForTest(cfg as unknown as Parameters<typeof _setConfigForTest>[0]);
+
+    await runPreFlight();
+
+    // (1) still an outage, with the generic-but-honest wording.
+    const warning = getStartupWarnings().find((w) => w.includes("Explore tool: UNAVAILABLE"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("see the server log");
+    expect(warning).toContain("sandbox.priority");
+    // Never the misdirecting advice a priority pin makes unactionable (#4828).
+    expect(warning).not.toContain("Install nsjail");
+    // The caught text must not ride along on a surface /api/health echoes.
+    expect(warning).not.toContain("hunter2");
+
+    // (2) the log detail is present but scrubbed.
+    const errored = logCalls.find((c) =>
+      c.args.some(
+        (a) => typeof a === "object" && a !== null && "err" in (a as Record<string, unknown>),
+      ),
+    );
+    const meta = errored?.args.find(
+      (a): a is Record<string, unknown> => typeof a === "object" && a !== null && "err" in a,
+    );
+    expect(String(meta?.err)).toContain("connect failed");
+    expect(String(meta?.err)).not.toContain("hunter2");
+    expect(String(meta?.err)).toContain("***");
+  });
+
+  // ── AC4 — boot and /api/health cannot disagree ────────────────────────────
+
+  it("agrees with getExploreBackendType() across every env shape", async () => {
+    // `expected` is not redundant with the agreement assertion. Without it the
+    // loop compares getExploreBackendType() against itself and stays green even
+    // if every shape silently collapsed to just-bash — agreement is cheap, and
+    // agreement on the WRONG value is exactly the failure this file exists to
+    // catch. Pinning the literal makes such a collapse a loud failure.
+    const shapes: ReadonlyArray<{
+      name: string;
+      env: Record<string, string>;
+      expected: ExploreBackendType;
+    }> = [
+      { name: "bare", env: {}, expected: "just-bash" },
+      { name: "on-Vercel", env: { ATLAS_RUNTIME: "vercel" }, expected: "vercel-sandbox" },
+      {
+        name: "Railway + Vercel creds",
+        env: {
+          VERCEL_TEAM_ID: "team_test",
+          VERCEL_PROJECT_ID: "prj_test",
+          VERCEL_TOKEN: "tok_test",
+        },
+        expected: "vercel-sandbox",
+      },
+      {
+        name: "sidecar",
+        env: { ATLAS_SANDBOX_URL: "http://sidecar.test" },
+        expected: "sidecar",
+      },
+      { name: "explicit nsjail", env: { ATLAS_SANDBOX: "nsjail" }, expected: "nsjail" },
+    ];
+
+    for (const shape of shapes) {
+      for (const v of SANDBOX_VARS) delete process.env[v];
+      // Each shape stands for a separate PROCESS, so drop the per-process
+      // caches too — `_nsjailAvailable` memoizes binary detection on first read,
+      // and since #4834 that memo feeds the reporting predicate. Without this,
+      // the first shape's "no binary" answer would be reused by every later
+      // shape and the nsjail case would resolve fail-closed for a stale reason.
+      _resetSandboxFailureFlagsForTest();
+      Object.assign(process.env, shape.env);
+      // Keep the nsjail and sidecar probes healthy so this case measures
+      // agreement, not degradation. The nsjail shape must declare the binary
+      // present to BOTH seams (#4834): with only the probe's seam set, explore's
+      // predicate would report it unavailable and the shape would quietly become
+      // a fail-closed case that agrees with itself.
+      if (shape.env.ATLAS_SANDBOX === "nsjail") givenNsjailBinary();
+      else mockNsjailBinaryPath = null;
+      mockCapabilityResult = { ok: true };
+      globalThis.fetch = healthyFetch();
+
+      await runPreFlight();
+
+      expect(loggedBackend(), `pre-flight named the wrong backend for ${shape.name}`).toBe(
+        shape.expected,
+      );
+      expect(getExploreBackendType(), `health resolved wrong for ${shape.name}`).toBe(
+        shape.expected,
+      );
+    }
+  });
+
+  // ── The trap: skipping the probe silently corrupts the health surface ─────
+
+  it("still probes nsjail (feeding health) even when Vercel Sandbox wins", async () => {
+    // A Railway host that happens to ship an nsjail binary whose namespaces do
+    // not work. vercel-sandbox wins the priority chain regardless, so the naive
+    // fix — "the resolved backend isn't nsjail, skip the probe" — would never
+    // call markNsjailFailed(). _nsjailFailed gates both tryCreateBackend and
+    // isBackendAvailable, so leaving it unset means a host whose winning backend
+    // fails to construct at request time falls through to a known-broken nsjail.
+    process.env.VERCEL_TEAM_ID = "team_test";
+    process.env.VERCEL_PROJECT_ID = "prj_test";
+    process.env.VERCEL_TOKEN = "tok_test";
+    givenNsjailBinary();
+    mockCapabilityResult = { ok: false, error: "clone failed: EPERM" };
+
+    // Asserting the pre-condition is what makes the post-condition meaningful
+    // rather than possibly-already-true.
+    expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
+
+    await runPreFlight();
+
+    // The two assertions the naive "skip the probe" fix fails.
+    expect(nsjailProbeRan).toBe(true);
+    expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(true);
+
+    // …and the log still names the backend that actually won.
+    expect(loggedBackend()).toBe("vercel-sandbox");
+    expect(claimedNoIsolation()).toBe(false);
+  });
+});

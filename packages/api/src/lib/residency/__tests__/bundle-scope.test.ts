@@ -80,12 +80,23 @@ describe("bundle-scope drift tripwire (#4460)", () => {
   it("pins the decided v2 bundle scope exactly", () => {
     // The maintainer-approved scope from #4460. Changing this list is a
     // product decision — update the issue trail + data-residency.mdx with it.
+    //
+    // Extended by #4767 (ADR-0036) with the four company-brain tables. The
+    // decision: a workspace's brain is the same class of asset as its
+    // knowledge base, so it moves. The alternative classification ('stays')
+    // is not neutral — stays rows are DELETED from the source after the
+    // grace period, which would make a region migration silently destroy the
+    // workspace's accumulated knowledge.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
+      "brain_edges",
+      "brain_episodes",
+      "brain_facts",
       "conversations",
       "dashboard_cards",
       "dashboard_user_drafts",
       "dashboards",
+      "fact_audience_member",
       "knowledge_documents",
       "knowledge_links",
       "learned_patterns",

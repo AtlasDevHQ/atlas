@@ -13,7 +13,7 @@ import { LEGAL_STAMPS } from "../../data/legal";
 export const metadata: Metadata = {
   title: "Data Processing Addendum",
   description:
-    "Atlas Cloud Article 28 GDPR-compliant DPA, with the EU Standard Contractual Clauses incorporated by reference. Pre-signed via legal@useatlas.dev — no negotiation needed for standard deals.",
+    "Atlas Cloud Article 28 GDPR DPA, with the EU Standard Contractual Clauses incorporated by reference. No negotiation needed for standard deals; countersigned copies on request via legal@useatlas.dev.",
   openGraph: {
     title: "Data Processing Addendum — Atlas",
     description:
@@ -144,7 +144,7 @@ const SECTIONS: LegalSectionData[] = [
     title: "Annexes",
     legal: [
       "Annex I — List of Sub-processors. The current list is rendered as a table at the bottom of this page and is the source of truth.",
-      "Annex II — Technical and Organizational Measures: encryption (TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation; integration credentials and connection strings encrypted in the internal database), customer-managed KMS keys negotiable on enterprise contracts, least-privilege IAM, TOTP two-factor authentication required for every administrator account on managed-mode sessions, audit logging of administrative operations, automated vulnerability scanning of container images and dependencies, ISO 27001-aligned ISMS, security program aligned with SOC 2 Type II controls (formal certification on the roadmap), secure SDLC with mandatory code review, segregated production access, documented incident-response runbook. A third-party penetration-testing program is on the public roadmap.",
+      "Annex II — Technical and Organizational Measures: encryption (TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation; integration credentials and connection strings encrypted in the internal database), customer-managed KMS keys negotiable on enterprise contracts, two-factor authentication (TOTP or passkey) required for every administrator, owner, and platform-administrator account on managed-mode sessions, audit logging of administrative operations with configurable retention and data-subject erasure tooling, automated vulnerability scanning of both software dependencies and container images, static application security testing on every change, secret scanning with push protection, fail-closed startup guards that prevent the Service booting with missing or invalid security-critical configuration, a documented incident-response runbook published in the Service’s security documentation and organized around the notification deadline in this DPA, per-region data isolation across the EU, US, and APAC deployments — except that sandboxed tool execution (the explore and Python tools) currently runs in the United States for all regions, because the sandbox sub-processor exposes no region primitive, as disclosed in the Service’s data-residency documentation — SELECT-only validation of every query the agent generates, and read-only enforcement at the database session level on PostgreSQL, MySQL, and ClickHouse connections. Atlas operates a security program aligned with SOC 2 Type II and ISO 27001 controls; it does not hold either certification and does not maintain a formally documented ISMS today. A third-party penetration-testing program is on the public roadmap and is not represented as in place today.",
       "Annex III — Standard Contractual Clauses, Module Two (controller-to-processor) selected by default. Optional Clause 7 (Docking Clause) is included. Clause 9 sub-processor option (b) — general written authorization with 30-day notice — applies. Clause 11 dispute-resolution option (a) is selected. Clause 17 governing law: Ireland. Clause 18 forum: Ireland.",
     ],
     plain:
@@ -176,9 +176,9 @@ export default function DPAPage() {
             Data Processing Addendum.
           </h1>
           <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-fg-muted">
-            Article 28 GDPR-compliant DPA, with the EU Standard Contractual
-            Clauses incorporated by reference. Pre-signed for standard deals —
-            no negotiation needed.
+            Article 28 GDPR DPA, with the EU Standard Contractual Clauses
+            incorporated by reference. Standard terms for standard deals — no
+            negotiation needed, and no separate signature to get started.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
             <span>effective {LEGAL_STAMPS.dpa.effective}</span>
@@ -189,7 +189,7 @@ export default function DPAPage() {
           </div>
         </section>
 
-        {/* Pre-signed request card */}
+        {/* Countersigned-copy request card */}
         <section
           aria-labelledby="presigned-heading"
           className="mx-auto max-w-5xl px-6 pt-6 pb-4 md:pt-8"
@@ -198,17 +198,17 @@ export default function DPAPage() {
             id="presigned-heading"
             className="mb-3 font-mono text-xs tracking-widest text-accent uppercase"
           >
-            // pre-signed
+            // countersigned copy
           </p>
           <div className="rounded-2xl border border-accent/30 bg-accent-quiet p-5 md:p-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between md:gap-6">
               <div>
                 <p className="mb-1 font-mono text-[15px] font-semibold text-fg md:text-base">
-                  DPA-v2.5-pre-signed.pdf
+                  Need a countersigned copy?
                 </p>
                 <p className="font-mono text-[11px] tracking-wider text-fg-muted">
-                  Countersigned by Atlas · valid through 2027-05-02 ·
-                  available on request
+                  DPA v2.5 · the text on this page is the agreement · we
+                  countersign and return a PDF on request
                 </p>
               </div>
               <a

@@ -535,6 +535,21 @@ describe("migrateAuthTables", () => {
             // be in the already-applied set so this "all applied" test sees
             // zero new migrations.
             { name: "0179_drop_conversations_notebook_state.sql" },
+            // 0180 (#4767, ADR-0036) — brain substrate (episodes / facts /
+            // edges / fact_audience_member). Additive CREATE TABLE on
+            // Atlas-internal tables, no Better Auth involvement, so it runs
+            // in every auth mode — must be in the already-applied set so this
+            // "all applied" test sees zero new migrations.
+            { name: "0180_brain_substrate.sql" },
+            // 0181 (#4773, ADR-0036) — brain_facts.fts / brain_episodes.fts
+            // stored generated tsvectors + GIN indexes for the `searchBrain`
+            // lexical tier. Additive ADD COLUMN + CREATE INDEX on
+            // Atlas-internal tables, no Better Auth involvement, so it runs
+            // in every auth mode — must be in the already-applied set so this
+            // "all applied" test sees zero new migrations.
+            { name: "0181_brain_fts.sql" },
+            { name: "0182_audience_member_synced_at.sql" },
+            { name: "0183_brain_facts_pre_widening_grant.sql" },
           ],
         };
       }

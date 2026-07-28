@@ -18,11 +18,16 @@ import {
 import { getWhitelistedTables } from "@atlas/api/lib/semantic";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getExploreBackendType, getActiveSandboxPluginId } from "@atlas/api/lib/tools/explore";
+import { BACKEND_ISOLATION } from "@atlas/api/lib/tools/backends/selection";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 import { getConfig } from "@atlas/api/lib/config";
+import {
+  resolveDatasourceExpectation,
+  datasourceExpectationWarning,
+} from "@atlas/api/lib/db/datasource-expectation";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { getUserRole } from "@atlas/api/lib/auth/permissions";
 import type { PluginStatus } from "@atlas/api/lib/plugins/registry";
@@ -72,11 +77,16 @@ const PluginItemHealthSchema = z.object({
   latencyMs: z.number().int().nonnegative().optional(),
 });
 
-// Plugin aggregate is never `down` — that path is reserved for the
-// datasource (#1981 / SaaS-503 contract). Narrowing the inherited
+// Plugin aggregate is never `down` — a plugin fault must not read as an
+// outage on the plugins aggregate. Narrowing the inherited
 // `ComponentHealthSchema` enum to `healthy | degraded | disabled` encodes
 // that invariant in the wire format and prevents a future contributor
 // from setting `pluginsComponent.status = "down"`.
+//
+// NB `down` on a component does NOT imply the 503 contract: only the
+// datasource / SaaS internal DB promote the top-level status to `error`
+// (#1981). `provider` and `sandbox` both set component-level `down` while
+// the region keeps serving 200.
 const PluginsComponentSchema = ComponentHealthSchema.omit({
   status: true,
   model: true,
@@ -140,7 +150,15 @@ export const HealthResponseSchema = z.object({
       error: z.string().optional(),
     }),
     explore: z.object({
-      backend: z.enum(["nsjail", "sidecar", "vercel-sandbox", "just-bash", "plugin"]),
+      // `fail-closed` is not a backend — it means no backend will construct and
+      // explore throws on every request (a sandbox.priority pin with no just-bash
+      // fallback, or an ATLAS_SANDBOX=nsjail pin whose backend cannot be
+      // constructed: its binary is absent, or it was marked failed).
+      // Additive member: before #4828 that state was reported as `just-bash`,
+      // i.e. a working but unsandboxed deploy, the opposite of the truth. The
+      // absent-binary case joined it in #4834, when `isBackendAvailable` stopped
+      // trusting the pin and started probing.
+      backend: z.enum(["nsjail", "sidecar", "vercel-sandbox", "just-bash", "plugin", "fail-closed"]),
       isolated: z.boolean(),
       isolationVerified: z.boolean().optional(),
       pluginId: z.string().optional(),
@@ -312,6 +330,13 @@ health.openapi(healthRoute, async (c) => {
     const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
     const entityCount = getWhitelistedTables().size;
     const exploreBackend = getExploreBackendType();
+    // Named because it is used at three sites below; it is the `=== "fail-closed"`
+    // comparison that narrows `exploreBackend` so `BACKEND_ISOLATION[...]` stays
+    // well-typed. That table is keyed by real backends only, so the compiler
+    // forces the branch rather than letting the state fall through as "not
+    // unsandboxed". See the `checks.explore.backend` enum above for what the
+    // state means.
+    const exploreFailClosed = exploreBackend === "fail-closed";
     const authMode = detectAuthMode();
 
     // Datasource is unhealthy if: no URL, diagnostics flagged it, OR the live probe failed
@@ -322,6 +347,15 @@ health.openapi(healthRoute, async (c) => {
     );
     const hasDsError = !!dsDiagnostic || !!dsProbeError;
     const dsNotConfigured = !hasDatasource;
+    // #4854 — the absence is only *intentional* when the deployment declares it.
+    // Narrowed by `dsNotConfigured` on purpose: the declaration answers "is one
+    // expected here?", never "is the configured one healthy?", so it is unreachable
+    // on any deployment that has a datasource and therefore cannot touch the
+    // error/503 arm below. Undeclared keeps degrading — see
+    // `lib/db/datasource-expectation.ts` for why intent is never inferred from
+    // the absence itself.
+    const dsExpectation = resolveDatasourceExpectation();
+    const dsIntentionallyAbsent = dsNotConfigured && !dsExpectation.expected;
     const hasKeyError = !!findDiagnostic(diagnostics, "MISSING_API_KEY");
     const hasSemanticError = !!findDiagnostic(
       diagnostics,
@@ -351,7 +385,10 @@ health.openapi(healthRoute, async (c) => {
     let status: "ok" | "degraded" | "error";
     if ((hasDsError && !dsNotConfigured) || internalDbBlocksProbe) status = "error";
     else if (
-      dsNotConfigured ||
+      // A missing datasource degrades unless the deployment declared it wasn't
+      // expected (#4854) — see the narrowing where `dsIntentionallyAbsent` is
+      // defined for why this cannot reach the `error` arm above.
+      (dsNotConfigured && !dsIntentionallyAbsent) ||
       hasKeyError ||
       hasSemanticError ||
       hasInternalDbError ||
@@ -360,7 +397,27 @@ health.openapi(healthRoute, async (c) => {
       status = "degraded";
     else status = "ok";
 
+    // A fail-closed sandbox is a total outage of the explore tool, so it must
+    // not leave the top-level status `ok` — before #4828 it did, and reported
+    // the deploy as a working just-bash box on top of that.
+    //
+    // Promotes ok → degraded and never → error, matching the plugins/backups
+    // precedent below. `error` means 503, and 503 pulls the region out of the
+    // load balancer: that path is reserved for the datasource / SaaS internal DB
+    // (#1981). Chat, SQL, and every other route still serve correctly here — the
+    // explore tool refusing to run is not grounds for taking the region down.
+    if (exploreFailClosed && status === "ok") status = "degraded";
+
     const warnings = [...getStartupWarnings()];
+
+    // #4854 — an unparseable ATLAS_DATASOURCE_EXPECTED is logged once per
+    // process, which is the right volume for a public polled endpoint but the
+    // wrong surface: by the time an operator wonders why their declaration did
+    // nothing, that line has scrolled away. Surface it where they set it. The
+    // deployment is treated as expecting a datasource, so this rides alongside a
+    // `degraded` status rather than explaining an `ok` one.
+    const expectationWarning = datasourceExpectationWarning(dsExpectation);
+    if (expectationWarning) warnings.push(expectationWarning);
 
     // Per-source health from ConnectionRegistry. The bare `describe()`
     // enumerates only native/bare pools; published plugin datasources
@@ -590,9 +647,22 @@ health.openapi(healthRoute, async (c) => {
             : ("healthy" as const),
         ...(dsLatencyMs !== undefined && { latencyMs: dsLatencyMs }),
         lastCheckedAt: now,
-        ...(hasDsError && {
-          message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
-        }),
+        // A declared-absent deployment must not carry `MISSING_DATASOURCE_URL`
+        // on a `disabled` component (#4854) — the diagnostic still fires
+        // (`checkDatasourceUrlPresence` in `startup.ts` raises it when no
+        // datasource URL resolves and DATABASE_URL is set), but showing an error
+        // code for a state the operator deliberately configured is what made the
+        // dashboard read as broken: `component-health-tiles.tsx` renders this
+        // field verbatim. An UNDECLARED absence keeps the code — there it is the
+        // finding, and `status` stays `disabled` either way.
+        ...(dsIntentionallyAbsent
+          ? {
+              message:
+                "No analytics datasource is configured, and this deployment declares that none is expected.",
+            }
+          : hasDsError && {
+              message: dsProbeError ?? dsDiagnostic?.code ?? "DB_UNREACHABLE",
+            }),
       },
       internalDb: {
         status: !process.env.DATABASE_URL
@@ -625,13 +695,38 @@ health.openapi(healthRoute, async (c) => {
         status: schedulerEnabled ? "healthy" as const : "disabled" as const,
         lastCheckedAt: now,
       },
-      // just-bash means no isolation — report degraded so operators know
-      sandbox: {
-        status: exploreBackend === "just-bash" ? "degraded" as const : "healthy" as const,
-        backend: exploreBackend,
-        lastCheckedAt: now,
-        ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
-      },
+      // Three states, not two. An unsandboxed backend means no isolation —
+      // report degraded so operators know; posture comes from BACKEND_ISOLATION
+      // rather than a `=== "just-bash"` comparison, so a future unsandboxed
+      // backend cannot report itself healthy by not being named here (#4824).
+      // Fail-closed is DOWN, not weakened — the tool is out, so it must not be
+      // flattened into the unsandboxed bucket.
+      sandbox: exploreFailClosed
+        ? {
+            status: "down" as const,
+            backend: exploreBackend,
+            lastCheckedAt: now,
+            // "no CONFIGURED backend" deliberately: a sandbox plugin or a
+            // per-workspace BYOC backend sits ahead of the resolved plan and is
+            // invisible to it until the first explore call, so an unqualified
+            // "every request is refused" would contradict the same hedge the
+            // boot warning carries.
+            message:
+              "Explore tool unavailable — no configured sandbox backend can be constructed and " +
+              "the deployment is pinned fail-closed, so explore requests are refused. " +
+              "See the startup warnings for the specific backend and credential.",
+          }
+        : {
+            status:
+              BACKEND_ISOLATION[exploreBackend] === "unsandboxed"
+                ? "degraded" as const
+                : "healthy" as const,
+            backend: exploreBackend,
+            lastCheckedAt: now,
+            ...(BACKEND_ISOLATION[exploreBackend] === "unsandboxed" && {
+              message: `No sandbox isolation — using ${exploreBackend} fallback`,
+            }),
+          },
       plugins: pluginsComponent,
       backups: backupsComponent,
     };
@@ -702,7 +797,19 @@ health.openapi(healthRoute, async (c) => {
             },
         explore: {
           backend: exploreBackend,
-          isolated: exploreBackend !== "just-bash",
+          // `!== "unsandboxed"` (not `=== "isolated"`) so a plugin backend keeps
+          // reporting isolated:true as it always has — its `isolationVerified:
+          // false` below is what says Atlas has not confirmed the claim.
+          //
+          // Fail-closed reports `false`. Nothing unsandboxed runs, so `true` is
+          // arguably defensible — but this field is what monitors alert on, and
+          // a totally broken explore tool must not read as green. When the two
+          // readings conflict, the one that raises the alarm is the correct
+          // default on an isolation surface; `backend: "fail-closed"` carries
+          // the precise state.
+          isolated: exploreFailClosed
+            ? false
+            : BACKEND_ISOLATION[exploreBackend] !== "unsandboxed",
           ...(exploreBackend === "plugin" && { isolationVerified: false }),
           ...(() => {
             const pluginId = exploreBackend === "plugin" ? getActiveSandboxPluginId() : null;

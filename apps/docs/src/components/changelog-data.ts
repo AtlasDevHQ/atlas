@@ -34,6 +34,21 @@ export const releases: Release[] = [
     ],
   },
   {
+    version: "v0.1.0",
+    title: "Public Launch",
+    date: "2026-07-24",
+    summary:
+      "Atlas is public. This is the launch release: an AI data analyst you can run anywhere, answering plain-English questions across SQL warehouses and REST/OpenAPI sources, grounded in a semantic layer you author and a Knowledge Base of your own documents. Every query it runs is read-only by construction. Self-hosting is free under AGPL-3.0 with nothing held back; Atlas Cloud adds three-region data residency, an OAuth 2.1 MCP server any agent can connect to, and per-seat plans starting at $39. The last blocker before this tag was an adversarial security pass aimed at the running product rather than the source tree — it closed here, together with everything it surfaced.",
+    highlights: [
+      "The first minor version, reserved for the public launch since the versioning scheme was written — sixty-seven patch releases preceded it",
+      "A hostname that resolved to an internal address could slip past the outbound-request guard, which checked the literal host text; it now resolves DNS first and validates the address actually used",
+      "Sandbox containment is now described accurately everywhere: writes are contained by structural isolation (an ephemeral microVM on Cloud, read-only mounts self-hosted), not by a path jail that never existed",
+      "Per-tier Knowledge Base caps, so document volume is a plan entitlement rather than an unbounded cost",
+      "Every agent tool is traced at the registry seam, so a new tool gets telemetry without wiring any in",
+      "Accuracy pass across the public site and docs — region wording, chat-platform reach, and containment claims now match what the code enforces",
+    ],
+  },
+  {
     version: "v0.0.67",
     title: "Seam Consolidation & Aggregate-Review Hardening",
     date: "2026-07-22",

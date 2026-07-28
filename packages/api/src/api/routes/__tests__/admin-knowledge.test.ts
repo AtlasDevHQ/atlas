@@ -218,6 +218,37 @@ void mock.module("@atlas/api/lib/knowledge/connectors", () => ({
   ConnectorRateLimitError,
   toIsoInstant: (value: unknown) => (typeof value === "string" ? value : null),
 }));
+// The brain ingest seam (#4770) — the cycle walk and the "Sync now" route both
+// consult this registry BEFORE the knowledge one, so the router must be able to
+// find a brain source here for the third dispatch arm to be reachable at all.
+let BRAIN_SOURCE: { catalogId: string; source: string; createClient: () => unknown } | undefined;
+const getBrainSourceConnector = mock((_id: string) => BRAIN_SOURCE);
+void mock.module("@atlas/api/lib/brain/ingest/types", () => ({
+  getBrainSourceConnector,
+  registerBrainSourceConnector: () => {},
+  listBrainSourceCatalogIds: () => (BRAIN_SOURCE ? [BRAIN_SOURCE.catalogId] : []),
+  _resetBrainSourceConnectors: () => {},
+}));
+const syncBrainEpisodeSource = mock(async (params: { installId: string }) => ({
+  installId: params.installId,
+  status: "success" as const,
+  mode: "reconciliation" as const,
+  syncedAt: "2026-07-02T02:00:00.000Z",
+  error: null,
+  episodes: {
+    inserted: 4,
+    duplicate: 1,
+    refused: { blank_source_id: 0, blank_body: 0, unusable_grant: 0, invalid_occurred_at: 0 },
+    batchDuplicate: 0,
+  },
+  coverageIncomplete: false,
+  warnings: [],
+  highWaterMark: "2026-07-01T00:00:00.000Z",
+}));
+void mock.module("@atlas/api/lib/brain/ingest/episode-sync", () => ({
+  syncBrainEpisodeSource,
+}));
+
 const syncConnectorCollection = mock(async (params: { collectionSlug: string }) => ({
   collection: params.collectionSlug,
   status: "success" as const,
@@ -344,6 +375,8 @@ beforeEach(() => {
   internalQuery.mockClear();
   syncCollection.mockClear();
   syncConnectorCollection.mockClear();
+  syncBrainEpisodeSource.mockClear();
+  BRAIN_SOURCE = undefined;
   getKnowledgeSyncConnector.mockClear();
   NOTION_CONNECTOR = { catalogId: "catalog:notion-knowledge", vendor: "notion", createClient: () => ({}) };
 });
@@ -817,6 +850,93 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(sf?.source).toBe("salesforce-knowledge");
     expect(sf?.endpointUrl).toBeNull();
     expect(sf?.sync).not.toBeNull();
+  });
+
+  it("dispatches a Slack history collection to the EPISODE engine and lists it as source 'slack-history' (#4770)", async () => {
+    // The third dispatch arm. Without it the knowledge-connector lookup misses
+    // (brain sources live in their own registry) and a perfectly healthy
+    // install answers 500 "contact your operator" — the failure the arm's own
+    // comment claims to prevent.
+    BRAIN_SOURCE = {
+      catalogId: "catalog:slack-history",
+      source: "slack",
+      createClient: () => ({}),
+    };
+    COLLECTION = {
+      install_id: "slack-brain",
+      catalog_id: "catalog:slack-history",
+      status: "published",
+      config: { channels: ["C01ABCDEF"] },
+    };
+    SYNC_STATES = [
+      {
+        collection_id: "slack-brain",
+        last_sync_at: "2026-07-02T02:00:00.000Z",
+        status: "success",
+        error: null,
+        coverage_incomplete: false,
+      },
+    ];
+    const syncRes = await adminKnowledge.request("/slack-brain/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncBrainEpisodeSource).toHaveBeenCalledTimes(1);
+    expect(syncConnectorCollection).not.toHaveBeenCalled();
+    expect(syncCollection).not.toHaveBeenCalled();
+    // Episodes are not documents: the document counters stay null rather than
+    // reporting episode counts in a field the UI labels "documents".
+    const syncBody = (await syncRes.json()) as { documents: unknown; archivedAbsent: unknown };
+    expect(syncBody.documents).toBeNull();
+    expect(syncBody.archivedAbsent).toBeNull();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; sync: { coverageIncomplete: boolean } | null }>;
+    };
+    const brain = body.collections.find((c) => c.slug === "slack-brain");
+    expect(brain?.source).toBe("slack-history");
+    // It carries sync bookkeeping like any other synced collection…
+    expect(brain?.sync).not.toBeNull();
+    expect(brain?.sync?.coverageIncomplete).toBe(false);
+  });
+
+  it("surfaces a coverage-incomplete sync so deferred work is not a plain green tick (#4770)", async () => {
+    // The whole point of putting the flag on the wire. Delete the projection
+    // and this goes red; without it the route would emit `false` for every
+    // collection and an operator could never learn a sync deferred work.
+    BRAIN_SOURCE = {
+      catalogId: "catalog:slack-history",
+      source: "slack",
+      createClient: () => ({}),
+    };
+    COLLECTION = {
+      install_id: "slack-brain",
+      catalog_id: "catalog:slack-history",
+      status: "published",
+      config: { channels: ["C01ABCDEF"] },
+    };
+    SYNC_STATES = [
+      {
+        collection_id: "slack-brain",
+        last_sync_at: "2026-07-02T02:00:00.000Z",
+        status: "success",
+        error: null,
+        coverage_incomplete: true,
+        coverage_detail: "Channel C2 was not read this cycle.",
+      },
+    ];
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{
+        slug: string;
+        sync: { status: string; coverageIncomplete: boolean; coverageDetail: string | null } | null;
+      }>;
+    };
+    const brain = body.collections.find((c) => c.slug === "slack-brain");
+    expect(brain?.sync?.status).toBe("success");
+    expect(brain?.sync?.coverageIncomplete).toBe(true);
+    // A flag with no reason is a flag nobody can act on — the three causes
+    // need three different fixes.
+    expect(brain?.sync?.coverageDetail).toBe("Channel C2 was not read this cycle.");
   });
 
   it("dispatches an Intercom collection to the connector engine and lists it as source 'intercom' (#4399)", async () => {

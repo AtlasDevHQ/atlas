@@ -1708,6 +1708,134 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // Company-brain chat ingest backfill window (#4770, ADR-0036 §Ingestion) —
+    // how far back a chat channel with no stored mark reads on its first pass.
+    // The operator's lever when a first sync hits the per-sync record cap: the
+    // cap warning names this knob. Read per cycle by
+    // `lib/brain/ingest/slack/connector.ts::getChatBackfillWindowMs`.
+    key: "ATLAS_BRAIN_CHAT_BACKFILL_DAYS",
+    section: "Knowledge Base",
+    label: "Chat History Backfill (days)",
+    description:
+      "How much history a newly-connected chat channel reads on its first sync (default 7). Lower it when a first sync reports that a channel has more history than one cycle can read; already-synced channels are unaffected. Hot-reloaded; non-positive values fall back to the default.",
+    type: "number",
+    default: "7",
+    envVar: "ATLAS_BRAIN_CHAT_BACKFILL_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // Company-brain extraction fiber (#4771, ADR-0036 §Ingestion). Default OFF
+    // while the brain milestone is in flight: the review surface (#4772) is
+    // what makes an extracted fact usable, so until it lands the fiber would
+    // spend model budget filling a queue nobody can read. Platform-scoped
+    // because the fiber is process-wide and drains every workspace's episodes.
+    // Read at fiber-registration time by
+    // `lib/brain/extract.ts::isBrainExtractionEnabled`, so a change takes
+    // effect on the next boot rather than on the next tick.
+    key: "ATLAS_BRAIN_EXTRACTION_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Brain Extraction",
+    description:
+      "Draw fact candidates from stored chat episodes with the workspace's configured model and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_EXTRACTION_ENABLED",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // Audience-membership sync (#4801, ADR-0036 §Access control). WORKSPACE-
+    // scoped and default ON, unlike its extraction sibling above, because the
+    // two knobs answer different questions. Extraction spends model budget, so
+    // it defaults off; this resolves a Slack roster the workspace already
+    // granted Atlas read access to, and defaulting it OFF would mean private-
+    // channel ingest keeps producing facts that are invisible to everyone —
+    // the exact failure #4801 exists to end.
+    //
+    // Workspace-scoped because it encodes a tenant's decision (may Atlas match
+    // our Slack members' emails to Atlas accounts?), not an operator's. The
+    // fiber ALSO reads this key with no workspace, which resolves to the
+    // platform value — the operator's process-wide off switch, applied at
+    // RESTART (the fiber's gate is evaluated once at registration). Mid-run, a
+    // platform flip takes effect through the per-install re-read inside the
+    // cycle — except for a workspace carrying an explicit `true` override,
+    // since workspace precedence beats platform.
+    key: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Brain Audience Sync",
+    description:
+      "Keep private chat channels' membership in sync so facts drawn from them are visible to the people in the channel — and hidden again when someone leaves. Matches channel members' email addresses against existing Atlas accounts; it never creates accounts and never stores the channel roster. Requires Slack's users:read and users:read.email scopes.",
+    type: "boolean",
+    default: "true",
+    envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+    scope: "workspace",
+    saasVisible: false,
+  },
+  {
+    // Cadence of the membership sync. A knob rather than a constant because it
+    // is the lever for the revocation-latency question a security-conscious
+    // workspace will ask ("how long after I remove someone can they still read
+    // it?") — the answer is one interval, and this is where it is set.
+    key: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
+    section: "Knowledge Base",
+    label: "Company Brain Audience Sync Interval",
+    description:
+      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the shortest delay between someone leaving a channel and losing access to facts drawn from it — a channel whose roster cannot be read keeps its membership until it can, up to the staleness limit below. Applies at restart; non-positive or unparseable values fall back to the default.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // The time bound on the interval knob's promise (#4808). Without it, "the
+    // answer is one interval" holds only while the roster reads SUCCEED — a
+    // channel Atlas was removed from fails every cycle forever and keeps
+    // granting access on a roster nobody has been able to verify since.
+    //
+    // Platform-scoped, not workspace: it is a floor the operator sets. A
+    // workspace admin raising their own staleness tolerance is precisely the
+    // self-serving direction, and lowering it is not a decision they have the
+    // signals to make.
+    //
+    // 7 days ≈ 336 default intervals — long enough that a Slack outage, a
+    // token rotation, or a weekend of 429s resolves well inside it, so what
+    // remains at expiry is an abandoned connection, which SHOULD stop granting.
+    key: "ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",
+    section: "Knowledge Base",
+    label: "Company Brain Audience Staleness Limit",
+    description:
+      "How long a private chat channel's membership stays valid after Atlas last verified it against the source, in hours (default 168 = 7 days). Past this, facts drawn from that channel stop being readable through its membership until a sync succeeds again — so a channel Atlas has lost access to cannot keep granting access indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to 0 to disable the limit and rely on the sync-cycle alerts alone.",
+    type: "number",
+    default: "168",
+    envVar: "ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // Cadence of the malformed-grant sweep (#4797). DAILY by default, and the
+    // gap from the audience sync's 30 minutes is the point: a malformed grant
+    // is a PERMANENT data defect, so the sweep re-reports the same rows every
+    // cycle forever. The count on the span is a gauge and wants that; the log
+    // line is the fix list and does not. Cadence is what keeps the second one
+    // a digest rather than noise — see `lib/brain/grant-sweep.ts`'s header.
+    //
+    // Platform-scoped: this observes a data-integrity defect in the operator's
+    // deployment, and a workspace admin turning down the rate at which their
+    // own broken rows get reported is the self-serving direction.
+    key: "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS",
+    section: "Knowledge Base",
+    label: "Company Brain Grant Sweep Interval",
+    description:
+      "How often Atlas scans company-brain facts and episodes for access grants that name nobody, in hours (default 24). Such rows are invisible to every reader and to the review queue, and nothing repairs them automatically — the sweep only counts and logs them, and never rejects or changes anything. Applies at restart; non-positive or unparseable values fall back to the default, values below 0.05 hours (3 minutes) are clamped up, and values above ~596 hours are clamped down to the maximum timer delay.",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

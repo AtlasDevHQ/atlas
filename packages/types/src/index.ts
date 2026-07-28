@@ -46,3 +46,4 @@ export * from "./proactive";
 export * from "./catalog";
 export * from "./session-memory";
 export * from "./durable-run";
+export * from "./brain";

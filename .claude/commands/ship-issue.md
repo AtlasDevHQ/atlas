@@ -1,14 +1,31 @@
+---
+description: "L0 inner loop — take ONE issue from nothing to a merged PR autonomously, halting only at human boundaries. Usage: /ship-issue 1234 [base-branch]."
+---
+
 L0 — the inner ship loop. Take ONE issue from nothing to a merged PR, autonomously, halting only at the human boundaries. This is the unit `/ship-milestone` runs per issue.
 
-**Input:** `$ARGUMENTS` — the issue number (e.g. `1234`). Required.
+**Input:** `$ARGUMENTS` — the issue number (e.g. `1234`), optionally followed by a base branch. Required.
 
-**You type:** `/ship-issue 1234`
+**You type:** `/ship-issue 1234` · `/ship-issue 1234 milestone/v0.2.0-brain-m1`
 
 ---
 
+**Base branch — `main` by default, a milestone branch when named**
+
+Everything below says "`main`". If a second argument names a `milestone/**` branch, that branch is the base for the whole run: branch off it, PR into it, merge into it. This is **milestone-branch mode** — a whole milestone accumulates on one long-running integration branch and reaches `main` as a single reviewed merge, so `main` stays releasable while a multi-issue arc is half-built.
+
+What changes, and nothing else:
+
+- **Step 0** — `git worktree add -b <branch> ../atlas-wt-<slug> origin/<base>`
+- **Step 5** — `/pr` must target the base: `gh pr create --base <base> …`. `Closes #<N>` still works (GitHub closes on merge into the default branch — verify at `/tidy` and close by hand if it didn't fire).
+- **Merge discipline** — CLAUDE.md's required checks are enforced by branch protection on **`main` only**. On a milestone branch the same checks *run* (`ci.yml` / `deploy-validation.yml` are filtered to `[main, "milestone/**"]`) but nothing blocks a merge, so the gate is **your** judgment: `gh pr checks <N> --watch` green before merge, exactly as if protection were on. **One check is structurally absent: `Analyze (javascript-typescript)`** — CodeQL default setup is `main`-only and cannot be branch-filtered. Per CLAUDE.md a missing-by-design gate is a stop sign, not an override invitation; here it is *deferred*, not skipped — it runs on the milestone branch's own PR into `main`, which is where it matters. Do not treat its absence as license to skip the checks that *are* present.
+- **Drift** — before each new issue, re-merge `main` into the milestone branch (`git merge origin/main`) so the stack never diverges far. Landing last among parallel streams is where migration-number collisions bite.
+
+Everything else — the craft loop, `/review-panel`, `/ci`, the fork-PR halt — is unchanged.
+
 **Step 0 — Worktree isolation (MANDATORY, before anything else)**
 
-This repo is a SHARED working tree. Create your own worktree off latest `main` and install deps before reading/editing/running anything:
+This repo is a SHARED working tree. Create your own worktree off latest `main` (or the base branch, above) and install deps before reading/editing/running anything:
 
 ```bash
 git fetch origin

@@ -1,3 +1,7 @@
+---
+description: "Decide what to work on next from open issues, recent commits, and ROADMAP. Outputs prioritized work with full ready-to-run prompts."
+---
+
 You are helping decide what to work on next in Atlas.
 
 **Step 1: Read current state**

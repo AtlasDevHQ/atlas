@@ -75,8 +75,37 @@ const SLACK_SLUG: CatalogId = "slack";
  * admin channel picker (`GET /admin/proactive/channels/available` →
  * `conversations.list`); installs predating them soft-degrade to manual
  * channel-id entry until the workspace re-installs.
+ *
+ * `channels:history` + `groups:history` (#4770) power the company-brain chat
+ * source, which reads `conversations.history` into `brain_episodes`. THIS
+ * STRING IS THE `scope=` PARAM, so a workspace can only hold a scope this list
+ * requests — an install predating them fails the source's install probe with
+ * "reconnect Slack to grant them", and reconnecting is what actually grants
+ * them. Read scopes cannot substitute: `conversations.info` is gated on
+ * `channels:read`/`groups:read` and returns fine without any history scope,
+ * which is why the install handler probes history separately.
+ *
+ * `users:read` + `users:read.email` (#4801) power audience-membership sync,
+ * which resolves a private channel's roster to Atlas users so the channel's
+ * `audience:` grant names real people. `users:read` alone is NOT enough and
+ * fails in the quietest possible way: `users.list` still returns 200 with every
+ * `profile.email` simply ABSENT, which reads as "no member matched an Atlas
+ * account" rather than as a scope error. The pair is requested together for
+ * that reason, and `lib/brain/audience/sync.ts` detects the
+ * directory-with-no-emails shape explicitly rather than trusting the 200.
+ *
+ * Note the asymmetry #4801's design turns on: the ROSTER read
+ * (`conversations.members`) rides on `channels:read`/`groups:read`, already
+ * present above — so only the DIRECTORY read costs a re-consent, and the
+ * privacy decision it encodes is narrowly "may Atlas read Slack member emails".
+ *
+ * OPERATIONAL: the scopes must also be added to the Slack app manifest, and per
+ * CLAUDE.md's operational rule that happens on the STAGING app first. Until an
+ * app's manifest carries them, Slack refuses the consent screen for the whole
+ * install, not just the brain source — so manifest first, then this list.
  */
-const SLACK_SCOPES = "commands,chat:write,app_mentions:read,channels:read,groups:read";
+const SLACK_SCOPES =
+  "commands,chat:write,app_mentions:read,channels:read,groups:read,channels:history,groups:history,users:read,users:read.email";
 
 /**
  * Per-deploy operator config — Slack app client credentials registered

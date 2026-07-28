@@ -223,6 +223,45 @@ describe("validateAndResolve", () => {
     expect(resolved.datasources.default.description).toBeUndefined();
   });
 
+  // #4854 — the config-file half of the datasource-expectation declaration.
+  // Both readers (`isDatasourceExpected`) inject a pre-resolved config in their
+  // own tests, so without these the Zod field and the resolver spread could
+  // both be deleted with every other test still green — and a self-hoster
+  // following the docs would get a silently stripped field.
+  it("carries datasourceExpected through", () => {
+    expect(validateAndResolve({ datasourceExpected: false }).datasourceExpected).toBe(false);
+    expect(validateAndResolve({ datasourceExpected: true }).datasourceExpected).toBe(true);
+  });
+
+  // The tri-state invariant: `undeclared` must not collapse into `declared
+  // expected`. Rewriting the resolver's conditional spread as `?? true` is
+  // behaviour-preserving for today's only reader (which tests `=== false`), so
+  // this assertion is the only thing that would catch it.
+  it("omits datasourceExpected entirely when undeclared", () => {
+    const resolved = validateAndResolve({});
+    expect(resolved.datasourceExpected).toBeUndefined();
+    expect("datasourceExpected" in resolved).toBe(false);
+  });
+
+  // A contradiction (no datasource expected, here are the datasources) warns
+  // rather than throwing: the resolution is unambiguous — a registered
+  // datasource makes the declaration inert — so refusing to boot over it would
+  // be the worse trade. Both values survive so the operator sees what they wrote.
+  it("accepts a contradictory datasourceExpected + datasources, keeping both", () => {
+    const resolved = validateAndResolve({
+      datasourceExpected: false,
+      datasources: { default: { url: "postgresql://host/data" } },
+    });
+    expect(resolved.datasourceExpected).toBe(false);
+    expect(Object.keys(resolved.datasources)).toEqual(["default"]);
+  });
+
+  it("rejects a non-boolean datasourceExpected", () => {
+    expect(() => validateAndResolve({ datasourceExpected: "false" })).toThrow(
+      /datasourceExpected/,
+    );
+  });
+
   it("throws on invalid auth value", () => {
     expect(() => validateAndResolve({ auth: "invalid-mode" })).toThrow(
       "Invalid atlas.config.ts",
@@ -801,6 +840,61 @@ describe("validateToolConfig", () => {
         defaultRegistry,
       ),
     ).rejects.toThrow("Unknown tool(s) in config: unknownTool");
+  });
+
+  // #4773 — the upgrade-safety path. `validateToolConfig` THROWS on an unknown
+  // name, so a rename inside Atlas turns into a failed BOOT in a self-hoster's
+  // deployment on a patch upgrade unless the old spelling is accepted here.
+  it("normalizes a renamed tool in place instead of failing the boot", async () => {
+    const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+    const config = {
+      datasources: {},
+      tools: ["explore", "searchKnowledge"],
+      auth: "auto" as const,
+      semanticLayer: "./semantic",
+      maxTotalConnections: 100,
+      source: "env" as const,
+    };
+    await expect(validateToolConfig(config, defaultRegistry)).resolves.toBeUndefined();
+    expect(config.tools).toEqual(["explore", "searchBrain"]);
+  });
+
+  it("still rejects a renamed spelling whose TARGET does not resolve", async () => {
+    // A stale `RENAMED_TOOLS` entry must surface as the ordinary unknown-tool
+    // error naming the available set, not as a silent substitution of one
+    // missing name for another.
+    const { ToolRegistry } = await import("@atlas/api/lib/tools/registry");
+    const empty = new ToolRegistry().freeze();
+    await expect(
+      validateToolConfig(
+        {
+          datasources: {},
+          tools: ["searchKnowledge"],
+          auth: "auto",
+          semanticLayer: "./semantic",
+          maxTotalConnections: 100,
+          source: "env",
+        },
+        empty,
+      ),
+    ).rejects.toThrow("Unknown tool(s) in config: searchKnowledge");
+  });
+
+  it("does not resolve inherited Object.prototype keys as renames", async () => {
+    const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+    await expect(
+      validateToolConfig(
+        {
+          datasources: {},
+          tools: ["constructor"],
+          auth: "auto",
+          semanticLayer: "./semantic",
+          maxTotalConnections: 100,
+          source: "env",
+        },
+        defaultRegistry,
+      ),
+    ).rejects.toThrow("Unknown tool(s) in config: constructor");
   });
 
   it("includes available tools in unknown tool error message", async () => {

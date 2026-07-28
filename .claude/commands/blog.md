@@ -1,3 +1,7 @@
+---
+description: "Write a new apps/www blog post from an idea, or run an editorial de-AI/voice polish over an existing one. Founder-voice public surface; multi-file route/index/sitemap anatomy."
+---
+
 # Blog Post — Write & Polish
 
 Turn a rough idea into a finished `apps/www` blog post, or run an editorial polish pass over an existing one. The `new` mode is a **collaboration, not a one-shot generator**: you bring an idea, it mines the repo (git history, ROADMAP, changelog, code, ADRs, sibling posts) for real truths and concrete material, riffs on the angle with you in a back-and-forth, then drafts it. Both modes bake in the house voice (plainspoken founder voice, no AI tells), the prose-component structure, and the multi-file anatomy (route + index + sitemap + metadata + byline) so nothing drifts out of sync.
@@ -134,5 +138,5 @@ Converge on the beat structure (Lead → an early stat/visual → H2 sections �
    curl -s http://localhost:3002/blog | grep -o "<slug>"                          # index lists it
    ```
    On a rename, also confirm the **old** URL → **404**.
-3. **Fact-safety.** Cross-check any hard claim against reality before it ships — license is **AGPL-3.0** (not MIT), the SQL pipeline is **7-layer**, datasource/plugin/region counts, pricing. The stale `.claude/research/launch/blog-intro.md` (MIT, 4-layer) is the cautionary tale. For anything load-bearing, hand off to **`/www-audit`** rather than trust memory.
+3. **Fact-safety.** Cross-check any hard claim against reality before it ships — license is **AGPL-3.0** (not MIT), the SQL pipeline is **7-layer**, datasource/plugin/region counts, pricing. The stale `.claude/research/launch/blog-intro.md` (MIT, 4-layer) is the cautionary tale. For anything load-bearing, hand off to **`/audit-www`** rather than trust memory.
 4. **Don't auto-commit.** Blog work is creative and iterative — show the result (quote the key new/changed lines), let Matt react, commit only when he says so. Keep the dev server up for live reload while he reads; offer to shut it down after.

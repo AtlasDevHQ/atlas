@@ -15,10 +15,16 @@ import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError, isRetryableError, type ChatContextWarning } from "@useatlas/types";
+import { matchError, isRetryableError, type ChatContextWarning, type ChatErrorCode } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import { validateEnvironment } from "@atlas/api/lib/startup";
+import {
+  probeWorkspaceCapabilities,
+  shouldRefuseTurn,
+  diagnosticsForBoundWorkspace,
+  NO_CAPABILITY_MESSAGE,
+} from "@atlas/api/lib/workspace-capability";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { logFirstAnswerLatency, isFirstTurn, turnAnsweredQuery } from "@atlas/api/lib/activation-metrics";
@@ -511,7 +517,8 @@ const chatRoute = createRoute({
       },
     },
     400: {
-      description: "Bad request (malformed JSON, missing datasource, or invalid configuration)",
+      description:
+        "Bad request (malformed JSON, invalid configuration, or a workspace with no datasource, knowledge collections, or brain content)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -577,7 +584,7 @@ const chatResumeRoute = createRoute({
       description: "SSE stream of the resumed turn (same protocol as POST /chat).",
       content: { "text/event-stream": { schema: z.string() } },
     },
-    400: { description: "No analytics datasource configured", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Workspace has nothing the agent can serve, or no analytics datasource is configured", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Conversation not found, or nothing to resume", content: { "application/json": { schema: ErrorSchema } } },
@@ -840,36 +847,77 @@ chat.openapi(chatRoute, async (c) => {
     return withRequestContext(
       { requestId, user: authResult.user, atlasMode, agentOrigin: "chat" },
       async () => {
-        // Startup diagnostics — fast-fail with actionable errors
-        const diagnostics = await validateEnvironment();
-        if (diagnostics.length > 0) {
+        // --- Serviceability gate (#4826) ---
+        // Two different questions, depending on tenancy:
+        //
+        //  - UNBOUND (no bound workspace — normally self-hosted single-tenant):
+        //    the process-level `ATLAS_DATASOURCE_URL` is the only thing that
+        //    can serve a turn —
+        //    knowledge collections and brain facts are both workspace-scoped and
+        //    unreachable without an org. The env-level checks are exactly right.
+        //
+        //  - BOUND (a workspace): the question is whether *this workspace* has
+        //    any pillar the agent can serve — a registered datasource, a
+        //    Knowledge Base collection, or brain content. Asking the process
+        //    env instead is what made every knowledge-only / brain-only
+        //    deployment refuse chat outright, telling adopters to configure the
+        //    analytics datasource they had deliberately not bought Atlas for.
+        //    The process-datasource diagnostics are filtered out for the same
+        //    reason; provider/auth/internal-DB diagnostics still apply.
+        const gateDiagnostics = chatOrgId
+          ? diagnosticsForBoundWorkspace(await validateEnvironment())
+          : await validateEnvironment();
+        if (gateDiagnostics.length > 0) {
           return c.json(
             {
               error: "configuration_error",
-              message: diagnostics.map((d) => d.message).join("\n\n"),
-              diagnostics,
+              message: gateDiagnostics.map((d) => d.message).join("\n\n"),
+              diagnostics: gateDiagnostics,
               retryable: false,
               requestId,
             },
             400,
           );
         }
-  
-        // Datasource guard — diagnostics pass (it's a warning) but chat requires a datasource
-        const { resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
-        if (!resolveDatasourceUrl()) {
-          return c.json(
-            {
-              error: "no_datasource",
-              message:
-                "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
-              retryable: false,
-              requestId,
-            },
-            400,
-          );
+
+        if (chatOrgId) {
+          const probe = await probeWorkspaceCapabilities(chatOrgId);
+          if (shouldRefuseTurn(probe)) {
+            log.warn({ requestId, orgId: chatOrgId }, "Chat rejected — workspace has no servable capability");
+            return c.json(
+              {
+                error: "no_capability" satisfies ChatErrorCode,
+                message: NO_CAPABILITY_MESSAGE,
+                retryable: false,
+                requestId,
+              },
+              400,
+            );
+          }
+          if (probe.kind === "unknown") {
+            // Deliberate fail-open. Logged at the route so an operator reading
+            // the gate can tell an undecidable probe from a servable workspace.
+            log.warn(
+              { requestId, orgId: chatOrgId, reason: probe.reason },
+              "Capability probe undecidable — failing open and serving the turn",
+            );
+          }
+        } else {
+          const { resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
+          if (!resolveDatasourceUrl()) {
+            return c.json(
+              {
+                error: "no_datasource",
+                message:
+                  "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
+                retryable: false,
+                requestId,
+              },
+              400,
+            );
+          }
         }
-  
+
         // Parse request body separately so malformed JSON gets a 400, not 500
         let body: unknown;
         try {
@@ -1973,13 +2021,33 @@ chat.openapi(chatResumeRoute, async (c) => {
     return withRequestContext(
       { requestId, user: authResult.user, atlasMode, agentOrigin: "chat", actor: { kind: "human" } },
       async () => {
-        // Datasource guard — a resumed turn still needs a live datasource.
-        const { resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
-        if (!resolveDatasourceUrl()) {
-          return c.json(
-            { error: "no_datasource", message: "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.", retryable: false, requestId },
-            400,
-          );
+        // Serviceability gate — a resumed turn needs the same capability a fresh
+        // one does, and asks the same tenancy-aware question (#4826). Kept in
+        // lockstep with the POST /api/chat gate above; a resume that bypassed it
+        // would be a back door into the agent loop for an empty workspace.
+        if (orgId) {
+          const probe = await probeWorkspaceCapabilities(orgId);
+          if (shouldRefuseTurn(probe)) {
+            log.warn({ requestId, orgId }, "Resume rejected — workspace has no servable capability");
+            return c.json(
+              { error: "no_capability" satisfies ChatErrorCode, message: NO_CAPABILITY_MESSAGE, retryable: false, requestId },
+              400,
+            );
+          }
+          if (probe.kind === "unknown") {
+            log.warn(
+              { requestId, orgId, reason: probe.reason },
+              "Capability probe undecidable — failing open and resuming the turn",
+            );
+          }
+        } else {
+          const { resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
+          if (!resolveDatasourceUrl()) {
+            return c.json(
+              { error: "no_datasource", message: "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.", retryable: false, requestId },
+              400,
+            );
+          }
         }
 
         // Conversation OWNERSHIP — re-verified LIVE against the request's auth

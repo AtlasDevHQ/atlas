@@ -56,6 +56,21 @@ describe("ErrorBanner", () => {
     expect(container.textContent).toContain("No data source configured");
   });
 
+  test("renders no_capability distinctly from no_datasource", () => {
+    // #4826 — a knowledge-only or brain-only workspace that has genuinely
+    // nothing connected must not be told to configure a data source env var.
+    const err = makeError({
+      error: "no_capability",
+      message: "Connect a data source, add a Knowledge Base collection, or let the Company Brain learn.",
+    });
+    const { container } = render(
+      <ErrorBanner error={err} authMode="none" />,
+    );
+    expect(container.textContent).toContain("This workspace has no data yet");
+    expect(container.textContent).toContain("Knowledge Base");
+    expect(container.textContent).not.toContain("ATLAS_DATASOURCE_URL");
+  });
+
   test("renders specific message for each provider error", () => {
     const expectations: [string, string][] = [
       ["provider_model_not_found", "model was not found"],

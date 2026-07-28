@@ -1,0 +1,17 @@
+# A vulnerable LIBRARY and nothing else — no OS packages at all.
+#
+# scripts/__tests__/scan-image.test.sh asserts scripts/scan-image.sh exits 0 on
+# this while the finding still lands in the SARIF report. That pins the scope
+# decision documented in scan-image.sh: OS packages block, library findings are
+# reported and left to Dependabot, which is the tool that can open the fix PR.
+#
+# Without this fixture, someone could drop --pkg-types os from the gate and no
+# test would notice — the change would look harmless until it started blocking
+# unrelated PRs on transitive dependency bumps.
+#
+# FROM scratch so there is no OS package database whatsoever: if this image ever
+# fails the gate, it is because the gate started blocking on libraries, not
+# because the base picked up a CVE.
+FROM scratch
+
+COPY lodash-package.json /app/node_modules/lodash/package.json

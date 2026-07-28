@@ -91,6 +91,7 @@ import { attachDrift } from "@atlas/api/lib/semantic/drift";
 import { adminOrgs } from "./admin-orgs";
 import { adminAudit } from "./admin-audit";
 import { adminLearnedPatterns } from "./admin-learned-patterns";
+import { adminBrainFacts } from "./admin-brain-facts";
 import { adminSessions } from "./admin-sessions";
 import { adminPrompts } from "./admin-prompts";
 import { adminSuggestions } from "./admin-suggestions";
@@ -398,6 +399,7 @@ admin.use(withRequestId);
 // 404ing on `GET <path>/`. See ./mount.ts.
 mountBoth(admin, "/organizations", adminOrgs);
 mountBoth(admin, "/learned-patterns", adminLearnedPatterns);
+mountBoth(admin, "/brain-facts", adminBrainFacts);
 mountBoth(admin, "/sessions", adminSessions);
 mountBoth(admin, "/audit", adminAudit);
 mountBoth(admin, "/prompts", adminPrompts);

@@ -163,7 +163,7 @@ describe("agent-auth read-safe allowlist — read-only engine guarantee (#4707)"
       // Read tools — the analyst loop.
       "explore",
       "executeSQL",
-      "searchKnowledge",
+      "searchBrain",
       // Side-effecting, workspace-install-gated integration actions —
       // consciously accepted residual of the postQuery admission (#4707).
       "sendEmail",
@@ -175,7 +175,7 @@ describe("agent-auth read-safe allowlist — read-only engine guarantee (#4707)"
       expect(ACKNOWLEDGED.has(name), `unacknowledged tool "${name}" reachable via postQuery`).toBe(true);
     }
     // Non-vacuity: the read core is actually present.
-    for (const required of ["explore", "executeSQL", "searchKnowledge"]) {
+    for (const required of ["explore", "executeSQL", "searchBrain"]) {
       expect(names).toContain(required);
     }
     // The dashboards write tool is NOT reachable from this surface (#4566).

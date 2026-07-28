@@ -612,6 +612,17 @@ export const ADMIN_ACTIONS = {
     uninstall: "knowledge.uninstall",
   },
   /**
+   * Company brain (#4771, ADR-0036). `extractionCycle` is the per-tick row the
+   * async extraction fiber emits on EVERY terminal path — including the
+   * nothing-to-do one — so the ABSENCE of a row over a window is the "the fiber
+   * stopped" signal, the same forensic invariant
+   * `model_config.catalog_refresh_cycle` carries. Platform-scoped: one tick
+   * drains episodes across workspaces, so no single org owns the row.
+   */
+  brain: {
+    extractionCycle: "brain.extraction_cycle",
+  },
+  /**
    * Without these entries a compromised admin could shrink retentionDays
    * and hard-delete the audit trail leaving zero forensic record.
    *
@@ -968,6 +979,23 @@ export const ADMIN_ACTIONS = {
     capabilityDeny: "agent.capability.deny",
     capabilityRevoke: "agent.capability.revoke",
     capabilityExecute: "agent.capability.execute",
+  },
+  /**
+   * Company-brain fact review (#4772, ADR-0036).
+   *
+   * `retract` is the review gate's NEGATIVE verb, and the only fact-lifecycle
+   * event with a durable audit row of its own. There is deliberately no
+   * `brainFact.approve` here: approval is the atomic publish endpoint, which
+   * already records its own action for the whole publish — a second "approved"
+   * row per fact would claim a decision the publish transaction, not this
+   * surface, actually made.
+   *
+   * `metadata.invalidatedAt` is the tombstone timestamp. A retraction is never
+   * a delete (ADR-0036: supersession is not deletion), so the row it points at
+   * is still there to be read as-of.
+   */
+  brainFact: {
+    retract: "brain_fact.retract",
   },
 } as const;
 

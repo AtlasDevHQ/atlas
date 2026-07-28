@@ -1,3 +1,7 @@
+---
+description: "Switch to main, pull, and bun install. Use after a merge to get back to a clean baseline."
+---
+
 Switch to the main branch, pull the latest changes, and install dependencies. Run these commands sequentially:
 
 1. `git checkout main`

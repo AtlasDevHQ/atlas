@@ -481,6 +481,20 @@ const AtlasConfigSchema = z.object({
   datasources: z.record(z.string(), DatasourceConfigSchema).optional(),
 
   /**
+   * Whether this deployment is expected to have a process-level analytics
+   * datasource at all (#4854). Set `false` on a deployment that intentionally
+   * has none — a multi-tenant SaaS region whose connections live per-workspace,
+   * or a knowledge-only / brain-only self-host — so `/health` reports the
+   * `datasource` component as `disabled` without degrading the top-level rollup.
+   *
+   * Omitted means **expected**: a box that simply forgot `ATLAS_DATASOURCE_URL`
+   * must keep degrading rather than silently reading green. `ATLAS_DATASOURCE_EXPECTED`
+   * overrides this per-service — required when several services share one config
+   * file (see `lib/db/datasource-expectation.ts`).
+   */
+  datasourceExpected: z.boolean().optional(),
+
+  /**
    * Tool names to enable. When omitted, defaults to the two core tools
    * (explore, executeSQL).
    */
@@ -701,6 +715,12 @@ export { AtlasConfigSchema, RateLimitConfigSchema, RLSConditionSchema, RLSPolicy
  */
 export interface ResolvedConfig {
   datasources: Record<string, DatasourceConfig>;
+  /**
+   * Whether a process-level analytics datasource is expected on this deployment
+   * (#4854). Absent means expected — see `lib/db/datasource-expectation.ts`,
+   * which owns the resolution and the env-var override.
+   */
+  datasourceExpected?: boolean;
   tools: string[];
   auth: AuthConfig;
   semanticLayer: string;
@@ -1318,8 +1338,29 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     validatePlugins(config.plugins);
   }
 
+  // #4854 — `datasourceExpected: false` says no analytics datasource is expected
+  // here; a `datasources` block says one is. Both cannot be true statements
+  // about the same deployment. A warning rather than a throw: the resolution is
+  // unambiguous (the registered datasource wins — `dsNotConfigured` is false, so
+  // the declaration is inert), and refusing to boot over a contradiction that
+  // changes no behaviour would be a worse trade than saying so.
+  if (config.datasourceExpected === false && Object.keys(config.datasources ?? {}).length > 0) {
+    log.warn(
+      { datasources: Object.keys(config.datasources ?? {}) },
+      "atlas.config.ts declares datasourceExpected: false but also defines datasources — " +
+        "the declaration is ignored for health reporting while a datasource is registered. " +
+        "Remove one of the two.",
+    );
+  }
+
   return {
     datasources: config.datasources ?? {},
+    // Conditional spread, not `?? true`: "undeclared" must stay distinguishable
+    // from "declared expected" so the resolver here never becomes a second
+    // source of truth for the default (`isDatasourceExpected()` owns it).
+    ...(config.datasourceExpected !== undefined
+      ? { datasourceExpected: config.datasourceExpected }
+      : {}),
     tools: config.tools ?? ["explore", "executeSQL"],
     auth: config.auth ?? "auto",
     semanticLayer: config.semanticLayer ?? "./semantic",
@@ -1648,7 +1689,16 @@ export async function applyDatasources(
  * Validate that the tool names in the config match registered tools in the
  * default registry. Throws if any tool names are unrecognized.
  *
- * @param config - The resolved configuration.
+ * Renamed tools are normalized IN PLACE first (#4773). This function is where
+ * that belongs: it is the only consumer of `config.tools` — nothing downstream
+ * filters the registry by it — so rewriting the array here changes exactly one
+ * thing, whether boot succeeds. It has to be handled at all because this
+ * function THROWS on an unknown name, which would turn a rename inside Atlas
+ * into a failed boot in a self-hoster's deployment on a patch upgrade. The
+ * accepted spelling is warned about, not silently honoured, so the operator has
+ * a reason to fix their config before the window closes.
+ *
+ * @param config - The resolved configuration. `tools` may be rewritten.
  * @param registry - The ToolRegistry to validate against. When omitted,
  *   uses the default registry from `./tools/registry`.
  * @throws {Error} When config references tool names not in the registry.
@@ -1657,7 +1707,28 @@ export async function validateToolConfig(
   config: ResolvedConfig,
   registry?: ToolRegistry,
 ): Promise<void> {
-  const toolRegistry = registry ?? (await import("./tools/registry")).defaultRegistry;
+  const { defaultRegistry, RENAMED_TOOLS } = await import("./tools/registry");
+  const toolRegistry = registry ?? defaultRegistry;
+
+  for (let i = 0; i < config.tools.length; i++) {
+    // `Object.hasOwn` rather than a bare index: `RENAMED_TOOLS` is an object
+    // literal, so a config listing `"constructor"` would otherwise reach
+    // `Object.prototype` and yield a truthy non-string.
+    const renamedTo = Object.hasOwn(RENAMED_TOOLS, config.tools[i])
+      ? RENAMED_TOOLS[config.tools[i]]
+      : undefined;
+    // Only accept the old spelling when the NEW one actually resolves — a stale
+    // rename entry pointing at a tool that no longer exists must surface as the
+    // ordinary unknown-tool error naming the available set, not as a silent
+    // substitution of one missing name for another.
+    if (renamedTo && toolRegistry.get(renamedTo)) {
+      log.warn(
+        { from: config.tools[i], to: renamedTo },
+        `Config lists the renamed tool "${config.tools[i]}"; it is now "${renamedTo}". Accepted for now — update atlas.config.ts, as the old name will stop resolving.`,
+      );
+      config.tools[i] = renamedTo;
+    }
+  }
 
   const unknownTools: string[] = [];
   for (const toolName of config.tools) {
@@ -1716,7 +1787,20 @@ export function _resetConfig(): void {
   _resolved = null;
 }
 
-/** Set the cached config directly. For testing only. */
-export function _setConfigForTest(config: ResolvedConfig | null): void {
-  _resolved = config;
+/**
+ * Set the cached config directly. For testing only.
+ *
+ * Accepts a `Partial` because essentially every caller drives one field (a
+ * deploy mode, a sandbox pin, a datasource expectation) and the rest of
+ * `ResolvedConfig` is irrelevant to what it is testing. Typing this as the full
+ * shape pushed an `as any` cast onto ~100 call sites — a lie repeated a hundred
+ * times, each needing its own oxlint-disable. Told once, here, it stays visible.
+ *
+ * The cast is sound for the intended use and unsound in general: readers of an
+ * absent field see `undefined` where the type promises a value. That is exactly
+ * what a partial fixture means, and it is why this is test-only.
+ */
+export function _setConfigForTest(config: Partial<ResolvedConfig> | null): void {
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see the note above: one deliberate widening for a test-only seam
+  _resolved = config as any;
 }

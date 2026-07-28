@@ -49,6 +49,10 @@ import {
 import { FRONT_CATALOG_ID, FRONT_SLUG } from "@atlas/api/lib/knowledge/front/config";
 import { HELPSCOUT_CATALOG_ID, HELPSCOUT_SLUG } from "@atlas/api/lib/knowledge/helpscout/config";
 import { FRESHDESK_CATALOG_ID, FRESHDESK_SLUG } from "@atlas/api/lib/knowledge/freshdesk/config";
+import {
+  SLACK_HISTORY_CATALOG_ID,
+  SLACK_HISTORY_SLUG,
+} from "@atlas/api/lib/brain/ingest/slack/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -658,6 +662,58 @@ export const BUILTIN_FRESHDESK_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   ],
 };
 
+/**
+ * The Slack chat-history BRAIN SOURCE catalog row (#4770, ADR-0036 §Ingestion
+ * & connectors).
+ *
+ * The odd one out in this list, deliberately: it is a `pillar='knowledge'`
+ * install like its neighbours — which is what lets it reuse the collection
+ * install spine, the `knowledge_sync_state` bookkeeping, and the ONE sync
+ * cycle walk verbatim (ADR-0036 §T6's "reuse the engine, fork the ingest
+ * core") — but what it ingests is tier-3 EPISODES into `brain_episodes`, not
+ * knowledge documents. The cycle walk routes it on that ingest target
+ * (`lib/knowledge/sync.ts::dispatchInstall`).
+ *
+ * Two visible consequences, both worth stating because they will look like
+ * bugs: an installed Slack history source appears on /admin/knowledge as a
+ * collection with ZERO documents (its rows land in `brain_episodes`), and it
+ * CONSUMES one of the workspace's plan-capped knowledge-collection slots. Both
+ * are the price of reusing the collection spine verbatim. The brain's own
+ * surface is #4772; until it lands, the sync status row is where this source
+ * reports itself.
+ *
+ * No secret field: the connector reuses the workspace's existing Slack OAuth
+ * install (`chat_cache`), so installing this row registers no new Slack app
+ * and writes no `knowledge_sync_credentials` row. The id/slug are the config
+ * SSOT (`SLACK_HISTORY_CATALOG_ID` / `SLACK_HISTORY_SLUG`).
+ */
+export const BUILTIN_SLACK_HISTORY_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: SLACK_HISTORY_CATALOG_ID,
+  slug: SLACK_HISTORY_SLUG,
+  name: "Company Brain (Slack history)",
+  description:
+    "Read history from chosen Slack channels into the company brain as immutable, deduped episodes using the workspace's existing Slack connection — no extra credentials. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "channels",
+      type: "string",
+      label: "Channels",
+      required: true,
+      description:
+        "Comma-separated Slack channel IDs (e.g. C01ABCDEF, C02GHIJKL) that Atlas should read history from. Invite the Atlas bot to each channel first. Private channels are ingested with an access grant scoped to that channel.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this brain source.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -672,6 +728,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_FRONT_CATALOG_ROW,
   BUILTIN_HELPSCOUT_CATALOG_ROW,
   BUILTIN_FRESHDESK_CATALOG_ROW,
+  BUILTIN_SLACK_HISTORY_CATALOG_ROW,
 ];
 
 /**

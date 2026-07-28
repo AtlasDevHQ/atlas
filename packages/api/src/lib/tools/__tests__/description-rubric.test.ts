@@ -40,6 +40,8 @@ import {
   QUERY_TOOL_DESCRIPTION,
   RUN_METRIC_ERROR_CODES,
   RUN_METRIC_TOOL_DESCRIPTION,
+  SEARCH_BRAIN_ERROR_CODES,
+  SEARCH_BRAIN_TOOL_DESCRIPTION,
   SEARCH_GLOSSARY_ERROR_CODES,
   SEARCH_GLOSSARY_TOOL_DESCRIPTION,
   withErrorContract,
@@ -69,6 +71,8 @@ const RECOGNIZED_EXAMPLE_KEYS = [
   "count", // listEntities / searchGlossary response
   "question", // query
   "answer", // query response
+  "query", // searchBrain
+  "limit", // searchBrain
 ] as const;
 const JSON_EXAMPLE_RE = new RegExp(
   `\\{[^{}]*"(?:${RECOGNIZED_EXAMPLE_KEYS.join("|")})"\\s*:[^{}]+\\}`,
@@ -88,6 +92,7 @@ const TOOLS: readonly ToolUnderRubric[] = [
   { name: "searchGlossary", base: SEARCH_GLOSSARY_TOOL_DESCRIPTION, codes: SEARCH_GLOSSARY_ERROR_CODES },
   { name: "runMetric", base: RUN_METRIC_TOOL_DESCRIPTION, codes: RUN_METRIC_ERROR_CODES },
   { name: "query", base: QUERY_TOOL_DESCRIPTION, codes: QUERY_ERROR_CODES },
+  { name: "searchBrain", base: SEARCH_BRAIN_TOOL_DESCRIPTION, codes: SEARCH_BRAIN_ERROR_CODES },
 ];
 
 function wordCount(text: string): number {
@@ -103,6 +108,7 @@ describe("MCP tool description rubric", () => {
       "listEntities",
       "query",
       "runMetric",
+      "searchBrain",
       "searchGlossary",
     ]);
   });

@@ -1,0 +1,89 @@
+# Trivy gate baseline — pre-existing OS-package findings in the base images.
+#
+# ── What this file is NOT ─────────────────────────────────────────────────────
+#
+# It is not a waiver, and it hides nothing. scripts/scan-image.sh runs Trivy
+# twice and applies this file to ONE of the two passes:
+#
+#   report pass  --ignorefile /dev/null   every severity, every package type,
+#                                         including everything listed here →
+#                                         SARIF → GitHub code scanning.
+#
+#   gate pass    --ignorefile .trivyignore  fixable HIGH/CRITICAL OS packages,
+#                                           minus this list → blocks the merge.
+#
+# The effect is that the gate blocks *regressions*. A newly disclosed CVE, or
+# one a PR introduces via a base-image change, goes red on that PR. Debt that
+# arrived with a third-party base image Atlas does not build stays visible in
+# code scanning without pinning every unrelated PR red.
+#
+# ── Why there is a baseline at all ────────────────────────────────────────────
+#
+# Every entry below was present in an upstream base image on the day the gate
+# landed (#4822), and none was fixable by bumping a pin: the pinned digest for
+# oven/bun:1.3.13 IS the current digest for that tag, so upstream has simply not
+# rebuilt with the patched packages. "Fixable" in Trivy's sense means the distro
+# published a fixed package version — not that a fixed base image exists for us
+# to move to.
+#
+# Clearing them needs a change to shipped artifacts: an apt/apk upgrade in the
+# runner stages, a rebase onto a refreshed base, or waiting for upstream to
+# rebuild. That is deliberate product surface, and it was out of scope for the
+# PR that added the gate, which landed during the 2026-07-27 ship freeze.
+#
+# ── Scope note ────────────────────────────────────────────────────────────────
+#
+# Only OS packages appear here, because only OS packages are gated. Library
+# findings inside the images (npm, Go modules) are reported to code scanning but
+# never block — they are Dependabot's remit, and it can open the fix PR. See the
+# SCOPE section in scripts/scan-image.sh.
+#
+# ── How to clear it ───────────────────────────────────────────────────────────
+#
+# Re-scan after any base-image change and delete every line that no longer
+# appears. The expiry dates are the forcing function: once passed, Trivy stops
+# honouring the entry and the gate goes red until it is fixed or consciously
+# re-dated. Do not bulk-extend the dates — re-scan first.
+#
+#   bash scripts/list-runtime-base-images.sh | while read -r i; do \
+#     trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL \
+#       --ignore-unfixed --ignorefile /dev/null "$i"; done
+#
+# Entries are global rather than per-image on purpose: the two runtime bases
+# share 7 of these, so per-image files would duplicate them and drift apart.
+#
+# Baseline captured 2026-07-27. Expiry 2026-09-01 — after the v0.2.0 release on
+# 2026-08-03, with slack to schedule the base-image work.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared by BOTH runtime bases (oven/bun:1.3.13 and caddy:2.10-alpine).
+# openssl plus libcap — the same upstream advisories reaching Debian and Alpine.
+# These ship in every Atlas image, including the create-atlas docker templates.
+# ─────────────────────────────────────────────────────────────────────────────
+# HIGH     libcrypto3 (debian: libssl3t64)
+CVE-2026-28387 exp:2026-09-01
+# HIGH     libcrypto3 (debian: libssl3t64)
+CVE-2026-28388 exp:2026-09-01
+# HIGH     libcrypto3 (debian: libssl3t64)
+CVE-2026-28389 exp:2026-09-01
+# HIGH     libcrypto3 (debian: libssl3t64)
+CVE-2026-28390 exp:2026-09-01
+# CRITICAL libcrypto3 (debian: libssl3t64)
+CVE-2026-31789 exp:2026-09-01
+# HIGH     libcrypto3 (debian: libssl3t64)
+CVE-2026-45447 exp:2026-09-01
+# HIGH     libcap (debian: libcap2)
+CVE-2026-4878 exp:2026-09-01
+
+# ─────────────────────────────────────────────────────────────────────────────
+# caddy:2.10-alpine only — runtime base for deploy/docs. Alpine/musl packages
+# with no Debian equivalent, so they do not affect the bun-based images.
+# ─────────────────────────────────────────────────────────────────────────────
+# HIGH     zlib
+CVE-2026-22184 exp:2026-09-01
+# HIGH     nghttp2-libs
+CVE-2026-27135 exp:2026-09-01
+# HIGH     c-ares
+CVE-2026-33630 exp:2026-09-01
+# HIGH     musl
+CVE-2026-40200 exp:2026-09-01

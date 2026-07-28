@@ -1,0 +1,5 @@
+{
+  "name": "lodash",
+  "version": "4.17.15",
+  "_comment": "Fixture only. Not a real dependency, never installed. Trivy's node-pkg analyzer reads node_modules/*/package.json, so this manifest alone is enough to make an image carry a known-vulnerable library (GHSA-p6mc-m468-83gg, prototype pollution, HIGH, fixed in 4.17.19). Used by scripts/__tests__/scan-image.test.sh to prove that a LIBRARY finding is reported but does not block the gate."
+}

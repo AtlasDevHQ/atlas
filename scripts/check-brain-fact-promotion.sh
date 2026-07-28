@@ -1,0 +1,407 @@
+#!/bin/bash
+# Refuse any write to `brain_facts.status`, or any MUTATION of
+# `brain_facts.visible_to`, outside the atomic publish endpoint (#4769 / #4823,
+# ADR-0036 — acceptance criterion 4). Scope + blind spots below.
+#
+# `brain_facts.status` is the fact class's review gate. ADR-0036 makes the gate
+# the brain's conflict-resolution mechanism, which only holds if `draft →
+# published` happens in exactly ONE place: the exotic content-mode adapter that
+# `/api/v1/admin/publish` runs inside its transaction. A second writer — a
+# connector shortcut, an "just mark it reviewed" admin action, a backfill — would
+# not merely duplicate logic; it would bypass the no-provenance / no-grant
+# refusals and stamp trust on a claim nothing checked.
+#
+# `brain_facts.visible_to` is the fact's ACL, and #4823 made the same publish
+# path its second writer: a draft is promoted with its own grant unioned with
+# those of the episodes on its `provenance` edges. ADR-0036 §T5 permits a grant
+# to widen at the review gate and NOWHERE else, so the same single-writer
+# argument applies — with a worse failure direction. A rogue `status` write
+# over-trusts a claim; a rogue `visible_to` write DISCLOSES one.
+#
+# THE TWO COLUMNS ARE GATED ASYMMETRICALLY, and the asymmetry is load-bearing:
+#   - `status` — refused on UPDATE **and** INSERT. A writer must omit it so
+#     0180's `draft` default applies the review gate by construction.
+#   - `visible_to` — refused on UPDATE **only** (including an upsert's
+#     `DO UPDATE` half). A grant is DERIVED AT INGEST: `reconcile.ts`'s
+#     `INSERT_FACT_SQL` names the column and must, so an INSERT arm here would
+#     refuse the write the whole ACL design rests on. Fixtures pin BOTH
+#     directions, so "tidying" this into symmetry has to fail a test first.
+#
+# WHAT IS REFUSED (each has a fixture in the adversarial suite)
+#   - `UPDATE [schema.]brain_facts … SET … status …`
+#   - `UPDATE [schema.]brain_facts … SET … visible_to …`
+#   - `INSERT INTO [schema.]brain_facts (… status …)`
+#   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … visible_to …`
+#   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
+#     — the path-upsert shape ADR-0030's connector engine uses, and therefore
+#     the single most likely way #4770/#4771 would reach this column. It names
+#     no table after `UPDATE` and no `status` in the column list, so it evaded
+#     both of the patterns above until it was called out.
+#   - `INSERT INTO brain_facts VALUES (…)` with NO column list — positional, so
+#     whether it sets `status` is unknowable by grep. Refused on principle:
+#     a positional insert into an 18-column table is unreviewable anyway.
+#   - `db.update([schema.]brainFacts).set({ status … })` and
+#     `db.insert([schema.]brainFacts).values({ … status … })` — both Drizzle
+#     write-builder halves, including the `.onConflictDoUpdate({ set: { status
+#     … } })` upsert (covered by the insert pattern's window).
+#
+# Matching is case-INSENSITIVE for the SQL forms (keyword casing is a style
+# choice, not a security boundary) and accepts an optional schema qualifier and
+# double-quoted identifier.
+#
+# WHAT THIS GATE STILL CANNOT SEE. Stated in full so nobody reads the list above
+# as a completeness proof:
+#   - A table name assembled at runtime (`UPDATE ${t} SET status`) — ungreppable
+#     by construction.
+#   - A statement whose `SET … status` is more than 400 characters past the
+#     table name (the window bound below).
+#   - Any language or file type outside `--include` (`.ts`/`.tsx`/`.js`).
+# The structural half of the guarantee is therefore NOT this script: it is
+# `adapters/__tests__/brain-facts.test.ts`, which asserts the registry entry
+# stays `exotic`. Flipping it to `simple` would route promotion through the
+# registry's blanket UPDATE and bypass every refusal without any file in this
+# scan changing.
+#
+# NOTE the deliberate over-breadth. Matching is per-STATEMENT, and within a
+# statement the rules ask only "does it touch the table AND mention `status`" —
+# so `status` in a WHERE clause counts. Both of these are refused even though
+# neither mutates the review state:
+#   UPDATE brain_facts SET invalidated_at = now() WHERE … status = 'published'
+#   INSERT INTO brain_facts (…) SELECT … WHERE status = 'draft'
+# That is the safe direction for a security gate. A legitimate case — a
+# retraction or backfill that FILTERS on status, which #4772/#4773 may well
+# want — needs an allowlist entry WITH a rationale, not a quiet loosening. Both
+# shapes have fixtures, so relaxing this has to fail a test first.
+#
+# An INSERT that does NOT name `status` is fine and is the expected shape for
+# every writer: migration 0180 defaults the column to `draft`, so the ingest
+# path (#4770 / #4771) gets the review gate by construction rather than by
+# remembering to ask for it. That is the whole point of the default.
+#
+# ALLOWLIST — each entry is a recorded carve-out, per CLAUDE.md § Content Mode:
+#
+#   packages/api/src/lib/content-mode/adapters/brain-facts.ts
+#     THE promotion path. Runs only from `runPublishPhases`, inside the publish
+#     transaction.
+#
+#   packages/api/src/api/routes/admin-migrate.ts
+#     Region import (ADR-0024). Preserves the SOURCE workspace's review status
+#     verbatim — 0180's header states this explicitly — because a migration must
+#     not silently demote a tenant's already-reviewed facts back to draft, which
+#     would re-queue a human's completed review work at every region cutover.
+#     It is a restore of a prior gate decision, not a new one; the import's own
+#     `grantProblem` validation is paired with the 0180 CHECK.
+#     It also restores `pre_widening_visible_to` (#4836) — necessarily, since
+#     the column cannot be re-derived in the target region (the import writes
+#     `status` verbatim, so the fact never re-publishes and the widening UPDATE
+#     that derives it never runs again). `validateBundle` checks that column's
+#     SHAPE only, not `grantProblem`: absent-or-empty is legitimate there
+#     (`null` = never widened, `[]` = the source could not vouch for it), and
+#     the fail direction is opposite to `visible_to`'s — a bad pre-widening
+#     grant over-WITHHOLDS attribution, which is recoverable, where a bad
+#     `visible_to` would over-disclose.
+#
+# Comments are stripped before matching so an explanatory comment in a source
+# file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in
+# neither the search roots nor `--include`, so the gate can never scan itself.)
+# Two caveats on the stripping, which is the shared sed from check-ee-imports.sh:
+# an UNTERMINATED `/*` truncates the rest of the file, which hides real
+# offenders below it — the safe direction is the one it does NOT take, so treat
+# a suspiciously clean result on a file with odd comment syntax with suspicion.
+#
+# Tests are excluded by filename pattern: a fixture must be able to construct a
+# published row. `db/migrations/` is NOT excluded by directory — the `.sql`
+# migrations are already out of scope via `--include`, and excluding the
+# directory would have let a one-shot backfill under
+# `db/migrations/scripts/*.ts` (where CLAUDE.md says they live) write this
+# column with no gate at all.
+#
+# A regression here means a new promotion path appeared. Route it through
+# `promoteBrainFacts` (or, if it is genuinely a restore-not-a-decision like the
+# region import, add it to ALLOWLIST below WITH the rationale).
+
+set -euo pipefail
+
+# Matched as GLOBS against the full path, naming each file's two real homes:
+# the source of truth under `packages/api/`, and the gitignored copy that
+# `create-atlas/scripts/prepare-templates.sh` mirrors into
+# `create-atlas/templates/*/src/`. The scan covers `create-atlas` on purpose — a
+# template that grew a rogue writer must still fail — so both spellings have to
+# be listed.
+#
+# Deliberately NOT a bare `src/...` suffix, even though that is shorter and
+# covers both. It would exempt those two relative paths in EVERY scanned root,
+# so a `plugins/anything/src/api/routes/admin-migrate.ts` would inherit the
+# region-import carve-out for free. A carve-out has to name the file it trusts,
+# not a shape any package can adopt.
+ALLOWLIST=(
+  "packages/api/src/lib/content-mode/adapters/brain-facts.ts"
+  "packages/api/src/api/routes/admin-migrate.ts"
+  "create-atlas/templates/*/src/lib/content-mode/adapters/brain-facts.ts"
+  "create-atlas/templates/*/src/api/routes/admin-migrate.ts"
+)
+
+# `BRAIN_PROMOTION_ROOT` points the scan at a throwaway tree — used ONLY by the
+# adversarial fixture suite (`scripts/__tests__/check-brain-fact-promotion.test.sh`),
+# so the fixtures can assert the guard actually fires without editing real files.
+if [ -n "${BRAIN_PROMOTION_ROOT:-}" ]; then
+  SEARCH_ROOTS=("$BRAIN_PROMOTION_ROOT")
+else
+  SEARCH_ROOTS=(packages apps ee examples create-atlas create-atlas-plugin plugins)
+fi
+EXISTING_ROOTS=()
+for root in "${SEARCH_ROOTS[@]}"; do
+  [ -d "$root" ] && EXISTING_ROOTS+=("$root")
+done
+
+if [ ${#EXISTING_ROOTS[@]} -eq 0 ]; then
+  echo "::error::no search roots present — wrong working directory?" >&2
+  exit 2
+fi
+
+# Candidate files: anything naming the table in EITHER spelling — the raw-SQL
+# `brain_facts` or the Drizzle export `brainFacts`. Cheap pre-filter; the precise
+# (multi-line, comment-stripped) match happens per file below.
+CANDIDATES=$(grep -rlE 'brain_facts|\bbrainFacts\b' "${EXISTING_ROOTS[@]}" \
+  --include='*.ts' \
+  --include='*.tsx' \
+  --include='*.js' \
+  --exclude='*.test.ts' \
+  --exclude='*.test.tsx' \
+  --exclude='*.spec.ts' \
+  --exclude='*.spec.tsx' \
+  --exclude-dir='__tests__' \
+  --exclude-dir='__mocks__' \
+  --exclude-dir='__test-utils__' \
+  --exclude-dir='node_modules' \
+  --exclude-dir='.next' \
+  --exclude-dir='dist' \
+  --exclude-dir='__snapshots__' \
+  || true)
+
+# Same comment-stripping program as check-ee-imports.sh / the legacy-SQL gate.
+STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$##"'
+
+# Once a file is split into STATEMENTS (below), "these two tokens belong to the
+# same statement" is structural — so each rule is a set of cheap independent
+# greps AND-ed together, not one regex with `.{0,400}`-style windows.
+#
+# That is not only simpler, it is why this gate is fast. The window form was
+# catastrophically backtracking: a single pattern took 1.6s on `schema.ts`
+# alone, and the whole gate ran >200s in `/ci` stage 1.
+#
+# `QUALIFIED` admits an optional schema qualifier with either identifier
+# independently quoted, so `public.brain_facts`, `"public"."brain_facts"`, and
+# `"brain_facts"` all match. `ORM_TABLE` does the same for a namespace-qualified
+# Drizzle reference (`schema.brainFacts`).
+QUALIFIED='("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?'
+ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
+
+# The gated columns, and why the two arms are asymmetric.
+#
+# `status` is refused on UPDATE **and** INSERT: a writer must omit it entirely
+# so 0180's `draft` default applies the review gate by construction.
+#
+# `visible_to` (#4823) is refused on UPDATE **only**. A grant is DERIVED AT
+# INGEST — `reconcile.ts`'s `INSERT_FACT_SQL` and `ingest/episodes.ts` name the
+# column on their inserts, and must — so an INSERT arm here would refuse the
+# write the whole ACL design depends on. What must not exist is a second writer
+# that MUTATES an existing fact's grant: ADR-0036 §T5 permits widening only at
+# the review gate, and unlike the `status` gate the failure direction here is
+# DISCLOSURE rather than fail-closed over-restriction.
+#
+# `pre_widening_visible_to` (#4836) joins it on the same terms, and the `\b`
+# subtlety is why it needs naming rather than inheriting: `_` and `v` are both
+# word characters, so `\bvisible_to\b` does NOT match inside
+# `pre_widening_visible_to`. The widening UPDATE trips the guard today only
+# because it also sets `visible_to` — a future statement touching ONLY the
+# pre-widening column would be invisible to this gate, and corrupting that
+# column is silent in both directions: set it to the widened grant (or NULL)
+# and #4836's disclosure returns in full; set it to `[]` and attribution is
+# withheld corpus-wide. A "backfill the pre-widening grant from evidence edges"
+# script — which migration 0183's header explicitly forecloses — is exactly the
+# shape that would otherwise slip through.
+UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to)'
+ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo)'
+
+# Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
+# ECHOES which one — the two have completely different remedies, and a message
+# that named the wrong column would send the reader to fix code they did not
+# write. When a statement trips on both, `status` is reported: it is the arm
+# with the shorter fix.
+statement_writes_gated_column() {
+  local stmt="$1"
+
+  # Raw SQL — UPDATE … SET … status / visible_to
+  if grep -qiE "UPDATE[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+    && grep -qiE '\bSET\b' <<<"$stmt"; then
+    if grep -qiE '\bstatus\b' <<<"$stmt"; then
+      echo status
+      return 0
+    fi
+    if grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
+      echo visible_to
+      return 0
+    fi
+  fi
+
+  # Raw SQL — INSERT INTO brain_facts … status. Covers BOTH the column-list form
+  # and `ON CONFLICT … DO UPDATE SET status`, because within one statement they
+  # are the same question. Deliberately over-broad: an INSERT that merely reads
+  # `status` in a sub-SELECT also trips this. That is the safe direction, and a
+  # legitimate case wants an allowlist entry with a rationale, not a loosening.
+  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+    && grep -qiE '\bstatus\b' <<<"$stmt"; then
+    echo status
+    return 0
+  fi
+
+  # Raw SQL — the UPSERT's UPDATE half, for `visible_to` only. It needs its own
+  # arm precisely because `visible_to` is INSERT-legal and UPDATE-forbidden, so
+  # it cannot ride the blanket INSERT rule above the way `status` does — and
+  # `ON CONFLICT … DO UPDATE SET visible_to` names no table after `UPDATE`,
+  # which is how it evaded the UPDATE rule when this was first written.
+  # Deliberately over-broad in the same direction as everything else here: an
+  # upsert that inserts `visible_to` and DO-UPDATEs some other column trips it
+  # too, and that wants an allowlist entry with a rationale, not a loosening.
+  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+    && grep -qiE 'ON[[:space:]]+CONFLICT' <<<"$stmt" \
+    && grep -qiE 'DO[[:space:]]+UPDATE' <<<"$stmt" \
+    && grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
+    echo visible_to
+    return 0
+  fi
+
+  # Raw SQL — a column-less positional INSERT. Neither column can appear by
+  # name, so this is refused on shape: a positional insert into an 18-column
+  # table is unreviewable regardless of what it happens to set.
+  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then
+    echo status
+    return 0
+  fi
+
+  # Drizzle write-builders, both halves. The insert half matters as much as the
+  # update half: without it the ORM and raw-SQL spellings of one write would
+  # disagree, and the ORM insert is the shape an ingest fiber reaches for.
+  if grep -qE "\.update\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+    && grep -qE '\.set\(' <<<"$stmt"; then
+    if grep -qE '\bstatus\b' <<<"$stmt"; then
+      echo status
+      return 0
+    fi
+    if grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
+      echo visible_to
+      return 0
+    fi
+  fi
+  if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+    && grep -qE '\bstatus\b' <<<"$stmt"; then
+    echo status
+    return 0
+  fi
+  # The ORM twin of the raw upsert arm above, for the same asymmetry reason:
+  # `.insert().values({visibleTo})` is legal, `.onConflictDoUpdate` of it is not.
+  if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+    && grep -qE '\.onConflictDoUpdate\(' <<<"$stmt" \
+    && grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
+    echo visible_to
+    return 0
+  fi
+
+  return 1
+}
+
+OFFENDERS=""
+# Which arm(s) fired — the two columns have completely different remedies, so
+# only the relevant advice is printed. Printing both would put a wrong fix in
+# front of every reader, and "omit the column" is actively wrong for a grant.
+SAW_STATUS=0
+SAW_GRANT=0
+if [ -n "$CANDIDATES" ]; then
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    # Glob match against a `*/`-prefixed pattern, so the fixture suite can stage
+    # the same repo-relative paths under a temporary root while the pattern
+    # still pins the package. `$a` is intentionally unquoted — it IS the glob.
+    allowed=0
+    for a in "${ALLOWLIST[@]}"; do
+      # shellcheck disable=SC2053
+      [[ "$f" == $a || "$f" == */$a ]] && allowed=1 && break
+    done
+    [ "$allowed" -eq 1 ] && continue
+    # Split into STATEMENTS, then keep only those naming the table. Two reasons:
+    #
+    #   CORRECTNESS — each rule above AND-s independent tokens, which only means
+    #   "in the same write" because the unit here is a statement. Per-file, an
+    #   UPDATE on one table could pair with a `status` belonging to another.
+    #
+    #   COST — `schema.ts` is a candidate (it holds the `brainFacts` pgTable) and
+    #   is 167KB; the statement filter cuts what the rules ever see to a handful
+    #   of short lines. Atlas SQL is single-statement by rule, so a `;` inside a
+    #   query literal is not a case this has to handle.
+    while IFS= read -r stmt; do
+      [ -z "$stmt" ] && continue
+      if column=$(statement_writes_gated_column "$stmt"); then
+        OFFENDERS="${OFFENDERS}${f}  (${column})"$'\n'
+        [ "$column" = "visible_to" ] && SAW_GRANT=1 || SAW_STATUS=1
+        break
+      fi
+    done < <(eval "$STRIP_COMMENTS \"\$f\"" | tr '\n' ' ' | tr ';' '\n' \
+      | grep -iE 'brain_facts|brainFacts' || true)
+  done <<<"$CANDIDATES"
+fi
+
+OFFENDERS=$(echo "${OFFENDERS%$'\n'}" | grep -v '^$' || true)
+
+if [ -n "$OFFENDERS" ]; then
+  if [ "$SAW_GRANT" -eq 1 ] && [ "$SAW_STATUS" -eq 1 ]; then
+    echo "::error::a company-brain fact's \`status\` and \`visible_to\` are written outside the atomic publish endpoint (#4769 / #4823)."
+  elif [ "$SAW_GRANT" -eq 1 ]; then
+    echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)."
+  else
+    echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)."
+  fi
+  echo ""
+  echo "Offending files (with the column that tripped the gate):"
+  echo "$OFFENDERS" | sed 's/^/  /'
+  echo ""
+
+  if [ "$SAW_STATUS" -eq 1 ]; then
+    echo "\`brain_facts.status\` is the review gate (ADR-0036). Promotion must happen"
+    echo "ONLY in \`promoteBrainFacts\`, which \`/api/v1/admin/publish\` runs inside its"
+    echo "transaction — that is where no-provenance-no-promotion and"
+    echo "no-grant-no-promotion are enforced. A second writer bypasses both."
+    echo ""
+    echo "Fixes for a \`status\` write:"
+    echo "  * Writing a NEW fact? Omit \`status\` entirely — migration 0180 defaults it"
+    echo "    to 'draft', which is the review gate applying itself."
+    echo "  * Promoting? Don't. Let \`/api/v1/admin/publish\` do it."
+    echo "  * Retracting? Stamp \`invalidated_at\` — a fact is never deleted and never"
+    echo "    demoted by status (ADR-0036: supersession is not deletion)."
+    echo "  * Genuinely restoring a PRIOR gate decision (a region import)? Add the file"
+    echo "    to ALLOWLIST in this script WITH the rationale, per CLAUDE.md § Content Mode."
+    echo ""
+  fi
+
+  if [ "$SAW_GRANT" -eq 1 ]; then
+    echo "\`brain_facts.visible_to\` is the fact's ACL. ADR-0036 §T5 makes it a"
+    echo "per-version snapshot that may widen ONLY at the review gate — which is"
+    echo "\`promoteBrainFacts\`, where a draft is published with its own grant unioned"
+    echo "with those of its \`provenance\` evidence (#4823). Note the failure direction:"
+    echo "a stray \`status\` write over-trusts a claim, a stray grant write DISCLOSES one."
+    echo ""
+    echo "Fixes for a \`visible_to\` write — note that OMITTING the column is NOT one:"
+    echo "  * Writing a NEW fact or episode? An INSERT naming \`visible_to\` is correct"
+    echo "    and required — the grant is derived at ingest (\`ingest/grant.ts\`). Only"
+    echo "    UPDATE (and an upsert's \`DO UPDATE\` half) is refused here."
+    echo "  * Widening because new evidence arrived? Don't write it. Record the"
+    echo "    \`provenance\` edge; the next publish unions the grants in for you."
+    echo "  * Repairing a malformed grant? That is not this path either — see"
+    echo "    \`lib/brain/grant-sweep.ts\` and #4797; the sweep is an observer by design."
+    echo "  * Genuinely a new gate-time decision? It belongs in \`promoteBrainFacts\`,"
+    echo "    not in a second writer. An allowlist entry needs a recorded rationale."
+  fi
+  exit 1
+fi
+
+echo "Brain-fact promotion check passed — no ungated status or visible_to write to brain_facts outside the atomic publish endpoint."

@@ -1,3 +1,7 @@
+---
+description: "Run the pre-PR gate — scripts/ci-local.sh, 32 gates, PASS/FAIL table. Mandatory before a PR. Iterate with test-isolated.ts --affected instead."
+---
+
 Run the same checks CI runs. This must pass before opening a PR.
 
 `/ci` is the pre-PR gate, not an iteration loop. For iteration use

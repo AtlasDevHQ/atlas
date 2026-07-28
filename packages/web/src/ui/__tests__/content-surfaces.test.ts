@@ -17,6 +17,7 @@ function counts(over: Partial<ModeDraftCounts> = {}): ModeDraftCounts {
     prompts: 0,
     starterPrompts: 0,
     knowledgeDocuments: 0,
+    brainFacts: 0,
     ...over,
   };
 }
@@ -31,6 +32,7 @@ function activity(over: Partial<Record<keyof ModeDraftCounts, string | null>>): 
     prompts: at("prompts"),
     starterPrompts: at("starterPrompts"),
     knowledgeDocuments: at("knowledgeDocuments"),
+    brainFacts: at("brainFacts"),
   };
 }
 

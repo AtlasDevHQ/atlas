@@ -106,12 +106,71 @@ export type ExoticModeAdapter = {
 
 export type ContentModeEntry = SimpleModeTable | ExoticModeAdapter;
 
+/**
+ * A draft row an adapter DECLINED to promote, and why (#4769).
+ *
+ * The review gate's refusal vocabulary. A refused row is left at
+ * `status='draft'` — it is quarantined, NOT the workspace: one malformed row
+ * must never wedge a tenant's entire publish, which is what failing the shared
+ * transaction would do. It therefore stays in `draftCounts`, stays in the
+ * publish preview, and is re-offered on the next publish, so the refusal is a
+ * visible backlog rather than a silent drop.
+ *
+ * Only an exotic adapter can produce these: a simple entry's promote is one
+ * blanket UPDATE with no per-row opinion.
+ */
+export interface PromotionRefusal {
+  /** Primary key of the refused row, so an operator can go look at it. */
+  readonly rowId: string;
+  /**
+   * Machine-readable refusal codes, one per failed rule. A row can break more
+   * than one rule and an admin needs to fix all of them, so this is a list
+   * rather than a first-failure.
+   */
+  readonly reasons: readonly string[];
+  /** Human-readable, actionable explanation. Surfaced to the admin verbatim. */
+  readonly detail: string;
+}
+
+/**
+ * A row whose ACL this publish widened, and the principals it added (#4823).
+ *
+ * Only `brain_facts` produces these today: it is the one table whose promote
+ * computes a visibility grant rather than only flipping a status. Reported
+ * rather than only logged because a log line rotates and its level is
+ * hot-mutable — `admin-publish.ts` puts the sweep in `logAdminAction`'s durable
+ * jsonb, the same argument `refusedDrafts` is written for, applied to the more
+ * consequential of the two events. (The MCP publish seam writes no audit row
+ * for anything, so there it reaches a `log.warn` and no further;
+ * `collectWidenings` is shared so at least the two cannot report differently.)
+ *
+ * `added` is a non-empty tuple: a widening that widened nothing is not an
+ * event, and the producer already makes that state unrepresentable.
+ */
+export interface GrantWidening {
+  readonly rowId: string;
+  /** Grant tokens added. Syntactic — a token may already be implied by a role. */
+  readonly added: readonly [string, ...string[]];
+}
+
 /** Result of promoting drafts for a single table. */
 export interface PromotionReport {
   readonly table: string;
   readonly promoted: number;
   readonly deleted?: number;
   readonly tombstonesApplied?: number;
+  /**
+   * Rows this adapter refused to promote. Absent (not `[]`) for adapters that
+   * cannot refuse, so "this table has no refusal concept" and "this table
+   * refused nothing today" stay distinguishable.
+   */
+  readonly refused?: readonly PromotionRefusal[];
+  /**
+   * Rows whose grant this publish widened. Absent for every adapter that has
+   * no grant concept at all, on the same distinguishability grounds as
+   * {@link PromotionReport.refused}.
+   */
+  readonly widened?: readonly GrantWidening[];
 }
 
 /**

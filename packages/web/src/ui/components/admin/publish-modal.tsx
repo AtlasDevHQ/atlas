@@ -9,6 +9,7 @@ import {
   Trash2,
   AlertCircle,
   AlertTriangle,
+  Lock,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -41,9 +42,42 @@ interface IncompleteLayer {
   readonly failedTables: ReadonlyArray<ProfileError>;
 }
 
-/** Parsed `/api/v1/admin/publish` response — only the field this modal reads. */
+/**
+ * A draft the review gate REFUSED to promote. Today the only refusing surface
+ * is `brain_facts` (#4769 / ADR-0036) — a fact missing provenance or a usable
+ * grant, where publishing would stamp "reviewed and trusted" on a claim with no
+ * evidence, or one invisible to every reader. Mirrors
+ * `refusedDrafts[]` in the `/api/v1/admin/publish` response. The row stays a
+ * draft and is re-offered on the next publish.
+ *
+ * `detail` is rendered verbatim: the API writes the actionable sentence, so the
+ * reason vocabulary can grow without a matching copy change here.
+ */
+interface RefusedDraft {
+  readonly id: string;
+  /** Physical table the refused row belongs to, e.g. `brain_facts`. */
+  readonly surface: string;
+  readonly reasons: ReadonlyArray<string>;
+  readonly detail: string;
+}
+
+/** Parsed `/api/v1/admin/publish` response — only the fields this modal reads. */
 interface PublishResponseData {
-  readonly warnings?: { readonly incompleteLayers: ReadonlyArray<IncompleteLayer> };
+  readonly warnings?: {
+    readonly incompleteLayers: ReadonlyArray<IncompleteLayer>;
+  };
+  /**
+   * Top-level, part of the shared `PublishResult` core (#4156 discipline) —
+   * REST, MCP, and the CLI all report refusals under this one name. Optional:
+   * absent when nothing was refused, and from an older API during a
+   * deploy-overlap window.
+   */
+  readonly refusedDrafts?: ReadonlyArray<RefusedDraft>;
+  /**
+   * TRUE refusal count — never capped, unlike `refusedDrafts` (100 max). Count
+   * off this; the list length under-reports exactly when the backlog is worst.
+   */
+  readonly refusedDraftTotal?: number;
 }
 
 interface DraftRow {
@@ -65,6 +99,33 @@ interface PublishPreviewData {
   readonly starterPrompts: ReadonlyArray<DraftRow>;
   /** Optional: absent from an older API during a deploy-overlap window. */
   readonly knowledgeDocuments?: ReadonlyArray<DraftRow>;
+  /**
+   * Optional: absent from an older API during a deploy-overlap window.
+   *
+   * SCOPED to the reader's brain grants (#4825), unlike every other array here.
+   * So this is what the admin may READ, not what publish will promote — add
+   * {@link PublishPreviewData.brainFactsWithheld} for that.
+   */
+  readonly brainFacts?: ReadonlyArray<DraftRow>;
+  /**
+   * Draft facts publish WILL promote and this admin may NOT read (#4825).
+   *
+   * The number that used to be learnable only from the publish RESPONSE, by an
+   * admin who had no way to interpret it. Optional and defaulted to 0 for a
+   * deploy-overlap window; an older API omitting it degrades to the previous
+   * silence rather than to a wrong count.
+   */
+  readonly brainFactsWithheld?: number;
+  /**
+   * True when `brainFactsWithheld` means "Atlas couldn't establish what you may
+   * read" rather than "these are outside your audiences" (#4825).
+   *
+   * Two different causes needing two different sentences. Defaulting to `false`
+   * for a deploy-overlap window is the right way round: the audience
+   * explanation is correct in the overwhelmingly common case, and an older API
+   * has no degraded path to describe.
+   */
+  readonly brainFactsScopeUnavailable?: boolean;
 }
 
 /**
@@ -72,9 +133,15 @@ interface PublishPreviewData {
  *
  * Opens from the {@link PendingChangesPill} popover. Fetches the per-surface
  * draft inventory from `/api/v1/admin/publish-preview`, then POSTs to
- * `/api/v1/admin/publish` on confirm. Errors keep the modal open so the
- * admin sees the failure with the request id (rollback is already atomic
- * server-side — partial state is impossible).
+ * `/api/v1/admin/publish` on confirm. Errors keep the modal open so the admin
+ * sees the failure with the request id — a FAILED publish rolls back atomically
+ * server-side, so there is no half-applied state to reconcile.
+ *
+ * A SUCCEEDED publish can still be partial, and that is deliberate (#4769): the
+ * review gate refuses individual drafts (a brain fact with no provenance or no
+ * usable grant) and commits the rest, so those rows are still drafts afterwards.
+ * The modal stays open on that outcome too and renders {@link RefusedDraftsBanner} —
+ * closing with a bare "Published successfully" would hide it.
  */
 export function PublishModal({
   open,
@@ -96,6 +163,12 @@ export function PublishModal({
   // Layers the publish just promoted that are profiled INCOMPLETELY (#3682).
   // Non-empty keeps the modal open with a warning instead of a silent success.
   const [incompleteLayers, setIncompleteLayers] = useState<ReadonlyArray<IncompleteLayer>>([]);
+  // Drafts the review gate refused to promote (#4769). Same posture as
+  // `incompleteLayers`: the publish committed, but reporting an unqualified
+  // success would hide that some drafts deliberately did not go live.
+  const [refusedDrafts, setRefusedDrafts] = useState<ReadonlyArray<RefusedDraft>>([]);
+  // Separate from the list because the list is capped — see `refusedDraftTotal`.
+  const [refusedTotal, setRefusedTotal] = useState(0);
 
   // Reset error + warning state whenever the modal opens — a previous attempt
   // shouldn't leave a banner showing the next time the admin opens the modal.
@@ -103,21 +176,31 @@ export function PublishModal({
     if (open) {
       reset();
       setIncompleteLayers([]);
+      setRefusedDrafts([]);
+      setRefusedTotal(0);
     }
   }, [open, reset]);
 
   async function handlePublish() {
     const result = await mutate({ body: {} });
     if (result.ok) {
-      // The publish committed. If any promoted layer is incomplete, keep the
-      // modal open and show the durable warning the API returned (#3682) — an
-      // unconditional "Published successfully" would hide that some tables are
-      // now live but NOT queryable. Otherwise close as before.
+      // The publish committed. If any promoted layer is incomplete (#3682) or
+      // any draft was refused (#4769), keep the modal open and show the warning
+      // the API returned — an unconditional "Published successfully" would hide
+      // that some tables are now live but NOT queryable, or that some drafts
+      // are still drafts. Otherwise close as before.
       const layers = result.data?.warnings?.incompleteLayers ?? [];
-      if (layers.length > 0) {
+      const refused = result.data?.refusedDrafts ?? [];
+      // `?? refused.length` covers an older API that predates the total.
+      const refusedCount = result.data?.refusedDraftTotal ?? refused.length;
+      if (layers.length > 0 || refusedCount > 0) {
         setIncompleteLayers(layers);
+        setRefusedDrafts(refused);
+        setRefusedTotal(refusedCount);
         toast.warning(
-          `Published, but ${layers.length === 1 ? "a layer is" : `${layers.length} layers are`} incomplete`,
+          refusedCount > 0
+            ? `Published, but ${refusedCount === 1 ? "1 draft was" : `${refusedCount} drafts were`} not published`
+            : `Published, but ${layers.length === 1 ? "a layer is" : `${layers.length} layers are`} incomplete`,
         );
       } else {
         toast.success("Published successfully");
@@ -127,6 +210,14 @@ export function PublishModal({
     // On failure, leave modal open — the banner below surfaces the error.
   }
 
+  /** True once publish committed with something the admin must read first. */
+  const hasPostPublishWarning = incompleteLayers.length > 0 || refusedTotal > 0;
+
+  // Facts publish will promote that this admin cannot be shown (#4825). Folded
+  // into `total` so the button's count is the real blast radius: an admin must
+  // not learn it from the response, and "Publish all (26)" that promotes 32 is
+  // the same defect one layer up.
+  const withheldFacts = data?.brainFactsWithheld ?? 0;
   const total = data ? totalRows(data) : 0;
   const sections = data ? buildSections(data) : [];
 
@@ -164,12 +255,24 @@ export function PublishModal({
                 </Button>
               </div>
             </div>
-          ) : sections.length === 0 ? (
+          ) : sections.length === 0 && withheldFacts === 0 ? (
             <div className="py-10 text-center text-sm text-muted-foreground">
               No pending changes to publish.
             </div>
           ) : (
             <div className="space-y-4">
+              {/* BEFORE the click, and above the lists rather than after them:
+                  the whole point is that the blast radius must not be learned
+                  from the response. It renders even when `sections` is empty,
+                  which is the case where an admin can see nothing at all and
+                  would otherwise read "No pending changes" over a real one. */}
+              {withheldFacts > 0 && (
+                <WithheldFactsNotice
+                  count={withheldFacts}
+                  scopeUnavailable={data?.brainFactsScopeUnavailable ?? false}
+                  onRetry={() => void refetch()}
+                />
+              )}
               {sections.map((section) => (
                 <PreviewSection key={section.key} section={section} />
               ))}
@@ -194,8 +297,12 @@ export function PublishModal({
           <IncompleteLayersBanner layers={incompleteLayers} />
         )}
 
+        {refusedTotal > 0 && (
+          <RefusedDraftsBanner drafts={refusedDrafts} total={refusedTotal} />
+        )}
+
         <DialogFooter>
-          {incompleteLayers.length > 0 ? (
+          {hasPostPublishWarning ? (
             // Publish already committed; collapse the footer to a single
             // acknowledge action so the warning above is read before closing.
             <Button onClick={() => onOpenChange(false)}>Done</Button>
@@ -225,6 +332,127 @@ export function PublishModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * States, before the click, that this publish reaches facts the admin cannot
+ * read (#4825).
+ *
+ * Not a warning and not styled as one — the behaviour is correct and
+ * deliberate. Reader-scoped publish was considered and rejected: with no
+ * resolvable reviewer those facts would strand PERMANENTLY, keeping the drafts
+ * badge lit forever, which is the unclearable-banner shape #4771 closed for
+ * grants. The defect was that nothing said so. So this is a plain statement of
+ * scope with the reason attached, positioned where a scope statement belongs:
+ * above the confirm button, not in the response.
+ *
+ * A COUNT and never a list. There is no honest row to render — the claim is the
+ * only identity a fact has — and a placeholder carrying a fact id would
+ * disclose which facts exist without disclosing what they say.
+ */
+function WithheldFactsNotice({
+  count,
+  scopeUnavailable,
+  onRetry,
+}: {
+  count: number;
+  /** The withholding is an Atlas fault, not an audience boundary — see the type. */
+  scopeUnavailable: boolean;
+  /**
+   * Refetches the preview. A real button, because the obvious instruction is
+   * inert: this arm is a 200, so the modal's error-path Retry never renders,
+   * and "close and reopen the dialog" hits TanStack's 30s `staleTime` and
+   * replays the byte-identical degraded response — so an admin following it
+   * during the exact window a blip would have cleared concludes the fault is
+   * permanent.
+   */
+  onRetry: () => void;
+}) {
+  const one = count === 1;
+  return (
+    <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-sm">
+      <Lock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <div className="min-w-0 space-y-1">
+        <p className="font-medium">
+          {one
+            ? "1 brain fact here isn't shown to you"
+            : `${count.toLocaleString()} brain facts here aren't shown to you`}
+        </p>
+        <p className="text-muted-foreground">
+          {scopeUnavailable ? (
+            <>
+              Atlas couldn&apos;t work out which of these you&apos;re allowed to see, so
+              it&apos;s showing none of them. This is a fault on our side, not a
+              restriction on you. Publishing still promotes {one ? "it" : "them"}.{" "}
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-sm"
+                onClick={onRetry}
+              >
+                Try again
+              </Button>
+            </>
+          ) : (
+            <>
+              {one ? "It belongs" : "They belong"} to an audience you&apos;re not part of
+              — usually a private channel — so Atlas won&apos;t show you the claim, and
+              reviewing {one ? "it" : "them"} belongs to that audience&apos;s members.
+              Publishing promotes {one ? "it" : "them"} along with everything else,
+              because otherwise {one ? "it" : "they"} could never be published by anyone.
+            </>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Warns that the review gate REFUSED to promote one or more drafts (#4769 /
+ * ADR-0036). Today that means a brain fact missing provenance or a usable
+ * grant: publishing it would either stamp a claim with no evidence as reviewed,
+ * or publish one that is invisible to every reader. Each stays a draft and is
+ * re-offered on the next publish, so this is a repairable backlog, not a loss.
+ */
+function RefusedDraftsBanner({
+  drafts,
+  total,
+}: {
+  drafts: ReadonlyArray<RefusedDraft>;
+  /** May exceed `drafts.length` — the API caps the list at 100, never the count. */
+  total: number;
+}) {
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+    >
+      <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 space-y-1">
+        <p className="font-medium">
+          Published, but {total === 1 ? "1 draft was" : `${total} drafts were`} not published
+        </p>
+        <p className="opacity-90">
+          Each is missing the evidence or the audience it needs to be trusted, so the review gate
+          held it back. They are still drafts — fix or retract them and publish again.
+        </p>
+        <ul className="space-y-1">
+          {drafts.map((draft) => (
+            <li key={`${draft.surface}:${draft.id}`} className="opacity-90">
+              {draft.detail}
+            </li>
+          ))}
+        </ul>
+        {total > drafts.length && (
+          <p className="opacity-90">
+            Showing the first {drafts.length} of {total}. The rest are in the server logs and
+            are all still drafts.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -333,6 +561,15 @@ function IntentIcon({ intent }: { intent: SectionRow["intent"] }) {
   }
 }
 
+/**
+ * Everything this publish will promote — LISTED OR NOT.
+ *
+ * `brainFactsWithheld` is added because the brain segment is the one list here
+ * that is reader-scoped (#4825): its rows are what the admin may read, and the
+ * withheld remainder is promoted just the same. Counting only the rows would
+ * put "Publish all (26)" on a button that promotes 32, which is precisely the
+ * confusion the disclosure exists to end.
+ */
 function totalRows(data: PublishPreviewData): number {
   return (
     data.connections.length +
@@ -341,7 +578,9 @@ function totalRows(data: PublishPreviewData): number {
     data.entityDeletes.length +
     data.prompts.length +
     data.starterPrompts.length +
-    (data.knowledgeDocuments?.length ?? 0)
+    (data.knowledgeDocuments?.length ?? 0) +
+    (data.brainFacts?.length ?? 0) +
+    (data.brainFactsWithheld ?? 0)
   );
 }
 
@@ -379,5 +618,6 @@ function buildSections(data: PublishPreviewData): Section[] {
     surfaceSection("prompts", creates(data.prompts)),
     surfaceSection("starterPrompts", creates(data.starterPrompts)),
     surfaceSection("knowledgeDocuments", creates(data.knowledgeDocuments)),
+    surfaceSection("brainFacts", creates(data.brainFacts)),
   ].filter((s): s is Section => s !== null);
 }

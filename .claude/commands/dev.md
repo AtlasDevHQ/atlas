@@ -1,3 +1,7 @@
+---
+description: "Bring local dev up in a chosen deploy mode, handling the harness gotchas (deploy-mode detect, SaaS guards, cookie prefix, Turbopack cache). Usage: /dev [self-host|saas] [clean] [stop]."
+---
+
 Bring Atlas local dev up reliably in a chosen deploy mode, handling every harness gotcha that normally makes this painful. Usage: `/dev [self-host|saas] [clean] [stop]`.
 
 This command exists because getting local dev to boot — especially SaaS mode — keeps tripping on the same papercuts (deploy-mode auto-detect, fail-closed SaaS guards, cookie-prefix mismatch, Turbopack/browser cache). Encode the fix once; stop rediscovering it.

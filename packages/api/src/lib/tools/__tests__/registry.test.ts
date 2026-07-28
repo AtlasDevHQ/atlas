@@ -226,7 +226,7 @@ describe("defaultRegistry", () => {
     expect(defaultRegistry.get("explore")).toBeDefined();
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
     expect(defaultRegistry.get("createDashboard")).toBeDefined();
-    expect(defaultRegistry.get("searchKnowledge")).toBeDefined();
+    expect(defaultRegistry.get("searchBrain")).toBeDefined();
   });
 
   it("getAll returns exactly the core tools", () => {
@@ -236,7 +236,7 @@ describe("defaultRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
-      "searchKnowledge",
+      "searchBrain",
       "sendEmail",
     ]);
   });
@@ -246,7 +246,7 @@ describe("defaultRegistry", () => {
     expect(text).toContain("### 2. Explore the Semantic Layer");
     expect(text).toContain("### 3. Write and Execute SQL");
     expect(text).toContain("### Create a Dashboard");
-    expect(text).toContain("### Search the Knowledge Base");
+    expect(text).toContain("### Search the Company Brain");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -290,7 +290,7 @@ describe("buildRegistry", () => {
         "executePython",
         "executeSQL",
         "explore",
-        "searchKnowledge",
+        "searchBrain",
         "sendEmail",
       ]);
       expect(registry.describe()).toContain("### 4. Analyze Data with Python");
@@ -310,7 +310,7 @@ describe("buildRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
-      "searchKnowledge",
+      "searchBrain",
       "sendEmail",
     ]);
   });
@@ -324,7 +324,7 @@ describe("buildRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
-      "searchKnowledge",
+      "searchBrain",
       "sendEmail",
       "sendEmailReport",
     ]);
@@ -371,7 +371,7 @@ describe("buildRegistry", () => {
       // (Assert the delta, not an exact list: querySalesforce / executePython
       // are env-gated and would break an exact-equality check on a dev box.)
       expect(names).not.toContain("createDashboard");
-      for (const core of ["explore", "executeSQL", "searchKnowledge", "sendEmail", "createLinearIssue"]) {
+      for (const core of ["explore", "executeSQL", "searchBrain", "sendEmail", "createLinearIssue"]) {
         expect(names).toContain(core);
       }
     });
@@ -387,7 +387,7 @@ describe("buildRegistry", () => {
       expect(nonDashboardRegistry.get("createDashboard")).toBeUndefined();
       expect(nonDashboardRegistry.get("executeSQL")).toBeDefined();
       expect(nonDashboardRegistry.get("explore")).toBeDefined();
-      expect(nonDashboardRegistry.get("searchKnowledge")).toBeDefined();
+      expect(nonDashboardRegistry.get("searchBrain")).toBeDefined();
     });
   });
 

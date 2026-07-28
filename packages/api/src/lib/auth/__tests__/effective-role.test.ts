@@ -12,7 +12,12 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: (sql: string, params: unknown[]) => mockInternalQuery(sql, params),
 }));
 
-import { resolveEffectiveRole } from "../effective-role";
+import {
+  MemberRoleLookupError,
+  resolveEffectiveRole,
+  resolveEffectiveRoleStrict,
+} from "../effective-role";
+import { rootCause } from "@atlas/api/lib/error-cause";
 import {
   buildCustomSessionPayload,
   canGenerateSCIMToken,
@@ -110,6 +115,67 @@ describe("resolveEffectiveRole()", () => {
     expect(await resolveEffectiveRole("admin", "usr_1", "org_1")).toBeUndefined();
   });
 });
+
+// #4773 — the strict variant, for callers that turn the role into per-row ACL
+// grants. The distinctions it preserves are the ones that are invisible from
+// every surface that would suffer their loss.
+describe("resolveEffectiveRoleStrict()", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.resolve([]);
+  });
+
+  it("reports fromMemberRow only when the role came from THIS org's member row", async () => {
+    mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
+    expect(await resolveEffectiveRoleStrict("member", "usr_1", "org_1")).toEqual({
+      role: "admin",
+      fromMemberRow: true,
+    });
+
+    // No member row: the SESSION role comes back, flagged as not from the table.
+    // Collapsing this into the arm above is the fail-OPEN widening — it would
+    // let a role held in org A mint `role:` grants in org B.
+    mockInternalQuery = () => Promise.resolve([]);
+    expect(await resolveEffectiveRoleStrict("admin", "usr_1", "org_1")).toEqual({
+      role: "admin",
+      fromMemberRow: false,
+    });
+  });
+
+  it("reports platform_admin as NOT from a member row — it short-circuits the lookup", async () => {
+    let calls = 0;
+    mockInternalQuery = () => { calls++; return Promise.resolve([]); };
+    expect(await resolveEffectiveRoleStrict("platform_admin", "usr_1", "org_1")).toEqual({
+      role: "platform_admin",
+      fromMemberRow: false,
+    });
+    expect(calls).toBe(0);
+  });
+
+  it("PROPAGATES a lookup failure instead of encoding it as undefined", async () => {
+    // The whole reason this variant exists. `resolveEffectiveRole` catches and
+    // returns `undefined`, which for a grant-deriving reader is a silent
+    // narrowing indistinguishable from "this user is a plain member".
+    const driverError = new Error("connection reset by peer");
+    mockInternalQuery = () => Promise.reject(driverError);
+    await expect(resolveEffectiveRoleStrict("member", "usr_1", "org_1")).rejects.toBeInstanceOf(
+      MemberRoleLookupError,
+    );
+    // The driver error survives as the cause — it is the only text saying WHAT
+    // broke; the wrapper's own message just restates the ids.
+    const err = await resolveEffectiveRoleStrict("member", "usr_1", "org_1").catch((e) => e);
+    expect(rootCause(err)).toBe(driverError);
+  });
+
+  it("treats an unparseable member role as no org role", async () => {
+    mockInternalQuery = () => Promise.resolve([{ role: "superuser" }]);
+    expect(await resolveEffectiveRoleStrict(undefined, "usr_1", "org_1")).toEqual({
+      role: undefined,
+      fromMemberRow: false,
+    });
+  });
+});
+
 
 describe("buildCustomSessionPayload()", () => {
   beforeEach(() => {

@@ -2,12 +2,35 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "milestone/**", "hotfix/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "milestone/**"]
   # Manual lever: lets an operator/agent re-create required check runs when
   # GitHub drops pull_request event deliveries (observed 2026-06-10 on #3358).
   workflow_dispatch:
+
+# `milestone/**` is the long-running integration-branch namespace (first user:
+# `milestone/v0.2.0-brain-m1`). Without it, a PR stacked onto a milestone branch
+# would run ZERO required checks — branch protection is `main`-only, so nothing
+# else would catch a regression until the whole milestone landed on `main` in one
+# merge. The `push:` half is deliberate too: it gives the milestone branch a
+# post-merge integration signal, which is what catches a semantic conflict
+# between two stacked PRs that were each green in isolation.
+#
+# Caveat, by design: `Analyze (javascript-typescript)` (CodeQL default setup) is
+# `main`-only and cannot be branch-filtered here, so milestone-branch PRs are
+# gated by everything EXCEPT CodeQL. It runs on the milestone branch's own PR
+# into `main`, which is the merge that matters for that gate.
+#
+# `hotfix/**` is `push:`-only, and the asymmetry is the point. A hotfix cut when
+# `main` is NOT prod-plus-one-fix branches from the tag `prod` serves, so the SHA
+# that ships is never the SHA a PR tests: `pull_request` checks run against the
+# MERGE result (`main` + the fix, including whatever unreleased arc `main` is
+# carrying), which is a different tree than prod receives. The `push:` trigger is
+# what puts CI on the hotfix commit itself. No `pull_request` entry is needed —
+# a hotfix PR targets `main`, so it already matches the filter above.
+# Runbook: docs/development/release-process.md § When `main` is NOT a safe
+# hotfix source.
 
 permissions:
   contents: read
@@ -142,6 +165,12 @@ jobs:
 
       - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
         run: bash scripts/check-no-legacy-connections-sql.sh
+
+      - name: Check brain facts are promoted only by the atomic publish endpoint (#4769)
+        run: bash scripts/check-brain-fact-promotion.sh
+
+      - name: Adversarial fixtures for the brain-fact promotion gate (#4769)
+        run: bash scripts/__tests__/check-brain-fact-promotion.test.sh
 
       - name: Check test-file discipline (1.5.4 / #2796)
         run: bash scripts/check-test-discipline.sh
@@ -482,11 +511,13 @@ jobs:
           TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
         run: bun run scripts/test-isolated.ts --shard ${{ matrix.shard }}/4
     services:
-      # Postgres for the migration smoke test. The other 3 shards see
-      # the same service (matrix shares the `services` block), which is
-      # fine — only one shard at a time runs the migrate-pg test, and
-      # it scopes its writes to a per-test schema so concurrent shards
-      # don't trample each other.
+      # Postgres for the real-Postgres suites. Each matrix leg is its own
+      # runner and gets its own service container — shards do NOT share this
+      # Postgres, so cross-shard interference is not a thing. Contention is
+      # always *within* a shard, between the `-pg` suites the runner happens
+      # to have in flight concurrently; those scope their writes to a private
+      # scratch schema, and the migration advisory lock is keyed to that schema
+      # so they no longer serialize against each other (#4844).
       postgres:
         image: postgres:16-alpine
         env:

@@ -1,0 +1,15 @@
+# The other half of the negative control: an image with no packages at all.
+#
+# scripts/__tests__/scan-image.test.sh asserts scripts/scan-image.sh exits 0 on
+# this. Without it, a gate that failed unconditionally would still pass the
+# "fails on a vulnerable image" test — proving the gate can go red says nothing
+# about whether it can go green.
+#
+# FROM scratch is used rather than a real minimal base (alpine:latest, distroless)
+# on purpose: a real base can acquire a CVE on any given Tuesday and turn this
+# control red for a reason that has nothing to do with the gate's correctness.
+# scratch has no package database, so Trivy finds zero packages and therefore
+# zero vulnerabilities, deterministically and forever.
+FROM scratch
+
+COPY Dockerfile.clean /control

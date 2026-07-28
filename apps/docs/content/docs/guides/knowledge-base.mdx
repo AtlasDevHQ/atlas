@@ -15,7 +15,7 @@ On [app.useatlas.dev](https://app.useatlas.dev) there is nothing to set up — t
 
 ## Concepts
 
-**Descriptive, never authoritative.** Knowledge Base content *informs* the agent's answers; it never *governs* them. Nothing in a knowledge document ever runs as SQL, extends the table whitelist, overrides a pinned metric, or gates the agent — the [semantic layer](/semantic-layer) remains the sole authoritative context surface. This boundary is structural (separate tables, separate agent-visible subtree, enforced by tests), not a convention.
+**Knowledge documents are descriptive, never authoritative.** Knowledge Base content *informs* the agent's answers; it never *governs* them. Nothing in a knowledge document ever runs as SQL, extends the table whitelist, overrides a pinned metric, or gates the agent — the [semantic layer](/semantic-layer) remains the sole authority over what can be queried, what a metric means, and what the agent must clarify first. This boundary is structural (separate tables, separate agent-visible subtree, enforced by tests), not a convention.
 
 **Collections.** A collection is the unit of knowledge organization: a named, independently searchable document tree. Each collection is one Knowledge Base install — like datasources, you can install many, and the typical split is one collection per product or corpus so the agent needn't wade through unrelated knowledge. Documents belong to exactly one collection, and uploads upsert into the tree by path. Collections are workspace-global; if a document concerns one environment or region ("this runbook covers the EU replica"), express that with tags, not separate scoping.
 
@@ -98,7 +98,11 @@ Published knowledge is served to the agent **OKF-native** — no translation lay
 
 - **Browsing.** Published documents are mirrored per-workspace into the agent's sandboxed, read-only filesystem under a `knowledge/<collection>/…` subtree. The agent walks them with the same explore tools it uses for the semantic layer (`ls`, `cat`, `grep`), following `index.md` navigation — the document body you uploaded, verbatim, under the normalized frontmatter described above.
 - **Orientation.** A size-capped table of contents for your collections rides in the agent's system prompt, so it knows what knowledge exists without searching for it. Collections past the cap are omitted from the prompt but stay fully browsable.
-- **Search at scale.** The `searchKnowledge` tool layers three tiers over the same documents: structured frontmatter filters (`type`, `tags`, `collection`, recency), full-text search with highlighted snippets, and one-hop expansion along the links between documents. Results carry provenance (path, collection, title).
+- **Search at scale.** The `searchBrain` tool layers three tiers over the same documents: structured frontmatter filters (`type`, `tags`, `collection`, recency), full-text search with highlighted snippets, and one-hop expansion along the links between documents. Results carry provenance (path, collection, title) and are labelled `tier: "document"`.
+
+  <Callout type="info">
+    `searchBrain` was called `searchKnowledge` before it grew beyond documents. It now fuses your knowledge collections with the company brain's reviewed facts and raw source records, labelling every result with its trust tier — documents behave exactly as described here and are one of the three stores it reads. If your `atlas.config.ts` lists `searchKnowledge` under `tools`, it is still accepted and normalized with a startup warning; update it to `searchBrain`.
+  </Callout>
 
 Knowledge content is framed to the agent as third-party descriptive material — context to draw on, never instructions to follow — and the hard boundaries above mean even a malicious document cannot reach the SQL whitelist, pinned metrics, or glossary gating.
 

@@ -40,6 +40,26 @@ const mockPrepareResume: Mock<() => Promise<PrepareResumeResult>> = mock(() =>
   }),
 );
 const mockFinishResume = mock(() => {});
+
+// #4826 — the resume route runs the same serviceability gate as POST /api/chat.
+// Resolved BEFORE the mock.module registers, so this is the real module; only
+// the DB-backed probe is faked.
+import * as realWorkspaceCapability from "@atlas/api/lib/workspace-capability";
+import type { CapabilityProbe, WorkspaceCapability } from "@atlas/api/lib/workspace-capability";
+
+const mockProbeWorkspaceCapabilities: Mock<(workspaceId: string) => Promise<CapabilityProbe>> =
+  mock(() =>
+    Promise.resolve({
+      kind: "resolved" as const,
+      capabilities: new Set<WorkspaceCapability>(["datasource"]),
+    }),
+  );
+
+void mock.module("@atlas/api/lib/workspace-capability", () => ({
+  ...realWorkspaceCapability,
+  probeWorkspaceCapabilities: mockProbeWorkspaceCapabilities,
+}));
+
 void mock.module("@atlas/api/lib/durable-resume", () => ({
   prepareResume: mockPrepareResume,
   finishResume: mockFinishResume,
@@ -189,6 +209,11 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     mockCheckRateLimit.mockReturnValue({ allowed: true });
     mockGetClientIP.mockReset();
     mockGetClientIP.mockReturnValue(null);
+    mockProbeWorkspaceCapabilities.mockReset();
+    mockProbeWorkspaceCapabilities.mockResolvedValue({
+      kind: "resolved" as const,
+      capabilities: new Set<WorkspaceCapability>(["datasource"]),
+    });
     mockGetConversation.mockReset();
     mockGetConversation.mockResolvedValue({ ok: true, data: { id: CONV_ID, messages: [] } });
     mockPrepareResume.mockReset();
@@ -376,6 +401,80 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     expect(res.status).toBeGreaterThanOrEqual(500);
     // The lease must be released even though the stream object never existed.
     expect(mockFinishResume).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // #4826 — the resume route carries the same serviceability gate as
+  // POST /api/chat. It had NO coverage before: the old `resolveDatasourceUrl()`
+  // guard here was as wrong as the one on the chat route, and a resume that
+  // skipped the gate entirely would be a back door into the agent loop.
+  // -------------------------------------------------------------------------
+  describe("serviceability gate", () => {
+    it("resumes a brain-only workspace with no analytics datasource", async () => {
+      delete process.env.ATLAS_DATASOURCE_URL;
+      mockProbeWorkspaceCapabilities.mockResolvedValue({
+        kind: "resolved" as const,
+        capabilities: new Set<WorkspaceCapability>(["brain"]),
+      });
+
+      const res = await app.fetch(resumeRequest());
+
+      expect(res.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalled();
+      // Probing anything other than the workspace id would find no rows for
+      // every tenant and refuse every resume.
+      expect(mockProbeWorkspaceCapabilities).toHaveBeenCalledWith("org-1");
+    });
+
+    it("refuses to resume into a genuinely empty workspace, without blaming a datasource", async () => {
+      mockProbeWorkspaceCapabilities.mockResolvedValue({
+        kind: "resolved" as const,
+        capabilities: new Set<WorkspaceCapability>(),
+      });
+
+      const res = await app.fetch(resumeRequest());
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("no_capability");
+      expect(body.message).not.toContain("ATLAS_DATASOURCE_URL");
+      // The gate must sit ahead of the lease claim, or a refused resume would
+      // still burn the single-resumer lease.
+      expect(mockPrepareResume).not.toHaveBeenCalled();
+      expect(mockRunAgent).not.toHaveBeenCalled();
+    });
+
+    it("fails open when the capability probe cannot decide", async () => {
+      mockProbeWorkspaceCapabilities.mockResolvedValue({
+        kind: "unknown" as const,
+        reason: "connection terminated unexpectedly",
+      });
+
+      const res = await app.fetch(resumeRequest());
+
+      expect(res.status).toBe(200);
+      expect(mockRunAgent).toHaveBeenCalled();
+    });
+
+    it("keeps the env-level datasource guard for an UNBOUND request", async () => {
+      // Self-hosted single-tenant: no org, so knowledge and brain are both
+      // unreachable and the process datasource really is the only thing that
+      // can serve a resumed turn.
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true as const,
+        mode: "none" as const,
+        user: undefined,
+      });
+      delete process.env.ATLAS_DATASOURCE_URL;
+
+      const res = await app.fetch(resumeRequest());
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("no_datasource");
+      expect(mockProbeWorkspaceCapabilities).not.toHaveBeenCalled();
+      expect(mockRunAgent).not.toHaveBeenCalled();
+    });
   });
 });
 

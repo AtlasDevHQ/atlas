@@ -77,6 +77,11 @@ import {
 } from "./connectors";
 import { syncConnectorCollection } from "./connector-sync";
 import {
+  getBrainSourceConnector,
+  listBrainSourceCatalogIds,
+} from "@atlas/api/lib/brain/ingest/types";
+import { syncBrainEpisodeSource } from "@atlas/api/lib/brain/ingest/episode-sync";
+import {
   BUNDLE_SYNC_CATALOG_ID,
   parseBundleSyncConfig,
   type BundleSyncAuthScheme,
@@ -532,13 +537,25 @@ async function recordSyncState(
 }
 
 // ---------------------------------------------------------------------------
-// Cycle — walk every enabled synced collection (the scheduler tick body).
+// Cycle — walk every enabled synced install (the scheduler tick body).
+//
 // Dispatch is keyed on catalog id (#4376): `bundle-sync` installs pull their
 // endpoint through this module's fetch path; installs of a REGISTERED
 // Knowledge Sync Connector catalog row go through the connector engine
 // (`connector-sync.ts` — incremental/reconciliation cadence, high-water
-// marks, 429 backoff). Both engines isolate per-collection failures, so one
-// bad endpoint/vendor never blocks the cycle's remaining collections.
+// marks, 429 backoff).
+//
+// #4770 (ADR-0036 §Ingestion & connectors) adds the third arm, and it is THE
+// FORK POINT the ADR documents: installs of a registered BRAIN SOURCE catalog
+// row run the same cadence/backoff/caps machinery but a different INGEST CORE
+// (`lib/brain/ingest/episode-sync.ts` → append-only episodes, no upsert, no
+// subtractive archive). The dispatch is keyed on which registry owns the
+// catalog id — an ingest-target discriminator — rather than on a flag inside
+// the engine, so `connector-sync.ts` keeps knowing nothing about episodes and
+// the archive path stays structurally unreachable from the brain arm.
+//
+// All three engines isolate per-install failures, so one bad
+// endpoint/vendor/source never blocks the cycle's remaining installs.
 // ---------------------------------------------------------------------------
 
 export interface KnowledgeSyncCycleResult {
@@ -586,7 +603,11 @@ export async function runKnowledgeSyncCycle(options?: {
     return { inspected: 0, succeeded: 0, failed: 0, queryFailed: false };
   }
 
-  const catalogIds = [BUNDLE_SYNC_CATALOG_ID, ...listKnowledgeSyncConnectorCatalogIds()];
+  const catalogIds = [
+    BUNDLE_SYNC_CATALOG_ID,
+    ...listKnowledgeSyncConnectorCatalogIds(),
+    ...listBrainSourceCatalogIds(),
+  ];
   let installs: SyncInstallRow[];
   try {
     installs = await internalQuery<SyncInstallRow>(SYNC_CYCLE_INSTALLS_SQL, [catalogIds]);
@@ -627,11 +648,32 @@ export async function runKnowledgeSyncCycle(options?: {
   return { inspected: installs.length, succeeded, failed, queryFailed: false };
 }
 
-/** Route one install to its engine by catalog id. */
+/**
+ * Route one install to its engine by catalog id — the ingest-target fork point.
+ *
+ * The brain arm is checked first, and the order is safe because the registries
+ * are ENFORCED disjoint in BOTH directions: each one claims its catalog ids
+ * through `catalog-claims.ts` at registration, so whichever registers second
+ * throws. An earlier cut claimed disjointness "by construction" while nothing
+ * constructed it, and the cut after that checked only one direction — the one
+ * that cannot happen given today's registration order. A duplicate id would
+ * otherwise silently take the brain arm and the knowledge connector would stop
+ * syncing with no error anywhere.
+ */
 async function dispatchInstall(
   install: SyncInstallRow,
   options?: { readonly fetchImpl?: typeof globalThis.fetch },
 ): Promise<"success" | "error"> {
+  const brainSource = getBrainSourceConnector(install.catalog_id);
+  if (brainSource !== undefined) {
+    const outcome = await syncBrainEpisodeSource({
+      connector: brainSource,
+      workspaceId: install.workspace_id,
+      installId: install.install_id,
+      config: install.config,
+    });
+    return outcome.status;
+  }
   if (install.catalog_id === BUNDLE_SYNC_CATALOG_ID) {
     const outcome = await syncCollection({
       workspaceId: install.workspace_id,

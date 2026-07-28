@@ -36,6 +36,7 @@ function counts(partial: Partial<ModeDraftCounts> = {}): ModeDraftCounts {
     prompts: 0,
     starterPrompts: 0,
     knowledgeDocuments: 0,
+    brainFacts: 0,
     ...partial,
   };
 }

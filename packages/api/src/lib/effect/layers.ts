@@ -224,13 +224,17 @@ function withFiberDeathLog<A, E, R>(
 //     `expert_scheduler`, `promote_decay`, `billing_reconcile`,
 //     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`,
 //     the three #4195 DB/refresh jobs `byot_catalog_refresh`,
-//     `openapi_spec_refresh`, `openapi_install_rediscover`, and
-//     `scheduled_backup` (#4457 — the internal-DB backup cycle). Spanned by
+//     `openapi_spec_refresh`, `openapi_install_rediscover`,
+//     `scheduled_backup` (#4457 — the internal-DB backup cycle), and
+//     `brain_extraction` (#4771 — the company-brain episode drain), and
+//     `brain_audience_sync` (#4801 — the audience-membership reconcile).
+//     Spanned by
 //     #2987 (+#3423 for billing_reconcile, #3992 for overage_report, #4195
 //     for the DB/refresh trio) — identical rationale and wrap shape.
-//     `unclaimed_grace_reap` (#3796), the three #4195 jobs, and
-//     `scheduled_backup` attach result attributes (cycle counts / outcome);
-//     the rest carry none.
+//     Which of these attach result attributes is visible at each registration
+//     site (`spanResultAttributes`) rather than enumerated here — the
+//     enumeration that used to live on this line drifted twice, at #4771 and
+//     again at #4801.
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
 // distinction (it drives the log wording and the operator's mental model),
@@ -300,6 +304,22 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   byot_catalog_refresh: "atlas.scheduler.byot_catalog_refresh",
   openapi_spec_refresh: "atlas.scheduler.openapi_spec_refresh",
   openapi_install_rediscover: "atlas.scheduler.openapi_install_rediscover",
+  // #4771 — the company-brain extraction drain (ADR-0036). Another
+  // `runPeriodicDbCycle` job: scan `brain_episodes` with `extracted_at IS
+  // NULL`, extract → reconcile → stamp, one episode at a time. Attaches its
+  // cycle counts via `spanResultAttributes`.
+  brain_extraction: "atlas.scheduler.brain_extraction",
+  // #4801 — the company-brain audience-membership sync (ADR-0036). Reconciles
+  // `fact_audience_member` against each private chat channel's source roster,
+  // adding AND revoking. Its `members_revoked` attribute is the alertable one:
+  // a spike is either a real offboarding or a resolver that stopped resolving.
+  brain_audience_sync: "atlas.scheduler.brain_audience_sync",
+  // #4797 — the entirely-malformed-grant sweep (ADR-0036). The one observer of
+  // a row whose `visible_to` names no principal: invisible to every reader by
+  // construction, therefore never held by a caller, therefore logged by nobody
+  // at read time. DAILY by default — the defect is permanent, so its count is a
+  // gauge and its log line is a digest, not an event stream.
+  brain_grant_sweep: "atlas.scheduler.brain_grant_sweep",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
   // `backups.scheduled_window`), then create→verify→purge through the
@@ -2297,6 +2317,243 @@ export function makeSchedulerLive(
           message: "BYOT catalog refresh tick failed — will retry next interval",
         },
         startLog: "BYOT catalog refresh scheduler started",
+      });
+
+      // ── Periodic fiber: company-brain extraction (#4771, ADR-0036) ────────
+      // Drains `brain_episodes` where `extracted_at IS NULL`: extract fact
+      // candidates with the workspace's own model (BYO key rides the agent's
+      // seam), reconcile them into fully-formed drafts, then stamp the queue
+      // marker. Deliberately SEPARATE from the connector cadence — episode
+      // freshness must never block on LLM latency or 429s — and gated OFF by
+      // default until the review surface (#4772) can read what it produces.
+      // Cycle body is the shared `runPeriodicDbCycle` skeleton.
+      yield* registerPeriodicFiber({
+        name: "brain_extraction",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as byot_catalog_refresh)
+          const { getBrainExtractionIntervalMs } = require("@atlas/api/lib/brain/extract") as {
+            getBrainExtractionIntervalMs: () => number;
+          };
+          return getBrainExtractionIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- same reason
+            const { isBrainExtractionEnabled } = require("@atlas/api/lib/brain/extract") as {
+              isBrainExtractionEnabled: () => boolean;
+            };
+            return hasInternalDB() && isBrainExtractionEnabled();
+          },
+          skipLog:
+            "Company-brain extraction not started — needs an internal database and ATLAS_BRAIN_EXTRACTION_ENABLED",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/brain/extract"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(Effect.flatMap((m) => m.runBrainExtractionCycle())),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.status": result.status,
+          "atlas.brain.inspected": result.inspected,
+          "atlas.brain.extracted": result.extracted,
+          "atlas.brain.facts_created": result.factsCreated,
+          "atlas.brain.facts_corroborated": result.factsCorroborated,
+          "atlas.brain.facts_blocked": result.factsBlocked,
+          "atlas.brain.blocked_episodes": result.blockedEpisodes,
+          "atlas.brain.failed": result.failed,
+          // The three skip reasons are the fiber's most alert-worthy outcomes
+          // and the span is the alertable surface. Without them,
+          // "EE failed to load and every BYO workspace's backlog is stalled"
+          // and "25 chat messages contained no durable fact" render identically
+          // as `inspected: 25, extracted: 0, failed: 0`.
+          "atlas.brain.skipped_model_unavailable": result.skipped.model_unavailable,
+          "atlas.brain.skipped_no_body": result.skipped.no_body,
+          "atlas.brain.skipped_quarantined": result.skipped.quarantined,
+          "atlas.brain.outage_refunded": result.outageRefunded,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain extraction tick failed — will retry next interval",
+        },
+        startLog: "Company-brain extraction scheduler started",
+      });
+
+      // ── Periodic fiber: company-brain audience membership (#4801, ADR-0036) ─
+      // Keeps a private chat channel's `audience:` grant resolving to real
+      // people: read the channel roster, resolve each source principal to an
+      // Atlas user, and reconcile `fact_audience_member` — adding AND revoking.
+      // Deliberately its own fiber rather than part of the history pass: a
+      // quiet channel is where a stale roster survives longest, so membership
+      // freshness has to be driven by the clock, not by traffic.
+      yield* registerPeriodicFiber({
+        name: "brain_audience_sync",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as brain_extraction). NOTE the knob is hot-reloadable in the registry but is read ONCE here, so a change takes effect at restart.
+          const { getAudienceSyncIntervalMs } = require("@atlas/api/lib/brain/audience/sync") as {
+            getAudienceSyncIntervalMs: () => number;
+          };
+          return getAudienceSyncIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- same reason
+            const { isAudienceSyncEnabled } = require("@atlas/api/lib/brain/audience/sync") as {
+              isAudienceSyncEnabled: (workspaceId?: string) => boolean;
+            };
+            // No workspace argument: this is the PLATFORM gate (the operator's
+            // process-wide off switch). The per-workspace decision is read
+            // again inside the cycle, per install.
+            return hasInternalDB() && isAudienceSyncEnabled();
+          },
+          skipLog:
+            "Company-brain audience sync not started — needs an internal database and ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/brain/audience/sync"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.flatMap((m) =>
+            // `tryPromise`, NOT `promise`. `runAudienceSyncCycle` documents
+            // "never throws" and catches its own scan + per-workspace faults,
+            // but two calls sit outside that net (`hasInternalDB()` and the
+            // per-install settings read). `Effect.promise` would route such a
+            // rejection to the DEFECT channel, which `registerPeriodicFiber`'s
+            // `catchAll` recovery does not catch — so one unforeseen throw
+            // would kill this fiber for the life of the process, and membership
+            // would silently stop being revoked with no signal but an ABSENCE
+            // of spans.
+            Effect.tryPromise({
+              try: () => m.runAudienceSyncCycle(),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }),
+          ),
+        ),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.audience.status": result.status,
+          "atlas.brain.audience.workspaces_inspected": result.workspacesInspected,
+          "atlas.brain.audience.workspaces_skipped_disabled": result.workspacesSkippedDisabled,
+          "atlas.brain.audience.workspaces_failed": result.workspacesFailed,
+          "atlas.brain.audience.audiences_reconciled": result.audiencesReconciled,
+          "atlas.brain.audience.audiences_skipped_public": result.audiencesSkippedPublic,
+          "atlas.brain.audience.audiences_failed": result.audiencesFailed,
+          "atlas.brain.audience.members_added": result.membersAdded,
+          // The alertable one: a revocation spike means either a real
+          // offboarding or a resolver that stopped resolving, and the two must
+          // be distinguishable from the span alone.
+          "atlas.brain.audience.members_revoked": result.membersRevoked,
+          "atlas.brain.audience.principals_unresolved": result.principalsUnresolved,
+          // #4809: a cycle that backed off and RECOVERED versus one that gave
+          // up. Before the backoff existed both looked like an abort, so
+          // "Slack throttles us occasionally" and "this workspace has not
+          // reconciled in a week" were the same signal.
+          "atlas.brain.audience.reads_throttled": result.readsThrottled,
+          "atlas.brain.audience.reads_throttle_exhausted": result.readsThrottleExhausted,
+          // #4808: the staleness bound made observable. `audiences_failed`
+          // says a roster read is failing; these say for HOW LONG, and how
+          // close it is to the point where `acl.ts` stops serving those grants.
+          // `-1` encodes "the sweep could not run" — span attributes have no
+          // null, and reporting 0 would be indistinguishable from all-clear.
+          "atlas.brain.audience.stale_audiences": result.staleAudiences ?? -1,
+          "atlas.brain.audience.stale_workspaces": result.staleWorkspaces ?? -1,
+          "atlas.brain.audience.oldest_verified_age_seconds":
+            result.oldestVerifiedAgeSeconds ?? -1,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain audience sync tick failed — will retry next interval",
+        },
+        startLog: "Company-brain audience sync scheduler started",
+      });
+
+      // ── Periodic fiber: malformed-grant sweep (#4797, ADR-0036) ──────────
+      // Closes the deny+log gap `acl.ts`'s header discloses: a row whose
+      // `visible_to` parses to NO principal is invisible to every reader by
+      // construction, so no caller ever holds it and `logGrantAnomalies` never
+      // fires on it. A sweep is the only seam that can see it — and it must be
+      // a sweep rather than a write-time hook, because a region-migration
+      // import bundle carries grants `grantProblem` legally admits on a route
+      // #4771's deriver does not own.
+      //
+      // Gated on the internal DB ALONE — no feature flag. An operator should
+      // not have to opt in to learning that their data is broken, and unlike
+      // the audience sync this needs no chat install to be useful. The
+      // `yield* Migration` barrier above sequences it after `MigrationLive`, so
+      // the eager boot tick cannot race 0180 creating the tables.
+      yield* registerPeriodicFiber({
+        name: "brain_grant_sweep",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as brain_audience_sync). NOTE the knob is hot-reloadable in the registry but is read ONCE here, so a change takes effect at restart.
+          const { getGrantSweepIntervalMs } = require("@atlas/api/lib/brain/grant-sweep") as {
+            getGrantSweepIntervalMs: () => number;
+          };
+          return getGrantSweepIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          skipLog: "Company-brain grant sweep not started — needs an internal database",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/brain/grant-sweep"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.flatMap((m) =>
+            // `tryPromise`, NOT `promise` — the same reasoning as
+            // `brain_audience_sync` above. `runGrantSweepCycle` documents "never
+            // throws" and catches its own per-table faults, but `hasInternalDB()`
+            // sits outside that net (unlike the sibling, this cycle performs no
+            // settings read — the interval is resolved in the `intervalMs` thunk
+            // at registration, outside the tick). `Effect.promise` routes
+            // a rejection to the DEFECT channel, which `registerPeriodicFiber`'s
+            // `catchAll` recovery does not catch — so one unforeseen throw would
+            // kill this fiber for the life of the process, and the signal would
+            // revert to exactly the silence #4797 exists to end, with nothing to
+            // notice but an ABSENCE of spans.
+            Effect.tryPromise({
+              try: () => m.runGrantSweepCycle(),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }),
+          ),
+        ),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.grant_sweep.status": result.status,
+          // `-1` encodes "the sweep could not run" — span attributes have no
+          // null, and reporting 0 would be indistinguishable from all-clear,
+          // which is precisely the silence this fiber exists to remove.
+          "atlas.brain.grant_sweep.malformed_rows": result.malformedRows ?? -1,
+          "atlas.brain.grant_sweep.malformed_workspaces": result.malformedWorkspaces ?? -1,
+          "atlas.brain.grant_sweep.rows_scanned": result.rowsScanned ?? -1,
+          // Rows the scan returned but could not READ. Non-zero means the
+          // malformed count is unverified rather than clean — it forces
+          // `degraded`, so this and `status` move together.
+          "atlas.brain.grant_sweep.unreadable_rows": result.unreadableRows ?? -1,
+          // Whether `malformed_rows` is a total or a floor — the ONE field an
+          // alert reads. All three causes are folded in (row cap, a failed
+          // table, unreadable rows), so alerting never has to join two fields.
+          "atlas.brain.grant_sweep.count_is_floor": result.countIsFloor,
+          // ...and the cause discriminator the fold would otherwise cost. A cap
+          // hit means "raise the cap"; a failed table means "fix the scan".
+          // Folding without this made a permanently-capped deployment
+          // indistinguishable from a broken one on the span alone.
+          "atlas.brain.grant_sweep.scan_truncated": result.scanTruncated,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain grant sweep tick failed — will retry next interval",
+        },
+        startLog: "Company-brain grant sweep scheduler started",
       });
 
       // ── Periodic fiber: shared OpenAPI spec refresh (#2970, Tier-1; #4195) ──

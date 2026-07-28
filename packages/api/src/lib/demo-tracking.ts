@@ -11,7 +11,7 @@
  */
 
 import { demoUserId } from "@atlas/api/lib/demo";
-import { estimateCostUsd } from "@atlas/api/lib/token-pricing";
+import { estimateCostUsd, resolveRate } from "@atlas/api/lib/token-pricing";
 
 // ---------------------------------------------------------------------------
 // Limits
@@ -166,6 +166,17 @@ export interface DemoTokenRollup {
   cacheWriteTokens: number;
   avgLatencyMs: number | null;
   estimatedCostUsd: number | null;
+  /**
+   * True when ANY model in this rollup was priced from the offline static
+   * family table rather than the live gateway catalog (#4869 review).
+   *
+   * `ResolvedRate.source` used to be computed and discarded, so a figure
+   * derived from hardcoded list prices rendered exactly as confidently as one
+   * derived from live per-model rates — and the static table can only express
+   * per-FAMILY pricing, so it is wrong for any version that isn't the current
+   * flagship. The UI uses this to mark the estimate as approximate.
+   */
+  costEstimated: boolean;
 }
 
 export interface DemoLead {
@@ -254,6 +265,7 @@ export function foldUsage(
   let costSum = 0;
   let anyPriced = false;
   let anyUnpriced = false;
+  let anyFromStaticTable = false;
   const latencyParts: Array<{ avg: number | null; count: number }> = [];
 
   for (const r of rows) {
@@ -279,6 +291,10 @@ export function foldUsage(
     } else {
       anyPriced = true;
       costSum += cost;
+      // Same lookup `estimateCostUsd` just did — the catalog peek is a Map hit
+      // off an in-memory cache, so re-resolving is cheaper than threading the
+      // provenance back through the return type.
+      if (resolveRate(r.model)?.source === "family") anyFromStaticTable = true;
     }
   }
 
@@ -290,6 +306,7 @@ export function foldUsage(
     cacheWriteTokens,
     avgLatencyMs: weightedAvgLatency(latencyParts),
     estimatedCostUsd: anyPriced ? costSum : null,
+    costEstimated: anyFromStaticTable,
     costComplete: !anyUnpriced,
   };
 }

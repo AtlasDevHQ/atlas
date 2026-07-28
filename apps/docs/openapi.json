@@ -78189,6 +78189,9 @@
                                   "number",
                                   "null"
                                 ]
+                              },
+                              "costEstimated": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -78198,7 +78201,8 @@
                               "cacheReadTokens",
                               "cacheWriteTokens",
                               "avgLatencyMs",
-                              "estimatedCostUsd"
+                              "estimatedCostUsd",
+                              "costEstimated"
                             ]
                           }
                         },
@@ -78507,6 +78511,9 @@
                             "null"
                           ]
                         },
+                        "costEstimated": {
+                          "type": "boolean"
+                        },
                         "costComplete": {
                           "type": "boolean"
                         }
@@ -78519,6 +78526,7 @@
                         "cacheWriteTokens",
                         "avgLatencyMs",
                         "estimatedCostUsd",
+                        "costEstimated",
                         "costComplete"
                       ]
                     },
@@ -78554,6 +78562,9 @@
                               "null"
                             ]
                           },
+                          "costEstimated": {
+                            "type": "boolean"
+                          },
                           "model": {
                             "type": [
                               "string",
@@ -78575,6 +78586,7 @@
                           "cacheWriteTokens",
                           "avgLatencyMs",
                           "estimatedCostUsd",
+                          "costEstimated",
                           "model",
                           "provider"
                         ]

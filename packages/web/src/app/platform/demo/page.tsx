@@ -337,6 +337,23 @@ function MetricsPanel() {
                 </p>
               ) : null}
 
+              {/*
+                Provenance, not just completeness (#4869 review). `costComplete`
+                says whether every model had SOME price; this says whether any
+                price came from the offline per-family table instead of the live
+                catalog. That table can't express per-version pricing, so it is
+                wrong for anything but the current flagship of a family — a
+                figure derived from it should not read as confidently as one
+                derived from live per-model rates.
+              */}
+              {data.totals.estimatedCostUsd != null && data.totals.costEstimated ? (
+                <p className="text-xs text-muted-foreground">
+                  Some models were priced from Atlas&apos;s offline list-price
+                  table because the live gateway catalog wasn&apos;t available.
+                  Those figures track the model family, not the exact version.
+                </p>
+              ) : null}
+
               {data.perModel.length > 0 ? (
                 <>
                   <Separator />

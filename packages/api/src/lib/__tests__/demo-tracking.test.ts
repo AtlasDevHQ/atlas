@@ -106,6 +106,7 @@ describe("foldUsage", () => {
       cacheWriteTokens: 0,
       avgLatencyMs: null,
       estimatedCostUsd: null,
+      costEstimated: false,
       costComplete: true,
     });
   });
@@ -152,8 +153,10 @@ describe("assembleLeads", () => {
     expect(leads[0]!.usage.turns).toBe(4);
     expect(leads[0]!.usage.promptTokens).toBe(2_000_000);
     expect(leads[0]!.usage.avgLatencyMs).toBe(1750); // count-weighted
-    // haiku $1 + sonnet $3 over 1M input each = $4.
-    expect(leads[0]!.usage.estimatedCostUsd).toBeCloseTo(4, 6);
+    // haiku $1 + sonnet $2 over 1M input each = $3. (Was $4 when the family
+    // table pinned sonnet at $3/MTok; refreshed to the live $2 in the #4869
+    // review.)
+    expect(leads[0]!.usage.estimatedCostUsd).toBeCloseTo(3, 6);
   });
 
   it("a lead with no demo turns gets a zeroed rollup and null cost", () => {
@@ -174,7 +177,7 @@ describe("assembleMetrics", () => {
     expect(metrics.leadCount).toBe(5);
     expect(metrics.sessionCount).toBe(12);
     expect(metrics.totals.turns).toBe(3);
-    expect(metrics.totals.estimatedCostUsd).toBeCloseTo(4, 6);
+    expect(metrics.totals.estimatedCostUsd).toBeCloseTo(3, 6);
     expect(metrics.totals.costComplete).toBe(true);
     expect(metrics.perModel).toHaveLength(2);
     const sumPerModel = metrics.perModel.reduce((s, m) => s + (m.estimatedCostUsd ?? 0), 0);

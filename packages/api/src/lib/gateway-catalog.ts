@@ -235,22 +235,35 @@ function readToolSupport(raw: RawCatalogEntry): boolean | null {
 
 const TOKENS_PER_MILLION = 1_000_000;
 
-/** A per-token price string/number → USD per million tokens. */
+/**
+ * A per-token price string/number → USD per million tokens.
+ *
+ * `0` is a REAL price, not a missing one (#4869 review). Three live language
+ * models publish `input: "0", output: "0"` — `inclusionai/ling-3.0-flash-free`,
+ * `poolside/laguna-s-2.1-free`, `zai/glm-4.6v-flash` — and they are genuinely
+ * free. Folding them into "unpriced" made the demo page render "—" when the
+ * true answer is $0.00, and permanently flipped `costComplete: false` on any
+ * rollup containing one. Only a NEGATIVE rate is nonsense; absence is absence.
+ */
 function asPerMTok(value: unknown): number | null {
   const raw = asString(value);
   if (raw === null) return null;
   const parsed = Number.parseFloat(raw);
-  // A zero or negative rate is not a real price — treat it as unpublished so
-  // the caller falls back rather than reporting a confident $0.00.
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
   return parsed * TOKENS_PER_MILLION;
 }
 
 /**
  * Normalized rates for one entry, or `null` when the catalog publishes no
- * usable input/output pair (3 of 204 language models, plus the non-language
- * types). Both base rates are required — a half-priced model would silently
+ * usable input/output pair (3 of 204 language models — the `perplexity/sonar*`
+ * trio, which publish no `pricing` values at all — plus the non-language
+ * types). Both base rates are required: a half-priced model would silently
  * under-report, which is worse than falling back.
+ *
+ * Measured 2026-07-28: NO live model publishes exactly one of input/output, so
+ * this guard costs nothing today. It stays as a forward guard. (An earlier
+ * version of this comment said "3 of 204" while also counting the three
+ * zero-priced models as unpriced — those are now correctly priced at $0.)
  */
 function normalizePricing(raw: RawCatalogEntry): CatalogModelPricing | null {
   if (!raw.pricing || typeof raw.pricing !== "object") return null;

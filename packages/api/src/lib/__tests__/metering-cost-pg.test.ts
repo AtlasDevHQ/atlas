@@ -26,7 +26,7 @@ import {
   _resetPool,
   type InternalPool,
 } from "@atlas/api/lib/db/internal";
-import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
+import { getCurrentPeriodUsage, logUsageEvent } from "@atlas/api/lib/metering";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -80,6 +80,53 @@ describeIfPg("getCurrentPeriodUsage costUsd aggregate (real Postgres)", () => {
       [workspaceId, eventType, quantity, eventType === "token" ? quantity : null, gatewayCostUsd],
     );
   }
+
+  it("logUsageEvent's real INSERT is accepted by real Postgres (#4869 review)", async () => {
+    // The one thing a mock CANNOT catch. The #4869 follow-up dropped
+    // `weighted_quantity` from the INSERT column list, shifting every
+    // positional parameter after it. The unit tests assert on the JS `params`
+    // array and on `sql).not.toContain("weighted_quantity")` — neither parses
+    // the SQL, so a column-list/placeholder disagreement (right params, wrong
+    // count or order) is GREEN in mocks and fails only against a live DB.
+    //
+    // That failure mode is silent and expensive: `internalExecute` is
+    // fire-and-forget, so a broken INSERT logs "row lost" and, after 5
+    // consecutive failures, opens the circuit breaker and disables every
+    // fire-and-forget internal-DB write. No 500, no failed request, no red
+    // test — metering just stops and Atlas under-bills until someone reads
+    // logs. This drives the REAL production write path end to end.
+    const ws = `ws-realinsert-${Math.floor(Math.random() * 1e6)}`;
+
+    logUsageEvent({
+      workspaceId: ws,
+      userId: null,
+      eventType: "token",
+      quantity: 1234,
+      gatewayCostUsd: 0.5678,
+      metadata: { input: 1000, output: 234 },
+    });
+
+    // logUsageEvent is intentionally fire-and-forget; poll for the row rather
+    // than sleeping a fixed interval.
+    let row: { quantity: number; gateway_cost_usd: string | null; weighted_quantity: number | null; metadata: unknown } | undefined;
+    for (let attempt = 0; attempt < 50 && !row; attempt += 1) {
+      const res = await pool.query(
+        `SELECT quantity, gateway_cost_usd, weighted_quantity, metadata
+           FROM usage_events WHERE workspace_id = $1`,
+        [ws],
+      );
+      row = res.rows[0];
+      if (!row) await new Promise((r) => setTimeout(r, 20));
+    }
+
+    expect(row).toBeDefined();
+    expect(row!.quantity).toBe(1234);
+    expect(Number(row!.gateway_cost_usd)).toBeCloseTo(0.5678, 6);
+    // The dropped column must land NULL, not 0 — 0 would mean "weighted to
+    // zero", which is a different and wrong claim about historical rows.
+    expect(row!.weighted_quantity).toBeNull();
+    expect(row!.metadata).toEqual({ input: 1000, output: 234 });
+  });
 
   it("sums gateway_cost_usd over token rows, skips NULL + non-token, returns a JS number", async () => {
     const ws = `ws-cost-${Math.floor(Math.random() * 1e6)}`;

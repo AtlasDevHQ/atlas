@@ -51,15 +51,21 @@ const CACHE_WRITE_MULTIPLIER = 1.25;
 const TOKENS_PER_MILLION = 1_000_000;
 
 /**
- * Base rates keyed by model family. The demo path defaults to Haiku (the
- * cheapest tier); Sonnet/Opus are covered so an operator who points the demo at
- * a pricier model still gets a sane estimate. Keep these in the same ballpark
- * as Anthropic's published list pricing — they're an estimate, not a contract.
+ * Base rates keyed by model family — the OFFLINE fallback, used only when the
+ * live catalog hasn't been fetched yet or doesn't carry the model.
+ *
+ * Refreshed against the live gateway catalog 2026-07-28 (#4869 review). They
+ * had drifted badly: `opus` was $15/$75 when every current Opus (4.5 through
+ * 5) is $5/$25 — a 3x over-report — and `sonnet` was $3/$15 against Sonnet 5's
+ * $2/$10. Because this is a per-FAMILY table it cannot track per-version
+ * pricing, so these now sit on the CURRENT flagship of each family and will
+ * drift again; the live catalog is what keeps the estimate honest, and this is
+ * only the cold-start floor.
  */
 const FAMILY_RATES = {
   haiku: { inputPerMTok: 1, outputPerMTok: 5 },
-  sonnet: { inputPerMTok: 3, outputPerMTok: 15 },
-  opus: { inputPerMTok: 15, outputPerMTok: 75 },
+  sonnet: { inputPerMTok: 2, outputPerMTok: 10 },
+  opus: { inputPerMTok: 5, outputPerMTok: 25 },
 } satisfies Record<string, ModelRate>;
 
 export type ModelFamily = keyof typeof FAMILY_RATES;
@@ -117,16 +123,20 @@ export function resolveRate(model: string | null | undefined): ResolvedRate | nu
     };
   }
 
+  // Warm BEFORE the family lookup, not inside the `!family` branch (#4869
+  // review). `resolveModelFamily` substring-matches haiku/sonnet/opus, so every
+  // Anthropic gateway id resolved a family and skipped the warm entirely — the
+  // catalog tier never activated for them, and the static table below answered
+  // forever. That's what made the stale `opus` rate a permanent 3x over-report
+  // rather than a one-turn cold-start artifact.
+  //
+  // Fire-and-forget, deduped by the catalog's inflight promise, no-op when
+  // already warm. Gated on a gateway-shaped id so a direct/BYOT model id never
+  // triggers an outbound fetch.
+  if (model?.includes("/")) warmGatewayCatalog();
+
   const family = resolveModelFamily(model);
-  if (!family) {
-    // Cold cache is indistinguishable from "not in the catalog" at this call,
-    // so warm in the background — the next read prices what this one couldn't.
-    // Fire-and-forget, deduped by the catalog's inflight promise, no-op when
-    // already warm. Gated on a gateway-shaped id so a direct/BYOT model id
-    // never triggers an outbound fetch.
-    if (model?.includes("/")) warmGatewayCatalog();
-    return null;
-  }
+  if (!family) return null;
   const rate = FAMILY_RATES[family];
   return {
     inputPerMTok: rate.inputPerMTok,
@@ -158,12 +168,28 @@ export function estimateCostUsd(
   const freshInput = Math.max(0, counts.promptTokens - cacheRead - cacheWrite);
   const completion = Math.max(0, counts.completionTokens);
 
-  // Prefer the model's OWN published cache rates; fall back to the Anthropic
-  // multipliers only when the catalog doesn't publish them. Applying Anthropic's
-  // 0.1x/1.25x to, say, a Gemini model was always an approximation — now it's
-  // only used where there's genuinely nothing better.
-  const cacheReadRate = rate.cacheReadPerMTok ?? rate.inputPerMTok * CACHE_READ_MULTIPLIER;
-  const cacheWriteRate = rate.cacheWritePerMTok ?? rate.inputPerMTok * CACHE_WRITE_MULTIPLIER;
+  // Prefer the model's OWN published cache rates. When the catalog doesn't
+  // publish them, the fallback depends on where the base rate came from
+  // (#4869 review):
+  //
+  //  - `family` (the Anthropic-only static table) — the Anthropic 0.1x/1.25x
+  //    multipliers are correct for that family, so use them.
+  //  - `catalog` — do NOT borrow Anthropic's shape. 62 of 204 live language
+  //    models publish input+output but no cache-read rate, and the published
+  //    ratios among those that DO declare one span 0.008x-0.52x. Applying 0.1x
+  //    blindly under-reported by ~5x for `gpt-4-turbo` and `deepseek-r1`
+  //    (whose siblings publish 0.5x), while reporting `source: "catalog"` with
+  //    full confidence. The likeliest reason a model publishes no cache-read
+  //    rate is that it gives no cache discount, so charge cache tokens at the
+  //    FULL input rate: an over-report is the safe direction for a spend
+  //    signal, and it can't silently make a bill look smaller than it is.
+  const assumeNoDiscount = rate.source === "catalog";
+  const cacheReadRate =
+    rate.cacheReadPerMTok ??
+    (assumeNoDiscount ? rate.inputPerMTok : rate.inputPerMTok * CACHE_READ_MULTIPLIER);
+  const cacheWriteRate =
+    rate.cacheWritePerMTok ??
+    (assumeNoDiscount ? rate.inputPerMTok : rate.inputPerMTok * CACHE_WRITE_MULTIPLIER);
 
   const cost =
     (freshInput * rate.inputPerMTok +

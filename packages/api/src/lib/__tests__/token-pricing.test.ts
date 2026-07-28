@@ -79,7 +79,7 @@ describe("estimateCostUsd", () => {
     expect(cost).toBeCloseTo(0.7 + 0.02 + 0.125, 6);
   });
 
-  it("scales by family — Sonnet costs 3× Haiku on the same input", () => {
+  it("scales by family — Sonnet costs 2× Haiku on the same input", () => {
     const counts = {
       promptTokens: 1_000_000,
       completionTokens: 0,
@@ -88,7 +88,10 @@ describe("estimateCostUsd", () => {
     };
     const haiku = estimateCostUsd("anthropic/claude-haiku-4.5", counts)!;
     const sonnet = estimateCostUsd("anthropic/claude-sonnet-4.6", counts)!;
-    expect(sonnet).toBeCloseTo(haiku * 3, 6);
+    // 2x, not 3x: the family table was refreshed against the live catalog
+    // (#4869 review) — sonnet $2/MTok vs haiku $1/MTok. It said $3 when the
+    // current Sonnet is $2, and $15 for opus when every current Opus is $5.
+    expect(sonnet).toBeCloseTo(haiku * 2, 6);
   });
 
   it("clamps fresh input to 0 when the cache split exceeds prompt_tokens (isolated)", () => {
@@ -207,7 +210,14 @@ describe("resolveRate — catalog tier", () => {
     expect(cost).toBeGreaterThan((1_000 * 0.1 + 1_000 * 1.25) / 1_000_000);
   });
 
-  it("falls back to the multipliers when the catalog omits cache rates", async () => {
+  it("charges cache reads at FULL input rate when a CATALOG model omits them", async () => {
+    // Does NOT borrow Anthropic's 0.1x (#4869 review). 62 of 204 live language
+    // models publish input+output but no cache-read rate, and the published
+    // ratios among those that DO declare one span 0.008x-0.52x — `gpt-4-turbo`
+    // and `deepseek-r1` were under-reported ~5x while claiming
+    // `source: "catalog"`. The likeliest reason a model publishes no cache-read
+    // rate is that it offers no discount, so assume none; over-reporting is the
+    // safe direction for a spend signal.
     await warmCatalogWith([
       { id: "a/nocache", type: "language", pricing: { input: "0.000001", output: "0.000005" } },
     ]);
@@ -221,23 +231,114 @@ describe("resolveRate — catalog tier", () => {
       cacheReadTokens: 1_000,
       cacheWriteTokens: 0,
     });
+    // Full $1/MTok, not $0.10/MTok.
+    expect(cost).toBeCloseTo((1_000 * 1) / 1_000_000, 12);
+  });
+
+  it("STILL applies the Anthropic multipliers on the family tier", () => {
+    // The multipliers are correct for the family table, which is Anthropic-only
+    // — the change above is scoped to catalog-sourced rates.
+    const rate = resolveRate("anthropic/claude-haiku-4.5");
+    expect(rate?.source).toBe("family");
+    const cost = estimateCostUsd("anthropic/claude-haiku-4.5", {
+      promptTokens: 1_000,
+      completionTokens: 0,
+      cacheReadTokens: 1_000,
+      cacheWriteTokens: 0,
+    });
+    // haiku $1/MTok x 0.1 cache-read multiplier.
     expect(cost).toBeCloseTo((1_000 * 1 * 0.1) / 1_000_000, 12);
   });
 
-  it("treats a half-priced or zero-priced entry as unpriced, not as free", async () => {
-    // A confident $0.00 is worse than "—": it reads as real spend data.
+  it("treats a HALF-priced entry as unpriced, but a zero-priced one as free", async () => {
+    // Zero is a real price (#4869 review). Three live language models publish
+    // `input: "0", output: "0"` and are genuinely free — folding them into
+    // "unpriced" rendered "—" when the truth is $0.00, and permanently flipped
+    // `costComplete: false` on any rollup containing one. A HALF-published
+    // price stays unpriced: that would silently under-report.
     await warmCatalogWith([
       { id: "a/half", type: "language", pricing: { input: "0.000001" } },
       { id: "a/zero", type: "language", pricing: { input: "0", output: "0" } },
+      { id: "a/negative", type: "language", pricing: { input: "-1", output: "-1" } },
     ]);
     expect(resolveRate("a/half")).toBeNull();
-    expect(resolveRate("a/zero")).toBeNull();
+    expect(resolveRate("a/negative")).toBeNull();
+
+    const free = resolveRate("a/zero");
+    expect(free?.source).toBe("catalog");
+    expect(free?.inputPerMTok).toBe(0);
+    expect(
+      estimateCostUsd("a/zero", {
+        promptTokens: 1_000_000,
+        completionTokens: 1_000_000,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      }),
+    ).toBe(0);
   });
 
-  it("keeps the static family fallback when the catalog is cold", () => {
+  it("keeps the static family fallback when the catalog is cold, at CURRENT prices", () => {
+    // This asserted 15 — the old table value — which pinned a 3x over-report as
+    // intended behavior against a live Opus price of $5/MTok (#4869 review).
     const rate = resolveRate("anthropic/claude-opus-4.8");
     expect(rate?.source).toBe("family");
-    expect(rate?.inputPerMTok).toBe(15);
+    expect(rate?.inputPerMTok).toBe(5);
+    expect(rate?.outputPerMTok).toBe(25);
+  });
+
+  it("WARMS the catalog for an Anthropic id, which used to skip the warm", async () => {
+    // The regression: the warm sat inside the `!family` branch, and
+    // `resolveModelFamily` substring-matches haiku/sonnet/opus — so every
+    // Anthropic id resolved a family and never warmed. The catalog tier never
+    // activated for them and the static table answered forever, which is what
+    // turned a stale rate into a PERMANENT over-report rather than a
+    // one-turn cold-start artifact.
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    expect(resolveRate("anthropic/claude-opus-4.8")?.source).toBe("family");
+    await Promise.resolve();
+    expect(fetches).toBe(1);
+  });
+
+  it("does NOT warm for a slashless direct/BYOT id", () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    resolveRate("claude-opus-4-8");
+    expect(fetches).toBe(0);
+  });
+
+  it("treats a TTL-EXPIRED catalog as a miss, not as a usable price", async () => {
+    // The one branch where the module deliberately picks "no price" over "a
+    // price that may have moved" — and it was untested (#4869 review).
+    // Flipping `<=` to `<`, or deleting the check, was green: the result would
+    // be an operator page confidently showing dollars computed at expired
+    // prices. Driven through the real TTL knob rather than a clock mock.
+    const origTtl = process.env.ATLAS_GATEWAY_CATALOG_TTL_MS;
+    process.env.ATLAS_GATEWAY_CATALOG_TTL_MS = "1";
+    try {
+      await warmCatalogWith([
+        { id: "zai/glm-5.2", type: "language", pricing: { input: "0.0000014", output: "0.0000044" } },
+      ]);
+      // Fresh for ~1ms...
+      await new Promise((r) => setTimeout(r, 25));
+      // ...now expired. Falls through to the family tier, which has no entry
+      // for a `zai/` id, so the honest answer is "no price".
+      expect(resolveRate("zai/glm-5.2")).toBeNull();
+    } finally {
+      if (origTtl === undefined) delete process.env.ATLAS_GATEWAY_CATALOG_TTL_MS;
+      else process.env.ATLAS_GATEWAY_CATALOG_TTL_MS = origTtl;
+    }
   });
 
   it("does not price off the bundled fallback catalog", async () => {

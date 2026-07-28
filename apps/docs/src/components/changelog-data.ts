@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.1.1",
+    title: "Auth Dependency Advisories & SCIM Ownership",
+    date: "2026-07-28",
+    summary:
+      "A security patch closing four advisories in the Better Auth dependency cluster, found by the container-image scanning added shortly after launch. Three close with the upgrade to 1.6.25. The fourth affects SCIM directory provisioning: a SCIM connection that belongs to a person rather than an organization was not bound to the person who created it, so any signed-in user could view, delete, or regenerate the token of someone else's personal connection — and regenerating rotates it, which would break the legitimate integration while handing the caller a working token. Organization-scoped connections, which is what the Atlas admin console creates, were never affected; they were always checked against organization membership and role. This release binds new personal connections to their creator and seals any that already existed. Sealed connections keep provisioning users normally — only their management endpoints are locked, and an operator can reclaim one. Self-hosted deployments that never enabled SCIM are unaffected and the change is a no-op for them.",
+    highlights: [
+      "Better Auth cluster upgraded to 1.6.25, closing three advisories",
+      "SCIM connections owned by a person are now bound to that person at creation, so another signed-in user can no longer read, delete, or regenerate their token (GHSA-j8v8-g9cx-5qf4)",
+      "Personal SCIM connections that predate the fix are sealed to a reserved owner rather than deleted — they keep syncing users, and an operator can reclaim one instead of losing a live directory connection",
+      "Organization-scoped SCIM connections were never exposed and are deliberately left untouched",
+      "Shipped as a hotfix from the v0.1.0 tag rather than from main, so it carries only the security fix",
+    ],
+  },
+  {
     version: "v0.1.0",
     title: "Public Launch",
     date: "2026-07-24",

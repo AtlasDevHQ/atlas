@@ -266,7 +266,9 @@ describe("resolveRate — catalog tier", () => {
 
     const free = resolveRate("a/zero");
     expect(free?.source).toBe("catalog");
-    expect(free?.inputPerMTok).toBe(0);
+    // `Number(...)` strips the `UsdPerMTok` brand so the matcher compares a
+    // plain number; the brand exists to gate ASSIGNMENT, not comparison.
+    expect(Number(free?.inputPerMTok)).toBe(0);
     expect(
       estimateCostUsd("a/zero", {
         promptTokens: 1_000_000,
@@ -277,13 +279,58 @@ describe("resolveRate — catalog tier", () => {
     ).toBe(0);
   });
 
+  it("rejects every malformed pricing shape without inventing a number", async () => {
+    // Table-driven because `asPerMTok`/`normalizePricing` fold EVERY rejection
+    // to null, so the risk isn't a wrong number — it's a shape that slips
+    // through and prices at NaN. Only `input`-only and zero were covered
+    // before (#4869 review).
+    await warmCatalogWith([
+      { id: "m/output-only", type: "language", pricing: { output: "0.000005" } },
+      { id: "m/negative-in", type: "language", pricing: { input: "-0.1", output: "0.000005" } },
+      { id: "m/negative-out", type: "language", pricing: { input: "0.000001", output: "-0.1" } },
+      { id: "m/nan", type: "language", pricing: { input: "not-a-number", output: "0.000005" } },
+      { id: "m/empty-str", type: "language", pricing: { input: "", output: "0.000005" } },
+      { id: "m/no-pricing-key", type: "language" },
+      { id: "m/pricing-null", type: "language", pricing: null },
+      { id: "m/pricing-not-object", type: "language", pricing: "cheap" },
+      { id: "m/pricing-empty", type: "language", pricing: {} },
+      { id: "m/bool", type: "language", pricing: { input: true, output: "0.000005" } },
+    ]);
+
+    for (const id of [
+      "m/output-only",
+      "m/negative-in",
+      "m/negative-out",
+      "m/nan",
+      "m/empty-str",
+      "m/no-pricing-key",
+      "m/pricing-null",
+      "m/pricing-not-object",
+      "m/pricing-empty",
+      "m/bool",
+    ]) {
+      expect(resolveRate(id)).toBeNull();
+    }
+  });
+
+  it("accepts NUMERIC (non-string) pricing, which the gateway may emit", async () => {
+    // `asString` coerces finite numbers on purpose; nothing asserted it.
+    await warmCatalogWith([
+      { id: "m/numeric", type: "language", pricing: { input: 0.000001, output: 0.000005 } },
+    ]);
+    const rate = resolveRate("m/numeric");
+    expect(rate?.source).toBe("catalog");
+    expect(Number(rate?.inputPerMTok)).toBeCloseTo(1, 10);
+    expect(Number(rate?.outputPerMTok)).toBeCloseTo(5, 10);
+  });
+
   it("keeps the static family fallback when the catalog is cold, at CURRENT prices", () => {
     // This asserted 15 — the old table value — which pinned a 3x over-report as
     // intended behavior against a live Opus price of $5/MTok (#4869 review).
     const rate = resolveRate("anthropic/claude-opus-4.8");
     expect(rate?.source).toBe("family");
-    expect(rate?.inputPerMTok).toBe(5);
-    expect(rate?.outputPerMTok).toBe(25);
+    expect(Number(rate?.inputPerMTok)).toBe(5);
+    expect(Number(rate?.outputPerMTok)).toBe(25);
   });
 
   it("WARMS the catalog for an Anthropic id, which used to skip the warm", async () => {

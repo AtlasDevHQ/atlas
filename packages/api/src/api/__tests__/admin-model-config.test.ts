@@ -464,9 +464,14 @@ void mock.module("@atlas/api/lib/gateway-catalog", () => ({
   // rather than the rule (#4869 review).
   isSelectableGatewayModel: (m: { type: string; supportsTools: boolean | null }) =>
     m.type === "language" && m.supportsTools !== false,
+  // Added in the #4869 follow-up and missing here until the review caught it:
+  // a partial factory hands `undefined` to the next importer in this graph and
+  // fails at CALL time, far from the cause. The in-file note below says to keep
+  // this list complete — it wasn't.
+  peekModelPricing: mock(() => null),
   warmGatewayCatalog: mock(() => {}),
   __resetGatewayCatalogCacheForTests: mock(() => {}),
-  __getRecommendedIdsForTests: mock(() => new Set<string>()),
+  __getRecommendedIdsForTests: mock((): readonly string[] => []),
 }));
 
 // --- Import the app AFTER all mocks ---

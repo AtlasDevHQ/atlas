@@ -24,7 +24,11 @@
  * model, which is exactly the set the model picker now exposes.
  */
 
-import { peekModelPricing, warmGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
+import {
+  peekModelPricing,
+  warmGatewayCatalog,
+  type UsdPerMTok,
+} from "@atlas/api/lib/gateway-catalog";
 
 export interface TokenCounts {
   /** Total input tokens (AI-SDK `inputTokens`, inclusive of the cache split). */
@@ -36,9 +40,9 @@ export interface TokenCounts {
 
 interface ModelRate {
   /** USD per million fresh (uncached) input tokens. */
-  readonly inputPerMTok: number;
+  readonly inputPerMTok: UsdPerMTok;
   /** USD per million output tokens. */
-  readonly outputPerMTok: number;
+  readonly outputPerMTok: UsdPerMTok;
 }
 
 /**
@@ -63,9 +67,11 @@ const TOKENS_PER_MILLION = 1_000_000;
  * only the cold-start floor.
  */
 const FAMILY_RATES = {
-  haiku: { inputPerMTok: 1, outputPerMTok: 5 },
-  sonnet: { inputPerMTok: 2, outputPerMTok: 10 },
-  opus: { inputPerMTok: 5, outputPerMTok: 25 },
+  // Literals are already per-MTok, so the brand is asserted rather than
+  // derived — the `satisfies` below keeps the shape honest.
+  haiku: { inputPerMTok: 1 as UsdPerMTok, outputPerMTok: 5 as UsdPerMTok },
+  sonnet: { inputPerMTok: 2 as UsdPerMTok, outputPerMTok: 10 as UsdPerMTok },
+  opus: { inputPerMTok: 5 as UsdPerMTok, outputPerMTok: 25 as UsdPerMTok },
 } satisfies Record<string, ModelRate>;
 
 export type ModelFamily = keyof typeof FAMILY_RATES;
@@ -86,12 +92,12 @@ export function resolveModelFamily(model: string | null | undefined): ModelFamil
 
 /** Rates for a turn, plus where they came from (for observability/tests). */
 export interface ResolvedRate {
-  readonly inputPerMTok: number;
-  readonly outputPerMTok: number;
+  readonly inputPerMTok: UsdPerMTok;
+  readonly outputPerMTok: UsdPerMTok;
   /** Explicit cache-read rate; `null` ⇒ derive from input via the multiplier. */
-  readonly cacheReadPerMTok: number | null;
+  readonly cacheReadPerMTok: UsdPerMTok | null;
   /** Explicit cache-write rate; `null` ⇒ derive from input via the multiplier. */
-  readonly cacheWritePerMTok: number | null;
+  readonly cacheWritePerMTok: UsdPerMTok | null;
   readonly source: "catalog" | "family";
 }
 

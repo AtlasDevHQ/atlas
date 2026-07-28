@@ -128,6 +128,25 @@ interface RawCatalogEntry {
 }
 
 /**
+ * USD per MILLION tokens — a branded number, not a bare one (#4869 review).
+ *
+ * This module handles the same fact in two units six lines apart: the wire
+ * fields `inputPrice`/`outputPrice` are per-TOKEN strings straight from the
+ * gateway, while `CatalogModelPricing` is per-MILLION-token numbers. The
+ * conversion is a factor of 1e6, and with both sides typed `number` a
+ * per-token value assigned into a per-MTok slot type-checks cleanly and
+ * under-reports cost by a million times.
+ *
+ * The brand makes that assignment a compile error. `asPerMTok` is the only
+ * constructor, so the multiplication happens exactly once and anything that
+ * skips it can't reach a `CatalogModelPricing` field.
+ *
+ * Consumers do arithmetic on it normally (a branded number IS a number); only
+ * ASSIGNMENT into a per-MTok slot is gated.
+ */
+export type UsdPerMTok = number & { readonly __brand: "UsdPerMTok" };
+
+/**
  * Per-model rates in USD per MILLION tokens, normalized from the catalog's
  * per-token strings.
  *
@@ -146,13 +165,13 @@ interface RawCatalogEntry {
  */
 export interface CatalogModelPricing {
   /** USD per million fresh (uncached) input tokens. */
-  readonly inputPerMTok: number;
+  readonly inputPerMTok: UsdPerMTok;
   /** USD per million output tokens. */
-  readonly outputPerMTok: number;
+  readonly outputPerMTok: UsdPerMTok;
   /** USD per million cache-read input tokens; `null` when unpublished. */
-  readonly cacheReadPerMTok: number | null;
+  readonly cacheReadPerMTok: UsdPerMTok | null;
   /** USD per million cache-write input tokens; `null` when unpublished. */
-  readonly cacheWritePerMTok: number | null;
+  readonly cacheWritePerMTok: UsdPerMTok | null;
 }
 
 interface CatalogCacheEntry {
@@ -245,12 +264,14 @@ const TOKENS_PER_MILLION = 1_000_000;
  * true answer is $0.00, and permanently flipped `costComplete: false` on any
  * rollup containing one. Only a NEGATIVE rate is nonsense; absence is absence.
  */
-function asPerMTok(value: unknown): number | null {
+function asPerMTok(value: unknown): UsdPerMTok | null {
   const raw = asString(value);
   if (raw === null) return null;
   const parsed = Number.parseFloat(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return parsed * TOKENS_PER_MILLION;
+  // The ONE place the per-token → per-MTok conversion happens, and the only
+  // place the brand is minted.
+  return (parsed * TOKENS_PER_MILLION) as UsdPerMTok;
 }
 
 /**

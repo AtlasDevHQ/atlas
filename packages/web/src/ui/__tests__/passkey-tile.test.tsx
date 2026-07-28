@@ -121,6 +121,52 @@ describe("deriveDeviceName", () => {
   });
 });
 
+/**
+ * testing-library's async default is 1000ms of WALL-CLOCK, not of work. The
+ * tile's add-passkey click is fire-and-forget (`handleAdd` does
+ * `void runAddPasskey()`), so the click returns before the chain that drives
+ * the UI has settled: addPasskey resolves -> setState -> re-render -> the
+ * re-auth dialog's portal mounts. On a CI runner executing 300+ web test files
+ * in parallel the event loop is starved enough for that chain to exceed 1000ms
+ * — observed at 1035ms in run 30355525624, where the same commit passed in a
+ * sibling run. Matches the scoped `{ timeout: N }` idiom already used in
+ * password-section / use-password-status / use-run-status rather than a global
+ * `configure({ asyncUtilTimeout })`, so only the genuinely-async waits get
+ * headroom and a real hang still fails the suite.
+ */
+const SLOW_ENV_TIMEOUT = 5000;
+
+/**
+ * Drive the tile from its idle state to an open re-auth dialog and hand back
+ * the password input.
+ *
+ * Waits on the CAUSE before the effect: asserting `addPasskeyMock` ran, then
+ * the dialog's own copy, then the input. A timeout therefore names the step
+ * that actually stalled ("addPasskey never ran" / "dialog never opened")
+ * instead of the generic "unable to find an element with the placeholder
+ * text", which is what made the original failure hard to read.
+ *
+ * Callers must stage an `addPasskeyMock` implementation returning
+ * SESSION_NOT_FRESH before calling this.
+ */
+async function openReauthDialog(): Promise<HTMLElement> {
+  const addBtn = await screen.findByRole(
+    "button",
+    { name: /add a passkey/i },
+    { timeout: SLOW_ENV_TIMEOUT },
+  );
+  await act(async () => {
+    fireEvent.click(addBtn);
+  });
+  await waitFor(() => expect(addPasskeyMock).toHaveBeenCalled(), {
+    timeout: SLOW_ENV_TIMEOUT,
+  });
+  await waitFor(() => expect(document.body.textContent).toContain("Re-enter your password"), {
+    timeout: SLOW_ENV_TIMEOUT,
+  });
+  return screen.findByPlaceholderText(/your password/i, {}, { timeout: SLOW_ENV_TIMEOUT });
+}
+
 describe("PasskeyTile", () => {
   test("falls back to unsupported copy when PublicKeyCredential is missing", async () => {
     setPublicKeyCredential(undefined);
@@ -129,7 +175,7 @@ describe("PasskeyTile", () => {
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Passkey unavailable");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     expect(document.body.textContent).toContain("Your browser doesn't support passkeys");
   });
 
@@ -155,7 +201,7 @@ describe("PasskeyTile", () => {
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Recommended");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     expect(screen.getByRole("button", { name: /add a passkey/i })).toBeDefined();
   });
 
@@ -168,7 +214,7 @@ describe("PasskeyTile", () => {
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Limited support — security key only");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     expect(document.body.textContent).not.toContain("Recommended");
     const addBtn = screen.getByRole("button", { name: /add a passkey/i }) as HTMLButtonElement;
     expect(addBtn.disabled).toBe(false);
@@ -183,7 +229,7 @@ describe("PasskeyTile", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /add another passkey/i })).toBeDefined();
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     expect(document.body.textContent).not.toContain("Recommended");
   });
 
@@ -198,7 +244,11 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    const addBtn = await screen.findByRole(
+      "button",
+      { name: /add a passkey/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
 
     await act(async () => {
       fireEvent.click(addBtn);
@@ -206,7 +256,7 @@ describe("PasskeyTile", () => {
 
     await waitFor(() => {
       expect(addPasskeyMock).toHaveBeenCalledTimes(1);
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
 
     expect(document.body.textContent).not.toContain("Could not register that passkey");
     expect(document.body.textContent).not.toContain("Name this passkey");
@@ -223,7 +273,11 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    const addBtn = await screen.findByRole(
+      "button",
+      { name: /add a passkey/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
 
     await act(async () => {
       fireEvent.click(addBtn);
@@ -231,7 +285,7 @@ describe("PasskeyTile", () => {
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Origin mismatch");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     expect(document.body.textContent).not.toContain("Name this passkey");
   });
 
@@ -246,7 +300,11 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    const addBtn = await screen.findByRole(
+      "button",
+      { name: /add a passkey/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
 
     await act(async () => {
       fireEvent.click(addBtn);
@@ -254,7 +312,7 @@ describe("PasskeyTile", () => {
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Name this passkey");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
   });
 
   test("SESSION_NOT_FRESH opens the re-auth dialog instead of surfacing a banner", async () => {
@@ -268,14 +326,18 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    const addBtn = await screen.findByRole(
+      "button",
+      { name: /add a passkey/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
     await act(async () => {
       fireEvent.click(addBtn);
     });
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Re-enter your password");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     // The freshness branch must NOT surface the generic enrollment-failure
     // banner — that would be a confusing double signal alongside the dialog.
     expect(document.body.textContent).not.toContain("Could not register that passkey");
@@ -300,31 +362,30 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
-    await act(async () => {
-      fireEvent.click(addBtn);
-    });
-
     // Re-auth dialog appears with a password input + confirm button.
-    const passwordInput = await screen.findByPlaceholderText(/your password/i);
+    const passwordInput = await openReauthDialog();
     await act(async () => {
       fireEvent.change(passwordInput, { target: { value: "correct-horse-battery-staple" } });
     });
-    const confirmBtn = await screen.findByRole("button", { name: /confirm and add passkey/i });
+    const confirmBtn = await screen.findByRole(
+      "button",
+      { name: /confirm and add passkey/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
     await act(async () => {
       fireEvent.click(confirmBtn);
     });
 
-    await waitFor(() => {
-      expect(signInEmailMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(signInEmailMock).toHaveBeenCalledTimes(1), {
+      timeout: SLOW_ENV_TIMEOUT,
     });
     // addPasskey is called twice: original (rejected) + retry (successful).
-    await waitFor(() => {
-      expect(addPasskeyMock).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(addPasskeyMock).toHaveBeenCalledTimes(2), {
+      timeout: SLOW_ENV_TIMEOUT,
     });
     // Successful retry should open the rename modal.
-    await waitFor(() => {
-      expect(document.body.textContent).toContain("Name this passkey");
+    await waitFor(() => expect(document.body.textContent).toContain("Name this passkey"), {
+      timeout: SLOW_ENV_TIMEOUT,
     });
   });
 
@@ -343,16 +404,15 @@ describe("PasskeyTile", () => {
 
     render(<PasskeyTile hasPasskey={false} />);
 
-    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
-    await act(async () => {
-      fireEvent.click(addBtn);
-    });
-
-    const passwordInput = await screen.findByPlaceholderText(/your password/i);
+    const passwordInput = await openReauthDialog();
     await act(async () => {
       fireEvent.change(passwordInput, { target: { value: "wrong" } });
     });
-    const confirmBtn = await screen.findByRole("button", { name: /confirm and add passkey/i });
+    const confirmBtn = await screen.findByRole(
+      "button",
+      { name: /confirm and add passkey/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
     await act(async () => {
       fireEvent.click(confirmBtn);
     });
@@ -364,7 +424,7 @@ describe("PasskeyTile", () => {
       expect(document.body.textContent).toContain(
         "If you signed up with Google, GitHub, or SSO",
       );
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     // Ensure addPasskey was NOT retried — re-auth failed.
     expect(addPasskeyMock).toHaveBeenCalledTimes(1);
   });
@@ -385,28 +445,36 @@ describe("PasskeyTile", () => {
     const onChange = mock(() => {});
     render(<PasskeyTile hasPasskey={false} onChange={onChange} />);
 
-    const addBtn = await screen.findByRole("button", { name: /add a passkey/i });
+    const addBtn = await screen.findByRole(
+      "button",
+      { name: /add a passkey/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
     await act(async () => {
       fireEvent.click(addBtn);
     });
 
     await waitFor(() => {
       expect(document.body.textContent).toContain("Name this passkey");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
 
-    const saveBtn = await screen.findByRole("button", { name: /^save$/i });
+    const saveBtn = await screen.findByRole(
+      "button",
+      { name: /^save$/i },
+      { timeout: SLOW_ENV_TIMEOUT },
+    );
     await act(async () => {
       fireEvent.click(saveBtn);
     });
 
     await waitFor(() => {
       expect(updatePasskeyMock).toHaveBeenCalledTimes(1);
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
 
     // Dialog closes; parent is asked to refetch; recovery hint is visible.
     await waitFor(() => {
       expect(document.body.textContent).not.toContain("Name this passkey");
-    });
+    }, { timeout: SLOW_ENV_TIMEOUT });
     expect(onChange).toHaveBeenCalled();
     expect(document.body.textContent).toContain("Saved your passkey, but renaming failed");
     expect(document.body.textContent).toContain("DB write timeout");

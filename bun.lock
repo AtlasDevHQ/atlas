@@ -74,7 +74,7 @@
         "@types/node": "^25.9.4",
         "@types/pg": "^8.20.0",
         "@types/react": "^19.2.15",
-        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
+        "@typescript/native-preview": "7.0.0-dev.20260623.1",
         "@vercel/og": "0.11.1",
         "github-slugger": "2.0.0",
         "jose": "^6.2.3",
@@ -357,7 +357,7 @@
       "version": "0.0.17",
       "devDependencies": {
         "@types/node": "^25.9.4",
-        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
+        "@typescript/native-preview": "7.0.0-dev.20260623.1",
         "ai": "^6.0.208",
         "hono": "^4.12.27",
         "zod": "^4.4.3",
@@ -449,14 +449,14 @@
       },
       "devDependencies": {
         "@atlas/oauth-helper": "workspace:*",
-        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
+        "@typescript/native-preview": "7.0.0-dev.20260623.1",
       },
     },
     "packages/types": {
       "name": "@useatlas/types",
       "version": "0.7.0",
       "devDependencies": {
-        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
+        "@typescript/native-preview": "7.0.0-dev.20260623.1",
       },
     },
     "packages/web": {
@@ -534,7 +534,7 @@
       "version": "0.0.1",
       "devDependencies": {
         "@types/node": "^25.9.4",
-        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
+        "@typescript/native-preview": "7.0.0-dev.20260623.1",
       },
     },
     "plugins/bigquery": {

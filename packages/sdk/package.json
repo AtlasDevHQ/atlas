@@ -53,6 +53,6 @@
   },
   "devDependencies": {
     "@atlas/oauth-helper": "workspace:*",
-    "@typescript/native-preview": "7.0.0-dev.20260623.1"
+    "@typescript/native-preview": "7.0.0-dev.20260707.2"
   }
 }

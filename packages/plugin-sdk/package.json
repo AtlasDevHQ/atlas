@@ -76,7 +76,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.4",
-    "@typescript/native-preview": "7.0.0-dev.20260623.1",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "ai": "^6.0.208",
     "hono": "^4.12.27",
     "zod": "^4.4.3"

@@ -118,6 +118,12 @@ jobs:
       - name: Adversarial fixtures for the plugin-count gate (#4066)
         run: bash scripts/__tests__/check-plugin-count.test.sh
 
+      - name: Check boot-loaded plugins ↔ api Dockerfile wiring lockstep (#4880)
+        run: bun scripts/check-plugin-lockstep.ts
+
+      - name: Adversarial fixtures for the plugin-lockstep gate (#4880)
+        run: bash scripts/__tests__/check-plugin-lockstep.test.sh
+
       - name: Check entitlement SSOT ↔ route-layer enforcement drift (#3997)
         run: bash scripts/check-enforcement-parity.sh
 

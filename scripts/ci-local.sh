@@ -186,6 +186,7 @@ launch template-drift            g_template_drift
 launch security-headers-drift    bash scripts/check-security-headers-drift.sh
 launch pricing-parity            bash scripts/check-pricing-parity.sh
 launch plugin-count              bash scripts/check-plugin-count.sh
+launch plugin-lockstep           bun scripts/check-plugin-lockstep.ts
 launch enforcement-parity        bash scripts/check-enforcement-parity.sh
 launch schema-drift              bash scripts/check-schema-drift.sh
 launch migration-rename          bash scripts/check-migration-rename-discipline.sh

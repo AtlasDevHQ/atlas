@@ -11,8 +11,8 @@
     "@useatlas/react": "workspace:*",
     "@useatlas/sdk": "workspace:*",
     "next": "^16.2.12",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",

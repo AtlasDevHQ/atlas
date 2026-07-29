@@ -50,16 +50,16 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@chat-adapter/discord": "4.23.0",
-    "@chat-adapter/gchat": "4.23.0",
-    "@chat-adapter/github": "4.23.0",
-    "@chat-adapter/linear": "4.23.0",
-    "@chat-adapter/slack": "4.23.0",
-    "@chat-adapter/state-memory": "4.23.0",
-    "@chat-adapter/teams": "4.23.0",
-    "@chat-adapter/telegram": "4.23.0",
-    "@chat-adapter/whatsapp": "4.23.0",
-    "chat": "4.23.0"
+    "@chat-adapter/discord": "4.35.0",
+    "@chat-adapter/gchat": "4.35.0",
+    "@chat-adapter/github": "4.35.0",
+    "@chat-adapter/linear": "4.35.0",
+    "@chat-adapter/slack": "4.35.0",
+    "@chat-adapter/state-memory": "4.35.0",
+    "@chat-adapter/teams": "4.35.0",
+    "@chat-adapter/telegram": "4.35.0",
+    "@chat-adapter/whatsapp": "4.35.0",
+    "chat": "4.35.0"
   },
   "peerDependencies": {
     "hono": "^4.0.0",
@@ -68,7 +68,7 @@
     "@useatlas/types": ">=0.1.6"
   },
   "devDependencies": {
-    "hono": "^4.12.27",
+    "hono": "^4.12.32",
     "zod": "^4.4.3",
     "@useatlas/plugin-sdk": "workspace:*",
     "@useatlas/types": "workspace:*"

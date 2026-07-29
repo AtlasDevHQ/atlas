@@ -30,8 +30,8 @@
     "@useatlas/schemas": "workspace:*",
     "@useatlas/types": "workspace:*",
     "better-auth": "^1.6.25",
-    "effect": "^3.21.4",
-    "hono": "^4.12.27",
+    "effect": "^3.22.0",
+    "hono": "^4.12.32",
     "js-yaml": "^5.2.2",
     "pino": "^10.3.1"
   },

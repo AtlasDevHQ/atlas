@@ -15,7 +15,7 @@
     "@useatlas/types": "workspace:*",
     "@useatlas/webhook-publisher": "workspace:*",
     "ai": "^6.0.208",
-    "effect": "^3.14.8",
+    "effect": "^3.22.0",
     "ipaddr.js": "^2.3.0",
     "node-sql-parser": "^5.4.0",
     "zod": "^4.4.3"

@@ -1,0 +1,72 @@
+version: 2
+
+# Dependabot configuration (#4878).
+#
+# ── What this can and cannot do ───────────────────────────────────────────────
+#
+# Atlas uses bun, and `bun` is a SEPARATE Dependabot ecosystem from `npm`, with a
+# different support matrix:
+#
+#   version updates    supported      <- this file drives them
+#   security updates   NOT supported  <- planned upstream, no timeline
+#
+# So this file delivers dependency *freshness*, not advisory remediation. It
+# cannot open a fix PR for a vulnerable package, and nothing in it makes the
+# GitHub dependency graph read `bun.lock`: the graph parses only
+# package-lock.json / yarn.lock / pnpm-lock.yaml, so bun.lock's transitive
+# closure is invisible to it. Measured on this repo — the graph held 150 unique
+# packages as unresolved caret RANGES read off the 53 package.json manifests,
+# against 2133 resolved packages in bun.lock.
+#
+# Transitive visibility is supplied separately by
+# .github/workflows/dependency-graph.yml, which submits the resolved bun.lock
+# closure through the Dependency Submission API. Alerts fire on submitted
+# dependencies; fix PRs still do not, per the matrix above.
+#
+# Remediation of npm advisories is therefore Trivy-on-image (image-scan.yml)
+# plus hand-authored `overrides` in the root package.json. See #4878.
+#
+# ── Why the limit is low, and majors are ignored ──────────────────────────────
+#
+# The workspace has 53 manifests and ~150 unique direct deps, so enabling
+# version updates opens a batch on the first run. Non-major updates are grouped
+# into a single PR and the open-PR ceiling is deliberately small.
+#
+# Majors are ignored on purpose: `/deps-update` already owns them as "Group B",
+# one deliberate PR per major, because this repo has several majors that need
+# coupled bumps (fumadocs-core/openapi lockstep, zod x @modelcontextprotocol/sdk).
+# An unattended major PR would be noise at best and a red CI lane at worst.
+#
+# ── Two things to know before merging a Dependabot PR here ────────────────────
+#
+# 1. bunfig.toml sets `minimumReleaseAge = 172800` (48h). Dependabot does not
+#    know about that gate, so it can propose a version younger than 48h that a
+#    local `bun install` will decline to resolve. If a PR's lockfile looks
+#    unreproducible, check the release age before hunting for a real cause.
+#
+# 2. Any PR touching bun.lock or package.json DEPLOYS docs.useatlas.dev on merge
+#    (deploy/docs/railway.json watchPatterns), direct from main to production
+#    with no staging twin. Verify the docs site after merging, not before.
+
+updates:
+  - package-ecosystem: bun
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      bun-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major

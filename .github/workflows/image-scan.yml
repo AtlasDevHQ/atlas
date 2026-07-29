@@ -26,12 +26,35 @@ name: Image Scan
 #   Unfixed CVEs, because a gate that is red for something nobody can action
 #   gets ignored, and an ignored gate reads as coverage while providing none.
 #
-#   Library findings (npm, Go modules) inside the images, because Dependabot
-#   already owns them and can open the fix PR. Gating here too would put two
-#   red surfaces on one problem and block unrelated PRs on a dependency bump.
-#   #4822 scoped dependency scanning out for exactly this reason. They are
-#   still reported — the image's resolved node_modules is not identical to the
-#   manifest Dependabot reads.
+#   Library findings (npm, Go modules) inside the images. #4822 scoped these out
+#   on the premise that "Dependabot already owns them and can open the fix PR."
+#   That premise was false and is corrected here (#4878): Atlas uses bun, and
+#   `bun` is a SEPARATE Dependabot ecosystem from `npm` that does NOT support
+#   security updates. Dependabot will not open a fix PR for an npm advisory in
+#   this repo, no matter how it is configured — so for the whole window between
+#   #4822 and #4878 this scanner was the only thing looking, while its own header
+#   said something else owned it.
+#
+#   The handoff that actually exists now:
+#
+#     detection      Trivy here, against the image's resolved node_modules —
+#                    the authoritative surface, since that is what ships
+#     visibility     .github/workflows/dependency-graph.yml submits the resolved
+#                    bun.lock closure via the Dependency Submission API, which
+#                    is what makes Dependabot ALERTS fire on transitive packages.
+#                    The dependency graph does not parse bun.lock on its own
+#     remediation    hand-authored `overrides` in the root package.json, plus
+#                    parent bumps where a parent pins a vulnerable version
+#     freshness      .github/dependabot.yml — version updates only, not security
+#
+#   They still do not block, but for a different reason than #4822 gave: the
+#   remediation path is manual, and part of the residual set has no expressible
+#   fix. bun supports only TOP-LEVEL overrides, so a package present at two
+#   majors (undici 6.x + 7.x, brace-expansion 2.x + 5.x, protobufjs 7.x + 8.x)
+#   cannot be pinned per-major — a single global override silently forces every
+#   consumer onto one version. Gating on findings nobody can action is the same
+#   trap as gating on unfixed CVEs, one bullet up. The residual set and the
+#   reason each entry is declined are recorded on #4878.
 #
 # ── Where it runs, and why ────────────────────────────────────────────────────
 #

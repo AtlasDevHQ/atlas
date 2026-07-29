@@ -38,7 +38,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "jose": "^6.2.3"
+    "jose": "6.2.3"
   },
   "peerDependencies": {
     "hono": "^4.0.0",
@@ -46,7 +46,7 @@
     "@useatlas/plugin-sdk": ">=0.0.1"
   },
   "devDependencies": {
-    "hono": "^4.12.27",
+    "hono": "^4.12.32",
     "zod": "^4.4.3",
     "@useatlas/plugin-sdk": "workspace:*"
   }

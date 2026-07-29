@@ -75,10 +75,10 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^25.9.4",
+    "@types/node": "^25.9.5",
     "@typescript/native-preview": "7.0.0-dev.20260623.1",
-    "ai": "^6.0.208",
-    "hono": "^4.12.27",
+    "ai": "^6.0.235",
+    "hono": "^4.12.32",
     "zod": "^4.4.3"
   }
 }

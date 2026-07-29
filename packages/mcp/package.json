@@ -25,13 +25,13 @@
   "dependencies": {
     "@atlas/api": "workspace:*",
     "@atlas/ee": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@useatlas/mcp": "workspace:*",
     "@useatlas/schemas": "workspace:*",
     "@useatlas/types": "workspace:*",
     "better-auth": "^1.6.25",
-    "effect": "^3.21.4",
-    "hono": "^4.12.27",
+    "effect": "^3.22.0",
+    "hono": "^4.12.32",
     "js-yaml": "^5.2.2",
     "pino": "^10.3.1"
   },

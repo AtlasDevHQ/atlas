@@ -70,8 +70,8 @@
   "devDependencies": {
     "@atlas/mcp": "workspace:*",
     "@atlas/oauth-helper": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "hono": "^4.12.27",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "hono": "^4.12.32",
     "zod": "^4.4.3",
     "@useatlas/plugin-sdk": "workspace:*"
   }

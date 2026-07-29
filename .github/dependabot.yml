@@ -70,3 +70,9 @@ updates:
       - dependency-name: "*"
         update-types:
           - version-update:semver-major
+      # Pinned EXACTLY on purpose by #4882 — the `type` gate was running against a
+      # floating preview, so the whole point of that change was to stop this
+      # version from moving on its own. Dependabot's first run after #4884 opened
+      # exactly that bump (#4887), which would have re-floated the gate every
+      # week. Bump it deliberately or not at all.
+      - dependency-name: "@typescript/native-preview"

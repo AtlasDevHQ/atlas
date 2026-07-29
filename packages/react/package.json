@@ -110,7 +110,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@useatlas/sdk": "workspace:*",
-    "ai": "^6.0.208",
+    "ai": "^6.0.235",
     "exceljs": "^4.4.0",
     "happy-dom": "^20.10.6",
     "lucide-react": "^1.21.0",

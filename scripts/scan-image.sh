@@ -25,16 +25,30 @@
 #            a runtime layer is the gap nothing else covers: CodeQL analyses
 #            source, Dependabot reads manifests, and neither one sees it. That
 #            is the gap #4822 exists to close, and it is what this gate blocks
-#            on. Library findings already have an owner — Dependabot watches the
-#            manifests and opens the fix PR — so gating on them here would
-#            create two red surfaces for one problem and block unrelated PRs on
-#            a dependency bump somebody else's PR is already making. #4822
-#            scoped dependency scanning out for exactly this reason.
+#            on.
+#
+#            Library findings do NOT block, but the reason #4822 gave for that
+#            was wrong and is corrected here (#4878): it said "Dependabot
+#            watches the manifests and opens the fix PR." Atlas uses bun, and
+#            `bun` is a separate Dependabot ecosystem from `npm` that does not
+#            support security updates — no configuration makes Dependabot open
+#            an npm advisory fix PR in this repo. For the whole window between
+#            #4822 and #4878 this scanner was the only thing looking, while its
+#            own header said something else owned it.
+#
+#            They still do not block, for a different reason: remediation is
+#            manual (hand-authored `overrides` in the root package.json, plus
+#            parent bumps), and part of the residual set has no expressible fix
+#            at all, because bun honours only TOP-LEVEL overrides. Gating on
+#            findings nobody can action is the same trap as gating on unfixed
+#            CVEs. The full handoff — detection, visibility, remediation,
+#            freshness — is documented in .github/workflows/image-scan.yml;
+#            keep this note in sync with it rather than restating it.
 #
 #            They are still reported, because the image's resolved node_modules
-#            is not identical to the manifest Dependabot reads, and a finding
-#            visible in code scanning is worth having even when this gate is not
-#            the right place to enforce it.
+#            is the surface that actually ships, and a finding visible in code
+#            scanning is worth having even when this gate is not the right
+#            place to enforce it.
 #
 # BASELINE   .trivyignore holds the fixable HIGH/CRITICAL findings that already
 #            existed in the third-party base images when this gate was added.
@@ -134,7 +148,7 @@ trivy image \
 
 if [ "$rc" -eq 0 ]; then
   echo "PASS: no fixable HIGH/CRITICAL OS-package vulnerabilities in $IMAGE"
-  echo "      (library findings, if any, are in the SARIF report and are Dependabot's remit — see the SCOPE note above)"
+  echo "      (library findings, if any, are in the SARIF report and are remediated by hand — see the SCOPE note above)"
   exit 0
 fi
 

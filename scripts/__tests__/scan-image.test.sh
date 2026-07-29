@@ -163,7 +163,8 @@ fi
 # (7) A vulnerable LIBRARY must be REPORTED but must NOT block.
 #
 #     This pins the scope decision in scan-image.sh: OS packages gate, library
-#     findings go to code scanning and are left to Dependabot. Without this,
+#     findings go to code scanning and are remediated by hand (#4878 — bun has
+#     no Dependabot security updates, so nothing opens that PR). Without this,
 #     dropping --pkg-types os from the gate would pass every other test here
 #     and only surface later as unrelated PRs going red on transitive bumps.
 docker build -q -f "$FIXTURES/Dockerfile.library" -t atlas-scan-fixture:library "$FIXTURES" >/dev/null

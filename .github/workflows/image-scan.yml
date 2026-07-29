@@ -45,7 +45,16 @@ name: Image Scan
 #                    The dependency graph does not parse bun.lock on its own
 #     remediation    hand-authored `overrides` in the root package.json, plus
 #                    parent bumps where a parent pins a vulnerable version
-#     freshness      .github/dependabot.yml — version updates only, not security
+#     freshness      the `/deps-update` skill, run by hand: `bun update` plus
+#                    `bun x syncpack fix`. NOT Dependabot. A `bun` version-updates
+#                    config lived at .github/dependabot.yml briefly (#4884) and was
+#                    removed in #4890: its grouped PRs could not pass the REQUIRED
+#                    `drift` gate. `drift` runs `syncpack lint`, which compares
+#                    create-atlas/templates/*/package.json — and those sit outside
+#                    root `workspaces`, so a Dependabot run rooted at "/" can never
+#                    reach them. Every weekly sweep touching a template-shared dep
+#                    went red. `deps:update` clears that by construction with its
+#                    `syncpack fix` pass; Dependabot has no way to run one
 #
 #   They still do not block, but for a different reason than #4822 gave: the
 #   remediation path is manual, and part of the residual set has no expressible

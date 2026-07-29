@@ -55,6 +55,16 @@ export const POSTS: Post[] = [
     tag: "How it works",
   },
   {
+    slug: "the-live-security-pass",
+    title: "A security pass against the running product",
+    description:
+      "The last blocker before launch was an adversarial pass aimed at a deployed system rather than a source tree. It found an egress guard that validated hostnames while the request used the resolved address, and a containment claim on my own security page that didn't match how the sandbox actually works.",
+    isoDate: "2026-07-29",
+    dateLabel: "July 29, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
     slug: "the-last-mile",
     title: "The last mile",
     description:

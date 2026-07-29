@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.0",
+    title: "Brain M1: The Thin Wedge Slice",
+    date: "2026-07-29",
+    summary:
+      "The first slice of Atlas as a company brain: authoritative company facts, on infrastructure you already control. Atlas can now read a Slack workspace's chat history, extract candidate facts from it, hold them for human review, and answer from the approved set with a trust label attached — alongside the semantic layer it already queries. Access is fail-closed: a fact is only visible to people who could see the conversation it came from, and that audience is resynced from the live Slack roster, so revoking someone's channel access revokes their view of the facts too. Fact extraction ships turned off — reading chat history is a deliberate per-workspace decision, not a default. Also in this release: the SaaS default model picker now reads the live Vercel AI Gateway catalog instead of three hardcoded options, container images are scanned for vulnerable OS packages on every build, and the incident-response runbook referenced by the DPA now exists.",
+    highlights: [
+      "Ask Atlas about your company, not just your database — approved facts extracted from Slack history answer alongside the semantic layer, each carrying a label for how far to trust it",
+      "Fail-closed access: a fact inherits the audience of the conversation it came from, resynced from the live Slack roster so access revocation flows through to the facts",
+      "A review surface where an admin approves, edits, or rejects each candidate fact before it can answer anything",
+      "Fact extraction is off by default — no chat history is read until a workspace turns it on",
+      "The SaaS default model picker now lists the live Vercel AI Gateway catalog (the ~190 models that can drive the agent loop) instead of three hardcoded options, with pricing read from that same live source",
+      "Container images are scanned for fixable OS-package vulnerabilities on every build, and the incident-response runbook the DPA references is now written and published",
+      "The agent's searchKnowledge tool is renamed searchBrain in the default registry",
+    ],
+  },
+  {
     version: "v0.1.1",
     title: "Auth Dependency Advisories & SCIM Ownership",
     date: "2026-07-28",

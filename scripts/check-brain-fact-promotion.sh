@@ -274,20 +274,29 @@ statement_writes_gated_column() {
     return 0
   fi
 
-  # Raw SQL — the UPSERT's UPDATE half, for `visible_to` only. It needs its own
-  # arm precisely because `visible_to` is INSERT-legal and UPDATE-forbidden, so
-  # it cannot ride the blanket INSERT rule above the way `status` does — and
-  # `ON CONFLICT … DO UPDATE SET visible_to` names no table after `UPDATE`,
-  # which is how it evaded the UPDATE rule when this was first written.
+  # Raw SQL — the UPSERT's UPDATE half, for the INSERT-legal columns. It needs
+  # its own arm precisely because `visible_to` and `valid_to` are INSERT-legal
+  # and UPDATE-forbidden, so neither can ride the blanket INSERT rule above the
+  # way `status` does — and `ON CONFLICT … DO UPDATE SET visible_to` names no
+  # table after `UPDATE`, which is how it evaded the UPDATE rule when this was
+  # first written. (`valid_to` is INSERT-legal only via the region import,
+  # which restores a closed window verbatim — but the ASYMMETRY is the same,
+  # and the upsert is exactly the shape an unattended ingest fiber reaches
+  # for, so it is gated here identically. #4912.)
   # Deliberately over-broad in the same direction as everything else here: an
   # upsert that inserts `visible_to` and DO-UPDATEs some other column trips it
   # too, and that wants an allowlist entry with a rationale, not a loosening.
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
     && grep -qiE 'ON[[:space:]]+CONFLICT' <<<"$stmt" \
-    && grep -qiE 'DO[[:space:]]+UPDATE' <<<"$stmt" \
-    && grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
-    echo visible_to
-    return 0
+    && grep -qiE 'DO[[:space:]]+UPDATE' <<<"$stmt"; then
+    if grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
+      echo visible_to
+      return 0
+    fi
+    if grep -qiE '\bvalid_to\b' <<<"$stmt"; then
+      echo valid_to
+      return 0
+    fi
   fi
 
   # Raw SQL — a column-less positional INSERT. Neither column can appear by
@@ -322,12 +331,18 @@ statement_writes_gated_column() {
     return 0
   fi
   # The ORM twin of the raw upsert arm above, for the same asymmetry reason:
-  # `.insert().values({visibleTo})` is legal, `.onConflictDoUpdate` of it is not.
+  # `.insert().values({visibleTo})` is legal, `.onConflictDoUpdate` of it is not
+  # — and the same for `validTo` (#4912).
   if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
-    && grep -qE '\.onConflictDoUpdate\(' <<<"$stmt" \
-    && grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
-    echo visible_to
-    return 0
+    && grep -qE '\.onConflictDoUpdate\(' <<<"$stmt"; then
+    if grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
+      echo visible_to
+      return 0
+    fi
+    if grep -qE '\bvalidTo\b' <<<"$stmt"; then
+      echo valid_to
+      return 0
+    fi
   fi
 
   return 1

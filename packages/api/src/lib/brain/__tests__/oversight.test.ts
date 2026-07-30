@@ -5,12 +5,14 @@
  * every one of them is a NEGATIVE — this surface is defined by what it must not
  * do:
  *
- *   - **no content reaches the wire.** Not "the happy path returns numbers" —
- *     that proves nothing. The pin sweeps the serialized payload twice: for the
- *     projection KEY NAMES a producer might have wired through, and for VALUES
- *     smuggled under an innocuous key. The claim-text sweep against real seeded
- *     rows is `oversight-pg.test.ts`'s job — that is the layer where the text
- *     actually exists.
+ *   - **no content reaches the wire from the UNSCOPED aggregates.** Not "the
+ *     happy path returns numbers" — that proves nothing. The pin sweeps the
+ *     serialized payload twice: for the projection KEY NAMES a producer might
+ *     have wired through, and for VALUES smuggled under an innocuous key. The
+ *     claim-text sweep against real seeded rows is `oversight-pg.test.ts`'s
+ *     job — that is the layer where the text actually exists. (The ONE
+ *     sanctioned content channel is `loadSupersessionPreview`'s reader-scoped
+ *     pairs, #4912 — covered by its own suite at the bottom of this file.)
  *   - **the counts are NOT reader-scoped.** A view that silently agreed with
  *     `/summary` would restore the exact false all-clear the issue recorded, and
  *     would pass any test that only checked the shape. Asserted by inspecting
@@ -30,7 +32,9 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  OVERSIGHT_BUCKETS_SQL,
   OVERSIGHT_BUCKET_MAX,
+  OVERSIGHT_TOTALS_SQL,
   WILL_SUPERSEDE_PAIR_MAX,
   classifyToken,
   loadConfiguredChannels,
@@ -908,5 +912,21 @@ describe("loadSupersessionPreview", () => {
         audienceIds: [],
       }),
     ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
+  });
+
+  it("keeps the workspace counters on the review-state axis, and the reviewable count on the queue's (#4912)", async () => {
+    // The deliberate divergence, pinned from both sides: a superseded fact
+    // stays in the workspace `published` arm (accounting by review state —
+    // shrinking a counter is not how supersession is disclosed; `willSupersede`
+    // is), while the reader-scoped reviewable count carries the queue's
+    // current-validity term so it stays the SAME quantity as `/summary`'s
+    // `draftTotal`.
+    expect(OVERSIGHT_BUCKETS_SQL).not.toContain("valid_to");
+    expect(OVERSIGHT_TOTALS_SQL).not.toContain("valid_to");
+
+    const seen: string[] = [];
+    await loadFactOversight(reader({ seen }), ctx());
+    const reviewable = seen.find((sql) => sql.includes("COUNT(*)::int AS n")) ?? "";
+    expect(reviewable).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
   });
 });

@@ -1160,6 +1160,33 @@ describe("will-supersede disclosure (#4912)", () => {
     expect(text).toContain("Nothing is deleted");
   });
 
+  test("admits truncation without dressing it as an ACL boundary", async () => {
+    oversight = {
+      ...oversight,
+      willSupersede: {
+        total: 130,
+        pairs: [
+          {
+            draftId: "d1",
+            draftLabel: "alice manager carol",
+            supersededId: "o1",
+            supersededLabel: "alice manager bob",
+          },
+        ],
+        withheld: 0,
+        truncated: true,
+      },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("did not fit in one response"),
+    );
+    // Nothing was ACL-withheld, so the audience sentence must NOT render —
+    // truncation relabelled as an audience boundary would send the admin
+    // hunting for private channels that do not exist.
+    expect(view.container.textContent ?? "").not.toContain("audiences you are not part of");
+  });
+
   test("the publish modal states the workspace-wide count before the confirm button", async () => {
     // The modal is the confirm surface; an admin who never visits the review
     // page must still learn a publish will retire published beliefs. The

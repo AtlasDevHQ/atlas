@@ -1,6 +1,7 @@
 /**
  * Admin oversight for the fact class — counts without content (#4825,
- * ADR-0036 §Access control & residency).
+ * ADR-0036 §Access control & residency), plus the one reader-scoped content
+ * disclosure that rides beside them: the will-supersede pairs (#4912).
  *
  * ## The asymmetry this exists to disclose
  *
@@ -27,13 +28,16 @@
  * both of its aliases, so it can only show a reader claims their own queue
  * already shows them; see its header for why that does not breach this rule.
  *
- * TWO non-numeric values reach the wire, and an auditor must check both:
- * `label`, only when {@link classifyToken} rules the token disclosable; and
- * `key`, which is that same token on the disclosable arms and a positional
- * handle (`discovered-N`) on the withheld one. Everything else is a number or a
- * closed enum. `oversight.test.ts` pins both, because a `z.strictObject` on the
- * wire schema can reject an unexpected KEY but cannot tell a channel id from a
- * sentence.
+ * From the UNSCOPED aggregates, TWO non-numeric values reach the wire, and an
+ * auditor must check both: `label`, only when {@link classifyToken} rules the
+ * token disclosable; and `key`, which is that same token on the disclosable
+ * arms and a positional handle (`discovered-N`) on the withheld one.
+ * Everything else there is a number or a closed enum. `oversight.test.ts` pins
+ * both, because a `z.strictObject` on the wire schema can reject an unexpected
+ * KEY but cannot tell a channel id from a sentence. The third place an auditor
+ * must now look is `loadSupersessionPreview`'s pairs (#4912) — fact ids and
+ * SPO labels, sanctioned because they are READER-scoped on both sides, not
+ * workspace-wide; see its header.
  *
  * ## Why the aggregate is deliberately NOT ACL-scoped
  *
@@ -334,6 +338,16 @@ export function classifyToken(
  *
  * The arms therefore do NOT sum to a bucket's fact total, and nothing on the
  * wire claims they do.
+ *
+ * `valid_to` is DELIBERATELY not an axis here (#4912): a superseded fact stays
+ * in the `published` arm. These counters account for the workspace by REVIEW
+ * STATE and tombstone, and a superseded fact's review verdict stands — it is
+ * published, merely no longer current. That makes this `published` figure
+ * legitimately LARGER than the review page's `publishedTotal`, which is an
+ * as-of-now read and hides superseded rows; the divergence is by design, not
+ * drift, and `oversight.test.ts` pins the absence of the predicate. The
+ * supersession story is disclosed on this same surface by `willSupersede`
+ * instead of by shrinking a counter.
  */
 const STATE_COUNTERS = `COUNT(*) FILTER (WHERE f.status = 'draft' AND f.invalidated_at IS NULL)::int AS awaiting_review,
          COUNT(*) FILTER (WHERE f.status = 'published' AND f.invalidated_at IS NULL)::int AS published,
@@ -557,11 +571,19 @@ export async function loadFactOversight(
     db.query(OVERSIGHT_BUCKETS_SQL, [workspaceId, OVERSIGHT_BUCKET_MAX + 1]),
     db.query(OVERSIGHT_TOTALS_SQL, [workspaceId]),
     db.query(
+      // The current-validity term keeps this the SAME quantity as `/summary`'s
+      // `draftTotal` (#4912) — the panel restates that number, and the two
+      // diverging over an imported already-superseded draft would be exactly
+      // the flicker carrying them in one response exists to prevent. The
+      // WORKSPACE counters above deliberately do NOT carry the term (see
+      // STATE_COUNTERS), so such a draft lands in the hidden-backlog delta —
+      // honestly: publish still reaches it and no reader's queue shows it.
       `SELECT COUNT(*)::int AS n
          FROM brain_facts f
         WHERE ${acl.sql}
           AND f.status = 'draft'
-          AND f.invalidated_at IS NULL`,
+          AND f.invalidated_at IS NULL
+          AND (f.valid_to IS NULL OR f.valid_to > now())`,
       [...acl.params],
     ),
     loadConfiguredChannels(db, workspaceId, requestId),
@@ -776,6 +798,14 @@ export const WILL_SUPERSEDE_PAIR_MAX = 100;
  * adapter, not restated: a disclosure that drifted from the transaction's own
  * collision rule would list one set while publish stamps another, which is
  * silent supersession through drift — the exact failure #4912 forbids.
+ *
+ * One accepted over-statement: this counts every colliding LIVE draft, while
+ * the transaction supersedes only for drafts the classifier admits — so a
+ * refused draft's collision is listed here and then not stamped. That mirrors
+ * the publish preview's own posture ("the preview lists what publish will
+ * CONSIDER"), over-discloses rather than under-, and the refusal itself is
+ * separately disclosed; replicating the refusal rules in SQL is not worth a
+ * second spelling of them.
  */
 export const WILL_SUPERSEDE_TOTAL_SQL = `SELECT COUNT(*)::int AS will_supersede_total
     FROM brain_facts d
@@ -903,6 +933,7 @@ export async function loadSupersessionPreview(
   const pairs: BrainFactWillSupersedePair[] = [];
   let scopedTotal = 0;
   let droppedRows = 0;
+  let windowDriftRows = 0;
   for (const raw of clipped ? rawRows.slice(0, WILL_SUPERSEDE_PAIR_MAX) : rawRows) {
     if (typeof raw !== "object" || raw === null) {
       droppedRows++;
@@ -920,9 +951,12 @@ export async function loadSupersessionPreview(
     }
     // The window rides every row; reading it off each kept row rather than only
     // the first means one drifted row costs the breakdown one pair, not the
-    // whole scoped count.
+    // whole scoped count. A row whose window will not parse is COUNTED — the
+    // floor below is what keeps that drift from silently relabelling clipped
+    // rows as ACL-withheld.
     const windowed = typeof r.scoped_total === "number" ? r.scoped_total : Number(r.scoped_total);
     if (Number.isFinite(windowed) && windowed > scopedTotal) scopedTotal = Math.trunc(windowed);
+    else if (!Number.isFinite(windowed)) windowDriftRows++;
     pairs.push({
       draftId: r.draft_id,
       draftLabel: r.draft_label,
@@ -938,6 +972,18 @@ export async function loadSupersessionPreview(
       "brain oversight: will-supersede pair rows came back with an unreadable column — the pair list understates what publish will supersede; the query shape changed",
     );
   }
+  if (windowDriftRows > 0) {
+    log.warn(
+      { workspaceId, requestId, windowDriftRows },
+      "brain oversight: the will-supersede scoped window did not read back as a number on some rows — truncation may be under-reported; the query shape changed",
+    );
+  }
+  // Floors, in the order that matters. We SAW `rawRows.length` reader-visible
+  // rows, so the scoped cardinality is at least that — without this floor, a
+  // drifted window column under a clipped page would fold the clipped
+  // remainder into `withheld`, i.e. truncation dressed as an ACL boundary,
+  // which the wire type explicitly forbids.
+  if (clipped && scopedTotal < rawRows.length) scopedTotal = rawRows.length;
   if (scopedTotal < pairs.length) scopedTotal = pairs.length;
 
   if (scopedTotal > total) {
@@ -956,6 +1002,10 @@ export async function loadSupersessionPreview(
     total: Math.trunc(total),
     pairs,
     withheld: Math.max(0, total - scopedTotal),
-    truncated: scopedTotal > pairs.length,
+    // `clipped` is ORed in so a known page overrun is reported even if the
+    // window column drifted; `scopedTotal > pairs.length` additionally covers
+    // drift-dropped rows, which are also "you were entitled to more than is
+    // listed".
+    truncated: clipped || scopedTotal > pairs.length,
   };
 }

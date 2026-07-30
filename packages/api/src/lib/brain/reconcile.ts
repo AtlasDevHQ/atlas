@@ -373,10 +373,11 @@ const NO_BLOCKS: Readonly<Record<ReconcileBlockReason, number>> = Object.freeze(
 // WRITE `valid_to` (#4912): "a human promotion stamps `valid_to`; there is no
 // autonomous supersession" — the publish gate (and later `correct_fact`) are
 // its only writers, and this stage runs unattended on every ingest pass.
-// Reading the column (the two SELECTs above filter on it) is fine and
-// required; `reconcile.test.ts` pins the write half.
+// Reading it is fine and required (two SELECTs below filter on it, and the
+// guard's own fixtures pass a SELECT doing exactly that);
+// `reconcile.test.ts` pins the write half.
 // `scripts/check-brain-fact-promotion.sh` refuses any statement that touches
-// `brain_facts` and mentions the column — including in a WHERE clause — and
+// `brain_facts` and mentions `status` — including in a WHERE clause — and
 // that over-breadth is deliberate. The fact insert omits `status` on purpose:
 // migration 0180 defaults it to `draft`, and that default IS the review gate
 // applying itself (#4769). Asking for `draft` explicitly would be the same
@@ -409,7 +410,8 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
  * `valid_to` off a region import is a fact with a CLOSED window, and minting a
  * fresh draft for a new window is right there too, where the read-side clause's
  * "still valid until then" reading answers a different question. Writes are
- * never touched here: this stage still stamps nothing (see the NOTE below).
+ * never touched here: this stage still stamps nothing (see the NOTE at the
+ * top of this SQL section).
  */
 export const CORROBORATION_LOOKUP_SQL = `SELECT id
      FROM brain_facts
@@ -469,6 +471,9 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * arbitration already happened at the publish gate and the `supersedes` edge
  * records it. Wiring an `in-tension-with` edge at settled history would tell a
  * reviewer the new claim is contested by a belief a human already retired.
+ * A FUTURE-dated `valid_to` (region import only) is likewise skipped — the
+ * same accepted coexistence `supersessionCollisionJoin` documents: its end is
+ * already decided, so it is neither a rival to flag nor a belief to supersede.
  */
 export const TENSION_CANDIDATES_SQL = `SELECT id
      FROM brain_facts

@@ -329,11 +329,25 @@ run_fixture "the allowlisted adapter's supersession stamp passes" pass \
   "packages/api/src/lib/content-mode/adapters/brain-facts.ts" \
 'await tx.query(`UPDATE brain_facts SET valid_to = now(), updated_at = now() WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND status = '"'"'published'"'"' AND valid_to IS NULL RETURNING id::text AS id`);'
 
-# `invalidated_at` contains the letters of neither gated column; a retraction
-# must keep passing now that `valid_to` is gated (the \b boundary pin).
+# A retraction mentions neither gated column, so it must keep passing now that
+# `valid_to` is gated — the regression that matters most, because retraction is
+# the one legitimate brain_facts UPDATE outside the allowlist.
 run_fixture "retraction still passes with valid_to gated" pass \
   "packages/api/src/lib/brain/retract2.ts" \
 'await db.query(`UPDATE brain_facts AS f SET invalidated_at = now(), updated_at = now() WHERE f.id = $1 AND f.invalidated_at IS NULL`);'
+
+# The upsert's UPDATE half is the shape that evaded the visible_to gate when it
+# was first written, and `valid_to` sits in the same INSERT-legal /
+# UPDATE-forbidden asymmetry — so both spellings must trip (#4912).
+run_fixture "ON CONFLICT … DO UPDATE SET valid_to fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET valid_to = now()`);'
+
+run_fixture "Drizzle .insert().onConflictDoUpdate({set:{validTo}}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { validTo: new Date() } });'
+
+echo ""
 
 echo ""
 echo "  $PASS passed, $FAIL failed"

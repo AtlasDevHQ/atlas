@@ -34,7 +34,8 @@
  *   - **Org/group reach (ADR-0022)** — not composed. A brain fact is
  *     workspace-scoped and carries no connection-group binding, so there is no
  *     reach dimension to gate on. If M2 gives a fact a group, this is the seam
- *     that has to grow a fourth clause.
+ *     that has to grow a fifth clause (the supersession predicate took the
+ *     fourth slot, #4912).
  *
  * `invalidated_at IS NULL` is AND-ed on top and is NOT one of the four — it is
  * the tombstone axis, which `brainFactStatusClause` explicitly does not cover,

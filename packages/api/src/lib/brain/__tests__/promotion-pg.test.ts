@@ -44,6 +44,7 @@ import {
 import { FACT_REFUSAL_REASONS } from "@atlas/api/lib/brain/promotion";
 import { CORROBORATION_LOOKUP_SQL } from "@atlas/api/lib/brain/reconcile";
 import { loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
+import { buildFactQuery } from "@atlas/api/lib/brain/search";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -1332,17 +1333,27 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         });
         await publish(ws);
 
-        // The exact current-belief composition the read paths use — status,
-        // tombstone, and the new validity axis.
-        const { rows } = await pool.query<{ id: string }>(
-          `SELECT f.id::text AS id
-             FROM brain_facts f
-            WHERE f.workspace_id = $1
-              AND f.status = 'published'
-              AND f.invalidated_at IS NULL
-              AND (f.valid_to IS NULL OR f.valid_to > now())`,
-          [ws],
-        );
+        // Not a paraphrase: run the EXACT statement `searchBrain` builds, so a
+        // predicate dropped from `buildFactQuery` fails here, not only in the
+        // unit test that pins the clause as a string.
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        const aclClause = aclVisibilityClause(reader, {
+          table: "brain_facts",
+          alias: "f",
+          paramIndex: 1,
+        });
+        if (aclClause.decision === "deny-all") throw new Error("reader should resolve");
+        const built = buildFactQuery("published", {
+          limit: 10,
+          aclSql: aclClause.sql,
+          aclParams: aclClause.params,
+        });
+        const { rows } = await pool.query<{ id: string }>(built.sql, built.params);
         expect(rows.map((r) => r.id)).toEqual([draft]);
         expect(rows.map((r) => r.id)).not.toContain(old);
       },

@@ -151,7 +151,9 @@ export function brainFactCurrentClause(alias: string): string {
 }
 
 /**
- * Draft facts awaiting review, with exactly the columns the refusal rules read.
+ * Draft facts awaiting review, with exactly the columns the refusal rules and
+ * the supersession classifier read (#4912 — `predicate_cardinality` is the
+ * supersession input; everything else feeds `classifyFactForPromotion`).
  *
  * `FOR UPDATE` because this adapter is read-then-write, which the simple
  * entries are not: it serializes two concurrent publishes on the same
@@ -329,6 +331,17 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
  * superseded is settled history, and stamping it twice would rewrite when the
  * belief ended.
  *
+ * `valid_to IS NULL`, deliberately NOT `brainFactCurrentClause`'s wider
+ * `IS NULL OR > now()`: a FUTURE-dated `valid_to` (reachable only via a region
+ * import restoring a closed window verbatim) is a fact still answering
+ * as-of-now reads whose end a human already decided. Superseding it would
+ * overwrite that recorded end with `now()` — rewriting an imported validity
+ * decision from an unrelated promotion — so a colliding draft COEXISTS with it
+ * until the window closes on its own. Accepted, not overlooked: the same
+ * choice, for the same reason, in `TENSION_CANDIDATES_SQL` (`reconcile.ts`),
+ * which likewise leaves such a row alone. The cost is a briefly tension-less
+ * coexistence of two current values; the alternative destroys an import.
+ *
  * Both sides `single`, not just the draft, because the two rows can disagree
  * about the predicate (corroboration never upgrades cardinality — see
  * `reconcile.ts`) and wrongly superseding destroys a belief where wrongly
@@ -373,12 +386,17 @@ export function supersedingDraftPredicate(d: string): string {
  * Run BEFORE the promote UPDATEs, deliberately: `status = 'published'` in the
  * join must mean "published before this publish began". Two colliding
  * `single` drafts promoted in the SAME batch have no temporal order between
- * them — `reconcile.ts` already recorded their `in-tension-with` edge — and
- * running this after the promote would make them supersede each other
- * symmetrically, stamping `valid_to` on both and destroying both beliefs.
- * They coexist, in visible tension, until a human retracts one.
+ * them — `reconcile.ts` already recorded their `in-tension-with` edge — and a
+ * collision rule evaluated post-promote (one without this statement's
+ * draft-side predicate) would see each as the other's published rival and
+ * stamp `valid_to` on both, destroying both beliefs. They coexist, in visible
+ * tension, until a human retracts one. (As literally written, running this
+ * after the promote would instead match NOTHING — the drafts are no longer
+ * `draft` — which is the other failure: zero supersession. Either way the
+ * ordering is load-bearing, and the unit test pins it.)
  *
- * `$2` is the classified-promotable id list, so a refused draft never
+ * `$2` is the `single`-cardinality subset of the classified-promotable ids
+ * (the join re-checks cardinality regardless), so a refused draft never
  * supersedes anything: the collision only fires for rows the transaction will
  * actually promote.
  */
@@ -393,10 +411,13 @@ export const SUPERSESSION_TARGETS_SQL = `
 `;
 
 /**
- * Stamp the end of a superseded fact's validity — the ONE writer of
+ * Stamp the end of a superseded fact's validity — the ONE in-region writer of
  * `valid_to` (#4912): a human promotion, inside the publish transaction.
  * `correct_fact` (M2 #2) will be the second; nothing autonomous ever is, and
- * `check-brain-fact-promotion.sh` now refuses the column outside this file.
+ * `check-brain-fact-promotion.sh` now refuses UPDATE-shape writes to the
+ * column outside its allowlist (this file, plus `admin-migrate.ts` — the
+ * region import restores an already-closed window verbatim, a restore rather
+ * than a new arbitration).
  *
  * Every predicate is re-checked even though the targets SELECT just evaluated
  * them: the published rows are NOT covered by `DRAFT_FACTS_SQL`'s `FOR
@@ -531,7 +552,10 @@ interface PromotableDraft {
    * principal, and this is the last point at which the type can say it cannot.
    */
   readonly grant: StoredGrant;
-  /** Whether this draft can supersede on promotion (#4912). */
+  /**
+   * The draft's predicate cardinality (#4912) — `single` is the only kind
+   * that can supersede on promotion; `multi` coexists.
+   */
   readonly cardinality: "single" | "multi";
 }
 
@@ -889,10 +913,30 @@ export function promoteBrainFacts(
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });
         const stamped = new Set<string>();
+        let unreadableStampRows = 0;
         for (const raw of stampResult.rows) {
           if (isJsonObject(raw) && typeof raw.id === "string" && raw.id !== "") {
             stamped.add(raw.id);
+          } else {
+            unreadableStampRows++;
           }
+        }
+        if (unreadableStampRows > 0) {
+          // A FAILURE, not a skip, and the asymmetry with every other drift
+          // path in this adapter is deliberate: an unreadable RETURNING row
+          // means the stamp COMMITTED for a fact this code can no longer name
+          // — proceeding would retire a belief with no `supersedes` edge and
+          // no audit record, the exact silent supersession #4912 forbids.
+          // Failing here rolls the whole transaction (and the stamp) back.
+          return yield* Effect.fail(
+            new PublishPhaseError({
+              table: BRAIN_FACTS_TABLE,
+              phase: "promote",
+              cause: new Error(
+                `promoteBrainFacts: ${unreadableStampRows} SUPERSEDE_STAMP_SQL RETURNING row(s) had no usable id — the statement shape changed; rolling back rather than committing a supersession with no record`,
+              ),
+            }),
+          );
         }
         if (stamped.size !== oldIds.length) {
           // Reachable, not only drift: the published side is not FOR-UPDATE

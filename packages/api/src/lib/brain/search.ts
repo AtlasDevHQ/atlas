@@ -16,10 +16,12 @@
  * `executeSQL`, decision/rationale/ownership → `searchBrain` — with no hidden
  * classifier in the middle.
  *
- * ## The trap: four gates, and the two that are not gates
+ * ## The trap: four predicates, and the two that are not ADR gates
  *
- * A current-belief fact read composes FOUR predicates, and composing only the
- * two advertised seams is wrong:
+ * (Distinct from "the four ADR-0036 gates" one section down — those are the
+ * ADR's governance axes; these are the WHERE-clause terms one statement must
+ * compose.) A current-belief fact read composes FOUR predicates, and composing
+ * only the two advertised seams is wrong:
  *
  *   1. `aclVisibilityClause` — the fail-closed push-down grant predicate (#4768)
  *   2. `brainFactStatusClause` — content mode, i.e. REVIEW STATUS ONLY (#4769)
@@ -60,7 +62,8 @@
  *     and a KB document are all workspace-scoped with no connection-group
  *     binding, so there is no reach dimension to gate on. Composing one would
  *     mean inventing a group for rows that have none. If M2 gives a fact a
- *     group, this is the seam that grows a fourth clause.
+ *     group, this is the seam that grows a fifth clause (the supersession
+ *     predicate took the fourth slot, #4912).
  *
  * ## Push-down, and why the fail-closed test is written as a negative
  *
@@ -311,7 +314,7 @@ export function buildFactQuery(
     // NOT redundant with the mode clause — see the module header. Without it
     // the agent is served retracted claims as current belief.
     "f.invalidated_at IS NULL",
-    // The FOURTH gate (#4912): a fact whose `valid_to` has passed was
+    // The FOURTH predicate (#4912): a fact whose `valid_to` has passed was
     // superseded at the publish gate and is no longer current belief. Hidden
     // exactly as tombstones are — the row stays readable to the as-of reads M2
     // adds, and this default read is as-of-now.

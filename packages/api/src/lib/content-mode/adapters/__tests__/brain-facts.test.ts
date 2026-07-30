@@ -608,6 +608,93 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     ]);
   });
 
+  it("treats a draft with an unreadable cardinality as `multi` — it coexists, never destroys", async () => {
+    // The conservative fallback (`draftCardinality`): a row missing the column
+    // is query drift, and drift must not be able to retire a published belief.
+    // No supersession statement runs at all.
+    const missing = { ...draft("drifted") } as Record<string, unknown>;
+    delete missing.predicate_cardinality;
+    const { tx, calls } = txWithDrafts([missing]);
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(report.promoted).toBe(1);
+    expect(report.superseded).toEqual([]);
+    expect(calls.some((c) => c.sql.includes("superseded_id"))).toBe(false);
+  });
+
+  it("fails the phase when the stamp UPDATE throws — atomicity, not skip-and-warn", async () => {
+    // The stamp is half of "atomically with promotion": if it cannot run, the
+    // whole transaction must roll back rather than publish the new fact while
+    // leaving the rival current. `failOnUpdate` cannot reach it (the promote
+    // UPDATE fires first), so this double targets the stamp alone.
+    const tx: ModeTxClient = {
+      query: async (sql, params = []) => {
+        if (/^\s*UPDATE/i.test(sql)) {
+          if (sql.includes("valid_to = now()")) throw new Error("stamp exploded");
+          const target = params[1];
+          const rowCount = Array.isArray(target) ? target.length : 0;
+          return { rows: [], rowCount };
+        }
+        if (sql.includes("superseded_id")) {
+          return { rows: [{ draft_id: "new-1", superseded_id: "old-1" }] };
+        }
+        if (sql.includes("brain_edges")) return { rows: [] };
+        return { rows: [singleDraft("new-1")] };
+      },
+    };
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
+    expect(exit._tag).toBe("Left");
+    if (exit._tag === "Left") {
+      expect(exit.left).toBeInstanceOf(PublishPhaseError);
+      expect(exit.left.phase).toBe("promote");
+    }
+  });
+
+  it("fails the phase when the edge INSERT throws — a stamp without its record must roll back", async () => {
+    const tx: ModeTxClient = {
+      query: async (sql, params = []) => {
+        if (/^\s*INSERT/i.test(sql)) throw new Error("edge insert exploded");
+        if (/^\s*UPDATE/i.test(sql)) {
+          if (sql.includes("valid_to = now()")) {
+            const ids = params[1] as readonly string[];
+            return { rows: ids.map((id) => ({ id })), rowCount: ids.length };
+          }
+          const target = params[1];
+          const rowCount = Array.isArray(target) ? target.length : 0;
+          return { rows: [], rowCount };
+        }
+        if (sql.includes("superseded_id")) {
+          return { rows: [{ draft_id: "new-1", superseded_id: "old-1" }] };
+        }
+        if (sql.includes("brain_edges")) return { rows: [] };
+        return { rows: [singleDraft("new-1")] };
+      },
+    };
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
+    expect(exit._tag).toBe("Left");
+    if (exit._tag === "Left") expect(exit.left.phase).toBe("promote");
+  });
+
+  it("fails the phase — never a silent skip — when a stamp RETURNING row has no usable id", async () => {
+    // The one drift path in the supersession arm that must NOT degrade: the
+    // stamp COMMITTED for a fact this code can no longer name, so proceeding
+    // would retire a belief with no edge and no audit record. Failing rolls
+    // the stamp back with the rest of the transaction.
+    const { tx } = txWithDrafts([singleDraft("new-1")], {
+      supersessions: [{ draft_id: "new-1", superseded_id: "old-1" }],
+    });
+    const original = tx.query.bind(tx);
+    tx.query = async (sql, params) => {
+      if (sql.includes("valid_to = now()")) return { rows: [{ nope: true }], rowCount: 1 };
+      return original(sql, params);
+    };
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
+    expect(exit._tag).toBe("Left");
+    if (exit._tag === "Left") {
+      expect(String(exit.left.cause)).toContain("no usable id");
+    }
+  });
+
   it("pins the collision join's invariants in the SQL itself", () => {
     // The join is shared with the two disclosure surfaces, so these strings are
     // the contract: BOTH sides single, the rival published, live, and current,

@@ -662,8 +662,9 @@ describe("no autonomous supersession (#4912)", () => {
     // supersession" (ADR-0036 §Temporal). The strongest available pin: the
     // unattended ingest stage has no UPDATE statement to smuggle a stamp into,
     // so acquiring one is a deliberate decision that has to argue with this
-    // test — and with `check-brain-fact-promotion.sh`, which now refuses the
-    // column outside the publish gate.
+    // test — and with `check-brain-fact-promotion.sh`, which now refuses
+    // UPDATE-shape writes to the column outside its allowlisted
+    // publish/import files.
     for (const [name, sql] of Object.entries(EVERY_RECONCILE_SQL)) {
       expect(`${name}: ${sql}`).not.toMatch(/\bUPDATE\b/i);
     }

@@ -383,6 +383,25 @@ describe("loadFactCandidates — contradiction hints", () => {
     ]);
   });
 
+  it("does NOT hide a superseded rival — settled history is still why the claim was contested (#4912)", async () => {
+    // The negative that keeps a future "apply the current-validity predicate
+    // everywhere" sweep honest: the queue itself now filters `valid_to`, but
+    // the counterpart lookup must not — a rival retired at the publish gate is
+    // still the reason this claim earned its tension edge, exactly like a
+    // retracted one.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      { match: "edge_type = 'in-tension-with'", rows: edgeRows },
+      { match: "f.id = ANY(", rows: [] },
+    ]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    const counterpart = db.calls.find((c) => c.sql.includes("f.id = ANY("));
+    expect(counterpart?.sql).not.toContain("valid_to IS NULL OR");
+    expect(counterpart?.sql).not.toContain("invalidated_at IS NULL");
+  });
+
   it("gives each end of an on-page edge the other as a peer", async () => {
     const db = reader([
       {

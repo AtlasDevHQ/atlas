@@ -9,6 +9,19 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Real Node.js for `next build` (build-time only — the runner stage below still
+# starts your app under bun).
+#
+# `next` is a `#!/usr/bin/env node` bin and `bun run` honours that shebang, so
+# the first `node` on PATH is what builds. This image ships only oven/bun's
+# shim (`/usr/local/bun-node-fallback-bin/node` → `bun`), and building Next
+# under bun hits an open upstream crash in bun's N-API thread-safe-function
+# handling: the build dies partway through with SIGILL / exit 132
+# (oven-sh/bun#25864). It is a race, so it can pass for a long time and then
+# start failing on a slower or busier build machine.
+COPY --from=node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 /usr/local/bin/node /usr/local/bin/node
+RUN test "$(node -p 'typeof Bun')" = undefined \
+    || { echo "ERROR: 'node' on PATH is bun's shim, not real Node — next build will segfault intermittently"; exit 1; }
 RUN mkdir -p semantic && bun run build
 
 # --- nsjail build stage (parallel with builder) ---

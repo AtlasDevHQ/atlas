@@ -394,6 +394,95 @@ describe("loadFactCandidates — contradiction hints", () => {
     expect(page.candidates[0]?.tensions[0]?.factId).toBe("fact-2");
     expect(page.candidates[1]?.tensions[0]?.factId).toBe("fact-1");
   });
+
+  it("fetches counterparts in a SEPARATE ACL-gated statement, never a join onto the fact row", async () => {
+    // The likeliest leak in the slice (#4913): a counterpart join gated by the
+    // OWNER's predicate would hand a reviewer a rival's claim and provenance
+    // because they were entitled to the fact it conflicts with.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      { match: "edge_type = 'in-tension-with'", rows: edgeRows },
+      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
+    ]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    const pageCall = db.calls.find((c) => c.sql.includes("COUNT(*) OVER ()"))!;
+    // The page statement resolves no counterpart. Pinned on `to_fact_id`
+    // rather than a blanket no-JOIN: #4914's decay anchor legitimately joins
+    // `brain_episodes` for a timestamp inside the page query, so "no JOIN"
+    // stopped being the invariant — "no tension-edge traversal" is.
+    expect(pageCall.sql).not.toContain("to_fact_id");
+    const counterpartCall = db.calls.find((c) => c.sql.includes("f.id = ANY("))!;
+    // The FRESH fact predicate, with the reader's own bound tokens — not the
+    // owner row's decision carried over, and no join in the statement. The
+    // bound array is the real pin: `not.toContain("JOIN")` alone would pass a
+    // correlated EXISTS against the owner row.
+    expect(counterpartCall.sql).toContain("f.visible_to && $2::text[]");
+    expect(counterpartCall.sql).not.toContain("JOIN");
+    expect(counterpartCall.params[1]).toEqual([
+      "org",
+      "role:admin",
+      "role:member",
+      "user:user-1",
+    ]);
+    // And the edge fetch binds cap + 1 — the overflow row is how truncation is
+    // detected, and the literal reader ignores LIMIT, so only the parameter
+    // can pin it (and which cap this surface budgets).
+    const edgeCall = db.calls.find((c) => c.sql.includes("edge_type = 'in-tension-with'"))!;
+    expect(edgeCall.params[2]).toBe(TENSION_FANOUT_CAP + 1);
+  });
+
+  it("interleaves visible and withheld rivals by factId — the review surface's historical order", async () => {
+    // The search surface appends its aggregate withheld arm LAST; the review
+    // surface deliberately does not — each withheld rival is its own entry,
+    // merged into one factId-sorted list. A regression copying the search
+    // projection's append-last shape here would pass every other test.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      {
+        match: "edge_type = 'in-tension-with'",
+        rows: [
+          { from_id: "fact-1", to_id: "fact-2" },
+          { from_id: "fact-1", to_id: "fact-0" },
+          { from_id: "fact-9", to_id: "fact-1" },
+        ],
+      },
+      // Only fact-2 is visible to this reader.
+      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    expect(
+      (page.candidates[0]?.tensions ?? []).map((t) => `${t.factId}:${t.visible}`),
+    ).toEqual(["fact-0:false", "fact-2:true", "fact-9:false"]);
+  });
+
+  it("lists a reciprocal rival once per direction — the graph, not a double-count", async () => {
+    // `reconcile.ts`'s `WHERE NOT EXISTS` dedupes one direction only, so a
+    // raced reciprocal pair (A→B and B→A) is representable. Each review entry
+    // carries its `edgeDirection`, so one entry per edge is a faithful report
+    // of the graph — pinned so the search surface's direction-less
+    // withheld-count dedupe is never "helpfully" copied here.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      {
+        match: "edge_type = 'in-tension-with'",
+        rows: [
+          { from_id: "fact-1", to_id: "fact-2" },
+          { from_id: "fact-2", to_id: "fact-1" },
+        ],
+      },
+      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    expect(
+      (page.candidates[0]?.tensions ?? []).map((t) => `${t.factId}:${t.edgeDirection}`),
+    ).toEqual(["fact-2:to", "fact-2:from"]);
+  });
 });
 
 describe("loadFactCandidates — honest totals and caps", () => {

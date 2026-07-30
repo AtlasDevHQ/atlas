@@ -80,9 +80,11 @@
  *
  * FTS-first, per the M1 cut. Embeddings, RRF over dense lists, and rerank are
  * M4 — `fusion.ts` is the seam they extend, and there is no disabled embedding
- * path here to switch on. `asOf` bi-temporal point reads are M2's, alongside
- * the rest of the conflict machinery; this read is as-of-now. `in-tension-with`
- * is surfaced in BOTH directions and never ranked.
+ * path here to switch on. `asOf` bi-temporal point reads are M2's; this read is
+ * as-of-now. `in-tension-with` is surfaced as a conflict CLUSTER (#4913): both
+ * directions, each visible counterpart with its own provenance, invisible ones
+ * as a withheld count — and never ranked; arbitration belongs to the human
+ * gate.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -94,6 +96,7 @@ import {
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
 import { attributionDecision } from "@atlas/api/lib/brain/attribution";
+import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
 import { computeDecaySignal, LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
 import { brainFactStatusClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
@@ -109,7 +112,6 @@ import type {
   BrainEpisodeExtraction,
   BrainEpisodeResult,
   BrainFactResult,
-  BrainFactTensionDirection,
   BrainResultTier,
   BrainSearchResponse,
   BrainSearchResult,
@@ -142,6 +144,7 @@ export const EPISODE_BODY_MAX_CHARS = 4_000;
  * on a 200-row admin table. When it bites, `tensionsTruncated` reaches the
  * caller AND the log — a truncated conflict list reads as "nothing contradicts
  * this", which is the one thing a trust-labeled surface must never imply.
+ * Both caps feed the shared `loadTensionClusters` (`lib/brain/tensions.ts`).
  */
 export const TENSION_FANOUT_CAP = 200;
 
@@ -413,12 +416,11 @@ export function buildEpisodeQuery(options: {
  * A `brain_facts` row off `pg`.
  *
  * `subject` / `predicate` / `object` are typed `string` and read without
- * narrowing — the ONE place in this module that trusts a column, justified by
- * `text NOT NULL` in migration 0180. Stated because the file is otherwise
- * uniformly `unknown`-in, and because `loadTensions` reads the same three
- * columns off the same table and narrows them: that asymmetry existed by
- * accident and is now deliberate on both sides, with the tension path narrowing
- * only because its rows arrive through a differently-shaped projection.
+ * narrowing — trusting a column is the exception in this otherwise uniformly
+ * `unknown`-in file, justified by `text NOT NULL` in migration 0180. The
+ * tension path makes the identical exception through `TensionCounterpartRow`
+ * (`lib/brain/tensions.ts`), so the two row shapes agree about which columns
+ * are trusted and why.
  */
 interface FactRow {
   readonly id: string;
@@ -540,22 +542,28 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
 // Tension lookup
 // ---------------------------------------------------------------------------
 
-interface TensionPair {
-  readonly owner: string;
-  readonly other: string;
-  readonly direction: BrainFactTensionDirection;
-}
-
 /**
- * `in-tension-with` counterparts for the facts on this page — both directions,
- * never ranked.
+ * The conflict clusters for the facts on this page — both directions, never
+ * ranked (#4913).
  *
- * Two statements: the edges (ungated — `brain_edges` carries no grant of its
- * own), then the counterpart FACTS through a FRESH fact predicate, applied
- * independently. A counterpart the reader may not see is reported as
- * `visible: false` rather than dropped: "there is a rival you cannot see" is
- * precisely what should stop an agent asserting the claim as settled, and an
- * omitted row reads as "nothing contradicts this".
+ * The walk — edges, then counterpart facts through a FRESH fact predicate,
+ * never a join onto the owner row — is `loadTensionClusters`
+ * (`lib/brain/tensions.ts`, shared with the review queue). What stays here is
+ * the SEARCH projection, which differs from the review surface's in both arms:
+ *
+ *   - A VISIBLE counterpart carries the full claim WITH its provenance — the
+ *     T4 stance is surfaced-both-with-provenance, so the agent can present
+ *     each side with its evidence. Attribution is re-decided per counterpart
+ *     row (#4836): a counterpart is a fact in its own right, fetched through
+ *     its own ACL predicate, so inheriting the owner's decision would be a
+ *     guess about a different row's grant. Status, corroboration, and recency
+ *     travel as surfacing hints; none of them orders anything.
+ *   - Counterparts the reader may NOT see collapse into ONE
+ *     `{ visible: false, withheldCount }` entry, appended after the
+ *     id-sorted counterparts. Aggregated because this surface feeds an LLM
+ *     context window, where N identical opaque handles spend tokens without
+ *     adding information — the count IS the signal, and it is never dropped:
+ *     an omitted conflict reads as "nothing contradicts this".
  *
  * `invalidated_at` is deliberately NOT filtered on the counterpart — a rival
  * that was retracted is still why this claim was contested — but it IS carried,
@@ -568,108 +576,45 @@ async function loadTensions(
   ctx: BrainPrincipalContext,
   requestId: string | undefined,
 ): Promise<{ views: Map<string, BrainSearchTensionView[]>; truncated: boolean }> {
-  const views = new Map<string, BrainSearchTensionView[]>();
-  if (factIds.length === 0) return { views, truncated: false };
-  if (!ctx.workspaceId) {
-    // Unreachable — a workspace-less context denies at the caller. Loud rather
-    // than a bare return, because this guard's failure mode is a page that
-    // silently reports no conflicts at all.
-    log.warn(
-      { requestId, origin: ctx.origin },
-      "brain search: contradiction lookup reached with no workspace — reporting no conflicts, which is wrong; this is an Atlas bug",
-    );
-    return { views, truncated: false };
-  }
-
-  // `DISTINCT` because 0180 puts no unique index on the edge tuple —
-  // `reconcile.ts` dedupes with `WHERE NOT EXISTS`, which two concurrent passes
-  // can race, and a duplicate edge would surface as two identical conflicts.
-  const edgeResult = await db.query(
-    `SELECT DISTINCT from_fact_id::text AS from_id, to_fact_id::text AS to_id
-       FROM brain_edges
-      WHERE workspace_id = $1
-        AND edge_type = 'in-tension-with'
-        AND (from_fact_id = ANY($2::uuid[]) OR to_fact_id = ANY($2::uuid[]))
-      ORDER BY from_id, to_id
-      LIMIT $3`,
-    [ctx.workspaceId, [...factIds], TENSION_FANOUT_CAP + 1],
-  );
-  const edges = edgeResult.rows as ReadonlyArray<{ from_id: string | null; to_id: string | null }>;
-  if (edges.length === 0) return { views, truncated: false };
-
-  const truncated = edges.length > TENSION_FANOUT_CAP;
-  const usable = truncated ? edges.slice(0, TENSION_FANOUT_CAP) : edges;
-  if (truncated) {
-    log.warn(
-      { workspaceId: ctx.workspaceId, requestId, cap: TENSION_FANOUT_CAP, facts: factIds.length },
-      "brain search: in-tension-with fan-out exceeded the per-page cap — some contradiction hints are omitted from this result set",
-    );
-  }
-
-  const onPage = new Set(factIds);
-  const pairs: TensionPair[] = [];
-  for (const edge of usable) {
-    const from = edge.from_id;
-    const to = edge.to_id;
-    if (!from || !to) continue;
-    // An edge with both ends on the page yields two entries — each fact names
-    // the other. Symmetric on purpose: neither end is the authority.
-    if (onPage.has(from)) pairs.push({ owner: from, other: to, direction: "to" });
-    if (onPage.has(to)) pairs.push({ owner: to, other: from, direction: "from" });
-  }
-  if (pairs.length === 0) return { views, truncated };
-
-  const counterpartIds = [...new Set(pairs.map((p) => p.other))];
-  const acl = aclVisibilityClause(ctx, {
-    table: "brain_facts",
-    alias: "f",
-    paramIndex: 1,
+  const { clusters, truncated } = await loadTensionClusters(db, factIds, {
+    ctx,
+    cap: TENSION_FANOUT_CAP,
+    surface: SEARCH_SURFACE,
+    log,
     requestId,
   });
-  if (acl.decision === "deny-all") {
-    // Unreachable — the caller already threw on this decision, against the same
-    // table with the same context. Throwing rather than skipping the query,
-    // because skipping leaves every counterpart unresolved and therefore
-    // rendered as "a conflicting claim you are not allowed to see" — fabricated
-    // ACL withholding, which a caller cannot tell from the real thing.
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, SEARCH_SURFACE);
-  }
 
-  const params: unknown[] = [...acl.params, counterpartIds];
-  const result = await db.query(
-    `SELECT f.id::text AS id, f.subject, f.predicate, f.object, f.invalidated_at
-       FROM brain_facts f
-      WHERE ${acl.sql}
-        AND f.id = ANY($${params.length}::uuid[])`,
-    params,
-  );
-  const visible = new Map<string, Record<string, unknown>>();
-  for (const raw of result.rows) {
-    const r = raw as Record<string, unknown>;
-    if (typeof r.id === "string") visible.set(r.id, r);
+  const views = new Map<string, BrainSearchTensionView[]>();
+  for (const [owner, cluster] of clusters) {
+    const list: BrainSearchTensionView[] = cluster.counterparts.map(({ row, direction }) => ({
+      visible: true,
+      factId: row.id,
+      edgeDirection: direction,
+      subject: row.subject,
+      predicate: row.predicate,
+      object: row.object,
+      status: factStatus(row.status, row.id, ctx.workspaceId),
+      validFrom: iso(row.valid_from),
+      ingestedAt: iso(row.ingested_at),
+      invalidatedAt: iso(row.invalidated_at),
+      corroborationCount: count(row.corroboration_count, "corroboration_count", ctx.workspaceId),
+      provenance: projectProvenance(
+        row.provenance,
+        row.source_episode_id,
+        attributionDecision(row, ctx, requestId),
+      ),
+    }));
+    if (cluster.withheld.length > 0) {
+      // DISTINCT rivals, not edge-ends: `reconcile.ts`'s `WHERE NOT EXISTS`
+      // dedupes one direction only, so a raced reciprocal pair (A→B and B→A)
+      // is representable and would otherwise report one hidden rival as two.
+      // The count is the whole signal this arm carries; overstating it is the
+      // one way it can lie.
+      const withheldRivals = new Set(cluster.withheld.map((w) => w.factId)).size;
+      list.push({ visible: false, withheldCount: withheldRivals });
+    }
+    views.set(owner, list);
   }
-
-  for (const pair of pairs) {
-    const row = visible.get(pair.other);
-    const view: BrainSearchTensionView = row
-      ? {
-          visible: true,
-          factId: pair.other,
-          edgeDirection: pair.direction,
-          subject: typeof row.subject === "string" ? row.subject : "",
-          predicate: typeof row.predicate === "string" ? row.predicate : "",
-          object: typeof row.object === "string" ? row.object : "",
-          invalidatedAt: iso(row.invalidated_at),
-        }
-      : { visible: false, factId: pair.other, edgeDirection: pair.direction };
-    const list = views.get(pair.owner);
-    if (list) list.push(view);
-    else views.set(pair.owner, [view]);
-  }
-
-  // Deterministic, and deliberately NOT by time, status, or corroboration —
-  // any of those would be a ranking, and refusing to arbitrate is the point.
-  for (const list of views.values()) list.sort((a, b) => a.factId.localeCompare(b.factId));
 
   return { views, truncated };
 }
@@ -844,9 +789,9 @@ export async function searchBrainCore(
   // Same treatment the episode rows get below, and for the same reason: `id` is
   // the PK cast to text in the SELECT, so a missing one is query drift rather
   // than tenant data. It matters MORE on this path — a non-string `id` would
-  // reach `loadTensions`' `$2::uuid[]` and fail the whole read with the generic
-  // message, and would collapse every malformed row onto one `fact:undefined`
-  // fusion key.
+  // reach `loadTensionClusters`' `$2::uuid[]` and fail the whole read with the
+  // generic message, and would collapse every malformed row onto one
+  // `fact:undefined` fusion key.
   const facts = (factRows ?? []).filter((row) => {
     if (typeof row.id === "string" && row.id !== "") return true;
     log.warn(

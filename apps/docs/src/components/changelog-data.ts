@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.1",
+    title: "Slack Loop Fix + Supply-Chain Hardening",
+    date: "2026-07-30",
+    summary:
+      "A fix for a Slack bug that could make Atlas reply to its own messages. When a workspace connected Slack, Atlas stored the connection but not the bot's own user ID — the one piece of information the Slack integration needs to recognise its own posts. Without it, Atlas could read a message it had just written as a new question and answer it, repeatedly, in a thread or a direct message. This release stores that ID on every connection path, repairs workspaces that were already connected so nobody needs to reconnect, and adds a safety valve that pauses a thread if replies ever start compounding again. The rest of the release is maintenance you should not have to think about: known vulnerabilities cleared from dependencies, a much smaller API container image, and a faster, simpler build pipeline.",
+    highlights: [
+      "Atlas no longer answers its own Slack messages — the bot's user ID is now stored on connect, which is what lets the Slack integration tell its own posts apart from yours",
+      "Already-connected workspaces are repaired automatically on upgrade; no reconnect needed",
+      "A per-thread safety valve pauses a conversation and says so if replies ever start compounding, whatever the cause",
+      "19 of 26 known dependency vulnerabilities cleared; the remaining 7 are documented with named constraints",
+      "The API container image now ships only what the API actually needs at runtime, cutting its size substantially",
+      "Faster CI: test shards folded into a single gate, and the container builds no longer trip over a Node shim",
+    ],
+  },
+  {
     version: "v0.2.0",
     title: "Brain M1: The Thin Wedge Slice",
     date: "2026-07-29",

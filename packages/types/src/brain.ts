@@ -707,38 +707,42 @@ export type BrainResultTier = "fact" | "raw-episode" | "document";
 export type BrainEpisodeExtractionState = "pending" | "complete";
 
 /**
- * A claim in advisory tension with a fused fact result — an `in-tension-with`
- * edge, surfaced in BOTH directions and NEVER ranked.
+ * The counterparts this reader may NOT see, as one aggregated entry (#4913).
  *
- * Arbitration is M2's. This slice reports the graph and stops: the agent is
- * told two claims conflict and neither is presented as the winner. Same rule
- * the review surface follows ({@link BrainFactTensionView}); this is the
- * lighter projection — no provenance, no corroboration, because a retrieval
- * caller needs to know a conflict EXISTS, and the review surface is where it
- * gets adjudicated.
+ * A COUNT rather than one `visible: false` row per rival, and that asymmetry
+ * with {@link BrainFactTensionWithheld} is deliberate: the review surface hands
+ * a human per-rival opaque handles worth keeping distinct (an id names a row a
+ * differently-entitled reviewer can resolve); `searchBrain` feeds an LLM
+ * context window, where N identical "you cannot see this" rows spend tokens
+ * without adding information. The COUNT is the whole
+ * signal — "two rivals exist that you cannot see" is exactly what should stop
+ * an agent asserting the claim as settled, and an omitted conflict reads as
+ * "nothing contradicts this" (the M1 rule).
+ *
+ * `z.strictObject` on the schema mirror keeps this arm structurally incapable
+ * of carrying the claim payload — the same enforcement every withheld arm in
+ * this file gets, because this is an ACL boundary.
  */
-export type BrainSearchTensionView =
-  | {
-      readonly visible: true;
-      readonly factId: string;
-      readonly edgeDirection: BrainFactTensionDirection;
-      readonly subject: string;
-      readonly predicate: string;
-      readonly object: string;
-      /** Non-null when the counterpart has been withdrawn — see {@link BrainFactTensionVisible.invalidatedAt}. */
-      readonly invalidatedAt: string | null;
-    }
-  /**
-   * A conflicting claim this reader may not see. Reported rather than dropped:
-   * "there is a rival you cannot see" is exactly what should stop an agent
-   * asserting the claim as settled, and an omitted row reads as "nothing
-   * contradicts this".
-   */
-  | {
-      readonly visible: false;
-      readonly factId: string;
-      readonly edgeDirection: BrainFactTensionDirection;
-    };
+export interface BrainSearchTensionWithheld {
+  readonly visible: false;
+  /** How many conflicting claims exist that this reader may not see. ≥ 1. */
+  readonly withheldCount: number;
+}
+
+/**
+ * One entry of a fused fact's conflict cluster — an `in-tension-with` edge,
+ * surfaced in BOTH directions and NEVER ranked (#4913, ADR-0036 §Temporal).
+ *
+ * Genuine coexisting tension is surfaced-both-with-provenance, never arbitrated:
+ * each ACL-visible counterpart is the FULL {@link BrainFactTensionVisible}
+ * projection — claim, provenance (attribution decided per counterpart row),
+ * corroboration, and recency — so the agent can present both sides with their
+ * evidence. Source authority and recency are surfacing hints for the READER;
+ * nothing in the ordering or the shape names a winner: entries are sorted by
+ * `factId` alone, with the withheld aggregate last. Arbitration belongs to the
+ * human gate (`/admin/brain-facts`, composing with supersession — #4912).
+ */
+export type BrainSearchTensionView = BrainFactTensionVisible | BrainSearchTensionWithheld;
 
 /** tier-2 — a reviewed claim. Authoritative for its class; yields to the warehouse. */
 export interface BrainFactResult {

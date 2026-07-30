@@ -150,10 +150,11 @@ const RECONCILE_LOCK_NAMESPACE = 4771;
 
 /**
  * Bound how many existing facts one new `single`-cardinality claim may be put
- * in tension with. The edges are ADVISORY (M2 owns clustering and arbitration),
- * so a subject/predicate that somehow accumulated hundreds of live objects
- * should surface the newest few for a reviewer rather than write a fan of
- * edges nobody reads.
+ * in tension with. The edges are ADVISORY — `lib/brain/tensions.ts` is the
+ * clustering that reads them (#4913), and arbitration stays with the human
+ * gate — so a subject/predicate that somehow accumulated hundreds of live
+ * objects should surface the newest few for a reviewer rather than write a fan
+ * of edges nobody reads.
  */
 const TENSION_EDGE_CAP = 10;
 
@@ -491,8 +492,9 @@ export const TENSION_CANDIDATES_SQL = `SELECT id
 /**
  * The advisory edge. `in-tension-with` is SURFACED with both provenances and
  * never ranked (ADR-0036) — writing it is not an arbitration, and nothing here
- * supersedes, invalidates, or reorders anything. M2 owns the clustering that
- * reads these.
+ * supersedes, invalidates, or reorders anything. `loadTensionClusters`
+ * (`lib/brain/tensions.ts`) is the clustering that reads these, behind both
+ * the review queue and `searchBrain` (#4913).
  */
 export const INSERT_TENSION_EDGE_SQL = `INSERT INTO brain_edges
          (workspace_id, edge_type, from_fact_id, to_fact_id)

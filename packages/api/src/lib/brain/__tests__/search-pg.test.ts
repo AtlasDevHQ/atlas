@@ -432,17 +432,26 @@ describeIfPg("searchBrain against the live schema", () => {
         (r): r is BrainFactResult => r.tier === "fact" && r.id === open,
       );
       expect(fact).toBeDefined();
-      // Present, withheld, and named — "there is a rival you cannot see" is the
-      // signal; an omitted row would read as "nothing contradicts this".
-      expect(fact!.tensions).toEqual([
-        { visible: false, factId: secret, edgeDirection: "to" },
-      ]);
+      // Present, withheld, and counted — "there is a rival you cannot see" is
+      // the signal; an omitted row would read as "nothing contradicts this".
+      // The count is the WHOLE entry (#4913): `z.strictObject` semantics, so a
+      // producer attaching the claim payload here is a shape change this
+      // assertion refuses.
+      expect(fact!.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
 
       const forInsider = await search(insider(), { query: "Petrel owner", include: ["fact"] });
       const insiderFact = forInsider.results.find(
         (r): r is BrainFactResult => r.tier === "fact" && r.id === open,
       );
-      expect(insiderFact!.tensions[0]).toMatchObject({ visible: true, factId: secret });
+      const rival = insiderFact!.tensions[0];
+      expect(rival).toMatchObject({ visible: true, factId: secret });
+      if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+      // The counterpart arrives WITH its own provenance (#4913) — the T4
+      // stance is surfaced-both-with-provenance, projected off the rival's own
+      // row through the live SQL, not the owner's.
+      expect(rival.provenance.source).toBe("slack");
+      expect(rival.provenance.attribution).toMatchObject({ visible: true, actor: "U1" });
+      expect(rival.status).toBe("published");
     },
     PG_TEST_TIMEOUT_MS,
   );

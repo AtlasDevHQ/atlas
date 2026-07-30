@@ -56,7 +56,11 @@ void mock.module("@atlas/api/lib/slack/api", () => ({
 }));
 
 const mockSaveInstallation: Mock<
-  (teamId: string, botToken: string, opts?: { orgId?: string; workspaceName?: string }) => Promise<void>
+  (
+    teamId: string,
+    botToken: string,
+    opts?: { orgId?: string; workspaceName?: string; botUserId?: string },
+  ) => Promise<void>
 > = mock(() => Promise.resolve());
 
 void mock.module("@atlas/api/lib/slack/store", () => ({
@@ -350,8 +354,38 @@ describe("SlackOAuthInstallHandler.handleCallback — happy path", () => {
     expect(mockSaveInstallation).toHaveBeenCalledWith(
       "T999",
       "xoxb-installed-token",
-      expect.objectContaining({ orgId: WSID, workspaceName: "TestTeam" }),
+      // `botUserId` rides this call or the chat-adapter's self-message
+      // check has no working input in multi-workspace mode (#4907) —
+      // storing it only in workspace_plugins.config is not enough, the
+      // adapter reads chat_cache.
+      expect.objectContaining({
+        orgId: WSID,
+        workspaceName: "TestTeam",
+        botUserId: "U-BOT",
+      }),
     );
+  });
+
+  it("still installs when Slack omits bot_user_id, without forging a botUserId", async () => {
+    // Slack sends bot_user_id on every bot install, so this is anomalous
+    // rather than routine — but failing an otherwise-valid exchange over
+    // it would trade a real outage for a hypothetical one. The install
+    // proceeds; the bridge reply breaker is the backstop (#4907).
+    mockSlackAPI.mockResolvedValueOnce({
+      ok: true as const,
+      team: { id: "T999", name: "TestTeam" },
+      access_token: "xoxb-installed-token",
+      scope: "commands,chat:write,app_mentions:read",
+      app_id: "A1234",
+    });
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "slack");
+
+    await handler.handleCallback("auth-code-abc", stateToken);
+
+    expect(mockSaveInstallation).toHaveBeenCalledTimes(1);
+    const opts = mockSaveInstallation.mock.calls[0][2];
+    expect(Object.hasOwn(opts ?? {}, "botUserId")).toBe(false);
   });
 
   it("carries Slack metadata (team_id, team_name, bot_user_id, scopes, app_id) into workspace_plugins.config", async () => {

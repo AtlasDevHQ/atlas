@@ -286,6 +286,34 @@ describe("store (chat_cache-backed)", () => {
       expect(value.teamName).toBe("My Team");
     });
 
+    // #4907: `botUserId` is the only working input to the chat-adapter's
+    // self-message check in multi-workspace mode. Dropping it on the
+    // write path is what let Atlas answer its own Slack posts in a loop,
+    // so these two assert the field's presence AND its absence-semantics.
+    it("persists botUserId when provided", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [{ key: "slack:installation:T123" }] });
+
+      await saveInstallation("T123", "xoxb-new", { botUserId: "U0BOT123" });
+      const [, insertParams] = mockPoolQuery.mock.calls[0];
+      const value = JSON.parse(insertParams![1] as string);
+      expect(value.botUserId).toBe("U0BOT123");
+    });
+
+    it("omits the botUserId KEY entirely when absent, so the JSONB merge preserves a stored id", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [{ key: "slack:installation:T123" }] });
+
+      await saveInstallation("T123", "xoxb-new", { orgId: "org-1" });
+      const [, insertParams] = mockPoolQuery.mock.calls[0];
+      const value = JSON.parse(insertParams![1] as string);
+      // `botUserId: undefined` would serialise the key away too — but a
+      // future refactor to `botUserId: input.botUserId ?? null` would
+      // NOT, and `value || EXCLUDED.value` would then overwrite a good
+      // stored id with null. Assert on key presence, not on the value.
+      expect(Object.hasOwn(value, "botUserId")).toBe(false);
+    });
+
     it("encrypts the bot token when SLACK_ENCRYPTION_KEY is set", async () => {
       process.env.SLACK_ENCRYPTION_KEY = Buffer.alloc(32).toString("base64");
       resetSlackEncryptionKeyCache();

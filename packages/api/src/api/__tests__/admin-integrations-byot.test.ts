@@ -597,6 +597,37 @@ describe("BYOT routes", () => {
       });
     });
 
+    // #4907: `auth.test`'s `user_id` IS the bot's own user ID when the
+    // call is made with a bot token — the BYOT equivalent of
+    // `oauth.v2.access`'s `bot_user_id`. Without persisting it, the
+    // chat-adapter's self-message check has no working input in
+    // multi-workspace mode and Atlas answers its own posts in a loop.
+    it("persists botUserId from auth.test's user_id", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              team_id: "T123",
+              team: "My Workspace",
+              user_id: "U0BOT456",
+            }),
+            { status: 200 },
+          ),
+        ),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/slack/byot", {
+        botToken: "xoxb-test-token",
+      });
+      expect(res.status).toBe(200);
+      expect(mockSaveSlackInstallation).toHaveBeenCalledWith("T123", "xoxb-test-token", {
+        orgId: "org-1",
+        workspaceName: "My Workspace",
+        botUserId: "U0BOT456",
+      });
+    });
+
     it("returns 500 when store save throws (org hijack)", async () => {
       mockFetchImpl.mockImplementation(() =>
         Promise.resolve(

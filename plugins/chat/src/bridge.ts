@@ -86,6 +86,34 @@ const CONVERSATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** TTL for event dedup locks (30 seconds). */
 const DEDUP_LOCK_TTL_MS = 30_000;
 
+/**
+ * Reply circuit breaker (#4907) — the backstop against a self-sustaining
+ * reply loop in a subscribed thread.
+ *
+ * The dedup lock above cannot serve this role: it is keyed per thread but
+ * released in `finally`, so a *sequential* loop (reply → inbound → reply)
+ * acquires it cleanly every time. Nothing else bounds how many turns a
+ * single thread can drive, and the failure is expensive — the #4907 loop
+ * ran ~15 agent turns in 90 seconds, one of them a 144k-token
+ * cross-region query, before a human noticed.
+ *
+ * 12/minute is far above human follow-up pace in one thread and far below
+ * the observed loop rate (~20–40/minute), so it separates the two cleanly
+ * without a tuning knob. Deliberately a blunt instrument: it does not try
+ * to identify *why* a thread is looping, only that it is.
+ */
+const MAX_REPLIES_PER_WINDOW = 12;
+
+/** Rolling window for {@link MAX_REPLIES_PER_WINDOW}. */
+const REPLY_WINDOW_MS = 60_000;
+
+/**
+ * How long a tripped thread stays muted. Long enough that a stuck loop
+ * cannot resume by waiting, short enough that a thread a human is still
+ * using recovers within a coffee break.
+ */
+const REPLY_BREAKER_COOLDOWN_MS = 15 * 60 * 1000;
+
 /** Callback ID for the Slack clarification modal. */
 const MODAL_CALLBACK_ID = "atlas_clarify";
 
@@ -260,6 +288,81 @@ async function tryAcquireLock(
     // Return a synthetic lock so the handler still runs; releaseLock
     // will be a no-op (token won't match anything in the backend).
     return { threadId: lockKey, token: "synthetic-fallback", expiresAt: Date.now() + ttlMs };
+  }
+}
+
+/** State adapter key for the per-thread reply breaker. */
+function replyBreakerKey(threadId: string): string {
+  return `reply-breaker:${threadId}`;
+}
+
+/** Counter state for the reply circuit breaker. */
+interface ReplyBreakerState {
+  count: number;
+  windowStart: number;
+  /** Set once the breaker trips, so the notice posts exactly once. */
+  tripped?: boolean;
+}
+
+/**
+ * Record one handled reply for a thread and report whether the breaker
+ * has tripped.
+ *
+ * Returns `"ok"` to proceed, `"trip"` on the transition into the tripped
+ * state (the caller posts one notice), and `"muted"` for every call after
+ * that until the cooldown expires.
+ *
+ * Fails OPEN on a state-adapter error: this guard exists to bound a
+ * runaway, and a state backend that is down must not take chat with it.
+ * That is a deliberate asymmetry from the "prefer errors over silent
+ * fallbacks" default — the counter is not a security control, and the
+ * self-message check in `@chat-adapter/slack` (fed by the `botUserId`
+ * this PR persists) remains the primary defence.
+ *
+ * Exported for direct unit testing: driving the three outcomes through
+ * `onSubscribedMessage` would need a full fake `chat` harness and would
+ * exercise less of the counter's actual behaviour than calling it does.
+ */
+export async function recordReplyForBreaker(
+  stateAdapter: StateAdapter,
+  threadId: string,
+  log: PluginLogger,
+): Promise<"ok" | "trip" | "muted"> {
+  const key = replyBreakerKey(threadId);
+  try {
+    const now = Date.now();
+    const prior = await stateAdapter.get<ReplyBreakerState>(key);
+
+    if (prior?.tripped) {
+      return "muted";
+    }
+
+    const inWindow = prior && now - prior.windowStart < REPLY_WINDOW_MS;
+    const next: ReplyBreakerState = inWindow
+      ? { count: prior.count + 1, windowStart: prior.windowStart }
+      : { count: 1, windowStart: now };
+
+    if (next.count > MAX_REPLIES_PER_WINDOW) {
+      await stateAdapter.set(
+        key,
+        { ...next, tripped: true },
+        REPLY_BREAKER_COOLDOWN_MS,
+      );
+      log.error(
+        { threadId, count: next.count, windowMs: REPLY_WINDOW_MS },
+        "Reply circuit breaker tripped — thread muted; this usually means the bot is answering its own messages",
+      );
+      return "trip";
+    }
+
+    await stateAdapter.set(key, next, REPLY_WINDOW_MS);
+    return "ok";
+  } catch (breakerErr) {
+    log.warn(
+      { err: breakerErr instanceof Error ? breakerErr : new Error(String(breakerErr)), threadId },
+      "Reply breaker state unavailable — proceeding without loop protection",
+    );
+    return "ok";
   }
 }
 
@@ -1068,6 +1171,33 @@ export function createChatBridge(
       { threadId, question: question.slice(0, 100) },
       "Follow-up message received",
     );
+
+    // Reply circuit breaker (#4907) — BEFORE the lock and before any
+    // model spend. This is the subscribed path specifically because a
+    // self-reply loop can only sustain itself here: `onNewMention`
+    // requires an @-mention Atlas never writes into its own replies.
+    const breaker = await recordReplyForBreaker(stateAdapter, threadId, log);
+    if (breaker === "muted") {
+      log.debug({ threadId }, "Thread muted by reply breaker — ignoring follow-up");
+      return;
+    }
+    if (breaker === "trip") {
+      // One notice, then silence — so a human sees why the thread went
+      // quiet instead of assuming Atlas crashed. Safe to post even mid-
+      // loop: the breaker is already latched, so the echo of THIS
+      // message returns "muted" and dies here.
+      await safePostError(
+        thread,
+        buildErrorCard({
+          message:
+            "I've paused this thread — I was replying too rapidly, which usually means I started answering my own messages.",
+          retryHint: "Start a new thread to continue, and let the team know if this repeats.",
+        }),
+        log,
+        threadId,
+      );
+      return;
+    }
 
     // Dedup lock — prevent duplicate processing
     const lock = await tryAcquireLock(stateAdapter, `bridge:${threadId}`, DEDUP_LOCK_TTL_MS, log, threadId);

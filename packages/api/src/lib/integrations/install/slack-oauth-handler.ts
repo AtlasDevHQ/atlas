@@ -269,6 +269,20 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
       });
     }
 
+    // Slack returns `bot_user_id` on every bot install, so absence is
+    // anomalous rather than routine — and it degrades loop safety (see
+    // the `saveInstallation` call below). Warn loudly rather than
+    // refusing the install: the bridge's per-thread reply breaker is the
+    // backstop that keeps a missing id from becoming another #4907, and
+    // failing an otherwise-valid OAuth exchange on a field Slack has
+    // always sent would trade a real outage for a hypothetical one.
+    if (!botUserId) {
+      log.warn(
+        { workspaceId, teamId },
+        "Slack OAuth response omitted bot_user_id — self-message detection will fall back to the bridge reply breaker",
+      );
+    }
+
     // ── 3. Plan cap + install record — atomic (#2953, #3001) ───────
     // Enforce the chat-integration cap and write the workspace_plugins row
     // (the first store) in ONE transaction guarded by a per-workspace
@@ -323,9 +337,15 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // and can retry — re-running this method will UPSERT the install
     // row (no-op on config) and re-attempt the credential write.
     try {
+      // `botUserId` is not decoration — it is the only working input to
+      // the adapter's self-message check in multi-workspace mode, and
+      // omitting it turns every reply in a subscribed thread into a new
+      // inbound question (#4907). `lib/slack/store.ts`'s header carries
+      // the full chain.
       await saveInstallation(teamId, accessToken, {
         orgId: workspaceId,
         ...(teamName ? { workspaceName: teamName } : {}),
+        ...(botUserId ? { botUserId } : {}),
       });
       log.info({ workspaceId, teamId }, "Slack install completed (both stores written)");
       return {

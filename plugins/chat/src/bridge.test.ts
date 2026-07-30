@@ -2473,3 +2473,73 @@ describe("executeQuery context contract", () => {
     expect(calls).toEqual([{ adapterName: "slack", rawTeamId: "T999" }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reply circuit breaker (#4907)
+// ---------------------------------------------------------------------------
+
+describe("recordReplyForBreaker", () => {
+  const silentLog = {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  } as unknown as import("@useatlas/plugin-sdk").PluginLogger;
+
+  async function memoryState() {
+    const state = (await import("./state")).createStateAdapter({ backend: "memory" }, null);
+    // MemoryStateAdapter throws on every op until connected — without
+    // this the breaker's fail-open catch swallows it and every call
+    // returns "ok", which would make these tests vacuously green.
+    await state.connect();
+    return state;
+  }
+
+  it("allows normal follow-up traffic", async () => {
+    const { recordReplyForBreaker } = await import("./bridge");
+    const state = await memoryState();
+
+    for (let i = 0; i < 5; i++) {
+      expect(await recordReplyForBreaker(state, "slack:C1-1.0", silentLog)).toBe("ok");
+    }
+  });
+
+  it("trips exactly once past the threshold, then mutes", async () => {
+    const { recordReplyForBreaker } = await import("./bridge");
+    const state = await memoryState();
+    const thread = "slack:C1-1.1";
+
+    const results: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      results.push(await recordReplyForBreaker(state, thread, silentLog));
+    }
+
+    // Exactly one "trip" — the notice must not be posted repeatedly into
+    // the very thread the breaker is trying to quiet.
+    expect(results.filter((r) => r === "trip")).toHaveLength(1);
+    // Everything after the trip is muted, nothing slips back to "ok".
+    const tripAt = results.indexOf("trip");
+    expect(results.slice(tripAt + 1).every((r) => r === "muted")).toBe(true);
+  });
+
+  it("isolates threads — one looping thread does not mute another", async () => {
+    const { recordReplyForBreaker } = await import("./bridge");
+    const state = await memoryState();
+
+    for (let i = 0; i < 20; i++) {
+      await recordReplyForBreaker(state, "slack:C1-noisy", silentLog);
+    }
+
+    expect(await recordReplyForBreaker(state, "slack:C1-quiet", silentLog)).toBe("ok");
+  });
+
+  it("fails OPEN when the state adapter throws, rather than taking chat down", async () => {
+    const { recordReplyForBreaker } = await import("./bridge");
+    const brokenState = {
+      get: () => Promise.reject(new Error("state backend down")),
+      set: () => Promise.reject(new Error("state backend down")),
+    } as unknown as import("chat").StateAdapter;
+
+    expect(await recordReplyForBreaker(brokenState, "slack:C1-1.2", silentLog)).toBe("ok");
+  });
+});

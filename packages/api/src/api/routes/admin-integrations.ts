@@ -654,7 +654,19 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
             log.warn({ err: errorMessage(err) }, "Slack auth.test fetch failed");
             return { ok: false as const, error: "Could not reach Slack API. Please try again." };
           }
-          let data: { ok: boolean; team_id?: string; team?: string; error?: string };
+          // `user_id` is the BOT's own user ID on an `auth.test` made with
+          // a bot token — the same value `oauth.v2.access` returns as
+          // `bot_user_id`. Capturing it here is what keeps the BYOT path
+          // from reproducing #4907: without it the chat-adapter's
+          // `isMessageFromSelf` has no working input and Atlas answers
+          // its own posts. `lib/slack/store.ts`'s header has the chain.
+          let data: {
+            ok: boolean;
+            team_id?: string;
+            team?: string;
+            user_id?: string;
+            error?: string;
+          };
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
@@ -664,7 +676,12 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
           if (!data.ok) {
             return { ok: false as const, error: data.error ?? "Invalid bot token" };
           }
-          return { ok: true as const, teamId: data.team_id ?? null, workspaceName: data.team ?? null };
+          return {
+            ok: true as const,
+            teamId: data.team_id ?? null,
+            workspaceName: data.team ?? null,
+            botUserId: data.user_id ?? null,
+          };
         },
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
@@ -681,6 +698,7 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
           saveInstallation(authResult.teamId ?? `byot-${orgId}`, botToken, {
             orgId,
             workspaceName: authResult.workspaceName ?? undefined,
+            ...(authResult.botUserId ? { botUserId: authResult.botUserId } : {}),
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(

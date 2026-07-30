@@ -14,8 +14,9 @@
  *   - the EPISODE carries its own predicate, never the fact's;
  *   - an unextracted episode is RETURNED and labelled, not skipped;
  *   - every row carries `tier` + `trustTier`, written at one seam;
- *   - `in-tension-with` surfaces both directions, unranked, and a withheld
- *     counterpart is reported rather than dropped.
+ *   - `in-tension-with` surfaces the conflict cluster (#4913): both directions,
+ *     unranked, each visible counterpart with its own provenance, and withheld
+ *     counterparts reported as a count rather than dropped.
  *
  * A literal `BrainSearchReader` stands in for the pool — no `mock.module()`, no
  * singleton mutation. That the emitted SQL actually selects what these tests
@@ -59,10 +60,12 @@ interface Call {
  * emits. The obvious `"brain_facts"` is not: the fact page's corroboration
  * subquery names `brain_edges`, and the tension-counterpart query names
  * `brain_facts` too — so a loose key silently answers the wrong statement and
- * the assertion passes vacuously on the withheld arm.
+ * the assertion passes vacuously on the withheld arm. Since #4913 the
+ * counterpart statement carries the corroboration subquery as well, so the
+ * fact page is keyed on `valid_to` — the one column only it selects.
  */
 const SQL = {
-  factPage: "COUNT(DISTINCT ed.to_episode_id)",
+  factPage: "f.valid_to",
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",
@@ -546,7 +549,40 @@ describe("trust labeling", () => {
 // Tensions
 // ---------------------------------------------------------------------------
 
-describe("in-tension-with", () => {
+/**
+ * A counterpart row as the shared cluster loader's SELECT shapes it
+ * (`lib/brain/tensions.ts`). Fully formed so the provenance assertions below
+ * are about projection, not about drift fallbacks.
+ */
+function rivalRow(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    subject: "billing pipeline",
+    predicate: "owned_by",
+    object: `team-${id}`,
+    status: "published",
+    visible_to: ["org"],
+    pre_widening_visible_to: null,
+    provenance: {
+      source: "slack",
+      sourceId: `m-${id}`,
+      episodeId: `ep-${id}`,
+      actor: `U-${id}`,
+      producer: "extraction:v1",
+      occurredAt: "2026-05-30T00:00:00.000Z",
+      extractedAt: "2026-05-30T00:05:00.000Z",
+      reconciledAt: "2026-05-30T00:06:00.000Z",
+    },
+    source_episode_id: `ep-${id}`,
+    valid_from: null,
+    invalidated_at: null,
+    ingested_at: new Date("2026-06-01T00:00:00Z"),
+    corroboration_count: 1,
+    ...overrides,
+  };
+}
+
+describe("in-tension-with — the conflict cluster (#4913)", () => {
   it("surfaces both edge directions and never orders by anything that implies a winner", async () => {
     const db = reader([
       { match: SQL.factPage, rows: [factRow()] },
@@ -559,10 +595,7 @@ describe("in-tension-with", () => {
       },
       {
         match: SQL.tensionCounterparts,
-        rows: [
-          { id: "rival-a", subject: "s", predicate: "p", object: "a", invalidated_at: null },
-          { id: "rival-b", subject: "s", predicate: "p", object: "b", invalidated_at: null },
-        ],
+        rows: [rivalRow("rival-a"), rivalRow("rival-b")],
       },
     ]);
     const res = await searchBrainCore(db, {
@@ -574,16 +607,89 @@ describe("in-tension-with", () => {
     });
     const fact = res.results[0] as BrainFactResult;
     expect(fact.tensions).toHaveLength(2);
-    expect(fact.tensions.map((t) => t.edgeDirection).sort()).toEqual(["from", "to"]);
+    const visible = fact.tensions.filter((t) => t.visible === true);
+    expect(visible.map((t) => t.edgeDirection).sort()).toEqual(["from", "to"]);
     // Ordered by id — deliberately NOT by time, status, or corroboration, any
     // of which would be an arbitration this slice must not perform.
-    expect(fact.tensions.map((t) => t.factId)).toEqual(["rival-a", "rival-b"]);
+    expect(visible.map((t) => t.factId)).toEqual(["rival-a", "rival-b"]);
   });
 
-  it("REPORTS a counterpart the reader may not see rather than dropping it", async () => {
+  it("carries each visible counterpart's claim WITH its provenance — surfaced-both-with-provenance", async () => {
     const db = reader([
       { match: SQL.factPage, rows: [factRow()] },
-      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "secret-rival" }] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival-a" }] },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a")] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    const rival = fact.tensions[0];
+    if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+    expect(rival.object).toBe("team-rival-a");
+    expect(rival.status).toBe("published");
+    expect(rival.corroborationCount).toBe(1);
+    expect(rival.ingestedAt).toBe("2026-06-01T00:00:00.000Z");
+    expect(rival.provenance.producer).toBe("extraction:v1");
+    expect(rival.provenance.source).toBe("slack");
+    expect(rival.provenance.attribution).toEqual({
+      visible: true,
+      sourceId: "m-rival-a",
+      actor: "U-rival-a",
+      occurredAt: "2026-05-30T00:00:00.000Z",
+    });
+  });
+
+  it("decides attribution per COUNTERPART row, off the rival's own pre-widening grant (#4836)", async () => {
+    // The rival was first stated in a private channel and reached this reader
+    // only through publish-time widening — its attribution triple is withheld
+    // even though the OWNER fact's is not. Inheriting the owner's decision
+    // would be a guess about a different row's grant.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival-a" }] },
+      {
+        match: SQL.tensionCounterparts,
+        rows: [
+          rivalRow("rival-a", {
+            visible_to: ["audience:chat-channel:slack:C-SECRET", "org"],
+            pre_widening_visible_to: ["audience:chat-channel:slack:C-SECRET"],
+          }),
+        ],
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    const rival = fact.tensions[0];
+    if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+    // The CLAIM is disclosed — the reader is entitled to it — but who said it
+    // first, where, and when stay with the original audience. Absent from the
+    // serialized entry, not merely unreachable through the type.
+    expect(rival.provenance.attribution).toEqual({ visible: false });
+    expect(JSON.stringify(rival)).not.toContain("C-SECRET");
+    expect(JSON.stringify(rival)).not.toContain("U-rival-a");
+  });
+
+  it("collapses counterparts the reader may not see into ONE withheld count rather than dropping them", async () => {
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "secret-rival-1" },
+          { from_id: "fact-1", to_id: "secret-rival-2" },
+        ],
+      },
       // The counterpart query is ACL-gated independently and returns nothing.
       { match: SQL.tensionCounterparts, rows: [] },
     ]);
@@ -596,9 +702,127 @@ describe("in-tension-with", () => {
     });
     const fact = res.results[0] as BrainFactResult;
     // An omitted row reads as "nothing contradicts this" — the one thing a
-    // trust-labeled surface must never imply.
-    expect(fact.tensions).toEqual([
-      { visible: false, factId: "secret-rival", edgeDirection: "to" },
+    // trust-labeled surface must never imply. Asserted with toEqual so the
+    // withheld arm structurally cannot smuggle a claim payload (the wire
+    // schema's z.strictObject, restated as a test).
+    expect(fact.tensions).toEqual([{ visible: false, withheldCount: 2 }]);
+  });
+
+  it("appends the withheld count AFTER the id-sorted counterparts in a mixed cluster", async () => {
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "secret-rival" },
+          { from_id: "fact-1", to_id: "rival-b" },
+          { from_id: "rival-a", to_id: "fact-1" },
+        ],
+      },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a"), rivalRow("rival-b")] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(
+      fact.tensions.map((t) => (t.visible ? t.factId : `withheld:${t.withheldCount}`)),
+    ).toEqual(["rival-a", "rival-b", "withheld:1"]);
+  });
+
+  it("never picks a winner — ordering ignores every authority signal, and no entry carries a verdict", async () => {
+    // Every surfacing hint is stacked in favour of the LATER-sorting rival:
+    // more corroboration, newer, published-vs-draft. If any code path ranked
+    // by authority, recency, or status, `rival-z-strong` would lead. It must
+    // not: entries are ordered by factId alone, and the shape has no field
+    // that could carry a verdict.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "rival-z-strong" },
+          { from_id: "fact-1", to_id: "rival-a-weak" },
+        ],
+      },
+      {
+        match: SQL.tensionCounterparts,
+        rows: [
+          rivalRow("rival-z-strong", {
+            status: "published",
+            corroboration_count: 900,
+            ingested_at: new Date("2026-07-01T00:00:00Z"),
+          }),
+          rivalRow("rival-a-weak", {
+            status: "draft",
+            corroboration_count: 0,
+            ingested_at: new Date("2020-01-01T00:00:00Z"),
+          }),
+        ],
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    const visible = fact.tensions.filter((t) => t.visible === true);
+    expect(visible.map((t) => t.factId)).toEqual(["rival-a-weak", "rival-z-strong"]);
+    // The entry's key set is closed: authority signals travel as display
+    // fields, and there is no `rank`, `score`, `winner`, or `preferred` for a
+    // producer to start setting.
+    for (const entry of visible) {
+      expect(Object.keys(entry).toSorted()).toEqual([
+        "corroborationCount",
+        "edgeDirection",
+        "factId",
+        "ingestedAt",
+        "invalidatedAt",
+        "object",
+        "predicate",
+        "provenance",
+        "status",
+        "subject",
+        "validFrom",
+        "visible",
+      ]);
+    }
+  });
+
+  it("fetches counterparts in a SEPARATE ACL-gated statement, never a join onto the fact row", async () => {
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival-a" }] },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a")] },
+    ]);
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    // The fact-page statement resolves no counterpart — a join gated by the
+    // OWNER's predicate would hand a reader a rival's claim and provenance
+    // because they were entitled to the fact it conflicts with.
+    const factCall = db.calls.find((c) => c.sql.includes(SQL.factPage))!;
+    expect(factCall.sql).not.toContain("in-tension-with");
+    // The counterpart statement is its own query, carries the FRESH fact
+    // predicate with the reader's own bound tokens, and joins nothing.
+    const counterpartCall = db.calls.find((c) => c.sql.includes(SQL.tensionCounterparts))!;
+    expect(counterpartCall.sql).toContain("f.visible_to && $2::text[]");
+    expect(counterpartCall.sql).not.toContain("JOIN");
+    expect(counterpartCall.params[1]).toEqual([
+      "org",
+      "role:member",
+      "user:user-1",
     ]);
   });
 
@@ -608,15 +832,7 @@ describe("in-tension-with", () => {
       { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival" }] },
       {
         match: SQL.tensionCounterparts,
-        rows: [
-          {
-            id: "rival",
-            subject: "s",
-            predicate: "p",
-            object: "o",
-            invalidated_at: new Date("2026-06-05T00:00:00Z"),
-          },
-        ],
+        rows: [rivalRow("rival", { invalidated_at: new Date("2026-06-05T00:00:00Z") })],
       },
     ]);
     const res = await searchBrainCore(db, {

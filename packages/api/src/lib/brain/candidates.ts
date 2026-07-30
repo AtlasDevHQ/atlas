@@ -64,6 +64,7 @@ import {
   type BrainAttributionDecision,
 } from "@atlas/api/lib/brain/attribution";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
 import { BRAIN_FACT_REVIEW_STATUSES, type BrainFactStatusFilter } from "@useatlas/schemas";
 import type {
   BrainEntityRole,
@@ -136,6 +137,10 @@ export const EPISODE_BODY_MAX_CHARS = 4_000;
  * than spreading evenly, and a candidate can lose every hint it originated
  * while keeping the ones pointed at it. Either way an incomplete list is
  * indistinguishable from a complete one, which is what the flag is for.
+ *
+ * Deliberately larger than the search surface's cap (200) — this budget serves
+ * a 200-row admin table, that one an LLM context window. Both feed the shared
+ * `loadTensionClusters` (`lib/brain/tensions.ts`).
  */
 export const TENSION_FANOUT_CAP = 500;
 
@@ -875,20 +880,17 @@ async function loadEpisodes(
   return out;
 }
 
-interface TensionEdgeRow {
-  readonly from_id: string | null;
-  readonly to_id: string | null;
-}
-
 /**
  * Advisory contradiction hints for a page of candidates.
  *
- * Two statements: the edges (ungated — `brain_edges` carries no grant of its
- * own), then the counterpart FACTS through the fact predicate, applied
- * independently. A counterpart the reader may not see is reported as
- * `visible: false` rather than dropped: "this claim has a rival you cannot see"
- * is precisely the signal that should stop a reviewer approving it, and
- * omitting the row would read as "no conflicts".
+ * The walk itself — edges, then counterpart facts through a FRESH fact
+ * predicate, never a join onto the owner row — is `loadTensionClusters`
+ * (`lib/brain/tensions.ts`, shared with `searchBrain` since #4913). What stays
+ * here is the REVIEW projection: a human resolves conflicts rival by rival, so
+ * a counterpart the reader may not see is reported as a per-rival
+ * `visible: false` handle rather than the search surface's aggregated count.
+ * Omitting it would read as "no conflicts" — precisely the signal that should
+ * stop a reviewer approving.
  *
  * Never ranked, never ordered by recency or status — see `BrainFactTensionView`.
  */
@@ -898,139 +900,47 @@ async function loadTensions(
   ctx: BrainPrincipalContext,
   requestId: string | undefined,
 ): Promise<{ views: Map<string, BrainFactTensionView[]>; truncated: boolean }> {
-  const out = new Map<string, BrainFactTensionView[]>();
-  const pageIds = rows.map((r) => r.id);
-  if (pageIds.length === 0) return { views: out, truncated: false };
-  if (!ctx.workspaceId) {
-    // Unreachable — a workspace-less context denies at the caller. Loud rather
-    // than a bare `return`, because this guard's failure mode is a page that
-    // silently reports no conflicts at all.
-    log.warn(
-      { requestId, origin: ctx.origin },
-      "brain review: contradiction lookup reached with no workspace — reporting no conflicts, which is wrong; this is an Atlas bug",
-    );
-    return { views: out, truncated: false };
-  }
-
-  // `DISTINCT` because migration 0180 puts no unique index on
-  // `(workspace_id, edge_type, from_fact_id, to_fact_id)` — `reconcile.ts`
-  // dedupes with `WHERE NOT EXISTS`, which two concurrent passes can race. A
-  // duplicate edge would otherwise render as two identical conflict cards and
-  // an inflated "In tension (2)".
-  const edgeResult = await db.query(
-    `SELECT DISTINCT from_fact_id::text AS from_id, to_fact_id::text AS to_id
-       FROM brain_edges
-      WHERE workspace_id = $1
-        AND edge_type = 'in-tension-with'
-        AND (from_fact_id = ANY($2::uuid[]) OR to_fact_id = ANY($2::uuid[]))
-      ORDER BY from_id, to_id
-      LIMIT $3`,
-    [ctx.workspaceId, pageIds, TENSION_FANOUT_CAP + 1],
+  const { clusters, truncated } = await loadTensionClusters(
+    db,
+    rows.map((r) => r.id),
+    { ctx, cap: TENSION_FANOUT_CAP, surface: REVIEW_SURFACE, log, requestId },
   );
-  const edges = edgeResult.rows as TensionEdgeRow[];
-  if (edges.length === 0) return { views: out, truncated: false };
 
-  // Never a silent cap. `tensionsTruncated` reaches the reviewer as well as the
-  // log — see TENSION_FANOUT_CAP.
-  const truncated = edges.length > TENSION_FANOUT_CAP;
-  const usable = truncated ? edges.slice(0, TENSION_FANOUT_CAP) : edges;
-  if (truncated) {
-    log.warn(
-      { workspaceId: ctx.workspaceId, requestId, cap: TENSION_FANOUT_CAP, pageSize: pageIds.length },
-      "brain review: in-tension-with fan-out exceeded the per-page cap — some contradiction hints are not shown on this page",
-    );
+  const out = new Map<string, BrainFactTensionView[]>();
+  for (const [owner, cluster] of clusters) {
+    const views: BrainFactTensionView[] = cluster.counterparts.map(({ row, direction }) => ({
+      visible: true,
+      factId: row.id,
+      edgeDirection: direction,
+      subject: row.subject,
+      predicate: row.predicate,
+      object: row.object,
+      status: reviewStatus(row.status, row.id, ctx.workspaceId),
+      validFrom: iso(row.valid_from),
+      ingestedAt: iso(row.ingested_at),
+      invalidatedAt: iso(row.invalidated_at),
+      corroborationCount: count(row.corroboration_count),
+      // Decided per COUNTERPART, off its own row. A tension counterpart is
+      // a fact in its own right and was fetched through its own ACL
+      // predicate, so inheriting the owner's decision would be a guess
+      // about a different row's grant.
+      provenance: projectProvenance(
+        row.provenance,
+        row.source_episode_id,
+        attributionDecision(row, ctx, requestId),
+      ),
+    }));
+    for (const w of cluster.withheld) {
+      views.push({ visible: false, factId: w.factId, edgeDirection: w.direction });
+    }
+    // Deterministic, and deliberately NOT by time, status, or corroboration —
+    // any of those would be a ranking, and refusing to arbitrate is the point.
+    // (The cluster's two lists arrive individually sorted; re-sorting the
+    // merged list keeps visible and withheld rivals interleaved by id, as the
+    // review surface has always rendered them.)
+    views.sort((a, b) => a.factId.localeCompare(b.factId));
+    out.set(owner, views);
   }
-
-  const onPage = new Set(pageIds);
-  /** candidate id → [counterpart id, which end of the edge the counterpart sat on] */
-  const pairs: Array<{
-    readonly owner: string;
-    readonly other: string;
-    readonly direction: "from" | "to";
-  }> = [];
-  for (const edge of usable) {
-    const { from_id: from, to_id: to } = edge;
-    if (!from || !to) continue;
-    // An edge whose BOTH ends are on this page yields two entries — each
-    // candidate names the other. That is symmetric on purpose: neither end is
-    // the authority over the other.
-    if (onPage.has(from)) pairs.push({ owner: from, other: to, direction: "to" });
-    if (onPage.has(to)) pairs.push({ owner: to, other: from, direction: "from" });
-  }
-  if (pairs.length === 0) return { views: out, truncated };
-
-  const counterpartIds = [...new Set(pairs.map((p) => p.other))];
-  const acl = aclVisibilityClause(ctx, {
-    table: "brain_facts",
-    alias: "f",
-    paramIndex: 1,
-    requestId,
-  });
-
-  if (acl.decision === "deny-all") {
-    // Unreachable for the same reason as `loadEpisodes` — the caller already
-    // threw on this decision, against the same table with the same context.
-    // Throwing rather than skipping the query, because skipping leaves every
-    // counterpart unresolved and therefore rendered as "a conflicting claim
-    // you are not allowed to see" — fabricated ACL withholding, and the one
-    // arm a reviewer cannot tell apart from the real thing.
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
-  }
-
-  const visible = new Map<string, FactRow>();
-  {
-    const params: unknown[] = [...acl.params, counterpartIds];
-    // `invalidated_at` is NOT filtered here, unlike the queue itself: a rival
-    // that was retracted is still why this claim was contested, and hiding it
-    // would make a contradiction vanish the moment somebody rejected one side.
-    // It IS selected and carried to the wire as `invalidatedAt`, because
-    // retraction never writes `status` — so without it a withdrawn rival would
-    // render as an indistinguishable live `draft`.
-    const result = await db.query(
-      `SELECT ${CANDIDATE_COLUMNS},
-              ${CORROBORATION_SELECT} AS corroboration_count
-         FROM brain_facts f
-        WHERE ${acl.sql}
-          AND f.id = ANY($${params.length}::uuid[])`,
-      params,
-    );
-    for (const raw of result.rows as FactRow[]) visible.set(raw.id, raw);
-  }
-
-  for (const pair of pairs) {
-    const row = visible.get(pair.other);
-    const view: BrainFactTensionView = row
-      ? {
-          visible: true,
-          factId: row.id,
-          edgeDirection: pair.direction,
-          subject: row.subject,
-          predicate: row.predicate,
-          object: row.object,
-          status: reviewStatus(row.status, row.id, ctx.workspaceId),
-          validFrom: iso(row.valid_from),
-          ingestedAt: iso(row.ingested_at),
-          invalidatedAt: iso(row.invalidated_at),
-          corroborationCount: count(row.corroboration_count),
-          // Decided per COUNTERPART, off its own row. A tension counterpart is
-          // a fact in its own right and was fetched through its own ACL
-          // predicate, so inheriting the owner's decision would be a guess
-          // about a different row's grant.
-          provenance: projectProvenance(
-            row.provenance,
-            row.source_episode_id,
-            attributionDecision(row, ctx, requestId),
-          ),
-        }
-      : { visible: false, factId: pair.other, edgeDirection: pair.direction };
-    const list = out.get(pair.owner);
-    if (list) list.push(view);
-    else out.set(pair.owner, [view]);
-  }
-
-  // Deterministic, and deliberately NOT by time, status, or corroboration —
-  // any of those would be a ranking, and refusing to arbitrate is the point.
-  for (const list of out.values()) list.sort((a, b) => a.factId.localeCompare(b.factId));
 
   return { views: out, truncated };
 }

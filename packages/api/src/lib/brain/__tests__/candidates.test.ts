@@ -388,6 +388,28 @@ describe("loadFactCandidates — contradiction hints", () => {
     expect(page.candidates[0]?.tensions[0]?.factId).toBe("fact-2");
     expect(page.candidates[1]?.tensions[0]?.factId).toBe("fact-1");
   });
+
+  it("fetches counterparts in a SEPARATE ACL-gated statement, never a join onto the fact row", async () => {
+    // The likeliest leak in the slice (#4913): a counterpart join gated by the
+    // OWNER's predicate would hand a reviewer a rival's claim and provenance
+    // because they were entitled to the fact it conflicts with.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      { match: "edge_type = 'in-tension-with'", rows: edgeRows },
+      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
+    ]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    const pageCall = db.calls.find((c) => c.sql.includes("COUNT(*) OVER ()"))!;
+    expect(pageCall.sql).not.toContain("JOIN");
+    expect(pageCall.sql).not.toContain("to_fact_id");
+    const counterpartCall = db.calls.find((c) => c.sql.includes("f.id = ANY("))!;
+    // The FRESH fact predicate, with the reader's own bound tokens — not the
+    // owner row's decision carried over, and no join in the statement.
+    expect(counterpartCall.sql).toContain("f.visible_to && $2::text[]");
+    expect(counterpartCall.sql).not.toContain("JOIN");
+  });
 });
 
 describe("loadFactCandidates — honest totals and caps", () => {

@@ -42,6 +42,7 @@ import type {
   BrainFactReviewStatus,
   BrainFactTensionView,
   BrainResultTier,
+  BrainSearchTensionView,
 } from "@useatlas/types";
 
 /** Mirrors `BRAIN_FACT_STATUSES` in `packages/api/src/lib/brain/types.ts`. */
@@ -216,27 +217,57 @@ export const BrainFactEpisodeViewSchema = z.discriminatedUnion("visible", [
 
 const BrainFactTensionDirectionSchema = z.enum(["from", "to"]);
 
+/**
+ * The visible counterpart arm — one schema behind BOTH tension unions, because
+ * `BrainFactTensionVisible` is the one type behind both: the review queue and
+ * `searchBrain` project the same conflict cluster (#4913,
+ * `lib/brain/tensions.ts`) and differ only in their withheld arm.
+ */
+const BrainFactTensionVisibleSchema = z.object({
+  visible: z.literal(true),
+  factId: z.string(),
+  edgeDirection: BrainFactTensionDirectionSchema,
+  subject: z.string(),
+  predicate: z.string(),
+  object: z.string(),
+  status: z.enum(BRAIN_FACT_REVIEW_STATUSES),
+  validFrom: z.string().nullable(),
+  ingestedAt: z.string().nullable(),
+  invalidatedAt: z.string().nullable(),
+  corroborationCount: z.number().int().nonnegative(),
+  provenance: BrainFactProvenanceViewSchema,
+});
+
 export const BrainFactTensionViewSchema = z.discriminatedUnion("visible", [
-  z.object({
-    visible: z.literal(true),
-    factId: z.string(),
-    edgeDirection: BrainFactTensionDirectionSchema,
-    subject: z.string(),
-    predicate: z.string(),
-    object: z.string(),
-    status: z.enum(BRAIN_FACT_REVIEW_STATUSES),
-    validFrom: z.string().nullable(),
-    ingestedAt: z.string().nullable(),
-    invalidatedAt: z.string().nullable(),
-    corroborationCount: z.number().int().nonnegative(),
-    provenance: BrainFactProvenanceViewSchema,
-  }),
+  BrainFactTensionVisibleSchema,
   z.strictObject({
     visible: z.literal(false),
     factId: z.string(),
     edgeDirection: BrainFactTensionDirectionSchema,
   }),
 ]) satisfies z.ZodType<BrainFactTensionView, unknown>;
+
+/**
+ * `searchBrain`'s cluster entry (#4913): the same visible counterpart, but the
+ * withheld arm is an aggregated COUNT — the review surface hands a human
+ * per-rival opaque handles; the search surface hands an LLM the one number
+ * that matters. `z.strictObject` keeps the withheld arm structurally incapable
+ * of carrying the claim payload, per the M1 ACL-boundary rule.
+ *
+ * SCOPE, same as {@link BrainFactAttributionViewSchema}'s note: `searchBrain`
+ * has no runtime response parse today, so this schema's job is the
+ * compile-time pin against `BrainSearchTensionView` (a drifted field fails the
+ * `satisfies` below) and the enforcement seam for any parser that is added
+ * later. The runtime guarantee on that path is the discriminated union plus
+ * `loadTensions` in `lib/brain/search.ts` being the single constructor.
+ */
+export const BrainSearchTensionViewSchema = z.discriminatedUnion("visible", [
+  BrainFactTensionVisibleSchema,
+  z.strictObject({
+    visible: z.literal(false),
+    withheldCount: z.number().int().positive(),
+  }),
+]) satisfies z.ZodType<BrainSearchTensionView, unknown>;
 
 /**
  * `reasons` is `z.string()`, not an enum over the refusal vocabulary. That

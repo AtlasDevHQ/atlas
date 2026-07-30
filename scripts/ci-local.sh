@@ -21,7 +21,8 @@
 #   no-admin-plugin, no-legacy-connections-sql, auth-md-parity, the adversarial
 #   __tests__ fixtures, unpublished-versions), so you stop finding them only
 #   after a push. It does NOT run the GitHub-only checks (Deploy Validation,
-#   Analyze/CodeQL, Symlink Stub Build) or the heavy `bun run build` web build.
+#   Image Scan, Analyze/CodeQL, ee-stub-build) or the heavy `bun run build`
+#   web build.
 #
 # SCHEDULE (race- and flake-safe, not max-parallel)
 #   Stage 0  serial    `bun run type` — the ONLY gate that writes SDK dist/.

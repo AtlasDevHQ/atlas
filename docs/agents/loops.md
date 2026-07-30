@@ -53,9 +53,9 @@ makes an overnight loop safe to run:
 - **`--admin` is for a *broken* gate, not a *slow* one.** A loop waits for
   `gh pr checks --watch` to go green on the head SHA; it does not force merges because it
   is impatient (#2206).
-- **Branch protection on `main` is on.** Required checks (`ci`, `api-tests (1/4)`–`(4/4)`,
-  Deploy Validation, `Analyze (javascript-typescript)`, Symlink Stub Build, `fork-pr-gate`)
-  gate every merge.
+- **Branch protection on `main` is on.** Five required checks (`ci`, `Deploy Validation`,
+  `Image Scan`, `Analyze (javascript-typescript)`, `fork-pr-gate`) gate every merge; `ci`
+  is an umbrella that covers the `api-tests` shards and `ee-stub-build`.
 
 The design rule that falls out: **a loop may run fully autonomous up to the merge gate on
 its own-branch PRs, and must halt for a human at every boundary the merge-discipline rules

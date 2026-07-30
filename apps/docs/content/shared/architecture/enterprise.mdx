@@ -296,7 +296,7 @@ The architecture-deepening arc (#2017 / milestone #48, closed 2026-05-18) invert
 Two CI gates lock the inversion in. Both run on every PR and both sit in the required-status-check set on `main`:
 
 - **`scripts/check-ee-imports.sh`** — greps the core source tree for real `@atlas/ee` import syntax (`from "@atlas/ee`, `import("@atlas/ee`, `require("@atlas/ee`), strips comments before matching, and rejects any new match outside `lib/effect/enterprise-layer.ts`. A failure means a new dynamic import slipped in; migrate the call site to `yield* TheTag` from Effect Context.
-- **`ee-stub-build`** job (surfaced in branch protection as **Symlink Stub Build**) — replaces `ee/` with `scripts/ee-stub/` (whose `EELayer` export is `Layer.empty` and whose other exports are no-op stubs sized to the call sites) and re-runs `bun run type` + `bun run build`. Any structural coupling from core to ee fails the build. This proves core compiles standalone — the AGPL artifact that ships when enterprise is disabled.
+- **`ee-stub-build`** job (enforced through the required `ci` umbrella) — replaces `ee/` with `scripts/ee-stub/` (whose `EELayer` export is `Layer.empty` and whose other exports are no-op stubs sized to the call sites) and re-runs `bun run type` + `bun run build`. Any structural coupling from core to ee fails the build. This proves core compiles standalone — the AGPL artifact that ships when enterprise is disabled.
 
 That arc deliberately picked Effect's `Context.Tag` over a bare boolean flag because every subsystem already needed multiple methods (residency: 8; SLA: 6; backups: 5). A `Tag` lets the AGPL core express "I yield* this enterprise capability" without committing to whether `@atlas/ee` is on disk. The Noop default closes the loop: self-hosted runs the no-op implementation; SaaS overlays `ee/src/layers.ts:EELayer` via the lazy import in `ConditionalEELayer`.
 
@@ -360,8 +360,8 @@ Tags that carry `available` today (verified against [`lib/effect/services.ts`](h
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `check-ee-imports` fails with a file path | A new `from "@atlas/ee/…"` or `import("@atlas/ee/…")` landed outside the allowed file | Replace with `yield* TheTag` from Effect Context. If the feature genuinely needs a new subsystem, follow the five-step recipe above |
-| `Symlink Stub Build` fails at `bun run type` | Core code references an EE-specific type via a structural path that the stub doesn't expose | Type-only imports from `@useatlas/types` or `@atlas/api/lib/effect/services` are fine; concrete imports from `@atlas/ee/...` are not. Move the type into a shared module |
-| `Symlink Stub Build` fails at `bun run build` | A consumer call site assumes EE-only side effects (e.g. `Effect.provide(EELayer)` instead of `EnterpriseLayer`) | Use `runEnterprise(program)` / the Hono bridge's `runHandler` — they thread `EnterpriseLayer`, which composes Noop defaults under the conditional EE overlay |
+| `ee-stub-build` fails at `bun run type` | Core code references an EE-specific type via a structural path that the stub doesn't expose | Type-only imports from `@useatlas/types` or `@atlas/api/lib/effect/services` are fine; concrete imports from `@atlas/ee/...` are not. Move the type into a shared module |
+| `ee-stub-build` fails at `bun run build` | A consumer call site assumes EE-only side effects (e.g. `Effect.provide(EELayer)` instead of `EnterpriseLayer`) | Use `runEnterprise(program)` / the Hono bridge's `runHandler` — they thread `EnterpriseLayer`, which composes Noop defaults under the conditional EE overlay |
 
 ### Load-failure handling
 

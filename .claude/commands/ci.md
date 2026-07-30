@@ -95,8 +95,8 @@ promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 and the full `test` suite.
 
 It does **not** run the GitHub-only required checks (Deploy Validation,
-`Analyze (javascript-typescript)` / CodeQL, Symlink Stub Build) or the heavy
-`bun run build` web build — those run remotely (see "Remote checks").
+`Image Scan`, `Analyze (javascript-typescript)` / CodeQL, `ee-stub-build`) or
+the heavy `bun run build` web build — those run remotely (see "Remote checks").
 
 Schedule is deliberately race- and flake-safe, not max-parallel: Stage 0 runs
 `bun run type` alone (the only gate that writes SDK `dist/`); Stage 1 fans out
@@ -106,7 +106,8 @@ under CPU contention on WSL2).
 **Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database.**
 They run only when `TEST_DATABASE_URL` is set (the wrapper prints whether it is).
 Locally unset, `bun run test` passes without exercising them; CI's
-`api-tests (1/4)`–`(4/4)` shards always run them against a real Postgres. Any
+`api-tests (1/4)`–`(4/4)` shards (under the `ci` umbrella) always run them
+against a real Postgres. Any
 change to a DB-reader SELECT (e.g. `getWorkspaceDetails`) or a migration must
 update the hand-built table fixtures inside the `-pg` tests too, or CI fails with
 `column "X" does not exist` even though local gates were green (how #3481 first

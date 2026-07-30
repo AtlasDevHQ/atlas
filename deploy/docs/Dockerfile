@@ -101,6 +101,14 @@ COPY packages/okf-bundle packages/okf-bundle
 COPY brand.css ./brand.css
 COPY scripts/check-docs-canary.sh /usr/local/bin/check-docs-canary.sh
 RUN chmod +x /usr/local/bin/check-docs-canary.sh
+# Real Node.js, for `next build` only (#4891) — build-time; the Caddy runtime
+# stage below never sees it. Without it the only `node` on PATH is oven/bun's
+# shim, `next`'s `#!/usr/bin/env node` resolves to bun, and the build segfaults
+# in bun's N-API thread-safe-function path (SIGILL / exit 132). Full reasoning,
+# including why a green local build proves nothing, is in deploy/web/Dockerfile.
+COPY --from=node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 /usr/local/bin/node /usr/local/bin/node
+RUN test "$(node -p 'typeof Bun')" = undefined \
+    || { echo "ERROR: 'node' on PATH is bun's shim, not real Node — next build will segfault intermittently (#4891)"; exit 1; }
 # fumadocs-mdx postinstall (generates .source/ from source.config.ts — skipped in
 # the deps stage), then the static export, then the canary.
 RUN cd apps/docs && bun run postinstall && bun run build && /usr/local/bin/check-docs-canary.sh

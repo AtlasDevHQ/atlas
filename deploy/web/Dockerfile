@@ -109,6 +109,40 @@ ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=$NEXT_PUBLIC_ATLAS_AUTH_MODE
 ENV NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=$NEXT_PUBLIC_ATLAS_COOKIE_PREFIX
 ENV NEXT_PUBLIC_TURNSTILE_SITE_KEY=$NEXT_PUBLIC_TURNSTILE_SITE_KEY
 ENV ATLAS_SECURITY_TXT_URL=$ATLAS_SECURITY_TXT_URL
+# Real Node.js, for `next build` only (#4891). Build-time; never reaches the
+# runner stage, which still starts under bun.
+#
+# `next` is a `#!/usr/bin/env node` bin and `bun run` honours that shebang, so
+# whichever `node` is first on PATH runs the build. Every environment we build
+# in has a real one — dev machines, GitHub runners — EXCEPT this image, where
+# the only `node` is oven/bun's shim (`/usr/local/bun-node-fallback-bin/node`
+# → `bun`). So inside the image, and nowhere else, `next build` runs as
+# bun-pretending-to-be-node.
+#
+# That path hits an open upstream crash in bun's N-API thread-safe-function
+# handling (`napi.ThreadSafeFunction.enqueue`, napi.zig:1654) the instant Next
+# spawns its page-data workers: bun segfaults at 0x13CB0, its panic handler
+# traps, and the build dies with SIGILL / exit 132. Both are upstream and
+# unfixed as of 1.3.13 — oven-sh/bun#25864, oven-sh/bun#24829 — and running the
+# build on node is the workaround upstream recommends.
+#
+# Do NOT read a green local `docker build` as evidence this is fixed — or that
+# it was ever broken. Five pre-fix runs of this exact image passed locally,
+# including under `--cpus 4` and `--cpuset-cpus 0-1`; the race only lands on
+# the 4-vCPU GitHub runner. Local Docker cannot falsify this one, so the
+# `Built image (web)` / `Built image (docs)` jobs are the only real verdict.
+#
+# The shim's PATH entry is last, so /usr/local/bin/node shadows it. Copying the
+# single binary is enough — its only shared-library needs (libstdc++, libgcc_s,
+# libm, libc) are already in the bun trixie image. Digest-pinned like every
+# other image reference here; `scripts/list-runtime-base-images.sh` resolves
+# only `FROM` lines, so this correctly stays out of the image-scan matrix.
+COPY --from=node:24-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 /usr/local/bin/node /usr/local/bin/node
+# Fail loudly if that ever stops working. Deleting the COPY above does not break
+# the build — it makes it pass locally and segfault intermittently on the deploy
+# path, which is exactly the failure mode #4891 was.
+RUN test "$(node -p 'typeof Bun')" = undefined \
+    || { echo "ERROR: 'node' on PATH is bun's shim, not real Node — next build will segfault intermittently (#4891)"; exit 1; }
 RUN cd packages/web && bun run build
 
 # --- runner ---

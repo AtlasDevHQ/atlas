@@ -346,7 +346,14 @@ jobs:
         # finalText, response payloads) for the upload-artifact step
         # below — the human-readable summary truncates `finalText` and
         # would lose the recovery-class diagnostic data.
-        run: bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json
+        #
+        # pipefail is load-bearing: the default step shell is `bash -e {0}`
+        # (NO pipefail), so without it the step's outcome is `tee`'s exit 0
+        # and a 0/20 eval run reads as success — which would neuter the
+        # informational gate below on tag pushes.
+        run: |
+          set -o pipefail
+          bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json
 
       - name: Upload eval artifacts on failure
         # Captured regardless of pass/fail so a baseline drift on a

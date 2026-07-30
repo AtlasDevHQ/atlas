@@ -37,7 +37,9 @@ set -euo pipefail
 
 LABEL="${1:?usage: eval-informational-gate.sh <job-label> <outcome>...}"
 shift
-[ "$#" -ge 1 ] || { echo "::error::no step outcomes passed for $LABEL" >&2; exit 1; }
+# On stdout, not stderr — the Actions runner only parses ::error:: /
+# ::warning:: workflow commands from stdout.
+[ "$#" -ge 1 ] || { echo "::error::no step outcomes passed for $LABEL"; exit 1; }
 
 FAILED=0
 for outcome in "$@"; do
@@ -51,11 +53,20 @@ MARKER="<!-- atlas-canonical-eval ${LABEL} -->"
 
 # Returns the id of the existing marker comment, or "" if none.
 existing_comment_id() {
-  # --paginate applies --jq per page, so nulls (pages without a match) must
-  # be filtered and only the first real id kept.
-  gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
-    --jq "[.[] | select(.body | contains(\"${MARKER}\"))][0].id" 2>/dev/null |
-    grep -v '^null$' | head -1 || true
+  # A gh/jq failure falls back to "" (upsert then POSTs, possibly
+  # duplicating a comment) — but it must be VISIBLE, not silent: the
+  # warning goes to stderr because stdout is this function's return value,
+  # and gh's own stderr is left attached so the underlying error surfaces
+  # in the log. --paginate applies --jq per page, so nulls (pages without
+  # a match) must be filtered and only the first real id kept; herestring
+  # rather than a pipe from gh so grep's SIGPIPE can't kill the producer.
+  local out
+  if ! out="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+    --jq "[.[] | select(.body | contains(\"${MARKER}\"))][0].id")"; then
+    echo "::warning::listing PR comments failed for ${LABEL} — treating as no existing comment (a duplicate comment may be posted)" >&2
+    out=""
+  fi
+  grep -v '^null$' <<<"$out" | head -1 || true # intentionally ignored: no matching comment is the "" case
 }
 
 # Upsert is best-effort: fork PRs get a read-only GITHUB_TOKEN, so a comment

@@ -96,7 +96,13 @@ jobs:
           # Run unless EVERY changed file is docs-only. `.mdx` (apps/docs
           # content) deliberately does NOT match `\.md$` — apps/docs is a
           # Next.js app covered by `bun run build`, so it stays gated in.
-          if echo "$CHANGED" | grep -vqE '^(docs/|\.claude/|[^/]*\.md$)'; then
+          #
+          # Herestring, not `echo | grep`: with pipefail, `grep -q` exiting
+          # early can SIGPIPE the writer on a large diff and flip the
+          # pipeline status to 141 — misclassifying a huge non-docs diff as
+          # docs-only. Herestring input has no writer to kill; grep's own
+          # exit status alone decides.
+          if grep -vqE '^(docs/|\.claude/|[^/]*\.md$)' <<<"$CHANGED"; then
             echo "ee-stub=true" >> "$GITHUB_OUTPUT"
             echo "Non-docs paths changed — running ee-stub-build"
           else

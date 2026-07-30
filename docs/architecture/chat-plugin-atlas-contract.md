@@ -97,6 +97,34 @@ stays the self-host fallback unchanged. ⚠ row to watch: any change to the shap
 overlay (e.g. nesting, or a non-string value) breaks the `{ ...process.env, ...overlay }`
 merge contract — the overlay must stay a flat `Record<string, string>`.
 
+### Adapter identity — `SlackAdapterConfig.userName` / `Chat.userName` (#4909)
+
+The bot's own handle at the `@chat-adapter/slack` construction boundary. Not
+cosmetic: it is the **only** working input to `detectMention`, the fallback the
+SDK uses when `isMention` wasn't set from the event type.
+
+| Boundary field | Owner | Atlas wiring | Adapter behaviour without it | Status |
+|---|---|---|---|---|
+| `SlackAdapterConfig.userName` | chat-adapter | `plugins/chat/src/adapters/slack.ts` passes `DEFAULT_BOT_USER_NAME` (`config.ts`), overridable per deploy | defaults to the literal `"bot"`; replaced from `auth.test` **only** inside `initialize()`, which runs solely on the single-workspace `defaultBotToken` path | ✓ verified |
+| `Chat.userName` | chat SDK | `bridge.ts` `new Chat({ userName: DEFAULT_BOT_USER_NAME })` — same constant | — | ✓ verified |
+
+**Boundary contract.** `detectMention` resolves the handle as
+`adapter.userName || chat.userName`. Because the adapter's default `"bot"` is
+**truthy, it shadows `chat.userName`** — setting only the `Chat` side looks correct
+and silently does nothing. Both must come from one constant, which is why
+`DEFAULT_BOT_USER_NAME` exists rather than two literals.
+
+The id-based patterns in `detectMention` are **not** a backstop here: the async
+parse path runs `resolveInlineMentions`, which rewrites `<@U0BOT…>` to the bot's
+display name, so no user id survives in `message.text`. (That rewrite is meant to be
+suppressed for the bot itself via `skipSelfMention`, but that guard reads the
+adapter's instance `_botUserId`, which is null in multi-workspace — see the
+`botUserId` row above.) Name matching is the only route.
+
+⚠ row to watch: this is **single-workspace-safe and multi-workspace-broken** by
+default — the class that produced both #4907 and #4909. Anything that relies on
+`initialize()` having populated adapter instance state is dead in SaaS/BYOT.
+
 ### Durable approval-park resume delivery — `ChatPluginConfig.onBridgeReady` + `chat:resume-pending:<conversationId>` (#3750)
 
 Durable sessions (#3742 family) let an agent turn **park** on an approval rule and

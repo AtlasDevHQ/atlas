@@ -103,7 +103,7 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@daytonaio/sdk": "^0.185.0",
+    "@daytonaio/sdk": "^0.201.0",
     "@vercel/sandbox": "^2.9.0",
     "e2b": "^2.36.1"
   },

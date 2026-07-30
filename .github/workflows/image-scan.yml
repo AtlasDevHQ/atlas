@@ -59,11 +59,24 @@ name: Image Scan
 #   They still do not block, but for a different reason than #4822 gave: the
 #   remediation path is manual, and part of the residual set has no expressible
 #   fix. bun supports only TOP-LEVEL overrides, so a package present at two
-#   majors (undici 6.x + 7.x, brace-expansion 2.x + 5.x, protobufjs 7.x + 8.x)
-#   cannot be pinned per-major — a single global override silently forces every
-#   consumer onto one version. Gating on findings nobody can action is the same
-#   trap as gating on unfixed CVEs, one bullet up. The residual set and the
-#   reason each entry is declined are recorded on #4878.
+#   majors (undici 6.x + 7.x, brace-expansion 2.x + 5.x) cannot be pinned
+#   per-major — a single global override silently forces every consumer onto one
+#   version. Gating on findings nobody can action is the same trap as gating on
+#   unfixed CVEs, one bullet up. The residual set and the reason each entry is
+#   declined are recorded on #4878.
+#
+#   protobufjs was listed here as a third two-major case and no longer is
+#   (#4889, 2026-07-30). The override constraint was real but the lever was
+#   misidentified: `protobufjs@8.0.1` came from ten NESTED
+#   `@daytonaio/sdk/**/otlp-transformer@0.217.0` entries, not from our own OTel
+#   pins — `otlp-transformer` dropped protobufjs in 0.218.0 and ours were
+#   already `^0.218.0`, so bumping root OTel would have cleared nothing.
+#   Bumping `@daytonaio/sdk` to `^0.201.0` (its OTel pins move to 0.220.0)
+#   removed the 8.x copy outright, so no per-major override is needed. Only
+#   `protobufjs@7.6.2` remains, via `@grpc/proto-loader` <- `@grpc/grpc-js`;
+#   the prototype-pollution advisories were fixed in 7.2.5, so it is expected
+#   to be clean — confirm against the live findings rather than assuming, and
+#   if 7.6.2 IS flagged it needs a `@grpc/grpc-js` bump, a separate change.
 #
 # ── Where it runs, and why ────────────────────────────────────────────────────
 #

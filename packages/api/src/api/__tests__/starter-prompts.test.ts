@@ -144,6 +144,27 @@ function jsonReq(
   return app.fetch(new Request(url, init));
 }
 
+/**
+ * Asserts the shared `validationHook` envelope (422 + `validation_error` +
+ * per-issue `details`). Request-body validation returns 422 like every other
+ * validation target in the API — the 400 these cases used to return was the
+ * raw @hono/zod-openapi fallback leaking through because this router was
+ * built without `defaultHook` (#4894). The genuine business-logic 400s on
+ * POST /favorites (cap exceeded, unusable text, no workspace) are unchanged.
+ */
+async function expectValidationRejection(res: Response) {
+  expect(res.status).toBe(422);
+  const body = (await res.json()) as {
+    error: string;
+    message: string;
+    details: unknown[];
+  };
+  expect(body.error).toBe("validation_error");
+  expect(body.message).toBe("Invalid request body");
+  expect(Array.isArray(body.details)).toBe(true);
+  expect(body.details.length).toBeGreaterThan(0);
+}
+
 afterAll(() => {
   mocks.cleanup();
   if (ORIGINAL_BETTER_AUTH_SECRET !== undefined) {
@@ -501,19 +522,20 @@ describe("POST /api/v1/starter-prompts/favorites", () => {
     expect(mockCreateFavorite).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when body is missing text", async () => {
+  it("returns 422 when body is missing text", async () => {
     const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {});
 
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
     expect(mockCreateFavorite).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when text is empty string", async () => {
+  it("returns 422 when text is empty string", async () => {
     const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
       text: "",
     });
 
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
+    expect(mockCreateFavorite).not.toHaveBeenCalled();
   });
 
   it("returns 200 and the created favorite on success", async () => {
@@ -633,19 +655,22 @@ describe("PATCH /api/v1/starter-prompts/favorites/:id", () => {
     expect(mockUpdateFavoritePosition).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when body is missing position", async () => {
+  it("returns 422 when body is missing position", async () => {
     const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/fav-1", {});
 
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
+    expect(mockUpdateFavoritePosition).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when position is NaN or Infinity", async () => {
+  it("returns 422 when position is NaN or Infinity", async () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
       const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/fav-1", {
         position: bad,
       });
-      // NaN/Infinity serialize as null in JSON — schema rejects as 400.
-      expect(res.status).toBe(400);
+      // NaN/Infinity serialize as null in JSON — the schema rejects them as a
+      // body-validation failure (422), same as a missing `position`.
+      await expectValidationRejection(res);
+      expect(mockUpdateFavoritePosition).not.toHaveBeenCalled();
     }
   });
 

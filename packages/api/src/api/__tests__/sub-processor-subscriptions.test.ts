@@ -79,6 +79,26 @@ function jsonReq(method: "POST", path: string, body?: unknown, headers: Record<s
   );
 }
 
+/**
+ * Asserts the shared `validationHook` envelope (422 + `validation_error` +
+ * per-issue `details`). Request-body validation returns 422 like every other
+ * validation target in the API — the 400 these cases used to return was the
+ * raw @hono/zod-openapi fallback leaking through because this router was
+ * built without `defaultHook` (#4894).
+ */
+async function expectValidationRejection(res: Response) {
+  expect(res.status).toBe(422);
+  const body = (await res.json()) as {
+    error: string;
+    message: string;
+    details: unknown[];
+  };
+  expect(body.error).toBe("validation_error");
+  expect(body.message).toBe("Invalid request body");
+  expect(Array.isArray(body.details)).toBe(true);
+  expect(body.details.length).toBeGreaterThan(0);
+}
+
 afterAll(() => {
   mocks.cleanup();
   if (ORIGINAL_BETTER_AUTH_SECRET !== undefined) {
@@ -136,57 +156,57 @@ describe("POST /api/v1/sub-processor-subscriptions", () => {
     expect(arg.createdByLabel).toBe("user@example.com");
   });
 
-  it("rejects malformed URLs with 400", async () => {
+  it("rejects malformed URLs with 422", async () => {
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "not-a-url",
       token: "shared-secret-at-least-16",
     });
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 
-  it("rejects http:// URLs with 400 (SSRF guard requires https)", async () => {
+  it("rejects http:// URLs with 422 (SSRF guard requires https)", async () => {
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "http://hooks.example.com/sp",
       token: "shared-secret-at-least-16",
     });
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 
-  it("rejects loopback URLs with 400 (SSRF guard)", async () => {
+  it("rejects loopback URLs with 422 (SSRF guard)", async () => {
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "https://127.0.0.1/sp",
       token: "shared-secret-at-least-16",
     });
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 
-  it("rejects RFC1918 URLs with 400 (SSRF guard)", async () => {
+  it("rejects RFC1918 URLs with 422 (SSRF guard)", async () => {
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "https://10.0.0.5/sp",
       token: "shared-secret-at-least-16",
     });
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 
-  it("rejects 169.254 metadata-service URLs with 400 (SSRF guard)", async () => {
+  it("rejects 169.254 metadata-service URLs with 422 (SSRF guard)", async () => {
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
       token: "shared-secret-at-least-16",
     });
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 
-  it("rejects tokens shorter than 16 chars with 400", async () => {
+  it("rejects tokens shorter than 16 chars with 422", async () => {
     const res = await jsonReq("POST", "/api/v1/sub-processor-subscriptions", {
       url: "https://hooks.example.com/sp",
       token: "short",
     });
-    expect(res.status).toBe(400);
+    await expectValidationRejection(res);
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 

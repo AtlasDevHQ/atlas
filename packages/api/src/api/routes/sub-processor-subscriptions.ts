@@ -32,6 +32,7 @@ import {
   ErrorSchema,
 } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import { validationHook } from "./validation-hook";
 
 const log = createLogger("sub-processor-subscriptions");
 
@@ -79,16 +80,19 @@ const createSubscriptionRoute = createRoute({
       description: "Subscription registered",
       content: { "application/json": { schema: CreateSubscriptionResponseSchema } },
     },
-    400: {
-      description: "Invalid input",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
     401: {
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     409: {
       description: "URL is already registered",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description:
+        "Request body failed validation — unsafe URL (loopback / RFC1918 / " +
+        "link-local / metadata-service / non-https), malformed URL, or a " +
+        "token shorter than 16 characters",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
@@ -102,7 +106,7 @@ const createSubscriptionRoute = createRoute({
   },
 });
 
-const router = new OpenAPIHono<AuthEnv>();
+const router = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 
 router.use("/*", standardAuth);
 router.use("/*", requestContext);

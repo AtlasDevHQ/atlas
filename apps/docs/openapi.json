@@ -12704,7 +12704,7 @@
             }
           },
           "400": {
-            "description": "Invalid input or cap exceeded",
+            "description": "Favorite cap exceeded, unusable text, or no active workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -12741,6 +12741,31 @@
           },
           "409": {
             "description": "Prompt already pinned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request body failed validation (missing or empty `text`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -12983,31 +13008,6 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid position value",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
           "401": {
             "description": "Authentication required",
             "content": {
@@ -13046,6 +13046,31 @@
           },
           "404": {
             "description": "Favorite not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request body failed validation (missing or non-finite `position`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13148,8 +13173,19 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid input",
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "URL is already registered",
             "content": {
               "application/json": {
                 "schema": {
@@ -13173,19 +13209,8 @@
               }
             }
           },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "URL is already registered",
+          "422": {
+            "description": "Request body failed validation — unsafe URL (loopback / RFC1918 / link-local / metadata-service / non-https), malformed URL, or a token shorter than 16 characters",
             "content": {
               "application/json": {
                 "schema": {

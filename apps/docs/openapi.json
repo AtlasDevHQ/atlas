@@ -24938,6 +24938,38 @@
                               "detail"
                             ]
                           },
+                          "decay": {
+                            "type": "object",
+                            "properties": {
+                              "level": {
+                                "type": "string",
+                                "enum": [
+                                  "fresh",
+                                  "aging",
+                                  "stale",
+                                  "unknown"
+                                ]
+                              },
+                              "ageDays": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ],
+                                "minimum": 0
+                              },
+                              "lastObservedAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "level",
+                              "ageDays",
+                              "lastObservedAt"
+                            ]
+                          },
                           "validFrom": {
                             "type": [
                               "string",
@@ -24984,6 +25016,7 @@
                           "episode",
                           "tensions",
                           "promotionBlock",
+                          "decay",
                           "validFrom",
                           "validTo",
                           "extractedAt",

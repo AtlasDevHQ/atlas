@@ -18,6 +18,10 @@ name: Canonical Eval
 #   - Release tags (v*.*.*): blocking. A canonical-question regression
 #     should never ship in a tagged release — the gate script exits 1 on
 #     any non-PR event.
+#   - Scope note: only the EVAL steps are shielded on PRs. Infra steps
+#     (install, types build, DB provision) fail the job red — deliberate:
+#     these checks are non-required, and /deps-update already documents the
+#     playbook for infra flakes here (visible red → re-run the job).
 #
 # Modes:
 #   - canonical-eval (existing): typed semantic-layer reads + direct SQL

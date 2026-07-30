@@ -79,12 +79,25 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "pull_request" ]; then
             RANGE="$BASE_SHA...$HEAD_SHA"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            # The WHOLE push, not HEAD~1: a 3-commit push whose tip commit is
+            # docs-only must still gate on the first two. A force-push makes
+            # BEFORE_SHA unreachable — git diff then fails and the fail-safe
+            # below runs the job.
+            RANGE="$BEFORE_SHA...HEAD"
           else
-            RANGE="HEAD~1...HEAD"
+            # workflow_dispatch has no diff scope — it exists to re-create
+            # REQUIRED check runs when GitHub drops event deliveries (#3358),
+            # so it must never skip a gate. New-branch pushes (BEFORE_SHA all
+            # zeros) have no base either. Run unconditionally.
+            echo "ee-stub=true" >> "$GITHUB_OUTPUT"
+            echo "No reliable diff range for $EVENT_NAME — running ee-stub-build"
+            exit 0
           fi
 
           if ! CHANGED=$(git diff --name-only "$RANGE" 2>&1); then

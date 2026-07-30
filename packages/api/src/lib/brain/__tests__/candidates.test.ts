@@ -408,7 +408,10 @@ describe("loadFactCandidates — contradiction hints", () => {
     await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
 
     const pageCall = db.calls.find((c) => c.sql.includes("COUNT(*) OVER ()"))!;
-    expect(pageCall.sql).not.toContain("JOIN");
+    // The page statement resolves no counterpart. Pinned on `to_fact_id`
+    // rather than a blanket no-JOIN: #4914's decay anchor legitimately joins
+    // `brain_episodes` for a timestamp inside the page query, so "no JOIN"
+    // stopped being the invariant — "no tension-edge traversal" is.
     expect(pageCall.sql).not.toContain("to_fact_id");
     const counterpartCall = db.calls.find((c) => c.sql.includes("f.id = ANY("))!;
     // The FRESH fact predicate, with the reader's own bound tokens — not the

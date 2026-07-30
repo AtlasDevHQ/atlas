@@ -410,12 +410,11 @@ export function buildEpisodeQuery(options: {
  * A `brain_facts` row off `pg`.
  *
  * `subject` / `predicate` / `object` are typed `string` and read without
- * narrowing — the ONE place in this module that trusts a column, justified by
- * `text NOT NULL` in migration 0180. Stated because the file is otherwise
- * uniformly `unknown`-in, and because `loadTensions` reads the same three
- * columns off the same table and narrows them: that asymmetry existed by
- * accident and is now deliberate on both sides, with the tension path narrowing
- * only because its rows arrive through a differently-shaped projection.
+ * narrowing — trusting a column is the exception in this otherwise uniformly
+ * `unknown`-in file, justified by `text NOT NULL` in migration 0180. The
+ * tension path makes the identical exception through `TensionCounterpartRow`
+ * (`lib/brain/tensions.ts`), so the two row shapes agree about which columns
+ * are trusted and why.
  */
 interface FactRow {
   readonly id: string;
@@ -581,7 +580,13 @@ async function loadTensions(
       ),
     }));
     if (cluster.withheld.length > 0) {
-      list.push({ visible: false, withheldCount: cluster.withheld.length });
+      // DISTINCT rivals, not edge-ends: `reconcile.ts`'s `WHERE NOT EXISTS`
+      // dedupes one direction only, so a raced reciprocal pair (A→B and B→A)
+      // is representable and would otherwise report one hidden rival as two.
+      // The count is the whole signal this arm carries; overstating it is the
+      // one way it can lie.
+      const withheldRivals = new Set(cluster.withheld.map((w) => w.factId)).size;
+      list.push({ visible: false, withheldCount: withheldRivals });
     }
     views.set(owner, list);
   }
@@ -759,9 +764,9 @@ export async function searchBrainCore(
   // Same treatment the episode rows get below, and for the same reason: `id` is
   // the PK cast to text in the SELECT, so a missing one is query drift rather
   // than tenant data. It matters MORE on this path — a non-string `id` would
-  // reach `loadTensions`' `$2::uuid[]` and fail the whole read with the generic
-  // message, and would collapse every malformed row onto one `fact:undefined`
-  // fusion key.
+  // reach `loadTensionClusters`' `$2::uuid[]` and fail the whole read with the
+  // generic message, and would collapse every malformed row onto one
+  // `fact:undefined` fusion key.
   const facts = (factRows ?? []).filter((row) => {
     if (typeof row.id === "string" && row.id !== "") return true;
     log.warn(

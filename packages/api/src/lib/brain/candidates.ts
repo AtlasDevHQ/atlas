@@ -235,8 +235,9 @@ function isParsableTimestamp(value: unknown): boolean {
  * REQUIRED, with no default, and that is the safety property. A defaulted
  * parameter would make every future call site disclose by omission — including
  * one added to a surface nobody thought of — so the compiler is what forces a
- * new read path to answer the question. Three call sites today: the review
- * queue, its tension counterparts, and `searchBrain`.
+ * new read path to answer the question. Four call sites today: the review
+ * queue and `searchBrain`, each for its own rows and for its tension
+ * counterparts (#4913).
  *
  * Withholding never touches `payloadComplete`, which is computed over the
  * stored payload and reports data integrity, not entitlement. Both appear on

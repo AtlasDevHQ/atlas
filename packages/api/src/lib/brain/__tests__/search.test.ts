@@ -867,6 +867,71 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
       expand: false,
     });
     expect(res.tensionsTruncated).toBe(true);
+    // And the loader asked for cap + 1 edges — the overflow row is how
+    // truncation is DETECTED, so a bind regressed to `cap` would silently
+    // drop the tail edge with the flag never set. The literal reader ignores
+    // LIMIT, so only the bound parameter can pin this.
+    const edgeCall = db.calls.find((c) => c.sql.includes(SQL.tensionEdges))!;
+    expect(edgeCall.params[2]).toBe(TENSION_FANOUT_CAP + 1);
+  });
+
+  it("never converts truncated-away edges into withheld rivals", async () => {
+    // The two degradations must stay distinct: an edge lost to the cap is
+    // reported ONLY through `tensionsTruncated`, while `withheldCount` means
+    // "this rival exists and ACL hides it from you". Conflating them would be
+    // fabricated ACL withholding. Every surviving counterpart here is visible,
+    // so no withheld arm may appear even though the cap bit.
+    const edges = Array.from({ length: TENSION_FANOUT_CAP + 1 }, (_, i) => ({
+      from_id: "fact-1",
+      // Padded so the mock's array order is also lexicographic — the loader
+      // slices the first `cap` edges before pairing.
+      to_id: `rival-${String(i).padStart(4, "0")}`,
+    }));
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: edges },
+      {
+        match: SQL.tensionCounterparts,
+        rows: edges.map((e) => rivalRow(e.to_id)),
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(res.tensionsTruncated).toBe(true);
+    expect(fact.tensions).toHaveLength(TENSION_FANOUT_CAP);
+    expect(fact.tensions.every((t) => t.visible === true)).toBe(true);
+  });
+
+  it("counts DISTINCT withheld rivals, not edge-ends, under a raced reciprocal pair", async () => {
+    // `reconcile.ts`'s `WHERE NOT EXISTS` dedupes one direction only, so A→B
+    // and B→A can coexist after a race. One hidden rival must not report as
+    // two — the count is the whole signal the withheld arm carries.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "secret-rival" },
+          { from_id: "secret-rival", to_id: "fact-1" },
+        ],
+      },
+      { match: SQL.tensionCounterparts, rows: [] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(fact.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
   });
 
   it("skips the edge lookup entirely when no facts matched", async () => {

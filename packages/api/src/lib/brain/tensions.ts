@@ -44,9 +44,10 @@
  *
  * The counterpart SELECT deliberately reads NO episode content: provenance is
  * the fact row's own `jsonb` payload, and the attribution triple inside it is
- * re-decided per counterpart row (`attributionDecision`) — a counterpart is a
- * fact in its own right, so inheriting the owner's decision would be a guess
- * about a different row's grant.
+ * re-decided per counterpart row by each surface's projection
+ * (`attributionDecision`, fed the `pre_widening_visible_to` this SELECT
+ * carries) — a counterpart is a fact in its own right, so inheriting the
+ * owner's decision would be a guess about a different row's grant.
  */
 
 import type { createLogger } from "@atlas/api/lib/logger";
@@ -69,10 +70,10 @@ type BrainTensionLogger = Pick<ReturnType<typeof createLogger>, "warn">;
  * A counterpart row off `pg`.
  *
  * `subject` / `predicate` / `object` are trusted `string` (0180 `text NOT
- * NULL`) — the same one exception both surfaces already make for the owner
- * rows. Everything else is `unknown` and narrowed by the surface's projection,
- * because the two surfaces already own the (logged) drift fallbacks for
- * status, cardinality, and timestamps.
+ * NULL`), as are the two `::text`-cast uuid columns — the same exception both
+ * surfaces already make for the owner rows. Everything else is `unknown` and
+ * narrowed by the surface's projection, because the two surfaces already own
+ * the (logged) drift fallbacks for status, corroboration, and timestamps.
  */
 export interface TensionCounterpartRow {
   readonly id: string;
@@ -242,7 +243,16 @@ export async function loadTensionClusters(
   const pairs: TensionPair[] = [];
   for (const edge of usable) {
     const { from_id: from, to_id: to } = edge;
-    if (!from || !to) continue;
+    if (!from || !to) {
+      // Unreachable — both columns are NOT NULL uuids — but a hit would make a
+      // conflict silently read as "nothing contradicts this", so it is logged
+      // rather than skipped bare.
+      log.warn(
+        { workspaceId: ctx.workspaceId, requestId, surface },
+        `${SURFACE_LABEL[surface]}: tension edge row is missing an endpoint — the edge query shape changed; a conflict hint was dropped`,
+      );
+      continue;
+    }
     // An edge with BOTH ends on the page yields two entries — each fact names
     // the other. Symmetric on purpose: neither end is the authority.
     if (onPage.has(from)) pairs.push({ owner: from, other: to, direction: "to" });
@@ -279,7 +289,19 @@ export async function loadTensionClusters(
   );
   const visible = new Map<string, TensionCounterpartRow>();
   for (const raw of result.rows as readonly TensionCounterpartRow[]) {
-    if (typeof raw.id === "string" && raw.id !== "") visible.set(raw.id, raw);
+    if (typeof raw.id === "string" && raw.id !== "") {
+      visible.set(raw.id, raw);
+    } else {
+      // This row came back THROUGH the ACL predicate, so dropping it here
+      // reclassifies an entitled rival as withheld — fabricated ACL
+      // withholding, the exact failure the deny-all throw above refuses.
+      // Unreachable from the database (`f.id::text` of a NOT NULL uuid), so a
+      // hit is query drift, and it must not be silent.
+      log.warn(
+        { workspaceId: ctx.workspaceId, requestId, surface },
+        `${SURFACE_LABEL[surface]}: counterpart row has no usable id — the counterpart query shape changed; the rival will be misreported as withheld`,
+      );
+    }
   }
 
   const building = new Map<string, { counterparts: TensionCounterpart[]; withheld: TensionWithheld[] }>();

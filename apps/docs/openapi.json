@@ -12772,18 +12772,23 @@
                   "type": "object",
                   "properties": {
                     "error": {
-                      "type": "string"
+                      "type": "string",
+                      "enum": [
+                        "validation_error"
+                      ]
                     },
                     "message": {
                       "type": "string"
                     },
-                    "requestId": {
-                      "type": "string"
+                    "details": {
+                      "type": "array",
+                      "items": {}
                     }
                   },
                   "required": [
                     "error",
-                    "message"
+                    "message",
+                    "details"
                   ]
                 }
               }
@@ -13077,18 +13082,23 @@
                   "type": "object",
                   "properties": {
                     "error": {
-                      "type": "string"
+                      "type": "string",
+                      "enum": [
+                        "validation_error"
+                      ]
                     },
                     "message": {
                       "type": "string"
                     },
-                    "requestId": {
-                      "type": "string"
+                    "details": {
+                      "type": "array",
+                      "items": {}
                     }
                   },
                   "required": [
                     "error",
-                    "message"
+                    "message",
+                    "details"
                   ]
                 }
               }
@@ -13217,18 +13227,23 @@
                   "type": "object",
                   "properties": {
                     "error": {
-                      "type": "string"
+                      "type": "string",
+                      "enum": [
+                        "validation_error"
+                      ]
                     },
                     "message": {
                       "type": "string"
                     },
-                    "requestId": {
-                      "type": "string"
+                    "details": {
+                      "type": "array",
+                      "items": {}
                     }
                   },
                   "required": [
                     "error",
-                    "message"
+                    "message",
+                    "details"
                   ]
                 }
               }

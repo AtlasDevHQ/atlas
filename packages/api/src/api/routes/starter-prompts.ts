@@ -36,7 +36,12 @@ import {
   FAVORITE_TEXT_MAX_LENGTH,
   type FavoritePromptRow,
 } from "@atlas/api/lib/starter-prompts/favorite-store";
-import { AuthErrorSchema, ErrorSchema, parsePagination } from "./shared-schemas";
+import {
+  AuthErrorSchema,
+  ErrorSchema,
+  ValidationErrorSchema,
+  parsePagination,
+} from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import { validationHook } from "./validation-hook";
 
@@ -159,7 +164,7 @@ const createFavoriteRoute = createRoute({
     },
     422: {
       description: "Request body failed validation (missing or empty `text`)",
-      content: { "application/json": { schema: ErrorSchema } },
+      content: { "application/json": { schema: ValidationErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -232,7 +237,7 @@ const patchFavoriteRoute = createRoute({
     },
     422: {
       description: "Request body failed validation (missing or non-finite `position`)",
-      content: { "application/json": { schema: ErrorSchema } },
+      content: { "application/json": { schema: ValidationErrorSchema } },
     },
     500: {
       description: "Internal server error",

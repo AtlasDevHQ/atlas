@@ -12,6 +12,20 @@ export const ErrorSchema = z.object({
   requestId: z.string().optional(),
 });
 
+/**
+ * The 422 body that `validationHook` actually returns — `error` is always the
+ * literal `"validation_error"`, `details` carries one entry per Zod issue, and
+ * there is deliberately no `requestId` (the request never reached a handler, so
+ * there is nothing to correlate). Declare a route's 422 with this rather than
+ * `ErrorSchema`, which both omits `details` and advertises a `requestId` the
+ * hook does not send.
+ */
+export const ValidationErrorSchema = z.object({
+  error: z.literal("validation_error"),
+  message: z.string(),
+  details: z.array(z.unknown()),
+});
+
 // ---------------------------------------------------------------------------
 // Role validation
 // ---------------------------------------------------------------------------

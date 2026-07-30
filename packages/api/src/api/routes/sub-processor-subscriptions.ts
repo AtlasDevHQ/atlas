@@ -30,6 +30,7 @@ import { createSubscription } from "@atlas/api/lib/sub-processor-publisher";
 import {
   AuthErrorSchema,
   ErrorSchema,
+  ValidationErrorSchema,
 } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import { validationHook } from "./validation-hook";
@@ -93,7 +94,7 @@ const createSubscriptionRoute = createRoute({
         "Request body failed validation — unsafe URL (loopback / RFC1918 / " +
         "link-local / metadata-service / non-https), malformed URL, or a " +
         "token shorter than 16 characters",
-      content: { "application/json": { schema: ErrorSchema } },
+      content: { "application/json": { schema: ValidationErrorSchema } },
     },
     500: {
       description: "Internal server error",

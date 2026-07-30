@@ -600,9 +600,10 @@ export type BrainEpisodeExtractionState = "pending" | "complete";
  *
  * A COUNT rather than one `visible: false` row per rival, and that asymmetry
  * with {@link BrainFactTensionWithheld} is deliberate: the review surface hands
- * a human per-rival opaque handles they can chase through the audit override;
- * `searchBrain` feeds an LLM context window, where N identical "you cannot see
- * this" rows spend tokens without adding information. The COUNT is the whole
+ * a human per-rival opaque handles worth keeping distinct (an id names a row a
+ * differently-entitled reviewer can resolve); `searchBrain` feeds an LLM
+ * context window, where N identical "you cannot see this" rows spend tokens
+ * without adding information. The COUNT is the whole
  * signal — "two rivals exist that you cannot see" is exactly what should stop
  * an agent asserting the claim as settled, and an omitted conflict reads as
  * "nothing contradicts this" (the M1 rule).

@@ -653,8 +653,9 @@ function candidateWhere(
 /**
  * One page of reviewable candidates, fully formed.
  *
- * Runs four statements on a populated page regardless of page size — the facts,
- * their episodes, the tension edges, the tension counterparts — and at most two
+ * Runs at most four statements on a populated page regardless of page size —
+ * the facts, their episodes, the tension edges, the tension counterparts
+ * (skipped when no edges matched) — and at most two
  * on an empty one (the facts, plus a total re-count only when the page could be
  * past the end). Nothing is fetched per row: ADR-0036 names review-gate
  * throughput a first-class concern, and a per-row round trip is what makes a

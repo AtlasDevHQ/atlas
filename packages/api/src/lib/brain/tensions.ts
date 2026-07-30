@@ -72,8 +72,9 @@ type BrainTensionLogger = Pick<ReturnType<typeof createLogger>, "warn">;
  * `subject` / `predicate` / `object` are trusted `string` (0180 `text NOT
  * NULL`), as are the two `::text`-cast uuid columns — the same exception both
  * surfaces already make for the owner rows. Everything else is `unknown` and
- * narrowed by the surface's projection, because the two surfaces already own
- * the (logged) drift fallbacks for status, corroboration, and timestamps.
+ * narrowed by the surface's projection, because the surfaces already own the
+ * drift fallbacks for status, corroboration, and timestamps (logged or
+ * deliberately silent per each helper's own doc).
  */
 export interface TensionCounterpartRow {
   readonly id: string;
@@ -244,17 +245,27 @@ export async function loadTensionClusters(
   for (const edge of usable) {
     const { from_id: from, to_id: to } = edge;
     if (!from || !to) {
-      // Unreachable — both columns are NOT NULL uuids — but a hit would make a
-      // conflict silently read as "nothing contradicts this", so it is logged
-      // rather than skipped bare.
+      // Unreachable — the endpoint columns are nullable by the four-endpoint
+      // design, but `chk_brain_edges_endpoint_kinds` forces both FACT
+      // endpoints non-null for every `in-tension-with` row this query can
+      // return. A hit would make a conflict silently read as "nothing
+      // contradicts this", so it is logged rather than skipped bare — with the
+      // surviving endpoint, so an operator can find the row.
       log.warn(
-        { workspaceId: ctx.workspaceId, requestId, surface },
+        { workspaceId: ctx.workspaceId, requestId, surface, edge: { from, to } },
         `${SURFACE_LABEL[surface]}: tension edge row is missing an endpoint — the edge query shape changed; a conflict hint was dropped`,
       );
       continue;
     }
     // An edge with BOTH ends on the page yields two entries — each fact names
-    // the other. Symmetric on purpose: neither end is the authority.
+    // the other. Symmetric on purpose: neither end is the authority. A raced
+    // reciprocal PAIR (A→B and B→A — `reconcile.ts` dedupes one direction
+    // only) likewise yields one pair per edge, and that is deliberate for
+    // visible rivals: each entry carries its `edgeDirection`, so listing the
+    // rival once per direction is graph-faithful, not double-counting. Only
+    // the search surface's direction-less withheld COUNT collapses to
+    // distinct rivals (`search.ts`), because there the number is the whole
+    // signal.
     if (onPage.has(from)) pairs.push({ owner: from, other: to, direction: "to" });
     if (onPage.has(to)) pairs.push({ owner: to, other: from, direction: "from" });
   }
@@ -296,9 +307,17 @@ export async function loadTensionClusters(
       // reclassifies an entitled rival as withheld — fabricated ACL
       // withholding, the exact failure the deny-all throw above refuses.
       // Unreachable from the database (`f.id::text` of a NOT NULL uuid), so a
-      // hit is query drift, and it must not be silent.
+      // hit is query drift, and it must not be silent. `idType` and the batch
+      // size are what tell an operator whether one row drifted or the whole
+      // statement did.
       log.warn(
-        { workspaceId: ctx.workspaceId, requestId, surface },
+        {
+          workspaceId: ctx.workspaceId,
+          requestId,
+          surface,
+          idType: typeof (raw as { id?: unknown }).id,
+          batch: counterpartIds.length,
+        },
         `${SURFACE_LABEL[surface]}: counterpart row has no usable id — the counterpart query shape changed; the rival will be misreported as withheld`,
       );
     }

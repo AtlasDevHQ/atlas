@@ -449,6 +449,31 @@ describe("loadFactCandidates — contradiction hints", () => {
       (page.candidates[0]?.tensions ?? []).map((t) => `${t.factId}:${t.visible}`),
     ).toEqual(["fact-0:false", "fact-2:true", "fact-9:false"]);
   });
+
+  it("lists a reciprocal rival once per direction — the graph, not a double-count", async () => {
+    // `reconcile.ts`'s `WHERE NOT EXISTS` dedupes one direction only, so a
+    // raced reciprocal pair (A→B and B→A) is representable. Each review entry
+    // carries its `edgeDirection`, so one entry per edge is a faithful report
+    // of the graph — pinned so the search surface's direction-less
+    // withheld-count dedupe is never "helpfully" copied here.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      {
+        match: "edge_type = 'in-tension-with'",
+        rows: [
+          { from_id: "fact-1", to_id: "fact-2" },
+          { from_id: "fact-2", to_id: "fact-1" },
+        ],
+      },
+      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    expect(
+      (page.candidates[0]?.tensions ?? []).map((t) => `${t.factId}:${t.edgeDirection}`),
+    ).toEqual(["fact-2:to", "fact-2:from"]);
+  });
 });
 
 describe("loadFactCandidates — honest totals and caps", () => {

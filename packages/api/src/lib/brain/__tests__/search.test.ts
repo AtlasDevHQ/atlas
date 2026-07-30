@@ -934,6 +934,35 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     expect(fact.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
   });
 
+  it("lists a VISIBLE reciprocal rival once per direction — graph-faithful, not double-counted", async () => {
+    // The counterpart to the dedupe above, pinned so neither semantics can
+    // silently drift into the other: a visible entry carries `edgeDirection`,
+    // so one entry per edge is a faithful report of the graph; only the
+    // direction-less withheld COUNT collapses to distinct rivals.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "rival-a" },
+          { from_id: "rival-a", to_id: "fact-1" },
+        ],
+      },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a")] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(
+      fact.tensions.map((t) => (t.visible ? `${t.factId}:${t.edgeDirection}` : "withheld")),
+    ).toEqual(["rival-a:to", "rival-a:from"]);
+  });
+
   it("skips the edge lookup entirely when no facts matched", async () => {
     const db = reader([{ match: SQL.factPage, rows: [] }]);
     await searchBrainCore(db, {

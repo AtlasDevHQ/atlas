@@ -432,9 +432,8 @@ function WithheldFactsNotice({
  * Like {@link WithheldFactsNotice} it is a statement of scope, not a warning:
  * the behaviour is correct and deliberate — a new value for a single-valued
  * predicate replaces the old one, atomically with the promotion. A COUNT and
- * never a list, for the same reason as the withheld notice one block up: the
- * count is workspace-wide and this modal has no reader-scoped brain fetch of
- * its own. The per-pair "X replaces Y" disclosure lives on
+ * never a list: the preview endpoint carries no reader-scoped supersession
+ * pairs — the per-pair "X replaces Y" disclosure lives on
  * `/admin/brain-facts`, which the copy points at.
  */
 function WillSupersedeNotice({ count }: { count: number }) {

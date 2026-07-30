@@ -924,7 +924,7 @@ export function promoteBrainFacts(
         if (unreadableStampRows > 0) {
           // A FAILURE, not a skip, and the asymmetry with every other drift
           // path in this adapter is deliberate: an unreadable RETURNING row
-          // means the stamp COMMITTED for a fact this code can no longer name
+          // means the stamp APPLIED to a fact this code can no longer name
           // — proceeding would retire a belief with no `supersedes` edge and
           // no audit record, the exact silent supersession #4912 forbids.
           // Failing here rolls the whole transaction (and the stamp) back.
@@ -959,12 +959,30 @@ export function promoteBrainFacts(
           // Edges only for pairs the stamp CONFIRMED: a `supersedes` edge whose
           // target is still current would be an arbitration record of an
           // arbitration that never happened.
-          yield* Effect.tryPromise({
+          const edgeResult = yield* Effect.tryPromise({
             try: () =>
               tx.query(INSERT_SUPERSEDES_EDGES_SQL, [orgId, JSON.stringify(stampedPairs)]),
             catch: (cause) =>
               new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
           });
+          const edgesInserted = edgeResult.rowCount ?? edgeResult.rows?.length ?? 0;
+          if (edgesInserted < stampedPairs.length) {
+            // Usually legitimate — `WHERE NOT EXISTS` skips an edge a region
+            // import already carried — so this is not a failure. It is logged
+            // because an exact-count check is genuinely ambiguous here, and
+            // without this line an insert drift that under-writes edges would
+            // leave stamps with no graph record and no operator trace. The
+            // durable audit record is unaffected: `superseded` below is built
+            // from the stamped pairs, not from this count.
+            log.info(
+              {
+                workspaceId: orgId,
+                pairs: stampedPairs.length,
+                edgesInserted,
+              },
+              "brain publish: fewer supersedes edges inserted than pairs stamped — pre-existing edges (a region import), or the edge statement drifted",
+            );
+          }
           const byNewFact = new Map<string, string[]>();
           for (const pair of stampedPairs) {
             const list = byNewFact.get(pair.newId);

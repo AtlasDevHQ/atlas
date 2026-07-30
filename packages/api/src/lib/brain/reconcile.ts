@@ -376,9 +376,10 @@ const NO_BLOCKS: Readonly<Record<ReconcileBlockReason, number>> = Object.freeze(
 // Reading it is fine and required (two SELECTs below filter on it, and the
 // guard's own fixtures pass a SELECT doing exactly that);
 // `reconcile.test.ts` pins the write half.
-// `scripts/check-brain-fact-promotion.sh` refuses any statement that touches
-// `brain_facts` and mentions `status` — including in a WHERE clause — and
-// that over-breadth is deliberate. The fact insert omits `status` on purpose:
+// `scripts/check-brain-fact-promotion.sh` refuses any UPDATE-, INSERT-, or
+// upsert-shaped statement that touches `brain_facts` and mentions `status` —
+// including a mention only in the WHERE clause — and that over-breadth is
+// deliberate. The fact insert omits `status` on purpose:
 // migration 0180 defaults it to `draft`, and that default IS the review gate
 // applying itself (#4769). Asking for `draft` explicitly would be the same
 // value written by a second, ungated writer.

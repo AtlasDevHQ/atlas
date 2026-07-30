@@ -610,8 +610,10 @@ export interface BrainFactWillSupersede {
    */
   readonly withheld: number;
   /**
-   * True when `pairs` is clipped at the response cap. The clipped remainder is
-   * NOT folded into {@link withheld} — that number means "hidden from you by
+   * True when `pairs` is clipped at the response cap — or when the producer
+   * dropped a drifted row, which is the same statement to the reader: you were
+   * entitled to more than is listed. The missing remainder is NOT folded into
+   * {@link withheld} in either case — that number means "hidden from you by
    * ACL", and a truncation dressed as an ACL boundary would send the admin
    * looking for private channels that do not exist.
    */

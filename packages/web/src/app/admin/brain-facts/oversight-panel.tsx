@@ -146,9 +146,14 @@ export function OversightPanel() {
         )
       )}
 
-      {data.willSupersede && data.willSupersede.total > 0 && (
-        <WillSupersedeNotice willSupersede={data.willSupersede} />
-      )}
+      {/* `pairs.length > 0` is ORed in: under the two-statement race the API
+          documents, `total` can read 0 while pairs exist — and pairs in hand
+          are proof of supersessions regardless of what the count said. Gating
+          on `total` alone would render NO disclosure in exactly that window. */}
+      {data.willSupersede &&
+        (data.willSupersede.total > 0 || data.willSupersede.pairs.length > 0) && (
+          <WillSupersedeNotice willSupersede={data.willSupersede} />
+        )}
 
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
@@ -256,15 +261,19 @@ export function OversightPanel() {
  * default read and nobody can notice a fact they can no longer see.
  *
  * The pairs render both claims verbatim — they are reader-ACL-gated by the
- * API on BOTH sides, so everything here is a claim this reader's own queue
- * already shows them. Supersessions the reader may not see arrive only as
+ * API on BOTH sides, so everything here is a claim this reader's own ACL
+ * already entitles them to read. Supersessions the reader may not see arrive only as
  * `withheld`, a count; there is nothing in the payload to leak, same as the
  * withheld buckets.
  */
 function WillSupersedeNotice({ willSupersede }: { willSupersede: BrainFactWillSupersede }) {
-  // `total`, never `pairs.length + withheld` — the pairs are capped, and the
-  // headline must not understate the moment truncation bites.
-  const { total, pairs, withheld, truncated } = willSupersede;
+  // `total` leads, never `pairs.length + withheld` — the pairs are capped, and
+  // the headline must not understate the moment truncation bites. The
+  // `Math.max` floor covers the opposite, racier corner: pairs in hand with a
+  // stale 0 total (the API's two-statement race) must still headline as at
+  // least what is visibly listed below.
+  const { pairs, withheld, truncated } = willSupersede;
+  const total = Math.max(willSupersede.total, pairs.length + withheld);
   return (
     <Alert role="alert">
       <History className="size-4" aria-hidden />

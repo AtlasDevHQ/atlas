@@ -25,8 +25,9 @@
  * `predicate`, `object`, `provenance`, `source_episode_id`, or anything off
  * `brain_episodes`. There is exactly ONE statement in this module that selects
  * claim content — `willSupersedePairsSql` (#4912) — and it is reader-scoped on
- * both of its aliases, so it can only show a reader claims their own queue
- * already shows them; see its header for why that does not breach this rule.
+ * both of its aliases, so it can only show a reader claims their own ACL
+ * already entitles them to read; see its header for why that does not breach
+ * this rule.
  *
  * From the UNSCOPED aggregates, TWO non-numeric values reach the wire, and an
  * auditor must check both: `label`, only when {@link classifyToken} rules the
@@ -82,6 +83,7 @@ import {
 } from "@atlas/api/lib/brain/candidates";
 import { parseChatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import {
+  brainFactCurrentClause,
   supersedingDraftPredicate,
   supersessionCollisionJoin,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
@@ -583,7 +585,7 @@ export async function loadFactOversight(
         WHERE ${acl.sql}
           AND f.status = 'draft'
           AND f.invalidated_at IS NULL
-          AND (f.valid_to IS NULL OR f.valid_to > now())`,
+          AND ${brainFactCurrentClause("f")}`,
       [...acl.params],
     ),
     loadConfiguredChannels(db, workspaceId, requestId),
@@ -784,7 +786,8 @@ async function countDistinctTokens(
 
 /** Most supersession pairs one response enumerates. A payload bound, like
  * {@link OVERSIGHT_BUCKET_MAX} — overrun is reported (`truncated`), never
- * silent, and never laundered into `withheld`, which means something else. */
+ * silent, and never silently laundered into `withheld`, which means
+ * something else. */
 export const WILL_SUPERSEDE_PAIR_MAX = 100;
 
 /**
@@ -819,9 +822,9 @@ export const WILL_SUPERSEDE_TOTAL_SQL = `SELECT COUNT(*)::int AS will_supersede_
  * This is the one statement under `lib/brain/oversight.ts` that selects claim
  * content, and the module rule ("a number, never content") survives it intact:
  * that rule governs the UNSCOPED aggregates, and this projection is
- * reader-scoped on both aliases — a pair appears only when the reader is
- * entitled to read both rows at `/admin/brain-facts`. Everything the ACL
- * withholds travels as the count above. Requiring BOTH sides (not just the
+ * reader-scoped on both aliases — a pair appears only when the reader's own
+ * fail-closed predicate admits BOTH rows. Everything the ACL withholds
+ * travels as the count above. Requiring BOTH sides (not just the
  * published one) is deliberate: "something you cannot see will replace X" and
  * "Y will replace something you cannot see" each disclose half a claim's
  * history to a reader the grant excluded from the other half.
@@ -950,11 +953,19 @@ export async function loadSupersessionPreview(
       continue;
     }
     // The window rides every row; reading it off each kept row rather than only
-    // the first means one drifted row costs the breakdown one pair, not the
-    // whole scoped count. A row whose window will not parse is COUNTED — the
+    // the first means one drifted window costs nothing — any other kept row's
+    // window recovers the scoped count, and only when every window drifts do
+    // the floors below take over. A row whose window will not parse is COUNTED — the
     // floor below is what keeps that drift from silently relabelling clipped
-    // rows as ACL-withheld.
-    const windowed = typeof r.scoped_total === "number" ? r.scoped_total : Number(r.scoped_total);
+    // rows as ACL-withheld. `null` is mapped to NaN explicitly: `Number(null)`
+    // is a finite 0, which would skip both the max() and the drift counter —
+    // the one shape of window drift that would otherwise go unlogged.
+    const windowed =
+      typeof r.scoped_total === "number"
+        ? r.scoped_total
+        : r.scoped_total == null
+          ? Number.NaN
+          : Number(r.scoped_total);
     if (Number.isFinite(windowed) && windowed > scopedTotal) scopedTotal = Math.trunc(windowed);
     else if (!Number.isFinite(windowed)) windowDriftRows++;
     pairs.push({

@@ -890,8 +890,51 @@ describe("loadSupersessionPreview", () => {
     );
     expect(result.pairs).toHaveLength(1);
     // The dropped row stays in the scoped window count, so it does NOT
-    // reappear as a phantom "hidden from you by ACL" entry.
+    // reappear as a phantom "hidden from you by ACL" entry…
     expect(result.withheld).toBe(0);
+    // …but it DOES report as truncation: to the reader, "a row was dropped"
+    // and "a row did not fit" are the same statement — you were entitled to
+    // more than is listed.
+    expect(result.truncated).toBe(true);
+  });
+
+  it("floors the scoped count at the pairs shown when every window column drifts", async () => {
+    // `scoped_total: null` on every row. Without the pairs-length floor,
+    // `withheld` becomes `total - 0 = total` — the disclosure would claim ALL
+    // pairs are ACL-hidden while simultaneously listing them.
+    const result = await loadSupersessionPreview(
+      reader({
+        willSupersedeTotal: 2,
+        willSupersedePairs: [
+          pairRow(1, 2, { scoped_total: null }),
+          pairRow(2, 2, { scoped_total: null }),
+        ],
+      }),
+      ctx(),
+    );
+    expect(result.pairs).toHaveLength(2);
+    expect(result.withheld).toBe(0);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("keeps a clipped remainder out of `withheld` even when the window column drifts", async () => {
+    // Clipped page + drifted windows — the branch the clip floor exists for.
+    // Without it, the clipped row would fold into `withheld`: truncation
+    // dressed as an ACL boundary, on a drifted column, silently.
+    const total = WILL_SUPERSEDE_PAIR_MAX + 40;
+    const rows = Array.from({ length: WILL_SUPERSEDE_PAIR_MAX + 1 }, (_, i) =>
+      pairRow(i, 0, { scoped_total: null }),
+    );
+    const result = await loadSupersessionPreview(
+      reader({ willSupersedeTotal: total, willSupersedePairs: rows }),
+      ctx(),
+    );
+    expect(result.pairs).toHaveLength(WILL_SUPERSEDE_PAIR_MAX);
+    expect(result.truncated).toBe(true);
+    // Withheld = total minus the rows we SAW (cap + 1), never minus the rows
+    // we kept (cap) — the one-row difference is the clipped row that must not
+    // masquerade as ACL withholding.
+    expect(result.withheld).toBe(total - (WILL_SUPERSEDE_PAIR_MAX + 1));
   });
 
   it("refuses to disclose a scope it cannot establish — a drifted total THROWS", async () => {

@@ -98,9 +98,21 @@ function run(input: Record<string, unknown> = {}) {
   ) as unknown as Promise<Record<string, unknown>>;
 }
 
-/** SQL the tool issued against one table, in call order. */
+/**
+ * SQL the tool issued whose FROM targets one table, in call order.
+ *
+ * Matches `FROM <table>` rather than a bare substring: the fact statement
+ * names `brain_episodes` inside its decay-anchor subquery (#4914) and
+ * `brain_edges` inside corroboration, so a substring match would count the
+ * fact read as an episode-store read and fail the include-filter negatives
+ * vacuously. The subqueries spell `FROM brain_edges ed` / `JOIN brain_episodes
+ * ep`, so anchoring on the store statements' own `FROM <table> <alias>` shape
+ * keeps the discrimination honest.
+ */
 function sqlFor(table: string): string[] {
-  return queryCalls.map((c) => c.sql).filter((s) => s.includes(table));
+  return queryCalls
+    .map((c) => c.sql)
+    .filter((s) => new RegExp(`FROM ${table} (?:f|e|d|kd)\\b`).test(s) || s.includes(`FROM ${table}\n`));
 }
 
 beforeEach(() => {

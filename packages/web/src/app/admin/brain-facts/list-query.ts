@@ -5,12 +5,15 @@
  * testable without mounting a large client tree; the page's
  * `useServerDataTable` call delegates its `buildPath` here.
  *
- * There is no sort mapping. The queue's order is the read model's — newest
- * ingest first, with a deterministic id tiebreaker — and it is not
- * reviewer-selectable in this slice. That is not an oversight: the one ordering
- * a reviewer might reach for is "most contested first", and ranking claims by
- * anything derived from their conflicts is the auto-arbitration ADR-0036
- * explicitly refuses to do (M2 owns arbitration).
+ * There is no sort mapping. The queue's order is the read model's — stale
+ * claims first (#4914's surfacing hint, a boolean float-to-top, not an age
+ * sort), then newest ingest, with a deterministic id tiebreaker — and it is
+ * not reviewer-selectable in this slice. That is not an oversight: the one
+ * ordering a reviewer might reach for is "most contested first", and ranking
+ * claims by anything derived from their conflicts is the auto-arbitration
+ * ADR-0036 explicitly refuses to do (M2 owns arbitration). Decay ordering is
+ * different in kind — it surfaces age for a human, it never arbitrates between
+ * claims — which is why it is the one derived signal allowed near ORDER BY.
  */
 
 import type { BrainFactStatusFilter } from "@/ui/lib/admin-schemas";

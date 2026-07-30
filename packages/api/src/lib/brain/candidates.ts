@@ -22,6 +22,11 @@
  * Rejection is {@link retractFactCandidate} — a tombstone on `invalidated_at`,
  * not a status write. See its own comment for why that is the archive verb.
  *
+ * The same posture holds for #4914's decay signal: computed at read time in
+ * `staleness.ts`, surfaced on every queue row, allowed to float stale claims
+ * to the top of the queue — and structurally incapable of demoting one,
+ * because nothing derived from it ever appears in a WHERE or an UPDATE.
+ *
  * ## How the four gates (ADR-0036) land here
  *
  *   - **ACL grant** — composed explicitly, via `aclVisibilityClause`.
@@ -64,6 +69,11 @@ import {
   type BrainAttributionDecision,
 } from "@atlas/api/lib/brain/attribution";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import {
+  computeDecaySignal,
+  LAST_OBSERVED_AT_SELECT,
+  STALE_SURFACING_HINT_SQL,
+} from "@atlas/api/lib/brain/staleness";
 import { BRAIN_FACT_REVIEW_STATUSES, type BrainFactStatusFilter } from "@useatlas/schemas";
 import type {
   BrainEntityRole,
@@ -449,6 +459,12 @@ interface FactRow {
   readonly ingested_at: unknown;
   readonly updated_at: unknown;
   readonly corroboration_count: unknown;
+  /**
+   * Newest corroborating observation ({@link LAST_OBSERVED_AT_SELECT}).
+   * Optional because the tension-counterpart query reuses this row shape
+   * without selecting it — counterparts carry no decay view.
+   */
+  readonly last_observed_at?: unknown;
   readonly total_count?: unknown;
 }
 
@@ -682,12 +698,25 @@ export async function loadFactCandidates(
   // `COUNT(*) OVER ()` yields the grand total in the same pass as the page —
   // one statement instead of a second COUNT that could disagree with it under
   // concurrent ingest.
+  //
+  // ORDER BY: the stale-first term is #4914's SURFACING HINT — a boolean, so
+  // genuinely stale claims float to the top while everything else keeps the
+  // newest-ingest-first order reviewers already know. It is deliberately a
+  // two-bucket hint and not a decay SORT: ordering the whole queue by age
+  // would be a ranking, and the hint's only job is to keep an aged claim from
+  // being buried under fresh ingest. It filters nothing, writes nothing, and
+  // shares its threshold constant with `computeDecaySignal`, so a row that
+  // surfaces as stale always labels itself stale. The per-row subquery runs
+  // over every row matching WHERE (ORDER BY sits under the LIMIT) — an
+  // accepted cost, kept honest by the fan-out already spent on
+  // `CORROBORATION_SELECT`.
   const sql = `SELECT ${CANDIDATE_COLUMNS},
          ${CORROBORATION_SELECT} AS corroboration_count,
+         ${LAST_OBSERVED_AT_SELECT} AS last_observed_at,
          COUNT(*) OVER ()::int AS total_count
     FROM brain_facts f
    WHERE ${where.join("\n     AND ")}
-   ORDER BY f.ingested_at DESC, f.id DESC
+   ORDER BY ${STALE_SURFACING_HINT_SQL} DESC, f.ingested_at DESC, f.id DESC
    LIMIT $${limitParam} OFFSET $${limitParam + 1}`;
 
   const result = await db.query(sql, params);
@@ -752,6 +781,13 @@ export async function loadFactCandidates(
 
   const candidates = rows.map((row): BrainFactCandidate => {
     const grant = grants.get(row.id);
+    // `FactRow` structurally satisfies `AttributionRow`, so the column is
+    // INTERPRETED once, in the module that owns the decision — then handed to
+    // BOTH consumers of it, so provenance and decay cannot disagree about the
+    // reader's entitlement. Each surface still names the column in its own
+    // SELECT, which is what the `undefined` arm of `attributionDecision`
+    // exists to catch.
+    const attribution = attributionDecision(row, ctx, requestId);
     return {
       id: row.id,
       subject: row.subject,
@@ -763,14 +799,17 @@ export async function loadFactCandidates(
       malformedGrantIndices: grant?.malformed ?? [],
       grantReadable: grant?.readable ?? false,
       corroborationCount: count(row.corroboration_count),
-      provenance: projectProvenance(
-        row.provenance,
-        row.source_episode_id,
-        // `FactRow` structurally satisfies `AttributionRow`, so the column is
-        // INTERPRETED once, in the module that owns the decision. Each surface
-        // still names it in its own SELECT — which is what the `undefined` arm
-        // of `attributionDecision` exists to catch.
-        attributionDecision(row, ctx, requestId),
+      provenance: projectProvenance(row.provenance, row.source_episode_id, attribution),
+      // Read-time and advisory — the signal exists on the wire and nowhere
+      // else. Same attribution decision as the provenance above, because for a
+      // singly-corroborated fact the observation IS the withheld `occurredAt`.
+      decay: computeDecaySignal(
+        {
+          lastObservedAt: row.last_observed_at,
+          validFrom: row.valid_from,
+          ingestedAt: row.ingested_at,
+        },
+        attribution,
       ),
       // `source_episode_id uuid NOT NULL` + the composite FK make the `null`
       // arm unreachable from the database, so it is defense in depth. The FK's

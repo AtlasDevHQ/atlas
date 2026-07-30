@@ -112,6 +112,8 @@ function candidate(overrides: Record<string, unknown> = {}) {
     },
     tensions: [],
     promotionBlock: null,
+    // Read-time decay (#4914) — fresh by default so the queue renders quiet.
+    decay: { level: "fresh", ageDays: 5, lastObservedAt: ISO },
     validFrom: null,
     validTo: null,
     extractedAt: ISO,
@@ -1108,5 +1110,55 @@ describe("hidden-backlog disclosure (#4825)", () => {
       expect(document.body.textContent).toContain("couldn't work out which of these"),
     );
     expect(document.body.textContent).not.toContain("audience you're not part of");
+  });
+});
+
+describe("staleness decay is surfaced, never alarming (#4914)", () => {
+  test("flags a stale claim in the queue", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "stale", ageDays: 400, lastObservedAt: ISO } }),
+    ]);
+    expect(view.container.textContent).toContain("Stale");
+  });
+
+  test("stays quiet for a fresh claim — fresh is the queue's default state", async () => {
+    const view = await renderPage([candidate()]);
+    expect(view.container.textContent).not.toContain("Stale");
+    expect(view.container.textContent).not.toContain("Aging");
+  });
+
+  test("says when the claim was last observed in the detail sheet", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "stale", ageDays: 400, lastObservedAt: ISO } }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    expect(document.body.textContent).toContain("Last observed");
+  });
+
+  test("explains a withheld age instead of rendering a blank", async () => {
+    // A widened-in reader gets the coarse level only (#4836): a day-precision
+    // age restates the withheld "when". The UI must say WHY the numbers are
+    // missing — an em-dash would read as "no age exists".
+    const view = await renderPage([
+      candidate({
+        provenance: WITHHELD_ATTRIBUTION,
+        decay: { level: "stale", ageDays: null, lastObservedAt: null },
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Stale");
+    expect(text).toContain("Exact age withheld with attribution");
+  });
+
+  test("admits an unknown age rather than fabricating one", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "unknown", ageDays: null, lastObservedAt: null } }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    expect(document.body.textContent).toContain("Age unknown");
   });
 });

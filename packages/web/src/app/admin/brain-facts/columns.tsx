@@ -1,11 +1,15 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import type { BrainFactCandidate, BrainFactReviewStatus } from "@/ui/lib/types";
+import type {
+  BrainFactCandidate,
+  BrainFactDecayLevel,
+  BrainFactReviewStatus,
+} from "@/ui/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
-import { AlertTriangle, HelpCircle, Link2, ShieldAlert, Split } from "lucide-react";
+import { AlertTriangle, Clock, HelpCircle, Link2, ShieldAlert, Split } from "lucide-react";
 
 /**
  * Review-queue columns.
@@ -40,6 +44,42 @@ export const tensionBadge = {
   variant: "outline" as const,
   className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
   label: "In tension",
+};
+
+/**
+ * Read-time staleness decay (#4914). One informational hue for every level —
+ * decay is advisory temporal metadata, never a demotion and never an alarm: a
+ * stale fact is still the reviewed record, its trust tier and status
+ * untouched. The label carries the distinction; the color only says "this is
+ * about age, not about trust".
+ *
+ * Keyed on the closed union for `statusBadge`'s reason — a fifth level is a
+ * compile error here, not a silently unstyled chip.
+ */
+export const decayBadge: Record<
+  BrainFactDecayLevel,
+  { variant: "outline"; className: string; label: string }
+> = {
+  fresh: {
+    variant: "outline",
+    className: "border-sky-300 text-sky-700 dark:border-sky-700 dark:text-sky-400",
+    label: "Fresh",
+  },
+  aging: {
+    variant: "outline",
+    className: "border-sky-300 text-sky-700 dark:border-sky-700 dark:text-sky-400",
+    label: "Aging",
+  },
+  stale: {
+    variant: "outline",
+    className: "border-sky-300 text-sky-700 dark:border-sky-700 dark:text-sky-400",
+    label: "Stale",
+  },
+  unknown: {
+    variant: "outline",
+    className: "border-muted-foreground/40 text-muted-foreground",
+    label: "Age unknown",
+  },
 };
 
 /**
@@ -188,6 +228,21 @@ export function getBrainFactColumns(
             {c.promotionBlock && (
               <Badge variant={blockedBadge.variant} className={blockedBadge.className}>
                 {blockedBadge.label}
+              </Badge>
+            )}
+            {/* The decay signal, rendered where a reviewer decides whether to
+                open — advisory only. `stale`/`aging` get a chip; `fresh` is
+                the queue's default state and stays quiet, and `unknown` is
+                surfaced in the detail sheet where there is room to say why.
+                The read model floats stale claims to the top of the queue
+                (a surfacing hint, not a re-ranking — see `candidates.ts`). */}
+            {(c.decay.level === "stale" || c.decay.level === "aging") && (
+              <Badge
+                variant={decayBadge[c.decay.level].variant}
+                className={decayBadge[c.decay.level].className}
+              >
+                <Clock className="mr-1 size-3" aria-hidden />
+                {decayBadge[c.decay.level].label}
               </Badge>
             )}
             {c.malformedGrantIndices.length > 0 && !c.promotionBlock && (

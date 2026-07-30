@@ -46,32 +46,92 @@ env:
 # context that branch protection on `main` requires — mirrors the
 # `Deploy Validation` umbrella pattern in deploy-validation.yml.
 #
-# Every job that runs `bun install` shares an `actions/cache@v4` step keyed
-# on `bun.lock`'s hash. Cold runs (new lockfile) install in full; warm runs
+# Every job's preamble (setup-bun + shared dependency cache keyed on
+# `bun.lock`'s hash + `bun install --frozen-lockfile`) is the
+# `.github/actions/setup-bun-cached` composite action — bump pins or install
+# behavior there, once. Cold runs (new lockfile) install in full; warm runs
 # (lockfile unchanged) reuse extracted packages and drop install time from
-# ~10s to ~1-2s. The cache is also shared with api-tests below.
+# ~10s to ~1-2s. The cache is shared across every job here and in the other
+# bun workflows.
 
 jobs:
+  # Path gate for `ee-stub-build` only. That job re-runs a full type-check +
+  # build with ee/ stubbed (~2 min), but a change that touches nothing except
+  # documentation structurally cannot introduce a core → ee import — so it
+  # skips on pure-docs diffs. The filter is INVERTED relative to
+  # deploy-validation.yml's: instead of enumerating paths that trigger the
+  # job, it enumerates the only paths that are safe to skip on (docs, .claude,
+  # markdown) and runs on everything else, so a new top-level directory is
+  # gated by default rather than silently exempt. Fail-safe: if the diff
+  # can't be computed, run.
+  changes:
+    name: Detect ee-stub-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      ee-stub: ${{ steps.filter.outputs.ee-stub }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          # Full history so $BASE_SHA is reachable from a PR fork point.
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="$BASE_SHA...$HEAD_SHA"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            # The WHOLE push, not HEAD~1: a 3-commit push whose tip commit is
+            # docs-only must still gate on the first two. A force-push makes
+            # BEFORE_SHA unreachable — git diff then fails and the fail-safe
+            # below runs the job.
+            RANGE="$BEFORE_SHA...HEAD"
+          else
+            # workflow_dispatch has no diff scope — it exists to re-create
+            # REQUIRED check runs when GitHub drops event deliveries (#3358),
+            # so it must never skip a gate. New-branch pushes (BEFORE_SHA all
+            # zeros) have no base either. Run unconditionally.
+            echo "ee-stub=true" >> "$GITHUB_OUTPUT"
+            echo "No reliable diff range for $EVENT_NAME — running ee-stub-build"
+            exit 0
+          fi
+
+          if ! CHANGED=$(git diff --name-only "$RANGE" 2>&1); then
+            echo "::warning::git diff $RANGE failed: $CHANGED — defaulting ee-stub to true"
+            echo "ee-stub=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Run unless EVERY changed file is docs-only. `.mdx` (apps/docs
+          # content) deliberately does NOT match `\.md$` — apps/docs is a
+          # Next.js app covered by `bun run build`, so it stays gated in.
+          #
+          # Herestring, not `echo | grep`: with pipefail, `grep -q` exiting
+          # early can SIGPIPE the writer on a large diff and flip the
+          # pipeline status to 141 — misclassifying a huge non-docs diff as
+          # docs-only. Herestring input has no writer to kill; grep's own
+          # exit status alone decides.
+          if grep -vqE '^(docs/|\.claude/|[^/]*\.md$)' <<<"$CHANGED"; then
+            echo "ee-stub=true" >> "$GITHUB_OUTPUT"
+            echo "Non-docs paths changed — running ee-stub-build"
+          else
+            echo "ee-stub=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only diff — skipping ee-stub-build"
+          fi
+
   drift:
     name: drift
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Check dependency versions (syncpack)
         run: bun x syncpack lint
@@ -206,20 +266,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Lint
         run: bun run lint
@@ -237,20 +286,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       # tsgolint's per-package programs resolve @useatlas/* via each package's
       # "exports" → dist/*.d.ts (e.g. @atlas/web imports @useatlas/sdk). A
@@ -270,20 +308,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       # `bun run type` builds the SDK packages it needs internally
       # (@useatlas/types, plugin-sdk, sdk, react), runs tsgo --noEmit, and
@@ -310,20 +337,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Build SDK packages
         run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
@@ -345,20 +361,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       # @atlas/web tests import from @useatlas/sdk (e.g. via
       # use-starter-prompts-query.ts), and the SDK packages resolve to their
@@ -409,20 +414,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       # E2E integration tier — contract tests that pin protocol-level
       # invariants across packages (e.g. MCP multi-replica session
@@ -439,18 +433,29 @@ jobs:
   # Umbrella required-check for branch protection.
   #
   # Branch protection on `main` requires a single context named `ci`. The
-  # umbrella `needs:` every parallel sub-job above and asserts each one
-  # completed `success` — so the protection still catches every failure
-  # the historic monolithic `ci` job did, just with a parallel underbelly.
-  # `if: always()` so the check is present even when a dependent job fails.
+  # umbrella `needs:` EVERY job in this workflow — including the api-tests
+  # shards and ee-stub-build, which historically sat outside it as five
+  # separate required contexts (`api-tests (1/4)`–`(4/4)`, `Symlink Stub
+  # Build`). Folding them in means the shard count and the stub job are
+  # workflow-internal details: resharding 4→6 no longer requires a branch
+  # protection edit, and the required-contexts list shrinks to `ci` alone
+  # for this workflow. Migration notes + the trim command:
+  # docs/development/branch-protection.md. `if: always()` so the check is
+  # present even when a dependent job fails.
+  #
+  # `needs.api-tests.result` aggregates the matrix: it is `success` only if
+  # all four shards succeeded. ee-stub-build may legitimately be `skipped`
+  # (path-gated on the `changes` job — docs-only PRs); everything else must
+  # be `success`, including `changes` itself.
   ci:
     name: ci
-    needs: [drift, lint, lint-type-aware, type, build, test-others, test-e2e-integration]
+    needs: [changes, drift, lint, lint-type-aware, type, build, test-others, test-e2e-integration, api-tests, ee-stub-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify all dependent jobs succeeded
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
           DRIFT_RESULT: ${{ needs.drift.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           LINT_TYPE_AWARE_RESULT: ${{ needs.lint-type-aware.result }}
@@ -458,10 +463,12 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           TEST_OTHERS_RESULT: ${{ needs.test-others.result }}
           TEST_E2E_RESULT: ${{ needs.test-e2e-integration.result }}
+          API_TESTS_RESULT: ${{ needs.api-tests.result }}
+          EE_STUB_RESULT: ${{ needs.ee-stub-build.result }}
         run: |
           set -euo pipefail
           fail=0
-          for pair in "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "lint-type-aware=$LINT_TYPE_AWARE_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT"; do
+          for pair in "changes=$CHANGES_RESULT" "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "lint-type-aware=$LINT_TYPE_AWARE_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT" "api-tests=$API_TESTS_RESULT"; do
             name=${pair%%=*}
             result=${pair#*=}
             if [ "$result" != "success" ]; then
@@ -469,6 +476,12 @@ jobs:
               fail=1
             fi
           done
+          # ee-stub-build is path-gated: skipped means the diff was docs-only
+          # and structurally cannot have introduced a core → ee import.
+          if [ "$EE_STUB_RESULT" != "success" ] && [ "$EE_STUB_RESULT" != "skipped" ]; then
+            echo "::error::ee-stub-build job result was '$EE_STUB_RESULT' (expected 'success' or 'skipped')"
+            fail=1
+          fi
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "All CI gates passed."
 
@@ -482,20 +495,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       # @useatlas/types and @useatlas/plugin-sdk both resolve to their
       # `dist/` via their "exports" field, so api tests can't import them
@@ -545,22 +547,25 @@ jobs:
     # (#2017 / milestone #48); any regression that re-introduces a
     # core → ee import beyond the one allowed boot-time composition
     # file (lib/effect/enterprise-layer.ts) fails this job.
+    #
+    # Path-gated on the `changes` job: a docs-only diff cannot introduce a
+    # core → ee import, so the ~2 min re-typecheck+rebuild skips. The `ci`
+    # umbrella accepts `skipped` here (and GitHub treats a skipped job's
+    # check as passing while `Symlink Stub Build` remains a standalone
+    # required context — see docs/development/branch-protection.md).
     name: Symlink Stub Build
+    needs: changes
+    if: needs.changes.outputs.ee-stub == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+      # install: "false" — this job installs AFTER swapping ee/ for the stub,
+      # and without --frozen-lockfile (see the install step below).
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+          install: "false"
 
       - name: Replace ee/ with stub
         run: |

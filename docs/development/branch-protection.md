@@ -27,6 +27,28 @@ gh api repos/AtlasDevHQ/atlas/branches/main/protection --jq '.required_status_ch
 >
 > Two drifts were found together on 2026-07-26: `fork-pr-gate` was documented as required but absent from the live config (restored the same day — it is required again), and `strict` was documented as `true` but live `false` (documented as `false`, config unchanged). The `fork-pr-gate` gap meant the fail-closed backstop below **did not actually block merges** for an unknown period, since a red non-required check does not prevent merging. No CI gate compares this doc to the live config; that is the reason both drifts went unnoticed.
 
+## Pending contexts change (2026-07-30 — apply after the umbrella-fold PR merges)
+
+The `ci` umbrella in `.github/workflows/ci.yml` now `needs:` the `api-tests` shards and `ee-stub-build` in addition to its original six sub-jobs, so the standalone `api-tests (1/4)`–`(4/4)` and `Symlink Stub Build` contexts are redundant duplicates of what `ci` already asserts. Keeping them required is harmless but brittle: a reshard (4→6) or a job rename silently breaks the merge gate until someone edits branch protection — the exact drift class from the 2026-07-26 incident. Separately, `Image Scan` (the umbrella in `.github/workflows/image-scan.yml`, built for branch protection from day one — #4822) was never added to the required list, so a red image scan currently blocks nothing.
+
+**After** the umbrella-fold change is on `main` (never before — that would drop the api-tests gate for the gap), trim + extend the contexts to:
+
+```bash
+gh api -X PATCH repos/AtlasDevHQ/atlas/branches/main/protection/required_status_checks \
+  -f 'contexts[]=ci' \
+  -f 'contexts[]=Deploy Validation' \
+  -f 'contexts[]=Image Scan' \
+  -f 'contexts[]=Analyze (javascript-typescript)' \
+  -f 'contexts[]=fork-pr-gate'
+```
+
+Then update the required-checks table above, the JSON in "Reproducing the configuration" below, and the other doc sites that enumerate the merge gate: `AGENTS.md` (Merge discipline), `docs/agents/loops.md`, `.claude/commands/deps-update.md`, `.claude/commands/ci.md`, and `apps/docs/content/shared/architecture/enterprise.mdx` (which says `ee-stub-build` is "surfaced in branch protection as Symlink Stub Build" — after the trim it is enforced through the `ci` umbrella instead).
+
+Two behavioral notes on the interim state (folded umbrella, contexts not yet trimmed):
+
+- `ee-stub-build` is now path-gated (skips on docs-only diffs). GitHub treats a skipped job's check as **passing** for required-status purposes — the skip reports under the literal `Symlink Stub Build` name (it is not a matrix job, so the un-substituted-template-name trap below does not apply) — so PRs do not wedge while `Symlink Stub Build` remains required.
+- A failing api-tests shard now fails **both** its own context and `ci`. Same gate, reported twice; that duplication disappears with the trim.
+
 ### The `Deploy Validation` umbrella
 
 Scaffold smoke (`Scaffold (docker)` / `Scaffold (vercel)`), `Standalone Example Build`, `Config & Deploy Mode`, `Boot Build`, and `Boot Smoke` live in `.github/workflows/deploy-validation.yml`. The `changes` detector emits two outputs — `scaffolds` and `boot-smoke` — and each gate consumes whichever applies. Scaffold + standalone skip when the PR doesn't touch templates, examples, or `packages/{api,web,types,cli}/...`; boot-smoke skips when the PR doesn't touch runtime paths (`packages/{api,web,types,schemas,plugin-sdk,sandbox-sidecar}/...`, `plugins/`, `ee/`, `deploy/api/`, the SaaS env fixture, or the lockfile).
@@ -41,11 +63,11 @@ The fix is the umbrella job `deploy-validation-required` (`name: Deploy Validati
 
 The list is the minimum set of checks that demonstrably catches the failure modes we have already hit on `main`:
 
-- `ci` — umbrella over six parallel sub-jobs in `.github/workflows/ci.yml`: `drift` (drift scripts + syncpack + Dockerfile bun-pin), `lint`, `type`, `build` (SDK + widget + `@atlas/web` Next.js + OpenAPI drift), `test-others` (non-api workspace tests), and `test-e2e-integration` (cross-package contract tests). The umbrella mirrors the `Deploy Validation` pattern — branch protection still requires one context (`ci`) and the umbrella fails if any sub-job fails. The historic monolithic `ci` was serial and took ~3m30s; the parallel split lands in ~1m30s. The #2206 incident (PR #2198 broke Railway because `check-dockerfile-workspace.sh` hadn't finished when the merge fired) is the canonical reason this gate must be required, not optional
-- `api-tests (1/4)`–`(4/4)` — sharded `@atlas/api` test suite, including the real-Postgres migration smoke (`migrate-pg.test.ts`). Migration regressions like #2221 (the broken `keepers` CTE in 0054) only surface against a real database
+- `ci` — umbrella over every job in `.github/workflows/ci.yml`: `changes` (the ee-stub path gate), `drift` (drift scripts + syncpack + Dockerfile bun-pin), `lint`, `lint-type-aware`, `type`, `build` (SDK + widget + `@atlas/web` Next.js + OpenAPI drift), `test-others` (non-api workspace tests), `test-e2e-integration` (cross-package contract tests), the four `api-tests` shards, and `ee-stub-build` (success or skipped). The umbrella mirrors the `Deploy Validation` pattern — branch protection still requires one context (`ci`) and the umbrella fails if any sub-job fails. The historic monolithic `ci` was serial and took ~3m30s; the parallel split lands in ~1m30s. The #2206 incident (PR #2198 broke Railway because `check-dockerfile-workspace.sh` hadn't finished when the merge fired) is the canonical reason this gate must be required, not optional
+- `api-tests (1/4)`–`(4/4)` — sharded `@atlas/api` test suite, including the real-Postgres migration smoke (`migrate-pg.test.ts`). Migration regressions like #2221 (the broken `keepers` CTE in 0054) only surface against a real database. Now also covered by the `ci` umbrella — see "Pending contexts change" above for the trim
 - `Deploy Validation` — umbrella over `scaffold-smoke` (`docker` + `vercel`), `standalone-build`, `config-validation`, `boot-build`, and `boot-smoke` (see "The `Deploy Validation` umbrella" above). Catches scaffold-template drift, standalone-build regressions, Docker/deploy-mode misconfigurations, Dockerfile-shape breakage on every PR (`boot-build`), and full container-boot regressions including SaaS env contract drift on runtime-relevant PRs (`boot-smoke`, gated)
 - `Analyze (javascript-typescript)` — CodeQL. Static security analysis we want enforced, not advisory
-- `Symlink Stub Build` — the `ee-stub-build` job in `.github/workflows/ci.yml`. Replaces `ee/` with the no-op stub at `scripts/ee-stub/` and re-runs `bun run type` + `bun run build` against core. Closes the 1.5.1 architecture-deepening arc (#2017 / milestone #48): the inversion that made every enterprise subsystem reachable from core via a `Context.Tag` is only meaningful if a regression that re-introduces a `core → ee` import beyond `lib/effect/enterprise-layer.ts` actually fails the merge gate. Without this required, a PR that breaks core-only compile can still ship
+- `Symlink Stub Build` — the `ee-stub-build` job in `.github/workflows/ci.yml`. Replaces `ee/` with the no-op stub at `scripts/ee-stub/` and re-runs `bun run type` + `bun run build` against core. Closes the 1.5.1 architecture-deepening arc (#2017 / milestone #48): the inversion that made every enterprise subsystem reachable from core via a `Context.Tag` is only meaningful if a regression that re-introduces a `core → ee` import beyond `lib/effect/enterprise-layer.ts` actually fails the merge gate. Without this required, a PR that breaks core-only compile can still ship. Now path-gated (skips on docs-only diffs, which cannot introduce a core → ee import) and covered by the `ci` umbrella — see "Pending contexts change" above for the trim
 - `fork-pr-gate` — `.github/workflows/fork-pr-gate.yml`. Runs on every PR open/update/label event via `pull_request_target` and reports on each (passing immediately for same-repo PRs; status is keyed to the head SHA, which `synchronize` re-runs), so it never leaves the merge BLOCKED-forever on internal PRs. For a PR from a **fork** — or any PR whose head-repo provenance can't be positively confirmed as this repo — it auto-applies the `external-fork` label and fails closed until a maintainer applies `external-approved` by hand. See [The fork-PR gate](#the-fork-pr-gate) below
 
 ### The fork-PR gate

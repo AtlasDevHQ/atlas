@@ -6,12 +6,18 @@ name: Canonical Eval
 # a curated set of ~20 questions.
 #
 # Policy:
-#   - Pull requests: informational only. The job is allowed to fail without
-#     blocking the PR; the signal is the `X/N passing` line in the run log.
-#     This matches the `lighthouse.yml` first-month policy.
+#   - Pull requests: informational, but VISIBLE. Historically this used
+#     job-level `continue-on-error`, which renders the check green even on
+#     failure — an invisible signal nobody opened the run log for. Each job
+#     now runs its eval steps with step-level `continue-on-error` and ends
+#     with `scripts/eval-informational-gate.sh`: on a PR failure it posts /
+#     updates a marker comment on the PR (the lighthouse.yml pattern) and
+#     exits 0, so the check stays green and does NOT trip the agent merge
+#     discipline (`gh pr checks --watch` green) into treating this as a
+#     blocking gate.
 #   - Release tags (v*.*.*): blocking. A canonical-question regression
-#     should never ship in a tagged release. Tag pushes drop the
-#     `continue-on-error` and a single fail trips the workflow red.
+#     should never ship in a tagged release — the gate script exits 1 on
+#     any non-PR event.
 #
 # Modes:
 #   - canonical-eval (existing): typed semantic-layer reads + direct SQL
@@ -31,6 +37,10 @@ name: Canonical Eval
 #   - No untrusted PR/issue/commit fields are spliced into `run:` strings.
 #   - Bun + Postgres versions templated into `run:` come from the workflow's
 #     own `env:` block — repo-controlled, not attacker-controlled.
+#   - The informational-gate steps forward only `steps.*.outcome`, the PR
+#     number, and server-side run metadata via `env:`; the PR comment body is
+#     assembled inside scripts/eval-informational-gate.sh from those fields
+#     alone. `pull-requests: write` below exists solely for that comment.
 
 on:
   pull_request:
@@ -80,6 +90,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write # informational-gate PR comments only
 
 env:
   BUN_VERSION: "1.3.13"
@@ -88,9 +99,9 @@ jobs:
   canonical-eval:
     name: canonical-eval
     runs-on: ubuntu-latest
-    # PR runs are informational; tag pushes are blocking. The release-tag
-    # branch flips this off so a regression actually trips the workflow red.
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # PR runs are informational (green check + PR comment on failure); tag
+    # pushes are blocking. Both behaviors live in the informational-gate
+    # step at the end of the job — see the Policy block above.
     timeout-minutes: 15
     services:
       postgres:
@@ -109,12 +120,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Build @useatlas/types (resolves api imports)
         run: bun run --filter '@useatlas/types' build
@@ -130,10 +138,22 @@ jobs:
           psql -h 127.0.0.1 -U atlas -d atlas -c "CREATE DATABASE atlas_demo;"
 
       - name: Run canonical eval (deterministic)
+        id: eval
+        continue-on-error: true
         env:
           ATLAS_DATASOURCE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas_demo
           DATABASE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas
         run: bun packages/cli/bin/atlas.ts canonical-eval
+
+      - name: Informational gate (PR comment on failure; blocks tags)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
+        run: bash scripts/eval-informational-gate.sh canonical-eval "$EVAL_OUTCOME"
 
   # MCP-path eval (#2074, Phase 1; #2119, Phase 2 part A). Runs every
   # canonical question through the real `createHostedMcpRouter` mounted
@@ -152,28 +172,43 @@ jobs:
   canonical-mcp-eval-deterministic:
     name: canonical-mcp-eval (deterministic)
     runs-on: ubuntu-latest
-    # Same policy as the deterministic job: PRs informational, tag pushes
-    # blocking. A protocol-shape regression must not ship in a tag.
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # Same policy as the deterministic job: PRs informational-but-visible,
+    # tag pushes blocking (the informational-gate step at the end). A
+    # protocol-shape regression must not ship in a tag.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Build @useatlas/types (resolves api imports)
         run: bun run --filter '@useatlas/types' build
 
       - name: Run MCP auth helper smoke test (#2119)
+        id: auth-smoke
+        continue-on-error: true
         run: bun test ./packages/mcp/src/__tests__/canonical-mcp-auth.test.ts
 
       - name: Run MCP-path canonical eval
+        id: evalspec
+        # Still worth running when the auth smoke failed — the evalspec's
+        # transport/envelope coverage is independent of the auth helper, and
+        # both outcomes reach the gate below.
+        continue-on-error: true
         run: bun test ./packages/mcp/src/__tests__/canonical-mcp-eval.evalspec.ts
+
+      - name: Informational gate (PR comment on failure; blocks tags)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUTH_OUTCOME: ${{ steps.auth-smoke.outcome }}
+          EVAL_OUTCOME: ${{ steps.evalspec.outcome }}
+        run: bash scripts/eval-informational-gate.sh canonical-mcp-eval "$AUTH_OUTCOME" "$EVAL_OUTCOME"
 
   # LLM-driven MCP eval (#2119 Part B). Runs every canonical question
   # through the real hosted MCP route via an LLM (Vercel AI SDK
@@ -196,18 +231,18 @@ jobs:
   #
   # ANTHROPIC_API_KEY must be added as a repo secret by an org owner.
   # Until the secret is wired the job emits a `::warning::` line and the
-  # eval is skipped — green on PRs and tag pushes alike. Once the secret
-  # lands the gate becomes blocking on tag pushes (continue-on-error
-  # already differentiates by event). The preflight step distinguishes
-  # an unset secret from an invalid/expired one so a credential rotation
-  # doesn't masquerade as a "0/20 regression" on a tag push.
+  # eval is skipped — green on PRs and tag pushes alike (the gate script
+  # treats `skipped` as a pass). Once the secret lands, tag pushes become
+  # blocking via the informational-gate step. The preflight step
+  # distinguishes an unset secret from an invalid/expired one so a
+  # credential rotation doesn't masquerade as a "0/20 regression" on a
+  # tag push.
   eval-mcp-llm:
     name: eval-mcp-llm (#2119 Part B)
     runs-on: ubuntu-latest
-    # Same policy as the deterministic + JWT-path jobs — PRs informational,
-    # tag pushes blocking. A drop below the 18/20 acceptance floor must
-    # not ship in a tag.
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # Same policy as the deterministic + JWT-path jobs — PRs
+    # informational-but-visible, tag pushes blocking. A drop below the
+    # 18/20 acceptance floor must not ship in a tag.
     timeout-minutes: 20
     # Bind the Anthropic key at the job level so step-level `if:`
     # expressions can read it via `env.ANTHROPIC_API_KEY`. GitHub
@@ -234,12 +269,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24
+      - uses: ./.github/actions/setup-bun-cached
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Build @useatlas/types (resolves api imports)
         run: bun run --filter '@useatlas/types' build
@@ -270,6 +302,8 @@ jobs:
         # acceptance floor for the wrong reason — masquerading as a
         # real semantic-layer regression. A 30-second curl preflight
         # makes the failure mode unambiguous.
+        id: preflight
+        continue-on-error: true
         if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
         env:
           ATLAS_MODEL: claude-haiku-4-5-20251001
@@ -290,7 +324,14 @@ jobs:
           echo "ANTHROPIC_API_KEY preflight OK"
 
       - name: Run LLM-driven MCP canonical eval
-        if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
+        id: eval
+        continue-on-error: true
+        # Requires the preflight to have SUCCEEDED (not just "not skipped"):
+        # a rejected key would otherwise burn the full 20-minute eval as
+        # spurious tool_selection failures. When the key is unset the
+        # preflight is skipped, so this skips too — both outcomes reach the
+        # gate step, where `skipped` counts as a pass.
+        if: ${{ steps.preflight.outcome == 'success' }}
         env:
           # Cheap-and-fast default: Haiku for the eval. Operators can
           # override at the workflow-dispatch level by setting these
@@ -320,3 +361,17 @@ jobs:
           path: eval-mcp-llm-output.json
           retention-days: 14
           if-no-files-found: warn
+
+      - name: Informational gate (PR comment on failure; blocks tags)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
+        # Both `skipped` (no ANTHROPIC_API_KEY wired) and `success` pass;
+        # a failed preflight (rejected key) or failed eval goes through the
+        # PR-comment / tag-blocking split in the script.
+        run: bash scripts/eval-informational-gate.sh eval-mcp-llm "$PREFLIGHT_OUTCOME" "$EVAL_OUTCOME"

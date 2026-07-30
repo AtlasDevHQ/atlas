@@ -261,6 +261,13 @@ describe("store (chat_cache-backed)", () => {
       expect(insertSql).toContain("INSERT INTO chat_cache");
       expect(insertSql).toContain("ON CONFLICT (key) DO UPDATE");
       expect(insertSql).toContain("RETURNING key");
+      // The MERGE, not just the upsert (#4907). `botUserId` is omitted
+      // from the payload when absent precisely so a stored id survives —
+      // that only holds while this is `value || EXCLUDED.value`. A switch
+      // to plain `EXCLUDED.value` would wipe the id on every re-install
+      // and silently restore the reply loop, with every other assertion
+      // in this file still green.
+      expect(insertSql).toContain("chat_cache.value || EXCLUDED.value");
 
       // Params: (key, value::jsonb, orgId-for-hijack-check)
       expect(insertParams).toHaveLength(3);

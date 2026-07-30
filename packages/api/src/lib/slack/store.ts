@@ -22,15 +22,18 @@
  *
  * `botUserId` is written by Atlas from `oauth.v2.access`'s
  * `bot_user_id` and is **load-bearing for loop safety**. In
- * multi-workspace mode (SaaS — no `defaultBotToken`) the adapter's
- * `isMessageFromSelf` has three checks, and the two that read the
- * adapter's own `_botUserId`/`_botId` instance fields are both dead
- * because those are only populated from a single-workspace bot token.
- * The surviving check compares the inbound event's `user` against the
+ * multi-workspace mode (no `SLACK_BOT_TOKEN` → no `defaultBotToken`:
+ * SaaS always, and self-hosted BYOT too) the adapter's
+ * `isMessageFromSelf` has three checks and only one can fire.
+ * `_botId` is populated solely by `initialize()` under a
+ * single-workspace `defaultBotToken`. `_botUserId` is populated there
+ * AND from `config.botUserId`, which `plugins/chat/src/adapters/slack.ts`
+ * does not forward — so both instance fields are null here. The
+ * surviving check compares the inbound event's `user` against the
  * request-context `botUserId`, which the adapter sources from THIS row
  * via `resolveTokenForTeam`. Leave it unset and every message Atlas
- * posts reads back as a user message: in a subscribed thread that is an
- * unbounded reply loop, which is exactly what #4907 was.
+ * posts reads back as a user message: in a subscribed thread or a DM
+ * that is an unbounded reply loop, which is exactly what #4907 was.
  *
  * The adapter only ever *reads* this field — its sole writer is the
  * SDK's own `handleOAuthCallback`, which Atlas bypasses by running
@@ -136,11 +139,12 @@ function keyFor(teamId: string): string {
 }
 
 /**
- * Shape persisted in `chat_cache.value`. `botToken` carries the
- * chat-adapter's expected field name so the adapter can read the same
- * row directly. The rest are Atlas extensions (chat-adapter ignores
- * unknown fields). Exported so the org-purge helper and any future
- * cross-cutting reader (e.g. SCIM dedupe) share one type.
+ * Shape persisted in `chat_cache.value`. `botToken` and `botUserId`
+ * carry the chat-adapter's expected field names so the adapter can read
+ * the same row directly; `teamName` is shared. `orgId`,
+ * `workspaceName` and `installedAt` are Atlas extensions (chat-adapter
+ * ignores unknown fields). Exported so the org-purge helper and any
+ * future cross-cutting reader (e.g. SCIM dedupe) share one type.
  */
 export interface StoredInstallation {
   botToken: StoredSlackBotToken;
@@ -392,14 +396,14 @@ export function getInstallationByOrg(
 export function saveInstallation(
   teamId: string,
   botToken: string,
-  opts?: { orgId?: string; workspaceName?: string; botUserId?: string },
+  // Derived from the backend's input type rather than re-declared: a
+  // hand-mirrored options bag silently drifts when a field is added to
+  // one side and not the other, with NO compile error — the public API
+  // just can't set it. That is exactly how #4907 happened one layer up,
+  // so don't reintroduce the shape here.
+  opts?: Omit<SlackSaveInput, "botToken">,
 ): Promise<void> {
-  return store.save(teamId, {
-    botToken,
-    orgId: opts?.orgId,
-    workspaceName: opts?.workspaceName,
-    botUserId: opts?.botUserId,
-  });
+  return store.save(teamId, { botToken, ...opts });
 }
 
 /**

@@ -88,19 +88,20 @@ const DEDUP_LOCK_TTL_MS = 30_000;
 
 /**
  * Reply circuit breaker (#4907) — the backstop against a self-sustaining
- * reply loop in a subscribed thread.
+ * reply loop.
  *
  * The dedup lock above cannot serve this role: it is keyed per thread but
  * released in `finally`, so a *sequential* loop (reply → inbound → reply)
  * acquires it cleanly every time. Nothing else bounds how many turns a
- * single thread can drive, and the failure is expensive — the #4907 loop
- * ran ~15 agent turns in 90 seconds, one of them a 144k-token
- * cross-region query, before a human noticed.
+ * single thread can drive, and the failure is expensive.
  *
- * 12/minute is far above human follow-up pace in one thread and far below
- * the observed loop rate (~20–40/minute), so it separates the two cleanly
- * without a tuning knob. Deliberately a blunt instrument: it does not try
- * to identify *why* a thread is looping, only that it is.
+ * The threshold is NOT the primary discriminator — `author.isBot` is (see
+ * {@link recordReplyForBreaker}). Only bot-authored messages are counted,
+ * so human traffic cannot trip this at any typing speed, and the number
+ * below only has to sit under a machine-driven rate. The #4907 loop ran
+ * ~26 turns in 90 seconds (~17/minute) sustained; 12/minute trips inside
+ * the first minute of anything like it while leaving ample room for a
+ * legitimate bot posting into a thread.
  */
 const MAX_REPLIES_PER_WINDOW = 12;
 
@@ -108,9 +109,10 @@ const MAX_REPLIES_PER_WINDOW = 12;
 const REPLY_WINDOW_MS = 60_000;
 
 /**
- * How long a tripped thread stays muted. Long enough that a stuck loop
- * cannot resume by waiting, short enough that a thread a human is still
- * using recovers within a coffee break.
+ * How long a tripped thread stays muted — short enough that a thread a
+ * human is still using recovers within a coffee break, long enough that
+ * the next human message doesn't immediately buy another full window of
+ * loop before the breaker re-trips.
  */
 const REPLY_BREAKER_COOLDOWN_MS = 15 * 60 * 1000;
 
@@ -269,7 +271,8 @@ function convIdKey(threadId: string): string {
 
 /**
  * Attempt to acquire a dedup lock. Returns the lock on success, null if
- * already locked, or null (with a warning log) if the adapter throws.
+ * already locked, or a SYNTHETIC lock (logged at error) if the adapter
+ * throws, so the handler still runs.
  */
 async function tryAcquireLock(
   stateAdapter: StateAdapter,
@@ -305,23 +308,54 @@ interface ReplyBreakerState {
 }
 
 /**
- * Record one handled reply for a thread and report whether the breaker
- * has tripped.
+ * Validate a value read back from the state adapter.
+ *
+ * `stateAdapter.get<T>` is a CAST, not a parse — a legacy row, a backend
+ * that round-trips numbers as strings, or a future schema change yields
+ * an object whose `count` is `undefined`, and `undefined + 1` is `NaN`,
+ * and `NaN > MAX` is `false`. The breaker would then never trip and
+ * never log: the same silently-disabled-guard failure as #4907, inside
+ * the thing meant to backstop it. Treat anything unexpected as "start a
+ * fresh window" rather than trusting it.
+ */
+function isReplyBreakerState(value: unknown): value is ReplyBreakerState {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Partial<ReplyBreakerState>;
+  return (
+    typeof v.count === "number" &&
+    Number.isFinite(v.count) &&
+    typeof v.windowStart === "number" &&
+    Number.isFinite(v.windowStart)
+  );
+}
+
+/**
+ * Record one BOT-AUTHORED inbound message for a thread and report
+ * whether the breaker has tripped.
  *
  * Returns `"ok"` to proceed, `"trip"` on the transition into the tripped
  * state (the caller posts one notice), and `"muted"` for every call after
  * that until the cooldown expires.
  *
- * Fails OPEN on a state-adapter error: this guard exists to bound a
- * runaway, and a state backend that is down must not take chat with it.
- * That is a deliberate asymmetry from the "prefer errors over silent
- * fallbacks" default — the counter is not a security control, and the
- * self-message check in `@chat-adapter/slack` (fed by the `botUserId`
- * this PR persists) remains the primary defence.
+ * Callers must only invoke this for messages where `author.isBot` is
+ * true. That gate is what makes the threshold meaningful: a self-reply
+ * loop is 100% bot-authored, so counting only bot messages separates it
+ * from human traffic by KIND rather than by rate, and a busy human
+ * thread can never trip it no matter how fast people type. Every event
+ * in the #4907 loop carried `bot_id`, which is what sets `isBot`.
  *
- * Exported for direct unit testing: driving the three outcomes through
- * `onSubscribedMessage` would need a full fake `chat` harness and would
- * exercise less of the counter's actual behaviour than calling it does.
+ * Fails OPEN on a state READ error: this guard bounds a runaway, and a
+ * state backend that is down must not take chat with it. That is a
+ * deliberate asymmetry from the "prefer errors over silent fallbacks"
+ * default — the counter is not a security control, and the self-message
+ * check in `@chat-adapter/slack` (fed by the `botUserId` this PR
+ * persists) remains the primary defence. It does NOT fail open on the
+ * trip itself: once the threshold is crossed we return `"trip"` even if
+ * latching it failed, because halting an already-over-threshold thread
+ * is the safe direction and a failing write is *correlated* with a
+ * runaway hammering the backend.
+ *
+ * Exported for direct unit testing alongside the handler-level tests.
  */
 export async function recordReplyForBreaker(
   stateAdapter: StateAdapter,
@@ -329,41 +363,111 @@ export async function recordReplyForBreaker(
   log: PluginLogger,
 ): Promise<"ok" | "trip" | "muted"> {
   const key = replyBreakerKey(threadId);
+  const now = Date.now();
+
+  let prior: ReplyBreakerState | null = null;
   try {
-    const now = Date.now();
-    const prior = await stateAdapter.get<ReplyBreakerState>(key);
-
-    if (prior?.tripped) {
-      return "muted";
+    const raw = await stateAdapter.get<unknown>(key);
+    if (raw !== null && raw !== undefined) {
+      if (isReplyBreakerState(raw)) {
+        prior = raw;
+      } else {
+        log.warn({ threadId }, "Reply breaker state malformed — resetting window");
+      }
     }
-
-    const inWindow = prior && now - prior.windowStart < REPLY_WINDOW_MS;
-    const next: ReplyBreakerState = inWindow
-      ? { count: prior.count + 1, windowStart: prior.windowStart }
-      : { count: 1, windowStart: now };
-
-    if (next.count > MAX_REPLIES_PER_WINDOW) {
-      await stateAdapter.set(
-        key,
-        { ...next, tripped: true },
-        REPLY_BREAKER_COOLDOWN_MS,
-      );
-      log.error(
-        { threadId, count: next.count, windowMs: REPLY_WINDOW_MS },
-        "Reply circuit breaker tripped — thread muted; this usually means the bot is answering its own messages",
-      );
-      return "trip";
-    }
-
-    await stateAdapter.set(key, next, REPLY_WINDOW_MS);
-    return "ok";
-  } catch (breakerErr) {
-    log.warn(
-      { err: breakerErr instanceof Error ? breakerErr : new Error(String(breakerErr)), threadId },
-      "Reply breaker state unavailable — proceeding without loop protection",
+  } catch (readErr) {
+    log.error(
+      { err: readErr instanceof Error ? readErr : new Error(String(readErr)), threadId },
+      "Reply breaker state read failed — proceeding WITHOUT loop protection",
     );
     return "ok";
   }
+
+  if (prior?.tripped) {
+    return "muted";
+  }
+
+  const next: ReplyBreakerState =
+    prior !== null && now - prior.windowStart < REPLY_WINDOW_MS
+      ? { count: prior.count + 1, windowStart: prior.windowStart }
+      : { count: 1, windowStart: now };
+
+  if (next.count > MAX_REPLIES_PER_WINDOW) {
+    // Log BEFORE persisting — this is the one line an operator greps
+    // for during a runaway, and it must not be lost to a failed write.
+    log.error(
+      { threadId, count: next.count, windowMs: REPLY_WINDOW_MS },
+      "Reply circuit breaker tripped — thread muted; this usually means the bot is answering its own messages",
+    );
+    await stateAdapter
+      .set(key, { ...next, tripped: true }, REPLY_BREAKER_COOLDOWN_MS)
+      .catch((latchErr: unknown) => {
+        log.error(
+          { err: latchErr instanceof Error ? latchErr : new Error(String(latchErr)), threadId },
+          "Reply breaker trip could not be latched — thread will be re-evaluated on the next event",
+        );
+      });
+    return "trip";
+  }
+
+  await stateAdapter.set(key, next, REPLY_WINDOW_MS).catch((writeErr: unknown) => {
+    log.warn(
+      { err: writeErr instanceof Error ? writeErr : new Error(String(writeErr)), threadId },
+      "Reply breaker counter write failed — this event is not counted",
+    );
+  });
+  return "ok";
+}
+
+/**
+ * Shared breaker gate for a message handler.
+ *
+ * Returns true when the caller should STOP processing. Posts the
+ * one-and-only notice on the trip transition — safe to post mid-loop,
+ * because the latch is written first, so the echo of the notice itself
+ * returns `"muted"` and dies here.
+ *
+ * Non-bot messages skip the breaker entirely (see
+ * {@link recordReplyForBreaker} on why the gate is by author kind).
+ *
+ * Exported for testing. Both `handleMentionOrDM` and
+ * `onSubscribedMessage` call this before acquiring the dedup lock and
+ * before any model spend; that ordering is the fix and is not something
+ * these tests can pin, so keep the call FIRST when editing either
+ * handler.
+ */
+export async function breakerShouldHalt(
+  stateAdapter: StateAdapter,
+  thread: Thread,
+  message: Message,
+  threadId: string,
+  log: PluginLogger,
+  useEphemeralErrors: boolean,
+): Promise<boolean> {
+  if (message.author?.isBot !== true) return false;
+
+  const breaker = await recordReplyForBreaker(stateAdapter, threadId, log);
+  if (breaker === "muted") {
+    // warn, not debug: for the whole cooldown a real question gets
+    // silence, and prod logs run at info — a muted thread must leave
+    // evidence. It is self-limiting, so the volume is bounded.
+    log.warn({ threadId }, "Thread muted by reply breaker — ignoring bot-authored message");
+    return true;
+  }
+  if (breaker === "trip") {
+    const card = buildErrorCard({
+      message:
+        "I've paused this thread — I was replying to automated messages too rapidly, which usually means I started answering my own posts.",
+      retryHint: "Start a new thread to continue, and let the team know if this repeats.",
+    });
+    if (useEphemeralErrors) {
+      await safePostEphemeralError(thread, message.author, card, log, threadId);
+    } else {
+      await safePostError(thread, card, log, threadId);
+    }
+    return true;
+  }
+  return false;
 }
 
 /** Persist conversation messages — non-fatal; failures are logged. */
@@ -1028,6 +1132,20 @@ export function createChatBridge(
       return;
     }
 
+    // Reply circuit breaker (#4907) — BEFORE the lock and before any
+    // model spend. This handler is registered for BOTH `onNewMention`
+    // and `onDirectMessage`, and the DM half is a genuine loop path:
+    // per the registration note above, the SDK runs DM handlers and
+    // returns without ever reaching `onSubscribedMessage`, and a DM
+    // needs no @-mention to arrive here. So a self-post in a 1:1 DM
+    // re-enters exactly like the subscribed case. The mention half
+    // cannot self-sustain (Atlas never @-mentions itself), but the
+    // breaker only counts bot-authored messages, so leaving it
+    // unconditional costs nothing and removes a reasoning step.
+    if (await breakerShouldHalt(stateAdapter, thread, message, threadId, log, useEphemeralErrors)) {
+      return;
+    }
+
     log.info(
       { threadId, question: question.slice(0, 100) },
       "New mention received",
@@ -1173,29 +1291,9 @@ export function createChatBridge(
     );
 
     // Reply circuit breaker (#4907) — BEFORE the lock and before any
-    // model spend. This is the subscribed path specifically because a
-    // self-reply loop can only sustain itself here: `onNewMention`
-    // requires an @-mention Atlas never writes into its own replies.
-    const breaker = await recordReplyForBreaker(stateAdapter, threadId, log);
-    if (breaker === "muted") {
-      log.debug({ threadId }, "Thread muted by reply breaker — ignoring follow-up");
-      return;
-    }
-    if (breaker === "trip") {
-      // One notice, then silence — so a human sees why the thread went
-      // quiet instead of assuming Atlas crashed. Safe to post even mid-
-      // loop: the breaker is already latched, so the echo of THIS
-      // message returns "muted" and dies here.
-      await safePostError(
-        thread,
-        buildErrorCard({
-          message:
-            "I've paused this thread — I was replying too rapidly, which usually means I started answering my own messages.",
-          retryHint: "Start a new thread to continue, and let the team know if this repeats.",
-        }),
-        log,
-        threadId,
-      );
+    // model spend. The subscribed path is where the incident ran; the
+    // DM path is covered by the same gate in `handleMentionOrDM`.
+    if (await breakerShouldHalt(stateAdapter, thread, message, threadId, log, useEphemeralErrors)) {
       return;
     }
 

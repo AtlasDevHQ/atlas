@@ -704,9 +704,8 @@ export async function loadFactCandidates(
   // newest-ingest-first order reviewers already know. It is deliberately a
   // two-bucket hint and not a decay SORT: ordering the whole queue by age
   // would be a ranking, and the hint's only job is to keep an aged claim from
-  // being buried under fresh ingest. It filters nothing, writes nothing, and
-  // shares its threshold constant with `computeDecaySignal`, so a row that
-  // surfaces as stale always labels itself stale. The per-row subquery runs
+  // being buried under fresh ingest. It filters nothing and writes nothing.
+  // The per-row subquery runs
   // over every row matching WHERE (ORDER BY sits under the LIMIT) — an
   // accepted cost, kept honest by the fan-out already spent on
   // `CORROBORATION_SELECT`. The hint and the label share their threshold

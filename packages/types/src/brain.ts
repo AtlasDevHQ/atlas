@@ -277,7 +277,8 @@ export type BrainFactDecayLevel = "fresh" | "aging" | "stale" | "unknown";
  * aged on its own card.
  *
  * ADVISORY ONLY, and computed at read time from the claim's newest observation
- * (its corroborating episodes' `occurred_at`), falling back to `validFrom`,
+ * (its corroborating episodes' `occurred_at`, each falling back to that
+ * episode's own ingest time), falling back to `validFrom`,
  * then `ingestedAt`. There is no stored score, no expiry, and no write path
  * from this signal to a fact row: a stale fact keeps its status, its trust
  * tier, and its place in every read. What decay may do is SURFACE — the review

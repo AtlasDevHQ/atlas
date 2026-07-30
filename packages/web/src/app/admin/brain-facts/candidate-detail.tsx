@@ -149,7 +149,7 @@ function DecaySignal({ decay }: { decay: BrainFactDecayView }) {
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Exact age withheld with attribution — it would restate when the claim was first said.
+          Exact age withheld with attribution — it would restate when the claim was last said.
         </p>
       )}
     </div>

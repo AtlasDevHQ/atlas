@@ -37,6 +37,7 @@ import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { DECAY_STALE_AFTER_DAYS } from "@atlas/api/lib/brain/staleness";
 import {
   BrainFactCandidateListResponseSchema,
+  BrainFactDecayViewSchema,
   BrainFactProvenanceViewSchema,
 } from "@useatlas/schemas";
 
@@ -992,5 +993,33 @@ describe("loadFactCandidates — read-time decay (#4914)", () => {
       ageDays: null,
       lastObservedAt: null,
     });
+  });
+
+  it("REFUSES decay states the constructor cannot build, at the schema gate", () => {
+    // The refinements are the cross-field backstop for a hypothetical second
+    // producer — the same role `z.strictObject` plays on the withheld
+    // attribution arm. Deleting either refine must fail HERE, not surface as
+    // a contradictory view shipped through `checked()`.
+    const invalid = [
+      { level: "unknown", ageDays: 5, lastObservedAt: null },
+      { level: "unknown", ageDays: null, lastObservedAt: ISO },
+      { level: "stale", ageDays: null, lastObservedAt: ISO },
+    ];
+    for (const decay of invalid) {
+      expect(BrainFactDecayViewSchema.safeParse(decay).success).toBe(false);
+    }
+    // …and the polarity check: every state the constructor DOES build parses,
+    // most importantly the withheld shape — a refine that rejected valid
+    // withheld pages would take the review queue down for exactly the widened
+    // readers #4836 protects.
+    const valid = [
+      { level: "stale", ageDays: null, lastObservedAt: null },
+      { level: "unknown", ageDays: null, lastObservedAt: null },
+      { level: "aging", ageDays: 50, lastObservedAt: null },
+      { level: "fresh", ageDays: 5, lastObservedAt: ISO },
+    ];
+    for (const decay of valid) {
+      expect(BrainFactDecayViewSchema.safeParse(decay).success).toBe(true);
+    }
   });
 });

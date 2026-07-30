@@ -173,7 +173,8 @@ describe("no write path exists from the decay signal (#4914 acceptance)", () => 
     // that wrote anything — a stored score, an expiry, a demotion — would need
     // a mutating verb SOMEWHERE in this file, and this pin is what makes the
     // ADR-0036 stance ("decay only surfaces, never auto-demotes") survive a
-    // refactor rather than live in a comment. Comments are stripped first so
+    // refactor rather than live in a comment. Block and full-line comments
+    // are stripped first so
     // the scan is case-insensitive over CODE — prose may name UPDATE while
     // explaining why there isn't one, and a lowercase `update` in a template
     // literal must not slip an uppercase-only match.

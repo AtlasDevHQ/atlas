@@ -709,7 +709,13 @@ export async function loadFactCandidates(
   // surfaces as stale always labels itself stale. The per-row subquery runs
   // over every row matching WHERE (ORDER BY sits under the LIMIT) — an
   // accepted cost, kept honest by the fan-out already spent on
-  // `CORROBORATION_SELECT`.
+  // `CORROBORATION_SELECT`. The hint and the label share their threshold
+  // constant, so the WHAT of "stale" cannot drift — but the WHEN runs on two
+  // clocks (Postgres `now()` here, `new Date()` in the projection), so a row
+  // sitting exactly at the boundary can float while labelling "Aging", or
+  // label "Stale" without floating, by at most the skew plus the label's
+  // floor-rounding. Advisory on both sides and self-healing on the next
+  // read; noted so nobody reads "shared constant" as "bit-identical verdict".
   const sql = `SELECT ${CANDIDATE_COLUMNS},
          ${CORROBORATION_SELECT} AS corroboration_count,
          ${LAST_OBSERVED_AT_SELECT} AS last_observed_at,
@@ -788,6 +794,17 @@ export async function loadFactCandidates(
     // SELECT, which is what the `undefined` arm of `attributionDecision`
     // exists to catch.
     const attribution = attributionDecision(row, ctx, requestId);
+    if (row.last_observed_at === undefined) {
+      // `pg` never yields `undefined` for a selected column, so the page
+      // query stopped selecting the decay anchor — query drift, and the
+      // classifier will report "age unknown" rather than fabricating a label
+      // from ingest recency. Logged HERE because the pure module has no row
+      // id; same posture as `attributionDecision`'s missing-column arm.
+      log.warn(
+        { rowId: row.id, workspaceId: ctx.workspaceId, requestId },
+        "brain review: `last_observed_at` absent from the row — the queue query no longer selects the decay anchor; reporting age unknown",
+      );
+    }
     return {
       id: row.id,
       subject: row.subject,

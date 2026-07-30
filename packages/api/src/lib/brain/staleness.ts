@@ -11,16 +11,18 @@
  *
  * A PURE derivation. There is no stored decay score, no scheduler job, and no
  * write path of any kind — the module contains read-only SQL fragments and a
- * classifier over values a read already holds. `staleness.test.ts` pins that
- * structurally (no mutating SQL verb anywhere in this file) and behaviorally
- * (the read models that call it emit only SELECTs). The single writer of
+ * classifier over values a read already holds. `staleness.test.ts` pins the
+ * structural half (no mutating SQL statement anywhere in this file);
+ * `candidates.test.ts` / `search.test.ts` pin the behavioral half (the read
+ * models that call it emit only SELECTs). The single writer of
  * `brain_facts.status` stays `promoteBrainFacts`, and the tombstone verb stays
  * `retractFactCandidate`; decay influences neither.
  *
  * ## The anchor, and why corroboration enters through recency
  *
  * The signal is anchored on the newest OBSERVATION of the claim — the max
- * `occurred_at` over the episodes its `provenance` edges point at — falling
+ * `occurred_at` (per episode, falling back to that episode's own ingest time)
+ * over the episodes its `provenance` edges point at — falling
  * back to `valid_from`, then `ingested_at`, when no observation decodes.
  * Re-observing a claim adds a provenance edge (see `CORROBORATION_SELECT` in
  * `candidates.ts`), so every corroboration moves the anchor forward: that is
@@ -68,7 +70,15 @@ const MS_PER_DAY = 86_400_000;
  * Aliases the fact table `f`, like `CORROBORATION_SELECT` beside which it is
  * always selected. Reads episode timestamps WITHOUT the episode ACL on
  * purpose: this is a server-side aggregate, and what of it reaches the wire is
- * `computeDecaySignal`'s entitlement question, not the query's.
+ * `computeDecaySignal`'s entitlement question, not the query's — and that gate
+ * is the #4836 widening decision ONLY, never a per-episode ACL check. The
+ * accepted residual, stated so nobody "closes" it later: a reader inside the
+ * fact's pre-widening grant receives the bare max timestamp even when the max
+ * came from a corroborating episode whose own grant excludes them. A lone
+ * timestamp carries none of the who/where/what the episode ACL protects
+ * (compare `CORROBORATION_SELECT`, which already discloses a COUNT over the
+ * same edges to the same readers); the who/where/when TRIPLE is what travels
+ * with the attribution decision.
  */
 export const LAST_OBSERVED_AT_SELECT = `(
     SELECT MAX(COALESCE(ep.occurred_at, ep.ingested_at))
@@ -98,7 +108,16 @@ export const STALE_SURFACING_HINT_SQL = `(COALESCE(${LAST_OBSERVED_AT_SELECT}, f
 
 /** The raw temporal columns a read passes in — `unknown` off `pg`, like everything else in this slice. */
 export interface BrainFactDecayInputs {
-  /** `last_observed_at` — the {@link LAST_OBSERVED_AT_SELECT} aggregate. */
+  /**
+   * `last_observed_at` — the {@link LAST_OBSERVED_AT_SELECT} aggregate.
+   *
+   * `undefined` is NOT the same value as SQL `NULL`, and the classifier keys
+   * on the difference: `pg` never yields `undefined` for a column it selected,
+   * so `undefined` means the column is missing from the projection — a new
+   * read surface, a rewritten SELECT, a row built by hand. Same distinction
+   * `attributionDecision` draws on `pre_widening_visible_to`, for the same
+   * reason: conflating the two turns query drift into a confident wrong label.
+   */
   readonly lastObservedAt: unknown;
   readonly validFrom: unknown;
   readonly ingestedAt: unknown;
@@ -121,12 +140,18 @@ function asDate(value: unknown): Date | null {
  * tests pin boundaries exactly), and nothing here can reach a fact row —
  * the return value is wire data and the inputs are copies.
  *
- * `unknown` is the honest arm, not a fallback: every timestamp failed to
- * decode, so claiming any level would fabricate an age. `ingested_at` is NOT
- * NULL at rest, so `unknown` means query drift — but this module has no row id
- * to log against, and both call sites already log column drift on their own
- * paths; a silent-looking `unknown` still renders as "age unknown", which is
- * the visible degradation this surface wants.
+ * `unknown` is the honest arm, not a fallback, and it covers BOTH ways the
+ * inputs can be unusable: every timestamp failed to decode (query drift on the
+ * columns — `ingested_at` is NOT NULL at rest), or the observation column was
+ * never selected at all (`undefined`, see {@link BrainFactDecayInputs}). The
+ * drift arm refuses to anchor on the fallbacks deliberately: a page whose
+ * SELECT dropped `last_observed_at` would otherwise SORT by the real
+ * observation (the ORDER BY hint interpolates the subquery independently)
+ * while LABELLING from ingest recency — the hint/label disagreement this
+ * module exists to prevent — and would do it with a confident, plausible
+ * label. This module has no row id to log against, so the call sites own the
+ * drift warning; the classifier's job is to make the degradation VISIBLE
+ * ("age unknown") rather than wrong.
  *
  * A FUTURE anchor clamps to age 0 (`fresh`) rather than going negative — a
  * fabricated timestamp must not surface as "observed -3 days ago" with the
@@ -137,6 +162,9 @@ export function computeDecaySignal(
   attribution: BrainAttributionDecision,
   now: Date = new Date(),
 ): BrainFactDecayView {
+  if (inputs.lastObservedAt === undefined) {
+    return { level: "unknown", ageDays: null, lastObservedAt: null };
+  }
   const observed = asDate(inputs.lastObservedAt);
   const anchor = observed ?? asDate(inputs.validFrom) ?? asDate(inputs.ingestedAt);
   if (!anchor) return { level: "unknown", ageDays: null, lastObservedAt: null };

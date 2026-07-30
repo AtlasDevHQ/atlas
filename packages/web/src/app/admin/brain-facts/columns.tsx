@@ -47,8 +47,9 @@ export const tensionBadge = {
 };
 
 /**
- * Read-time staleness decay (#4914). One informational hue for every level —
- * decay is advisory temporal metadata, never a demotion and never an alarm: a
+ * Read-time staleness decay (#4914). One informational hue for the three aged
+ * levels (`unknown` goes muted — it is a data gap, not an age) — decay is
+ * advisory temporal metadata, never a demotion and never an alarm: a
  * stale fact is still the reviewed record, its trust tier and status
  * untouched. The label carries the distinction; the color only says "this is
  * about age, not about trust".

@@ -108,6 +108,10 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     ingested_at: ISO,
     updated_at: ISO,
     corroboration_count: 2,
+    // Selected by the page query (#4914) and NULL when the fact has no
+    // provenance edges — faithful to the real projection, so no test row
+    // trips the decay drift arm by accident.
+    last_observed_at: null,
     total_count: 1,
     ...overrides,
   };
@@ -946,6 +950,29 @@ describe("loadFactCandidates — read-time decay (#4914)", () => {
     const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
     expect(page.candidates[0]?.decay).toEqual({
       level: "stale",
+      ageDays: null,
+      lastObservedAt: null,
+    });
+    // ONE decision feeds both consumers — the refactor's invariant. If decay
+    // withheld while attribution disclosed (or vice versa) the row would
+    // contradict itself about the same reader's entitlement to the "when".
+    expect(page.candidates[0]?.provenance.attribution).toEqual({ visible: false });
+  });
+
+  it("reports drift, not a fabricated label, when the SELECT drops the decay anchor", async () => {
+    // `pg` never yields `undefined` for a selected column, so a row without
+    // the key means the page query stopped selecting `last_observed_at`.
+    // Anchoring on ingest would label confidently while the ORDER BY hint —
+    // which interpolates the subquery independently — kept sorting by the
+    // real observation. The classifier refuses: age unknown.
+    const { last_observed_at: _dropped, ...row } = factRow();
+    const db = reader([
+      { match: "FROM brain_facts f", rows: [row] },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(page.candidates[0]?.decay).toEqual({
+      level: "unknown",
       ageDays: null,
       lastObservedAt: null,
     });

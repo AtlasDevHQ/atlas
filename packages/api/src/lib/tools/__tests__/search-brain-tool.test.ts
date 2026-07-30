@@ -358,3 +358,34 @@ describe.each([
     expect(description).toMatch(/use the claim/i);
   });
 });
+
+/**
+ * Same two-surface pin, for #4914's staleness guidance — and for the same
+ * reason the attribution block states: a description is a string nobody would
+ * notice deleting, the two surfaces are not derived from each other, and
+ * guidance added to one reaches only half the agents.
+ */
+describe.each([
+  ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
+  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+])("%s — staleness is presented, never arbitrated (#4914)", (_label, description) => {
+  it("names the temporal wire fields the model will actually see", () => {
+    for (const field of ["decay", "validFrom", "corroborationCount"]) {
+      expect(description).toContain(field);
+    }
+    expect(description).toMatch(/stale/i);
+  });
+
+  it("tells the model to PRESENT a stale fact's age", () => {
+    expect(description).toMatch(/present .*(age|as of)/i);
+  });
+
+  it("forbids the two wrong moves: asserting as current, and dropping for age", () => {
+    // The failure mode of unguided staleness metadata is a model treating
+    // `stale` as a demotion — silently discarding the reviewed record — or
+    // ignoring it and asserting a year-old claim as today's truth. Both
+    // never-arms must survive a prompt-tightening pass.
+    expect(description).toMatch(/never (assert|discard|overrule|drop)/i);
+    expect(description).toMatch(/(as current|current[.,])/i);
+  });
+});

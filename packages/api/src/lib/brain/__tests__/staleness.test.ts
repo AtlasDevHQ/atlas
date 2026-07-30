@@ -95,6 +95,28 @@ describe("computeDecaySignal — anchor chain", () => {
     });
   });
 
+  it("treats an UNSELECTED observation column as drift, not as 'no observations'", () => {
+    // `pg` never yields `undefined` for a selected column, so `undefined`
+    // means the projection dropped the decay anchor. Falling back to ingest
+    // would produce a confident wrong label while the SQL surfacing hint —
+    // which interpolates the subquery independently — kept sorting by the
+    // real observation: the hint/label disagreement the module forbids. Same
+    // undefined-vs-NULL distinction `attributionDecision` draws.
+    const drifted = computeDecaySignal(
+      { lastObservedAt: undefined, validFrom: null, ingestedAt: daysAgo(5) },
+      "disclose",
+      NOW,
+    );
+    expect(drifted).toEqual({ level: "unknown", ageDays: null, lastObservedAt: null });
+    // The negative that keeps this arm honest: a SELECTED-but-NULL column is
+    // a legitimate "no observations yet" and still earns the fallback anchor.
+    expect(signal({ lastObservedAt: null, ingestedAt: daysAgo(5) })).toEqual({
+      level: "fresh",
+      ageDays: 5,
+      lastObservedAt: null,
+    });
+  });
+
   it("skips an unparseable observation rather than letting it shadow a real fallback", () => {
     const s = signal({ lastObservedAt: "not-a-date", ingestedAt: daysAgo(5) });
     expect(s).toEqual({ level: "fresh", ageDays: 5, lastObservedAt: null });
@@ -113,7 +135,7 @@ describe("computeDecaySignal — the withheld arm (#4836)", () => {
     });
   });
 
-  it("keeps the numbers when the anchor is one of Atlas's own disclosed clocks", () => {
+  it("keeps the numbers when the anchor is one of the claim's disclosed timestamps", () => {
     // `valid_from` / `ingested_at` are on the wire beside the decay view for
     // every reader; withholding an age derived from them protects nothing.
     expect(signal({ validFrom: daysAgo(50) }, "withhold")).toEqual({
@@ -151,9 +173,13 @@ describe("no write path exists from the decay signal (#4914 acceptance)", () => 
     // that wrote anything — a stored score, an expiry, a demotion — would need
     // a mutating verb SOMEWHERE in this file, and this pin is what makes the
     // ADR-0036 stance ("decay only surfaces, never auto-demotes") survive a
-    // refactor rather than live in a comment.
+    // refactor rather than live in a comment. Comments are stripped first so
+    // the scan is case-insensitive over CODE — prose may name UPDATE while
+    // explaining why there isn't one, and a lowercase `update` in a template
+    // literal must not slip an uppercase-only match.
     const source = await Bun.file(new URL("../staleness.ts", import.meta.url)).text();
-    expect(source).not.toMatch(/\b(UPDATE|INSERT|DELETE|TRUNCATE|ALTER|SET)\b/);
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toMatch(/\b(update|insert|delete|truncate|alter)\b/i);
     for (const fragment of [LAST_OBSERVED_AT_SELECT, STALE_SURFACING_HINT_SQL]) {
       expect(fragment).not.toMatch(/\b(update|insert|delete|truncate|alter|set)\b/i);
     }

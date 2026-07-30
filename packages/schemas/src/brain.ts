@@ -275,17 +275,34 @@ export const BrainFactPromotionBlockSchema = z.object({
 
 /**
  * The advisory decay signal (#4914). A plain nullable-fields object rather
- * than a discriminated union: unlike attribution, the withheld and the
- * merely-absent arms deliberately render the same way (the coarse level with
- * no numbers), so there is no payload a variant would have to be structurally
- * incapable of carrying — `computeDecaySignal` is the single constructor and
- * owns the entitlement decision.
+ * than a discriminated union: unlike attribution, the withheld-observation and
+ * nothing-decoded arms deliberately share one wire shape (a level with null
+ * numbers) — while a fact with no observation but a decodable fallback anchor
+ * keeps `ageDays` — so there is no discriminant on the wire and no payload a
+ * variant would have to be structurally incapable of carrying.
+ * `computeDecaySignal` is the single constructor and owns the entitlement
+ * decision.
+ *
+ * The refinements are the cross-field backstop that role otherwise loses:
+ * attribution's withheld arm gets `z.strictObject`, so a second producer that
+ * attached the withheld payload fails `checked()` on the REST surface — and a
+ * decay view carrying numbers the constructor forbids must fail the same gate.
+ * (`searchBrain` has no response parse, so on the agent path the constructor
+ * stays the only guarantee — the same honest limit the attribution schema
+ * documents.)
  */
-export const BrainFactDecayViewSchema = z.object({
-  level: z.enum(BRAIN_FACT_DECAY_LEVELS),
-  ageDays: z.number().int().nonnegative().nullable(),
-  lastObservedAt: z.string().nullable(),
-}) satisfies z.ZodType<BrainFactDecayView, unknown>;
+export const BrainFactDecayViewSchema = z
+  .object({
+    level: z.enum(BRAIN_FACT_DECAY_LEVELS),
+    ageDays: z.number().int().nonnegative().nullable(),
+    lastObservedAt: z.string().nullable(),
+  })
+  .refine((v) => v.level !== "unknown" || (v.ageDays === null && v.lastObservedAt === null), {
+    message: "an unknown decay level carries no numbers — an age beside it fabricates a reading",
+  })
+  .refine((v) => v.lastObservedAt === null || v.ageDays !== null, {
+    message: "an observation timestamp never ships without its age — the constructor sets both or neither",
+  }) satisfies z.ZodType<BrainFactDecayView, unknown>;
 
 export const BrainFactCandidateSchema = z.object({
   id: z.string(),

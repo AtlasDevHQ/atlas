@@ -465,6 +465,16 @@ function toFactResult(
   // One decision, both consumers — provenance and decay must agree about this
   // reader's entitlement to the "when" (#4836, #4914).
   const attribution = attributionDecision(row, ctx, requestId);
+  if (row.last_observed_at === undefined) {
+    // Selected-column drift on the decay anchor — the classifier reports
+    // "age unknown" instead of anchoring on ingest recency, and this is the
+    // log line that makes that degradation findable. Same posture as
+    // `attributionDecision`'s missing-column arm.
+    log.warn(
+      { rowId: row.id, workspaceId, requestId },
+      "brain search: `last_observed_at` absent from the row — the fact query no longer selects the decay anchor; reporting age unknown",
+    );
+  }
   return {
     tier: "fact",
     trustTier: 2,

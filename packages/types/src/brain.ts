@@ -271,8 +271,10 @@ export type BrainFactTensionView = BrainFactTensionVisible | BrainFactTensionWit
 export type BrainFactDecayLevel = "fresh" | "aging" | "stale" | "unknown";
 
 /**
- * The read-time decay signal attached to a fact wherever it appears — the
- * review queue, the fact detail, and `searchBrain` results.
+ * The read-time decay signal attached to every primary fact view — the review
+ * queue row, the fact detail, and `searchBrain` results. Tension counterparts
+ * deliberately carry none: they are context for a conflict, not a claim being
+ * aged on its own card.
  *
  * ADVISORY ONLY, and computed at read time from the claim's newest observation
  * (its corroborating episodes' `occurred_at`), falling back to `validFrom`,

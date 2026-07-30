@@ -112,8 +112,11 @@ function ProvenanceGrid({ provenance }: { provenance: BrainFactProvenanceView })
  *
  * Four states, each honest about what it rests on:
  *   - a decoded observation → the level plus WHEN the claim was last observed;
- *   - an age anchored only on Atlas's own clocks (`validFrom` / ingest) →
- *     the level plus the age, labelled as such — no observation is invented;
+ *   - an age anchored on the claim's other disclosed timestamps (`validFrom`
+ *     — the claim's validity start, NOT an Atlas clock — else ingest) → the
+ *     level plus the age, labelled as such; no observation is invented, and
+ *     the copy must not claim ingest specifically, because this component
+ *     cannot tell which of the two fallbacks won;
  *   - level with no numbers → the exact age is withheld WITH attribution
  *     (#4836): day-precision age restates the withheld "when", so a
  *     widened-in reader gets the bucket only, and this says why rather than
@@ -141,7 +144,8 @@ function DecaySignal({ decay }: { decay: BrainFactDecayView }) {
       ) : decay.ageDays !== null ? (
         <p className="text-xs text-muted-foreground">
           About {decay.ageDays} {decay.ageDays === 1 ? "day" : "days"} old — no source
-          observation recorded, so this is anchored on when Atlas learned it.
+          observation recorded, so this is anchored on the claim&apos;s validity start or on when
+          Atlas learned it.
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">

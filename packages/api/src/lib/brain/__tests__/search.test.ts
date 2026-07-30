@@ -99,6 +99,9 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     invalidated_at: null,
     ingested_at: new Date("2026-06-01T00:00:00Z"),
     corroboration_count: 1,
+    // Selected by the fact query (#4914); NULL = no provenance edges. Present
+    // in the fixture so no test row trips the decay drift arm by accident.
+    last_observed_at: null,
     snippet: null,
     ...overrides,
   };

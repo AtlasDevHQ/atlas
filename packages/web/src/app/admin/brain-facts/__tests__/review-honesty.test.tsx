@@ -1127,6 +1127,29 @@ describe("staleness decay is surfaced, never alarming (#4914)", () => {
     expect(view.container.textContent).not.toContain("Aging");
   });
 
+  test("flags an aging claim too — the chip is not stale-only", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "aging", ageDays: 60, lastObservedAt: ISO } }),
+    ]);
+    expect(view.container.textContent).toContain("Aging");
+  });
+
+  test("labels a fallback-anchored age honestly, and never as withheld", async () => {
+    // ageDays without an observation = the anchor fell back to the claim's
+    // validity start or ingest. This arm is distinguished from the withheld
+    // arm only by `ageDays` nullity, so a reordered ternary would show a
+    // fully-entitled reviewer "withheld with attribution" — a false ACL claim.
+    const view = await renderPage([
+      candidate({ decay: { level: "aging", ageDays: 50, lastObservedAt: null } }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("About 50 days old");
+    expect(text).toContain("validity start");
+    expect(text).not.toContain("withheld");
+  });
+
   test("says when the claim was last observed in the detail sheet", async () => {
     const view = await renderPage([
       candidate({ decay: { level: "stale", ageDays: 400, lastObservedAt: ISO } }),

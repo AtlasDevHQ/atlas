@@ -147,6 +147,20 @@ describe("buildFactQuery — push-down and the tombstone trap", () => {
     expect(sql).toContain("f.invalidated_at IS NULL");
   });
 
+  it("hides superseded facts exactly as tombstoned ones — the fourth gate (#4912)", () => {
+    // The regression this pins cuts both ways: a `valid_to IS NULL` row (every
+    // pre-supersession fact) must still satisfy the predicate — the OR arm is
+    // what keeps the whole corpus readable — while a stamped `valid_to` in the
+    // past falls out of it, because a human promotion explicitly replaced that
+    // belief and serving it as current would undo the arbitration.
+    const { sql } = buildFactQuery("published", { limit: 10, ...acl(ctx(), "brain_facts") });
+    expect(sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+    // Developer mode overlays DRAFTS, not superseded history — the supersession
+    // axis is orthogonal to review status and gates both modes.
+    const dev = buildFactQuery("developer", { limit: 10, ...acl(ctx(), "brain_facts") });
+    expect(dev.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+  });
+
   it("keeps the LIMIT and the ranking BELOW the gated WHERE, so an unreadable row is never ranked or counted", () => {
     const { sql } = buildFactQuery("published", {
       query: "billing",

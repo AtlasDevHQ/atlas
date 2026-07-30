@@ -550,6 +550,72 @@ export interface BrainFactOversight {
    * disclosure stays exact even when the breakdown is clipped.
    */
   readonly bucketsTruncated: boolean;
+  /**
+   * What the next publish will SUPERSEDE (#4912) — the disclosure that makes
+   * "no silent supersession" true before the admin confirms.
+   *
+   * Optional on the TYPE for deploy-skew tolerance only (an older API omits
+   * it, and the panel then simply renders no supersession notice — the
+   * pre-#4912 behaviour, when there was nothing to disclose). The current API
+   * always emits it; the server-side wire schema requires it.
+   */
+  readonly willSupersede?: BrainFactWillSupersede;
+}
+
+/**
+ * One supersession the next publish will perform (#4912): promoting `draft`
+ * stamps `superseded`'s `valid_to` and writes a `supersedes` edge, in the same
+ * transaction. Both claims are rendered because the pair IS the disclosure —
+ * "X replaces Y" is what the admin is confirming.
+ *
+ * Unlike the oversight buckets this is CONTENT, so it is reader-scoped: a pair
+ * appears here only when the reader's own fail-closed ACL predicate admits
+ * BOTH rows. Everything else is a number in
+ * {@link BrainFactWillSupersede.withheld} — never a placeholder row, for
+ * the publish preview's stated reason: a row carrying only a fact id would
+ * disclose which facts exist without disclosing what they say.
+ */
+export interface BrainFactWillSupersedePair {
+  /** The draft whose promotion supersedes. */
+  readonly draftId: string;
+  /** The draft's SPO claim, `subject predicate object`. */
+  readonly draftLabel: string;
+  /** The published fact whose `valid_to` the promotion will stamp. */
+  readonly supersededId: string;
+  readonly supersededLabel: string;
+}
+
+/**
+ * The will-supersede disclosure (#4912). `pairs` is reader-scoped and capped;
+ * `withheld` counts the pairs the reader may not read (either side); the two
+ * never overlap, so `pairs.length + withheld` understates only when
+ * {@link truncated} is set.
+ */
+export interface BrainFactWillSupersede {
+  /**
+   * How many supersessions the next publish will perform, workspace-wide and
+   * uncapped — the headline number. Carried explicitly because
+   * `pairs.length + withheld` stops being it the moment {@link truncated}
+   * bites, for `distinctAudiences`' reason: the client must never infer a
+   * cardinality from a capped array.
+   */
+  readonly total: number;
+  readonly pairs: readonly BrainFactWillSupersedePair[];
+  /**
+   * Supersessions the next publish will perform that this reader may NOT see —
+   * a count, never content, mirroring the publish preview's
+   * `brainFactsWithheld`. Publish is workspace-scoped, so these happen
+   * regardless of who presses the button; the count is what keeps that from
+   * being silent.
+   */
+  readonly withheld: number;
+  /**
+   * True when `pairs` is clipped at the response cap. The clipped remainder is
+   * NOT folded into {@link withheld} — that number means "hidden from you by
+   * ACL", and a truncation dressed as an ACL boundary would send the admin
+   * looking for private channels that do not exist.
+   */
+  readonly truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------

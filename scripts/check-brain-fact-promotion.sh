@@ -1,7 +1,8 @@
 #!/bin/bash
 # Refuse any write to `brain_facts.status`, or any MUTATION of
-# `brain_facts.visible_to`, outside the atomic publish endpoint (#4769 / #4823,
-# ADR-0036 — acceptance criterion 4). Scope + blind spots below.
+# `brain_facts.visible_to` or `brain_facts.valid_to`, outside the atomic
+# publish endpoint (#4769 / #4823 / #4912, ADR-0036). Scope + blind spots
+# below.
 #
 # `brain_facts.status` is the fact class's review gate. ADR-0036 makes the gate
 # the brain's conflict-resolution mechanism, which only holds if `draft →
@@ -30,6 +31,8 @@
 # WHAT IS REFUSED (each has a fixture in the adversarial suite)
 #   - `UPDATE [schema.]brain_facts … SET … status …`
 #   - `UPDATE [schema.]brain_facts … SET … visible_to …`
+#   - `UPDATE [schema.]brain_facts … SET … valid_to …` (#4912 — the
+#     supersession stamp; UPDATE-only like the grant, see the column notes)
 #   - `INSERT INTO [schema.]brain_facts (… status …)`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … visible_to …`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
@@ -221,8 +224,19 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # withheld corpus-wide. A "backfill the pre-widening grant from evidence edges"
 # script — which migration 0183's header explicitly forecloses — is exactly the
 # shape that would otherwise slip through.
-UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to)'
-ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo)'
+#
+# `valid_to` (#4912) is the third gated column, UPDATE-only like the grant:
+# "a human promotion stamps `valid_to`; there is no autonomous supersession"
+# (ADR-0036 §Temporal). Its only writer is `promoteBrainFacts`' supersession
+# stamp (M2's `correct_fact` will be the second, through the same allowlisted
+# review-gate machinery); a second writer would retire a belief no human
+# arbitrated — and unlike a stray `status` write the damage is INVISIBLE, since
+# every as-of-now read hides the row it touched. INSERT is deliberately not
+# gated: `INSERT_FACT_SQL` names `valid_from` (a producer may know when a claim
+# began), never `valid_to`, and a future entry point importing a fact with a
+# closed validity window is a restore, not an arbitration.
+UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to)'
+ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo)'
 
 # Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
 # ECHOES which one — the two have completely different remedies, and a message
@@ -232,7 +246,7 @@ ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo)'
 statement_writes_gated_column() {
   local stmt="$1"
 
-  # Raw SQL — UPDATE … SET … status / visible_to
+  # Raw SQL — UPDATE … SET … status / visible_to / valid_to
   if grep -qiE "UPDATE[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
     && grep -qiE '\bSET\b' <<<"$stmt"; then
     if grep -qiE '\bstatus\b' <<<"$stmt"; then
@@ -241,6 +255,10 @@ statement_writes_gated_column() {
     fi
     if grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
       echo visible_to
+      return 0
+    fi
+    if grep -qiE '\bvalid_to\b' <<<"$stmt"; then
+      echo valid_to
       return 0
     fi
   fi
@@ -293,6 +311,10 @@ statement_writes_gated_column() {
       echo visible_to
       return 0
     fi
+    if grep -qE '\bvalidTo\b' <<<"$stmt"; then
+      echo valid_to
+      return 0
+    fi
   fi
   if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
     && grep -qE '\bstatus\b' <<<"$stmt"; then
@@ -312,11 +334,12 @@ statement_writes_gated_column() {
 }
 
 OFFENDERS=""
-# Which arm(s) fired — the two columns have completely different remedies, so
-# only the relevant advice is printed. Printing both would put a wrong fix in
+# Which arm(s) fired — the three columns have completely different remedies, so
+# only the relevant advice is printed. Printing all would put a wrong fix in
 # front of every reader, and "omit the column" is actively wrong for a grant.
 SAW_STATUS=0
 SAW_GRANT=0
+SAW_VALIDITY=0
 if [ -n "$CANDIDATES" ]; then
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -343,7 +366,11 @@ if [ -n "$CANDIDATES" ]; then
       [ -z "$stmt" ] && continue
       if column=$(statement_writes_gated_column "$stmt"); then
         OFFENDERS="${OFFENDERS}${f}  (${column})"$'\n'
-        [ "$column" = "visible_to" ] && SAW_GRANT=1 || SAW_STATUS=1
+        case "$column" in
+          visible_to) SAW_GRANT=1 ;;
+          valid_to) SAW_VALIDITY=1 ;;
+          *) SAW_STATUS=1 ;;
+        esac
         break
       fi
     done < <(eval "$STRIP_COMMENTS \"\$f\"" | tr '\n' ' ' | tr ';' '\n' \
@@ -354,10 +381,12 @@ fi
 OFFENDERS=$(echo "${OFFENDERS%$'\n'}" | grep -v '^$' || true)
 
 if [ -n "$OFFENDERS" ]; then
-  if [ "$SAW_GRANT" -eq 1 ] && [ "$SAW_STATUS" -eq 1 ]; then
-    echo "::error::a company-brain fact's \`status\` and \`visible_to\` are written outside the atomic publish endpoint (#4769 / #4823)."
+  if [ $((SAW_STATUS + SAW_GRANT + SAW_VALIDITY)) -gt 1 ]; then
+    echo "::error::a company-brain fact's gated columns (\`status\` / \`visible_to\` / \`valid_to\`) are written outside the atomic publish endpoint (#4769 / #4823 / #4912)."
   elif [ "$SAW_GRANT" -eq 1 ]; then
     echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)."
+  elif [ "$SAW_VALIDITY" -eq 1 ]; then
+    echo "::error::a company-brain fact's \`valid_to\` is stamped outside the atomic publish endpoint (#4912)."
   else
     echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)."
   fi
@@ -383,6 +412,29 @@ if [ -n "$OFFENDERS" ]; then
     echo ""
   fi
 
+  if [ "$SAW_VALIDITY" -eq 1 ]; then
+    echo "\`brain_facts.valid_to\` is the supersession stamp (ADR-0036 §Temporal):"
+    echo "\"a human promotion stamps valid_to; there is no autonomous supersession\"."
+    echo "Its only writer is \`promoteBrainFacts\`' supersession arm, inside the"
+    echo "publish transaction, where the will-supersede disclosure ran BEFORE the"
+    echo "admin confirmed. A second writer retires a belief no human arbitrated —"
+    echo "and invisibly, because every as-of-now read hides the row it touched."
+    echo ""
+    echo "Fixes for a \`valid_to\` write:"
+    echo "  * Superseding because a newer value arrived? Don't write it. Let the"
+    echo "    claim reconcile into a draft; the publish gate stamps the rival when"
+    echo "    a human promotes it (#4912)."
+    echo "  * Retracting? That is \`invalidated_at\`, the tombstone — a different"
+    echo "    axis. Superseded facts stay readable to as-of reads; retracted ones"
+    echo "    are withdrawn."
+    echo "  * Writing a NEW fact with a known validity START? \`valid_from\` on the"
+    echo "    INSERT is fine and ungated; \`valid_to\` is not yours to close."
+    echo "  * Genuinely a new gate-time decision (a \`correct_fact\` verb)? It"
+    echo "    belongs beside \`promoteBrainFacts\`, or in an allowlisted file WITH a"
+    echo "    recorded rationale."
+    echo ""
+  fi
+
   if [ "$SAW_GRANT" -eq 1 ]; then
     echo "\`brain_facts.visible_to\` is the fact's ACL. ADR-0036 §T5 makes it a"
     echo "per-version snapshot that may widen ONLY at the review gate — which is"
@@ -404,4 +456,4 @@ if [ -n "$OFFENDERS" ]; then
   exit 1
 fi
 
-echo "Brain-fact promotion check passed — no ungated status or visible_to write to brain_facts outside the atomic publish endpoint."
+echo "Brain-fact promotion check passed — no ungated status, visible_to, or valid_to write to brain_facts outside the atomic publish endpoint."

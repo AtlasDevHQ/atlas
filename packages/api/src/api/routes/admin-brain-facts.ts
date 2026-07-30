@@ -59,7 +59,7 @@ import {
   loadFactCandidates,
   retractFactCandidate,
 } from "@atlas/api/lib/brain/candidates";
-import { loadFactOversight } from "@atlas/api/lib/brain/oversight";
+import { loadFactOversight, loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
@@ -233,7 +233,8 @@ const oversightRoute = createRoute({
     "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. " +
     "Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. " +
     "A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. " +
-    "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped.",
+    "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped. " +
+    "`willSupersede` discloses what the next publish will supersede (#4912): promoting a single-cardinality draft that collides with a live published fact stamps the old fact's `valid_to` atomically with the promotion. The pairs list both claims and is gated by the reader's own visibility predicate on BOTH sides; supersessions the reader may not see travel as `willSupersede.withheld` — a count, never content.",
   responses: {
     200: {
       description: "Per-audience counts by state, plus workspace totals",
@@ -357,13 +358,25 @@ adminBrainFacts.openapi(oversightRoute, async (c) => {
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
       // The reader context is resolved even though the WORKSPACE counts do not
-      // use it. Two jobs: it produces the one scoped number
-      // (`reviewableAwaitingReview`), and it makes an unresolvable identity a
-      // 500 rather than a workspace shape served to a session Atlas could not
-      // identify.
+      // use it. Three jobs now: it produces the one scoped number
+      // (`reviewableAwaitingReview`), it gates the will-supersede pair labels
+      // (#4912), and it makes an unresolvable identity a 500 rather than a
+      // workspace shape served to a session Atlas could not identify.
       const ctx = yield* reviewerContext(mode, user, orgId, requestId);
       const oversight = yield* Effect.tryPromise({
-        try: () => loadFactOversight(getInternalDB(), ctx, requestId),
+        try: async () => {
+          // One request, two loaders — the same "one request, not one
+          // snapshot" contract `loadFactOversight` documents for its own
+          // statements. The supersession preview is merged here rather than
+          // inside the counts loader so the counts aggregate keeps its
+          // numbers-only contract and its own tests.
+          const db = getInternalDB();
+          const [counts, willSupersede] = await Promise.all([
+            loadFactOversight(db, ctx, requestId),
+            loadSupersessionPreview(db, ctx, requestId),
+          ]);
+          return { ...counts, willSupersede };
+        },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 

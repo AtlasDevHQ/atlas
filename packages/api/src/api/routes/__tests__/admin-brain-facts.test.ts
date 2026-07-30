@@ -134,6 +134,15 @@ let oversightResponse: Record<string, unknown> = {
 let oversightCalls = 0;
 /** The principal context the route handed the aggregate — see the test below. */
 let oversightCtx: unknown;
+/** The will-supersede half (#4912), stubbed on the same terms as the counts. */
+let supersessionPreviewResponse: Record<string, unknown> = {
+  total: 0,
+  pairs: [],
+  withheld: 0,
+  truncated: false,
+};
+let supersessionPreviewCalls = 0;
+let supersessionPreviewCtx: unknown;
 // EVERY named export, not just the two this route reaches: `mock.module` is
 // file-global, so a partial factory link-fails the moment anything else in the
 // graph imports one of the omitted names.
@@ -143,12 +152,20 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
   OVERSIGHT_BUCKETS_SQL: "SELECT token FROM brain_facts",
   OVERSIGHT_TOTALS_SQL: "SELECT 1 FROM brain_facts",
   OVERSIGHT_DISTINCT_TOKENS_SQL: "SELECT 1 FROM brain_facts",
+  WILL_SUPERSEDE_PAIR_MAX: 100,
+  WILL_SUPERSEDE_TOTAL_SQL: "SELECT 1 FROM brain_facts",
+  willSupersedePairsSql: () => "SELECT 1 FROM brain_facts",
   loadConfiguredChannels: async () => new Map(),
   classifyToken: () => ({ kind: "org", labelPolicy: "intrinsic" }),
   loadFactOversight: async (_db: unknown, ctx: unknown) => {
     oversightCalls++;
     oversightCtx = ctx;
     return oversightResponse;
+  },
+  loadSupersessionPreview: async (_db: unknown, ctx: unknown) => {
+    supersessionPreviewCalls++;
+    supersessionPreviewCtx = ctx;
+    return supersessionPreviewResponse;
   },
 }));
 
@@ -212,6 +229,9 @@ beforeEach(() => {
   ORG_ID = CURRENT_ORG;
   oversightCalls = 0;
   oversightCtx = undefined;
+  supersessionPreviewCalls = 0;
+  supersessionPreviewCtx = undefined;
+  supersessionPreviewResponse = { total: 0, pairs: [], withheld: 0, truncated: false };
   oversightResponse = {
     buckets: [],
     workspaceTotals: {
@@ -443,6 +463,39 @@ describe("GET /oversight", () => {
     // exactly the false all-clear #4825 recorded.
     expect(body.reviewableAwaitingReview).toBe(26);
     expect((body.workspaceTotals as { awaitingReview: number }).awaitingReview).toBe(32);
+  });
+
+  it("merges the will-supersede disclosure into the same response (#4912)", async () => {
+    // The strict schema REQUIRES the section, so a route that stopped merging
+    // it would 500 rather than quietly retire the disclosure — but the happy
+    // path is pinned too: the pairs must actually ship.
+    supersessionPreviewResponse = {
+      total: 2,
+      pairs: [
+        {
+          draftId: "d1",
+          draftLabel: "alice manager bob",
+          supersededId: "o1",
+          supersededLabel: "alice manager carol",
+        },
+      ],
+      withheld: 1,
+      truncated: false,
+    };
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { willSupersede: unknown };
+    expect(body.willSupersede).toEqual(supersessionPreviewResponse);
+    expect(supersessionPreviewCalls).toBe(1);
+  });
+
+  it("hands the will-supersede loader the SAME reviewer context as the counts", async () => {
+    // The pair labels are content, and the reader context is what scopes them.
+    // A route that resolved a second, wider context for this half would hand
+    // the disclosure claims the queue itself refuses to show.
+    await adminBrainFacts.request("/oversight");
+    expect(supersessionPreviewCtx).toEqual(oversightCtx);
+    expect(JSON.stringify(supersessionPreviewCtx)).not.toContain("override");
   });
 
   it("hands the aggregate the reviewer's OWN member-table context", async () => {

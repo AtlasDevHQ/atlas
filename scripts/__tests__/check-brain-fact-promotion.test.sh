@@ -305,6 +305,36 @@ run_fixture "UPDATE of another table's visible_to passes" pass \
 'await db.query(`UPDATE brain_episodes SET visible_to = ARRAY['"'"'org'"'"'] WHERE id = $1`);
 const live = await db.query(`SELECT id FROM brain_facts`);'
 
+# ── valid_to (#4912): the supersession stamp, UPDATE-only like the grant ──
+
+run_fixture "UPDATE … SET valid_to fails (autonomous supersession)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET valid_to = now() WHERE workspace_id = $1 AND subject = $2`);'
+
+run_fixture "Drizzle .update().set({validTo}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ validTo: new Date() }).where(eq(brainFacts.id, id));'
+
+run_fixture "INSERT naming valid_from passes — a producer may open a window, never close one" pass \
+  "packages/api/src/lib/brain/reconcile-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, valid_from, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5::timestamptz,$6::jsonb,$7::uuid, ARRAY(SELECT jsonb_array_elements_text($8::jsonb)))`);'
+
+run_fixture "SELECT filtering on valid_to passes — reads are the point of the column" pass \
+  "packages/api/src/lib/brain/read.ts" \
+'const rows = await db.query(`SELECT id FROM brain_facts WHERE workspace_id = $1 AND invalidated_at IS NULL AND valid_to IS NULL`);'
+
+# The allowlisted adapter is where the supersession stamp lives.
+run_fixture "the allowlisted adapter's supersession stamp passes" pass \
+  "packages/api/src/lib/content-mode/adapters/brain-facts.ts" \
+'await tx.query(`UPDATE brain_facts SET valid_to = now(), updated_at = now() WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND status = '"'"'published'"'"' AND valid_to IS NULL RETURNING id::text AS id`);'
+
+# `invalidated_at` contains the letters of neither gated column; a retraction
+# must keep passing now that `valid_to` is gated (the \b boundary pin).
+run_fixture "retraction still passes with valid_to gated" pass \
+  "packages/api/src/lib/brain/retract2.ts" \
+'await db.query(`UPDATE brain_facts AS f SET invalidated_at = now(), updated_at = now() WHERE f.id = $1 AND f.invalidated_at IS NULL`);'
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

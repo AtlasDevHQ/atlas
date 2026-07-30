@@ -20,8 +20,12 @@
  *   **An admin learns that facts exist they cannot see — a number, never
  *   content.**
  *
- * Mechanically that means: no query here selects `subject`, `predicate`,
- * `object`, `provenance`, `source_episode_id`, or anything off `brain_episodes`.
+ * Mechanically that means: no UNSCOPED query here selects `subject`,
+ * `predicate`, `object`, `provenance`, `source_episode_id`, or anything off
+ * `brain_episodes`. There is exactly ONE statement in this module that selects
+ * claim content — `willSupersedePairsSql` (#4912) — and it is reader-scoped on
+ * both of its aliases, so it can only show a reader claims their own queue
+ * already shows them; see its header for why that does not breach this rule.
  *
  * TWO non-numeric values reach the wire, and an auditor must check both:
  * `label`, only when {@link classifyToken} rules the token disclosable; and
@@ -74,6 +78,10 @@ import {
 } from "@atlas/api/lib/brain/candidates";
 import { parseChatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import {
+  supersedingDraftPredicate,
+  supersessionCollisionJoin,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
   SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SOURCE,
   parseSlackHistoryConfig,
@@ -84,6 +92,8 @@ import type {
   BrainFactOversightBucketKind,
   BrainFactOversightLabelPolicy,
   BrainFactOversightTotals,
+  BrainFactWillSupersede,
+  BrainFactWillSupersedePair,
 } from "@useatlas/types";
 
 const log = createLogger("brain-oversight");
@@ -744,4 +754,208 @@ async function countDistinctTokens(
     meta,
     degraded,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Will-supersede disclosure (#4912)
+// ---------------------------------------------------------------------------
+
+/** Most supersession pairs one response enumerates. A payload bound, like
+ * {@link OVERSIGHT_BUCKET_MAX} — overrun is reported (`truncated`), never
+ * silent, and never laundered into `withheld`, which means something else. */
+export const WILL_SUPERSEDE_PAIR_MAX = 100;
+
+/**
+ * How many supersessions the next publish will perform, workspace-wide.
+ *
+ * Unscoped like the count aggregates above, and content-free like them: one
+ * number, no claim. It is what makes `withheld` honest — publish is
+ * workspace-scoped, so the pairs a reader cannot see still happen.
+ *
+ * The collision join and the draft predicate are IMPORTED from the promotion
+ * adapter, not restated: a disclosure that drifted from the transaction's own
+ * collision rule would list one set while publish stamps another, which is
+ * silent supersession through drift — the exact failure #4912 forbids.
+ */
+export const WILL_SUPERSEDE_TOTAL_SQL = `SELECT COUNT(*)::int AS will_supersede_total
+    FROM brain_facts d
+    ${supersessionCollisionJoin("d", "p")}
+   WHERE d.workspace_id = $1
+     AND ${supersedingDraftPredicate("d")}`;
+
+/**
+ * The reader-visible pairs, BOTH sides gated by the reader's own predicate.
+ *
+ * This is the one statement under `lib/brain/oversight.ts` that selects claim
+ * content, and the module rule ("a number, never content") survives it intact:
+ * that rule governs the UNSCOPED aggregates, and this projection is
+ * reader-scoped on both aliases — a pair appears only when the reader is
+ * entitled to read both rows at `/admin/brain-facts`. Everything the ACL
+ * withholds travels as the count above. Requiring BOTH sides (not just the
+ * published one) is deliberate: "something you cannot see will replace X" and
+ * "Y will replace something you cannot see" each disclose half a claim's
+ * history to a reader the grant excluded from the other half.
+ *
+ * `COUNT(*) OVER ()` carries the true scoped cardinality past the LIMIT, so
+ * `truncated` is detected rather than assumed — same pattern as
+ * `loadFactCandidates`.
+ *
+ * `draftAclSql` / `publishedAclSql` are interpolated, so callers pass clauses
+ * they built — same contract as `brainFactPreviewSql`.
+ */
+export function willSupersedePairsSql(
+  draftAclSql: string,
+  publishedAclSql: string,
+  limitParam: number,
+): string {
+  return `SELECT d.id::text AS draft_id,
+         d.subject || ' ' || d.predicate || ' ' || d.object AS draft_label,
+         p.id::text AS superseded_id,
+         p.subject || ' ' || p.predicate || ' ' || p.object AS superseded_label,
+         COUNT(*) OVER ()::int AS scoped_total
+    FROM brain_facts d
+    ${supersessionCollisionJoin("d", "p")}
+   WHERE ${draftAclSql}
+     AND ${publishedAclSql}
+     AND ${supersedingDraftPredicate("d")}
+   ORDER BY d.ingested_at, d.id, p.ingested_at, p.id
+   LIMIT $${limitParam}`;
+}
+
+/**
+ * What the next publish will supersede, disclosed BEFORE the admin confirms
+ * (#4912) — the temporal sibling of #4825's hidden-backlog delta.
+ *
+ * Promoting a `single`-cardinality draft that collides with a live published
+ * fact stamps the old fact's `valid_to` inside the publish transaction, and
+ * every as-of-now read then hides it. Nothing about that is wrong — it is the
+ * supersession model — but it must never be SILENT: the superseded side is
+ * invisible by construction afterwards, so this preview is the one moment the
+ * replacement can be seen as a pair.
+ *
+ * Two statements, one request: the unscoped total (a number, never content)
+ * and the reader-scoped pairs. `withheld` is their difference — supersessions
+ * that will happen regardless, listing rows this reader may not read.
+ *
+ * @throws {BrainReaderUnresolvedError} when the reader has no usable
+ *   principals, for {@link loadFactOversight}'s reason.
+ */
+export async function loadSupersessionPreview(
+  db: BrainCandidateReader,
+  ctx: BrainPrincipalContext,
+  requestId?: string,
+): Promise<BrainFactWillSupersede> {
+  const workspaceId = ctx.workspaceId;
+  const draftAcl = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: "d",
+    paramIndex: 1,
+    requestId,
+  });
+  if (draftAcl.decision === "deny-all") {
+    throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, OVERSIGHT_SURFACE);
+  }
+  const publishedAcl = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: "p",
+    paramIndex: draftAcl.nextParamIndex,
+    requestId,
+  });
+  if (publishedAcl.decision === "deny-all") {
+    // Unreachable — same context, same table, and the first clause already
+    // resolved. Kept because a silent empty pair list under a deny would render
+    // as "nothing will be superseded", the exact false all-clear this surface
+    // exists to prevent.
+    throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, OVERSIGHT_SURFACE);
+  }
+
+  const limitParam = publishedAcl.nextParamIndex;
+  const [totalResult, pairsResult] = await Promise.all([
+    db.query(WILL_SUPERSEDE_TOTAL_SQL, [workspaceId]),
+    db.query(willSupersedePairsSql(draftAcl.sql, publishedAcl.sql, limitParam), [
+      ...draftAcl.params,
+      ...publishedAcl.params,
+      WILL_SUPERSEDE_PAIR_MAX + 1,
+    ]),
+  ]);
+
+  const rawTotal = (totalResult.rows[0] as Record<string, unknown> | undefined)
+    ?.will_supersede_total;
+  const total =
+    typeof rawTotal === "number"
+      ? rawTotal
+      : typeof rawTotal === "string" && rawTotal.trim() !== ""
+        ? Number(rawTotal)
+        : Number.NaN;
+  if (!Number.isFinite(total) || total < 0) {
+    // A THROW, not a degraded 0, for the missing-totals-row reason above: 0
+    // renders as "this publish supersedes nothing", a confident false
+    // all-clear fabricated from query drift, on the surface whose whole job is
+    // this disclosure. `COUNT(*)` cannot return NULL, so this is unreachable
+    // from Postgres.
+    throw new Error(
+      `brain oversight: the will-supersede total did not read back as a number for workspace ${workspaceId} — refusing to disclose a supersession scope Atlas cannot establish`,
+    );
+  }
+
+  const rawRows = pairsResult.rows;
+  const clipped = rawRows.length > WILL_SUPERSEDE_PAIR_MAX;
+  const pairs: BrainFactWillSupersedePair[] = [];
+  let scopedTotal = 0;
+  let droppedRows = 0;
+  for (const raw of clipped ? rawRows.slice(0, WILL_SUPERSEDE_PAIR_MAX) : rawRows) {
+    if (typeof raw !== "object" || raw === null) {
+      droppedRows++;
+      continue;
+    }
+    const r = raw as Record<string, unknown>;
+    if (
+      typeof r.draft_id !== "string" ||
+      typeof r.draft_label !== "string" ||
+      typeof r.superseded_id !== "string" ||
+      typeof r.superseded_label !== "string"
+    ) {
+      droppedRows++;
+      continue;
+    }
+    // The window rides every row; reading it off each kept row rather than only
+    // the first means one drifted row costs the breakdown one pair, not the
+    // whole scoped count.
+    const windowed = typeof r.scoped_total === "number" ? r.scoped_total : Number(r.scoped_total);
+    if (Number.isFinite(windowed) && windowed > scopedTotal) scopedTotal = Math.trunc(windowed);
+    pairs.push({
+      draftId: r.draft_id,
+      draftLabel: r.draft_label,
+      supersededId: r.superseded_id,
+      supersededLabel: r.superseded_label,
+    });
+  }
+  if (droppedRows > 0) {
+    // Dropped, never coerced — but a dropped pair UNDERSTATES a disclosure, so
+    // it is loud. The total above is a separate statement and unaffected.
+    log.warn(
+      { workspaceId, requestId, droppedRows, kept: pairs.length },
+      "brain oversight: will-supersede pair rows came back with an unreadable column — the pair list understates what publish will supersede; the query shape changed",
+    );
+  }
+  if (scopedTotal < pairs.length) scopedTotal = pairs.length;
+
+  if (scopedTotal > total) {
+    // The scoped pairs are a subset of the unscoped total at any instant, so
+    // this is the two-statements race `loadFactOversight` documents — or drift.
+    // Clamped rather than surfaced as a negative `withheld`: this number is
+    // "and N more you cannot see", and under a race the honest answer is
+    // "none extra that we know of". Never clamped silently.
+    log.warn(
+      { workspaceId, requestId, scopedTotal, total },
+      "brain oversight: the reader-scoped will-supersede count exceeds the workspace count — a brief ingest race, or the two statements disagree; reporting 0 withheld",
+    );
+  }
+
+  return {
+    total: Math.trunc(total),
+    pairs,
+    withheld: Math.max(0, total - scopedTotal),
+    truncated: scopedTotal > pairs.length,
+  };
 }

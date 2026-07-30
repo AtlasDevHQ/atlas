@@ -279,6 +279,17 @@ describe("loadFactCandidates — visibility", () => {
     await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
   });
+
+  it("excludes SUPERSEDED facts exactly as tombstoned ones (#4912)", async () => {
+    // A stamped `valid_to` means a human promotion replaced this belief; there
+    // is no trust call left to make on it and it leaves the queue the way a
+    // retraction does. The OR arm is the regression pin for the other
+    // direction: every `valid_to IS NULL` row — the whole pre-supersession
+    // corpus — still satisfies the predicate.
+    const db = reader([{ match: "FROM brain_facts f", rows: [factRow()] }]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(db.calls[0]?.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+  });
 });
 
 describe("loadFactCandidates — filters", () => {
@@ -587,6 +598,10 @@ describe("loadFactCandidateSummary", () => {
       publishedTotal: 9,
     });
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
+    // The supersession axis (#4912): a superseded fact leaves the stats bar
+    // the same way a tombstoned one does — including `publishedTotal`, which
+    // otherwise counts rows the queue's own published filter would hide.
+    expect(db.calls[0]?.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
   });
 });
 
@@ -604,6 +619,11 @@ describe("retractFactCandidate", () => {
     const sql = db.calls[0]?.sql ?? "";
     expect(sql).toContain("invalidated_at = now()");
     expect(sql).not.toContain("status");
+    // Nor `valid_to` (#4912) — retraction is the tombstone axis, supersession
+    // is the validity axis, and the same guard now refuses this column too. A
+    // retract that also closed the validity window would rewrite when a belief
+    // ENDED out of a verb that only says it was withdrawn.
+    expect(sql).not.toContain("valid_to");
     expect(result).toEqual({ id: "fact-1", invalidatedAt: ISO });
   });
 

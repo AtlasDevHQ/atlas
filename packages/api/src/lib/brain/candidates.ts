@@ -38,7 +38,10 @@
  *
  * `invalidated_at IS NULL` is AND-ed on top and is NOT one of the four — it is
  * the tombstone axis, which `brainFactStatusClause` explicitly does not cover,
- * so every current-belief read has to add it itself.
+ * so every current-belief read has to add it itself. So is
+ * `brainFactCurrentClause` (#4912), the supersession axis: a superseded fact is
+ * still `published` and still not retracted, and it leaves this surface the
+ * same way a tombstoned one does.
  *
  * ## The episode is gated in its own right — the likeliest leak in the slice
  *
@@ -64,6 +67,7 @@ import {
   type BrainAttributionDecision,
 } from "@atlas/api/lib/brain/attribution";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { brainFactCurrentClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { BRAIN_FACT_REVIEW_STATUSES, type BrainFactStatusFilter } from "@useatlas/schemas";
 import type {
   BrainEntityRole,
@@ -618,7 +622,15 @@ function candidateWhere(
   aclParams: readonly unknown[],
 ): { where: string[]; params: unknown[] } {
   const params: unknown[] = [...aclParams];
-  const where: string[] = [aclSql, "f.invalidated_at IS NULL"];
+  const where: string[] = [
+    aclSql,
+    "f.invalidated_at IS NULL",
+    // The supersession axis (#4912): a fact whose `valid_to` has passed was
+    // replaced at the publish gate and leaves the review surface exactly as a
+    // tombstoned one does — there is no trust call left to make on it, and the
+    // as-of reads M2 adds are where it stays readable.
+    brainFactCurrentClause("f"),
+  ];
 
   const status = options.status ?? "draft";
   if (status !== "all") {
@@ -985,7 +997,9 @@ async function loadTensions(
     // would make a contradiction vanish the moment somebody rejected one side.
     // It IS selected and carried to the wire as `invalidatedAt`, because
     // retraction never writes `status` — so without it a withdrawn rival would
-    // render as an indistinguishable live `draft`.
+    // render as an indistinguishable live `draft`. `valid_to` is not filtered
+    // either, for the same reason on the supersession axis (#4912): a
+    // superseded rival is still why the claim was contested.
     const result = await db.query(
       `SELECT ${CANDIDATE_COLUMNS},
               ${CORROBORATION_SELECT} AS corroboration_count
@@ -1073,7 +1087,8 @@ export async function loadFactCandidateSummary(
             COUNT(*) FILTER (WHERE f.status = 'published')::int AS published_total
        FROM brain_facts f
       WHERE ${acl.sql}
-        AND f.invalidated_at IS NULL`,
+        AND f.invalidated_at IS NULL
+        AND ${brainFactCurrentClause("f")}`,
     [...acl.params],
   );
 

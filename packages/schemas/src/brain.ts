@@ -41,6 +41,8 @@ import type {
   BrainFactRetractResponse,
   BrainFactReviewStatus,
   BrainFactTensionView,
+  BrainFactWillSupersede,
+  BrainFactWillSupersedePair,
   BrainResultTier,
 } from "@useatlas/types";
 
@@ -391,6 +393,28 @@ export const BrainFactOversightBucketSchema = z.discriminatedUnion("labelPolicy"
   }),
 ]) satisfies z.ZodType<BrainFactOversightBucket, unknown>;
 
+/**
+ * One supersession the next publish will perform (#4912). Strict on both arms'
+ * behalf: unlike the oversight buckets this DOES carry content (both SPO
+ * claims), which is legitimate — the list is reader-ACL-scoped, per the type —
+ * but exactly because content is allowed here, an extra key must be refused
+ * rather than stripped: this is the one object in the oversight envelope where
+ * "somebody attached the provenance payload" would otherwise ship.
+ */
+export const BrainFactWillSupersedePairSchema = z.strictObject({
+  draftId: z.string(),
+  draftLabel: z.string(),
+  supersededId: z.string(),
+  supersededLabel: z.string(),
+}) satisfies z.ZodType<BrainFactWillSupersedePair, unknown>;
+
+export const BrainFactWillSupersedeSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  pairs: z.array(BrainFactWillSupersedePairSchema),
+  withheld: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<BrainFactWillSupersede, unknown>;
+
 const OVERSIGHT_ENVELOPE_FIELDS = {
   buckets: z.array(BrainFactOversightBucketSchema),
   workspaceTotals: BrainFactOversightTotalsSchema,
@@ -420,7 +444,14 @@ const OVERSIGHT_ENVELOPE_FIELDS = {
  * cost of failing open for the disclosure.
  */
 export const BrainFactOversightSchema = z
-  .strictObject(OVERSIGHT_ENVELOPE_FIELDS)
+  .strictObject({
+    ...OVERSIGHT_ENVELOPE_FIELDS,
+    // REQUIRED server-side even though the TYPE marks it optional: the
+    // optionality exists for the CLIENT's deploy-skew window, and a server
+    // that stopped emitting it would silently retire the will-supersede
+    // disclosure — the "no silent supersession" rule enforced as a parse.
+    willSupersede: BrainFactWillSupersedeSchema,
+  })
   .superRefine((value, ctx) => {
     if (
       value.countsConsistent &&
@@ -464,6 +495,11 @@ export const BrainFactOversightSchema = z
  * a loud error Alert rather than a false all-clear, so it is the right way to
  * fail — just narrower than "additive changes are safe".
  */
-export const BrainFactOversightClientSchema = z.object(
-  OVERSIGHT_ENVELOPE_FIELDS,
-) satisfies z.ZodType<BrainFactOversight, unknown>;
+export const BrainFactOversightClientSchema = z.object({
+  ...OVERSIGHT_ENVELOPE_FIELDS,
+  // Optional HERE and only here: an older API omits the field during a deploy
+  // window, and the panel then renders no supersession notice — the pre-#4912
+  // behaviour — rather than losing the whole oversight surface. The pair
+  // objects themselves stay strict for the bucket-arm reason above.
+  willSupersede: BrainFactWillSupersedeSchema.optional(),
+}) satisfies z.ZodType<BrainFactOversight, unknown>;

@@ -646,3 +646,45 @@ describe("the draft candidate", () => {
     expect(store.transactions).toBe(0);
   });
 });
+
+describe("no autonomous supersession (#4912)", () => {
+  const EVERY_RECONCILE_SQL = {
+    RECONCILE_LOCK_SQL,
+    CORROBORATION_LOOKUP_SQL,
+    INSERT_FACT_SQL,
+    INSERT_PROVENANCE_EDGE_SQL,
+    TENSION_CANDIDATES_SQL,
+    INSERT_TENSION_EDGE_SQL,
+  };
+
+  test("this stage issues no UPDATE at all — it cannot stamp valid_to by construction", () => {
+    // "A human promotion stamps `valid_to`; there is no autonomous
+    // supersession" (ADR-0036 §Temporal). The strongest available pin: the
+    // unattended ingest stage has no UPDATE statement to smuggle a stamp into,
+    // so acquiring one is a deliberate decision that has to argue with this
+    // test — and with `check-brain-fact-promotion.sh`, which now refuses the
+    // column outside the publish gate.
+    for (const [name, sql] of Object.entries(EVERY_RECONCILE_SQL)) {
+      expect(`${name}: ${sql}`).not.toMatch(/\bUPDATE\b/i);
+    }
+  });
+
+  test("the fact INSERT names valid_from and never valid_to", () => {
+    // A producer may know when a claim BEGAN; only the publish gate (and later
+    // `correct_fact`) may close a window.
+    expect(INSERT_FACT_SQL).toContain("valid_from");
+    expect(INSERT_FACT_SQL).not.toContain("valid_to");
+  });
+
+  test("corroboration targets only CURRENT facts — a superseded row never absorbs a re-observation", () => {
+    // Without `valid_to IS NULL`, re-asserting a superseded claim would
+    // strengthen a row every as-of-now read hides: the world's flip back to
+    // the old value would be swallowed invisibly instead of minting a fresh
+    // draft the publish gate can arbitrate.
+    expect(CORROBORATION_LOOKUP_SQL).toContain("valid_to IS NULL");
+  });
+
+  test("tension edges target only CURRENT rivals — settled history is not a contradiction", () => {
+    expect(TENSION_CANDIDATES_SQL).toContain("valid_to IS NULL");
+  });
+});

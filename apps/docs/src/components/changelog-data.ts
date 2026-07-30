@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.2",
+    title: "Slack @-Mention Detection Fix",
+    date: "2026-07-30",
+    summary:
+      "A follow-up to v0.2.1 that restores @-mentions in Slack. Atlas can be subscribed to two kinds of Slack notification at once — one for mentions and one for ordinary channel messages — and Slack sends both when you @-mention the bot. Atlas was keeping whichever arrived first, and when that was the ordinary-message copy it no longer carried the marker saying \"this was a mention\", so Atlas quietly treated it as background chatter and didn't answer. It now recognises its own handle in the message text, so a mention is understood either way. Nothing needs reconfiguring, and proactive chat keeps watching channels as before.",
+    highlights: [
+      "@-mentioning Atlas in Slack gets an answer again, regardless of which notification Slack delivers first",
+      "No change needed to your Slack app's event settings — both subscriptions can stay on",
+      "Proactive chat is unaffected and keeps seeing channel messages",
+      "Workspaces that renamed the Atlas bot can now set the handle it answers to",
+    ],
+  },
+  {
     version: "v0.2.1",
     title: "Slack Loop Fix + Supply-Chain Hardening",
     date: "2026-07-30",

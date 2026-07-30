@@ -16,22 +16,31 @@
  * `executeSQL`, decision/rationale/ownership → `searchBrain` — with no hidden
  * classifier in the middle.
  *
- * ## The trap: three gates, and the one that is not a gate
+ * ## The trap: four predicates, and the two that are not ADR gates
  *
- * A current-belief fact read composes THREE predicates, and composing only the
- * two advertised seams is wrong:
+ * (Distinct from "the four ADR-0036 gates" one section down — those are the
+ * ADR's governance axes; these are the WHERE-clause terms one statement must
+ * compose.) A current-belief fact read composes FOUR predicates, and composing
+ * only the two advertised seams is wrong:
  *
  *   1. `aclVisibilityClause` — the fail-closed push-down grant predicate (#4768)
  *   2. `brainFactStatusClause` — content mode, i.e. REVIEW STATUS ONLY (#4769)
  *   3. `f.invalidated_at IS NULL` — the tombstone axis, which (2) explicitly
  *      does not cover
+ *   4. `brainFactCurrentClause` — the SUPERSESSION axis (#4912), which neither
+ *      (2) nor (3) covers: a superseded fact is still `published` and still
+ *      not retracted; its `valid_to` is simply in the past
  *
  * ADR-0036 keeps retracted facts READABLE so "what we believed on Monday" still
  * answers, and #4772 made retraction the review gate's reject verb — so
  * retracted rows are routine, not hypothetical. A read that ANDs only (1) and
- * (2) serves withdrawn claims to the agent as current belief.
- * `idx_brain_facts_subject` is partial on exactly `invalidated_at IS NULL`, so
- * the index is built for the correct predicate.
+ * (2) serves withdrawn claims to the agent as current belief; one that skips
+ * (4) serves SUPERSEDED claims — the belief a human explicitly replaced at the
+ * publish gate — which on a trust-labeled surface is strictly worse.
+ * `idx_brain_facts_subject` is partial on exactly `invalidated_at IS NULL`;
+ * superseded rows stay IN the index (they are not tombstoned), so the same
+ * index serves the four-predicate read with (4) applied as a filter over the
+ * narrow candidate set the key columns already produced.
  *
  * ## How the four ADR-0036 gates land here, honestly
  *
@@ -53,7 +62,8 @@
  *     and a KB document are all workspace-scoped with no connection-group
  *     binding, so there is no reach dimension to gate on. Composing one would
  *     mean inventing a group for rows that have none. If M2 gives a fact a
- *     group, this is the seam that grows a fourth clause.
+ *     group, this is the seam that grows a fifth clause (the supersession
+ *     predicate took the fourth slot, #4912).
  *
  * ## Push-down, and why the fail-closed test is written as a negative
  *
@@ -99,7 +109,10 @@ import { attributionDecision } from "@atlas/api/lib/brain/attribution";
 import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
 import { computeDecaySignal, LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
-import { brainFactStatusClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
+  brainFactCurrentClause,
+  brainFactStatusClause,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
   searchKnowledgeDocuments,
   type KnowledgeQueryExec,
@@ -305,6 +318,11 @@ export function buildFactQuery(
     // NOT redundant with the mode clause — see the module header. Without it
     // the agent is served retracted claims as current belief.
     "f.invalidated_at IS NULL",
+    // The FOURTH predicate (#4912): a fact whose `valid_to` has passed was
+    // superseded at the publish gate and is no longer current belief. Hidden
+    // exactly as tombstones are — the row stays readable to the as-of reads M2
+    // adds, and this default read is as-of-now.
+    brainFactCurrentClause("f"),
   ];
 
   const trimmed = options.query?.trim();
@@ -568,7 +586,9 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
  * `invalidated_at` is deliberately NOT filtered on the counterpart — a rival
  * that was retracted is still why this claim was contested — but it IS carried,
  * because retraction never writes `status` and an unlabeled withdrawn rival is
- * indistinguishable from a live one.
+ * indistinguishable from a live one. `valid_to` is not filtered either, for
+ * the same reason on the supersession axis (#4912): a rival that was
+ * superseded is still why the claim was contested.
  */
 async function loadTensions(
   db: BrainSearchReader,

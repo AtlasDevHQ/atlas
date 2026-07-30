@@ -285,6 +285,17 @@ describe("loadFactCandidates — visibility", () => {
     await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
   });
+
+  it("excludes SUPERSEDED facts exactly as tombstoned ones (#4912)", async () => {
+    // A stamped `valid_to` means a human promotion replaced this belief; there
+    // is no trust call left to make on it and it leaves the queue the way a
+    // retraction does. The OR arm is the regression pin for the other
+    // direction: every `valid_to IS NULL` row — the whole pre-supersession
+    // corpus — still satisfies the predicate.
+    const db = reader([{ match: "FROM brain_facts f", rows: [factRow()] }]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(db.calls[0]?.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+  });
 });
 
 describe("loadFactCandidates — filters", () => {
@@ -376,6 +387,25 @@ describe("loadFactCandidates — contradiction hints", () => {
     expect(page.candidates[0]?.tensions).toEqual([
       { factId: "fact-2", edgeDirection: "to", visible: false },
     ]);
+  });
+
+  it("does NOT hide a superseded rival — settled history is still why the claim was contested (#4912)", async () => {
+    // The negative that keeps a future "apply the current-validity predicate
+    // everywhere" sweep honest: the queue itself now filters `valid_to`, but
+    // the counterpart lookup must not — a rival retired at the publish gate is
+    // still the reason this claim earned its tension edge, exactly like a
+    // retracted one.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      { match: "edge_type = 'in-tension-with'", rows: edgeRows },
+      { match: "f.id = ANY(", rows: [] },
+    ]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    const counterpart = db.calls.find((c) => c.sql.includes("f.id = ANY("));
+    expect(counterpart?.sql).not.toContain("valid_to IS NULL OR");
+    expect(counterpart?.sql).not.toContain("invalidated_at IS NULL");
   });
 
   it("gives each end of an on-page edge the other as a peer", async () => {
@@ -682,6 +712,10 @@ describe("loadFactCandidateSummary", () => {
       publishedTotal: 9,
     });
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
+    // The supersession axis (#4912): a superseded fact leaves the stats bar
+    // the same way a tombstoned one does — including `publishedTotal`, which
+    // otherwise counts rows the queue's own published filter would hide.
+    expect(db.calls[0]?.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
   });
 });
 
@@ -699,6 +733,11 @@ describe("retractFactCandidate", () => {
     const sql = db.calls[0]?.sql ?? "";
     expect(sql).toContain("invalidated_at = now()");
     expect(sql).not.toContain("status");
+    // Nor `valid_to` (#4912) — retraction is the tombstone axis, supersession
+    // is the validity axis, and the same guard now refuses this column too. A
+    // retract that also closed the validity window would rewrite when a belief
+    // ENDED out of a verb that only says it was withdrawn.
+    expect(sql).not.toContain("valid_to");
     expect(result).toEqual({ id: "fact-1", invalidatedAt: ISO });
   });
 

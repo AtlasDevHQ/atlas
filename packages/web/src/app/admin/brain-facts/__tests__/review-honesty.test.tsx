@@ -162,6 +162,8 @@ let oversight: Record<string, unknown> = {
 let withheldFacts = 0;
 /** Whether that count is an Atlas fault rather than an audience boundary. */
 let scopeUnavailable = false;
+/** How many published facts the publish preview says a publish will supersede (#4912). */
+let willSupersedeCount = 0;
 
 function mockApi(
   candidates: Array<Record<string, unknown>>,
@@ -212,6 +214,7 @@ function mockApi(
           brainFacts: [],
           brainFactsWithheld: withheldFacts,
           brainFactsScopeUnavailable: scopeUnavailable,
+          brainFactsWillSupersede: willSupersedeCount,
         }),
       );
     }
@@ -227,6 +230,7 @@ beforeEach(() => {
   retractStatus = 200;
   withheldFacts = 0;
   scopeUnavailable = false;
+  willSupersedeCount = 0;
   oversight = {
     buckets: [],
     workspaceTotals: {
@@ -1110,6 +1114,95 @@ describe("hidden-backlog disclosure (#4825)", () => {
       expect(document.body.textContent).toContain("couldn't work out which of these"),
     );
     expect(document.body.textContent).not.toContain("audience you're not part of");
+  });
+});
+
+describe("will-supersede disclosure (#4912)", () => {
+  test("stays silent when the next publish supersedes nothing — including on an older API", async () => {
+    // The default oversight fixture carries NO `willSupersede` at all, which is
+    // exactly what an older API sends during a deploy window. The panel must
+    // render the pre-#4912 page, not crash the whole oversight surface.
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("Workspace breakdown"),
+    );
+    expect(view.container.textContent ?? "").not.toContain("supersede");
+  });
+
+  test("renders each replacement as a pair — new claim, old claim — before the publish", async () => {
+    oversight = {
+      ...oversight,
+      willSupersede: {
+        total: 2,
+        pairs: [
+          {
+            draftId: "d1",
+            draftLabel: "alice manager carol",
+            supersededId: "o1",
+            supersededLabel: "alice manager bob",
+          },
+        ],
+        withheld: 1,
+        truncated: false,
+      },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "Publishing will supersede 2 published facts",
+      ),
+    );
+    const text = view.container.textContent ?? "";
+    // Both halves of the pair — the disclosure IS the replacement, not a count.
+    expect(text).toContain("alice manager carol");
+    expect(text).toContain("alice manager bob");
+    // The ACL-hidden remainder is a sentence with a number, never a row.
+    expect(text).toContain("1 of these replacements involves facts");
+    // And nothing claims deletion: the copy must say the history survives.
+    expect(text).toContain("Nothing is deleted");
+  });
+
+  test("admits truncation without dressing it as an ACL boundary", async () => {
+    oversight = {
+      ...oversight,
+      willSupersede: {
+        total: 130,
+        pairs: [
+          {
+            draftId: "d1",
+            draftLabel: "alice manager carol",
+            supersededId: "o1",
+            supersededLabel: "alice manager bob",
+          },
+        ],
+        withheld: 0,
+        truncated: true,
+      },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("did not fit in one response"),
+    );
+    // Nothing was ACL-withheld, so the audience sentence must NOT render —
+    // truncation relabelled as an audience boundary would send the admin
+    // hunting for private channels that do not exist.
+    expect(view.container.textContent ?? "").not.toContain("audiences you are not part of");
+  });
+
+  test("the publish modal states the workspace-wide count before the confirm button", async () => {
+    // The modal is the confirm surface; an admin who never visits the review
+    // page must still learn a publish will retire published beliefs. The
+    // withheld count is set too — a supersession implies a live single draft,
+    // and for THIS reader the preview reports it as withheld.
+    willSupersedeCount = 3;
+    withheldFacts = 1;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Publishing will supersede 3 published facts"),
+    );
+    // Scope statement, not a scare: it points at the per-pair disclosure.
+    expect(document.body.textContent).toContain("Brain facts");
   });
 });
 

@@ -289,7 +289,9 @@ export async function loadTensionClusters(
   // is still why this claim was contested, and hiding it would make a conflict
   // vanish the moment somebody rejected one side. It IS selected and carried,
   // because retraction never writes `status` and an unlabeled withdrawn rival
-  // is indistinguishable from a live one.
+  // is indistinguishable from a live one. `valid_to` is not filtered either,
+  // for the same reason on the supersession axis (#4912): a superseded rival
+  // is still why the claim was contested.
   const result = await db.query(
     `SELECT ${COUNTERPART_COLUMNS},
             ${COUNTERPART_CORROBORATION} AS corroboration_count

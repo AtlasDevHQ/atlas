@@ -39,11 +39,16 @@
  *   - **Org/group reach (ADR-0022)** — not composed. A brain fact is
  *     workspace-scoped and carries no connection-group binding, so there is no
  *     reach dimension to gate on. If M2 gives a fact a group, this is the seam
- *     that has to grow a fourth clause.
+ *     that has to grow a fifth clause (the supersession predicate took the
+ *     fourth WHERE-clause slot, #4912 — distinct from the four ADR gates this
+ *     list is counting).
  *
  * `invalidated_at IS NULL` is AND-ed on top and is NOT one of the four — it is
  * the tombstone axis, which `brainFactStatusClause` explicitly does not cover,
- * so every current-belief read has to add it itself.
+ * so every current-belief read has to add it itself. So is
+ * `brainFactCurrentClause` (#4912), the supersession axis: a superseded fact is
+ * still `published` and still not retracted, and it leaves this surface the
+ * same way a tombstoned one does.
  *
  * ## The episode is gated in its own right — the likeliest leak in the slice
  *
@@ -69,6 +74,7 @@ import {
   type BrainAttributionDecision,
 } from "@atlas/api/lib/brain/attribution";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { brainFactCurrentClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
 import {
   computeDecaySignal,
@@ -640,7 +646,15 @@ function candidateWhere(
   aclParams: readonly unknown[],
 ): { where: string[]; params: unknown[] } {
   const params: unknown[] = [...aclParams];
-  const where: string[] = [aclSql, "f.invalidated_at IS NULL"];
+  const where: string[] = [
+    aclSql,
+    "f.invalidated_at IS NULL",
+    // The supersession axis (#4912): a fact whose `valid_to` has passed was
+    // replaced at the publish gate and leaves the review surface exactly as a
+    // tombstoned one does — there is no trust call left to make on it, and the
+    // as-of reads M2 adds are where it stays readable.
+    brainFactCurrentClause("f"),
+  ];
 
   const status = options.status ?? "draft";
   if (status !== "all") {
@@ -1040,7 +1054,8 @@ export async function loadFactCandidateSummary(
             COUNT(*) FILTER (WHERE f.status = 'published')::int AS published_total
        FROM brain_facts f
       WHERE ${acl.sql}
-        AND f.invalidated_at IS NULL`,
+        AND f.invalidated_at IS NULL
+        AND ${brainFactCurrentClause("f")}`,
     [...acl.params],
   );
 

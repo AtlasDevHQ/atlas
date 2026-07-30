@@ -25292,7 +25292,7 @@
           "Admin — Brain Facts"
         ],
         "summary": "Where the workspace's facts stand, as counts",
-        "description": "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. `reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped.",
+        "description": "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. The WORKSPACE-WIDE half returns numbers only: no subject, predicate, object, provenance, episode body, or fact id reaches the counts, the buckets, or the totals. The ONE exception is `willSupersede.pairs` below, which carries claims and fact ids — and is therefore reader-scoped, never workspace-wide. A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. `reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped. `willSupersede` discloses what the next publish will supersede (#4912): promoting a single-cardinality draft that collides with a live published fact stamps the old fact's `valid_to` atomically with the promotion. The pairs list both claims and is gated by the reader's own visibility predicate on BOTH sides; supersessions the reader may not see travel as `willSupersede.withheld` — a count, never content.",
         "responses": {
           "200": {
             "description": "Per-audience counts by state, plus workspace totals",
@@ -25527,6 +25527,56 @@
                     },
                     "bucketsTruncated": {
                       "type": "boolean"
+                    },
+                    "willSupersede": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "pairs": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "draftId": {
+                                "type": "string"
+                              },
+                              "draftLabel": {
+                                "type": "string"
+                              },
+                              "supersededId": {
+                                "type": "string"
+                              },
+                              "supersededLabel": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "draftId",
+                              "draftLabel",
+                              "supersededId",
+                              "supersededLabel"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "withheld": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "total",
+                        "pairs",
+                        "withheld",
+                        "truncated"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -25535,7 +25585,8 @@
                     "reviewableAwaitingReview",
                     "countsConsistent",
                     "distinctAudiences",
-                    "bucketsTruncated"
+                    "bucketsTruncated",
+                    "willSupersede"
                   ],
                   "additionalProperties": false
                 }
@@ -60157,6 +60208,10 @@
                     },
                     "brainFactsScopeUnavailable": {
                       "type": "boolean"
+                    },
+                    "brainFactsWillSupersede": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -60169,7 +60224,8 @@
                     "knowledgeDocuments",
                     "brainFacts",
                     "brainFactsWithheld",
-                    "brainFactsScopeUnavailable"
+                    "brainFactsScopeUnavailable",
+                    "brainFactsWillSupersede"
                   ]
                 }
               }

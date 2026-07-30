@@ -153,6 +153,20 @@ describe("buildFactQuery — push-down and the tombstone trap", () => {
     expect(sql).toContain("f.invalidated_at IS NULL");
   });
 
+  it("hides superseded facts exactly as tombstoned ones — the fourth predicate (#4912)", () => {
+    // The regression this pins cuts both ways: a `valid_to IS NULL` row (every
+    // pre-supersession fact) must still satisfy the predicate — the OR arm is
+    // what keeps the whole corpus readable — while a stamped `valid_to` in the
+    // past falls out of it, because a human promotion explicitly replaced that
+    // belief and serving it as current would undo the arbitration.
+    const { sql } = buildFactQuery("published", { limit: 10, ...acl(ctx(), "brain_facts") });
+    expect(sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+    // Developer mode overlays DRAFTS, not superseded history — the supersession
+    // axis is orthogonal to review status and gates both modes.
+    const dev = buildFactQuery("developer", { limit: 10, ...acl(ctx(), "brain_facts") });
+    expect(dev.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+  });
+
   it("keeps the LIMIT and the ranking BELOW the gated WHERE, so an unreadable row is never ranked or counted", () => {
     const { sql } = buildFactQuery("published", {
       query: "billing",
@@ -829,6 +843,29 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
       "role:member",
       "user:user-1",
     ]);
+  });
+
+  it("does NOT hide a superseded rival from the counterpart lookup (#4912)", async () => {
+    // The queue-side sweep applied the current-validity predicate to the fact
+    // page; the counterpart lookup must stay exempt, like the tombstone axis —
+    // a rival retired at the publish gate is still why this claim was
+    // contested, and hiding it would make the contradiction vanish the moment
+    // its replacement published.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival" }] },
+      { match: SQL.tensionCounterparts, rows: [] },
+    ]);
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const counterpart = db.calls.find((c) => c.sql.includes("= ANY(") && !c.sql.includes("in-tension-with"));
+    expect(counterpart?.sql).not.toContain("valid_to");
+    expect(counterpart?.sql).not.toContain("invalidated_at IS NULL");
   });
 
   it("carries a retracted counterpart's tombstone, because retraction never writes status", async () => {

@@ -39,11 +39,16 @@ let queries: Array<{ sql: string; params: unknown[] }> = [];
 let workspaceDraftCount: unknown = 3;
 /** Rows the ACL-scoped label projection returns. */
 let visibleRows: Array<Record<string, unknown>> = [];
+/** The workspace-wide will-supersede count (#4912). `unknown` for drift tests. */
+let willSupersedeCount: unknown = 0;
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params: params ?? [] });
+      if (sql.includes("will_supersede_total")) {
+        return [{ will_supersede_total: willSupersedeCount }];
+      }
       if (sql.includes("COUNT(*)::int AS n")) return [{ key: "brainFacts", n: workspaceDraftCount }];
       // Dispatch on the BRAIN projection specifically. Returning `visibleRows`
       // for every statement made all eight preview surfaces share one fixture,
@@ -100,6 +105,7 @@ beforeEach(() => {
   queries = [];
   workspaceDraftCount = 3;
   visibleRows = [];
+  willSupersedeCount = 0;
   readerMode = "ok";
 });
 
@@ -284,5 +290,25 @@ describe("the wire mapping", () => {
     expect(preview.brainFacts).toEqual([]);
     expect(preview.brainFactsWithheld).toBe(4);
     expect(preview.brainFactsScopeUnavailable).toBe(true);
+  });
+
+  it("carries the will-supersede count onto the response (#4912)", async () => {
+    // Same reasoning as the withheld count: nothing but this catches the field
+    // being dropped or wired to another number, and its silence is precisely
+    // "silent supersession" for an admin who publishes from the modal.
+    willSupersedeCount = 3;
+    const preview = await buildPreview(WS, "managed", { id: "user-1" } as never, "test-req");
+    expect(preview.brainFactsWillSupersede).toBe(3);
+  });
+
+  it("refuses to report a supersession scope it could not count", async () => {
+    // 0 is the failure-silencing answer — it drops the modal's notice exactly
+    // when the count query is misbehaving.
+    for (const bad of [undefined, "abc", -1, null]) {
+      willSupersedeCount = bad;
+      await expect(
+        buildPreview(WS, "managed", { id: "user-1" } as never, "test-req"),
+      ).rejects.toThrow(/will-supersede count/);
+    }
   });
 });

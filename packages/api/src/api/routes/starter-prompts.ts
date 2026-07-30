@@ -36,8 +36,14 @@ import {
   FAVORITE_TEXT_MAX_LENGTH,
   type FavoritePromptRow,
 } from "@atlas/api/lib/starter-prompts/favorite-store";
-import { AuthErrorSchema, ErrorSchema, parsePagination } from "./shared-schemas";
+import {
+  AuthErrorSchema,
+  ErrorSchema,
+  ValidationErrorSchema,
+  parsePagination,
+} from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import { validationHook } from "./validation-hook";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -145,7 +151,7 @@ const createFavoriteRoute = createRoute({
       content: { "application/json": { schema: CreateFavoriteResponseSchema } },
     },
     400: {
-      description: "Invalid input or cap exceeded",
+      description: "Favorite cap exceeded, unusable text, or no active workspace",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -155,6 +161,10 @@ const createFavoriteRoute = createRoute({
     409: {
       description: "Prompt already pinned",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Request body failed validation (missing or empty `text`)",
+      content: { "application/json": { schema: ValidationErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -213,10 +223,6 @@ const patchFavoriteRoute = createRoute({
         },
       },
     },
-    400: {
-      description: "Invalid position value",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
     401: {
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
@@ -228,6 +234,10 @@ const patchFavoriteRoute = createRoute({
     404: {
       description: "Favorite not found",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Request body failed validation (missing or non-finite `position`)",
+      content: { "application/json": { schema: ValidationErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -308,7 +318,7 @@ const demoOrStandardAuth = createMiddleware<AuthEnv>(async (c, next) => {
   });
 });
 
-const starterPrompts = new OpenAPIHono<AuthEnv>();
+const starterPrompts = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 
 starterPrompts.use("/", demoOrStandardAuth);
 starterPrompts.use("/favorites/*", standardAuth);

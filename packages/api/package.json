@@ -61,7 +61,7 @@
     "@duckdb/node-api": "^1.5.5-r.2",
     "@effect/sql": "^0.51.1",
     "@effect/sql-pg": "^0.53.0",
-    "@hono/zod-openapi": "^1.4.0",
+    "@hono/zod-openapi": "^1.5.1",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.218.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
@@ -91,7 +91,7 @@
     "jose": "6.2.3",
     "js-yaml": "^5.2.2",
     "jsforce": "^3.10.19",
-    "just-bash": "^3.0.2",
+    "just-bash": "3.1.0",
     "mysql2": "^3.23.2",
     "node-sql-parser": "^5.4.0",
     "nodemailer": "^9.0.3",
@@ -103,7 +103,7 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@daytonaio/sdk": "^0.185.0",
+    "@daytonaio/sdk": "^0.201.0",
     "@vercel/sandbox": "^2.9.0",
     "e2b": "^2.36.1"
   },

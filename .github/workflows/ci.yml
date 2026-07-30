@@ -550,9 +550,11 @@ jobs:
     #
     # Path-gated on the `changes` job: a docs-only diff cannot introduce a
     # core → ee import, so the ~2 min re-typecheck+rebuild skips. The `ci`
-    # umbrella accepts `skipped` here (and GitHub treats a skipped job's
-    # check as passing while `Symlink Stub Build` remains a standalone
-    # required context — see docs/development/branch-protection.md).
+    # umbrella accepts `skipped` here — and since the 2026-07-30 contexts
+    # trim, `ci` is the ONLY thing enforcing this job; the standalone
+    # `Symlink Stub Build` required context is gone. Renaming this job or
+    # removing it from the umbrella's `needs:` silently drops the
+    # core-compiles-standalone gate. See docs/development/branch-protection.md.
     name: Symlink Stub Build
     needs: changes
     if: needs.changes.outputs.ee-stub == 'true'

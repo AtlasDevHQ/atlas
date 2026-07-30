@@ -35,6 +35,7 @@ import type {
   ChatMessage,
   PendingAction,
 } from "./config";
+import { DEFAULT_BOT_USER_NAME } from "./config";
 import { buildQueryResultCard } from "./cards/query-result-card";
 import { buildErrorCard } from "./cards/error-card";
 import { buildApprovalCardJSX } from "./cards/approval-card";
@@ -864,7 +865,10 @@ export function createChatBridge(
   }
 
   const chat = new Chat({
-    userName: "atlas",
+    // Same constant the Slack adapter gets. `detectMention` reads
+    // `adapter.userName || chat.userName`, so these drifting apart would
+    // silently change which handle counts as a mention (#4909).
+    userName: DEFAULT_BOT_USER_NAME,
     adapters,
     state: stateAdapter,
     ...(config.streaming?.chunkIntervalMs != null && {

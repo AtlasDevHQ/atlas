@@ -8,7 +8,7 @@
  */
 
 import { createSlackAdapter as createChatSlackAdapter } from "@chat-adapter/slack";
-import type { SlackAdapterConfig } from "../config";
+import { DEFAULT_BOT_USER_NAME, type SlackAdapterConfig } from "../config";
 
 /**
  * Create a Chat SDK Slack adapter from Atlas plugin config.
@@ -23,6 +23,12 @@ export function createSlackAdapter(config: SlackAdapterConfig) {
     signingSecret: config.signingSecret,
     clientId: config.clientId,
     clientSecret: config.clientSecret,
+    // Without this the adapter defaults to the literal "bot" and, being
+    // truthy, shadows `chat.userName` in `detectMention` — so @-mentions
+    // that arrive as a plain `message` event (rather than `app_mention`)
+    // are never recognised and fall through to the pattern handlers.
+    // See DEFAULT_BOT_USER_NAME for the full chain (#4909).
+    userName: config.userName ?? DEFAULT_BOT_USER_NAME,
     // Per-tenant AES-GCM envelope for installation bot tokens (#2634).
     // Pass-through when configured; the chat-adapter falls back to its
     // own `SLACK_ENCRYPTION_KEY` env lookup when undefined.

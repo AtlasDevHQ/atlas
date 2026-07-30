@@ -199,9 +199,42 @@ export interface ChatResumeBridge {
 export type OnBridgeReady = (bridge: ChatResumeBridge | null) => void;
 
 /** Adapter-specific credential configuration. */
+/**
+ * The bot's own handle, used for @-mention detection.
+ *
+ * Load-bearing in MULTI-WORKSPACE deploys (#4909). The chat SDK decides
+ * `isMention` two ways: from the Slack event TYPE (`app_mention`), and —
+ * when that isn't set — by text-matching `@<botUserName>` in
+ * `detectMention`, where the name is `adapter.userName || chat.userName`.
+ *
+ * `@chat-adapter/slack` defaults its own `userName` to the literal
+ * `"bot"` and only replaces it inside `initialize()` from `auth.test`,
+ * which runs solely on the single-workspace `defaultBotToken` path. So in
+ * multi-workspace the adapter's name stays `"bot"`, and because it is
+ * truthy it SHADOWS `chat.userName` — the fallback can never match.
+ *
+ * The id-based patterns can't rescue it either: the async parse path runs
+ * `resolveInlineMentions`, which rewrites `<@U0BOT…>` to the bot's
+ * display name, so no user id survives in `message.text` to match against.
+ * Name matching is the only route left, which is why this constant is
+ * passed to BOTH the adapter and the `Chat` instance from one place.
+ *
+ * Matching is case-insensitive and `\b`-anchored, so this also matches a
+ * display name that merely starts with it (`@Atlas Bot`). A workspace
+ * that renames the bot to something not prefixed by this needs
+ * {@link SlackAdapterConfig.userName}.
+ */
+export const DEFAULT_BOT_USER_NAME = "atlas";
+
 export interface SlackAdapterConfig {
   /** Single-workspace bot token (`xoxb-…`). Omit in multi-workspace deploys. */
   botToken?: string;
+  /**
+   * Override for the bot's @-handle used in mention detection. Defaults
+   * to {@link DEFAULT_BOT_USER_NAME}; set it when a workspace has renamed
+   * the bot's Slack display name to something that doesn't start with it.
+   */
+  userName?: string;
   signingSecret: string;
   /** Client ID for multi-workspace OAuth. */
   clientId?: string;

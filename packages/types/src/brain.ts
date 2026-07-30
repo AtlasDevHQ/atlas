@@ -262,6 +262,47 @@ export interface BrainFactTensionWithheld {
 export type BrainFactTensionView = BrainFactTensionVisible | BrainFactTensionWithheld;
 
 /**
+ * Advisory staleness bucket of one claim, derived at read time (#4914,
+ * ADR-0036 §Temporal — decay only surfaces, never auto-demotes).
+ *
+ * `unknown` is the honest arm for a row none of whose temporal anchors
+ * decoded: claiming any of the other three would fabricate an age.
+ */
+export type BrainFactDecayLevel = "fresh" | "aging" | "stale" | "unknown";
+
+/**
+ * The read-time decay signal attached to every primary fact view — the review
+ * queue row, the fact detail, and `searchBrain` results. Tension counterparts
+ * deliberately carry none: they are context for a conflict, not a claim being
+ * aged on its own card.
+ *
+ * ADVISORY ONLY, and computed at read time from the claim's newest observation
+ * (its corroborating episodes' `occurred_at`, each falling back to that
+ * episode's own ingest time), falling back to `validFrom`,
+ * then `ingestedAt`. There is no stored score, no expiry, and no write path
+ * from this signal to a fact row: a stale fact keeps its status, its trust
+ * tier, and its place in every read. What decay may do is SURFACE — the review
+ * queue floats stale claims for a human's attention, and the agent is told to
+ * present a fact's age rather than assert a stale claim as current.
+ */
+export interface BrainFactDecayView {
+  readonly level: BrainFactDecayLevel;
+  /**
+   * Days since the newest temporal anchor. `null` when the level is `unknown`
+   * — or when the anchor is an observation and this reader's provenance
+   * attribution is withheld (#4836): a day-precision age restates the withheld
+   * "when" as arithmetic, so a widened-in reader gets the coarse level only.
+   */
+  readonly ageDays: number | null;
+  /**
+   * The newest observation itself, ISO-8601. `null` when no observation
+   * decoded (the age, if any, is anchored on `validFrom` / `ingestedAt`) or
+   * when it is withheld for the reason {@link ageDays} states.
+   */
+  readonly lastObservedAt: string | null;
+}
+
+/**
  * A structural rule the atomic publish endpoint would refuse this claim on.
  *
  * A PRE-FLIGHT of `classifyFactForPromotion`, computed on read so the queue can
@@ -330,6 +371,8 @@ export interface BrainFactCandidate {
    * of published facts.
    */
   readonly promotionBlock: BrainFactPromotionBlock | null;
+  /** Read-time staleness signal — advisory, never a demotion. See {@link BrainFactDecayView}. */
+  readonly decay: BrainFactDecayView;
   readonly validFrom: string | null;
   readonly validTo: string | null;
   readonly extractedAt: string | null;
@@ -657,6 +700,13 @@ export interface BrainFactResult {
   readonly provenance: BrainFactProvenanceView;
   /** DISTINCT `provenance` edges backing the claim — see {@link BrainFactCandidate.corroborationCount}. */
   readonly corroborationCount: number;
+  /**
+   * Read-time staleness signal (#4914) — advisory temporal metadata, carried
+   * so the agent can present a fact's age instead of asserting a stale claim
+   * as current. Never a demotion: `trustTier` and `status` are unaffected by
+   * it, and fusion never ranks by it.
+   */
+  readonly decay: BrainFactDecayView;
   readonly tensions: readonly BrainSearchTensionView[];
 }
 

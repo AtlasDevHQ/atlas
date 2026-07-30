@@ -647,4 +647,51 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  // ══════════════════════════════════════════════════════════════════
+  // 7. Decay surfaces a stale claim and touches nothing (#4914)
+  // ══════════════════════════════════════════════════════════════════
+
+  it(
+    "floats a stale claim to the top, labels it, and leaves its row untouched",
+    async () => {
+      // A claim last observed a year ago, alongside one observed now. The
+      // stale one must SORT first (the surfacing hint), LABEL itself stale off
+      // the same threshold, and come through the read byte-identical at rest —
+      // the live half of the "no write path from the decay signal" criterion,
+      // which the unit suites can only assert about statement shape.
+      const staleEp = await seedEpisode({ sourceId: "decay-old" });
+      await pool.query(`UPDATE brain_episodes SET occurred_at = now() - interval '365 days' WHERE id = $1`, [
+        staleEp,
+      ]);
+      const freshEp = await seedEpisode({ sourceId: "decay-new" });
+      const staleFact = await seedFact({ subject: "decay-stale-claim", episodeId: staleEp });
+      const freshFact = await seedFact({ subject: "decay-fresh-claim", episodeId: freshEp });
+      await edge("provenance", staleFact, staleEp);
+      await edge("provenance", freshFact, freshEp);
+
+      const before = await pool.query(`SELECT * FROM brain_facts WHERE id = $1`, [staleFact]);
+
+      const page = await loadFactCandidates(pool, {
+        ctx: reviewer(),
+        search: "decay-",
+        limit: 50,
+        offset: 0,
+      });
+      const ids = page.candidates.map((c) => c.id);
+      expect(ids.indexOf(staleFact)).toBeLessThan(ids.indexOf(freshFact));
+
+      const stale = page.candidates.find((c) => c.id === staleFact)!;
+      expect(stale.decay.level).toBe("stale");
+      expect(stale.decay.ageDays).toBeGreaterThanOrEqual(364);
+      expect(stale.decay.lastObservedAt).not.toBeNull();
+      const fresh = page.candidates.find((c) => c.id === freshFact)!;
+      expect(fresh.decay.level).toBe("fresh");
+      // Surfaced, never demoted: the stale row still holds every value it had
+      // before the read — status, tombstone, validity window, update clock.
+      const after = await pool.query(`SELECT * FROM brain_facts WHERE id = $1`, [staleFact]);
+      expect(after.rows[0]).toEqual(before.rows[0]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
 });

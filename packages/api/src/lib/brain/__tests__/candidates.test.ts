@@ -34,8 +34,10 @@ import {
   type BrainCandidateReader,
 } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
+import { DECAY_STALE_AFTER_DAYS } from "@atlas/api/lib/brain/staleness";
 import {
   BrainFactCandidateListResponseSchema,
+  BrainFactDecayViewSchema,
   BrainFactProvenanceViewSchema,
 } from "@useatlas/schemas";
 
@@ -107,6 +109,10 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     ingested_at: ISO,
     updated_at: ISO,
     corroboration_count: 2,
+    // Selected by the page query (#4914) and NULL when the fact has no
+    // provenance edges — faithful to the real projection, so no test row
+    // trips the decay drift arm by accident.
+    last_observed_at: null,
     total_count: 1,
     ...overrides,
   };
@@ -935,6 +941,171 @@ describe("BrainFactAttributionViewSchema — the withheld arm is enforced, not c
     for (const decision of ["disclose", "withhold"] as const) {
       const built = projectProvenance(factRow().provenance, "ep-1", decision);
       expect(BrainFactProvenanceViewSchema.safeParse(built).success).toBe(true);
+    }
+  });
+});
+
+/**
+ * Read-time decay on the review queue (#4914, ADR-0036 §Temporal).
+ *
+ * The stance under test: decay only SURFACES — a label on the wire and a
+ * float-to-top hint in ORDER BY — and never demotes. The structural half
+ * (the staleness module holds no mutating SQL) is `staleness.test.ts`'s;
+ * this suite pins the read model's use of it.
+ */
+describe("loadFactCandidates — read-time decay (#4914)", () => {
+  const OLD = "2020-01-01T00:00:00.000Z";
+  const HINT = `make_interval(days => ${DECAY_STALE_AFTER_DAYS})`;
+
+  it("labels a long-unobserved claim stale and carries the observation", async () => {
+    const db = reader([
+      { match: "FROM brain_facts f", rows: [factRow({ last_observed_at: OLD })] },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    const decay = page.candidates[0]?.decay;
+    expect(decay?.level).toBe("stale");
+    expect(decay?.lastObservedAt).toBe(OLD);
+    expect(decay?.ageDays).toBeGreaterThanOrEqual(DECAY_STALE_AFTER_DAYS);
+    // The whole page still satisfies the wire contract the browser parses.
+    expect(BrainFactCandidateListResponseSchema.safeParse(page).success).toBe(true);
+  });
+
+  it("keeps the trust surface untouched by decay — status is whatever the row holds", async () => {
+    // The acceptance criterion stated as a negative: a stale fact is not
+    // demoted, re-labelled, or excluded. It arrives with its stored status.
+    const db = reader([
+      {
+        match: "FROM brain_facts f",
+        rows: [factRow({ status: "published", last_observed_at: OLD })],
+      },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), status: "all", limit: 50, offset: 0 });
+    expect(page.candidates[0]?.status).toBe("published");
+    expect(page.candidates[0]?.decay.level).toBe("stale");
+  });
+
+  it("uses the stale hint in ORDER BY and nowhere else", async () => {
+    const db = reader([{ match: "FROM brain_facts f", rows: [] }]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    const sql = db.calls[0]?.sql ?? "";
+    const orderAt = sql.indexOf("ORDER BY");
+    expect(orderAt).toBeGreaterThan(-1);
+    // The hint keys on the SAME constant as the label (`staleness.test.ts`
+    // pins the interpolation), floats stale first, and keeps the familiar
+    // newest-ingest order beneath it.
+    expect(sql.slice(orderAt)).toContain(HINT);
+    expect(sql.slice(orderAt)).toContain("f.ingested_at DESC, f.id DESC");
+    // …and it is a SURFACING hint only: the WHERE half of the statement never
+    // mentions it, so a stale fact is floated, never filtered.
+    expect(sql.slice(0, orderAt)).not.toContain(HINT);
+  });
+
+  it("emits only reads while serving a stale page — no write path from the signal", async () => {
+    // The behavioral half of the acceptance criterion: rendering decay over a
+    // stale queue performs zero writes of any kind, so there is no statement a
+    // decay value could reach a fact row through.
+    const db = reader([
+      { match: "FROM brain_facts f", rows: [factRow({ last_observed_at: OLD })] },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(db.calls.length).toBeGreaterThan(0);
+    for (const call of db.calls) {
+      expect(call.sql.trimStart()).toMatch(/^SELECT/i);
+    }
+  });
+
+  it("withholds the numbers from a widened-in reader but keeps the level (#4836)", async () => {
+    // For a singly-corroborated fact the newest observation IS the withheld
+    // `occurredAt`; a day-precision age restates it as arithmetic. The coarse
+    // bucket stays, because lying about the level would defeat the surface.
+    const db = reader([
+      {
+        match: "FROM brain_facts f",
+        rows: [
+          factRow({
+            visible_to: ["audience:chat-channel:slack:C-FOUNDERS", "org"],
+            pre_widening_visible_to: ["audience:chat-channel:slack:C-FOUNDERS"],
+            last_observed_at: OLD,
+          }),
+        ],
+      },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(page.candidates[0]?.decay).toEqual({
+      level: "stale",
+      ageDays: null,
+      lastObservedAt: null,
+    });
+    // ONE decision feeds both consumers — the refactor's invariant. If decay
+    // withheld while attribution disclosed (or vice versa) the row would
+    // contradict itself about the same reader's entitlement to the "when".
+    expect(page.candidates[0]?.provenance.attribution).toEqual({ visible: false });
+  });
+
+  it("reports drift, not a fabricated label, when the SELECT drops the decay anchor", async () => {
+    // `pg` never yields `undefined` for a selected column, so a row without
+    // the key means the page query stopped selecting `last_observed_at`.
+    // Anchoring on ingest would label confidently while the ORDER BY hint —
+    // which interpolates the subquery independently — kept sorting by the
+    // real observation. The classifier refuses: age unknown.
+    const { last_observed_at: _dropped, ...row } = factRow();
+    const db = reader([
+      { match: "FROM brain_facts f", rows: [row] },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(page.candidates[0]?.decay).toEqual({
+      level: "unknown",
+      ageDays: null,
+      lastObservedAt: null,
+    });
+  });
+
+  it("reports `unknown` rather than fabricating an age when nothing decodes", async () => {
+    const db = reader([
+      {
+        match: "FROM brain_facts f",
+        rows: [factRow({ last_observed_at: null, valid_from: null, ingested_at: "junk" })],
+      },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(page.candidates[0]?.decay).toEqual({
+      level: "unknown",
+      ageDays: null,
+      lastObservedAt: null,
+    });
+  });
+
+  it("REFUSES decay states the constructor cannot build, at the schema gate", () => {
+    // The refinements are the cross-field backstop for a hypothetical second
+    // producer — the same role `z.strictObject` plays on the withheld
+    // attribution arm. Deleting either refine must fail HERE, not surface as
+    // a contradictory view shipped through `checked()`.
+    const invalid = [
+      { level: "unknown", ageDays: 5, lastObservedAt: null },
+      { level: "unknown", ageDays: null, lastObservedAt: ISO },
+      { level: "stale", ageDays: null, lastObservedAt: ISO },
+    ];
+    for (const decay of invalid) {
+      expect(BrainFactDecayViewSchema.safeParse(decay).success).toBe(false);
+    }
+    // …and the polarity check: every state the constructor DOES build parses,
+    // most importantly the withheld shape — a refine that rejected valid
+    // withheld pages would take the review queue down for exactly the widened
+    // readers #4836 protects.
+    const valid = [
+      { level: "stale", ageDays: null, lastObservedAt: null },
+      { level: "unknown", ageDays: null, lastObservedAt: null },
+      { level: "aging", ageDays: 50, lastObservedAt: null },
+      { level: "fresh", ageDays: 5, lastObservedAt: ISO },
+    ];
+    for (const decay of valid) {
+      expect(BrainFactDecayViewSchema.safeParse(decay).success).toBe(true);
     }
   });
 });

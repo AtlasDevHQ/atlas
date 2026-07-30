@@ -97,6 +97,7 @@ import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context"
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
 import { attributionDecision } from "@atlas/api/lib/brain/attribution";
 import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
+import { computeDecaySignal, LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
 import { brainFactStatusClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
@@ -327,8 +328,13 @@ export function buildFactQuery(
     : `f.ingested_at DESC, f.id DESC`;
 
   params.push(options.limit);
+  // `last_observed_at` feeds the read-time decay signal (#4914). It is a
+  // SELECTed column only — never in this WHERE and never in ORDER BY, because
+  // retrieval ranking by age would be exactly the arbitration decay is
+  // forbidden to do. The agent is handed the age and told to present it.
   const sql = `SELECT ${FACT_COLUMNS},
          ${CORROBORATION_SELECT} AS corroboration_count,
+         ${LAST_OBSERVED_AT_SELECT} AS last_observed_at,
          ${snippetExpr} AS snippet,
          ${rankExpr} AS rank
     FROM brain_facts f
@@ -433,6 +439,8 @@ interface FactRow {
   readonly invalidated_at: unknown;
   readonly ingested_at: unknown;
   readonly corroboration_count: unknown;
+  /** Newest corroborating observation — the decay anchor (#4914). */
+  readonly last_observed_at: unknown;
   readonly snippet: unknown;
 }
 
@@ -456,6 +464,19 @@ function toFactResult(
   requestId?: string,
 ): BrainFactResult {
   const workspaceId = ctx.workspaceId;
+  // One decision, both consumers — provenance and decay must agree about this
+  // reader's entitlement to the "when" (#4836, #4914).
+  const attribution = attributionDecision(row, ctx, requestId);
+  if (row.last_observed_at === undefined) {
+    // Selected-column drift on the decay anchor — the classifier reports
+    // "age unknown" instead of anchoring on ingest recency, and this is the
+    // log line that makes that degradation findable. Same posture as
+    // `attributionDecision`'s missing-column arm.
+    log.warn(
+      { rowId: row.id, workspaceId, requestId },
+      "brain search: `last_observed_at` absent from the row — the fact query no longer selects the decay anchor; reporting age unknown",
+    );
+  }
   return {
     tier: "fact",
     trustTier: 2,
@@ -469,12 +490,16 @@ function toFactResult(
     validTo: iso(row.valid_to),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    provenance: projectProvenance(
-      row.provenance,
-      row.source_episode_id,
-      attributionDecision(row, ctx, requestId),
-    ),
+    provenance: projectProvenance(row.provenance, row.source_episode_id, attribution),
     corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
+    decay: computeDecaySignal(
+      {
+        lastObservedAt: row.last_observed_at,
+        validFrom: row.valid_from,
+        ingestedAt: row.ingested_at,
+      },
+      attribution,
+    ),
     tensions,
   };
 }

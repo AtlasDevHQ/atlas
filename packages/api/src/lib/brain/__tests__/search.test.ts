@@ -102,6 +102,9 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     invalidated_at: null,
     ingested_at: new Date("2026-06-01T00:00:00Z"),
     corroboration_count: 1,
+    // Selected by the fact query (#4914); NULL = no provenance edges. Present
+    // in the fixture so no test row trips the decay drift arm by accident.
+    last_observed_at: null,
     snippet: null,
     ...overrides,
   };
@@ -323,7 +326,9 @@ describe("fail-closed", () => {
       limit: 10,
       expand: false,
     });
-    const episodeCall = db.calls.find((c) => c.sql.includes("brain_episodes"))!;
+    // The STORE statement, not any statement touching the table — the fact
+    // page's decay anchor (#4914) also names `brain_episodes`, in a subquery.
+    const episodeCall = db.calls.find((c) => c.sql.includes(SQL.episodePage))!;
     // A join gated by the FACT's predicate would hand a caller a private
     // message because they were entitled to a conclusion drawn from it.
     expect(episodeCall.sql).toContain("e.visible_to && $2::text[]");
@@ -1124,5 +1129,85 @@ describe("provenance attribution — the widened-fact disclosure (#4836)", () =>
       expand: false,
     });
     expect(db.calls[0]?.sql).toContain("f.pre_widening_visible_to");
+  });
+});
+
+/**
+ * Read-time decay on the agent path (#4914, ADR-0036 §Temporal).
+ *
+ * `searchBrain` is where a stale claim reaches a chat answer, so the wire must
+ * hand the agent the fact's age — and must NOT let decay touch anything else:
+ * not the trust tier, not the status, not the retrieval ranking.
+ */
+describe("searchBrainCore — read-time decay (#4914)", () => {
+  const OLD = "2020-01-01T00:00:00.000Z";
+
+  async function factFor(row: Record<string, unknown>) {
+    const db = reader([{ match: SQL.factPage, rows: [row] }]);
+    const response = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = response.results[0] as BrainFactResult | undefined;
+    if (!fact) throw new Error("expected one fact result");
+    return { fact, db };
+  }
+
+  it("carries the temporal metadata the agent presents instead of arbitrating", async () => {
+    const { fact } = await factFor(
+      factRow({ last_observed_at: OLD, valid_from: "2019-06-01T00:00:00.000Z" }),
+    );
+    expect(fact.decay.level).toBe("stale");
+    expect(fact.decay.lastObservedAt).toBe(OLD);
+    expect(fact.decay.ageDays).toBeGreaterThan(0);
+    expect(fact.validFrom).toBe("2019-06-01T00:00:00.000Z");
+    expect(fact.corroborationCount).toBe(1);
+  });
+
+  it("leaves the trust label untouched by staleness", async () => {
+    // The acceptance criterion as a negative: `stale` never demotes. The row
+    // keeps tier-2, its stored status, and its place in the result set.
+    const { fact } = await factFor(factRow({ last_observed_at: OLD }));
+    expect(fact.tier).toBe("fact");
+    expect(fact.trustTier).toBe(2);
+    expect(fact.status).toBe("published");
+  });
+
+  it("emits only reads while serving decay — no write path from the signal", async () => {
+    const { db } = await factFor(factRow({ last_observed_at: OLD }));
+    expect(db.calls.length).toBeGreaterThan(0);
+    for (const call of db.calls) {
+      expect(call.sql.trimStart()).toMatch(/^SELECT/i);
+    }
+  });
+
+  it("selects the observation but never ranks by it", async () => {
+    // Retrieval order stays relevance (then recency of ingest) — age-ordering
+    // results would be exactly the arbitration decay is forbidden to do. The
+    // decay anchor appears in the SELECT list only.
+    const { db } = await factFor(factRow({ last_observed_at: OLD }));
+    const sql = db.calls[0]?.sql ?? "";
+    expect(sql).toContain("AS last_observed_at");
+    const orderAt = sql.indexOf("ORDER BY");
+    expect(orderAt).toBeGreaterThan(-1);
+    expect(sql.slice(orderAt)).not.toContain("last_observed_at");
+    expect(sql.slice(orderAt)).not.toContain("make_interval");
+  });
+
+  it("withholds the numbers with attribution but keeps the level (#4836)", async () => {
+    // Same decision, both consumers: for a singly-corroborated fact the
+    // newest observation IS the withheld `occurredAt`.
+    const { fact } = await factFor(
+      factRow({
+        visible_to: ["audience:chat-channel:slack:C-PRIVATE", "org"],
+        pre_widening_visible_to: ["audience:chat-channel:slack:C-PRIVATE"],
+        last_observed_at: OLD,
+      }),
+    );
+    expect(fact.provenance.attribution).toEqual({ visible: false });
+    expect(fact.decay).toEqual({ level: "stale", ageDays: null, lastObservedAt: null });
   });
 });

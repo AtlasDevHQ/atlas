@@ -17,13 +17,28 @@
  *       workspaceName?: string,                    // Atlas extension
  *       installedAt: ISO-8601 string               // Atlas extension
  *
- *       // Optionally merged in by the chat-adapter after auth.test:
- *       botUserId?:  string,
+ *       botUserId?:  string,                       // adapter contract
  *     }
  *
- * Atlas's writer never sets `botUserId`; the JSONB merge
- * (`chat_cache.value || EXCLUDED.value` in the upsert) preserves any
- * field the adapter has stamped on a previous read.
+ * `botUserId` is written by Atlas from `oauth.v2.access`'s
+ * `bot_user_id` and is **load-bearing for loop safety**. In
+ * multi-workspace mode (no `SLACK_BOT_TOKEN` → no `defaultBotToken`:
+ * SaaS always, and self-hosted BYOT too) the adapter's
+ * `isMessageFromSelf` has three checks and only one can fire.
+ * `_botId` is populated solely by `initialize()` under a
+ * single-workspace `defaultBotToken`. `_botUserId` is populated there
+ * AND from `config.botUserId`, which `plugins/chat/src/adapters/slack.ts`
+ * does not forward — so both instance fields are null here. The
+ * surviving check compares the inbound event's `user` against the
+ * request-context `botUserId`, which the adapter sources from THIS row
+ * via `resolveTokenForTeam`. Leave it unset and every message Atlas
+ * posts reads back as a user message: in a subscribed thread or a DM
+ * that is an unbounded reply loop, which is exactly what #4907 was.
+ *
+ * The adapter only ever *reads* this field — its sole writer is the
+ * SDK's own `handleOAuthCallback`, which Atlas bypasses by running
+ * `SlackOAuthInstallHandler`. So if Atlas doesn't persist it, nothing
+ * does.
  *
  * `botToken` may be plaintext OR the chat-adapter's AES-256-GCM
  * envelope. {@link installation-encryption.encryptSlackInstallationToken}
@@ -124,11 +139,12 @@ function keyFor(teamId: string): string {
 }
 
 /**
- * Shape persisted in `chat_cache.value`. `botToken` carries the
- * chat-adapter's expected field name so the adapter can read the same
- * row directly. The rest are Atlas extensions (chat-adapter ignores
- * unknown fields). Exported so the org-purge helper and any future
- * cross-cutting reader (e.g. SCIM dedupe) share one type.
+ * Shape persisted in `chat_cache.value`. `botToken` and `botUserId`
+ * carry the chat-adapter's expected field names so the adapter can read
+ * the same row directly; `teamName` is shared. `orgId`,
+ * `workspaceName` and `installedAt` are Atlas extensions (chat-adapter
+ * ignores unknown fields). Exported so the org-purge helper and any
+ * future cross-cutting reader (e.g. SCIM dedupe) share one type.
  */
 export interface StoredInstallation {
   botToken: StoredSlackBotToken;
@@ -197,6 +213,13 @@ function parseStoredInstallation(
 /** Save payload for a Slack installation (OAuth flow). */
 interface SlackSaveInput {
   botToken: string;
+  /**
+   * The bot's own Slack user ID (`U…`), from `oauth.v2.access`'s
+   * `bot_user_id`. Load-bearing for loop safety, not a nicety: in
+   * multi-workspace mode it is the ONLY input to the adapter's
+   * `isMessageFromSelf` check. See {@link saveInstallation}.
+   */
+  botUserId?: string;
   orgId?: string;
   workspaceName?: string;
 }
@@ -268,6 +291,7 @@ const slackBackend: InstallationBackend<
 
     const value: StoredInstallation = {
       botToken: encryptSlackInstallationToken(input.botToken),
+      ...(input.botUserId ? { botUserId: input.botUserId } : {}),
       ...(workspaceName ? { teamName: workspaceName, workspaceName } : {}),
       ...(orgId ? { orgId } : {}),
       installedAt: new Date().toISOString(),
@@ -276,8 +300,11 @@ const slackBackend: InstallationBackend<
     const pool = getInternalDB();
     // Atomic upsert with hijack protection — the WHERE clause rejects
     // a row already bound to a different org in one statement (no TOCTOU
-    // race). Merges `value` so the chat-adapter's own writes (e.g.
-    // `botUserId` set by a future `auth.test` round-trip) aren't clobbered.
+    // race). Merges `value` so fields this writer doesn't set aren't
+    // clobbered. That merge is also why `botUserId` is spread
+    // CONDITIONALLY above: omitting the key preserves a previously
+    // stored id, whereas writing `undefined` would erase it and silently
+    // re-break self-message detection (#4907).
     const result = await pool.query(
       `INSERT INTO ${INSTALL_TABLE} (key, value, expires_at)
      VALUES ($1, $2::jsonb, NULL)
@@ -369,13 +396,14 @@ export function getInstallationByOrg(
 export function saveInstallation(
   teamId: string,
   botToken: string,
-  opts?: { orgId?: string; workspaceName?: string },
+  // Derived from the backend's input type rather than re-declared: a
+  // hand-mirrored options bag silently drifts when a field is added to
+  // one side and not the other, with NO compile error — the public API
+  // just can't set it. That is exactly how #4907 happened one layer up,
+  // so don't reintroduce the shape here.
+  opts?: Omit<SlackSaveInput, "botToken">,
 ): Promise<void> {
-  return store.save(teamId, {
-    botToken,
-    orgId: opts?.orgId,
-    workspaceName: opts?.workspaceName,
-  });
+  return store.save(teamId, { botToken, ...opts });
 }
 
 /**

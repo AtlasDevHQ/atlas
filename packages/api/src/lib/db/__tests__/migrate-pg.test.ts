@@ -1128,11 +1128,19 @@ describeIfPg("migrate-pg (real Postgres)", () => {
 
   it("0086: JSONB merge preserves adapter-extension fields on a re-save (#2634)", async () => {
     // The upsert's `value = chat_cache.value || EXCLUDED.value` merges
-    // right-wins-shallow so a future chat-adapter write (e.g.
-    // `botUserId` set after an `auth.test` round-trip) survives a
-    // re-run of Atlas's `saveInstallation`. A refactor that switched
-    // to `value = EXCLUDED.value` (clobber) would silently lose
-    // those fields — locked down here.
+    // right-wins-shallow, so a field Atlas's `saveInstallation` does not
+    // set on a given call survives a re-run. A refactor that switched to
+    // `value = EXCLUDED.value` (clobber) would silently lose them —
+    // locked down here.
+    //
+    // NB (#4907): this used to cite "a future chat-adapter write, e.g.
+    // `botUserId` set after an `auth.test` round-trip" as the motivating
+    // case. That round-trip does not exist — the adapter only READS
+    // `botUserId`, and its sole writer is the SDK's own
+    // `handleOAuthCallback`, which Atlas bypasses. Believing otherwise
+    // is what left the field unwritten and caused the reply loop. Atlas
+    // is the writer; the merge now matters because `saveInstallation`
+    // OMITS the key when it has no value, so a stored id is preserved.
     const teamId = `T-merge-${Date.now()}`;
     const key = `slack:installation:${teamId}`;
 

@@ -261,6 +261,13 @@ describe("store (chat_cache-backed)", () => {
       expect(insertSql).toContain("INSERT INTO chat_cache");
       expect(insertSql).toContain("ON CONFLICT (key) DO UPDATE");
       expect(insertSql).toContain("RETURNING key");
+      // The MERGE, not just the upsert (#4907). `botUserId` is omitted
+      // from the payload when absent precisely so a stored id survives —
+      // that only holds while this is `value || EXCLUDED.value`. A switch
+      // to plain `EXCLUDED.value` would wipe the id on every re-install
+      // and silently restore the reply loop, with every other assertion
+      // in this file still green.
+      expect(insertSql).toContain("chat_cache.value || EXCLUDED.value");
 
       // Params: (key, value::jsonb, orgId-for-hijack-check)
       expect(insertParams).toHaveLength(3);
@@ -284,6 +291,34 @@ describe("store (chat_cache-backed)", () => {
       expect(value.orgId).toBe("org-1");
       expect(value.workspaceName).toBe("My Team");
       expect(value.teamName).toBe("My Team");
+    });
+
+    // #4907: `botUserId` is the only working input to the chat-adapter's
+    // self-message check in multi-workspace mode. Dropping it on the
+    // write path is what let Atlas answer its own Slack posts in a loop,
+    // so these two assert the field's presence AND its absence-semantics.
+    it("persists botUserId when provided", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [{ key: "slack:installation:T123" }] });
+
+      await saveInstallation("T123", "xoxb-new", { botUserId: "U0BOT123" });
+      const [, insertParams] = mockPoolQuery.mock.calls[0];
+      const value = JSON.parse(insertParams![1] as string);
+      expect(value.botUserId).toBe("U0BOT123");
+    });
+
+    it("omits the botUserId KEY entirely when absent, so the JSONB merge preserves a stored id", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [{ key: "slack:installation:T123" }] });
+
+      await saveInstallation("T123", "xoxb-new", { orgId: "org-1" });
+      const [, insertParams] = mockPoolQuery.mock.calls[0];
+      const value = JSON.parse(insertParams![1] as string);
+      // `botUserId: undefined` would serialise the key away too — but a
+      // future refactor to `botUserId: input.botUserId ?? null` would
+      // NOT, and `value || EXCLUDED.value` would then overwrite a good
+      // stored id with null. Assert on key presence, not on the value.
+      expect(Object.hasOwn(value, "botUserId")).toBe(false);
     });
 
     it("encrypts the bot token when SLACK_ENCRYPTION_KEY is set", async () => {

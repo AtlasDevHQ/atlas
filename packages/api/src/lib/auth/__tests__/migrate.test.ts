@@ -550,6 +550,14 @@ describe("migrateAuthTables", () => {
             { name: "0181_brain_fts.sql" },
             { name: "0182_audience_member_synced_at.sql" },
             { name: "0183_brain_facts_pre_widening_grant.sql" },
+            // 0185 (#4907) — backfills `botUserId` into existing Slack
+            // installation rows. A data-only UPDATE on two Atlas-internal
+            // tables (chat_cache, workspace_plugins), no Better Auth
+            // involvement, so it runs in every auth mode and must be in
+            // the already-applied set for this "all applied" test to see
+            // zero new migrations. (0184 is absent because it IS
+            // Better-Auth-gated via MANAGED_AUTH_MIGRATIONS.)
+            { name: "0185_backfill_slack_bot_user_id.sql" },
           ],
         };
       }

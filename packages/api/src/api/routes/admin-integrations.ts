@@ -654,7 +654,23 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
             log.warn({ err: errorMessage(err) }, "Slack auth.test fetch failed");
             return { ok: false as const, error: "Could not reach Slack API. Please try again." };
           }
-          let data: { ok: boolean; team_id?: string; team?: string; error?: string };
+          // `user_id` is the BOT's own user ID on an `auth.test` made with
+          // a BOT token — the same value `oauth.v2.access` returns as
+          // `bot_user_id`. That precondition is guaranteed by the
+          // `startsWith("xoxb-")` refine on this route's request schema:
+          // with a user (`xoxp-`) token `user_id` is the INSTALLER's own
+          // id, and persisting it would make Atlas silently ignore that
+          // human. Capturing it keeps the BYOT path from reproducing
+          // #4907 — without it the chat-adapter's `isMessageFromSelf` has
+          // no working input and Atlas answers its own posts.
+          // `lib/slack/store.ts`'s header has the full chain.
+          let data: {
+            ok: boolean;
+            team_id?: string;
+            team?: string;
+            user_id?: string;
+            error?: string;
+          };
           try {
             data = (await res.json()) as typeof data;
           } catch (err) {
@@ -664,7 +680,12 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
           if (!data.ok) {
             return { ok: false as const, error: data.error ?? "Invalid bot token" };
           }
-          return { ok: true as const, teamId: data.team_id ?? null, workspaceName: data.team ?? null };
+          return {
+            ok: true as const,
+            teamId: data.team_id ?? null,
+            workspaceName: data.team ?? null,
+            botUserId: data.user_id ?? null,
+          };
         },
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
@@ -676,11 +697,23 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
         );
       }
 
+      // `auth.test` returns `user_id` on every ok response, so absence
+      // means a malformed or proxied payload — and it silently leaves
+      // this workspace without self-message detection. Mirror the OAuth
+      // handler's warn rather than returning a 200 that looks healthy.
+      if (!authResult.botUserId) {
+        log.warn(
+          { orgId, teamId: authResult.teamId },
+          "Slack auth.test omitted user_id — self-message detection unavailable for this workspace (#4907)",
+        );
+      }
+
       yield* Effect.tryPromise({
         try: () =>
           saveInstallation(authResult.teamId ?? `byot-${orgId}`, botToken, {
             orgId,
             workspaceName: authResult.workspaceName ?? undefined,
+            ...(authResult.botUserId ? { botUserId: authResult.botUserId } : {}),
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(
@@ -698,7 +731,15 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
         ),
       );
 
-      log.info({ orgId, teamId: authResult.teamId, workspaceName: authResult.workspaceName }, "Slack BYOT installation saved by admin");
+      log.info(
+        {
+          orgId,
+          teamId: authResult.teamId,
+          workspaceName: authResult.workspaceName,
+          hasBotUserId: !!authResult.botUserId,
+        },
+        "Slack BYOT installation saved by admin",
+      );
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.integration.enable,

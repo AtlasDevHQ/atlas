@@ -254,7 +254,11 @@ describe("runMigrations", () => {
     //   reserved owner id — the residual half of GHSA-j8v8-g9cx-5qf4, which has
     //   no fix on the @better-auth/scim 1.6.x line; `providerOwnership` only
     //   binds providers created after it is enabled) = 185.
-    expect(count).toBe(185);
+    //   Plus 0185 (backfills `botUserId` into existing Slack installation
+    //   rows from `workspace_plugins.config->>'bot_user_id'` — without it
+    //   the #4907 fix protects only NEW installs and every pre-existing
+    //   workspace keeps answering its own messages) = 186.
+    expect(count).toBe(186);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -468,6 +472,7 @@ describe("runMigrations", () => {
         "0182_audience_member_synced_at.sql",
         "0183_brain_facts_pre_widening_grant.sql",
         "0184_scim_provider_seal_ownerless.sql",
+        "0185_backfill_slack_bot_user_id.sql",
       ],
     });
 

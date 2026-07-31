@@ -33,7 +33,8 @@
  *
  *      Where an entry in `EXPECTED_REGISTRY` pins a LOCAL IDENTIFIER rather
  *      than a registry name, the identifier's value is guaranteed only by that
- *      surface's behavioural test — named per entry.
+ *      surface's behavioural test — named per entry, including the one entry
+ *      (`admin-semantic-improve.ts`) whose route test mocks its builder.
  *
  * The safe default is the backstop for anything the scan cannot see (an
  * untyped caller, a plugin compiled separately); naming the registry at the
@@ -313,6 +314,8 @@ type ToolsProp =
   | { readonly kind: "shorthand" }
   /** `tools` appears, but only inside a spread element. */
   | { readonly kind: "spread-only" }
+  /** `tools` is named unconditionally, then RE-ASSIGNED by a LATER spread. */
+  | { readonly kind: "overridden" }
   | { readonly kind: "absent" };
 
 /**
@@ -358,23 +361,40 @@ function inspectToolsProp(args: string): ToolsProp {
     }
   }
 
+  // Scan ALL properties, never returning early. Object spread is
+  // LAST-WRITE-WINS, so a `tools`-carrying spread that appears AFTER the
+  // property is what the turn actually runs with — the named registry is then
+  // decoration, and every downstream check (including `EXPECTED_REGISTRY`,
+  // whose pinned spelling is still literally present) passes while the surface
+  // silently runs on the spread's registry. This is the one escape shape whose
+  // failure direction is UPWARD: it re-adds `correct_fact`, rather than
+  // resolving to `undefined` and landing on the fail-closed default. Stacked
+  // conditional spreads are the house idiom at exactly these call sites, so it
+  // is a one-line diff away. A spread BEFORE the property is harmless.
   let sawToolsInSpread = false;
+  let found: ToolsProp | undefined;
   for (const raw of props) {
     const prop = raw.trim();
     if (prop.startsWith("...")) {
-      if (/\btools\b/.test(prop)) sawToolsInSpread = true;
+      if (/\btools\b/.test(prop)) {
+        if (found) return { kind: "overridden" };
+        sawToolsInSpread = true;
+      }
       continue;
     }
+    if (found) continue;
     const match = /^(?:"tools"|'tools'|tools)\s*(:?)/.exec(prop);
     if (!match) continue;
     if (match[1] !== ":") {
       // Guard against `toolsFoo` matching the bare-identifier arm.
       if (prop !== "tools") continue;
-      return { kind: "shorthand" };
+      found = { kind: "shorthand" };
+      continue;
     }
-    return { kind: "value", text: prop.slice(match[0].length).trim() };
+    found = { kind: "value", text: prop.slice(match[0].length).trim() };
   }
 
+  if (found) return found;
   return sawToolsInSpread ? { kind: "spread-only" } : { kind: "absent" };
 }
 
@@ -394,6 +414,8 @@ function offenceFor(args: string): string | undefined {
       return "omits `tools`";
     case "spread-only":
       return "names `tools` only inside a SPREAD — the surface inherits the default whenever the spread's condition is false";
+    case "overridden":
+      return "names `tools` unconditionally and then RE-ASSIGNS it from a later spread — object spread is last-write-wins, so the named registry is not what the turn runs with";
     case "shorthand":
       return undefined;
     case "value":
@@ -412,10 +434,11 @@ function offenceFor(args: string): string | undefined {
  *
  * Where the pin is a REGISTRY NAME (`demo.ts`, `resume-turn.ts`) it is exact.
  * Where it is a LOCAL IDENTIFIER (`chat.ts`, `agent-query.ts`,
- * `answer-adapter.ts`) it only proves the surface chose deliberately — what the
- * identifier resolves to is pinned by that surface's behavioural test, named in
- * the `why` string. A text scan cannot close that gap; the behavioural layer is
- * not optional decoration.
+ * `answer-adapter.ts`, `admin-semantic-improve.ts`) it only proves the surface
+ * chose deliberately — what the identifier resolves to is pinned by that
+ * surface's behavioural test, named in the `why` string. A text scan cannot
+ * close that gap; the behavioural layer is not optional decoration, and where
+ * it is thin the `why` string says so.
  *
  * A call-site file absent from this map fails. That is the point — a new
  * `runAgent` surface must make its tool posture a reviewed decision here, not
@@ -435,7 +458,7 @@ const EXPECTED_REGISTRY: ReadonlyArray<readonly [file: string, expected: RegExp,
   [
     "packages/api/src/api/routes/admin-semantic-improve.ts",
     /tools:\s*expertRegistry\b/,
-    "the expert-agent chat runs a purpose-built registry (proposeAmendment, no analyst write verbs)",
+    "the expert-agent chat runs a purpose-built registry (proposeAmendment, no analyst write verbs). Contents pinned by lib/tools/__tests__/expert-registry.test.ts; the route's own test MOCKS buildExpertRegistry, so the identifier->registry edge is scanner-only",
   ],
   [
     "packages/api/src/lib/agent-query.ts",
@@ -572,10 +595,21 @@ describe("#4936 — the call-site scanner detects the shapes the bug actually ha
     ["unconditional, first key", `{ tools: nonDashboardRegistry, messages }`, false],
     ["unconditional await", `{ messages: [], tools: await buildHeadlessRegistry() }`, false],
     ["shorthand property", `{ messages, tools }`, false],
-    // A legitimate conditional spread of something OTHER than tools must not
-    // be flagged — the real chat.ts call site contains one.
+    // Last-write-wins escalation — the only escape shape that fails UPWARD.
     [
-      "unconditional tools beside an unrelated conditional spread",
+      "a later spread re-assigns tools",
+      `{ messages, tools: nonDashboardRegistry, ...(isInternal && { tools: defaultRegistry }) }`,
+      true,
+    ],
+    [
+      "a spread BEFORE tools is harmless — the literal wins",
+      `{ messages, ...(x && { tools: defaultRegistry }), tools: nonDashboardRegistry }`,
+      false,
+    ],
+    // A conditional spread of something OTHER than tools must not be flagged —
+    // the real chat.ts call site stacks three of them.
+    [
+      "unconditional tools beside a conditional spread of something ELSE",
       `{ messages, tools: resolvedToolRegistry, ...(warnings.length > 0 && { warnings }) }`,
       false,
     ],

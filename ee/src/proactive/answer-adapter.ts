@@ -198,9 +198,10 @@ export function createProactiveAnswerAdapter(
     // LATENT rather than live on the SaaS wiring today: the wired resolver
     // (`createSlackProactiveUserResolver`) returns `unlinked` for every asker
     // until a Slack-user link table exists, so this branch is unreachable there.
-    // A self-hosted host may still supply its own `userResolver`. That is exactly why it must be closed BEFORE that branch
-    // goes live — the type now makes the `undefined` state unrepresentable, so
-    // there is no path left to fall through.
+    // A self-hosted host may still supply its own `userResolver`. That is
+    // exactly why it must be closed BEFORE the branch goes live — the type now
+    // makes the `undefined` state unrepresentable, so there is no path left to
+    // fall through.
     let actor: AtlasUser;
     let toolRegistry: ToolRegistry;
     try {

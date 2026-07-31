@@ -546,7 +546,9 @@ export async function buildRegistry(options?: {
  *
  * This is `executeAgentQuery`'s registry construction, lifted to a named seam
  * so the surfaces that re-enter the SAME turn rebuild from the SAME POLICY
- * (not necessarily the same SET — the env flags below are re-read). Chat
+ * (not necessarily the same SET — the env this seam and `buildRegistry` read
+ * are re-read: `ATLAS_ACTIONS_ENABLED`, `ATLAS_PYTHON_ENABLED`, and the
+ * Salesforce OAuth pair that gates `querySalesforce`). Chat
  * resume (`lib/chat-plugin/resume-turn.ts`) was the case that forced it: the
  * original Slack turn ran through `executeAgentQuery`, but the approval-resume
  * of that turn called `runAgent` with no `tools` at all — so the tool surface

@@ -63,11 +63,14 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 }));
 
 let loggedError: unknown;
+let loggedWarn: unknown;
 // Mock all value exports of the logger module (mock.module is file-global; a
 // partial stub would hand `undefined` to any importer reaching an unmocked one).
 const noopLogger = {
   info: () => {},
-  warn: () => {},
+  warn: (obj: unknown) => {
+    loggedWarn = obj;
+  },
   debug: () => {},
   error: (obj: unknown) => {
     loggedError = obj;
@@ -126,6 +129,7 @@ beforeEach(() => {
   queryCalls.length = 0;
   queryImpl = async () => [];
   loggedError = undefined;
+  loggedWarn = undefined;
 });
 
 describe("searchBrain tool.execute", () => {
@@ -232,6 +236,38 @@ describe("searchBrain tool.execute", () => {
     // The request id is quotable, so the refusal correlates to the server log.
     expect(res.error).toContain("req-1");
     expect(loggedError).toBeDefined();
+  });
+
+  it("threads a valid asOf into the fact read and echoes it — the historical page says so (#4916)", async () => {
+    const res = await run({ query: "x", include: ["fact"], asOf: "2026-07-01T00:00:00Z", expand: false });
+    const factCall = queryCalls.find((c) => c.sql.includes("brain_facts"))!;
+    expect(factCall.sql).toContain("f.valid_from IS NULL OR f.valid_from <=");
+    expect(factCall.params).toContain("2026-07-01T00:00:00.000Z");
+    expect(res.asOf).toBe("2026-07-01T00:00:00.000Z");
+    expect(res.error).toBeUndefined();
+  });
+
+  it("rejects a malformed asOf with its own machine-readable reason — never answers as-of-now (#4916)", async () => {
+    const res = await run({ query: "x", asOf: "yesterday-ish" });
+    expect(res.error).toContain("yesterday-ish");
+    expect(res.error).toContain("ISO-8601");
+    expect(res.reason).toBe("invalid_as_of");
+    expect(res.results).toBeUndefined();
+    // Fail closed: nothing was searched — a page of CURRENT beliefs under a
+    // rejected historical ask would be attributed to the asked-about instant.
+    expect(queryCalls).toHaveLength(0);
+    // Logged at warn (a caller mistake, not a server fault), with correlation.
+    expect(loggedWarn).toMatchObject({ workspaceId: "ws-1", requestId: "req-1" });
+    expect(loggedError).toBeUndefined();
+  });
+
+  it("rejects a BLANK asOf rather than normalizing it away like the document filters", async () => {
+    // `since: '  '` becomes absent; `asOf: '  '` must NOT — an explicit
+    // point-read argument that silently degrades to as-of-now is the exact
+    // fall-through #4916 forbids.
+    const res = await run({ query: "x", asOf: "   " });
+    expect(res.reason).toBe("invalid_as_of");
+    expect(queryCalls).toHaveLength(0);
   });
 
   it("logs and returns a generic, secret-free error when the query throws", async () => {

@@ -185,8 +185,10 @@ export interface GrantWidening {
  * This type covers only the PUBLISH path's events — a `PromotionReport` is
  * emitted by a publish phase, so `collectSupersessions` structurally cannot see
  * a correction's supersession, which records itself through the correction
- * response and `admin-brain-facts.ts`'s own audit row (`supersededBy` /
- * `validTo`) instead. Neither record is a superset of the other; a reader
+ * response and the `admin_action_log` row `lib/brain/correction.ts` emits for
+ * EVERY correction entry point — the agent tool included since #4934 —
+ * carrying `supersededBy` / `validTo` in its metadata. Neither record is a
+ * superset of the other; a reader
  * asking "everything that retired this fact" must consult the `supersedes`
  * edges, which both paths write.
  *

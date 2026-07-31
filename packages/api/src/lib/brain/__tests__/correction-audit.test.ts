@@ -33,16 +33,25 @@
  *     bypasses the breaker on purpose, and the internal pool sets no statement
  *     timeout — so an awaited-but-unbounded write lets a degraded internal DB
  *     hold a chat turn open indefinitely;
- *   - and a SOURCE-LEVEL guard that discovers every `correctFact` caller and
- *     pins that none of them writes an audit row of its own. That is the half
- *     that makes "a third entry point cannot land uncovered" true by
+ *   - and a SOURCE-LEVEL guard that discovers every DIRECT `correctFact(` call
+ *     site and pins that none of them writes an audit row of its own. That is
+ *     the half that makes "a third entry point cannot land uncovered" true by
  *     construction rather than by review diligence — the failure mode #4934
- *     was, at one entry point, exactly this.
+ *     was, at one entry point, exactly this. Its reach is direct call sites in
+ *     five roots: an aliased import (`const fn = correctFact`), a re-export, or
+ *     a thin wrapper module is invisible to it. Broaden the regexes if one
+ *     appears; do not delete the guard.
+ *
+ * The RESOLVED row — `actor_id`, `actor_email`, `org_id`, `request_id`, which
+ * `resolveEntry` derives from the request context this file stubs away — and
+ * `supersede`'s metadata live in `correction-audit-pg.test.ts`, against live
+ * Postgres. Neither is knowable through a mocked `lib/audit`.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test, mock } from "bun:test";
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 
 // --- logger: every VALUE export stubbed (mock-all-exports) -----------------
 type LogCall = { level: "error" | "warn" | "info" | "debug"; payload: unknown; message: string };
@@ -79,13 +88,30 @@ const committed: AuditRow[] = [];
 const attempted: AuditRow[] = [];
 /** Swap to make the awaited write hang or reject. Default: commits promptly. */
 let auditBehaviour: (row: AuditRow) => Promise<void> = async () => {};
-/** Set if anything calls the FIRE-AND-FORGET variant — nothing here may. */
+/** How many times anything called the FIRE-AND-FORGET variant — must stay 0. */
 let fireAndForgetCalls = 0;
+/**
+ * Makes every read of `ADMIN_ACTIONS` throw, modelling a partial
+ * `mock.module("@atlas/api/lib/audit")` somewhere else in the repo (there are
+ * a dozen) that omits the export `correction.ts` now needs. That throw happens
+ * while BUILDING the audit entry, which is the one way the emitter's
+ * never-throws contract can be broken by a change outside it.
+ */
+let breakAdminActions = false;
 
+// The REAL catalog, not a hand-written copy. A copy would keep this suite green
+// through a rename of `ADMIN_ACTIONS.brainFact.retract` while production emitted
+// a new vocabulary — the exact drift a forensic-trail test exists to catch.
+// `lib/audit/actions.ts` is a constant catalog with zero imports, so a static
+// import here keeps the `mock.module` factory synchronous (an async factory
+// deadlocks bun's loader).
 void mock.module("@atlas/api/lib/audit", () => ({
-  ADMIN_ACTIONS: {
-    brainFact: { retract: "brain_fact.retract", correct: "brain_fact.correct" },
-  },
+  ADMIN_ACTIONS: new Proxy(REAL_ADMIN_ACTIONS, {
+    get(target, key, receiver: unknown) {
+      if (breakAdminActions) throw new TypeError("partial mock: ADMIN_ACTIONS is not defined");
+      return Reflect.get(target, key, receiver) as unknown;
+    },
+  }),
   logAdminAction: () => {
     fireAndForgetCalls += 1;
   },
@@ -126,10 +152,15 @@ const admin = {
 /**
  * The narrowest store the two audited verbs need: a statement dispatcher, the
  * same identity-not-paraphrase idea as `correction.test.ts`'s fake, trimmed to
- * `retract` and the vouch verbs. `supersede` runs the whole reconcile path and
- * is pinned there; its audit row rides the SAME expression as `pin`'s (every
- * non-retract verb maps to `brain_fact.correct`), so what is left untested here
- * is reconcile, not the audit mapping.
+ * `retract` and the vouch verbs.
+ *
+ * `supersede` is deliberately NOT here — it runs the whole reconcile path, and
+ * faking that would be a second, drifting copy of `correction.test.ts`'s store.
+ * Its `actionType` rides the same expression as `pin`'s, but its
+ * `supersededBy` / `validTo` metadata are conditional spreads no other verb can
+ * produce, so "same expression" does NOT cover them. They are pinned in
+ * `correction-audit-pg.test.ts`, against the live schema, where reconcile runs
+ * for real.
  */
 function fakeTransaction(
   options: { dependents?: readonly string[]; warehouseDerived?: boolean } = {},
@@ -179,11 +210,26 @@ function fakeTransaction(
   } satisfies CorrectionDeps;
 }
 
+/**
+ * The `err` field off a recorded log line, as an `Error`. A named throw rather
+ * than `call?.payload?.err`, which would compare `undefined` to `undefined` and
+ * pass on a line that never fired.
+ */
+function errOf(call: LogCall | undefined): Error {
+  if (call === undefined) throw new Error("expected a log line, got none");
+  const { err } = call.payload as { err?: unknown };
+  if (!(err instanceof Error)) {
+    throw new Error(`log line carried no Error in \`err\`: ${JSON.stringify(call.payload)}`);
+  }
+  return err;
+}
+
 beforeEach(() => {
   logCalls.length = 0;
   committed.length = 0;
   attempted.length = 0;
   fireAndForgetCalls = 0;
+  breakAdminActions = false;
   auditBehaviour = async () => {};
 });
 
@@ -303,13 +349,12 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     // `await`. A fire-and-forget write still records an ATTEMPT synchronously,
     // so asserting on `attempted` would pass either way — only the settled
     // `committed` list can tell the difference.
-    let release: (() => void) | undefined;
     auditBehaviour = () =>
+      // A macrotask, not a microtask: an `await`-less caller drains the
+      // microtask queue before returning, so a resolved-on-a-tick write would
+      // land in `committed` either way and the assertion would be vacuous.
       new Promise<void>((resolve) => {
-        release = resolve;
-        // Resolve on a later microtask+macrotask so a non-awaiting caller
-        // returns first and the assertion below sees an empty list.
-        setTimeout(() => resolve(), 5);
+        setTimeout(resolve, 5);
       });
 
     const outcome = await correctFact(
@@ -319,7 +364,6 @@ describe("the write is awaited, bounded, and never swallowed", () => {
 
     expect(outcome.kind).toBe("corrected");
     expect(committed).toHaveLength(1);
-    release?.();
   });
 
   test("a FAILED write is logged at ERROR — never swallowed — and the correction still stands", async () => {
@@ -340,21 +384,30 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     const errors = logCalls.filter((c) => c.level === "error");
     expect(errors).toHaveLength(1);
     const [failure] = errors;
-    // The underlying cause must reach the line — an `err`-less "audit failed"
-    // is not actionable, and CLAUDE.md requires the caught error be narrowed
-    // and logged rather than dropped.
+    // Everything needed to reconstruct the lost row BY HAND has to be on the
+    // line that says it is gone — the row was the actor-attributed record, so
+    // `actorId` in particular is not decoration.
     expect(failure?.payload).toMatchObject({
       workspaceId: WS,
+      actorId: "admin-1",
       factId: FACT,
       verb: "retract",
       correctionEpisodeId: EPISODE,
       requestId: "req-7",
-      err: "internal DB circuit breaker is open",
     });
+    // The Error OBJECT, not `err.message`: pino's `scrubErrSerializer` then
+    // captures the stack and, for a pg rejection, `code`/`detail`/`constraint`.
+    // An `err`-less "audit failed" is not actionable at all — `errOf` throws
+    // rather than letting a missing field pass as a match.
+    expect(errOf(failure).message).toBe("internal DB circuit breaker is open");
     // The message is a recovery instruction: it must name what SURVIVES, or an
     // operator reads it as "the correction was lost".
     expect(failure?.message).toContain("brain_episodes");
     expect(failure?.message).toContain("admin_action");
+    // …and it must NOT claim the row is definitely gone. A deadline does not
+    // cancel an insert, so an operator told "not committed" may hand-insert a
+    // duplicate forensic row.
+    expect(failure?.message).toContain("may not have been committed");
   });
 
   test("a HUNG write is bounded — a degraded internal DB cannot hold the turn open", async () => {
@@ -372,7 +425,88 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     expect(committed).toHaveLength(0);
     const errors = logCalls.filter((c) => c.level === "error");
     expect(errors).toHaveLength(1);
-    expect((errors[0]?.payload as { err?: string } | undefined)?.err).toContain("timed out");
+    expect(errOf(errors[0]).message).toContain("timed out");
+  });
+
+  test("a write that FAILS after the deadline still surfaces its real cause", async () => {
+    // `Promise.race` discards the losing branch's outcome, so without a
+    // continuation the pg error explaining a slow write is dropped and the only
+    // line an operator ever sees is "timed out" — which names the symptom and
+    // never the cause.
+    auditBehaviour = () =>
+      new Promise<void>((_, reject) => {
+        setTimeout(() => reject(new Error('relation "admin_action_log" does not exist')), 40);
+      });
+
+    await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-late" },
+      { ...fakeTransaction(), auditWriteTimeoutMs: 10 },
+    );
+    // The deadline line fires first; the cause arrives after.
+    expect(logCalls.filter((c) => c.level === "error")).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const errors = logCalls.filter((c) => c.level === "error");
+    expect(errors).toHaveLength(2);
+    const late = errors[1];
+    expect(late?.message).toContain("after its deadline");
+    expect(errOf(late).message).toContain("admin_action_log");
+  });
+
+  test("a throw while BUILDING the entry cannot escape onto a committed correction", async () => {
+    // The never-throws contract has to be structural, not a comment, because a
+    // leak lands on an ALREADY-COMMITTED correction and reaches a caller whose
+    // error copy says "nothing was changed — retry"
+    // (`lib/tools/correct-fact.ts`), which mints a second correction episode
+    // for one human decision. The realistic trigger is not the audit write at
+    // all: it is a partial `mock.module` elsewhere leaving `ADMIN_ACTIONS`
+    // undefined, i.e. a throw BEFORE the write is even attempted — so the entry
+    // literal has to be inside the try, not just the `await`.
+    breakAdminActions = true;
+
+    const outcome = await correctFact(
+      { ctx: admin, factId: FACT, verb: "retract", requestId: "req-break" },
+      fakeTransaction(),
+    );
+
+    expect(outcome.kind).toBe("corrected");
+    expect(attempted).toHaveLength(0);
+    expect(errOf(logCalls.filter((c) => c.level === "error")[0]).message).toContain(
+      "ADMIN_ACTIONS",
+    );
+  });
+
+  test("a non-positive deadline falls back to the real bound instead of timing out instantly", async () => {
+    // `??` only catches nullish, so a `0` (or negative, or NaN) seam value would
+    // mean "every audit write times out immediately" — a deadline that drops
+    // every row while looking like a configured one. The invariant the type
+    // cannot express is "a positive number of milliseconds".
+    auditBehaviour = () =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 5);
+      });
+
+    await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-zero" },
+      { ...fakeTransaction(), auditWriteTimeoutMs: 0 },
+    );
+
+    expect(committed).toHaveLength(1);
+    expect(logCalls.filter((c) => c.level === "error")).toHaveLength(0);
+  });
+
+  test("a write with no request context WARNS — an unattributed row is worse than none", async () => {
+    // `resolveEntry` falls back to the literal `"unknown"` actor with no
+    // complaint, so the module header's "a third entry point inherits the audit
+    // trail" is true of the ROW and not of its attribution. This file's logger
+    // mock returns no context, which is exactly the future-scheduler case.
+    await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-noctx" },
+      fakeTransaction(),
+    );
+    const warns = logCalls.filter((c) => c.level === "warn" && c.message.includes("actor 'unknown'"));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toContain("withRequestContext");
   });
 
   test("a prompt write CLEARS its deadline timer instead of leaving it armed", async () => {
@@ -442,14 +576,12 @@ const ROOTS = [
 const REPO_ROOT = join(import.meta.dir, "../../../../../..");
 
 function walk(dir: string, out: string[]): void {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    // A root that vanished is a shrunken guard, not a pass — the ROOTS
-    // assertion below turns this into a failure rather than silence.
-    return;
-  }
+  // Deliberately UNGUARDED. A swallowed `readdirSync` — EACCES, ELOOP, a
+  // directory removed mid-walk — silently shrinks the swept surface while the
+  // suite stays green, which is the same failure shape as the bug being
+  // guarded. The ROOTS assertion only covers the five top-level roots, so it is
+  // no substitute; letting a subdirectory failure throw is.
+  const entries: string[] = readdirSync(dir);
   for (const entry of entries) {
     if (entry === "node_modules" || entry === "dist" || entry === ".next") continue;
     const full = join(dir, entry);
@@ -467,10 +599,21 @@ function walk(dir: string, out: string[]): void {
 }
 
 /**
- * Comments and string literals stripped, strings FIRST so a `//` inside a URL
- * cannot eat the rest of its line. Both matter here: this file's own prose
- * names `logAdminAction` repeatedly, and a log message naming its own helper is
- * an ordinary thing to write.
+ * Comments and string literals stripped.
+ *
+ * Both halves are load-bearing, and each has a real in-tree case:
+ * `packages/api/src/lib/brain/candidates.ts` names `correctFact({ verb: … })`
+ * inside a doc comment, so without comment-stripping the sweep enrols a phantom
+ * caller; and a log message naming its own helper is an ordinary thing to write,
+ * so without string-stripping a `"...logAdminAction..."` literal reads as a call.
+ *
+ * Strings go first so a `//` inside a URL cannot eat the rest of its line. That
+ * ordering has a cost the {@link STRIP_ALLOWLIST} canary exists to pay: a lone
+ * backtick makes the template-literal regex pair with the NEXT backtick in the
+ * file and blank everything between, across lines. Over-stripping is the
+ * dangerous direction — it produces a silent false NEGATIVE, exactly the bug
+ * being guarded — so the canary compares raw discovery against stripped
+ * discovery and fails on any delta it does not expect.
  */
 function strip(source: string): string {
   return source
@@ -480,6 +623,16 @@ function strip(source: string): string {
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/\/\/[^\n]*/g, " ");
 }
+
+const CALLS_CORRECT_FACT = /\bcorrectFact\s*\(/;
+
+/**
+ * Files whose RAW source names `correctFact(` but whose stripped source does
+ * not — i.e. the mentions `strip` is supposed to remove. Every entry is a
+ * documented non-caller; anything else appearing in the delta means `strip`
+ * has started eating code, and the sweep has quietly stopped guarding.
+ */
+const STRIP_ALLOWLIST = new Set(["packages/api/src/lib/brain/candidates.ts"]);
 
 describe("source guard: the machinery is the ONLY audit-writing layer for corrections", () => {
   const MACHINERY = join(REPO_ROOT, "packages/api/src/lib/brain/correction.ts");
@@ -491,13 +644,40 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
     }
   });
 
-  test("no caller of correctFact writes an audit row of its own", () => {
+  test("`strip` removes prose, not code — the discovery delta is the allowlist", () => {
+    // The defeat this catches, reproduced before it was written: one unbalanced
+    // backtick anywhere in a file makes the `/gs` template regex pair with the
+    // next backtick in the FILE and blank everything between. 13 of the ~1000
+    // walked files already have an odd backtick count. A third entry point
+    // landing inside such a region would call `correctFact` AND
+    // `logAdminAction` and be invisible to the sweep below — a silent false
+    // negative, which is the failure mode the sweep exists to prevent.
+    const files: string[] = [];
+    for (const root of ROOTS) walk(join(REPO_ROOT, root), files);
+
+    const delta = files
+      .filter((file) => {
+        const source = readFileSync(file, "utf8");
+        return CALLS_CORRECT_FACT.test(source) && !CALLS_CORRECT_FACT.test(strip(source));
+      })
+      .map((f) => f.slice(REPO_ROOT.length + 1))
+      .filter((f) => !STRIP_ALLOWLIST.has(f));
+
+    expect(
+      delta,
+      "`strip` removed a real `correctFact(` call site. Either the file has an unbalanced backtick and " +
+        "the template-literal regex ate code, or the mention is a new documented non-caller that belongs " +
+        "in STRIP_ALLOWLIST. Do NOT widen the allowlist without reading the file",
+    ).toEqual([]);
+  });
+
+  test("no caller of correctFact writes a CORRECTION audit row of its own", () => {
     const files: string[] = [];
     for (const root of ROOTS) walk(join(REPO_ROOT, root), files);
 
     const callers = files.filter((file) => {
       if (file === MACHINERY) return false;
-      return /\bcorrectFact\s*\(/.test(strip(readFileSync(file, "utf8")));
+      return CALLS_CORRECT_FACT.test(strip(readFileSync(file, "utf8")));
     });
 
     // Discovery must actually find the known entry points, or the sweep is
@@ -506,13 +686,23 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
     expect(relative).toContain("packages/api/src/api/routes/admin-brain-facts.ts");
     expect(relative).toContain("packages/api/src/lib/tools/correct-fact.ts");
 
+    // Scoped to the brainFact vocabulary rather than any `logAdminAction(`:
+    // `admin-brain-facts.ts` may legitimately grow an unrelated admin action
+    // one day, and a guard that fails on it — with a message about
+    // double-logging — teaches the next author to weaken the test.
+    //
+    // The CATALOG reference, not the string value, and that is not a weaker
+    // check: `AdminActionType` is the union of `ADMIN_ACTIONS`' values, so a
+    // hand-written `"brain_fact.correct"` does not type-check. Matching the
+    // identifier also survives `strip`, which removes string literals.
     const offenders = callers.filter((file) =>
-      /\blogAdminAction(Await)?\s*\(/.test(strip(readFileSync(file, "utf8"))),
+      /\bADMIN_ACTIONS\.brainFact\b/.test(strip(readFileSync(file, "utf8"))),
     );
     expect(
       offenders.map((f) => f.slice(REPO_ROOT.length + 1)),
-      "an entry point onto correctFact writes its own admin_action_log row — that is either the #4934 " +
-        "double-log or a second metadata shape for one decision. The row belongs to lib/brain/correction.ts",
+      "an entry point onto correctFact reaches for the correction audit vocabulary — that is either the " +
+        "#4934 double-log or a second metadata shape for one decision. The row belongs to " +
+        "lib/brain/correction.ts",
     ).toEqual([]);
   });
 

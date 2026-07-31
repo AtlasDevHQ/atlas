@@ -18,6 +18,9 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect, Layer } from "effect";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+// Type-only: erased at compile time, so it does not evaluate the module this
+// file `mock.module`s below.
+import type { CorrectionOutcome } from "@atlas/api/lib/brain/correction";
 
 const CURRENT_ORG = "org-1";
 
@@ -36,12 +39,23 @@ void mock.module("@atlas/api/lib/logger", () => {
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test-req" }) };
 });
 
+// BOTH audit helpers land in one array, so the "this router emits nothing"
+// guard below is true for whichever one a re-added call reaches for — a partial
+// factory would fail it with `undefined is not a function` instead, which reads
+// as a broken test rather than a double-log. Mock-all-exports besides: since
+// #4934 `lib/brain/correction.ts` imports `logAdminActionAwait`, so a partial
+// factory here link-fails the moment that module is un-stubbed.
 const auditRows: Array<Record<string, unknown>> = [];
 void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => auditRows.push(entry),
+  logAdminActionAwait: async (entry: Record<string, unknown>) => {
+    auditRows.push(entry);
+  },
   ADMIN_ACTIONS: {
     brainFact: { retract: "brain_fact.retract", correct: "brain_fact.correct" },
   },
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
 
 // Records the role lookup so a test can prove the ROLE SOURCE, which is
@@ -810,13 +824,22 @@ describe("POST /{id}/correct", () => {
     expect(auditRows).toHaveLength(0);
   });
 
-  it("emits NO audit row on ANY path — the correction machinery owns it (#4934)", async () => {
+  it("emits NO audit row on ANY path of EITHER route — the machinery owns it (#4934)", async () => {
     // The double-logging guard, swept rather than enumerated: whatever this
     // router does, it must not write an `admin_action_log` row, because
     // `correctFact` already writes exactly one for every entry point. Re-adding
-    // a `logAdminAction` call to either handler turns one human decision into
-    // two forensic rows, and this fails.
-    const outcomes: Array<Record<string, unknown>> = [
+    // either audit helper to either handler turns one human decision into two
+    // forensic rows, and this fails — both are captured into `auditRows`.
+    //
+    // Deliberately reaches `/retract` as well as `/correct` despite living in
+    // the `/correct` block: the two handlers are the pair that has to stay in
+    // step, and splitting the sweep across two describes is how one of them
+    // stops being swept.
+    //
+    // Typed as the real `CorrectionOutcome` union, so a reshape of the
+    // machinery's contract breaks these fixtures at compile time rather than
+    // leaving four hand-written literals asserting against a shape that moved.
+    const outcomes: CorrectionOutcome[] = [
       {
         kind: "corrected",
         result: {

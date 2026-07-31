@@ -998,6 +998,14 @@ export const ADMIN_ACTIONS = {
    * asked for the correction — the admin HTTP routes or the `correct_fact`
    * agent tool. Neither entry point emits one of its own; see that module's
    * header for why the machinery owns the row (#4934).
+   *
+   * `metadata` shape, one rule for both action types: `verb`, `workspaceId` and
+   * `correctionEpisodeId` always; `invalidatedAt`, `flaggedForReReview`,
+   * `supersededBy` and `validTo` only when the verb actually produced them. A
+   * consumer must read an ABSENT key as "this verb decided nothing there", not
+   * as missing data — a `pin` row carrying `invalidatedAt: null` would read as
+   * a tombstone decision that was made and came back empty. This unified two
+   * shapes: pre-#4934 `/retract` emitted `flaggedForReReview` even when empty.
    */
   brainFact: {
     retract: "brain_fact.retract",

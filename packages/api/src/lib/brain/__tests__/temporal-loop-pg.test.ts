@@ -258,6 +258,19 @@ const CHANNEL_ROSTER: Readonly<Record<string, readonly string[]>> = {
   [EXEC_CHANNEL]: ["U_ADMIN", "U_ALAN"],
 };
 
+/**
+ * What Slack answers THIS sync with — the roster above unless a test has staged
+ * a change, and reset in `afterEach` like `extraMessages`.
+ *
+ * Mutable because membership is the one input this suite must be able to move
+ * BETWEEN two reads: `asOf` freezes the fact's grant, never the reader's
+ * roster, and the only honest way to pin that is to let the roster actually
+ * change through the production sync rather than to DELETE a
+ * `fact_audience_member` row by hand (which would prove a statement about the
+ * fixture, exactly what this file's header refuses).
+ */
+let channelRoster: Record<string, readonly string[]> = { ...CHANNEL_ROSTER };
+
 /** Slack's directory. `U_ALAN`'s address matches no Atlas user — logged, never guessed. */
 const SLACK_DIRECTORY: readonly SlackDirectoryUser[] = [
   { id: "U_ADMIN", email: "admin@temporal.test", deleted: false, isBot: false },
@@ -472,6 +485,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       _resetBrainExtractionFailures();
       modelCalls = [];
       extraMessages = {};
+      channelRoster = { ...CHANNEL_ROSTER };
     }
   });
 
@@ -648,7 +662,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       api: {
         getConversationInfo: slackApi.getConversationInfo,
         fetchConversationMembersPage: (_token, params) => {
-          const roster = CHANNEL_ROSTER[params.channel];
+          const roster = channelRoster[params.channel];
           if (roster === undefined) {
             return Promise.resolve({
               ok: false as const,
@@ -1114,6 +1128,60 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       expect(deployObjectsOf(justAfter.results)).toEqual(["Fridays"]);
       const justBefore = await search(adminCtx, { asOf: new Date(stampMs - 1).toISOString() });
       expect(deployObjectsOf(justBefore.results)).toEqual(["Fridays", "Thursdays"]);
+
+      // ---- 6b. the OTHER half of asOf: membership is as-of-NOW ------------
+      // `search-pg.test.ts` proves the FROZEN-GRANT half — the grant stored on
+      // the version, widened and narrowed between versions. It builds its
+      // reader contexts as literals, and `temporal-loop-pg` resolves them for
+      // real but never MOVES a reader between the version boundary and the
+      // read. So the user-visible semantics #4916 committed to had no test
+      // either way, in either direction (#4938).
+      //
+      // The semantics, pinned: `asOf` rewinds the FACTS, never the ROSTER. It
+      // is structural — `resolvePrincipalContext` takes no `asOf` and there is
+      // nowhere to put one — but structure defends the implementation, not the
+      // behaviour, and the behaviour is a real product commitment with a real
+      // edge: **a reviewer who leaves the exec channel loses historical access
+      // to a version they were entitled to when it held.** That is the
+      // fail-closed direction and the right one (leaving revokes, immediately,
+      // including for history), and it is exactly the kind of rule someone
+      // later "fixes" as a bug — hence a test rather than a comment.
+      //
+      // Staged through the REAL sync so the removal is production's, per this
+      // file's fixture discipline: Slack's roster changes, `syncAudiences`
+      // reconciles `fact_audience_member`, and the reader is re-resolved.
+      channelRoster = { ...channelRoster, [EXEC_CHANNEL]: ["U_ALAN"] };
+      await syncAudiences();
+      const adminLeft = await admin();
+      // The premise. Without it every assertion below would be satisfied by a
+      // sync that silently did nothing.
+      expect(adminCtx.audienceIds).toContain(EXEC_AUDIENCE);
+      expect(adminLeft.audienceIds).not.toContain(EXEC_AUDIENCE);
+
+      // The point read now serves ONLY the org-granted loser. `Fridays` is
+      // gone — the same version, at the same instant, for the same user, who
+      // was entitled to it a moment ago: the withdrawal is what this arm is
+      // about, and it is the frozen grant being matched against a CURRENT
+      // roster rather than the roster of the instant.
+      const leftThen = await search(adminLeft, { asOf: AS_OF });
+      expect(deployObjectsOf(leftThen.results)).toEqual(["Thursdays"]);
+      // …and the default read agrees, so the point read is not diverging from
+      // the ordinary one on membership — this reader has simply become the
+      // org member of step 5.
+      const leftNow = await search(adminLeft);
+      expect(deployObjectsOf(leftNow.results)).toEqual([]);
+
+      // Rejoining restores it, and that direction matters just as much: a
+      // one-way narrowing would be indistinguishable from the removal above on
+      // the assertions so far, and would quietly mean re-added reviewers never
+      // regain history. Restored before step 7 so the retract arm below runs
+      // against the state it was written for.
+      channelRoster = { ...CHANNEL_ROSTER };
+      await syncAudiences();
+      const adminRejoined = await admin();
+      expect(adminRejoined.audienceIds).toContain(EXEC_AUDIENCE);
+      const rejoinedThen = await search(adminRejoined, { asOf: AS_OF });
+      expect(deployObjectsOf(rejoinedThen.results)).toEqual(["Fridays", "Thursdays"]);
 
       // ---- 7. correct_fact retract: tombstone + flag, never cascade -------
       // The write-back-shaped lineage edge (header note): the freeze claim

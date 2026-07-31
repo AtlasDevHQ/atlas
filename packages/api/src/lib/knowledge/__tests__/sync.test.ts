@@ -264,6 +264,7 @@ const {
   _resetBrainSourceConnectors,
   registerBrainSourceConnector,
 } = await import("@atlas/api/lib/brain/ingest/types");
+const { SLACK_SOURCE } = await import("@atlas/api/lib/brain/sources");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -875,7 +876,7 @@ describe("runKnowledgeSyncCycle", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
-      source: "fixture",
+      source: SLACK_SOURCE,
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     brainSyncCalls.length = 0;
@@ -886,7 +887,7 @@ describe("runKnowledgeSyncCycle", () => {
     const result = await runKnowledgeSyncCycle();
     expect(result).toEqual({ inspected: 1, succeeded: 1, failed: 0, queryFailed: false });
     expect(brainSyncCalls).toEqual([
-      { workspaceId: ORG, installId: "chat", source: "fixture" },
+      { workspaceId: ORG, installId: "chat", source: SLACK_SOURCE },
     ]);
     // The document engine writes its own state row; the brain engine's stub
     // does not, so an empty state-write list proves the document arm was not
@@ -898,7 +899,7 @@ describe("runKnowledgeSyncCycle", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
-      source: "fixture",
+      source: SLACK_SOURCE,
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     INSTALL_ROWS = [];
@@ -915,7 +916,7 @@ describe("runKnowledgeSyncCycle", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
-      source: "fixture",
+      source: SLACK_SOURCE,
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     BRAIN_SYNC_STATUS = "error";

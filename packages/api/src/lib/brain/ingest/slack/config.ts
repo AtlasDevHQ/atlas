@@ -65,6 +65,8 @@
  * #4771 would then re-extract facts from all of them.
  */
 
+import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
+
 /** The built-in catalog slug + row id for the Slack chat-history brain source. */
 export const SLACK_HISTORY_SLUG = "slack-history";
 export const SLACK_HISTORY_CATALOG_ID = "catalog:slack-history";
@@ -74,8 +76,12 @@ export const SLACK_HISTORY_CATALOG_ID = "catalog:slack-history";
  * class-major, vendor-minor (chat → transcripts → email → docs); the column
  * stores the VENDOR within that class, so the chat class will hold `slack`
  * today and `teams`/`discord`/… as M3 adds them.
+ *
+ * Aliased off `lib/brain/sources.ts` rather than spelled again here: the column
+ * is read as a discriminator (`isWarehouseDerived`), so its vocabulary is one
+ * shared fact, not a literal each producer repeats.
  */
-export const SLACK_HISTORY_SOURCE = "slack";
+export const SLACK_HISTORY_SOURCE = SLACK_SOURCE;
 
 /**
  * Slack channel ids are `[A-Z0-9]` after a leading letter (`C…` public, `G…`

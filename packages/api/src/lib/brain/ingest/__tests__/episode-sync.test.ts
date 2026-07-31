@@ -23,6 +23,7 @@ import type {
   BrainSourceConnector,
   BrainSourceFetchParams,
 } from "@atlas/api/lib/brain/ingest/types";
+import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 // Recorded per test; the mocks below close over these.
@@ -149,7 +150,7 @@ function connectorReturning(
     warnings?: readonly string[];
   }>,
 ): BrainSourceConnector {
-  return { catalogId: "catalog:fixture", source: "fixture", createClient: () => ({ fetchEpisodes }) };
+  return { catalogId: "catalog:fixture", source: SLACK_SOURCE, createClient: () => ({ fetchEpisodes }) };
 }
 
 function run(connector: BrainSourceConnector) {
@@ -360,7 +361,7 @@ describe("bookkeeping", () => {
     const outcome = await syncBrainEpisodeSource({
       connector: {
         catalogId: "catalog:fixture",
-        source: "fixture",
+        source: SLACK_SOURCE,
         createClient: () => {
           throw new Error("unreachable");
         },
@@ -395,7 +396,7 @@ describe("never throws", () => {
     await run(
       connectorReturning(async () => ({ episodes: [episode("a")], highWaterMark: null })),
     );
-    expect(ingested[0]!.source).toBe("fixture");
+    expect(ingested[0]!.source).toBe(SLACK_SOURCE);
     expect(ingested[0]!.workspaceId).toBe("ws-1");
   });
 });

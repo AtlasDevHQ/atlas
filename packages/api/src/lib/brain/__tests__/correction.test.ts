@@ -35,6 +35,7 @@ import {
   isWarehouseDerived,
   type CorrectionRequest,
 } from "@atlas/api/lib/brain/correction";
+import { SLACK_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   CORROBORATION_LOOKUP_SQL,
   INSERT_FACT_SQL,
@@ -476,16 +477,32 @@ describe("retract", () => {
   test("source scan: this module is the only `invalidated_at` UPDATE writer", () => {
     // The acceptance criterion is repository-wide ("retract remains the ONLY
     // invalidated_at writer"), which no fake-store assertion can pin — so scan
-    // source the way the promotion guard does, across every root that can
-    // hold server code (`ee/` and `plugins/` included — the audit-grep
-    // blind-spot lesson), in BOTH spellings: raw SQL (`SET invalidated_at`)
-    // and the Drizzle builder (`.set({ … invalidatedAt … })`). Deliberately
-    // NOT matched: the region import's INSERT, which restores a stored
-    // tombstone verbatim (a restore, not a new arbitration — the same line
-    // the promotion guard's allowlist draws). Test files are excluded for the
-    // guard's own reason: fixtures may stage tombstoned rows.
+    // source the way `scripts/check-brain-fact-promotion.sh` does, across the
+    // same roots (`ee/`, `plugins/`, `apps/` and the scaffold templates
+    // included — the audit-grep blind-spot lesson), in BOTH spellings: raw SQL
+    // and the Drizzle write-builder.
+    //
+    // THIS SCAN IS THE WHOLE TOMBSTONE GUARANTEE. `invalidated_at` is
+    // deliberately absent from the shell guard's gated columns (it gates
+    // `status|(pre_widening_)?visible_to|valid_to`), so nothing else in the
+    // repository refuses a second tombstone writer. That is why the matching
+    // below is STRUCTURAL — source split into statements, then each rule a set
+    // of cheap independent tests AND-ed together, exactly like the guard's
+    // `statement_writes_gated_column` — rather than one regex. The single-regex
+    // form this replaced (`/SET\s+invalidated_at/`) required the column to come
+    // FIRST after `SET`, and its ORM twin (`/\.set\(\{[^}]*invalidatedAt/`)
+    // stopped at the first nested brace; both are evaded by ordinary
+    // refactors, and the fixtures below pin each evasion.
+    //
+    // Deliberately NOT matched: a plain INSERT naming the column — the region
+    // import restores a stored tombstone verbatim (a restore, not a new
+    // arbitration, the same line the promotion guard's allowlist draws). The
+    // upsert's `DO UPDATE` half IS matched: it names no table after `UPDATE`,
+    // which is precisely how that shape evaded the guard's UPDATE rule when it
+    // was first written. Test files are excluded for the guard's own reason:
+    // fixtures may stage tombstoned rows.
     const repoRoot = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
-    const roots = ["packages/api/src", "packages/mcp/src", "ee", "plugins"]
+    const roots = ["packages", "apps", "ee", "examples", "create-atlas", "create-atlas-plugin", "plugins"]
       .map((r) => join(repoRoot, r))
       .filter((r) => {
         try {
@@ -495,26 +512,187 @@ describe("retract", () => {
           return false;
         }
       });
-    const RAW_SQL_WRITE = /SET\s+invalidated_at/i;
-    const ORM_WRITE = /\.set\(\{[^}]*invalidatedAt/s;
-    const writers: string[] = [];
+
+    // The guard's own vocabulary, mirrored: an optional schema qualifier with
+    // either identifier independently quoted, so `public.brain_facts`,
+    // `"public"."brain_facts"` and `"brain_facts"` all match — and the same for
+    // a namespace-qualified Drizzle reference.
+    const QUALIFIED = String.raw`("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?`;
+    const ORM_TABLE = String.raw`([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts`;
+    const UPDATE_TABLE = new RegExp(String.raw`UPDATE\s+${QUALIFIED}\b`, "i");
+    const INSERT_TABLE = new RegExp(String.raw`INSERT\s+INTO\s+${QUALIFIED}\b`, "i");
+    const SET_KEYWORD = /\bSET\b/i;
+    const ON_CONFLICT = /ON\s+CONFLICT/i;
+    const DO_UPDATE = /DO\s+UPDATE/i;
+    // `\b` sits at the `"`/identifier boundary, so the quoted spelling matches
+    // on the same pattern.
+    const RAW_COLUMN = /\binvalidated_at\b/i;
+    const ORM_UPDATE_TABLE = new RegExp(String.raw`\.update\(\s*${ORM_TABLE}\s*\)`);
+    const ORM_INSERT_TABLE = new RegExp(String.raw`\.insert\(\s*${ORM_TABLE}\s*\)`);
+    const ORM_SET = /\.set\(/;
+    const ORM_ON_CONFLICT = /\.onConflictDoUpdate\(/;
+    const ORM_COLUMN = /\binvalidatedAt\b/;
+
+    /**
+     * Does ONE statement stamp the tombstone? Over-broad in the guard's
+     * direction on purpose: a mention anywhere in an `UPDATE brain_facts …
+     * SET …` counts, WHERE clause included. A legitimate case wants an entry
+     * in `ALLOWED` with a rationale, not a loosening.
+     */
+    const writesTombstone = (stmt: string): boolean => {
+      if (UPDATE_TABLE.test(stmt) && SET_KEYWORD.test(stmt) && RAW_COLUMN.test(stmt)) return true;
+      if (
+        INSERT_TABLE.test(stmt) &&
+        ON_CONFLICT.test(stmt) &&
+        DO_UPDATE.test(stmt) &&
+        RAW_COLUMN.test(stmt)
+      ) {
+        return true;
+      }
+      if (ORM_UPDATE_TABLE.test(stmt) && ORM_SET.test(stmt) && ORM_COLUMN.test(stmt)) return true;
+      if (ORM_INSERT_TABLE.test(stmt) && ORM_ON_CONFLICT.test(stmt) && ORM_COLUMN.test(stmt)) {
+        return true;
+      }
+      return false;
+    };
+
+    // The matcher, falsified before it is trusted. Every entry here is a shape
+    // the single-regex form MISSED, so this block fails if anyone reverts to
+    // it — the scan below would then be green for the wrong reason, which is
+    // the one failure mode a repository-wide grep cannot report on itself.
+    for (const evasion of [
+      "UPDATE brain_facts SET updated_at = now(), invalidated_at = now() WHERE id = $1",
+      `UPDATE public.brain_facts SET "invalidated_at" = now() WHERE id = $1`,
+      `UPDATE "brain_facts" SET invalidated_at = now() WHERE id = $1`,
+      "db.update(schema.brainFacts).set({ meta: { flagged: true }, invalidatedAt: new Date() })",
+      "INSERT INTO brain_facts (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET invalidated_at = now()",
+      "db.insert(brainFacts).values({ id }).onConflictDoUpdate({ set: { invalidatedAt: new Date() } })",
+    ]) {
+      expect([evasion, writesTombstone(evasion)]).toEqual([evasion, true]);
+    }
+    // …and the shapes that are NOT a new arbitration stay out, so the rules
+    // above are not merely "mentions the column anywhere".
+    for (const legal of [
+      "INSERT INTO brain_facts (id, invalidated_at) VALUES ($1, $2)",
+      "UPDATE brain_episodes SET invalidated_at = now() WHERE id = $1",
+      "SELECT id FROM brain_facts WHERE invalidated_at IS NULL",
+      "db.insert(brainFacts).values({ id, invalidatedAt })",
+    ]) {
+      expect([legal, writesTombstone(legal)]).toEqual([legal, false]);
+    }
+
+    /**
+     * Comment-strip, then split into STATEMENTS — the guard's
+     * `STRIP_COMMENTS | tr '\n' ' ' | tr ';' '\n'` in TypeScript. The unit
+     * matters: AND-ing independent tokens only means "in the same write" when
+     * the haystack is one statement, and stripping comments is what keeps the
+     * prose around `RETRACT_FACT_SQL` (which names the column repeatedly) from
+     * reading as a writer.
+     */
+    const statementsOf = (source: string): string[] =>
+      source
+        .replace(/\/\*[\s\S]*?\*\//g, " ")
+        .replace(/\/\/.*$/gm, " ")
+        .replace(/\s+/g, " ")
+        .split(";")
+        .filter((stmt) => /brain_facts|\bbrainFacts\b/.test(stmt));
+
+    const SKIP_DIRS = new Set([
+      "node_modules",
+      "dist",
+      ".next",
+      ".turbo",
+      "coverage",
+      "__tests__",
+      "__mocks__",
+      "__test-utils__",
+      "__snapshots__",
+    ]);
+    const matched = new Map<string, string[]>();
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir)) {
         const path = join(dir, entry);
         if (statSync(path).isDirectory()) {
-          if (entry === "__tests__" || entry === "node_modules" || entry === "dist") continue;
+          if (SKIP_DIRS.has(entry)) continue;
           walk(path);
           continue;
         }
-        if (!entry.endsWith(".ts") || entry.endsWith(".test.ts")) continue;
-        const source = readFileSync(path, "utf8");
-        if (RAW_SQL_WRITE.test(source) || ORM_WRITE.test(source)) writers.push(path);
+        if (!/\.(ts|tsx|js)$/.test(entry) || /\.(test|spec)\.(ts|tsx)$/.test(entry)) continue;
+        const hits = statementsOf(readFileSync(path, "utf8")).filter(writesTombstone);
+        if (hits.length > 0) matched.set(path.substring(repoRoot.length + 1), hits);
       }
     };
     for (const root of roots) walk(root);
-    expect(writers.map((p) => p.substring(repoRoot.length + 1))).toEqual([
-      "packages/api/src/lib/brain/correction.ts",
-    ]);
+
+    // The scaffold templates carry generated copies of the same modules, so the
+    // allowance is a shape rather than a list — the guard's ALLOWLIST draws the
+    // identical line, and for the same reason names the FILE rather than a
+    // `src/…` suffix any package could adopt.
+    //
+    // `content-mode/adapters/brain-facts.ts` is here because the match above is
+    // deliberately over-broad in the guard's direction: `SUPERSEDE_STAMP_SQL`
+    // READS the tombstone as a predicate (`invalidated_at IS NULL`) and sets
+    // `valid_to`. Narrowing the rule to "assignment only" would buy that one
+    // file back at the cost of the property this whole test exists for — the
+    // assignment spellings are open-ended (`SET (updated_at, invalidated_at) =
+    // (now(), now())` is valid Postgres), and an evadable rule is what was
+    // wrong with the version this replaced. So the file is allowed here and
+    // its statements are held to the stricter check below instead.
+    const ALLOWED = [
+      /^packages\/api\/src\/lib\/brain\/correction\.ts$/,
+      /^packages\/api\/src\/lib\/content-mode\/adapters\/brain-facts\.ts$/,
+      /^create-atlas\/templates\/[^/]+\/src\/lib\/brain\/correction\.ts$/,
+      /^create-atlas\/templates\/[^/]+\/src\/lib\/content-mode\/adapters\/brain-facts\.ts$/,
+    ];
+    const relative = [...matched.keys()];
+    // Asserted FIRST, and it is not redundant: a scan that walked nothing — a
+    // root list that drifted, a skip rule that swallowed `lib/` — would satisfy
+    // the sole-writer assertion below vacuously.
+    expect(relative).toContain("packages/api/src/lib/brain/correction.ts");
+    expect(relative.filter((p) => !ALLOWED.some((allowed) => allowed.test(p)))).toEqual([]);
+
+    // The publish adapter READS the tombstone, never writes it: nothing before
+    // the first `WHERE` may name it. Best-effort by construction (a SET list
+    // holding a subquery would truncate the slice), which is why it narrows an
+    // already-bounded set rather than standing alone — and the SET list of the
+    // statement that actually matters, `SUPERSEDE_STAMP_SQL`, is pinned
+    // directly in `adapters/__tests__/brain-facts.test.ts`.
+    for (const [path, statements] of matched) {
+      if (/brain\/correction\.ts$/.test(path)) continue;
+      for (const stmt of statements) {
+        const where = stmt.search(/\bWHERE\b/i);
+        expect([path, RAW_COLUMN.test(where < 0 ? stmt : stmt.slice(0, where))]).toEqual([path, false]);
+      }
+    }
+  });
+
+  test("RETRACT_FACT_SQL's SET list is the tombstone and nothing else", () => {
+    // The verb-level tests all watch the fake store's dispatch, which proves
+    // WHICH statement ran and never what it SETS — so `SET status = 'draft'`
+    // could be added to the statement below and every one of them would stay
+    // green (the only real-PG read of the retracted row, `candidates-pg`'s,
+    // targets a row seeded `draft`, so it cannot tell a demotion from a no-op).
+    // Sliced at `WHERE` because `invalidated_at` legitimately appears as a
+    // predicate; the sibling stamp gets exactly this treatment in
+    // `content-mode/adapters/__tests__/brain-facts.test.ts`.
+    //
+    // Withdrawal is a tombstone, NOT a demotion: `status` is the review gate's
+    // column and retraction never re-opens the gate — a retracted fact is gone
+    // from every fact-serving read, not queued for a second verdict. A demoting
+    // retract would also put `correction.ts` in the business of writing the
+    // gated column its allowlist entry exists to permit for other reasons.
+    const where = RETRACT_FACT_SQL.indexOf("WHERE");
+    expect(where).toBeGreaterThan(0);
+    const setList = RETRACT_FACT_SQL.slice(0, where);
+    expect(setList).toContain("invalidated_at = now()");
+    expect(setList).toContain("updated_at = now()");
+    expect(setList).not.toContain("status");
+    expect(setList).not.toContain("valid_to");
+    expect(setList).not.toContain("visible_to");
+    // The residual predicates that make the statement correct standalone —
+    // dropping the tombstone re-check would let a racing second retract stamp
+    // a new instant over a settled withdrawal.
+    expect(RETRACT_FACT_SQL.slice(where)).toContain("invalidated_at IS NULL");
   });
 });
 
@@ -765,7 +943,16 @@ describe("shared gates", () => {
   test("tier-1 warehouse-derived targets are refused for EVERY verb, with nothing written", async () => {
     for (const verb of CORRECTION_VERBS) {
       const store = new FakeCorrectionStore();
-      store.seedFact({ id: "wh", provenance: { source: "warehouse", producer: "warehouse:v1" } });
+      // Seeded from the CONSTANT, not the literal: this suite hand-builds the
+      // payload `reconcile.ts` would have written, so a literal here would let
+      // the fixture and the predicate agree with each other while the real
+      // producer drifted away from both (#4938). `reconcile.test.ts` holds the
+      // other end — the predicate run against a payload that module actually
+      // wrote.
+      store.seedFact({
+        id: "wh",
+        provenance: { source: WAREHOUSE_SOURCE, producer: "warehouse:v1" },
+      });
       const outcome = await run(store, {
         factId: "wh",
         verb,
@@ -824,8 +1011,12 @@ describe("shared gates", () => {
   });
 
   test("isWarehouseDerived reads only the structural source key", () => {
-    expect(isWarehouseDerived({ source: "warehouse" })).toBe(true);
-    expect(isWarehouseDerived({ source: "slack" })).toBe(false);
+    // The predicate's SHAPE is what this arm owns. Which VALUES it recognises,
+    // and the agreement between the constant and the producers that stamp it,
+    // are `__tests__/sources.test.ts` — the literals here were the reason
+    // tier-1 refusal could have failed open unnoticed (#4938).
+    expect(isWarehouseDerived({ source: WAREHOUSE_SOURCE })).toBe(true);
+    expect(isWarehouseDerived({ source: SLACK_SOURCE })).toBe(false);
     expect(isWarehouseDerived(null)).toBe(false);
     expect(isWarehouseDerived([])).toBe(false);
   });

@@ -26,6 +26,7 @@ import {
   _resetBrainSourceConnectors,
   registerBrainSourceConnector,
 } from "@atlas/api/lib/brain/ingest/types";
+import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
 
 const CATALOG = "catalog:collision";
 
@@ -43,7 +44,7 @@ function knowledgeConnector(catalogId = CATALOG) {
 function brainConnector(catalogId = CATALOG) {
   return {
     catalogId,
-    source: "fixture",
+    source: SLACK_SOURCE,
     createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
   };
 }

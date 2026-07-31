@@ -57,11 +57,17 @@
  *
  * ## Tier-1 has no correction path
  *
- * A warehouse-derived fact (`provenance.source = "warehouse"`) is refused with
- * an actionable error for EVERY verb: tier-1 is authoritative by construction,
- * so you fix the data or the semantic layer, not the brain. The refusal is
- * evaluated on the stored provenance because tier-1 proper is never stored at
- * all — an id that names no brain row is an ordinary not-found.
+ * A warehouse-derived fact (`provenance.source = WAREHOUSE_SOURCE`) is refused
+ * with an actionable error for EVERY verb: tier-1 is authoritative by
+ * construction, so you fix the data or the semantic layer, not the brain. The
+ * refusal is evaluated on the stored provenance because tier-1 proper is never
+ * stored at all — an id that names no brain row is an ordinary not-found.
+ *
+ * The class comes from `lib/brain/sources.ts`, and that indirection is load
+ * bearing rather than tidiness: the connector that will produce these facts
+ * does not exist yet (#4770/#4771), so while both sides spelled their own
+ * literal this refusal was one naming decision away from silently never
+ * firing (#4938).
  *
  * ## Why this file is on `check-brain-fact-promotion.sh`'s ALLOWLIST
  *
@@ -116,6 +122,7 @@ import {
   SUPERSEDE_STAMP_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { classifyFactForPromotion, isJsonObject, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { HUMAN_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import { BRAIN_CORRECTION_VERBS } from "@useatlas/schemas";
 import type { BrainCorrectionVerb, BrainFactCorrectionResponse } from "@useatlas/types";
 
@@ -738,7 +745,7 @@ async function applySupersede(
       episode: {
         id: episodeId,
         workspaceId,
-        source: "human",
+        source: HUMAN_SOURCE,
         sourceId: inputs.correctionSourceId,
         sourceActor: inputs.actor,
         occurredAt: at,
@@ -869,12 +876,19 @@ async function applyVouch(
 /**
  * Tier-1 detection, off the stored payload: `reconcile.ts` writes
  * `provenance.source` structurally from the episode's connector class, so a
- * warehouse-derived fact carries `"warehouse"` there. Tier-1 proper is never
- * stored in `brain_facts` at all — this guards the DERIVED class the ADR
+ * warehouse-derived fact carries `WAREHOUSE_SOURCE` there. Tier-1 proper is
+ * never stored in `brain_facts` at all — this guards the DERIVED class the ADR
  * likewise exempts from correction.
+ *
+ * The constant, not the literal `"warehouse"`, and that is the whole strength
+ * of this predicate: the class comes from a connector that does not exist yet
+ * (#4770/#4771), and while both sides spelled their own string their agreement
+ * was a coincidence — a connector naming itself `"snowflake"` would have
+ * silently stopped every tier-1 refusal without failing a test. See
+ * `lib/brain/sources.ts`.
  */
 export function isWarehouseDerived(provenance: unknown): boolean {
-  return isJsonObject(provenance) && provenance.source === "warehouse";
+  return isJsonObject(provenance) && provenance.source === WAREHOUSE_SOURCE;
 }
 
 function normalizeReplacement(

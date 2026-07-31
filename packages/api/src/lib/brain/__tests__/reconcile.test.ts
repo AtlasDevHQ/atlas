@@ -33,6 +33,8 @@ import {
   type ReconcileExecutor,
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
+import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 
 // ---------------------------------------------------------------------------
 // A store that answers exactly the six statements the stage issues
@@ -285,12 +287,23 @@ describe("block: unattributable claim", () => {
     // arm, every non-chat entry point would be permanently blocked.
     const store = new FakeBrainStore();
     const report = await run(store, {
-      episode: episode({ sourceActor: null, source: "warehouse" }),
+      episode: episode({ sourceActor: null, source: WAREHOUSE_SOURCE }),
       sourcePrincipal: "system:warehouse",
     });
 
     expect(report.created).toBe(1);
     expect(store.facts[0]?.provenance.actor).toBe("system:warehouse");
+    // The PRODUCER half of tier-1 refusal (#4938). This module copies
+    // `episode.source` verbatim into `provenance.source`, and `correction.ts`
+    // reads that payload back to decide a warehouse-derived fact has no
+    // correction path at all. Asserting the predicate HERE — against the value
+    // this module actually wrote, not a literal the correction suite
+    // hand-seeds — is what makes the two sides one fact rather than a
+    // coincidence between two strings. Without it, a warehouse connector
+    // naming its class after the vendor would fail the ADR invariant open with
+    // every test still green.
+    expect(store.facts[0]?.provenance.source).toBe(WAREHOUSE_SOURCE);
+    expect(isWarehouseDerived(store.facts[0]?.provenance)).toBe(true);
   });
 
   test("the episode's actor is namespaced by source", async () => {

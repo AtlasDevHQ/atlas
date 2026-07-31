@@ -56,6 +56,7 @@ import {
 } from "@atlas/api/lib/brain/promotion";
 import {
   PublishPhaseError,
+  type FactSupersession,
   type GrantWidening,
   type ModeTxClient,
   type PromotionRefusal,
@@ -124,7 +125,35 @@ export function brainFactStatusClause(mode: AtlasMode | undefined, alias: string
 }
 
 /**
- * Draft facts awaiting review, with exactly the columns the refusal rules read.
+ * The SUPERSESSION half of a current-belief read (#4912) — hides facts whose
+ * `valid_to` has passed, exactly as `invalidated_at IS NULL` hides tombstones.
+ *
+ * A third axis, deliberately separate from both the clause above and the
+ * tombstone filter: `valid_to` is VALID time ("when the claim held in the
+ * world"), stamped only by a human promotion superseding the fact, and it never
+ * touches `status` or `invalidated_at`. A superseded fact is still `published`
+ * (its review verdict stands) and still not retracted (nobody withdrew it) —
+ * it is simply no longer the current belief, so an as-of-NOW read must skip it
+ * while the as-of reads M2 adds can still serve it.
+ *
+ * `> now()`, not `IS NULL` alone: the stamp writes `now()` so an in-region
+ * `valid_to` is always past by read time, but a region import restores the
+ * column verbatim and a future bound is "still valid", not "superseded".
+ *
+ * Spelled once here, beside the status clause, because the same composition
+ * trap applies (see `brainFactStatusClause`'s header): a current-belief read
+ * now composes FOUR predicates — ACL, status, tombstone, and this — and a
+ * caller that forgets this one serves superseded claims as current belief.
+ * `alias` is interpolated; callers pass a plain identifier they control.
+ */
+export function brainFactCurrentClause(alias: string): string {
+  return `(${alias}.valid_to IS NULL OR ${alias}.valid_to > now())`;
+}
+
+/**
+ * Draft facts awaiting review, with exactly the columns the refusal rules and
+ * the supersession classifier read (#4912 — `predicate_cardinality` is the
+ * supersession input; everything else feeds `classifyFactForPromotion`).
  *
  * `FOR UPDATE` because this adapter is read-then-write, which the simple
  * entries are not: it serializes two concurrent publishes on the same
@@ -158,7 +187,8 @@ export const DRAFT_FACTS_SQL = `
          object,
          source_episode_id::text AS source_episode_id,
          provenance,
-         visible_to
+         visible_to,
+         predicate_cardinality
     FROM brain_facts
    WHERE workspace_id = $1
      AND status = 'draft'
@@ -291,6 +321,148 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
      AND f.id = w.id
 `;
 
+/**
+ * The supersession collision (#4912, ADR-0036 §Temporal), spelled ONCE.
+ *
+ * Joins a draft alias `d` to every already-published fact it would supersede:
+ * same (subject, predicate), a DIFFERENT object, and BOTH sides
+ * `single`-cardinality. The published side must be live (not tombstoned) and
+ * current (`valid_to IS NULL`) — a fact some earlier promotion already
+ * superseded is settled history, and stamping it twice would rewrite when the
+ * belief ended.
+ *
+ * `valid_to IS NULL`, deliberately NOT `brainFactCurrentClause`'s wider
+ * `IS NULL OR > now()`: a FUTURE-dated `valid_to` (reachable only via a region
+ * import restoring a closed window verbatim) is a fact still answering
+ * as-of-now reads whose end a human already decided. Superseding it would
+ * overwrite that recorded end with `now()` — rewriting an imported validity
+ * decision from an unrelated promotion — so a colliding draft COEXISTS with it
+ * until the window closes on its own. Accepted, not overlooked: the same
+ * choice, for the same reason, in `TENSION_CANDIDATES_SQL` (`reconcile.ts`),
+ * which likewise leaves such a row alone. The cost is a briefly tension-less
+ * coexistence of two current values; the alternative destroys an import.
+ *
+ * Both sides `single`, not just the draft, because the two rows can disagree
+ * about the predicate (corroboration never upgrades cardinality — see
+ * `reconcile.ts`) and wrongly superseding destroys a belief where wrongly
+ * coexisting is recoverable at the review gate. A `multi` fact is NEVER
+ * superseded by publish, whatever the incoming draft claims.
+ *
+ * A builder rather than a constant because THREE statements need the identical
+ * join and must never drift: the promote-time targets SELECT below, the
+ * oversight disclosure's pair listing (`lib/brain/oversight.ts`), and the
+ * publish preview's will-supersede count. Two spellings of "what collides" is
+ * a disclosure that lists one set while the transaction stamps another —
+ * silent supersession through drift, the exact thing #4912 forbids.
+ *
+ * `d` / `p` are interpolated; callers pass plain identifiers they control —
+ * same contract as `brainFactStatusClause`.
+ */
+export function supersessionCollisionJoin(d: string, p: string): string {
+  return `JOIN brain_facts ${p}
+      ON ${p}.workspace_id = ${d}.workspace_id
+     AND ${p}.subject = ${d}.subject
+     AND ${p}.predicate = ${d}.predicate
+     AND ${p}.object <> ${d}.object
+     AND ${p}.predicate_cardinality = 'single'
+     AND ${d}.predicate_cardinality = 'single'
+     AND ${p}.status = 'published'
+     AND ${p}.invalidated_at IS NULL
+     AND ${p}.valid_to IS NULL`;
+}
+
+/**
+ * The draft side of the same collision: what the publish gate offers for
+ * promotion, restated so the disclosure statements (which cannot reuse
+ * `DRAFT_FACTS_SQL`'s id list) target exactly the rows the transaction will.
+ */
+export function supersedingDraftPredicate(d: string): string {
+  return `${d}.status = 'draft' AND ${d}.invalidated_at IS NULL`;
+}
+
+/**
+ * Which published facts each about-to-be-promoted draft supersedes.
+ *
+ * Run BEFORE the promote UPDATEs, deliberately: `status = 'published'` in the
+ * join must mean "published before this publish began". Two colliding
+ * `single` drafts promoted in the SAME batch have no temporal order between
+ * them — `reconcile.ts` already recorded their `in-tension-with` edge — and a
+ * collision rule evaluated post-promote (one without this statement's
+ * draft-side predicate) would see each as the other's published rival and
+ * stamp `valid_to` on both, destroying both beliefs. They coexist, in visible
+ * tension, until a human retracts one. (As literally written, running this
+ * after the promote would instead match NOTHING — the drafts are no longer
+ * `draft` — which is the other failure: zero supersession. Either way the
+ * ordering is load-bearing, and the unit test pins it.)
+ *
+ * `$2` is the `single`-cardinality subset of the classified-promotable ids
+ * (the join re-checks cardinality regardless), so a refused draft never
+ * supersedes anything: the collision only fires for rows the transaction will
+ * actually promote.
+ */
+export const SUPERSESSION_TARGETS_SQL = `
+  SELECT d.id::text AS draft_id, p.id::text AS superseded_id
+    FROM brain_facts d
+    ${supersessionCollisionJoin("d", "p")}
+   WHERE d.workspace_id = $1
+     AND ${supersedingDraftPredicate("d")}
+     AND d.id = ANY($2::uuid[])
+   ORDER BY d.ingested_at, d.id, p.ingested_at, p.id
+`;
+
+/**
+ * Stamp the end of a superseded fact's validity — the ONE spelling of the
+ * `valid_to` write (#4912), executed by exactly two allowlisted callers: this
+ * adapter (a human promotion, inside the publish transaction) and
+ * `correct_fact`'s supersede verb (#4915, `lib/brain/correction.ts` — a human
+ * correction, inside the correction transaction, importing THIS constant so
+ * the two arbitration paths cannot drift). Nothing autonomous ever writes it,
+ * and `check-brain-fact-promotion.sh` refuses UPDATE-shape writes to the
+ * column outside its allowlist (this file, `correction.ts`, plus
+ * `admin-migrate.ts` — the region import restores an already-closed window
+ * verbatim, a restore rather than a new arbitration).
+ *
+ * Every predicate is re-checked even though the targets SELECT just evaluated
+ * them: the published rows are NOT covered by `DRAFT_FACTS_SQL`'s `FOR
+ * UPDATE` (that locks drafts), so a concurrent retraction can land between
+ * the SELECT and this UPDATE. Re-checking makes the statement correct on its
+ * own terms — it degrades to stamping fewer rows, and the caller warns on the
+ * shortfall. `RETURNING id` is how the caller learns which pairs actually
+ * superseded, so the `supersedes` edges and the report can never claim a
+ * stamp that did not happen.
+ */
+export const SUPERSEDE_STAMP_SQL = `
+  UPDATE brain_facts
+     SET valid_to = now(), updated_at = now()
+   WHERE workspace_id = $1
+     AND id = ANY($2::uuid[])
+     AND status = 'published'
+     AND invalidated_at IS NULL
+     AND valid_to IS NULL
+   RETURNING id::text AS id
+`;
+
+/**
+ * The arbitration record, new → old (#4912): `supersedes` is the M2 edge the
+ * type enum reserved from day one (`BRAIN_EDGE_TYPES`). Batch jsonb pairs for
+ * `WIDEN_AND_PROMOTE_FACTS_SQL`'s reason; `WHERE NOT EXISTS` for
+ * `INSERT_PROVENANCE_EDGE_SQL`'s — 0180 puts no unique index on the edge
+ * tuple, and a region import can legitimately land a draft that already
+ * carries the edge from its source region.
+ */
+export const INSERT_SUPERSEDES_EDGES_SQL = `
+  INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+  SELECT $1, 'supersedes', (pair->>'newId')::uuid, (pair->>'oldId')::uuid
+    FROM jsonb_array_elements($2::jsonb) AS pair
+   WHERE NOT EXISTS (
+     SELECT 1 FROM brain_edges e
+      WHERE e.workspace_id = $1
+        AND e.edge_type = 'supersedes'
+        AND e.from_fact_id = (pair->>'newId')::uuid
+        AND e.to_fact_id = (pair->>'oldId')::uuid)
+   RETURNING id
+`;
+
 /** Draft count for the `brainFacts` segment of `/api/v1/mode` `draftCounts`. */
 export function brainFactsCountSql(orgParam: string): string {
   return `SELECT 'brainFacts' AS key, COUNT(*)::int AS n FROM brain_facts WHERE workspace_id = ${orgParam} AND status = 'draft' AND invalidated_at IS NULL`;
@@ -383,6 +555,35 @@ interface PromotableDraft {
    * principal, and this is the last point at which the type can say it cannot.
    */
   readonly grant: StoredGrant;
+  /**
+   * The draft's predicate cardinality (#4912) — `single` is the only kind
+   * that can supersede on promotion; `multi` coexists.
+   */
+  readonly cardinality: "single" | "multi";
+}
+
+/**
+ * Cardinality off the draft row, defaulting CONSERVATIVELY.
+ *
+ * `chk_brain_facts_predicate_cardinality` makes an out-of-vocabulary value
+ * unreachable from the database, so a fallback here is query drift — logged,
+ * because the `multi` arm is the one that never supersedes: a `single` draft
+ * misread as `multi` leaves a stale rival answering as-of-now reads, which an
+ * operator can only find from this line. Wrongly superseding destroys a
+ * belief; wrongly coexisting leaves a visible tension — so drift degrades to
+ * the recoverable side.
+ */
+function draftCardinality(
+  raw: unknown,
+  meta: { readonly rowId: string; readonly workspaceId: string },
+): "single" | "multi" {
+  const value = isJsonObject(raw) ? raw.predicate_cardinality : undefined;
+  if (value === "single" || value === "multi") return value;
+  log.warn(
+    { ...meta, cardinality: value },
+    "brain publish: draft carries a predicate cardinality outside the vocabulary — treating it as `multi`, so it will coexist rather than supersede",
+  );
+  return "multi";
 }
 
 /**
@@ -542,7 +743,11 @@ export function promoteBrainFacts(
         rowId: row.id,
         workspaceId: orgId,
       });
-      promotable.push({ id: row.id, grant });
+      promotable.push({
+        id: row.id,
+        grant,
+        cardinality: draftCardinality(raw, { rowId: row.id, workspaceId: orgId }),
+      });
     }
 
     // Skip the round trips when there is nothing to promote — a workspace with
@@ -550,7 +755,49 @@ export function promoteBrainFacts(
     // adapter on every call.
     let promoted = 0;
     const widened: GrantWidening[] = [];
+    const superseded: FactSupersession[] = [];
     if (promotable.length > 0) {
+      // #4912: which already-published facts will this promotion supersede?
+      // Read BEFORE the promote UPDATEs, and only for the classified-promotable
+      // `single` drafts — see SUPERSESSION_TARGETS_SQL on both. A refused draft
+      // never reaches this list, so it can never supersede.
+      const singleIds = promotable
+        .filter((draft) => draft.cardinality === "single")
+        .map((draft) => draft.id);
+      const supersessionPairs: { readonly newId: string; readonly oldId: string }[] = [];
+      if (singleIds.length > 0) {
+        const targets = yield* Effect.tryPromise({
+          try: () => tx.query(SUPERSESSION_TARGETS_SQL, [orgId, singleIds]),
+          catch: (cause) =>
+            new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+        });
+        let unusableTargetRows = 0;
+        for (const raw of targets.rows) {
+          if (
+            !isJsonObject(raw) ||
+            typeof raw.draft_id !== "string" ||
+            raw.draft_id === "" ||
+            typeof raw.superseded_id !== "string" ||
+            raw.superseded_id === ""
+          ) {
+            // Query drift, not tenant data — both columns are PKs cast to text.
+            // Skipped rather than fatal, per this adapter's refuse-the-row
+            // posture, but NEVER silent: a dropped pair is a rival that keeps
+            // answering as-of-now reads after the disclosure said it would
+            // stop.
+            unusableTargetRows++;
+            continue;
+          }
+          supersessionPairs.push({ newId: raw.draft_id, oldId: raw.superseded_id });
+        }
+        if (unusableTargetRows > 0) {
+          log.warn(
+            { workspaceId: orgId, unusableTargetRows, targetRows: targets.rows.length },
+            "brain publish: supersession target rows came back without usable ids — those published rivals were NOT superseded and will keep answering as-of-now reads; diff SUPERSESSION_TARGETS_SQL",
+          );
+        }
+      }
+
       // #4823: publish is the review gate, and the review gate is the one place
       // ADR-0036 permits a grant to widen. Read every episode already recorded
       // as evidence, so a claim restated in a wider audience stops being served
@@ -655,6 +902,102 @@ export function promoteBrainFacts(
           "brain publish: promoted count does not match the classified-promotable set — some drafts may be unaccounted for",
         );
       }
+
+      // #4912 — supersession, atomically with the promotion above: stamp the
+      // superseded facts' `valid_to`, then record the arbitration as
+      // `supersedes` edges. Order matters only in that both follow the promote
+      // UPDATEs, so the edges' `from` end is a fact this transaction has
+      // already made published.
+      if (supersessionPairs.length > 0) {
+        const oldIds = [...new Set(supersessionPairs.map((pair) => pair.oldId))];
+        const stampResult = yield* Effect.tryPromise({
+          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds]),
+          catch: (cause) =>
+            new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+        });
+        const stamped = new Set<string>();
+        let unreadableStampRows = 0;
+        for (const raw of stampResult.rows) {
+          if (isJsonObject(raw) && typeof raw.id === "string" && raw.id !== "") {
+            stamped.add(raw.id);
+          } else {
+            unreadableStampRows++;
+          }
+        }
+        if (unreadableStampRows > 0) {
+          // A FAILURE, not a skip, and the asymmetry with every other drift
+          // path in this adapter is deliberate: an unreadable RETURNING row
+          // means the stamp APPLIED to a fact this code can no longer name
+          // — proceeding would retire a belief with no `supersedes` edge and
+          // no audit record, the exact silent supersession #4912 forbids.
+          // Failing here rolls the whole transaction (and the stamp) back.
+          return yield* Effect.fail(
+            new PublishPhaseError({
+              table: BRAIN_FACTS_TABLE,
+              phase: "promote",
+              cause: new Error(
+                `promoteBrainFacts: ${unreadableStampRows} SUPERSEDE_STAMP_SQL RETURNING row(s) had no usable id — the statement shape changed; rolling back rather than committing a supersession with no record`,
+              ),
+            }),
+          );
+        }
+        if (stamped.size !== oldIds.length) {
+          // Reachable, not only drift: the published side is not FOR-UPDATE
+          // locked, so a concurrent retraction between the collision check and
+          // the stamp legitimately shrinks the set. Warned because the
+          // pre-publish disclosure may have listed a supersession that then
+          // did not happen — the operator-visible trace of that gap is here.
+          log.warn(
+            {
+              workspaceId: orgId,
+              expected: oldIds.length,
+              stamped: stamped.size,
+              missing: oldIds.filter((id) => !stamped.has(id)).slice(0, LOGGED_ID_SAMPLE_CAP),
+            },
+            "brain publish: some supersession targets were not stamped — retracted or already superseded since the collision check; the will-supersede disclosure may have over-listed",
+          );
+        }
+        const stampedPairs = supersessionPairs.filter((pair) => stamped.has(pair.oldId));
+        if (stampedPairs.length > 0) {
+          // Edges only for pairs the stamp CONFIRMED: a `supersedes` edge whose
+          // target is still current would be an arbitration record of an
+          // arbitration that never happened.
+          const edgeResult = yield* Effect.tryPromise({
+            try: () =>
+              tx.query(INSERT_SUPERSEDES_EDGES_SQL, [orgId, JSON.stringify(stampedPairs)]),
+            catch: (cause) =>
+              new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+          });
+          const edgesInserted = edgeResult.rowCount ?? edgeResult.rows?.length ?? 0;
+          if (edgesInserted < stampedPairs.length) {
+            // Usually legitimate — `WHERE NOT EXISTS` skips an edge a region
+            // import already carried — so this is not a failure. It is logged
+            // because an exact-count check is genuinely ambiguous here, and
+            // without this line an insert drift that under-writes edges would
+            // leave stamps with no graph record and no operator trace. The
+            // durable audit record is unaffected: `superseded` below is built
+            // from the stamped pairs, not from this count.
+            log.info(
+              {
+                workspaceId: orgId,
+                pairs: stampedPairs.length,
+                edgesInserted,
+              },
+              "brain publish: fewer supersedes edges inserted than pairs stamped — pre-existing edges (a region import), or the edge statement drifted",
+            );
+          }
+          const byNewFact = new Map<string, string[]>();
+          for (const pair of stampedPairs) {
+            const list = byNewFact.get(pair.newId);
+            if (list) list.push(pair.oldId);
+            else byNewFact.set(pair.newId, [pair.oldId]);
+          }
+          for (const [rowId, oldList] of byNewFact) {
+            const [first, ...rest] = oldList;
+            if (first !== undefined) superseded.push({ rowId, superseded: [first, ...rest] });
+          }
+        }
+      }
     }
 
     if (widened.length > 0) {
@@ -673,6 +1016,24 @@ export function promoteBrainFacts(
           sampleTruncated: widened.length > LOGGED_ID_SAMPLE_CAP,
         },
         "brain publish: widened grants to cover the evidence behind them — a claim restated in a wider audience is no longer served only to the narrower one it was first seen in",
+      );
+    }
+
+    if (superseded.length > 0) {
+      // INFO for the widened log's reason, one axis over: a supersession
+      // changes which claim answers as-of-now reads the moment this commits,
+      // and the superseded side is invisible by construction afterwards —
+      // nobody can report a fact the reads now hide. Sampled for line size
+      // only; the complete list rides `PromotionReport.superseded` to the
+      // callers' durable records.
+      log.info(
+        {
+          workspaceId: orgId,
+          supersededCount: superseded.length,
+          superseded: superseded.slice(0, LOGGED_ID_SAMPLE_CAP),
+          sampleTruncated: superseded.length > LOGGED_ID_SAMPLE_CAP,
+        },
+        "brain publish: promoted single-cardinality facts superseded their published rivals — valid_to stamped and supersedes edges written; the old facts stay readable to as-of reads",
       );
     }
 
@@ -698,6 +1059,10 @@ export function promoteBrainFacts(
       // Same reasoning, one axis over: this is the table that HAS a grant, so
       // `[]` means "no ACL changed today" rather than "this table has no ACL".
       widened,
+      // And a third axis (#4912): the table that HAS supersession, so `[]`
+      // means "nothing was superseded this run", distinct from a table where
+      // the concept does not exist.
+      superseded,
     } satisfies PromotionReport;
   });
 }

@@ -42,6 +42,9 @@ import {
   resolvePrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import { FACT_REFUSAL_REASONS } from "@atlas/api/lib/brain/promotion";
+import { CORROBORATION_LOOKUP_SQL } from "@atlas/api/lib/brain/reconcile";
+import { loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
+import { buildFactQuery } from "@atlas/api/lib/brain/search";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -1219,4 +1222,344 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  // ══════════════════════════════════════════════════════════════════
+  // 6. Human-gated supersession (#4912) — the live semantics
+  // ══════════════════════════════════════════════════════════════════
+
+  describe("human-gated supersession at the publish gate (#4912)", () => {
+    /** A private channel's grant, for the ACL-withholding case below. */
+    const SUPERSEDE_PRIVATE_GRANT = "audience:chat-channel:slack:C04912PRIV";
+
+    /** A fact with the SPO + cardinality the collision join actually reads. */
+    async function seedFact(opts: {
+      workspaceId: string;
+      episodeId: string;
+      subject: string;
+      object: string;
+      cardinality?: "single" | "multi";
+      status?: "draft" | "published";
+    }): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_facts
+           (workspace_id, subject, predicate, object, source_episode_id,
+            provenance, status, visible_to, predicate_cardinality)
+         VALUES ($1, $2, 'manager', $3, $4, '{"actor":"test"}'::jsonb, $5, '{org}', $6)
+         RETURNING id`,
+        [
+          opts.workspaceId,
+          opts.subject,
+          opts.object,
+          opts.episodeId,
+          opts.status ?? "draft",
+          opts.cardinality ?? "single",
+        ],
+      );
+      return rows[0]!.id;
+    }
+
+    async function factState(id: string) {
+      const { rows } = await pool.query<{
+        status: string;
+        invalidated_at: Date | null;
+        valid_to: Date | null;
+      }>(`SELECT status, invalidated_at, valid_to FROM brain_facts WHERE id = $1`, [id]);
+      return rows[0]!;
+    }
+
+    async function supersedesEdges(ws: string) {
+      const { rows } = await pool.query<{ f: string; t: string }>(
+        `SELECT from_fact_id::text AS f, to_fact_id::text AS t
+           FROM brain_edges
+          WHERE workspace_id = $1 AND edge_type = 'supersedes'
+          ORDER BY f, t`,
+        [ws],
+      );
+      return rows;
+    }
+
+    it(
+      "stamps valid_to and writes the supersedes edge atomically — and it is NOT a retraction",
+      async () => {
+        const ws = "ws-4912-stamp";
+        const ep = await seedEpisode(ws, "stamp");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        const draft = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+        });
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(1);
+        expect(report.superseded).toEqual([{ rowId: draft, superseded: [old] }]);
+
+        const oldState = await factState(old);
+        expect(oldState.valid_to).not.toBeNull();
+        // Supersession is not deletion: the review verdict stands and the
+        // tombstone is untouched, so as-of reads still serve the row.
+        expect(oldState.status).toBe("published");
+        expect(oldState.invalidated_at).toBeNull();
+        expect((await factState(draft)).status).toBe("published");
+        expect(await supersedesEdges(ws)).toEqual([{ f: draft, t: old }]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "hides the superseded fact from an as-of-now read exactly as a tombstoned one",
+      async () => {
+        const ws = "ws-4912-hide";
+        const ep = await seedEpisode(ws, "hide");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        const draft = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+        });
+        await publish(ws);
+
+        // Not a paraphrase: run the EXACT statement `searchBrain` builds, so a
+        // predicate dropped from `buildFactQuery` fails here, not only in the
+        // unit test that pins the clause as a string.
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        const aclClause = aclVisibilityClause(reader, {
+          table: "brain_facts",
+          alias: "f",
+          paramIndex: 1,
+        });
+        if (aclClause.decision === "deny-all") throw new Error("reader should resolve");
+        const built = buildFactQuery("published", {
+          limit: 10,
+          aclSql: aclClause.sql,
+          aclParams: aclClause.params,
+        });
+        const { rows } = await pool.query<{ id: string }>(built.sql, built.params);
+        expect(rows.map((r) => r.id)).toEqual([draft]);
+        expect(rows.map((r) => r.id)).not.toContain(old);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "multi-cardinality facts coexist — never superseded by publish, in either direction",
+      async () => {
+        const ws = "ws-4912-multi";
+        const ep = await seedEpisode(ws, "multi");
+        // Published side says `multi`: however the draft spells it, the two
+        // rows disagree about the predicate and the recoverable arm wins.
+        const oldMulti = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "python",
+          cardinality: "multi",
+          status: "published",
+        });
+        await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "rust",
+          cardinality: "single",
+        });
+        // Draft side says `multi` against a `single` incumbent.
+        const oldSingle = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "bob",
+          object: "go",
+          cardinality: "single",
+          status: "published",
+        });
+        await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "bob",
+          object: "zig",
+          cardinality: "multi",
+        });
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(2);
+        expect(report.superseded).toEqual([]);
+        expect((await factState(oldMulti)).valid_to).toBeNull();
+        expect((await factState(oldSingle)).valid_to).toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "two same-batch rivals coexist in tension rather than destroying each other",
+      async () => {
+        // Neither is "already published" when the batch begins, so neither is
+        // superseded — there is no temporal order between them to arbitrate,
+        // and stamping both would destroy both beliefs.
+        const ws = "ws-4912-batch";
+        const ep = await seedEpisode(ws, "batch");
+        const a = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+        });
+        const b = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+        });
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(2);
+        expect(report.superseded).toEqual([]);
+        expect((await factState(a)).valid_to).toBeNull();
+        expect((await factState(b)).valid_to).toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "a re-observation after supersession corroborates NOTHING — the flip-back mints a fresh draft",
+      async () => {
+        const ws = "ws-4912-flip";
+        const ep = await seedEpisode(ws, "flip");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        const draft = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+        });
+        await publish(ws);
+        expect((await factState(old)).valid_to).not.toBeNull();
+
+        // The exact string `reconcile.ts` runs. "alice manager bob" flips back:
+        // the superseded row must NOT absorb the evidence — it is hidden from
+        // every as-of-now read, so corroborating it would swallow the flip.
+        const back = await pool.query(CORROBORATION_LOOKUP_SQL, [ws, "alice", "manager", "bob"]);
+        expect(back.rows).toEqual([]);
+        // The CURRENT claim still corroborates normally.
+        const current = await pool.query<{ id: string }>(CORROBORATION_LOOKUP_SQL, [
+          ws,
+          "alice",
+          "manager",
+          "carol",
+        ]);
+        expect(current.rows.map((r) => r.id)).toEqual([draft]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "the will-supersede disclosure lists exactly what the transaction then stamps",
+      async () => {
+        const ws = "ws-4912-preview";
+        const ep = await seedEpisode(ws, "preview");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        const draft = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+        });
+
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        const preview = await loadSupersessionPreview(pool, reader);
+        expect(preview).toEqual({
+          total: 1,
+          pairs: [
+            {
+              draftId: draft,
+              draftLabel: "alice manager carol",
+              supersededId: old,
+              supersededLabel: "alice manager bob",
+            },
+          ],
+          withheld: 0,
+          truncated: false,
+        });
+
+        const report = await publish(ws);
+        expect(report.superseded).toEqual([{ rowId: draft, superseded: [old] }]);
+        // …and afterwards the disclosure reports a clean slate, not a stale one.
+        expect((await loadSupersessionPreview(pool, reader)).total).toBe(0);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "withholds a pair whose PUBLISHED side the reader may not see — counted, never listed",
+      async () => {
+        const ws = "ws-4912-withheld";
+        const privateEp = await seedEpisode(ws, "withheld-private", [SUPERSEDE_PRIVATE_GRANT]);
+        // The incumbent lives in a private channel; the draft is org-wide.
+        await pool.query(
+          `INSERT INTO brain_facts
+             (workspace_id, subject, predicate, object, source_episode_id,
+              provenance, status, visible_to, predicate_cardinality)
+           VALUES ($1, 'alice', 'manager', 'bob', $2, '{"actor":"t"}'::jsonb,
+                   'published', $3::text[], 'single')`,
+          [ws, privateEp, [SUPERSEDE_PRIVATE_GRANT]],
+        );
+        await seedFact({
+          workspaceId: ws,
+          episodeId: privateEp,
+          subject: "alice",
+          object: "carol",
+        });
+
+        // A member outside the private audience: sees the draft, not the rival.
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "outsider",
+          resolvedRole: { role: "member", orgId: ws },
+        });
+        const preview = await loadSupersessionPreview(pool, reader);
+        expect(preview.total).toBe(1);
+        expect(preview.pairs).toEqual([]);
+        expect(preview.withheld).toBe(1);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+  });
 });

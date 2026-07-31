@@ -66,7 +66,12 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { rootCauseMessage } from "@atlas/api/lib/error-cause";
-import { searchBrainCore, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
+import {
+  searchBrainCore,
+  BrainAsOfInvalidError,
+  DEFAULT_SEARCH_LIMIT,
+  MAX_SEARCH_LIMIT,
+} from "@atlas/api/lib/brain/search";
 import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
@@ -94,6 +99,13 @@ export const BRAIN_TOOL_REASONS = {
   noWorkspace: "no_workspace",
   readerUnresolved: "reader_unresolved",
   searchFailed: "search_failed",
+  /**
+   * The caller's `asOf` could not be honored (#4916) — malformed or in the
+   * future. Its own reason rather than `search_failed` because the recovery is
+   * different: fix the argument, don't retry — and the MCP edge maps it to
+   * `validation_failed`, not `internal_error`.
+   */
+  invalidAsOf: "invalid_as_of",
 } as const;
 
 export type BrainToolReason = (typeof BRAIN_TOOL_REASONS)[keyof typeof BRAIN_TOOL_REASONS];
@@ -152,7 +164,9 @@ Use the searchBrain tool for decisions, rationale, ownership, policy, and histor
 - Every result is labelled: \`tier: "fact"\` (reviewed claim), \`"raw-episode"\` (the source record), \`"document"\` (hosted knowledge). Cite the tier and the provenance when you use one — a raw episode is what someone SAID, not what is true
 - An episode tagged \`extraction: "pending"\` has not been distilled into facts yet; quote it as raw evidence
 - A fact whose \`provenance.attribution\` is \`{ "visible": false }\` is one you may read but whose author, source id, and original timestamp are withheld from this reader. Use the claim; say attribution is restricted if asked who said it. Do NOT report it as anonymous, undated, or unsourced — and never infer the author from anything else in the response
-- \`tensions\` lists conflicting claims in both directions and is deliberately unranked — surface both sides, never pick a winner
+- Every fact carries its age: \`validFrom\`, \`corroborationCount\`, \`provenance.attribution.occurredAt\` (when visible), and a read-time \`decay\` signal (\`fresh\`/\`aging\`/\`stale\`/\`unknown\`). Staleness is advisory — a \`stale\` fact is still the reviewed record. Present its age ("as of March…") instead of asserting it as current, and never discard or overrule a fact because of age
+- \`tensions\` is the fact's conflict cluster, listed in both directions and deliberately unranked — each visible counterpart carries its own claim and provenance, so surface both sides with their evidence and never pick a winner; recency and corroboration are context for the reader, not a verdict. A \`{ "visible": false, "withheldCount": N }\` entry means N conflicting claims exist that you cannot see — treat the claim as contested, never as settled
+- To answer "what did we believe at <time>", pass \`asOf\` (ISO-8601, in the past): facts are then the versions valid AT that instant, including ones since superseded. A response carrying \`asOf\` is HISTORICAL — frame every fact in it as "as of <time>", never as current; a response without \`asOf\` is current belief. Retracted facts never appear, at any time
 - If the response carries \`unavailable\`, the brain could NOT be searched (e.g. no workspace is bound). Say so — do NOT report it as "nothing is known"
 - Read-only, and never the SQL whitelist, metrics, or glossary. For quantitative current state use \`executeSQL\`; for the on-disk semantic layer use \`explore\``;
 
@@ -174,6 +188,7 @@ export interface SearchBrainInput {
   tags?: string[];
   collection?: string;
   since?: string;
+  asOf?: string;
   limit?: number;
   expand?: boolean;
 }
@@ -193,6 +208,7 @@ export function normalizeSearchInput(input: SearchBrainInput): {
   tags?: readonly string[];
   collection?: string;
   since?: string;
+  asOf?: string;
   limit: number;
   expand: boolean;
 } {
@@ -213,6 +229,11 @@ export function normalizeSearchInput(input: SearchBrainInput): {
     tags: tags && tags.length > 0 ? tags : undefined,
     collection: input.collection?.trim() || undefined,
     since: input.since?.trim() || undefined,
+    // Passed through VERBATIM, deliberately unlike `since` above: `'   '.trim()
+    // || undefined` would silently turn an explicit-but-blank asOf into the
+    // as-of-now read — exactly the fall-through #4916 forbids. The core's
+    // parseBrainAsOf owns the judgment and REJECTS a blank instead.
+    asOf: input.asOf,
     limit,
     expand: input.expand ?? true,
   };
@@ -247,6 +268,12 @@ export const searchBrain = tool({
       .string()
       .optional()
       .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
+    asOf: z
+      .string()
+      .optional()
+      .describe(
+        "Facts only: historical point read — returns the reviewed facts valid at that moment (later-superseded versions included; retracted facts never). An ISO-8601 date (2026-07-27) or a timestamp with an EXPLICIT zone (2026-07-27T09:00:00Z); zone-less times, non-ISO forms, and future instants are rejected. Requires the fact store in `include`. Omit for current beliefs.",
+      ),
     limit: z
       .number()
       .int()
@@ -306,6 +333,20 @@ export const searchBrain = tool({
       });
     } catch (err) {
       const requestId = reqCtx?.requestId;
+      // The caller's own argument, refused (#4916) — warn, not error: nothing
+      // is wrong server-side, and the message already tells the agent the fix.
+      // The core's prose IS the user-facing message; it names the offending
+      // value and the recovery, per the no-generic-errors rule.
+      if (err instanceof BrainAsOfInvalidError) {
+        log.warn(
+          { err: err.message, workspaceId, requestId },
+          "searchBrain rejected an unusable asOf — refusing rather than answering as-of-now",
+        );
+        return {
+          error: withRequestId(err.message, requestId),
+          reason: BRAIN_TOOL_REASONS.invalidAsOf,
+        };
+      }
       // Identity failures are reported as a REFUSAL, distinctly from a generic
       // search failure — see the module header on why an empty result set would
       // be the dangerous answer here. ONE `instanceof` against the shared base,

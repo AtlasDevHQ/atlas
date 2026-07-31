@@ -63,11 +63,14 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 }));
 
 let loggedError: unknown;
+let loggedWarn: unknown;
 // Mock all value exports of the logger module (mock.module is file-global; a
 // partial stub would hand `undefined` to any importer reaching an unmocked one).
 const noopLogger = {
   info: () => {},
-  warn: () => {},
+  warn: (obj: unknown) => {
+    loggedWarn = obj;
+  },
   debug: () => {},
   error: (obj: unknown) => {
     loggedError = obj;
@@ -98,9 +101,21 @@ function run(input: Record<string, unknown> = {}) {
   ) as unknown as Promise<Record<string, unknown>>;
 }
 
-/** SQL the tool issued against one table, in call order. */
+/**
+ * SQL the tool issued whose FROM targets one table, in call order.
+ *
+ * Matches `FROM <table>` rather than a bare substring: the fact statement
+ * names `brain_episodes` inside its decay-anchor subquery (#4914) and
+ * `brain_edges` inside corroboration, so a substring match would count the
+ * fact read as an episode-store read and fail the include-filter negatives
+ * vacuously. The subqueries spell `FROM brain_edges ed` / `JOIN brain_episodes
+ * ep`, so anchoring on the store statements' own `FROM <table> <alias>` shape
+ * keeps the discrimination honest.
+ */
 function sqlFor(table: string): string[] {
-  return queryCalls.map((c) => c.sql).filter((s) => s.includes(table));
+  return queryCalls
+    .map((c) => c.sql)
+    .filter((s) => new RegExp(`FROM ${table} (?:f|e|d|kd)\\b`).test(s) || s.includes(`FROM ${table}\n`));
 }
 
 beforeEach(() => {
@@ -114,6 +129,7 @@ beforeEach(() => {
   queryCalls.length = 0;
   queryImpl = async () => [];
   loggedError = undefined;
+  loggedWarn = undefined;
 });
 
 describe("searchBrain tool.execute", () => {
@@ -220,6 +236,38 @@ describe("searchBrain tool.execute", () => {
     // The request id is quotable, so the refusal correlates to the server log.
     expect(res.error).toContain("req-1");
     expect(loggedError).toBeDefined();
+  });
+
+  it("threads a valid asOf into the fact read and echoes it — the historical page says so (#4916)", async () => {
+    const res = await run({ query: "x", include: ["fact"], asOf: "2026-07-01T00:00:00Z", expand: false });
+    const factCall = queryCalls.find((c) => c.sql.includes("brain_facts"))!;
+    expect(factCall.sql).toContain("f.valid_from IS NULL OR f.valid_from <=");
+    expect(factCall.params).toContain("2026-07-01T00:00:00.000Z");
+    expect(res.asOf).toBe("2026-07-01T00:00:00.000Z");
+    expect(res.error).toBeUndefined();
+  });
+
+  it("rejects a malformed asOf with its own machine-readable reason — never answers as-of-now (#4916)", async () => {
+    const res = await run({ query: "x", asOf: "yesterday-ish" });
+    expect(res.error).toContain("yesterday-ish");
+    expect(res.error).toContain("ISO-8601");
+    expect(res.reason).toBe("invalid_as_of");
+    expect(res.results).toBeUndefined();
+    // Fail closed: nothing was searched — a page of CURRENT beliefs under a
+    // rejected historical ask would be attributed to the asked-about instant.
+    expect(queryCalls).toHaveLength(0);
+    // Logged at warn (a caller mistake, not a server fault), with correlation.
+    expect(loggedWarn).toMatchObject({ workspaceId: "ws-1", requestId: "req-1" });
+    expect(loggedError).toBeUndefined();
+  });
+
+  it("rejects a BLANK asOf rather than normalizing it away like the document filters", async () => {
+    // `since: '  '` becomes absent; `asOf: '  '` must NOT — an explicit
+    // point-read argument that silently degrades to as-of-now is the exact
+    // fall-through #4916 forbids.
+    const res = await run({ query: "x", asOf: "   " });
+    expect(res.reason).toBe("invalid_as_of");
+    expect(queryCalls).toHaveLength(0);
   });
 
   it("logs and returns a generic, secret-free error when the query throws", async () => {
@@ -344,5 +392,36 @@ describe.each([
     // fact is legitimately visible. A model that refused to use it would turn
     // an attribution boundary into a knowledge gap.
     expect(description).toMatch(/use the claim/i);
+  });
+});
+
+/**
+ * Same two-surface pin, for #4914's staleness guidance — and for the same
+ * reason the attribution block states: a description is a string nobody would
+ * notice deleting, the two surfaces are not derived from each other, and
+ * guidance added to one reaches only half the agents.
+ */
+describe.each([
+  ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
+  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+])("%s — staleness is presented, never arbitrated (#4914)", (_label, description) => {
+  it("names the temporal wire fields the model will actually see", () => {
+    for (const field of ["decay", "validFrom", "corroborationCount"]) {
+      expect(description).toContain(field);
+    }
+    expect(description).toMatch(/stale/i);
+  });
+
+  it("tells the model to PRESENT a stale fact's age", () => {
+    expect(description).toMatch(/present .*(age|as of)/i);
+  });
+
+  it("forbids the two wrong moves: asserting as current, and dropping for age", () => {
+    // The failure mode of unguided staleness metadata is a model treating
+    // `stale` as a demotion — silently discarding the reviewed record — or
+    // ignoring it and asserting a year-old claim as today's truth. Both
+    // never-arms must survive a prompt-tightening pass.
+    expect(description).toMatch(/never (assert|discard|overrule|drop)/i);
+    expect(description).toMatch(/(as current|current[.,])/i);
   });
 });

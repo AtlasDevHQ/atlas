@@ -14,10 +14,13 @@ export {
 } from "@useatlas/types";
 export type {
   BrainFactCandidate,
+  BrainFactDecayLevel,
+  BrainFactDecayView,
   BrainFactReviewStatus,
   BrainFactEpisodeView,
   BrainFactOversight,
   BrainFactOversightBucket,
+  BrainFactWillSupersede,
   BrainFactProvenanceView,
   BrainFactTensionView,
   AdminRole,

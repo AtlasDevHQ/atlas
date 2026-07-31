@@ -2,12 +2,19 @@
  * Admin fact-review routes — the human end of the company-brain wedge
  * (#4772, ADR-0036).
  *
- * Mounted under `/api/v1/admin/brain-facts`. Four verbs and no fifth:
+ * Mounted under `/api/v1/admin/brain-facts`:
  *
  *   GET  /          — the review queue, paginated and filterable
  *   GET  /summary   — queue vitals for the stats bar
  *   GET  /oversight — per-audience counts, workspace-wide, with no content
- *   POST /:id/retract — reject a candidate
+ *   POST /:id/retract — reject a candidate (the `retract` correction verb)
+ *   POST /:id/correct — apply a `correct_fact` verb (#4915)
+ *
+ * `/retract` and `/correct {verb: "retract"}` are the SAME code path
+ * (`correctFact` in `lib/brain/correction.ts`) — one retract semantics, not
+ * two. Both stamp the tombstone AND materialize the immutable human-authored
+ * correction episode; the older route survives as the review surface's
+ * spelling of the verb.
  *
  * ## There is no approve verb here, and that is the design
  *
@@ -48,7 +55,6 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
@@ -57,9 +63,14 @@ import {
   CANDIDATE_PAGE_MAX,
   loadFactCandidateSummary,
   loadFactCandidates,
-  retractFactCandidate,
 } from "@atlas/api/lib/brain/candidates";
-import { loadFactOversight } from "@atlas/api/lib/brain/oversight";
+import {
+  CORRECTION_REFUSAL_REASONS,
+  correctFact,
+  type CorrectionOutcome,
+  type CorrectionRefusalReason,
+} from "@atlas/api/lib/brain/correction";
+import { loadFactOversight, loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
@@ -67,14 +78,14 @@ import {
   BRAIN_FACT_STATUS_FILTERS,
   BrainFactCandidateListResponseSchema,
   BrainFactCandidateSummarySchema,
+  BrainFactCorrectRequestSchema,
+  BrainFactCorrectionResponseSchema,
   BrainFactOversightSchema,
   BrainFactRetractResponseSchema,
   isBrainFactStatusFilter,
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-brain-facts");
 
 const DEFAULT_LIMIT = 50;
 
@@ -231,9 +242,10 @@ const oversightRoute = createRoute({
   summary: "Where the workspace's facts stand, as counts",
   description:
     "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. " +
-    "Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. " +
+    "The WORKSPACE-WIDE half returns numbers only: no subject, predicate, object, provenance, episode body, or fact id reaches the counts, the buckets, or the totals. The ONE exception is `willSupersede.pairs` below, which carries claims and fact ids — and is therefore reader-scoped, never workspace-wide. " +
     "A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. " +
-    "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped.",
+    "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped. " +
+    "`willSupersede` discloses what the next publish will supersede (#4912): promoting a single-cardinality draft that collides with a live published fact stamps the old fact's `valid_to` atomically with the promotion. The pairs list both claims and is gated by the reader's own visibility predicate on BOTH sides; supersessions the reader may not see travel as `willSupersede.withheld` — a count, never content.",
   responses: {
     200: {
       description: "Per-audience counts by state, plus workspace totals",
@@ -249,7 +261,7 @@ const retractRoute = createRoute({
   tags: ["Admin — Brain Facts"],
   summary: "Reject a fact candidate",
   description:
-    "Rejects a candidate by stamping `invalidated_at` — the review gate's negative verb. It never writes `status`: `brain_facts.status` has exactly one writer (the atomic publish endpoint), and ADR-0036 makes withdrawal a tombstone rather than a demotion, so the claim stays readable to an as-of query while leaving the review queue, the publish preview, and draftCounts. Approval is `/api/v1/admin/publish`; there is no per-fact approve verb.",
+    "Rejects a candidate by stamping `invalidated_at` — the review gate's negative verb, which since #4915 is the `retract` correction verb: the same call also materializes an immutable human-authored correction episode and flags any `derives-from` dependents for re-review (never a cascade). It never writes `status`: `brain_facts.status` has exactly one writer (the atomic publish endpoint), and ADR-0036 makes withdrawal a tombstone rather than a demotion, so the claim stays readable to an as-of query while leaving the review queue, the publish preview, and draftCounts. Approval is `/api/v1/admin/publish`; there is no per-fact approve verb.",
   request: {
     params: z.object({
       id: z.string().openapi({ description: "Fact id" }),
@@ -269,8 +281,86 @@ const retractRoute = createRoute({
         "No such fact, already retracted, or not visible to this reviewer — deliberately indistinguishable, so the response cannot confirm the existence of a fact the reader may not see",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    409: {
+      description:
+        "The fact cannot be retracted — it is warehouse-derived (tier-1), which has no correction path; fix the data or the semantic layer instead",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
   },
 });
+
+const correctRoute = createRoute({
+  method: "post",
+  path: "/{id}/correct",
+  tags: ["Admin — Brain Facts"],
+  summary: "Apply a correct_fact verb to a fact",
+  description:
+    "Applies one of the four correction verbs (#4915, ADR-0036 §Temporal) — the second human-authoritative entry point beside the review gate. Every correction materializes an immutable, actor-attributed correction episode and lands authoritative immediately, without the draft queue. " +
+    "`retract` stamps `invalidated_at` (the only tombstone path and the GDPR-erasure verb) and flags `derives-from` dependents for re-review — never a cascade. " +
+    "`supersede` publishes the human's replacement claim (same subject and predicate, the corrected `replacement.object`) through the ordinary reconcile seam and stamps the target's `valid_to` plus the `supersedes` edge via the publish gate's own machinery (#4912). " +
+    "`re-authority` and `pin` attach the correction episode as fresh human evidence, resetting the staleness clock and recording who vouched. " +
+    "Tier-1 warehouse-derived facts are refused for every verb: fix the data or the semantic layer, not the brain.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ description: "Fact id" }),
+    }),
+    body: {
+      content: { "application/json": { schema: BrainFactCorrectRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "The correction was applied",
+      content: { "application/json": { schema: BrainFactCorrectionResponseSchema } },
+    },
+    ...commonResponses,
+    404: {
+      description:
+        "No such fact, already retracted, or not visible to this admin — deliberately indistinguishable, so the response cannot confirm the existence of a fact the reader may not see",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description:
+        "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+/**
+ * Correction refusal → HTTP status. Request-shape mistakes are 400s, authority
+ * is 403, and target-state mismatches are 409s — the state can change out from
+ * under the client, so "try again after fixing the target" is the semantics.
+ */
+function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
+  switch (reason) {
+    case CORRECTION_REFUSAL_REASONS.notAuthorized:
+      return 403;
+    case CORRECTION_REFUSAL_REASONS.replacementMissing:
+    case CORRECTION_REFUSAL_REASONS.replacementIdentical:
+      return 400;
+    case CORRECTION_REFUSAL_REASONS.warehouseTarget:
+    case CORRECTION_REFUSAL_REASONS.targetNotPublished:
+    case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:
+    case CORRECTION_REFUSAL_REASONS.replacementUnpublishable:
+      return 409;
+    default: {
+      const unexpected: never = reason;
+      throw new Error(`Unhandled correction refusal reason: ${JSON.stringify(unexpected)}`);
+    }
+  }
+}
+
+/** The one 404 body for the deliberately indistinguishable trio. */
+function correctionNotFoundBody(requestId: string) {
+  return {
+    error: "not_found",
+    message:
+      "That fact could not be corrected. It may not exist, may already be retracted, or may not be visible to you.",
+    requestId,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Router
@@ -357,13 +447,25 @@ adminBrainFacts.openapi(oversightRoute, async (c) => {
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
       // The reader context is resolved even though the WORKSPACE counts do not
-      // use it. Two jobs: it produces the one scoped number
-      // (`reviewableAwaitingReview`), and it makes an unresolvable identity a
-      // 500 rather than a workspace shape served to a session Atlas could not
-      // identify.
+      // use it. Three jobs now: it produces the one scoped number
+      // (`reviewableAwaitingReview`), it gates the will-supersede pair labels
+      // (#4912), and it makes an unresolvable identity a 500 rather than a
+      // workspace shape served to a session Atlas could not identify.
       const ctx = yield* reviewerContext(mode, user, orgId, requestId);
       const oversight = yield* Effect.tryPromise({
-        try: () => loadFactOversight(getInternalDB(), ctx, requestId),
+        try: async () => {
+          // One request, two loaders — the same "one request, not one
+          // snapshot" contract `loadFactOversight` documents for its own
+          // statements. The supersession preview is merged here rather than
+          // inside the counts loader so the counts aggregate keeps its
+          // numbers-only contract and its own tests.
+          const db = getInternalDB();
+          const [counts, willSupersede] = await Promise.all([
+            loadFactOversight(db, ctx, requestId),
+            loadSupersessionPreview(db, ctx, requestId),
+          ]);
+          return { ...counts, willSupersede };
+        },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -390,30 +492,44 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       }
       const ctx = yield* reviewerContext(mode, user, orgId, requestId);
 
-      const retracted = yield* Effect.tryPromise({
-        try: () => retractFactCandidate(getInternalDB(), { ctx, factId, requestId }),
+      // The `retract` correction verb — the SAME code path `/correct` runs
+      // (#4915): tombstone + correction episode + dependent re-review flags,
+      // in one transaction. One retract semantics, not two.
+      const outcome = yield* Effect.tryPromise({
+        try: () => correctFact({ ctx, factId, verb: "retract", requestId }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
-      if (!retracted) {
+      if (outcome.kind === "not-found") {
         // One message for three causes on purpose — see the route's 404 copy.
-        log.info(
-          { workspaceId: orgId, factId, userId: user?.id, requestId },
-          "brain review: retract matched no row — absent, already retracted, or not visible to this reviewer",
-        );
+        return c.json(correctionNotFoundBody(requestId), 404);
+      }
+      if (outcome.kind === "refused") {
+        // Reachable for a warehouse-derived target (409) and for an actor
+        // without an org owner/admin role (403) — e.g. a bare platform_admin,
+        // whose platform role resolves to NO org role in the reader context
+        // and so does not carry the correction verb. That bar is #4915's, new
+        // relative to the pre-unification retract, and deliberate: a
+        // correction lands authoritative immediately, so it takes org
+        // authority, not platform reach. The prose is the verb machinery's
+        // own actionable message.
         return c.json(
-          {
-            error: "not_found",
-            message:
-              "That fact could not be retracted. It may not exist, may already be retracted, or may not be visible to you.",
-            requestId,
-          },
-          404,
+          { error: "correction_refused", message: outcome.message, requestId },
+          refusalStatus(outcome.reason),
+        );
+      }
+
+      const { result } = outcome;
+      if (result.invalidatedAt === null) {
+        // A retract outcome always carries its tombstone; a null here means
+        // the correction machinery changed shape underneath this route.
+        return yield* Effect.fail(
+          new Error(`brain review: retract outcome for ${factId} carried no invalidatedAt`),
         );
       }
 
       // Durable record of a human trust decision. The `log.info` inside
-      // `retractFactCandidate` is operational; this is the forensic trail.
+      // `correctFact` is operational; this is the forensic trail.
       // `logAdminAction` is fire-and-forget by design and handles its own
       // failures — a lost audit row must never roll back a retraction that
       // already committed, since the caller would then retract again.
@@ -421,12 +537,103 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
         actionType: ADMIN_ACTIONS.brainFact.retract,
         targetType: "brainFact",
         targetId: factId,
-        metadata: { invalidatedAt: retracted.invalidatedAt, workspaceId: orgId },
+        metadata: {
+          invalidatedAt: result.invalidatedAt,
+          workspaceId: orgId,
+          correctionEpisodeId: result.correctionEpisodeId,
+          flaggedForReReview: result.flaggedForReReview,
+        },
       });
 
-      return c.json(checked(BrainFactRetractResponseSchema, retracted), 200);
+      return c.json(
+        checked(BrainFactRetractResponseSchema, {
+          id: result.factId,
+          invalidatedAt: result.invalidatedAt,
+        }),
+        200,
+      );
     }),
     { label: "retract brain fact candidate" },
+  );
+});
+
+adminBrainFacts.openapi(correctRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const factId = c.req.param("id");
+      if (!UUID_RE.test(factId)) {
+        return c.json(
+          { error: "bad_request", message: "That is not a valid fact id.", requestId },
+          400,
+        );
+      }
+      const body = c.req.valid("json");
+      const replacementValidFrom = body.replacement?.validFrom
+        ? new Date(body.replacement.validFrom)
+        : null;
+
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+      const outcome: CorrectionOutcome = yield* Effect.tryPromise({
+        try: () =>
+          correctFact({
+            ctx,
+            factId,
+            verb: body.verb,
+            reason: body.reason,
+            // Always a valid Date past the body schema's `.datetime()` gate;
+            // the machinery keeps a warn-and-degrade backstop regardless.
+            replacement: body.replacement
+              ? { object: body.replacement.object, validFrom: replacementValidFrom }
+              : undefined,
+            requestId,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      if (outcome.kind === "not-found") {
+        return c.json(correctionNotFoundBody(requestId), 404);
+      }
+      if (outcome.kind === "refused") {
+        const status = refusalStatus(outcome.reason);
+        return c.json(
+          { error: "correction_refused", message: outcome.message, requestId },
+          status,
+        );
+      }
+
+      const { result } = outcome;
+      // The forensic trail beside the in-brain record. Retract keeps its
+      // dedicated action type so existing audit consumers see one vocabulary
+      // for one semantics; the other verbs share `correct` with the verb in
+      // metadata.
+      logAdminAction({
+        actionType:
+          result.verb === "retract"
+            ? ADMIN_ACTIONS.brainFact.retract
+            : ADMIN_ACTIONS.brainFact.correct,
+        targetType: "brainFact",
+        targetId: factId,
+        metadata: {
+          verb: result.verb,
+          workspaceId: orgId,
+          correctionEpisodeId: result.correctionEpisodeId,
+          ...(result.invalidatedAt !== null ? { invalidatedAt: result.invalidatedAt } : {}),
+          ...(result.flaggedForReReview.length > 0
+            ? { flaggedForReReview: result.flaggedForReReview }
+            : {}),
+          ...(result.supersededBy !== null ? { supersededBy: result.supersededBy } : {}),
+          ...(result.validTo !== null ? { validTo: result.validTo } : {}),
+        },
+      });
+
+      return c.json(checked(BrainFactCorrectionResponseSchema, result), 200);
+    }),
+    { label: "apply brain fact correction verb" },
   );
 });
 

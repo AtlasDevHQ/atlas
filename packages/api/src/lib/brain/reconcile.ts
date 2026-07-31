@@ -150,10 +150,11 @@ const RECONCILE_LOCK_NAMESPACE = 4771;
 
 /**
  * Bound how many existing facts one new `single`-cardinality claim may be put
- * in tension with. The edges are ADVISORY (M2 owns clustering and arbitration),
- * so a subject/predicate that somehow accumulated hundreds of live objects
- * should surface the newest few for a reviewer rather than write a fan of
- * edges nobody reads.
+ * in tension with. The edges are ADVISORY — `lib/brain/tensions.ts` is the
+ * clustering that reads them (#4913), and arbitration stays with the human
+ * gate — so a subject/predicate that somehow accumulated hundreds of live
+ * objects should surface the newest few for a reviewer rather than write a fan
+ * of edges nobody reads.
  */
 const TENSION_EDGE_CAP = 10;
 
@@ -369,10 +370,17 @@ const NO_BLOCKS: Readonly<Record<ReconcileBlockReason, number>> = Object.freeze(
 // NOTE for the next editor: none of these may name `status`, and no UPDATE
 // here may name `visible_to` (#4823 — the grant is a per-version snapshot that
 // widens only at the review gate; the INSERT below names it and must, because
-// derive-at-ingest is that snapshot being taken).
-// `scripts/check-brain-fact-promotion.sh` refuses any statement that touches
-// `brain_facts` and mentions the column — including in a WHERE clause — and
-// that over-breadth is deliberate. The fact insert omits `status` on purpose:
+// derive-at-ingest is that snapshot being taken). Nor may ANY statement here
+// WRITE `valid_to` (#4912): "a human promotion stamps `valid_to`; there is no
+// autonomous supersession" — the publish gate (and later `correct_fact`) are
+// its only writers, and this stage runs unattended on every ingest pass.
+// Reading it is fine and required (two SELECTs below filter on it, and the
+// guard's own fixtures pass a SELECT doing exactly that);
+// `reconcile.test.ts` pins the write half.
+// `scripts/check-brain-fact-promotion.sh` refuses any UPDATE-, INSERT-, or
+// upsert-shaped statement that touches `brain_facts` and mentions `status` —
+// including a mention only in the WHERE clause — and that over-breadth is
+// deliberate. The fact insert omits `status` on purpose:
 // migration 0180 defaults it to `draft`, and that default IS the review gate
 // applying itself (#4769). Asking for `draft` explicitly would be the same
 // value written by a second, ungated writer.
@@ -392,6 +400,20 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
  * fact version (0180) and ADR-0036 §T5 admits widening only at the review gate.
  * A wider re-observation is acted on there instead: `promoteBrainFacts` unions
  * the evidence grants in when the draft is published (#4823).
+ *
+ * `valid_to IS NULL` (#4912): only a CURRENT fact corroborates. A superseded
+ * fact — `valid_to` stamped by a human promotion — is settled history that
+ * every as-of-now read hides, so strengthening it would swallow the
+ * re-observation invisibly: the evidence would attach to a row no default read
+ * serves, and the world's flip BACK to the old value would never resurface.
+ * Instead the re-observation mints a fresh draft (a new validity window), which
+ * the publish gate can then arbitrate against the current rival. Note this
+ * SELECT reads the raw column, not `brainFactCurrentClause` — a future-dated
+ * `valid_to` off a region import is a fact with a CLOSED window, and minting a
+ * fresh draft for a new window is right there too, where the read-side clause's
+ * "still valid until then" reading answers a different question. Writes are
+ * never touched here: this stage still stamps nothing (see the NOTE at the
+ * top of this SQL section).
  */
 export const CORROBORATION_LOOKUP_SQL = `SELECT id
      FROM brain_facts
@@ -400,6 +422,7 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
       AND predicate = $3
       AND object = $4
       AND invalidated_at IS NULL
+      AND valid_to IS NULL
     ORDER BY ingested_at
     LIMIT 1`;
 
@@ -445,6 +468,14 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * the advisory contradiction set. Only consulted for `single` cardinality,
  * where "one manager" makes two live objects a genuine tension; `multi` values
  * are supposed to coexist.
+ *
+ * `valid_to IS NULL` (#4912): a superseded rival is not a tension — the
+ * arbitration already happened at the publish gate and the `supersedes` edge
+ * records it. Wiring an `in-tension-with` edge at settled history would tell a
+ * reviewer the new claim is contested by a belief a human already retired.
+ * A FUTURE-dated `valid_to` (region import only) is likewise skipped — the
+ * same accepted coexistence `supersessionCollisionJoin` documents: its end is
+ * already decided, so it is neither a rival to flag nor a belief to supersede.
  */
 export const TENSION_CANDIDATES_SQL = `SELECT id
      FROM brain_facts
@@ -453,6 +484,7 @@ export const TENSION_CANDIDATES_SQL = `SELECT id
       AND predicate = $3
       AND object <> $4
       AND invalidated_at IS NULL
+      AND valid_to IS NULL
       AND id <> $5::uuid
     ORDER BY ingested_at DESC
     LIMIT $6`;
@@ -460,8 +492,9 @@ export const TENSION_CANDIDATES_SQL = `SELECT id
 /**
  * The advisory edge. `in-tension-with` is SURFACED with both provenances and
  * never ranked (ADR-0036) — writing it is not an arbitration, and nothing here
- * supersedes, invalidates, or reorders anything. M2 owns the clustering that
- * reads these.
+ * supersedes, invalidates, or reorders anything. `loadTensionClusters`
+ * (`lib/brain/tensions.ts`) is the clustering that reads these, behind both
+ * the review queue and `searchBrain` (#4913).
  */
 export const INSERT_TENSION_EDGE_SQL = `INSERT INTO brain_edges
          (workspace_id, edge_type, from_fact_id, to_fact_id)

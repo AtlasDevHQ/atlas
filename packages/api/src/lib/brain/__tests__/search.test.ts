@@ -14,8 +14,9 @@
  *   - the EPISODE carries its own predicate, never the fact's;
  *   - an unextracted episode is RETURNED and labelled, not skipped;
  *   - every row carries `tier` + `trustTier`, written at one seam;
- *   - `in-tension-with` surfaces both directions, unranked, and a withheld
- *     counterpart is reported rather than dropped.
+ *   - `in-tension-with` surfaces the conflict cluster (#4913): both directions,
+ *     unranked, each visible counterpart with its own provenance, and withheld
+ *     counterparts reported as a count rather than dropped.
  *
  * A literal `BrainSearchReader` stands in for the pool — no `mock.module()`, no
  * singleton mutation. That the emitted SQL actually selects what these tests
@@ -24,8 +25,10 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  BrainAsOfInvalidError,
   buildEpisodeQuery,
   buildFactQuery,
+  parseBrainAsOf,
   searchBrainCore,
   TENSION_FANOUT_CAP,
   type BrainSearchReader,
@@ -59,10 +62,12 @@ interface Call {
  * emits. The obvious `"brain_facts"` is not: the fact page's corroboration
  * subquery names `brain_edges`, and the tension-counterpart query names
  * `brain_facts` too — so a loose key silently answers the wrong statement and
- * the assertion passes vacuously on the withheld arm.
+ * the assertion passes vacuously on the withheld arm. Since #4913 the
+ * counterpart statement carries the corroboration subquery as well, so the
+ * fact page is keyed on `valid_to` — the one column only it selects.
  */
 const SQL = {
-  factPage: "COUNT(DISTINCT ed.to_episode_id)",
+  factPage: "f.valid_to",
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",
@@ -99,6 +104,9 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     invalidated_at: null,
     ingested_at: new Date("2026-06-01T00:00:00Z"),
     corroboration_count: 1,
+    // Selected by the fact query (#4914); NULL = no provenance edges. Present
+    // in the fixture so no test row trips the decay drift arm by accident.
+    last_observed_at: null,
     snippet: null,
     ...overrides,
   };
@@ -145,6 +153,20 @@ describe("buildFactQuery — push-down and the tombstone trap", () => {
     // keeps retracted facts readable, so a current-belief read must exclude
     // them itself or the agent is served withdrawn claims.
     expect(sql).toContain("f.invalidated_at IS NULL");
+  });
+
+  it("hides superseded facts exactly as tombstoned ones — the fourth predicate (#4912)", () => {
+    // The regression this pins cuts both ways: a `valid_to IS NULL` row (every
+    // pre-supersession fact) must still satisfy the predicate — the OR arm is
+    // what keeps the whole corpus readable — while a stamped `valid_to` in the
+    // past falls out of it, because a human promotion explicitly replaced that
+    // belief and serving it as current would undo the arbitration.
+    const { sql } = buildFactQuery("published", { limit: 10, ...acl(ctx(), "brain_facts") });
+    expect(sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+    // Developer mode overlays DRAFTS, not superseded history — the supersession
+    // axis is orthogonal to review status and gates both modes.
+    const dev = buildFactQuery("developer", { limit: 10, ...acl(ctx(), "brain_facts") });
+    expect(dev.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
   });
 
   it("keeps the LIMIT and the ranking BELOW the gated WHERE, so an unreadable row is never ranked or counted", () => {
@@ -206,6 +228,239 @@ describe("buildFactQuery — push-down and the tombstone trap", () => {
     expect(sql).toContain("f.fts @@ websearch_to_tsquery('english', $3)");
     expect(sql).toContain("ts_rank(f.fts,");
     expect(sql).not.toContain("to_tsvector(");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// asOf — the bi-temporal point read (#4916)
+// ---------------------------------------------------------------------------
+
+describe("asOf — the bi-temporal point read (#4916)", () => {
+  const AS_OF = "2026-07-01T00:00:00.000Z";
+
+  it("switches the temporal predicate to the validity window, both bounds off ONE parameter", () => {
+    const { sql, params } = buildFactQuery("published", {
+      limit: 10,
+      asOf: parseBrainAsOf(AS_OF),
+      ...acl(ctx(), "brain_facts"),
+    });
+    // `valid_from <= asOf < COALESCE(valid_to, ∞)` — a NULL `valid_from`
+    // (an unrecorded start) is admitted, matching the default read.
+    expect(sql).toContain("(f.valid_from IS NULL OR f.valid_from <= $3::timestamptz)");
+    expect(sql).toContain("(f.valid_to IS NULL OR f.valid_to > $3::timestamptz)");
+    // The as-of-now supersession clause is REPLACED, not composed: composing
+    // both would hide every superseded fact from the historical read — the
+    // exact rows the point read exists to serve.
+    expect(sql).not.toContain("now()");
+    expect(params).toContain(AS_OF);
+  });
+
+  it("keeps the tombstone filter under asOf — retraction hides history at EVERY instant", () => {
+    // The boundary rule cut both ways in the ADR: superseded facts DO appear
+    // inside their window (previous test); tombstoned facts NEVER do, because
+    // retraction (the review gate's reject verb, and the GDPR-erasure path) is
+    // the one verb whose job is hiding.
+    const { sql } = buildFactQuery("published", {
+      limit: 10,
+      asOf: parseBrainAsOf(AS_OF),
+      ...acl(ctx(), "brain_facts"),
+    });
+    expect(sql).toContain("f.invalidated_at IS NULL");
+  });
+
+  it("leaves the default read byte-identical — the regression pin", () => {
+    // A GOLDEN pin, not a contains-check: the literal below is the statement
+    // the pre-#4916 builder emitted (captured from it verbatim), so any
+    // reordering, reformatting, or new clause the asOf branch leaks into the
+    // default arm fails byte-for-byte. If this fails because you CHANGED the
+    // default fact read on purpose, re-capture the literal — that is the
+    // deliberate act this pin exists to force.
+    const { sql, params } = buildFactQuery("published", {
+      query: "billing",
+      limit: 10,
+      ...acl(ctx(), "brain_facts"),
+    });
+    expect(sql).toBe(`SELECT f.id::text AS id,
+         f.subject,
+         f.predicate,
+         f.object,
+         f.status,
+         f.predicate_cardinality,
+         f.visible_to,
+         f.pre_widening_visible_to,
+         f.provenance,
+         f.source_episode_id::text AS source_episode_id,
+         f.valid_from,
+         f.valid_to,
+         f.invalidated_at,
+         f.ingested_at,
+         (
+    SELECT COUNT(DISTINCT ed.to_episode_id)
+      FROM brain_edges ed
+     WHERE ed.workspace_id = f.workspace_id
+       AND ed.edge_type = 'provenance'
+       AND ed.from_fact_id = f.id
+  )::int AS corroboration_count,
+         (
+    SELECT MAX(COALESCE(ep.occurred_at, ep.ingested_at))
+      FROM brain_edges ed
+      JOIN brain_episodes ep
+        ON ep.workspace_id = ed.workspace_id
+       AND ep.id = ed.to_episode_id
+     WHERE ed.workspace_id = f.workspace_id
+       AND ed.edge_type = 'provenance'
+       AND ed.from_fact_id = f.id
+  ) AS last_observed_at,
+         ts_headline('english', f.subject || ' ' || f.predicate || ' ' || f.object, websearch_to_tsquery('english', $3),
+        'StartSel=**, StopSel=**, MaxFragments=1, MaxWords=28, MinWords=4') AS snippet,
+         ts_rank(f.fts, websearch_to_tsquery('english', $3)) AS rank
+    FROM brain_facts f
+   WHERE (f.workspace_id = $1 AND f.visible_to && $2::text[])
+     AND f.status = 'published'
+     AND f.invalidated_at IS NULL
+     AND (f.valid_to IS NULL OR f.valid_to > now())
+     AND f.fts @@ websearch_to_tsquery('english', $3)
+   ORDER BY rank DESC NULLS LAST, f.ingested_at DESC, f.id DESC
+   LIMIT $4`);
+    expect(params).toEqual([WS, ["org", "role:member", "user:user-1"], "billing", 10]);
+  });
+
+  it("rejects a malformed asOf loudly, naming the value — never falls through to as-of-now", () => {
+    expect(() => parseBrainAsOf("last tuesday")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("last tuesday")).toThrow(/"last tuesday"/);
+    expect(() => parseBrainAsOf("last tuesday")).toThrow(/ISO-8601/);
+    // `new Date()` would happily parse these; the ISO shape gate must not.
+    expect(() => parseBrainAsOf("July 1 2026")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("07/01/2026")).toThrow(BrainAsOfInvalidError);
+  });
+
+  it("rejects a zone-less time — it would be read in the SERVER's timezone", () => {
+    // `new Date("2026-07-01T02:00:00")` is interpreted in the process's local
+    // zone (ECMA-262), so the same call would answer a different instant per
+    // deployment — a silent hours-scale shift of the point read. Malformed.
+    expect(() => parseBrainAsOf("2026-07-01T02:00:00")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("2026-07-01T02:00:00")).toThrow(/zone/);
+    // A bare DATE is fine: ECMA-262 reads it as UTC midnight, deterministically.
+    const dateOnly: string = parseBrainAsOf("2026-07-01");
+    expect(dateOnly).toBe(AS_OF);
+  });
+
+  it("rejects instants below the timestamptz floor instead of failing the bind as an internal fault", () => {
+    // JS parses year zero; Postgres has no year zero. Without the floor this
+    // would surface at the bind as a retryable `search_failed` — the wrong
+    // recovery signal for a caller-argument problem.
+    expect(() => parseBrainAsOf("0000-01-05T00:00:00Z")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("0000-01-05T00:00:00Z")).toThrow(/0001-01-01/);
+  });
+
+  it("caps the echoed value in the rejection message — caller input is unbounded", () => {
+    const huge = `${"9".repeat(500)}!`;
+    try {
+      parseBrainAsOf(huge);
+      throw new Error("expected a rejection");
+    } catch (err) {
+      if (!(err instanceof BrainAsOfInvalidError)) throw err;
+      expect(err.message.length).toBeLessThan(400);
+      expect(err.message).toContain("…");
+    }
+  });
+
+  it("rejects a BLANK asOf rather than treating it as absent", () => {
+    // '   '.trim() || undefined is the sibling params' normalization, and it
+    // is exactly the silent fall-through #4916 forbids on this one.
+    expect(() => parseBrainAsOf("")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("   ")).toThrow(BrainAsOfInvalidError);
+  });
+
+  it("rejects a FUTURE asOf — beliefs not yet held are not a point this surface answers", () => {
+    const now = () => Date.parse("2026-07-30T00:00:00Z");
+    expect(() => parseBrainAsOf("2026-08-01T00:00:00Z", now)).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("2026-08-01T00:00:00Z", now)).toThrow(/future/);
+    // The boundary itself is admitted: `asOf === now` is a valid past-or-present instant.
+    const atNow: string = parseBrainAsOf("2026-07-30T00:00:00Z", now);
+    expect(atNow).toBe("2026-07-30T00:00:00.000Z");
+  });
+
+  it("normalizes the instant to canonical ISO-8601 UTC", () => {
+    // Bound as `timestamptz` and echoed on the response, so both carry the
+    // canonical spelling rather than the caller's local-offset one.
+    const normalized: string = parseBrainAsOf(" 2026-07-01T02:00:00+02:00 ");
+    expect(normalized).toBe(AS_OF);
+  });
+
+  it("echoes the normalized asOf on the response — a historical page must say it is one", async () => {
+    const db = reader([{ match: SQL.factPage, rows: [factRow()] }]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      asOf: "2026-07-01T02:00:00+02:00",
+      limit: 10,
+      expand: false,
+    });
+    expect(res.asOf).toBe(AS_OF);
+    const factCall = db.calls.find((c) => c.sql.includes(SQL.factPage))!;
+    expect(factCall.params).toContain(AS_OF);
+  });
+
+  it("omits the field entirely on a default read — absence IS the 'current belief' statement", async () => {
+    const db = reader([{ match: SQL.factPage, rows: [factRow()] }]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    expect("asOf" in res).toBe(false);
+  });
+
+  it("refuses an unusable asOf BEFORE any store runs", async () => {
+    const db = reader();
+    await expect(
+      searchBrainCore(db, {
+        ctx: ctx(),
+        mode: "published",
+        asOf: "garbage",
+        limit: 10,
+        expand: false,
+      }),
+    ).rejects.toBeInstanceOf(BrainAsOfInvalidError);
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it("refuses asOf when `include` excludes the fact store — a temporal ask of atemporal stores", async () => {
+    // Echoing `asOf` over current-only documents/episodes would label
+    // as-of-now content as a historical page; dropping the parameter silently
+    // is the fall-through #4916 forbids. So it is a refusal, before any store.
+    const db = reader();
+    await expect(
+      searchBrainCore(db, {
+        ctx: ctx(),
+        mode: "published",
+        include: ["document", "raw-episode"],
+        asOf: AS_OF,
+        limit: 10,
+        expand: false,
+      }),
+    ).rejects.toBeInstanceOf(BrainAsOfInvalidError);
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it("does NOT leak the temporal predicate into the episode store — episodes have no validity window", async () => {
+    const db = reader();
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact", "raw-episode"],
+      asOf: AS_OF,
+      limit: 10,
+      expand: false,
+    });
+    const episodeCall = db.calls.find((c) => c.sql.includes(SQL.episodePage))!;
+    expect(episodeCall.sql).not.toContain("valid_from");
+    expect(episodeCall.sql).not.toContain("valid_to");
+    expect(episodeCall.params).not.toContain(AS_OF);
   });
 });
 
@@ -320,7 +575,9 @@ describe("fail-closed", () => {
       limit: 10,
       expand: false,
     });
-    const episodeCall = db.calls.find((c) => c.sql.includes("brain_episodes"))!;
+    // The STORE statement, not any statement touching the table — the fact
+    // page's decay anchor (#4914) also names `brain_episodes`, in a subquery.
+    const episodeCall = db.calls.find((c) => c.sql.includes(SQL.episodePage))!;
     // A join gated by the FACT's predicate would hand a caller a private
     // message because they were entitled to a conclusion drawn from it.
     expect(episodeCall.sql).toContain("e.visible_to && $2::text[]");
@@ -546,7 +803,40 @@ describe("trust labeling", () => {
 // Tensions
 // ---------------------------------------------------------------------------
 
-describe("in-tension-with", () => {
+/**
+ * A counterpart row as the shared cluster loader's SELECT shapes it
+ * (`lib/brain/tensions.ts`). Fully formed so the provenance assertions below
+ * are about projection, not about drift fallbacks.
+ */
+function rivalRow(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    subject: "billing pipeline",
+    predicate: "owned_by",
+    object: `team-${id}`,
+    status: "published",
+    visible_to: ["org"],
+    pre_widening_visible_to: null,
+    provenance: {
+      source: "slack",
+      sourceId: `m-${id}`,
+      episodeId: `ep-${id}`,
+      actor: `U-${id}`,
+      producer: "extraction:v1",
+      occurredAt: "2026-05-30T00:00:00.000Z",
+      extractedAt: "2026-05-30T00:05:00.000Z",
+      reconciledAt: "2026-05-30T00:06:00.000Z",
+    },
+    source_episode_id: `ep-${id}`,
+    valid_from: null,
+    invalidated_at: null,
+    ingested_at: new Date("2026-06-01T00:00:00Z"),
+    corroboration_count: 1,
+    ...overrides,
+  };
+}
+
+describe("in-tension-with — the conflict cluster (#4913)", () => {
   it("surfaces both edge directions and never orders by anything that implies a winner", async () => {
     const db = reader([
       { match: SQL.factPage, rows: [factRow()] },
@@ -559,10 +849,7 @@ describe("in-tension-with", () => {
       },
       {
         match: SQL.tensionCounterparts,
-        rows: [
-          { id: "rival-a", subject: "s", predicate: "p", object: "a", invalidated_at: null },
-          { id: "rival-b", subject: "s", predicate: "p", object: "b", invalidated_at: null },
-        ],
+        rows: [rivalRow("rival-a"), rivalRow("rival-b")],
       },
     ]);
     const res = await searchBrainCore(db, {
@@ -574,16 +861,89 @@ describe("in-tension-with", () => {
     });
     const fact = res.results[0] as BrainFactResult;
     expect(fact.tensions).toHaveLength(2);
-    expect(fact.tensions.map((t) => t.edgeDirection).sort()).toEqual(["from", "to"]);
+    const visible = fact.tensions.filter((t) => t.visible === true);
+    expect(visible.map((t) => t.edgeDirection).sort()).toEqual(["from", "to"]);
     // Ordered by id — deliberately NOT by time, status, or corroboration, any
     // of which would be an arbitration this slice must not perform.
-    expect(fact.tensions.map((t) => t.factId)).toEqual(["rival-a", "rival-b"]);
+    expect(visible.map((t) => t.factId)).toEqual(["rival-a", "rival-b"]);
   });
 
-  it("REPORTS a counterpart the reader may not see rather than dropping it", async () => {
+  it("carries each visible counterpart's claim WITH its provenance — surfaced-both-with-provenance", async () => {
     const db = reader([
       { match: SQL.factPage, rows: [factRow()] },
-      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "secret-rival" }] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival-a" }] },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a")] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    const rival = fact.tensions[0];
+    if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+    expect(rival.object).toBe("team-rival-a");
+    expect(rival.status).toBe("published");
+    expect(rival.corroborationCount).toBe(1);
+    expect(rival.ingestedAt).toBe("2026-06-01T00:00:00.000Z");
+    expect(rival.provenance.producer).toBe("extraction:v1");
+    expect(rival.provenance.source).toBe("slack");
+    expect(rival.provenance.attribution).toEqual({
+      visible: true,
+      sourceId: "m-rival-a",
+      actor: "U-rival-a",
+      occurredAt: "2026-05-30T00:00:00.000Z",
+    });
+  });
+
+  it("decides attribution per COUNTERPART row, off the rival's own pre-widening grant (#4836)", async () => {
+    // The rival was first stated in a private channel and reached this reader
+    // only through publish-time widening — its attribution triple is withheld
+    // even though the OWNER fact's is not. Inheriting the owner's decision
+    // would be a guess about a different row's grant.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival-a" }] },
+      {
+        match: SQL.tensionCounterparts,
+        rows: [
+          rivalRow("rival-a", {
+            visible_to: ["audience:chat-channel:slack:C-SECRET", "org"],
+            pre_widening_visible_to: ["audience:chat-channel:slack:C-SECRET"],
+          }),
+        ],
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    const rival = fact.tensions[0];
+    if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+    // The CLAIM is disclosed — the reader is entitled to it — but who said it
+    // first, where, and when stay with the original audience. Absent from the
+    // serialized entry, not merely unreachable through the type.
+    expect(rival.provenance.attribution).toEqual({ visible: false });
+    expect(JSON.stringify(rival)).not.toContain("C-SECRET");
+    expect(JSON.stringify(rival)).not.toContain("U-rival-a");
+  });
+
+  it("collapses counterparts the reader may not see into ONE withheld count rather than dropping them", async () => {
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "secret-rival-1" },
+          { from_id: "fact-1", to_id: "secret-rival-2" },
+        ],
+      },
       // The counterpart query is ACL-gated independently and returns nothing.
       { match: SQL.tensionCounterparts, rows: [] },
     ]);
@@ -596,10 +956,151 @@ describe("in-tension-with", () => {
     });
     const fact = res.results[0] as BrainFactResult;
     // An omitted row reads as "nothing contradicts this" — the one thing a
-    // trust-labeled surface must never imply.
-    expect(fact.tensions).toEqual([
-      { visible: false, factId: "secret-rival", edgeDirection: "to" },
+    // trust-labeled surface must never imply. Asserted with toEqual so the
+    // withheld arm structurally cannot smuggle a claim payload (the wire
+    // schema's z.strictObject, restated as a test).
+    expect(fact.tensions).toEqual([{ visible: false, withheldCount: 2 }]);
+  });
+
+  it("appends the withheld count AFTER the id-sorted counterparts in a mixed cluster", async () => {
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "secret-rival" },
+          { from_id: "fact-1", to_id: "rival-b" },
+          { from_id: "rival-a", to_id: "fact-1" },
+        ],
+      },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a"), rivalRow("rival-b")] },
     ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(
+      fact.tensions.map((t) => (t.visible ? t.factId : `withheld:${t.withheldCount}`)),
+    ).toEqual(["rival-a", "rival-b", "withheld:1"]);
+  });
+
+  it("never picks a winner — ordering ignores every authority signal, and no entry carries a verdict", async () => {
+    // Every surfacing hint is stacked in favour of the LATER-sorting rival:
+    // more corroboration, newer, published-vs-draft. If any code path ranked
+    // by authority, recency, or status, `rival-z-strong` would lead. It must
+    // not: entries are ordered by factId alone, and the shape has no field
+    // that could carry a verdict.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "rival-z-strong" },
+          { from_id: "fact-1", to_id: "rival-a-weak" },
+        ],
+      },
+      {
+        match: SQL.tensionCounterparts,
+        rows: [
+          rivalRow("rival-z-strong", {
+            status: "published",
+            corroboration_count: 900,
+            ingested_at: new Date("2026-07-01T00:00:00Z"),
+          }),
+          rivalRow("rival-a-weak", {
+            status: "draft",
+            corroboration_count: 0,
+            ingested_at: new Date("2020-01-01T00:00:00Z"),
+          }),
+        ],
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    const visible = fact.tensions.filter((t) => t.visible === true);
+    expect(visible.map((t) => t.factId)).toEqual(["rival-a-weak", "rival-z-strong"]);
+    // The entry's key set is closed: authority signals travel as display
+    // fields, and there is no `rank`, `score`, `winner`, or `preferred` for a
+    // producer to start setting.
+    for (const entry of visible) {
+      expect(Object.keys(entry).toSorted()).toEqual([
+        "corroborationCount",
+        "edgeDirection",
+        "factId",
+        "ingestedAt",
+        "invalidatedAt",
+        "object",
+        "predicate",
+        "provenance",
+        "status",
+        "subject",
+        "validFrom",
+        "visible",
+      ]);
+    }
+  });
+
+  it("fetches counterparts in a SEPARATE ACL-gated statement, never a join onto the fact row", async () => {
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival-a" }] },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a")] },
+    ]);
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    // The fact-page statement resolves no counterpart — a join gated by the
+    // OWNER's predicate would hand a reader a rival's claim and provenance
+    // because they were entitled to the fact it conflicts with.
+    const factCall = db.calls.find((c) => c.sql.includes(SQL.factPage))!;
+    expect(factCall.sql).not.toContain("in-tension-with");
+    // The counterpart statement is its own query, carries the FRESH fact
+    // predicate with the reader's own bound tokens, and joins nothing.
+    const counterpartCall = db.calls.find((c) => c.sql.includes(SQL.tensionCounterparts))!;
+    expect(counterpartCall.sql).toContain("f.visible_to && $2::text[]");
+    expect(counterpartCall.sql).not.toContain("JOIN");
+    expect(counterpartCall.params[1]).toEqual([
+      "org",
+      "role:member",
+      "user:user-1",
+    ]);
+  });
+
+  it("does NOT hide a superseded rival from the counterpart lookup (#4912)", async () => {
+    // The queue-side sweep applied the current-validity predicate to the fact
+    // page; the counterpart lookup must stay exempt, like the tombstone axis —
+    // a rival retired at the publish gate is still why this claim was
+    // contested, and hiding it would make the contradiction vanish the moment
+    // its replacement published.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival" }] },
+      { match: SQL.tensionCounterparts, rows: [] },
+    ]);
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const counterpart = db.calls.find((c) => c.sql.includes("= ANY(") && !c.sql.includes("in-tension-with"));
+    expect(counterpart?.sql).not.toContain("valid_to");
+    expect(counterpart?.sql).not.toContain("invalidated_at IS NULL");
   });
 
   it("carries a retracted counterpart's tombstone, because retraction never writes status", async () => {
@@ -608,15 +1109,7 @@ describe("in-tension-with", () => {
       { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival" }] },
       {
         match: SQL.tensionCounterparts,
-        rows: [
-          {
-            id: "rival",
-            subject: "s",
-            predicate: "p",
-            object: "o",
-            invalidated_at: new Date("2026-06-05T00:00:00Z"),
-          },
-        ],
+        rows: [rivalRow("rival", { invalidated_at: new Date("2026-06-05T00:00:00Z") })],
       },
     ]);
     const res = await searchBrainCore(db, {
@@ -651,6 +1144,100 @@ describe("in-tension-with", () => {
       expand: false,
     });
     expect(res.tensionsTruncated).toBe(true);
+    // And the loader asked for cap + 1 edges — the overflow row is how
+    // truncation is DETECTED, so a bind regressed to `cap` would silently
+    // drop the tail edge with the flag never set. The literal reader ignores
+    // LIMIT, so only the bound parameter can pin this.
+    const edgeCall = db.calls.find((c) => c.sql.includes(SQL.tensionEdges))!;
+    expect(edgeCall.params[2]).toBe(TENSION_FANOUT_CAP + 1);
+  });
+
+  it("never converts truncated-away edges into withheld rivals", async () => {
+    // The two degradations must stay distinct: an edge lost to the cap is
+    // reported ONLY through `tensionsTruncated`, while `withheldCount` means
+    // "this rival exists and ACL hides it from you". Conflating them would be
+    // fabricated ACL withholding. Every surviving counterpart here is visible,
+    // so no withheld arm may appear even though the cap bit.
+    const edges = Array.from({ length: TENSION_FANOUT_CAP + 1 }, (_, i) => ({
+      from_id: "fact-1",
+      // Padded so the mock's array order is also lexicographic — the loader
+      // slices the first `cap` edges before pairing.
+      to_id: `rival-${String(i).padStart(4, "0")}`,
+    }));
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: edges },
+      {
+        match: SQL.tensionCounterparts,
+        rows: edges.map((e) => rivalRow(e.to_id)),
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(res.tensionsTruncated).toBe(true);
+    expect(fact.tensions).toHaveLength(TENSION_FANOUT_CAP);
+    expect(fact.tensions.every((t) => t.visible === true)).toBe(true);
+  });
+
+  it("counts DISTINCT withheld rivals, not edge-ends, under a raced reciprocal pair", async () => {
+    // `reconcile.ts`'s `WHERE NOT EXISTS` dedupes one direction only, so A→B
+    // and B→A can coexist after a race. One hidden rival must not report as
+    // two — the count is the whole signal the withheld arm carries.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "secret-rival" },
+          { from_id: "secret-rival", to_id: "fact-1" },
+        ],
+      },
+      { match: SQL.tensionCounterparts, rows: [] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(fact.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
+  });
+
+  it("lists a VISIBLE reciprocal rival once per direction — graph-faithful, not double-counted", async () => {
+    // The counterpart to the dedupe above, pinned so neither semantics can
+    // silently drift into the other: a visible entry carries `edgeDirection`,
+    // so one entry per edge is a faithful report of the graph; only the
+    // direction-less withheld COUNT collapses to distinct rivals.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      {
+        match: SQL.tensionEdges,
+        rows: [
+          { from_id: "fact-1", to_id: "rival-a" },
+          { from_id: "rival-a", to_id: "fact-1" },
+        ],
+      },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival-a")] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    expect(
+      fact.tensions.map((t) => (t.visible ? `${t.factId}:${t.edgeDirection}` : "withheld")),
+    ).toEqual(["rival-a:to", "rival-a:from"]);
   });
 
   it("skips the edge lookup entirely when no facts matched", async () => {
@@ -814,5 +1401,85 @@ describe("provenance attribution — the widened-fact disclosure (#4836)", () =>
       expand: false,
     });
     expect(db.calls[0]?.sql).toContain("f.pre_widening_visible_to");
+  });
+});
+
+/**
+ * Read-time decay on the agent path (#4914, ADR-0036 §Temporal).
+ *
+ * `searchBrain` is where a stale claim reaches a chat answer, so the wire must
+ * hand the agent the fact's age — and must NOT let decay touch anything else:
+ * not the trust tier, not the status, not the retrieval ranking.
+ */
+describe("searchBrainCore — read-time decay (#4914)", () => {
+  const OLD = "2020-01-01T00:00:00.000Z";
+
+  async function factFor(row: Record<string, unknown>) {
+    const db = reader([{ match: SQL.factPage, rows: [row] }]);
+    const response = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = response.results[0] as BrainFactResult | undefined;
+    if (!fact) throw new Error("expected one fact result");
+    return { fact, db };
+  }
+
+  it("carries the temporal metadata the agent presents instead of arbitrating", async () => {
+    const { fact } = await factFor(
+      factRow({ last_observed_at: OLD, valid_from: "2019-06-01T00:00:00.000Z" }),
+    );
+    expect(fact.decay.level).toBe("stale");
+    expect(fact.decay.lastObservedAt).toBe(OLD);
+    expect(fact.decay.ageDays).toBeGreaterThan(0);
+    expect(fact.validFrom).toBe("2019-06-01T00:00:00.000Z");
+    expect(fact.corroborationCount).toBe(1);
+  });
+
+  it("leaves the trust label untouched by staleness", async () => {
+    // The acceptance criterion as a negative: `stale` never demotes. The row
+    // keeps tier-2, its stored status, and its place in the result set.
+    const { fact } = await factFor(factRow({ last_observed_at: OLD }));
+    expect(fact.tier).toBe("fact");
+    expect(fact.trustTier).toBe(2);
+    expect(fact.status).toBe("published");
+  });
+
+  it("emits only reads while serving decay — no write path from the signal", async () => {
+    const { db } = await factFor(factRow({ last_observed_at: OLD }));
+    expect(db.calls.length).toBeGreaterThan(0);
+    for (const call of db.calls) {
+      expect(call.sql.trimStart()).toMatch(/^SELECT/i);
+    }
+  });
+
+  it("selects the observation but never ranks by it", async () => {
+    // Retrieval order stays relevance (then recency of ingest) — age-ordering
+    // results would be exactly the arbitration decay is forbidden to do. The
+    // decay anchor appears in the SELECT list only.
+    const { db } = await factFor(factRow({ last_observed_at: OLD }));
+    const sql = db.calls[0]?.sql ?? "";
+    expect(sql).toContain("AS last_observed_at");
+    const orderAt = sql.indexOf("ORDER BY");
+    expect(orderAt).toBeGreaterThan(-1);
+    expect(sql.slice(orderAt)).not.toContain("last_observed_at");
+    expect(sql.slice(orderAt)).not.toContain("make_interval");
+  });
+
+  it("withholds the numbers with attribution but keeps the level (#4836)", async () => {
+    // Same decision, both consumers: for a singly-corroborated fact the
+    // newest observation IS the withheld `occurredAt`.
+    const { fact } = await factFor(
+      factRow({
+        visible_to: ["audience:chat-channel:slack:C-PRIVATE", "org"],
+        pre_widening_visible_to: ["audience:chat-channel:slack:C-PRIVATE"],
+        last_observed_at: OLD,
+      }),
+    );
+    expect(fact.provenance.attribution).toEqual({ visible: false });
+    expect(fact.decay).toEqual({ level: "stale", ageDays: null, lastObservedAt: null });
   });
 });

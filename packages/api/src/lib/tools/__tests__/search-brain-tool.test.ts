@@ -477,6 +477,23 @@ function unqualifiedRetractionSentences(description: string): readonly string[] 
 }
 
 /**
+ * Does a string state the `include` precondition `asOf` is hard-refused
+ * without (#4939)?
+ *
+ * A bare `toContain("include")` would pass VACUOUSLY on both descriptions:
+ * each already says "superseded versions **included**", and `include` is a
+ * substring of it. So the predicate is word-bounded AND requires the word to
+ * sit in a sentence that reads as a REQUIREMENT — which is the thing the
+ * dropped sentence actually carried. A description that merely mentions the
+ * argument in passing ("also accepts `include`") does not satisfy it.
+ */
+function statesIncludePrecondition(description: string): boolean {
+  return description
+    .split(/(?<=\.)\s+|\n(?=[-*] )/)
+    .some((s) => /\binclude\b/.test(s) && /\b(requires?|needs?|must|only with)\b/i.test(s));
+}
+
+/**
  * The tension-counterpart lifecycle labels (#4935), pinned for the reason the
  * base commit exists: this block's `asOf` sentence claimed "Retracted facts
  * never appear, at any time" until #4913 made it false, and NOTHING failed.
@@ -643,5 +660,19 @@ describe("searchBrain `asOf` argument description — the carve-out travels with
       unqualifiedRetractionSentences(asOfDescription),
       "a sentence promising retracted facts never come back must name the `tensions` carve-out in that same sentence",
     ).toEqual([]);
+  });
+
+  // #4939. `searchBrain` HARD-REFUSES an `asOf` read whose `include` omits
+  // facts (`lib/brain/search.ts`) — it is the caller's input problem and is
+  // reported as such rather than degraded. A model deciding whether to combine
+  // the two arguments reads THIS string, so the precondition living only in
+  // the refusal makes the refusal reachable by a well-behaved caller. The
+  // MCP twin re-declares this schema and had dropped the sentence; its own
+  // suite carries the same rule.
+  it("states the `include` precondition the read hard-refuses without", () => {
+    expect(
+      statesIncludePrecondition(asOfDescription),
+      "the `asOf` argument description states no `include` precondition — the read throws BrainAsOfInvalidError when `include` excludes facts, so an unstated precondition is a refusal a well-behaved model cannot avoid",
+    ).toBe(true);
   });
 });

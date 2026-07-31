@@ -984,10 +984,29 @@ export interface BrainSearchResponse {
  * and `brain_facts.status` has exactly one writer — the atomic publish
  * endpoint. Retracted rows drop out of the review queue, the publish preview,
  * and `draftCounts` because all three exclude `invalidated_at IS NOT NULL`.
+ *
+ * The route runs the `retract` CORRECTION verb (#4915), so it produces the
+ * same two disclosures {@link BrainFactCorrectionResponse} carries — the
+ * correction episode and the flagged dependents. Both are echoed here (#4939):
+ * while they reached only `logAdminAction` metadata, the console reviewer who
+ * triggered the retraction was the one party told nothing, and
+ * `brain-corrections.mdx` documented the opposite. `id` rather than `factId`
+ * is the pre-existing spelling of the same value, kept so the addition stays
+ * purely additive for an existing client.
  */
 export interface BrainFactRetractResponse {
   readonly id: string;
   readonly invalidatedAt: string;
+  /** The immutable human-authored correction episode recording the retraction. */
+  readonly correctionEpisodeId: string;
+  /**
+   * Live facts holding a `derives-from` edge onto the retracted one, flagged
+   * for human re-review. Opaque ids — never claims — and never a cascade.
+   * Ids rather than a count because this is the ADMIN path: the reviewer is
+   * already entitled to the queue these name. The agent path reports a count
+   * instead (see `lib/tools/correct-fact.ts`).
+   */
+  readonly flaggedForReReview: readonly string[];
 }
 
 /**

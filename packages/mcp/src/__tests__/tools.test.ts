@@ -1100,6 +1100,43 @@ describe("MCP tools", () => {
       ).toEqual([]);
     });
 
+    it("the advertised `asOf` argument states the `include` precondition the read refuses without (#4939)", async () => {
+      // The second sentence this re-declared schema had dropped. It is not
+      // advisory: `searchBrain` throws `BrainAsOfInvalidError` when `asOf` is
+      // passed and `include` excludes facts — validated FIRST, before any
+      // store runs — so an MCP model was the only caller told to combine two
+      // arguments it would be refused for combining. The api-side twin has
+      // always carried it; `search-brain-tool.test.ts` owns the same rule.
+      //
+      // Read off `listTools()` for the same reason the retraction pins above
+      // are: the registered schema is what an external client's model reads.
+      const { client } = await createTestClient();
+      const { tools } = await client.listTools();
+      const asOf = tools.find((t) => t.name === "searchBrain")?.inputSchema.properties?.asOf;
+      const description =
+        asOf && "description" in asOf && typeof asOf.description === "string"
+          ? asOf.description
+          : undefined;
+      expect(
+        description,
+        "searchBrain's registered inputSchema has no `asOf` description — the precondition pin below would pass vacuously",
+      ).toBeTruthy();
+
+      // Word-bounded AND required to sit in a sentence that reads as a
+      // requirement. A bare substring check passes vacuously on this exact
+      // string: it already says "superseded versions INCLUDED". A deliberate
+      // second copy of the api suite's `statesIncludePrecondition`, on the
+      // same terms as the `unqualifiedRetractionSentences` copy above — the
+      // rule is owned there.
+      const statesPrecondition = (description ?? "")
+        .split(/(?<=\.)\s+/)
+        .some((s) => /\binclude\b/.test(s) && /\b(requires?|needs?|must|only with)\b/i.test(s));
+      expect(
+        statesPrecondition,
+        "the MCP `asOf` argument states no `include` precondition — the read hard-refuses that combination, so the model cannot avoid a refusal it was never told about",
+      ).toBe(true);
+    });
+
     it("returns the fused payload as JSON on success", async () => {
       const { client } = await createTestClient();
       const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });

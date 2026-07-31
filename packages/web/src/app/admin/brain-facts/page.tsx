@@ -15,6 +15,7 @@ import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import {
   BrainFactCandidateListResponseSchema,
   BrainFactCandidateSummarySchema,
+  BrainFactRetractResponseSchema,
 } from "@/ui/lib/admin-schemas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -90,6 +91,15 @@ export default function BrainFactsPage() {
   const [rejectTarget, setRejectTarget] = useState<BrainFactCandidate | null>(null);
   // Pinned to the confirmation dialog, which is the only surface that rejects.
   const [rejectError, setRejectError] = useState<string | null>(null);
+  // Survives the dialog on purpose (#4939). Rejecting is the `retract`
+  // correction verb, and it FLAGS every claim derived from the one withdrawn.
+  // The dialog closes on success, so a notice rendered inside it would be
+  // destroyed at the moment it had something to say; this sits above the queue
+  // until the reviewer dismisses it.
+  const [flaggedNotice, setFlaggedNotice] = useState<{
+    readonly claim: string;
+    readonly count: number;
+  } | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   // Search is a local draft until submitted: keystroke-per-request against a
   // queue built for connector scale is the wrong trade, and the URL should
@@ -171,6 +181,18 @@ export default function BrainFactsPage() {
       // admin-fetch namespace, so the queue and the stats bar refetch together.
       if (detail?.id === candidate.id) setDetail(null);
       setRejectTarget(null);
+
+      // Parsed, not read off `result.data`: `useAdminMutation` is untyped at
+      // the wire and a hand-cast would let a drifted body render "0 other
+      // claims" — which reads as a guarantee that none were flagged. A parse
+      // failure leaves the notice absent, which claims nothing.
+      const parsed = BrainFactRetractResponseSchema.safeParse(result.data);
+      if (parsed.success && parsed.data.flaggedForReReview.length > 0) {
+        setFlaggedNotice({
+          claim: `${candidate.subject} ${candidate.predicate} ${candidate.object}`,
+          count: parsed.data.flaggedForReReview.length,
+        });
+      }
     } else {
       // Keep the dialog open with the failure inside it: a rejection that
       // silently didn't happen would leave a claim in the publish set while the
@@ -345,6 +367,31 @@ export default function BrainFactsPage() {
                 </>
               }
             />
+
+            {flaggedNotice && (
+              <Alert>
+                <Link2 className="size-4" aria-hidden />
+                <AlertDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span>
+                    Rejecting &ldquo;{flaggedNotice.claim}&rdquo; flagged{" "}
+                    <strong>
+                      {flaggedNotice.count} other claim{flaggedNotice.count === 1 ? "" : "s"}
+                    </strong>{" "}
+                    derived from it for re-review. Nothing was withdrawn automatically — a
+                    conclusion can outlive one of its premises. This notice is the only place
+                    the flag is reported, so act on it now.
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => setFlaggedNotice(null)}
+                  >
+                    Dismiss
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )}
 
             {tensionsTruncated && (
               <Alert>

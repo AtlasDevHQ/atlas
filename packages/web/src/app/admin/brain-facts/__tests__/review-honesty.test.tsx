@@ -137,6 +137,20 @@ const ALLOWED = [
 let requested: Array<{ url: string; method: string }> = [];
 /** Status the retract POST answers with. */
 let retractStatus = 200;
+/**
+ * The 200 body the retract POST answers with (#4939).
+ *
+ * Retracting is the `retract` CORRECTION verb, and it FLAGS every claim
+ * derived from the one withdrawn. Those flags reached `logAdminAction` and
+ * nothing else, so the console reviewer — the only person who knows a
+ * retraction just happened — was the one party told nothing.
+ */
+let retractBody: Record<string, unknown> = {
+  id: "fact-1",
+  invalidatedAt: ISO,
+  correctionEpisodeId: "ep-corr-1",
+  flaggedForReReview: [],
+};
 
 /**
  * The oversight payload (#4825). Defaults to "nothing hidden", so the
@@ -175,7 +189,7 @@ function mockApi(
     if (/\/retract$/.test(url)) {
       return Promise.resolve(
         retractStatus === 200
-          ? jsonResponse({ id: "fact-1", invalidatedAt: ISO })
+          ? jsonResponse(retractBody)
           : jsonResponse(
               { error: "internal_error", message: "Database exploded.", requestId: "req-xyz" },
               retractStatus,
@@ -228,6 +242,12 @@ function mockApi(
 beforeEach(() => {
   requested = [];
   retractStatus = 200;
+  retractBody = {
+    id: "fact-1",
+    invalidatedAt: ISO,
+    correctionEpisodeId: "ep-corr-1",
+    flaggedForReReview: [],
+  };
   withheldFacts = 0;
   scopeUnavailable = false;
   willSupersedeCount = 0;
@@ -378,6 +398,65 @@ describe("rejecting a claim", () => {
     const writes = requested.filter((r) => r.method === "POST");
     expect(writes).toHaveLength(1);
     expect(writes[0]!.url).toMatch(/\/api\/v1\/admin\/brain-facts\/fact-1\/retract$/);
+  });
+
+  // #4939. The three tests below are one property split by arm: the reviewer
+  // learns that a retraction had consequences beyond the row they clicked, and
+  // learns it in the only place they will ever be told.
+  test("reports the claims a retraction flagged for re-review", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1", "dep-2"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    // The dialog closes on success, so a notice rendered inside it would be
+    // destroyed at the moment it had something to say. This has to OUTLIVE it.
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    await waitFor(() => expect(document.body.textContent).toContain("2 other claims"));
+
+    // Scoped to the notice, not to the document. The queue re-renders the same
+    // claim in its own row, so a body-wide `toContain` for the claim text
+    // passes off the TABLE — the notice could name nothing and still go green.
+    const notice = Array.from(document.querySelectorAll('[role="alert"]')).find((el) =>
+      /other claims/.test(el.textContent ?? ""),
+    );
+    expect(notice, "the flagged-dependent notice did not render as an alert").toBeTruthy();
+    // Named, so the reviewer knows which rejection caused it, and honest about
+    // the cascade that did NOT happen.
+    expect(notice!.textContent).toContain("Acme uses Postgres");
+    expect(notice!.textContent).toMatch(/nothing was withdrawn automatically/i);
+  });
+
+  test("stays silent when a retraction flagged nothing — silence is the baseline", async () => {
+    // An always-on "0 other claims" line trains a reviewer to skip the banner,
+    // which is precisely how the non-zero case gets missed.
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+  });
+
+  test("claims nothing when the response body does not carry the flags", async () => {
+    // An older API — or a drifted one — answers the pre-#4939 shape. Rendering
+    // "0 other claims" off a missing field would be a fabricated all-clear on
+    // the one surface whose job is not to reassure falsely.
+    retractBody = { id: "fact-1", invalidatedAt: ISO };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
   });
 });
 

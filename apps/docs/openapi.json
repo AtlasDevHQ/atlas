@@ -25722,7 +25722,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The candidate was retracted",
+            "description": "The candidate was retracted. The body carries the correction episode the verb materialized and the ids of any `derives-from` dependents it flagged for re-review — the same two disclosures `/correct` returns, so the console reviewer is told what the audit row records",
             "content": {
               "application/json": {
                 "schema": {
@@ -25733,11 +25733,22 @@
                     },
                     "invalidatedAt": {
                       "type": "string"
+                    },
+                    "correctionEpisodeId": {
+                      "type": "string"
+                    },
+                    "flaggedForReReview": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "id",
-                    "invalidatedAt"
+                    "invalidatedAt",
+                    "correctionEpisodeId",
+                    "flaggedForReReview"
                   ]
                 }
               }

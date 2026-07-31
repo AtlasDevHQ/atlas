@@ -3,6 +3,13 @@ paths:
   - "packages/api/src/lib/content-mode/**"
   - "packages/api/src/lib/db/schema.ts"
   - "packages/api/src/api/routes/**"
+  # `lib/brain/**` is here because a carve-out was created there without this
+  # rule ever loading (#4939): `brain_facts` is the one exotic content-mode
+  # entry, and `lib/brain/correction.ts` is on the promotion guard's allowlist.
+  # The slices that loaded this rule created no carve-out; the slice that
+  # created one loaded no rule, so the "record the rationale" clause below
+  # reached nobody.
+  - "packages/api/src/lib/brain/**"
 ---
 
 # Content mode (draft / published)

@@ -268,7 +268,8 @@ const retractRoute = createRoute({
   },
   responses: {
     200: {
-      description: "The candidate was retracted",
+      description:
+        "The candidate was retracted. The body carries the correction episode the verb materialized and the ids of any `derives-from` dependents it flagged for re-review — the same two disclosures `/correct` returns, so the console reviewer is told what the audit row records",
       content: { "application/json": { schema: BrainFactRetractResponseSchema } },
     },
     // Spread FIRST so the specific 404 copy below overrides the shared
@@ -342,6 +343,7 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
     case CORRECTION_REFUSAL_REASONS.warehouseTarget:
     case CORRECTION_REFUSAL_REASONS.targetNotPublished:
     case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:
+    case CORRECTION_REFUSAL_REASONS.targetSuperseded:
     case CORRECTION_REFUSAL_REASONS.replacementUnpublishable:
       return 409;
     default: {
@@ -536,6 +538,15 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
         checked(BrainFactRetractResponseSchema, {
           id: result.factId,
           invalidatedAt: result.invalidatedAt,
+          // The verb's own two disclosures, echoed to the caller rather than
+          // only to the audit row above (#4939). Ids, not a count: this route
+          // is reached by a reviewer who is already entitled to the queue
+          // these name, and the flagged rows are the ones they now have to go
+          // look at. The AGENT path deliberately reports a count instead —
+          // `DEPENDENT_FACTS_SQL` is un-ACL-gated by design, so ids there
+          // would hand an LLM opaque handles for rows it cannot read.
+          correctionEpisodeId: result.correctionEpisodeId,
+          flaggedForReReview: [...result.flaggedForReReview],
         }),
         200,
       );

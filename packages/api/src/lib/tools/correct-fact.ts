@@ -15,6 +15,16 @@
  * prose. A refused correction additionally carries the machinery's own
  * refusal code (e.g. `WAREHOUSE_TARGET`) so a caller can branch without
  * pattern-matching English.
+ *
+ * ## The success result is PROJECTED, not spread (#4939)
+ *
+ * `BrainFactCorrectionResponse` is the ADMIN shape. The one field that must
+ * not cross to the agent verbatim is `flaggedForReReview`: those ids come from
+ * a deliberately un-ACL-gated query, so a subset of them names facts the actor
+ * cannot read. This surface reports the COUNT — the same call `searchBrain`
+ * makes for withheld tension rivals, on the same surface, for the same reason.
+ * The projection is an explicit destructure so a future field has to be named
+ * here to reach the model.
  */
 
 import { tool } from "ai";
@@ -204,12 +214,36 @@ export const correctFactTool = tool({
     }
 
     switch (outcome.kind) {
-      case "corrected":
+      case "corrected": {
+        // Projected field by field rather than spread (#4939). The spread put
+        // `flaggedForReReview`'s RAW IDS into the LLM's result, and
+        // `DEPENDENT_FACTS_SQL` is deliberately un-ACL-gated — it flags every
+        // dependent, including ones this actor cannot read, because skipping
+        // those would leave exactly them unflagged forever. Sound for the
+        // WRITE; wrong as a disclosure. `searchBrain` made the same call on
+        // the same surface and collapses withheld rivals to a bare count
+        // (`lib/brain/search.ts`, #4913), so this does too. The admin route
+        // keeps the ids: its caller is a reviewer already entitled to the
+        // queue they name.
+        //
+        // Explicit destructure, not `delete` or a rest-spread of the id
+        // field: a new field on `BrainFactCorrectionResponse` then has to be
+        // named HERE to reach the agent, so the next one carrying rows the
+        // actor cannot see cannot arrive by inheritance.
+        const { verb, factId, correctionEpisodeId, invalidatedAt, supersededBy, validTo } =
+          outcome.result;
         return {
           corrected: true as const,
-          ...outcome.result,
+          verb,
+          factId,
+          correctionEpisodeId,
+          invalidatedAt,
+          supersededBy,
+          validTo,
+          flaggedForReReviewCount: outcome.result.flaggedForReReview.length,
           summary: summarize(outcome),
         };
+      }
       case "refused":
         // The machinery's prose is already actionable and secret-free; the
         // structured `refusal` code lets a caller branch without parsing it.

@@ -15,6 +15,8 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import type { AuthMode } from "@useatlas/types";
 
@@ -187,6 +189,60 @@ describe("outcome mapping", () => {
     });
   });
 
+  // #4939. `DEPENDENT_FACTS_SQL` is deliberately un-ACL-gated — it flags every
+  // dependent, including ones this actor cannot read — so its ids are handles
+  // to rows the LLM has no entitlement to. `searchBrain` collapses withheld
+  // tension rivals to a bare count for exactly this reason, on exactly this
+  // surface; the spread that used to build this result did the opposite.
+  it("reports flagged dependents as a COUNT and leaks no dependent id", async () => {
+    const out = await run({});
+    expect(out.flaggedForReReviewCount).toBe(2);
+    expect(out).not.toHaveProperty("flaggedForReReview");
+
+    // The rule, not the field name: NO id from the un-ACL-gated set may appear
+    // anywhere in what the model receives, under any key. A rename that
+    // re-introduced the ids as `dependents` would pass the two assertions
+    // above and fail this one.
+    const serialized = JSON.stringify(out);
+    for (const id of CORRECTED.result.flaggedForReReview) {
+      expect(
+        serialized,
+        `the agent-facing result contains dependent id "${id}" — those come from a query with no ACL, so a subset names facts this actor cannot read`,
+      ).not.toContain(id);
+    }
+    // And the summary — the one string the agent is told to relay verbatim —
+    // states the number rather than enumerating.
+    expect(String(out.summary)).toContain("2 derived fact(s)");
+    expect(String(out.summary)).not.toContain("dep-1");
+  });
+
+  // The count is only a disclosure fix if everything ELSE still arrives: a
+  // projection is where fields get silently dropped, and the correction
+  // episode id is the caller's audit handle.
+  it("still projects every non-id field a correction carries", async () => {
+    correctionResult = () => ({
+      kind: "corrected",
+      result: {
+        ...CORRECTED.result,
+        verb: "supersede",
+        invalidatedAt: null,
+        supersededBy: "new-1",
+        validTo: "2026-07-30T12:00:00.000Z",
+      },
+    });
+    const out = await run({ verb: "supersede", replacement: { object: "Bo" } });
+    expect(out).toMatchObject({
+      corrected: true,
+      verb: "supersede",
+      factId: "6f2c0000-0000-4000-8000-000000000000",
+      correctionEpisodeId: "ep-1",
+      invalidatedAt: null,
+      supersededBy: "new-1",
+      validTo: "2026-07-30T12:00:00.000Z",
+      flaggedForReReviewCount: 2,
+    });
+  });
+
   it("carries the machinery's refusal code beside the prose", async () => {
     correctionResult = () => ({
       kind: "refused",
@@ -218,6 +274,49 @@ describe("outcome mapping", () => {
     const replacement = correctCalls[0]?.replacement as { object: string; validFrom: Date };
     expect(replacement.object).toBe("Bo");
     expect(replacement.validFrom.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The documented disclosure split (#4939)
+// ---------------------------------------------------------------------------
+
+describe("the documented disclosure split", () => {
+  // `brain-corrections.mdx` shipped saying flags "come back in
+  // `flaggedForReReview`" — true of `/correct` and the tool, false of
+  // `/retract`, which is the route the admin console actually calls. The
+  // response shapes are now unified and the split (ids on admin, a count on
+  // the agent path) is deliberate, so the doc has to name BOTH wire fields.
+  //
+  // The field names are READ OUT OF THE SOURCE, not restated: a rename that
+  // updated the tool and left the guide behind is the exact drift this issue
+  // was filed for, and a hardcoded literal here would go green through it.
+  it("names both wire fields, in whatever spelling the tool actually emits", () => {
+    const repo = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
+    const toolSource = readFileSync(
+      join(repo, "packages", "api", "src", "lib", "tools", "correct-fact.ts"),
+      "utf8",
+    );
+    const guide = readFileSync(
+      join(repo, "apps", "docs", "content", "shared", "guides", "brain-corrections.mdx"),
+      "utf8",
+    );
+
+    const countKey = /(\w+):\s*outcome\.result\.flaggedForReReview\.length/.exec(toolSource)?.[1];
+    expect(
+      countKey,
+      "correct-fact.ts no longer derives a count field from `flaggedForReReview.length` — either the agent path went back to shipping ids (which #4939 forbids) or this parse needs re-pointing",
+    ).toBeTruthy();
+
+    for (const field of ["flaggedForReReview", countKey!]) {
+      // Word-bounded, and that is load-bearing rather than tidiness: the count
+      // field's name CONTAINS the id field's, so a plain `includes` reports
+      // the ids as documented off a guide that only ever mentions the count.
+      expect(
+        new RegExp(`\\b${field}\\b`).test(guide),
+        `brain-corrections.mdx never names \`${field}\` (as a whole word). The admin routes return ids and the agent tool returns a count; a guide that documents only one of them tells half its readers the wrong thing about the surface they use.`,
+      ).toBe(true);
+    }
   });
 });
 

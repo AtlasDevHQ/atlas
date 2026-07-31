@@ -733,9 +733,18 @@ describe("POST /{id}/retract", () => {
     };
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(200);
-    // The wire shape is unchanged by the #4915 unification — the richer
-    // correction payload is `/correct`'s; this route keeps its contract.
-    expect(await res.json()).toEqual({ id: FACT_ID, invalidatedAt: "2026-07-01T00:00:00.000Z" });
+    // `toEqual`, not `toMatchObject`: the point of #4939 is that the two
+    // correction disclosures reach the CALLER and not only `logAdminAction`,
+    // and a partial match would go green against the pre-#4939 body that had
+    // them in the audit row alone. `correctionEpisodeId` and
+    // `flaggedForReReview` here are the same values asserted on the audit row
+    // below — asserting both is what pins that they cannot diverge.
+    expect(await res.json()).toEqual({
+      id: FACT_ID,
+      invalidatedAt: "2026-07-01T00:00:00.000Z",
+      correctionEpisodeId: "ep-corr-9",
+      flaggedForReReview: ["dep-1"],
+    });
 
     // One code path, not two: the route called the verb machinery.
     expect(correctCalls).toHaveLength(1);

@@ -173,12 +173,15 @@ export interface GrantWidening {
  * file, `admin-migrate.ts`, writes the column by INSERT: a region import
  * restoring an already-closed window verbatim, a restore rather than a new
  * arbitration — see `adapters/brain-facts.ts`'s allowlist note.) Both stampers
- * are human-attributed — the publish gate behind a confirm modal, `correct_fact`
- * behind owner/admin authority on a human-in-the-loop surface — so nothing
- * unattended stamps the column. `check-brain-fact-promotion.sh` refuses
- * UPDATE-shape writes outside its allowlist, but it is a grep with stated blind
- * spots, not a completeness proof; the structural half is the adapter test
- * pinning the registry entry as `exotic`.
+ * are human-attributed — the publish gate behind an authenticated admin action
+ * (a confirm modal on the console route; none on the MCP seam or on "upload &
+ * publish"), `correct_fact` behind owner/admin authority on a human-in-the-loop
+ * surface — so nothing unattended stamps the column.
+ * `check-brain-fact-promotion.sh` refuses UPDATE-shape writes outside its
+ * allowlist, but it is a grep with stated blind spots, not a completeness
+ * proof; the structural half is the adapter test pinning the registry entry as
+ * `exotic`.
+ *
  * This type covers only the PUBLISH path's events — a `PromotionReport` is
  * emitted by a publish phase, so `collectSupersessions` structurally cannot see
  * a correction's supersession, which records itself through the correction

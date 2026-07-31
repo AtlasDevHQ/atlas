@@ -78,6 +78,16 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin.knowledge");
 
+/**
+ * Deadline on the one audit write this router AWAITS (the supersession record
+ * on "upload & publish"). Same value and same reason as `auth/middleware.ts`'s:
+ * `internalQuery` bypasses the circuit breaker and the internal pool sets no
+ * statement timeout, so an unreachable internal Postgres would otherwise stall
+ * the response. Unlike middleware's, a timeout here logs and returns 200 — the
+ * ingest transaction has already committed, so failing closed would misreport.
+ */
+const AUDIT_WRITE_TIMEOUT_MS = 5_000;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -825,10 +835,11 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         // Uncapped ids, for `admin-publish.ts`'s reason with one extra edge:
         // that route's modal disclosed the supersession BEFORE the click, so
         // its audit row is the second record. This endpoint has no confirm
-        // step, so this row is the only ACTOR-ATTRIBUTED record on this path —
-        // the `supersedes` edges the adapter writes in the same transaction are
-        // the durable floor beneath it, but they carry no admin, ip, or
-        // requestId.
+        // step, so this row is the only DURABLE, QUERYABLE actor-attributed
+        // record on this path — the `supersedes` edges the adapter writes in
+        // the same transaction are the durable floor beneath it, but they carry
+        // no admin, ip, or requestId. (`logAdminAction*` also emits a matching
+        // pino line, which carries the actor but rotates.)
         supersededFacts,
         supersededFactCount: supersededFacts.length,
       },
@@ -837,10 +848,26 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     if (supersededFacts.length > 0) {
       // Awaited, not fire-and-forget: `logAdminAction` drops the row silently
       // when the internal-DB circuit breaker is open, and on this path that row
-      // is the only place the actor behind a `valid_to` stamp is recorded.
-      // Failure does NOT fail the request — the ingest transaction already
-      // committed — but it must be loud rather than a `_droppedCount++`.
-      await logAdminActionAwait(auditEntry).catch((err: unknown) => {
+      // is the only durable, queryable record of the actor behind a `valid_to`
+      // stamp. Failure does NOT fail the request — unlike the crm-outbox
+      // precedent that 500s on a failed audit write, the ingest transaction
+      // here has already committed and the mirror is already invalidated, so a
+      // 500 would report "nothing was written" and invite a retry that re-runs
+      // a WORKSPACE-WIDE publish. Loud log, 200 response.
+      //
+      // Capped for `auth/middleware.ts`'s reason: `logAdminActionAwait` goes
+      // through `internalQuery`, which deliberately bypasses the breaker, and
+      // the internal pool sets no statement timeout — so without a deadline a
+      // degraded internal DB would hold this response open indefinitely.
+      await Promise.race([
+        logAdminActionAwait(auditEntry),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`audit write timed out after ${AUDIT_WRITE_TIMEOUT_MS}ms`)),
+            AUDIT_WRITE_TIMEOUT_MS,
+          ),
+        ),
+      ]).catch((err: unknown) => {
         log.error(
           {
             requestId,
@@ -849,7 +876,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
             supersededFacts,
             err: err instanceof Error ? err.message : String(err),
           },
-          "audit row for an upload & publish SUPERSESSION was not committed — the valid_to stamp is durable but now unattributed; the supersedes edges in brain_facts are the surviving record",
+          "audit_log row for an upload & publish SUPERSESSION was not committed — the valid_to stamp is durable but has no queryable audit row; the actor-attributed `admin_action` pino line for this requestId, and the supersedes edges in brain_facts, are the surviving records",
         );
       });
     } else {
@@ -874,7 +901,16 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
           total: report.documents,
         },
         linksWritten: report.linksWritten,
-        published: shouldPublish,
+        // Off the outcome, for the audit row's reason — the request's intent and
+        // what the seam did must not be able to disagree across two surfaces.
+        published: outcome.published,
+        // `supersededFacts` deliberately does NOT ride the response (#4937 AC2):
+        // it is a wire-contract addition (`@useatlas/types` + the web zod mirror
+        // + an OpenAPI regen) whose only first-party consumer would need its own
+        // UI treatment, and the disclosure obligation is already met by the
+        // audit row, the seam's `log.warn`, and the in-transaction `supersedes`
+        // edges. Documented as the after-the-fact posture in
+        // `IngestDocumentsOk.supersededFacts`.
         rejected: [...rejected],
         skippedNonMarkdown: outcome.skippedNonMarkdown,
       } satisfies KnowledgeIngestSummary,

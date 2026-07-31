@@ -212,8 +212,10 @@ export interface IngestDocumentsOk {
    * is nowhere to put a pre-disclosure without splitting the endpoint into
    * preview + commit. That is not a gap in the gate: the facts a publish
    * supersedes are pending brain drafts that ALREADY existed in the workspace
-   * — a bundle of markdown documents mints none, the two ingest targets are
-   * disjoint (`catalog-claims.ts`) — so those supersessions are disclosable in
+   * — a bundle of markdown documents mints none: this seam writes
+   * `knowledge_documents` only, and the `brain_episodes` writers are
+   * `brain/ingest/episodes.ts` plus the correction and region-import paths,
+   * none reachable from here — so those supersessions are disclosable in
    * the publish preview independently of this upload. Two caveats keep that an
    * argument rather than a proof: the extraction fiber mints drafts on its own
    * clock, so a preview fetched earlier is not guaranteed to be the same set,
@@ -346,9 +348,11 @@ export async function ingestDocuments(
           // with no record of what replaced it (#4937). Swept with the SAME
           // helper `admin-publish.ts` and the MCP seam use, for
           // `collectRefusals`' stated reason: one sweep, nothing to keep in
-          // sync by hand. NOTE this path sweeps ONLY the supersessions — an
-          // upload & publish that refuses a draft or widens a grant still
-          // records neither (the deliberate #4937 scope; see `promoted.ts`).
+          // sync by hand. NOTE this path sweeps ONLY the supersessions (the
+          // deliberate #4937 scope): a refusal or a widening here reaches the
+          // adapter's own log line and no durable record — and the widening
+          // line SAMPLES at 20 ids, so discarding the report truncates it. See
+          // `promoted.ts`.
           superseded = collectSupersessions(reports);
         }
         return {
@@ -387,9 +391,9 @@ export async function ingestDocuments(
   // "which facts" is the entire point, and unlike the adapter's own sampled
   // line this one is the seam's complete list. The upload route mirrors it into
   // `audit_log`; this fires at the seam, so a future caller that publishes
-  // without an audit row still leaves a trace. (Today the only other caller is
-  // `connector-sync.ts`, which structurally cannot publish — ADR-0028 §4 — so
-  // this is forward coverage, not a live second case.)
+  // without an audit row still leaves a trace. (Today's other callers —
+  // connector sync and the bundle-sync engine — structurally cannot publish,
+  // ADR-0028 §4, so this is forward coverage rather than a live second case.)
   if (supersededFacts.length > 0) {
     log.warn(
       {

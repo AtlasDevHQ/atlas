@@ -35,17 +35,25 @@ const API_SRC = join(import.meta.dir, "..", "..", "..");
 const REPO = join(API_SRC, "..", "..", "..");
 
 /**
- * Every root a caller could land in — not just `packages/api/src`. `ee/` and
- * `packages/mcp` both import `@atlas/api/lib/**` today, so a fourth caller
- * landing in either is exactly the silent-inheritance scenario this file
- * exists to prevent, and a single-root walk would never see it. (Same reason
- * the repo's audit greps are required to cover `ee/`.)
+ * Every root a caller could land in — not just `packages/api/src`. `ee/`,
+ * `packages/mcp` and `packages/cli` all import `@atlas/api/lib/**` today, so a
+ * fourth caller landing in any of them is exactly the silent-inheritance
+ * scenario this file exists to prevent, and a single-root walk would never see
+ * it. (Same reason the repo's audit greps are required to cover `ee/`.
+ * `packages/cli` is here because `docs/development/content-mode.md` already
+ * describes a CLI publish surface.)
+ *
+ * NOT filtered by `existsSync` — a renamed or restructured root would silently
+ * shrink the guarded surface, which is the same failure shape as the bug being
+ * guarded. Existence is ASSERTED below instead, so the guard goes red rather
+ * than quietly narrowing.
  */
 const ROOTS = [
   API_SRC,
   join(REPO, "ee", "src"),
   join(REPO, "packages", "mcp", "src"),
-].filter((root) => existsSync(root));
+  join(REPO, "packages", "cli", "src"),
+];
 
 /** The module that DEFINES the method — this is a caller list, not a mention list. */
 const REGISTRY_MODULE = join("lib", "content-mode", "registry.ts");
@@ -53,6 +61,10 @@ const REGISTRY_MODULE = join("lib", "content-mode", "registry.ts");
 const CALL_SITE = ".runPublishPhases(";
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
+  // A missing root yields nothing here so the roots assertion below reports it
+  // as a readable failure rather than a module-load ENOENT — the scan still
+  // narrows, but never silently: that test is what makes it visible.
+  if (!existsSync(dir)) return out;
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
@@ -69,14 +81,32 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 function publishPhaseCallers(): string[] {
   return ROOTS.flatMap((root) => sourceFiles(root))
     .filter((full) => !full.endsWith(REGISTRY_MODULE))
-    .filter((full) => readFileSync(full, "utf8").includes(CALL_SITE))
+    // Discovery runs on STRIPPED source too, not just the shape checks: this
+    // file's neighbours (`promoted.ts`, `tables.ts`) discuss `runPublishPhases`
+    // in prose, and one `.` away from `.runPublishPhases(` a comment would
+    // enrol a non-caller and immediately red both shape checks against it.
+    .filter((full) => stripCommentsAndStrings(readFileSync(full, "utf8")).includes(CALL_SITE))
     .map((full) => full.slice(REPO.length + 1))
     .sort();
 }
 
-/** Drop comments so prose can neither satisfy nor break the shape checks below. */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+/**
+ * Drop comments AND string/template literals, so neither prose nor a log
+ * message can satisfy or break the shape checks below.
+ *
+ * Strings first, deliberately: this codebase's log messages routinely name the
+ * helpers they describe, so `log.info(…, "…collectSupersessions(reports) is the
+ * projection")` would otherwise satisfy the sweep check on a caller that swept
+ * nothing. Stripping strings before comments also stops a `//` inside a URL
+ * literal from eating the rest of its line.
+ */
+function stripCommentsAndStrings(src: string): string {
+  return src
+    .replace(/`(?:\\.|[^`\\])*`/g, " ")
+    .replace(/"(?:\\.|[^"\\\n])*"/g, " ")
+    .replace(/'(?:\\.|[^'\\\n])*'/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
 }
 
 /**
@@ -99,7 +129,7 @@ function blankNonAssignmentOperators(src: string): string {
  * three.
  */
 function callStatementPrefixes(src: string): string[] {
-  const clean = blankNonAssignmentOperators(stripComments(src));
+  const clean = blankNonAssignmentOperators(stripCommentsAndStrings(src));
   const out: string[] = [];
   for (let from = 0; ; ) {
     const at = clean.indexOf(CALL_SITE, from);
@@ -118,6 +148,15 @@ function callStatementPrefixes(src: string): string[] {
 const CALLERS = publishPhaseCallers();
 
 describe("every runPublishPhases caller handles the supersession report (#4937)", () => {
+  it("walks every root that can reach @atlas/api/lib", () => {
+    // Asserted, not filtered: a root that moves must red this test rather than
+    // silently drop out of the scan.
+    for (const root of ROOTS) expect({ root, exists: existsSync(root) }).toEqual({
+      root,
+      exists: true,
+    });
+  });
+
   it("discovers the known callers", () => {
     // A floor plus the three known names, so a broken predicate cannot make
     // every assertion below pass vacuously by discovering nothing.
@@ -131,12 +170,13 @@ describe("every runPublishPhases caller handles the supersession report (#4937)"
   for (const file of CALLERS) {
     describe(file, () => {
       const src = readFileSync(join(REPO, file), "utf8");
-      // Both shape checks run on the COMMENT-STRIPPED source, so prose can
-      // neither satisfy nor break them: a caller could otherwise pass by
-      // writing `// deliberately not calling collectSupersessions(reports)`,
-      // and a comment quoting the forbidden `.find(...)` shape could false-FAIL
-      // an innocent file.
-      const clean = stripComments(src);
+      // Both shape checks run on source with comments AND string literals
+      // stripped, so neither prose nor a log message can satisfy or break them:
+      // a caller could otherwise pass by writing `// deliberately not calling
+      // collectSupersessions(reports)` or by naming the helper inside a log
+      // message, and a comment quoting the forbidden `.find(...)` shape could
+      // false-FAIL an innocent file.
+      const clean = stripCommentsAndStrings(src);
 
       it("sweeps the reports through the shared collectSupersessions helper", () => {
         // The shared sweep, never a hand-rolled `reports.find(...)?.superseded`
@@ -150,21 +190,34 @@ describe("every runPublishPhases caller handles the supersession report (#4937)"
         // Closes the "binds and discards" gap: the two checks either side of
         // this one are satisfied by `const reports = await ...` plus a
         // `collectSupersessions(` anywhere in the file, even on an unrelated
-        // value. At least one call site's bound identifier must actually reach
-        // the sweep — directly (`collectSupersessions(reports)`) or relayed out
-        // of the transaction closure it was bound in, as `admin-publish.ts`
-        // does with `collectSupersessions(tx.reports)`.
+        // value. EVERY call site's bound identifier must reach the sweep —
+        // directly (`collectSupersessions(reports)`) or relayed out of the
+        // transaction closure it was bound in, as `admin-publish.ts` does with
+        // `collectSupersessions(tx.reports)`. `every`, not `some`: a file with
+        // two call sites where only one is swept is the #4937 regression at a
+        // finer granularity.
+        //
+        // Known false-FAIL shapes, all currently unused: a destructured bind
+        // (`const { reports } = await …`), an assignment to a pre-declared
+        // `let`, and a bind into an object literal. If one of those becomes the
+        // natural way to write a caller, broaden the pattern — do not delete
+        // the assertion.
         const bound = callStatementPrefixes(src)
           .map((prefix) => /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/.exec(prefix)?.[1])
           .filter((name): name is string => name !== undefined);
+        expect(bound).toHaveLength(callStatementPrefixes(src).length);
         expect(bound.length).toBeGreaterThan(0);
-        expect(
-          bound.some((name) =>
-            new RegExp(`collectSupersessions\\(\\s*(?:[A-Za-z_$][\\w$]*\\.)*${name}\\b`).test(
-              clean,
-            ),
-          ),
-        ).toBe(true);
+        for (const name of bound) {
+          // `$` is a regex anchor and a legal identifier character, so it is
+          // escaped rather than interpolated raw.
+          const ident = name.replace(/\$/g, "\\$");
+          expect({
+            name,
+            reachesSweep: new RegExp(
+              `collectSupersessions\\(\\s*(?:[A-Za-z_$][\\w$]*\\.)*${ident}\\b`,
+            ).test(clean),
+          }).toEqual({ name, reachesSweep: true });
+        }
       });
 
       it("binds the promotion reports rather than discarding them", () => {

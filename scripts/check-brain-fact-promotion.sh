@@ -56,9 +56,12 @@
 # as a completeness proof:
 #   - A table name assembled at runtime (`UPDATE ${t} SET status`) — ungreppable
 #     by construction.
-#   - A statement the splitter cannot bound: statement segmentation is by `;`,
-#     so an unterminated final statement folds into its neighbour. (This
-#     replaced an earlier `.{0,400}`-window blind spot — the window form was
+#   - A gated write assembled ACROSS statement boundaries. Segmentation is by
+#     `;` (see the `tr ';' '\n'` below) and each rule AND-s independent tokens
+#     WITHIN one chunk, so `const q = db.update(brainFacts); q.set({ status });`
+#     never presents both halves together. (Merging in the other direction is
+#     safe — it only widens a chunk, which can only add findings. This bullet
+#     replaced an earlier `.{0,400}`-window blind spot; the window form was
 #     dropped for the backtracking reason documented further down.)
 #   - Any language or file type outside `--include` (`.ts`/`.tsx`/`.js`).
 # The structural half of the guarantee is therefore NOT this script: it is

@@ -128,9 +128,20 @@ void mock.module("@atlas/api/lib/effect/hono", () => ({
   },
 }));
 
+// Error lines the router emitted. Captured because a failed supersession audit
+// write is required to be LOUD — that is the whole justification for awaiting
+// it, and a `.catch(() => {})` regression is invisible without this.
+const errors: Array<{ payload: Record<string, unknown>; msg: string }> = [];
+
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
-  const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
+  const logger = {
+    info: noop,
+    warn: noop,
+    error: (payload: Record<string, unknown>, msg: string) => errors.push({ payload, msg }),
+    debug: noop,
+    child: () => logger,
+  };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
@@ -144,6 +155,10 @@ const auditRows: Array<{ actionType: string; metadata: Record<string, unknown>; 
 /** Set to make the AWAITED audit write reject — the circuit-open / DB-down case. */
 let AUDIT_AWAIT_THROWS = false;
 
+// Partial mock, justified: `admin-knowledge.ts` imports exactly the three
+// exports stubbed below, and the isolated per-file runner prevents cross-file
+// leaks — an unmocked export reached later fails loudly as `undefined is not a
+// function`.
 void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (row: { actionType: string; metadata: Record<string, unknown> }) => {
     auditRows.push({ ...row, awaited: false });
@@ -403,6 +418,7 @@ beforeEach(() => {
   publishRan = false;
   PUBLISH_REPORTS = [];
   auditRows.length = 0;
+  errors.length = 0;
   AUDIT_AWAIT_THROWS = false;
   archivedDocRows = 0;
   nextId = 1;
@@ -697,6 +713,14 @@ describe("POST /{collectionSlug}/ingest — happy path", () => {
     const res = await ingest("/runbooks/ingest?publish=true", zipSync({ "a.md": strToU8("# A") }));
     expect(res.status).toBe(200);
     expect(((await res.json()) as { published: boolean }).published).toBe(true);
+    // And it is LOUD — a swallowed catch here would leave the `valid_to` stamp
+    // with no queryable record and nothing saying so. The line must carry the
+    // ids, since reconstructing the row from it is the fallback.
+    const logged = errors.filter((e) => e.msg.includes("SUPERSESSION"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.payload).toMatchObject({
+      supersededFacts: [{ surface: "brain_facts", id: "new-fact-1", superseded: ["old-fact-1"] }],
+    });
   });
 
   it("records an empty supersession list when the publish superseded nothing (#4937)", async () => {

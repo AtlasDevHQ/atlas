@@ -1014,7 +1014,11 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       `SELECT valid_to FROM brain_facts WHERE id = $1`,
       [supersededFactId],
     );
-    expect(stamped.rows[0]?.valid_to).not.toBeNull();
+    // Row count asserted first: `rows[0]?.valid_to` is `undefined` on a missing
+    // row, and `undefined` is not `null`, so the bare not-null check would pass
+    // vacuously if the seed ever stopped landing.
+    expect(stamped.rows).toHaveLength(1);
+    expect(stamped.rows[0]!.valid_to).toBeInstanceOf(Date);
   }, PG_TEST_TIMEOUT_MS);
 
   it("archives absent paths via ARCHIVE_COLLECTION_DOCS_SQL without touching present or rejected paths", async () => {

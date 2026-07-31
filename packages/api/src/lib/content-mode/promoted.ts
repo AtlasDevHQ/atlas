@@ -36,7 +36,9 @@ const log = createLogger("content-mode-promoted");
  * that one alone, the deliberate scope — a dropped refusal under-reports a
  * draft that is still pending and still re-offered, whereas a dropped
  * supersession retires a belief with nothing recording what replaced it). So
- * an upload & publish that refuses a draft records the refusal nowhere.
+ * an upload & publish that refuses a draft leaves only the adapter's own
+ * `log.warn` — uncapped, so nothing is lost, but no durable record and nothing
+ * in the HTTP response.
  */
 /**
  * The result of sweeping every adapter's refusals.
@@ -112,9 +114,14 @@ export interface WidenedGrantRecord {
  * permanently changed who can read a claim, and unlike a refusal nothing
  * re-offers it — so it is the last thing that should be collected twice.
  *
- * Swept by the same two surfaces as {@link collectRefusals}, and with the same
- * gap: `knowledge/ingest-bundle.ts` runs the phases without sweeping this, so
- * an upload & publish that widens a grant records the widening nowhere.
+ * Swept by the same two surfaces as {@link collectRefusals}, and with a sharper
+ * version of the same gap: `knowledge/ingest-bundle.ts` runs the phases without
+ * sweeping this, so on that path a widening survives only as the adapter's INFO
+ * line — which is SAMPLED at `LOGGED_ID_SAMPLE_CAP` (20) ids, because the
+ * complete list is exactly what rides `PromotionReport.widened`, and that is
+ * what this path discards. A publish widening more than 20 grants loses ids for
+ * good there. Unlike the refusal case, this one TRUNCATES rather than merely
+ * failing to persist.
  *
  * Uncapped. Its callers put it in a durable-ish record rather than an HTTP
  * response, so the payload-size argument behind `MAX_REPORTED_REFUSALS` does

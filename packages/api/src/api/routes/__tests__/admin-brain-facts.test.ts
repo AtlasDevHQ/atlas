@@ -18,9 +18,13 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect, Layer } from "effect";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 // Type-only: erased at compile time, so it does not evaluate the module this
 // file `mock.module`s below.
-import type { CorrectionOutcome } from "@atlas/api/lib/brain/correction";
+import type {
+  CorrectionOutcome,
+  CorrectionRefusalReason,
+} from "@atlas/api/lib/brain/correction";
 
 const CURRENT_ORG = "org-1";
 
@@ -51,9 +55,11 @@ void mock.module("@atlas/api/lib/audit", () => ({
   logAdminActionAwait: async (entry: Record<string, unknown>) => {
     auditRows.push(entry);
   },
-  ADMIN_ACTIONS: {
-    brainFact: { retract: "brain_fact.retract", correct: "brain_fact.correct" },
-  },
+  // The REAL catalog rather than a hand-copy, for `correction-audit.test.ts`'s
+  // reason: a copy drifts silently through a rename. `lib/audit/actions.ts` is
+  // a zero-import constant module, so reaching past the mocked barrel into it
+  // pulls nothing back in and the factory stays synchronous.
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
@@ -141,7 +147,14 @@ const REFUSAL_REASONS = {
   replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
 } as const;
 let correctCalls: Array<Record<string, unknown>> = [];
-let correctionOutcome: Record<string, unknown> = {
+/**
+ * Typed as the real union rather than `Record<string, unknown>`, so a reshape of
+ * the machinery's contract breaks every fixture in this file at compile time
+ * instead of leaving hand-written literals asserting against a shape that moved.
+ * The one exception below (`invalidatedAt: 42`) is a DELIBERATE violation and
+ * says so at its site.
+ */
+let correctionOutcome: CorrectionOutcome = {
   kind: "corrected",
   result: {
     verb: "retract",
@@ -871,10 +884,28 @@ describe("POST /{id}/correct", () => {
         message: "tier-1 has no correction path",
       },
     ];
-    for (const outcome of outcomes) {
+    // Statuses asserted per iteration, not just the final row count. Without
+    // them a request that 500s BEFORE reaching the line where the deleted
+    // `logAdminAction` used to sit leaves this green while proving nothing — and
+    // one fixture does exactly that: `/retract` rejects a `corrected` outcome
+    // whose `invalidatedAt` is null (the `pin` shape), so it never traverses the
+    // handler's tail. Pinning the expected status is what makes each iteration a
+    // statement about a path that was actually walked.
+    const expected: Array<{ retract: number; correct: number }> = [
+      { retract: 200, correct: 200 },
+      // `pin` through `/retract`: no tombstone in the outcome ⇒ the route's own
+      // shape guard 500s. Deliberately kept — it is the one path that stops
+      // early, and naming it here is cheaper than a fixture that avoids it.
+      { retract: 500, correct: 200 },
+      { retract: 404, correct: 404 },
+      { retract: 409, correct: 409 },
+    ];
+    for (const [i, outcome] of outcomes.entries()) {
       correctionOutcome = outcome;
-      await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
-      await correct({ verb: "pin" });
+      const retractRes = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+      expect(retractRes.status, `outcome ${i} via /retract`).toBe(expected[i]?.retract);
+      const correctRes = await correct({ verb: "pin" });
+      expect(correctRes.status, `outcome ${i} via /correct`).toBe(expected[i]?.correct);
     }
     expect(auditRows).toHaveLength(0);
   });
@@ -896,7 +927,7 @@ describe("POST /{id}/correct", () => {
   });
 
   it("maps refusals onto their HTTP classes: 403 authority, 400 request shape, 409 target state", async () => {
-    const cases: Array<{ reason: string; status: number }> = [
+    const cases: Array<{ reason: CorrectionRefusalReason; status: number }> = [
       { reason: REFUSAL_REASONS.notAuthorized, status: 403 },
       { reason: REFUSAL_REASONS.replacementMissing, status: 400 },
       { reason: REFUSAL_REASONS.replacementIdentical, status: 400 },
@@ -926,6 +957,11 @@ describe("POST /{id}/correct", () => {
   it("refuses to ship a correction payload that violates its own wire schema", async () => {
     // Same `checked()` posture as the list route: a machinery result the
     // schema refuses must become a 500, never reach the browser.
+    //
+    // The one fixture in this file that is deliberately ILL-TYPED — `42` where
+    // the contract says `string | null` — because the whole point is a producer
+    // that broke the contract. Cast at this site only, so every other fixture
+    // stays compile-checked against the real union.
     correctionOutcome = {
       kind: "corrected",
       result: {
@@ -937,7 +973,7 @@ describe("POST /{id}/correct", () => {
         supersededBy: null,
         validTo: null,
       },
-    };
+    } as unknown as CorrectionOutcome;
     const res = await correct({ verb: "pin" });
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain("ep-corr-3");

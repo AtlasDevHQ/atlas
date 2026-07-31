@@ -31,6 +31,11 @@
  * `hasInternalDB() === false` short-circuit would change what those 20 tests
  * mean without changing a line of them.
  *
+ * One limit worth knowing: `_resetPool` nulls the `@effect/sql` client too, so
+ * `internalQuery` here takes its raw-pool branch. This proves the row lands and
+ * what it contains; it does not exercise the `PgClient` path production uses
+ * once the InternalDB Layer has booted.
+ *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */
@@ -115,9 +120,24 @@ describeIfPg("correction audit row (real Postgres)", () => {
     }
   }, PG_TEST_TIMEOUT_MS);
 
-  /** One transaction on the test pool — the runner `correctFact` injects. */
-  const poolTx: ReconcileTransactionRunner = async (fn) => {
+  /**
+   * One transaction on the test pool, handed to `correctFact` through
+   * `deps.withTransaction`.
+   *
+   * Deliberately the same shape as production's `withBrainTransaction`, down to
+   * the `.catch` on the ROLLBACK and the `client.release(rollbackErr)`. A naive
+   * `await client.query("ROLLBACK"); throw err;` would let a rollback-time
+   * failure REPLACE the original cause — which in the refusal test below would
+   * swap the `CorrectionRefusedError` for a pg error and fail the assertion
+   * naming the wrong thing — and an unconditional `release()` would hand a
+   * client still inside an aborted transaction back to the pool, where
+   * `auditRowsFor`'s next query fails with "current transaction is aborted".
+   */
+  const poolTx: ReconcileTransactionRunner = async <T,>(
+    fn: (tx: { query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }> }) => Promise<T>,
+  ): Promise<T> => {
     const client = await pool.connect();
+    let rollbackErr: Error | undefined;
     try {
       await client.query("BEGIN");
       const result = await fn({
@@ -129,10 +149,12 @@ describeIfPg("correction audit row (real Postgres)", () => {
       await client.query("COMMIT");
       return result;
     } catch (err) {
-      await client.query("ROLLBACK");
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      });
       throw err;
     } finally {
-      client.release();
+      client.release(rollbackErr);
     }
   };
 
@@ -308,7 +330,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
   );
 
   it(
-    "a pin records the verb and nothing it did not decide",
+    "a pin records the verb and nothing it did not decide, under the CANONICAL fact id",
     async () => {
       const factId = await seedPublishedFact({
         subject: "Oncall",
@@ -317,8 +339,17 @@ describeIfPg("correction audit row (real Postgres)", () => {
         sourceId: "audit-pg-pin",
       });
 
+      // Upper-cased on the way in, and that is the point. Postgres canonicalizes
+      // on the `::uuid` cast so the correction succeeds either way, but the
+      // agent tool takes `factId` as a bare `z.string()` with no normalization —
+      // so an LLM echoing a differently-cased id would, if the row used the
+      // CALLER's string, produce a `target_id` that does not string-join to
+      // `brain_facts.id`. The emitter uses `result.factId` for exactly this.
       const outcome = await asRequest("req-pin-1", () =>
-        correctFact({ ctx: reviewer(), factId, verb: "pin" }, { withTransaction: poolTx }),
+        correctFact(
+          { ctx: reviewer(), factId: factId.toUpperCase(), verb: "pin" },
+          { withTransaction: poolTx },
+        ),
       );
       if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
 
@@ -327,9 +358,16 @@ describeIfPg("correction audit row (real Postgres)", () => {
       const row = rows[0];
       if (row === undefined) throw new Error("no admin_action_log row for the pin");
       expect(row.action_type).toBe("brain_fact.correct");
-      // Exactly the three unconditional keys — a `pin` neither tombstones,
-      // supersedes, nor closes a validity window, and a row asserting
-      // `invalidatedAt: null` reads as a decision that was made.
+      // Lower-case, i.e. the DB's spelling — not the upper-cased string the
+      // caller passed. `auditRowsFor` queried on the canonical id and found it,
+      // which is the join this pins.
+      expect(row.target_id).toBe(factId);
+      // Exactly the three unconditional keys FROM THIS CALL SITE — a `pin`
+      // neither tombstones, supersedes, nor closes a validity window, and a row
+      // asserting `invalidatedAt: null` reads as a decision that was made.
+      // (`resolveEntry` also merges `trustDeviceIdentifier` / `origin` when the
+      // context carries them; this context carries neither, so a strict
+      // `toEqual` is right and forces a deliberate decision if that changes.)
       expect(row.metadata).toEqual({
         verb: "pin",
         workspaceId: WS,

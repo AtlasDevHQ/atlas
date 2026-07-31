@@ -19,9 +19,11 @@
  *
  *   - the ROW: emitted exactly once for a `corrected` outcome, with retract's
  *     dedicated action type and the other verbs riding `correct` with the verb
- *     in metadata; NOT emitted for a refusal or a not-found (#4934's recorded
- *     non-goal — `admin_action_log` consumers may read the table as
- *     success-only);
+ *     in metadata; NOT emitted for a refusal or a not-found. That is a SCOPE
+ *     call, not a semantic one (#4934 non-goal) — the table is not success-only
+ *     (`AdminActionEntry.status` takes `"failure"`, and `sso.enforcement_block`
+ *     audits a refusal that way), so auditing refused corrections is legitimate
+ *     and can be added later with its own decision about volume;
  *   - AWAITED, not fire-and-forget. `logAdminAction` posts its insert into the
  *     internal-DB circuit breaker and returns, so an open breaker discards the
  *     row with nothing but a counter — the silent gap #4937 found on the
@@ -62,11 +64,18 @@ const recorder = {
   info: (payload: unknown, message: string) => logCalls.push({ level: "info", payload, message }),
   debug: (payload: unknown, message: string) => logCalls.push({ level: "debug", payload, message }),
 };
+/**
+ * What `getRequestContext()` returns. `undefined` models a caller outside any
+ * request; a context WITHOUT a `user` models the canonical scheduler shape,
+ * which resolves to `actor_id: "unknown"` just as an absent context does.
+ */
+let requestContext: { requestId: string; user?: { id: string } } | undefined;
+
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => recorder,
   getLogger: () => ({ ...recorder, level: "info" }),
   setLogLevel: () => true,
-  getRequestContext: () => undefined,
+  getRequestContext: () => requestContext,
   ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
   withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
   redactPaths: [] as string[],
@@ -91,20 +100,34 @@ let auditBehaviour: (row: AuditRow) => Promise<void> = async () => {};
 /** How many times anything called the FIRE-AND-FORGET variant — must stay 0. */
 let fireAndForgetCalls = 0;
 /**
- * Makes every read of `ADMIN_ACTIONS` throw, modelling a partial
- * `mock.module("@atlas/api/lib/audit")` somewhere else in the repo (there are
- * a dozen) that omits the export `correction.ts` now needs. That throw happens
- * while BUILDING the audit entry, which is the one way the emitter's
- * never-throws contract can be broken by a change outside it.
+ * Makes every read of `ADMIN_ACTIONS` throw, so the emitter's never-throws
+ * contract is exercised on a SYNCHRONOUS throw raised while BUILDING the audit
+ * entry — before any write is attempted. Moving the entry literal out of the
+ * `try` turns the test that uses this red, which is what it is for.
+ *
+ * NOT a model of a partial `mock.module` (66 files mock
+ * `@atlas/api/lib/audit`): an omitted named export fails at LINK time in bun
+ * with `SyntaxError: Export named 'X' not found`, before any test body runs, so
+ * no `try` could catch it and no correction is in flight to be affected. The
+ * hazard this guards is the general one — any synchronous throw in entry
+ * construction landing on an already-committed correction.
+ *
+ * The trap fires on the FIRST property read (`.brainFact`), which is enough
+ * because `correction.ts` reads the catalog at emit time. A future module-scope
+ * `const { brainFact } = ADMIN_ACTIONS` would move the throw to import time and
+ * turn this into a load failure instead of a contract test.
  */
 let breakAdminActions = false;
 
 // The REAL catalog, not a hand-written copy. A copy would keep this suite green
 // through a rename of `ADMIN_ACTIONS.brainFact.retract` while production emitted
 // a new vocabulary — the exact drift a forensic-trail test exists to catch.
-// `lib/audit/actions.ts` is a constant catalog with zero imports, so a static
-// import here keeps the `mock.module` factory synchronous (an async factory
-// deadlocks bun's loader).
+//
+// Reaching past the mocked `@atlas/api/lib/audit` barrel into its submodule is
+// safe because `lib/audit/actions.ts` is a constant catalog with ZERO imports:
+// it cannot cycle back through the mock or drag a transitive graph in. Static
+// rather than dynamic because an async `mock.module` factory deadlocks bun's
+// loader.
 void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: new Proxy(REAL_ADMIN_ACTIONS, {
     get(target, key, receiver: unknown) {
@@ -217,11 +240,28 @@ function fakeTransaction(
  */
 function errOf(call: LogCall | undefined): Error {
   if (call === undefined) throw new Error("expected a log line, got none");
-  const { err } = call.payload as { err?: unknown };
+  // A real narrow, not an assertion: `payload as { err?: unknown }` would throw
+  // `Cannot destructure property 'err' of null` on a null payload — the
+  // confusing failure this helper exists to replace.
+  const err =
+    typeof call.payload === "object" && call.payload !== null && "err" in call.payload
+      ? call.payload.err
+      : undefined;
   if (!(err instanceof Error)) {
-    throw new Error(`log line carried no Error in \`err\`: ${JSON.stringify(call.payload)}`);
+    throw new Error(`log line carried no Error in \`err\`: ${describe_(call.payload)}`);
   }
   return err;
+}
+
+/** `JSON.stringify` that cannot itself throw on a circular ref or a BigInt. */
+function describe_(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    // intentionally ignored: this is a diagnostic for an assertion that is
+    // already failing; a serializer error must not replace the real message.
+    return String(value);
+  }
 }
 
 beforeEach(() => {
@@ -230,6 +270,7 @@ beforeEach(() => {
   attempted.length = 0;
   fireAndForgetCalls = 0;
   breakAdminActions = false;
+  requestContext = { requestId: "req-ctx", user: { id: "admin-1" } };
   auditBehaviour = async () => {};
 });
 
@@ -442,15 +483,24 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       { ctx: admin, factId: FACT, verb: "pin", requestId: "req-late" },
       { ...fakeTransaction(), auditWriteTimeoutMs: 10 },
     );
-    // The deadline line fires first; the cause arrives after.
-    expect(logCalls.filter((c) => c.level === "error")).toHaveLength(1);
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // No intermediate count assertion: under an event-loop stall the late
+    // rejection can land before it, which would fail the test for a scheduling
+    // reason rather than a behavioural one. The message content is what matters.
+    await new Promise((resolve) => setTimeout(resolve, 120));
 
     const errors = logCalls.filter((c) => c.level === "error");
     expect(errors).toHaveLength(2);
-    const late = errors[1];
-    expect(late?.message).toContain("after its deadline");
+    const late = errors.find((c) => c.message.includes("after its deadline"));
+    expect(late).toBeDefined();
     expect(errOf(late).message).toContain("admin_action_log");
+    // The line that reports DEFINITIVE loss must carry the same reconstruction
+    // fields as the uncertain one — it is the more important of the two.
+    expect(late?.payload).toMatchObject({
+      actorId: "admin-1",
+      verb: "pin",
+      correctionEpisodeId: EPISODE,
+      requestId: "req-late",
+    });
   });
 
   test("a throw while BUILDING the entry cannot escape onto a committed correction", async () => {
@@ -471,42 +521,118 @@ describe("the write is awaited, bounded, and never swallowed", () => {
 
     expect(outcome.kind).toBe("corrected");
     expect(attempted).toHaveLength(0);
-    expect(errOf(logCalls.filter((c) => c.level === "error")[0]).message).toContain(
-      "ADMIN_ACTIONS",
-    );
+
+    const errors = logCalls.filter((c) => c.level === "error");
+    expect(errors).toHaveLength(1);
+    // The recovery instruction has to branch. On this path the writer was never
+    // called, so `logAdminActionAwait`'s pre-insert `admin_action` pino line was
+    // never emitted either — telling an operator to go look for it, or to check
+    // `admin_action_log`, sends them after records that do not exist and invites
+    // a hand-inserted duplicate row.
+    expect(errors[0]?.message).toContain("could not even be BUILT");
+    expect(errors[0]?.message).not.toContain("Check admin_action_log");
+    expect(errors[0]?.payload).toMatchObject({ writeAttempted: false, actorId: "admin-1" });
+    expect(errOf(errors[0]).message).toContain("ADMIN_ACTIONS");
   });
 
-  test("a non-positive deadline falls back to the real bound instead of timing out instantly", async () => {
-    // `??` only catches nullish, so a `0` (or negative, or NaN) seam value would
-    // mean "every audit write times out immediately" — a deadline that drops
-    // every row while looking like a configured one. The invariant the type
-    // cannot express is "a positive number of milliseconds".
-    auditBehaviour = () =>
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, 5);
+  test("a WRITE failure gets the other recovery instruction — the pino line does exist", async () => {
+    // The counterpart to the test above: once `logAdminActionAwait` has been
+    // called its pre-insert pino line exists, and the write may still land, so
+    // the operator is told to check before re-creating anything.
+    auditBehaviour = async () => {
+      const pgish = Object.assign(new Error("relation does not exist"), {
+        code: "42P01",
+        constraint: "pk_admin_action_log",
       });
+      throw pgish;
+    };
 
     await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-zero" },
-      { ...fakeTransaction(), auditWriteTimeoutMs: 0 },
-    );
-
-    expect(committed).toHaveLength(1);
-    expect(logCalls.filter((c) => c.level === "error")).toHaveLength(0);
-  });
-
-  test("a write with no request context WARNS — an unattributed row is worse than none", async () => {
-    // `resolveEntry` falls back to the literal `"unknown"` actor with no
-    // complaint, so the module header's "a third entry point inherits the audit
-    // trail" is true of the ROW and not of its attribution. This file's logger
-    // mock returns no context, which is exactly the future-scheduler case.
-    await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-noctx" },
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
       fakeTransaction(),
     );
-    const warns = logCalls.filter((c) => c.level === "warn" && c.message.includes("actor 'unknown'"));
-    expect(warns).toHaveLength(1);
-    expect(warns[0]?.message).toContain("withRequestContext");
+
+    const errors = logCalls.filter((c) => c.level === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("may not have been committed");
+    // `scrubErrSerializer` rebuilds the error into `{ type, message, stack }`
+    // and DROPS everything else, so a pg rejection's diagnostics only reach an
+    // operator if they are lifted onto the payload as their own fields.
+    expect(errors[0]?.payload).toMatchObject({
+      writeAttempted: true,
+      pgCode: "42P01",
+      pgConstraint: "pk_admin_action_log",
+    });
+  });
+
+  test("an out-of-range deadline falls back to the real bound instead of timing out instantly", async () => {
+    // Both ends, and they fail the SAME way. `??` only catches nullish, so `0`,
+    // a negative or `NaN` would mean "time out immediately". And `Infinity` —
+    // the natural spelling of "no deadline for this test" — is worse than it
+    // looks: `setTimeout` clamps anything past 2^31-1 to ONE millisecond, with
+    // nothing but a `TimeoutOverflowWarning` on stderr. A deadline that silently
+    // drops every audit row while looking configured is the failure this guards.
+    for (const [label, ms] of [
+      ["zero", 0],
+      ["negative", -1],
+      ["NaN", Number.NaN],
+      ["Infinity", Number.POSITIVE_INFINITY],
+      ["past the 32-bit timer ceiling", 3_000_000_000],
+    ] as const) {
+      committed.length = 0;
+      logCalls.length = 0;
+      auditBehaviour = () =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, 5);
+        });
+
+      await correctFact(
+        { ctx: admin, factId: FACT, verb: "pin", requestId: `req-${label}` },
+        { ...fakeTransaction(), auditWriteTimeoutMs: ms },
+      );
+
+      expect(committed, `deadline ${label} dropped the row`).toHaveLength(1);
+      expect(logCalls.filter((c) => c.level === "error")).toHaveLength(0);
+    }
+  });
+
+  test("a write with no resolvable ACTOR warns — an unattributed row is worse than none", async () => {
+    // `resolveEntry` falls back to the literal `"unknown"` actor with no
+    // complaint, so the module header's "a third entry point inherits the audit
+    // trail" is true of the ROW and not of its attribution.
+    //
+    // Both shapes, because the second is the one that actually happens: a
+    // scheduler fiber or a background session resume runs inside
+    // `withRequestContext({ requestId })` with NO user, and a guard that only
+    // checked for a missing context would wave it through — producing a row that
+    // exists and lies, which is a worse artifact than the missing row #4934
+    // fixed.
+    for (const ctxShape of [undefined, { requestId: "req-sched" }] as const) {
+      logCalls.length = 0;
+      requestContext = ctxShape;
+      await correctFact(
+        { ctx: admin, factId: FACT, verb: "pin", requestId: "req-noactor" },
+        fakeTransaction(),
+      );
+      const warns = logCalls.filter(
+        (c) => c.level === "warn" && c.message.includes("actor 'unknown'"),
+      );
+      expect(warns, `no warning for context ${JSON.stringify(ctxShape)}`).toHaveLength(1);
+      expect(warns[0]?.message).toContain("withRequestContext");
+      // The warn is a finding an operator has to act on, so it carries the same
+      // reconstruction fields as the failure lines.
+      expect(warns[0]?.payload).toMatchObject({ actorId: "admin-1", factId: FACT, verb: "pin" });
+    }
+  });
+
+  test("a resolvable actor produces NO warning — the guard is not always-on noise", async () => {
+    // Without this the warn test above passes on a guard that fires
+    // unconditionally, which would be alert fatigue on every single correction.
+    await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-ok" },
+      fakeTransaction(),
+    );
+    expect(logCalls.filter((c) => c.level === "warn")).toHaveLength(0);
   });
 
   test("a prompt write CLEARS its deadline timer instead of leaving it armed", async () => {
@@ -567,13 +693,25 @@ describe("the write is awaited, bounded, and never swallowed", () => {
 const ROOTS = [
   "packages/api/src",
   "packages/mcp/src",
+  // The CLI's TypeScript is split across three trees and ten-plus files under
+  // `lib`/`bin` import `@atlas/api/lib` — walking only `src` would have left
+  // the criterion above claiming coverage it did not have.
   "packages/cli/src",
+  "packages/cli/lib",
+  "packages/cli/bin",
   "ee",
   "plugins",
 ];
 
 /** `packages/api/src/lib/brain/__tests__` → repo root: six levels up. */
 const REPO_ROOT = join(import.meta.dir, "../../../../../..");
+
+/**
+ * Held in a constant so THIS file's own path — which contains the segment —
+ * cannot be rewritten by a careless find-and-replace over the literal, and so
+ * the exclusion reads as a rule rather than a magic string.
+ */
+const TEST_DIR = "__tests__";
 
 function walk(dir: string, out: string[]): void {
   // Deliberately UNGUARDED. A swallowed `readdirSync` — EACCES, ELOOP, a
@@ -593,7 +731,7 @@ function walk(dir: string, out: string[]): void {
     if (!entry.endsWith(".ts") && !entry.endsWith(".tsx")) continue;
     // Tests routinely stub both sides; they are not entry points.
     if (entry.includes(".test.")) continue;
-    if (full.includes(`${"__tests__"}/`)) continue;
+    if (full.includes(`${TEST_DIR}/`)) continue;
     out.push(full);
   }
 }
@@ -601,11 +739,12 @@ function walk(dir: string, out: string[]): void {
 /**
  * Comments and string literals stripped.
  *
- * Both halves are load-bearing, and each has a real in-tree case:
- * `packages/api/src/lib/brain/candidates.ts` names `correctFact({ verb: … })`
- * inside a doc comment, so without comment-stripping the sweep enrols a phantom
- * caller; and a log message naming its own helper is an ordinary thing to write,
- * so without string-stripping a `"...logAdminAction..."` literal reads as a call.
+ * The comment half has a real in-tree case: `lib/brain/candidates.ts` names
+ * `correctFact({ verb: … })` in a `//` line comment, so without it the sweep
+ * enrols a phantom caller. The string half is prophylactic — nothing in-tree
+ * exercises it today, but an `ADMIN_ACTIONS.brainFact` mention inside a log
+ * message is an ordinary thing to write and would read as a reach for the
+ * vocabulary.
  *
  * Strings go first so a `//` inside a URL cannot eat the rest of its line. That
  * ordering has a cost the {@link STRIP_ALLOWLIST} canary exists to pay: a lone
@@ -671,38 +810,51 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
     ).toEqual([]);
   });
 
-  test("no caller of correctFact writes a CORRECTION audit row of its own", () => {
+  test("correctFact's DIRECT callers are discovered, and the known two are among them", () => {
     const files: string[] = [];
     for (const root of ROOTS) walk(join(REPO_ROOT, root), files);
 
-    const callers = files.filter((file) => {
-      if (file === MACHINERY) return false;
-      return CALLS_CORRECT_FACT.test(strip(readFileSync(file, "utf8")));
-    });
+    const callers = files
+      .filter((file) => file !== MACHINERY)
+      .filter((file) => CALLS_CORRECT_FACT.test(strip(readFileSync(file, "utf8"))))
+      .map((f) => f.slice(REPO_ROOT.length + 1));
 
     // Discovery must actually find the known entry points, or the sweep is
     // vacuous and would pass on an empty result set.
-    const relative = callers.map((f) => f.slice(REPO_ROOT.length + 1));
-    expect(relative).toContain("packages/api/src/api/routes/admin-brain-facts.ts");
-    expect(relative).toContain("packages/api/src/lib/tools/correct-fact.ts");
+    expect(callers).toContain("packages/api/src/api/routes/admin-brain-facts.ts");
+    expect(callers).toContain("packages/api/src/lib/tools/correct-fact.ts");
+  });
 
-    // Scoped to the brainFact vocabulary rather than any `logAdminAction(`:
-    // `admin-brain-facts.ts` may legitimately grow an unrelated admin action
-    // one day, and a guard that fails on it — with a message about
-    // double-logging — teaches the next author to weaken the test.
+  test("lib/brain/correction.ts is the ONLY file that reaches for the correction vocabulary", () => {
+    // Swept over EVERY walked file, not just `correctFact`'s callers. The
+    // header's promise is "two entry points cannot drift into two metadata
+    // shapes", and a bulk-import path or a migration backfill that emitted
+    // `ADMIN_ACTIONS.brainFact.correct` WITHOUT calling `correctFact` produces
+    // exactly that second shape while never appearing in the caller set.
     //
-    // The CATALOG reference, not the string value, and that is not a weaker
+    // The CATALOG reference, not the string value, and that is not the weaker
     // check: `AdminActionType` is the union of `ADMIN_ACTIONS`' values, so a
-    // hand-written `"brain_fact.correct"` does not type-check. Matching the
-    // identifier also survives `strip`, which removes string literals.
-    const offenders = callers.filter((file) =>
-      /\bADMIN_ACTIONS\.brainFact\b/.test(strip(readFileSync(file, "utf8"))),
-    );
+    // hand-written `"brain_fact.correct"` does not type-check.
+    //
+    // On RAW source, deliberately. `strip` exists to stop prose enrolling a
+    // phantom caller, but here the cost/benefit inverts: over-stripping (the
+    // unbalanced-backtick defeat the canary above documents) would hide a real
+    // second emitter, while a comment merely MENTIONING the vocabulary is a
+    // fair thing to have to explain. There are none today.
+    const files: string[] = [];
+    for (const root of ROOTS) walk(join(REPO_ROOT, root), files);
+
+    const offenders = files
+      .filter((file) => file !== MACHINERY)
+      .filter((file) => /\bADMIN_ACTIONS\.brainFact\b/.test(readFileSync(file, "utf8")))
+      .map((f) => f.slice(REPO_ROOT.length + 1))
+      // The catalog defines the vocabulary; it is not an emitter.
+      .filter((f) => f !== "packages/api/src/lib/audit/actions.ts");
+
     expect(
-      offenders.map((f) => f.slice(REPO_ROOT.length + 1)),
-      "an entry point onto correctFact reaches for the correction audit vocabulary — that is either the " +
-        "#4934 double-log or a second metadata shape for one decision. The row belongs to " +
-        "lib/brain/correction.ts",
+      offenders,
+      "a second file reaches for the correction audit vocabulary — that is either the #4934 double-log " +
+        "or a second metadata shape for one decision. The row belongs to lib/brain/correction.ts",
     ).toEqual([]);
   });
 

@@ -1004,8 +1004,13 @@ export const ADMIN_ACTIONS = {
    * `supersededBy` and `validTo` only when the verb actually produced them. A
    * consumer must read an ABSENT key as "this verb decided nothing there", not
    * as missing data — a `pin` row carrying `invalidatedAt: null` would read as
-   * a tombstone decision that was made and came back empty. This unified two
-   * shapes: pre-#4934 `/retract` emitted `flaggedForReReview` even when empty.
+   * a tombstone decision that was made and came back empty.
+   *
+   * This unified two divergent shapes, so there is a discontinuity at the #4934
+   * boundary in both directions: pre-#4934 `/retract` rows emitted
+   * `flaggedForReReview` even when empty, and carried NO `metadata.verb` at all.
+   * A consumer pivoting on `metadata.verb` sees it only on rows from #4934
+   * onward.
    */
   brainFact: {
     retract: "brain_fact.retract",

@@ -62,18 +62,31 @@ Use this whenever a metric exists for what the user asked — never re-derive me
 
 Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
 
-// The `tensions` clause is the one place in this file where prose is load-
-// bearing for correctness rather than routing (#4933). `invalidatedAt` and
-// `validTo` are carried on every counterpart precisely so a withdrawn or
-// replaced rival is distinguishable from a live one; without the labels here
-// an MCP model reads the whole cluster as unresolved and re-opens a conflict a
-// human already settled. The two lifecycle words are trades, not additions —
-// the string sat at 149/150 rubric words, so the retraction guidance was paid
-// for by compressing the tier, attribution, age, and `asOf` clauses. The
-// system-prompt twin in `lib/tools/search-brain.ts` carries the same semantics
-// at full length because it is not rubric-capped; the two are pinned together
-// in `__tests__/search-brain-tool.test.ts`. Trim anything here and re-run that
-// suite — the never-arms are assertions, not decoration.
+// The `tensions` clause is load-bearing for correctness rather than routing
+// (#4933) — like the attribution and age never-arms beside it. `invalidatedAt`
+// and `validTo` are carried on every VISIBLE counterpart precisely so a
+// withdrawn or replaced rival is distinguishable from a live one; the withheld
+// arm is a bare `withheldCount` and stays contested by construction, which is
+// why the labels are stated as a carve-out and not as a verdict on the cluster.
+// Without them a model reads the whole cluster as unresolved and re-opens a
+// conflict a human already settled.
+//
+// This string is the tool description for BOTH readers — the in-process agent
+// (`defaultRegistry`) and any external MCP client — so a gap here is not an
+// MCP-only gap.
+//
+// The lifecycle labels are trades, not additions: the string sat at 149 of the
+// rubric's 150 words (`__tests__/description-rubric.test.ts`), and the budget
+// came out of the tier, attribution, age and `asOf` clauses, the JSON example,
+// and both routing paragraphs. It now sits at 148 — two words of headroom, and
+// `KNOWLEDGE_TRUST_FRAMING` is interpolated, so growing that shared constant
+// spends this description's margin too.
+//
+// The system-prompt twin in `lib/tools/search-brain.ts` is a superset, not a
+// copy: uncapped, it also carries the as-of-NOW clarifier and the withheld-arm
+// rule, which do not fit here. Parity is on the labels only, and is pinned in
+// `__tests__/search-brain-tool.test.ts` — the never-arms are assertions, not
+// decoration, so trim anything here and re-run that suite.
 export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain. Trust-labeled results: \`tier: "fact"\` human-reviewed, \`"raw-episode"\` its source (maybe \`extraction: "pending"\`), \`"document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: use the claim, say attribution restricted; never anonymous, undated, unsourced, nor infer the author. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age, never assert as current or drop. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen), unranked: never pick a winner. Report those as settled once retired: \`invalidatedAt\` non-null = RETRACTED, \`validTo\` ALREADY IN THE PAST = SUPERSEDED; \`validTo\` still in the future = LIVE. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then, framed "as of <time>": superseded included, retracted only in \`tensions\`. Example: \`{ "query": "billing owner", "asOf": "2026-07-01" }\`.
 
 Use this when asked about decisions, rationale, ownership, or policy.

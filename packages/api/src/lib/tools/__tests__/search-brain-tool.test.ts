@@ -17,6 +17,7 @@
  */
 
 import { describe, expect, it, beforeEach, mock } from "bun:test";
+import { z } from "zod";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import type { AuthMode } from "@useatlas/types";
 
@@ -427,6 +428,43 @@ describe.each([
 });
 
 /**
+ * The one rule every agent-facing string about retraction has to obey (#4933):
+ * a sentence may state that a retracted fact NEVER comes back only if that same
+ * sentence names the exception. `invalidatedAt` alone does not count — naming
+ * the label without naming where it is read is what the pre-#4933 prose already
+ * did on the surfaces that had it.
+ *
+ * Two predicates rather than one, because only the absolute claim is policed.
+ * The label-defining sentences ("a non-null `invalidatedAt` is a rival since
+ * RETRACTED") mention retraction without promising anything about reachability,
+ * and a rule that demanded a carve-out from those would push the whole clause
+ * out of the 150-word rubric for no truth gained.
+ *
+ * `ABSOLUTE` is deliberately broader than the two wordings that actually
+ * shipped, and `CARVE_OUT` deliberately requires an exception marker next to
+ * `tensions` rather than the bare word: a rewrite that merely mentions
+ * `tensions` earlier in the sentence ("`tensions` unranked; superseded
+ * included, retracted never returned") restates the exact defect and must not
+ * buy immunity with a token.
+ */
+const RETRACTION_ABSOLUTE =
+  /retract\w*\s+(?:facts?\s+)?(?:is |are )?never|never\s+(?:returned|surfaces?|appears?|as a RESULT)/i;
+const RETRACTION_CARVE_OUT = /(only|except|still appears?|the one place)[^.]{0,80}tensions/i;
+
+/** Sentences that promise retracted facts are unreachable without naming the exception. */
+function unqualifiedRetractionSentences(description: string): readonly string[] {
+  return (
+    description
+      // Naive on purpose: prose with "e.g." fragments mid-sentence, which can
+      // only ever SPLIT an offender into smaller chunks that are still tested.
+      .split(/(?<=\.)\s+/)
+      .filter((s) => /retract/i.test(s))
+      .filter((s) => RETRACTION_ABSOLUTE.test(s))
+      .filter((s) => !RETRACTION_CARVE_OUT.test(s))
+  );
+}
+
+/**
  * The tension-counterpart lifecycle labels (#4935), pinned for the reason the
  * base commit exists: this block's `asOf` sentence claimed "Retracted facts
  * never appear, at any time" until #4913 made it false, and NOTHING failed.
@@ -438,8 +476,9 @@ describe.each([
  *
  * BOTH surfaces, as of #4933. The block shipped with #4935 covering only
  * `SEARCH_BRAIN_DESCRIPTION` and said so, because `SEARCH_BRAIN_TOOL_DESCRIPTION`
- * — and through it `packages/mcp/src/tools.ts`, which registers that exact
- * string — had to trade words against the 80–150 rubric
+ * — the description served to the in-process agent AND, via
+ * `searchBrain.description` wrapped in `withErrorContract`, to every external
+ * MCP client — had to trade words against the 80–150 rubric
  * (`description-rubric.test.ts`) before it could carry any of this. #4933 paid
  * that price, so the parameterisation is now the assertion.
  *
@@ -451,7 +490,10 @@ describe.each([
  */
 describe.each([
   ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
-  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+  [
+    "SEARCH_BRAIN_TOOL_DESCRIPTION (tool description — in-process agent and MCP)",
+    SEARCH_BRAIN_TOOL_DESCRIPTION,
+  ],
 ])("%s — a retired tension counterpart is labelled, not re-litigated (#4935, #4933)", (_label, description) => {
   it("names BOTH wire fields, so neither axis can be dropped in a rewrite", () => {
     expect(description).toContain("invalidatedAt");
@@ -504,42 +546,50 @@ describe.each([
     // cannot tell which from the prose, so it reports a settled retraction as
     // a live contradiction.
     //
-    // Sentence-scoped rather than a blocklist of the two exact wordings that
-    // shipped: any future sentence that mentions retraction has to say, in
-    // that same sentence, where a retracted fact still surfaces. A blocklist
-    // would pass the moment someone rephrased the absolute.
-    const offenders = description
-      .split(/(?<=\.)\s+/)
-      .filter((s) => /retract/i.test(s))
-      .filter((s) => !s.includes("tensions") && !s.includes("invalidatedAt"));
+    // Rule-shaped rather than a blocklist of the two wordings that shipped: a
+    // blocklist goes green the moment someone rephrases the absolute.
     expect(
-      offenders,
-      "every sentence mentioning retraction must name `tensions` or `invalidatedAt` — an unqualified absolute teaches the model retracted facts are unreachable",
+      unqualifiedRetractionSentences(description),
+      "a sentence promising retracted facts never come back must name the `tensions` carve-out in that same sentence",
     ).toEqual([]);
   });
 });
 
 /**
- * The third agent-facing string, and the one neither block above reaches: the
- * `asOf` ARGUMENT description on the tool's input schema (#4933). A model
- * deciding whether to pass `asOf` reads the argument prose, not the tool
- * prose, and this one shipped promising "retracted facts never" — the same
- * absolute, in the same place, on a surface with its own reader.
+ * The third of FOUR agent-facing strings, and the one neither block above
+ * reaches: the `asOf` ARGUMENT description on this tool's input schema
+ * (#4933). The four are the system prompt (`SEARCH_BRAIN_DESCRIPTION`), the
+ * tool prose (`SEARCH_BRAIN_TOOL_DESCRIPTION`, both blocks above), this
+ * argument, and its re-declared MCP twin. A model deciding whether to PASS
+ * `asOf` reads the argument, not the tool prose, and this one shipped
+ * promising "retracted facts never" — the same absolute, on a surface with its
+ * own reader.
  *
- * `packages/mcp/src/tools.ts` re-declares this argument rather than importing
- * it, so the MCP half is pinned there (`__tests__/tools.test.ts`, via
- * `listTools()`). Two assertions, two files, because there are genuinely two
- * strings.
+ * `packages/mcp/src/tools.ts` re-declares the whole input schema rather than
+ * importing it — `asOf` is only the argument where that drift is
+ * correctness-bearing, and `query` has already drifted harmlessly — so the
+ * fourth string is pinned there (`__tests__/tools.test.ts`, through
+ * `listTools()`). Two files because there are genuinely two strings.
  */
 describe("searchBrain `asOf` argument description — the carve-out travels with the promise (#4933)", () => {
   const asOfDescription = ((): string => {
-    // The AI SDK keeps the zod object it was handed, so the argument prose an
-    // LLM is served is readable straight off the shape. Narrowed rather than
-    // cast blind: a schema reshape should fail loudly here, not silently pin
-    // an empty string.
-    const shape = (searchBrain.inputSchema as unknown as { shape?: Record<string, unknown> }).shape;
-    const asOf = shape?.asOf as { description?: string } | undefined;
-    return asOf?.description ?? "";
+    // Read what the model is SERVED, not what the builder was handed: the AI
+    // SDK hands the LLM a JSON Schema, and zod resolves `.describe()` into it
+    // wherever in the chain it was called. Reading `.shape.asOf.description`
+    // instead would go red on a harmless `.describe()`/`.optional()` reorder
+    // while the model still saw the right prose.
+    //
+    // The narrowing throws rather than falling back, so an AI SDK reshape
+    // reports itself instead of collapsing to `""` and reading as a prose
+    // regression in the three assertions below.
+    const schema = searchBrain.inputSchema;
+    if (!(schema instanceof z.ZodObject)) {
+      throw new Error(
+        "searchBrain.inputSchema is no longer a ZodObject — re-point this read at whatever now carries the argument prose, or the retraction pins below pass vacuously",
+      );
+    }
+    const asOf = z.toJSONSchema(schema).properties?.asOf;
+    return typeof asOf === "object" ? (asOf.description ?? "") : "";
   })();
 
   it("is readable at all — a reshape must fail here, not silently pass", () => {
@@ -555,5 +605,15 @@ describe("searchBrain `asOf` argument description — the carve-out travels with
     // The carve-out is what makes the sentence true; this is what makes it
     // useful. Drop it and the model has no reason to trust an `asOf` read.
     expect(asOfDescription).toMatch(/never as a RESULT/);
+  });
+
+  it("obeys the same absolute rule as the two descriptions above", () => {
+    // The positive pins above all survive a rewrite that keeps the three
+    // tokens and re-adds an unqualified absolute in a neighbouring sentence.
+    // This is the arm that does not.
+    expect(
+      unqualifiedRetractionSentences(asOfDescription),
+      "a sentence promising retracted facts never come back must name the `tensions` carve-out in that same sentence",
+    ).toEqual([]);
   });
 });

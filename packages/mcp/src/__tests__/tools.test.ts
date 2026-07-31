@@ -1011,28 +1011,50 @@ describe("MCP tools", () => {
   // --- searchBrain dispatch (#4773) ---
 
   describe("searchBrain", () => {
-    it("the advertised `asOf` argument does not promise retracted facts are unreachable (#4933)", async () => {
-      // This string is written HERE, not imported from the api package, so it
-      // is the one half of the searchBrain description that a fix in
-      // `lib/tools/descriptions.ts` cannot reach — and it shipped saying
-      // "retracted never", full stop. #4913 kept a retracted rival in
-      // `tensions` precisely so it stays distinguishable, so the absolute was
-      // false of the response and true only of `results`; a model reading it
-      // reports a settled retraction as a live contradiction.
+    it("advertises the tool prose the api package owns, not a local copy (#4933)", async () => {
+      // The link that makes #4933's api-side fix reach an MCP client at all:
+      // `registerTools` must keep deriving this description from
+      // `searchBrain.description` (wrapped by `withErrorContract`) rather than
+      // growing a hand-written literal here. The retraction labels are pinned
+      // on the constant in the api package
+      // (`lib/tools/__tests__/search-brain-tool.test.ts`); nothing there would
+      // notice this file re-declaring the prose, and every retraction
+      // assertion in this suite would still be green.
       //
-      // Asserted through `listTools()` rather than against the source constant
+      // The stub text comes from the module mock at the top of this file, so
+      // this asserts the WIRING, not the prose — which is the only half that
+      // can be checked here without duplicating a 148-word string.
+      const { client } = await createTestClient();
+      const { tools } = await client.listTools();
+      const description = tools.find((t) => t.name === "searchBrain")?.description;
+      expect(description).toContain("Search the company brain");
+      expect(description).toContain("Error contract:");
+    });
+
+    it("the advertised `asOf` argument does not promise retracted facts are unreachable (#4933)", async () => {
+      // Unlike the tool prose above, the whole input schema is re-declared in
+      // `src/tools.ts` rather than imported — `query` has already drifted from
+      // its api-side twin — so `asOf` is the argument where that drift is
+      // correctness-bearing and a fix in `lib/tools/descriptions.ts`
+      // structurally cannot reach it. It shipped saying "retracted never",
+      // full stop. #4913 kept a retracted rival in `tensions` precisely so it
+      // stays distinguishable, so the absolute was false of the response and
+      // true only of `results`; a model reading it reports a settled
+      // retraction as a live contradiction.
+      //
+      // Asserted through `listTools()` rather than against the source string
       // because what an external client's model actually reads is the
-      // REGISTERED schema. `searchBrain.description` is module-mocked at the
-      // top of this file, so the tool-level prose is pinned in the api package
-      // (`lib/tools/__tests__/search-brain-tool.test.ts`); the argument prose
-      // has no other home.
+      // REGISTERED schema.
       const { client } = await createTestClient();
       const { tools } = await client.listTools();
       const asOf = tools.find((t) => t.name === "searchBrain")?.inputSchema.properties?.asOf as
         | { description?: string }
         | undefined;
-      expect(asOf?.description).toBeTruthy();
-      const description = asOf?.description ?? "";
+      const description = asOf?.description;
+      expect(
+        description,
+        "searchBrain's registered inputSchema has no `asOf` description — the registration in src/tools.ts changed shape, so the retraction pins below would pass vacuously",
+      ).toBeTruthy();
       // Both arms, so neither half can be dropped: the carve-out has to be
       // stated (`tensions`) AND the field that labels it has to be nameable
       // (`invalidatedAt`), or the guidance is unactionable.
@@ -1041,6 +1063,24 @@ describe("MCP tools", () => {
       // The never-arm the carve-out could plausibly displace: a retracted fact
       // is still never a RESULT, which is what makes `asOf` safe to trust.
       expect(description).toMatch(/never as a RESULT/);
+      // And the arm the three pins above survive: a rewrite that keeps every
+      // token and re-adds the absolute in a neighbouring sentence. Mirrors
+      // `unqualifiedRetractionSentences` in the api suite; four short lines
+      // rather than a shared helper because the two packages do not share test
+      // utilities and the rule is stated in full at its api-side definition.
+      const unqualified = (description ?? "")
+        .split(/(?<=\.)\s+/)
+        .filter((s) => /retract/i.test(s))
+        .filter((s) =>
+          /retract\w*\s+(?:facts?\s+)?(?:is |are )?never|never\s+(?:returned|surfaces?|appears?|as a RESULT)/i.test(
+            s,
+          ),
+        )
+        .filter((s) => !/(only|except|still appears?|the one place)[^.]{0,80}tensions/i.test(s));
+      expect(
+        unqualified,
+        "a sentence promising retracted facts never come back must name the `tensions` carve-out in that same sentence",
+      ).toEqual([]);
     });
 
     it("returns the fused payload as JSON on success", async () => {

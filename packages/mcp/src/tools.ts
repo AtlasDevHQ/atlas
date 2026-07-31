@@ -382,16 +382,16 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
           .string()
           .optional()
           .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
+        // "retracted never" was true of RESULTS and false of the response as a
+        // whole (#4933): #4913 kept a retracted rival in `tensions` precisely
+        // so it stays distinguishable, and an unqualified absolute here taught
+        // the MCP model the opposite. The wording names which field carries
+        // the label, so the guidance is actionable rather than a promise the
+        // wire does not keep.
         asOf: z
           .string()
           .optional()
           .describe(
-            // "retracted never" was true of RESULTS and false of the response
-            // as a whole (#4933): #4913 kept a retracted rival in `tensions`
-            // precisely so it stays distinguishable, and an unqualified
-            // absolute here taught the MCP model the opposite. Says which
-            // field carries the label, so the guidance is actionable rather
-            // than a promise the wire does not keep.
             "Facts only: historical point read — the reviewed facts valid at that moment (superseded versions included; a retracted fact never as a RESULT, only as a `tensions` counterpart labelled by `invalidatedAt`). ISO-8601 date (2026-07-27) or timestamp with an explicit zone (2026-07-27T09:00:00Z); zone-less times and future instants are rejected. Omit for current beliefs.",
           ),
         limit: z

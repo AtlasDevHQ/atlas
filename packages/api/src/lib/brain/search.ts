@@ -90,11 +90,56 @@
  *
  * FTS-first, per the M1 cut. Embeddings, RRF over dense lists, and rerank are
  * M4 — `fusion.ts` is the seam they extend, and there is no disabled embedding
- * path here to switch on. `asOf` bi-temporal point reads are M2's; this read is
- * as-of-now. `in-tension-with` is surfaced as a conflict CLUSTER (#4913): both
- * directions, each visible counterpart with its own provenance, invisible ones
- * as a withheld count — and never ranked; arbitration belongs to the human
- * gate.
+ * path here to switch on. `in-tension-with` is surfaced as a conflict CLUSTER
+ * (#4913): both directions, each visible counterpart with its own provenance,
+ * invisible ones as a withheld count — and never ranked; arbitration belongs
+ * to the human gate.
+ *
+ * ## `asOf` — the bi-temporal point read (#4916, ADR-0036 §Temporal)
+ *
+ * T4/T7's "what did we believe Monday": an optional `asOf` instant switches the
+ * FACT store's temporal predicate from as-of-now to the point read
+ * `valid_from <= asOf < COALESCE(valid_to, ∞)`, so a fact a later promotion
+ * superseded answers again inside its own validity window — that is the point
+ * of keeping superseded rows readable. Four boundary rules, all deliberate:
+ *
+ *   - **Tombstones stay hidden under ANY `asOf`.** Retraction is the only verb
+ *     that hides history, and hiding history is what it is FOR (it is also the
+ *     GDPR-erasure path) — so `invalidated_at IS NULL` survives in both
+ *     branches, unconditionally.
+ *   - **The ACL is the row's own frozen grant against as-of-NOW membership.**
+ *     Each version carries the immutable `visible_to` it was published with,
+ *     and `aclVisibilityClause` evaluates exactly that column per row — so
+ *     "Monday's belief" is gated by Monday's grant with no code here doing
+ *     anything: the bi-temporal ACL (T5) falls out of grant immutability. The
+ *     reader's tokens, by contrast, are always resolved as of now — a member
+ *     who since left an audience does not keep historical access through the
+ *     read; membership is the live half and the revocation path.
+ *   - **A NULL `valid_from` is an unrecorded start, not a late one.** The
+ *     as-of-now read has no `valid_from` predicate at all — a fact with no
+ *     recorded start IS served as current belief — so the point read must
+ *     admit it too, or `asOf ≈ now()` would diverge from the default read.
+ *   - **The default read is byte-identical to before #4916** — same clauses,
+ *     same order, regression-pinned — and a malformed or future `asOf` is
+ *     REJECTED with {@link BrainAsOfInvalidError}, never silently ignored: a
+ *     caller who asked for history and silently got current belief would
+ *     attribute today's claims to Monday.
+ *
+ * The episode and document stores are untouched by `asOf`: an episode is
+ * append-only evidence of what was SAID (it has no validity window to point
+ * into), and a KB document is deliberately outside the truth ordering. Only
+ * the fact store makes claims about what was BELIEVED, so it is the only store
+ * with a temporal axis to read against — and an `asOf` read that EXCLUDES the
+ * fact store is refused outright, because echoing `asOf` over current-only
+ * content would label it historical.
+ *
+ * One scope limit, stated so nobody reads more into the point read than it
+ * does: metadata computed AT READ TIME — the decay signal, the corroboration
+ * count, and the tension cluster — is evaluated as of NOW even on a historical
+ * page. Those are advisory framing about the row as it stands today (how stale
+ * it has since become, what has since come to contradict it), not part of the
+ * belief being reported, and rewinding them would require versioned edges the
+ * substrate does not keep.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -198,10 +243,126 @@ export interface BrainSearchOptions {
   readonly tags?: readonly string[];
   readonly collection?: string;
   readonly since?: string;
+  /**
+   * Bi-temporal point read (#4916): the ISO-8601 instant to answer for.
+   * Fact store only — see the module header. Validated by
+   * {@link parseBrainAsOf}; malformed or future values THROW rather than fall
+   * through to as-of-now. Absent ⇒ current belief, unchanged.
+   */
+  readonly asOf?: string;
   /** Include the 1-hop KB link-graph expansion of matched documents. */
   readonly expand: boolean;
   readonly limit: number;
   readonly requestId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// asOf validation (#4916)
+// ---------------------------------------------------------------------------
+
+/**
+ * A caller-supplied `asOf` this read refuses to honor.
+ *
+ * A dedicated class rather than a bare `Error` so the tool wrapper can map it
+ * to its machine-readable reason (`invalid_as_of`) by `instanceof`, the same
+ * seam `BrainReaderIdentityError` rides — never by matching the prose, which
+ * is user-facing and free to change.
+ */
+export class BrainAsOfInvalidError extends Error {
+  override readonly name = "BrainAsOfInvalidError";
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+declare const brainAsOfBrand: unique symbol;
+/**
+ * An instant that has been through {@link parseBrainAsOf} — normalized
+ * ISO-8601 UTC, in the past, inside `timestamptz` range. The brand makes
+ * "validated" a compile-time property of {@link buildFactQuery}'s input rather
+ * than a doc-comment precondition, and keeps the UNVALIDATED sibling params
+ * (`since`, the documents filter) unpassable where `asOf` belongs.
+ */
+export type BrainAsOfInstant = string & { readonly [brainAsOfBrand]: true };
+
+/**
+ * The accepted spellings: a bare ISO date (`YYYY-MM-DD`, read as UTC midnight
+ * per ECMA-262 — deterministic), or a timestamp with an EXPLICIT zone.
+ *
+ * Deliberately stricter than `new Date()`, which this feeds: bare `Date`
+ * parsing admits `"July 2026"` and — worse — reads a zone-less
+ * `"2026-07-27T09:00"` in the SERVER's local timezone, so the same call would
+ * answer a different instant per deployment. A silent hours-scale shift of the
+ * point read is the same class of failure as the silent fall-through this
+ * function exists to refuse, so a time without a zone is malformed here.
+ */
+const AS_OF_SHAPE =
+  /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|z|[+-]\d{2}:?\d{2}))?$/;
+
+/**
+ * Everything `timestamptz` can hold starts here: Postgres admits no year zero
+ * (and no negative years in ISO input), so a JS-parseable instant below this
+ * would pass validation only to fail the bind at query time — surfacing as a
+ * retryable internal fault when it is really the caller's argument.
+ */
+const AS_OF_FLOOR_MS = Date.parse("0001-01-01T00:00:00Z");
+
+/** Longest slice of a rejected value echoed back — a bound on message/log size, not a policy. */
+const AS_OF_ECHO_CAP = 64;
+
+/**
+ * Validate and normalize a caller-supplied `asOf`, or throw
+ * {@link BrainAsOfInvalidError}.
+ *
+ * FAIL CLOSED, per the issue's boundary rule: a value the caller plainly meant
+ * as a point-read instant but that cannot be honored must never degrade to the
+ * as-of-now read — the caller would attribute today's beliefs to the instant
+ * they asked about, silently. So blank, non-ISO, zone-less, out-of-range, and
+ * FUTURE values are all refusals with a message naming the value and the fix.
+ * Future bounds are refused rather than clamped because `valid_from` can
+ * legitimately sit in the future (a region import restores it verbatim), so a
+ * future point read is not "the same as now" — it is a question about beliefs
+ * not yet held, which this surface does not answer.
+ *
+ * Returns the instant normalized to ISO-8601 UTC: it is bound as a
+ * `timestamptz` parameter and echoed on the response, and both should carry
+ * the canonical spelling rather than whatever the caller typed.
+ */
+export function parseBrainAsOf(raw: string, now: () => number = Date.now): BrainAsOfInstant {
+  const trimmed = raw.trim();
+  // The caller's own input, so echoing it back is safe — but it is unbounded,
+  // so the echo is capped rather than pasted verbatim into an error message
+  // and a warn line.
+  const shown =
+    trimmed.length > AS_OF_ECHO_CAP ? `${trimmed.slice(0, AS_OF_ECHO_CAP)}…` : trimmed;
+  if (trimmed === "") {
+    throw new BrainAsOfInvalidError(
+      "asOf was blank. Pass an ISO-8601 instant (e.g. 2026-07-27T09:00:00Z) for a historical read, or omit asOf entirely for current beliefs.",
+    );
+  }
+  if (!AS_OF_SHAPE.test(trimmed)) {
+    throw new BrainAsOfInvalidError(
+      `asOf ${JSON.stringify(shown)} is not an ISO-8601 instant. Pass a date (2026-07-27) or a timestamp with an explicit zone (2026-07-27T09:00:00Z) — a time without a zone would be read in the server's timezone, so it is rejected. Omit asOf for current beliefs.`,
+    );
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    // Shape-valid but field-invalid — a 13th month, a 25th hour.
+    throw new BrainAsOfInvalidError(
+      `asOf ${JSON.stringify(shown)} is not a real instant — a field is out of range. Pass a valid ISO-8601 instant (e.g. 2026-07-27T09:00:00Z), or omit asOf for current beliefs.`,
+    );
+  }
+  if (parsed.getTime() < AS_OF_FLOOR_MS) {
+    throw new BrainAsOfInvalidError(
+      `asOf ${JSON.stringify(shown)} is before 0001-01-01, which the database cannot represent. Pass an instant on or after 0001-01-01T00:00:00Z.`,
+    );
+  }
+  if (parsed.getTime() > now()) {
+    throw new BrainAsOfInvalidError(
+      `asOf ${parsed.toISOString()} is in the future. As-of reads answer what was believed at a past instant; omit asOf for current beliefs.`,
+    );
+  }
+  return parsed.toISOString() as BrainAsOfInstant;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,21 +470,50 @@ const FACT_COLUMNS = `f.id::text AS id,
  */
 export function buildFactQuery(
   mode: AtlasMode,
-  options: { query?: string; limit: number; aclSql: string; aclParams: readonly unknown[] },
+  options: {
+    query?: string;
+    limit: number;
+    aclSql: string;
+    aclParams: readonly unknown[];
+    /**
+     * A point-read instant, or absent for the as-of-now read. The brand means
+     * it can only come from {@link parseBrainAsOf} — "validated" is a
+     * compile-time property here, not a doc-comment plea.
+     */
+    asOf?: BrainAsOfInstant;
+  },
 ): { sql: string; params: unknown[] } {
   const params: unknown[] = [...options.aclParams];
   const where: string[] = [
     options.aclSql,
     brainFactStatusClause(mode, "f"),
     // NOT redundant with the mode clause — see the module header. Without it
-    // the agent is served retracted claims as current belief.
+    // the agent is served retracted claims as current belief. Deliberately in
+    // BOTH temporal branches: a tombstone is hidden under any `asOf`, because
+    // retraction is the one verb whose JOB is hiding history (#4916).
     "f.invalidated_at IS NULL",
+  ];
+  if (options.asOf !== undefined) {
+    // The bi-temporal point read (#4916): the facts valid AT the instant —
+    // `valid_from <= asOf < COALESCE(valid_to, ∞)`. A superseded fact answers
+    // again inside its window (that is the point of keeping it readable); a
+    // NULL `valid_from` is an unrecorded start and is admitted, matching the
+    // default read's treatment of the same rows — see the module header.
+    // One bound parameter, referenced by both bounds, so the two sides of the
+    // window cannot be handed different instants.
+    params.push(options.asOf);
+    const asOfParam = `$${params.length}::timestamptz`;
+    where.push(
+      `(f.valid_from IS NULL OR f.valid_from <= ${asOfParam})`,
+      `(f.valid_to IS NULL OR f.valid_to > ${asOfParam})`,
+    );
+  } else {
     // The FOURTH predicate (#4912): a fact whose `valid_to` has passed was
     // superseded at the publish gate and is no longer current belief. Hidden
-    // exactly as tombstones are — the row stays readable to the as-of reads M2
-    // adds, and this default read is as-of-now.
-    brainFactCurrentClause("f"),
-  ];
+    // exactly as tombstones are — the row stays readable to the `asOf` branch
+    // above, and this default read is as-of-now.
+    where.push(brainFactCurrentClause("f"));
+  }
 
   const trimmed = options.query?.trim();
   let tsq: string | null = null;
@@ -712,6 +902,8 @@ function queriedStore(matched: number, limit: number): BrainSearchStoreReport {
  *   principals. Deliberately not degraded to an empty result set: an agent told
  *   "the brain holds nothing about this" answers from the model's priors, which
  *   is the failure a trust-labeled surface exists to prevent.
+ * @throws {BrainAsOfInvalidError} when `asOf` is malformed or in the future —
+ *   fail closed, never fall through to as-of-now (#4916).
  */
 export async function searchBrainCore(
   db: BrainSearchReader,
@@ -724,6 +916,22 @@ export async function searchBrainCore(
   const wantFacts = include.has("fact");
   const wantEpisodes = include.has("raw-episode");
   const wantDocuments = include.has("document");
+
+  // Validated FIRST, before any store runs: an unusable point-read instant is
+  // the caller's input problem and must be reported as such, not spent a
+  // fan-out on. Throws — see parseBrainAsOf on why it never degrades.
+  const asOf = options.asOf === undefined ? undefined : parseBrainAsOf(options.asOf);
+  if (asOf !== undefined && !wantFacts) {
+    // A temporal question aimed only at stores with no temporal axis. Serving
+    // the current documents/episodes under an echoed `asOf` would label
+    // as-of-now content as a historical page — mislabeling on the one surface
+    // whose labels are the product — and silently dropping the parameter is
+    // the fall-through this module refuses. Same fail-closed verb as every
+    // other unusable asOf.
+    throw new BrainAsOfInvalidError(
+      'asOf was passed but `include` excludes "fact" — only reviewed facts have a validity window to read against. Add "fact" to include, or omit asOf.',
+    );
+  }
 
   // Resolved UNCONDITIONALLY, before any store runs, and the refusal is the
   // single gate for the whole read. Deliberately not scoped to
@@ -764,6 +972,7 @@ export async function searchBrainCore(
             limit,
             aclSql: acl.sql,
             aclParams: acl.params,
+            asOf,
           });
           const result = await db.query(built.sql, built.params);
           return result.rows as FactRow[];
@@ -909,5 +1118,9 @@ export async function searchBrainCore(
         : UNQUERIED_STORE,
     },
     tensionsTruncated: tensions.truncated,
+    // Echoed ONLY on an as-of read — spreading rather than `asOf: asOf` keeps
+    // the default response byte-identical to pre-#4916, and makes the field's
+    // absence itself the "these are current beliefs" statement.
+    ...(asOf !== undefined ? { asOf } : {}),
   };
 }

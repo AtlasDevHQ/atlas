@@ -264,7 +264,11 @@ const {
   _resetBrainSourceConnectors,
   registerBrainSourceConnector,
 } = await import("@atlas/api/lib/brain/ingest/types");
-const { SLACK_SOURCE } = await import("@atlas/api/lib/brain/sources");
+// `HUMAN_SOURCE`, not `SLACK_SOURCE`, for `episode-sync.test.ts`'s reason:
+// `brainSyncCalls` records `connector.source` and nothing else identifying, so
+// a Slack-named fixture would let a walk that hardcoded `"slack"` instead of
+// threading the connector's own value pass the assertion below.
+const { HUMAN_SOURCE } = await import("@atlas/api/lib/brain/sources");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -876,7 +880,7 @@ describe("runKnowledgeSyncCycle", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
-      source: SLACK_SOURCE,
+      source: HUMAN_SOURCE,
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     brainSyncCalls.length = 0;
@@ -887,7 +891,7 @@ describe("runKnowledgeSyncCycle", () => {
     const result = await runKnowledgeSyncCycle();
     expect(result).toEqual({ inspected: 1, succeeded: 1, failed: 0, queryFailed: false });
     expect(brainSyncCalls).toEqual([
-      { workspaceId: ORG, installId: "chat", source: SLACK_SOURCE },
+      { workspaceId: ORG, installId: "chat", source: HUMAN_SOURCE },
     ]);
     // The document engine writes its own state row; the brain engine's stub
     // does not, so an empty state-write list proves the document arm was not
@@ -899,7 +903,7 @@ describe("runKnowledgeSyncCycle", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
-      source: SLACK_SOURCE,
+      source: HUMAN_SOURCE,
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     INSTALL_ROWS = [];
@@ -916,7 +920,7 @@ describe("runKnowledgeSyncCycle", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
-      source: SLACK_SOURCE,
+      source: HUMAN_SOURCE,
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     BRAIN_SYNC_STATUS = "error";

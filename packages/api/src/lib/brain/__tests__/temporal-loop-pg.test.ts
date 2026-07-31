@@ -1156,7 +1156,9 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // above): it distinguishes "the roster reconcile revoked them" from
       // "they vanished some other way", which the membership check below
       // cannot tell apart on its own.
-      expect(revoked).toMatchObject({ membersRevoked: 1, workspacesFailed: 0 });
+      // BOTH directions on the counter: `membersRevoked: 1` alone is also
+      // satisfied by a sync that revoked one and spuriously re-added one.
+      expect(revoked).toMatchObject({ membersRevoked: 1, membersAdded: 0, workspacesFailed: 0 });
       const adminLeft = await admin();
       // The premise. Without it every assertion below would be satisfied by a
       // sync that silently did nothing.
@@ -1190,7 +1192,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // against the state it was written for.
       channelRoster = { ...CHANNEL_ROSTER };
       const rejoined = await syncAudiences();
-      expect(rejoined).toMatchObject({ membersAdded: 1, workspacesFailed: 0 });
+      expect(rejoined).toMatchObject({ membersAdded: 1, membersRevoked: 0, workspacesFailed: 0 });
       const adminRejoined = await admin();
       expect(adminRejoined.audienceIds).toContain(EXEC_AUDIENCE);
       const rejoinedThen = await search(adminRejoined, { asOf: AS_OF });

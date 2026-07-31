@@ -59,10 +59,13 @@ describe("the episode-source vocabulary", () => {
 
   test("narrows an arbitrary stored value, and refuses the vendor names a warehouse connector would reach for", () => {
     // `isEpisodeSource` is the runtime gate `registerBrainSourceConnector`
-    // applies to a plugin's connector — the producer half that a compile-time
-    // type cannot reach. These four are the concrete regression: every one is
-    // a legal source slug, so the pattern check waves them all through.
-    for (const vendor of ["snowflake", "bigquery", "warehouse:prod", "warehouse-prod"]) {
+    // applies to a connector arriving as data. Three of these four are legal
+    // `SOURCE_SLUG` values, so the pattern check waves them through and only
+    // the vocabulary stops them — that is the concrete regression. The fourth,
+    // `warehouse:prod`, is caught one gate EARLIER by the slug pattern (the
+    // colon); it is here because a narrowing predicate should refuse it too,
+    // not because the slug check would miss it.
+    for (const vendor of ["snowflake", "bigquery", "warehouse-prod", "warehouse:prod"]) {
       expect([vendor, isEpisodeSource(vendor)]).toEqual([vendor, false]);
     }
     for (const nonString of [null, undefined, 42, { source: "warehouse" }, ["warehouse"]]) {
@@ -118,7 +121,12 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // `'human'` into another slot fails here rather than passing. A correction
     // episode landing outside the vocabulary would be invisible to every
     // discriminator that reads the column.
-    expect(CORRECTION_EPISODE_INSERT_SQL).toContain(`VALUES ($1, '${HUMAN_SOURCE}', `);
+    // Whitespace-tolerant: the claim is the column POSITION, not the
+    // statement's formatting, and a reflow that broke the line after the comma
+    // would otherwise fail a test whose subject had not changed.
+    expect(CORRECTION_EPISODE_INSERT_SQL).toMatch(
+      new RegExp(String.raw`VALUES\s*\(\s*\$1\s*,\s*'${HUMAN_SOURCE}'\s*,`),
+    );
     expect(isEpisodeSource(HUMAN_SOURCE)).toBe(true);
     // And it is NOT the warehouse class: a human's own words must stay
     // correctable, which is the opposite end of the same predicate.

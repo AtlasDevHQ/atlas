@@ -143,9 +143,9 @@ describeIfPg("brain episode ingest core (real Postgres)", () => {
     const shared = record({ sourceId: "SAME:1.000001" });
     await ingestEpisodes({ workspaceId: WORKSPACE, source: SOURCE, episodes: [shared] });
     // A different vocabulary member (`lib/brain/sources.ts`), not a made-up
-    // one: the dedupe key is `(workspace, source, source_id)`, and `source` is
-    // now a closed set, so the second value has to be a kind that really
-    // exists for this to be the collision production could actually see.
+    // one: the dedupe key is `(workspace, source, source_id)` and `source` is
+    // now a closed set, so the second value has to be a kind that exists. Which
+    // member is immaterial — what the arm pins is that the KEY is composite.
     const otherSource = await ingestEpisodes({
       workspaceId: WORKSPACE,
       source: WAREHOUSE_SOURCE,

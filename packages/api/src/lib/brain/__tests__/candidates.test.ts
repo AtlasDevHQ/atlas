@@ -575,6 +575,13 @@ describe("loadFactCandidates — contradiction hints", () => {
     // display fields for the reviewer to weigh; there is no `rank`, `score`,
     // `winner`, or `preferred` for a producer to start setting, and a withheld
     // rival stays an opaque handle rather than acquiring a payload.
+    //
+    // `validTo` is on this list because #4942 added it, and it belongs on the
+    // display side of that line: a superseded rival LABELLED as superseded is
+    // the reviewer being told the counterpart's status, which is the same
+    // service `invalidatedAt` performs for a retracted one. The distinction
+    // this assertion protects is not "no temporal fields" — it is that nothing
+    // here tells the reviewer which rival WINS.
     for (const entry of tensions) {
       expect([entry.factId, Object.keys(entry).toSorted()]).toEqual([
         entry.factId,
@@ -591,6 +598,7 @@ describe("loadFactCandidates — contradiction hints", () => {
               "status",
               "subject",
               "validFrom",
+              "validTo",
               "visible",
             ]
           : ["edgeDirection", "factId", "visible"],

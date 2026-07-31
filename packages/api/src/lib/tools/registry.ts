@@ -19,6 +19,7 @@ import {
   isSalesforceOAuthConfigured,
 } from "@atlas/api/lib/integrations/salesforce-tool";
 import { searchBrain, SEARCH_BRAIN_DESCRIPTION } from "./search-brain";
+import { correctFactTool, CORRECT_FACT_DESCRIPTION } from "./correct-fact";
 import { withToolSpans } from "./tool-spans";
 
 export type { AtlasAction, DashboardUrlResolver };
@@ -289,6 +290,28 @@ function registerCoreTools(
     description: SEARCH_BRAIN_DESCRIPTION,
     tool: searchBrain,
   });
+
+  // #4915 — the four correction verbs (ADR-0036 T4), core, under the ADR's
+  // own spelling (`correct_fact`). Workspace, identity, and the owner/admin
+  // authority gate all run at execute time inside the verb machinery — but
+  // unlike `searchBrain` it is NOT registered globally, because it WRITES:
+  // `nonDashboardRegistry` is the surface `POST /api/v1/query` reaches, and
+  // that operation is admitted to READ-SAFE Agent-Auth keys on a read-only-
+  // engine guarantee (#4707, pinned by `agent-auth-read-safe-engine.test.ts`'s
+  // tool-surface tripwire). A brain-mutating tool on that surface would break
+  // the admission however well execute-time gating held. The dashboard-URL
+  // resolver is the existing headless-vs-interactive signal (`null` = SDK /
+  // Slack / MCP / scheduler via `executeAgentQuery`; non-null = a workspace
+  // surface with a human in the loop), and today those classes coincide
+  // exactly with where a correction verb belongs — if they ever diverge,
+  // split the signal rather than re-globalizing this tool.
+  if (dashboardUrlResolver) {
+    registry.register({
+      name: "correct_fact",
+      description: CORRECT_FACT_DESCRIPTION,
+      tool: correctFactTool,
+    });
+  }
 
   // First per-Workspace lazy-plugin tool (#2698). Registered globally
   // because the workspace + install check happens at execute time inside

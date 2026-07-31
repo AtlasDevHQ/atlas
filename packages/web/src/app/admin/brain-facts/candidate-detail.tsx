@@ -1,11 +1,16 @@
 "use client";
 
-import type { BrainFactCandidate, BrainFactProvenanceView, BrainFactTensionView } from "@/ui/lib/types";
+import type {
+  BrainFactCandidate,
+  BrainFactDecayView,
+  BrainFactProvenanceView,
+  BrainFactTensionView,
+} from "@/ui/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertTriangle, ShieldAlert, Split } from "lucide-react";
-import { blockedBadge, provisionalBadge, statusBadge } from "./columns";
+import { AlertTriangle, Clock, ShieldAlert, Split } from "lucide-react";
+import { blockedBadge, decayBadge, provisionalBadge, statusBadge } from "./columns";
 
 /**
  * The body of the review sheet — everything behind the trust call for one
@@ -98,6 +103,55 @@ function ProvenanceGrid({ provenance }: { provenance: BrainFactProvenanceView })
       <Field label="Extracted">
         {provenance.extractedAt ? <RelativeTimestamp iso={provenance.extractedAt} /> : orDash(null)}
       </Field>
+    </div>
+  );
+}
+
+/**
+ * The read-time staleness signal (#4914), said in full.
+ *
+ * Four states, each honest about what it rests on:
+ *   - a decoded observation → the level plus WHEN the claim was last observed;
+ *   - an age anchored on the claim's other disclosed timestamps (`validFrom`
+ *     — the claim's validity start, NOT an Atlas clock — else ingest) → the
+ *     level plus the age, labelled as such; no observation is invented, and
+ *     the copy must not claim ingest specifically, because this component
+ *     cannot tell which of the two fallbacks won;
+ *   - level with no numbers → the exact age is withheld WITH attribution
+ *     (#4836): day-precision age restates the withheld "when", so a
+ *     widened-in reader gets the bucket only, and this says why rather than
+ *     rendering an em-dash that reads as "no age exists";
+ *   - `unknown` → no timestamp decoded; claiming any age would fabricate one.
+ *
+ * Advisory throughout: nothing here demotes, expires, or re-ranks the claim.
+ */
+function DecaySignal({ decay }: { decay: BrainFactDecayView }) {
+  const badge = decayBadge[decay.level];
+  return (
+    <div className="space-y-1">
+      <Badge variant={badge.variant} className={badge.className}>
+        <Clock className="mr-1 size-3" aria-hidden />
+        {badge.label}
+      </Badge>
+      {decay.level === "unknown" ? (
+        <p className="text-xs text-muted-foreground">
+          No timestamp on this claim decoded, so its age cannot be stated.
+        </p>
+      ) : decay.lastObservedAt !== null ? (
+        <p className="text-xs text-muted-foreground">
+          <RelativeTimestamp iso={decay.lastObservedAt} label="Last observed" />
+        </p>
+      ) : decay.ageDays !== null ? (
+        <p className="text-xs text-muted-foreground">
+          About {decay.ageDays} {decay.ageDays === 1 ? "day" : "days"} old — no source
+          observation recorded, so this is anchored on the claim&apos;s validity start or on when
+          Atlas learned it.
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Exact age withheld with attribution — it would restate when the claim was last said.
+        </p>
+      )}
     </div>
   );
 }
@@ -324,6 +378,9 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
       )}
 
       <div className="grid grid-cols-2 gap-4 border-t pt-4">
+        <Field label="Staleness">
+          <DecaySignal decay={candidate.decay} />
+        </Field>
         <Field label="Valid from">
           {candidate.validFrom ? <RelativeTimestamp iso={candidate.validFrom} /> : orDash(null)}
         </Field>

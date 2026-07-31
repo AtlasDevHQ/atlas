@@ -983,8 +983,8 @@ export const ADMIN_ACTIONS = {
   /**
    * Company-brain fact review (#4772, ADR-0036).
    *
-   * `retract` is the review gate's NEGATIVE verb, and the only fact-lifecycle
-   * event with a durable audit row of its own. There is deliberately no
+   * `retract` is the review gate's NEGATIVE verb; `correct` covers the other
+   * three `correct_fact` verbs (#4915). There is deliberately no
    * `brainFact.approve` here: approval is the atomic publish endpoint, which
    * already records its own action for the whole publish — a second "approved"
    * row per fact would claim a decision the publish transaction, not this
@@ -996,6 +996,15 @@ export const ADMIN_ACTIONS = {
    */
   brainFact: {
     retract: "brain_fact.retract",
+    /**
+     * A `correct_fact` verb applied over the admin API (#4915) — retract via
+     * the correction machinery still records `retract` above (one retract
+     * semantics, one audit vocabulary); this row covers `supersede`,
+     * `re-authority`, and `pin`, with the verb in `metadata.verb` and the
+     * correction episode id beside it. The correction episode itself is the
+     * durable in-brain record; this is the admin-actions trail's copy.
+     */
+    correct: "brain_fact.correct",
   },
 } as const;
 

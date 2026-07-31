@@ -100,6 +100,28 @@ run_fixture "the allowlisted region import passes" pass \
   "packages/api/src/api/routes/admin-migrate.ts" \
 'await client.query(`INSERT INTO brain_facts (id, workspace_id, subject, status, visible_to) VALUES ($1,$2,$3,$4,$5)`);'
 
+# (i2) The allowlisted correction machinery (#4915) → must PASS: `correct_fact`
+#      is the second gate-time decision maker the gated-column commentary
+#      forecast, promoting the human-authored replacement inside the
+#      correction transaction.
+run_fixture "the allowlisted correction machinery passes" pass \
+  "packages/api/src/lib/brain/correction.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1 AND id = $2::uuid AND status = '"'"'draft'"'"'`);'
+
+# (i2b) The generated template mirror of the correction machinery → must PASS
+#       under its own glob, exactly like fixture (w) for the adapter — the
+#       template scan is deliberate, so each allowlisted file needs both
+#       spellings covered.
+run_fixture "generated template mirror of the correction machinery passes" pass \
+  "create-atlas/templates/nextjs-standalone/src/lib/brain/correction.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1 AND id = $2::uuid AND status = '"'"'draft'"'"'`);'
+
+# (i3) The carve-out is the FILE, not the directory: a sibling under
+#      `lib/brain/` writing the same shape must still FAIL.
+run_fixture "a non-allowlisted lib/brain sibling still fails" fail \
+  "packages/api/src/lib/brain/reconcile.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1`);'
+
 # (j) A test file staging a published fixture → must PASS (excluded by pattern).
 run_fixture "a .test.ts fixture is excluded" pass \
   "packages/api/src/lib/brain/__tests__/seed.test.ts" \
@@ -304,6 +326,50 @@ run_fixture "UPDATE of another table's visible_to passes" pass \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.query(`UPDATE brain_episodes SET visible_to = ARRAY['"'"'org'"'"'] WHERE id = $1`);
 const live = await db.query(`SELECT id FROM brain_facts`);'
+
+# ── valid_to (#4912): the supersession stamp, UPDATE-only like the grant ──
+
+run_fixture "UPDATE … SET valid_to fails (autonomous supersession)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET valid_to = now() WHERE workspace_id = $1 AND subject = $2`);'
+
+run_fixture "Drizzle .update().set({validTo}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ validTo: new Date() }).where(eq(brainFacts.id, id));'
+
+run_fixture "INSERT naming valid_from passes — a producer may open a window, never close one" pass \
+  "packages/api/src/lib/brain/reconcile-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, valid_from, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5::timestamptz,$6::jsonb,$7::uuid, ARRAY(SELECT jsonb_array_elements_text($8::jsonb)))`);'
+
+run_fixture "SELECT filtering on valid_to passes — reads are the point of the column" pass \
+  "packages/api/src/lib/brain/read.ts" \
+'const rows = await db.query(`SELECT id FROM brain_facts WHERE workspace_id = $1 AND invalidated_at IS NULL AND valid_to IS NULL`);'
+
+# The allowlisted adapter is where the supersession stamp lives.
+run_fixture "the allowlisted adapter's supersession stamp passes" pass \
+  "packages/api/src/lib/content-mode/adapters/brain-facts.ts" \
+'await tx.query(`UPDATE brain_facts SET valid_to = now(), updated_at = now() WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND status = '"'"'published'"'"' AND valid_to IS NULL RETURNING id::text AS id`);'
+
+# A retraction mentions neither gated column, so it must keep passing now that
+# `valid_to` is gated — the regression that matters most, because retraction is
+# the one legitimate brain_facts UPDATE outside the allowlist.
+run_fixture "retraction still passes with valid_to gated" pass \
+  "packages/api/src/lib/brain/retract2.ts" \
+'await db.query(`UPDATE brain_facts AS f SET invalidated_at = now(), updated_at = now() WHERE f.id = $1 AND f.invalidated_at IS NULL`);'
+
+# The upsert's UPDATE half is the shape that evaded the visible_to gate when it
+# was first written, and `valid_to` sits in the same INSERT-legal /
+# UPDATE-forbidden asymmetry — so both spellings must trip (#4912).
+run_fixture "ON CONFLICT … DO UPDATE SET valid_to fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET valid_to = now()`);'
+
+run_fixture "Drizzle .insert().onConflictDoUpdate({set:{validTo}}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { validTo: new Date() } });'
+
+echo ""
 
 echo ""
 echo "  $PASS passed, $FAIL failed"

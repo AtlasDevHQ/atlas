@@ -141,12 +141,15 @@ describeIfPg("searchBrain against the live schema", () => {
     visibleTo?: readonly string[];
     status?: "draft" | "published";
     invalidated?: boolean;
+    /** Validity window (#4916) — `validTo` set simulates a supersession stamp. */
+    validFrom?: Date;
+    validTo?: Date;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, invalidated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9)
+          status, visible_to, invalidated_at, valid_from, valid_to)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9, $10, $11)
        RETURNING id`,
       [
         WS,
@@ -158,6 +161,8 @@ describeIfPg("searchBrain against the live schema", () => {
         opts.status ?? "published",
         opts.visibleTo ?? ["org"],
         opts.invalidated ? new Date() : null,
+        opts.validFrom ?? null,
+        opts.validTo ?? null,
       ],
     );
     return rows[0]!.id;
@@ -432,17 +437,230 @@ describeIfPg("searchBrain against the live schema", () => {
         (r): r is BrainFactResult => r.tier === "fact" && r.id === open,
       );
       expect(fact).toBeDefined();
-      // Present, withheld, and named — "there is a rival you cannot see" is the
-      // signal; an omitted row would read as "nothing contradicts this".
-      expect(fact!.tensions).toEqual([
-        { visible: false, factId: secret, edgeDirection: "to" },
-      ]);
+      // Present, withheld, and counted — "there is a rival you cannot see" is
+      // the signal; an omitted row would read as "nothing contradicts this".
+      // The count is the WHOLE entry (#4913): `z.strictObject` semantics, so a
+      // producer attaching the claim payload here is a shape change this
+      // assertion refuses.
+      expect(fact!.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
 
       const forInsider = await search(insider(), { query: "Petrel owner", include: ["fact"] });
       const insiderFact = forInsider.results.find(
         (r): r is BrainFactResult => r.tier === "fact" && r.id === open,
       );
-      expect(insiderFact!.tensions[0]).toMatchObject({ visible: true, factId: secret });
+      const rival = insiderFact!.tensions[0];
+      expect(rival).toMatchObject({ visible: true, factId: secret });
+      if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+      // The counterpart arrives WITH its own provenance (#4913) — the T4
+      // stance is surfaced-both-with-provenance, projected off the rival's own
+      // row through the live SQL, not the owner's.
+      expect(rival.provenance.source).toBe("slack");
+      expect(rival.provenance.attribution).toMatchObject({ visible: true, actor: "U1" });
+      expect(rival.status).toBe("published");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ══════════════════════════════════════════════════════════════════
+  // 7. asOf — the bi-temporal point read (#4916)
+  // ══════════════════════════════════════════════════════════════════
+
+  it(
+    "answers a point read under each version's FROZEN grant — a widening between versions does not reach back",
+    async () => {
+      // The acceptance scenario: the grant CHANGED between versions. Monday's
+      // version was private to `audience:private-channel`; Wednesday's
+      // supersession republished the claim org-wide. "What did we believe
+      // Monday" must use Monday's grant — the org reader gets NOTHING at
+      // Monday even though the CURRENT version is public, because each row is
+      // gated by its own immutable `visible_to`, not by the lineage's newest.
+      const monday = new Date("2026-07-06T09:00:00Z");
+      const tuesday = "2026-07-07T09:00:00Z";
+      const wednesday = new Date("2026-07-08T09:00:00Z");
+      const ep = await seedEpisode({
+        sourceId: "asof-grant",
+        visibleTo: ["audience:private-channel"],
+      });
+      const privateV1 = await seedFact({
+        subject: "Osprey rollout",
+        predicate: "led_by",
+        object: "the skunkworks pod",
+        episodeId: ep,
+        visibleTo: ["audience:private-channel"],
+        validFrom: monday,
+        validTo: wednesday, // superseded at Wednesday's publish
+      });
+      const publicV2 = await seedFact({
+        subject: "Osprey rollout",
+        predicate: "led_by",
+        object: "the platform team",
+        episodeId: ep,
+        visibleTo: ["org"],
+        validFrom: wednesday,
+      });
+
+      // The insider at Tuesday: Monday's belief, through Monday's grant.
+      const insiderAtTuesday = await search(insider(), {
+        query: "Osprey rollout",
+        include: ["fact"],
+        asOf: tuesday,
+      });
+      expect(ids(insiderAtTuesday.results)).toContain(privateV1);
+      // v2's window has not opened at Tuesday — a later belief must not
+      // answer for an earlier instant.
+      expect(ids(insiderAtTuesday.results)).not.toContain(publicV2);
+      expect(insiderAtTuesday.asOf).toBe("2026-07-07T09:00:00.000Z");
+
+      // The org reader at Tuesday: NOTHING. v1's frozen grant excludes them,
+      // and v2 had not begun. The current version being org-visible earns no
+      // historical access.
+      const outsiderAtTuesday = await search(outsider(), {
+        query: "Osprey rollout",
+        include: ["fact"],
+        asOf: tuesday,
+      });
+      expect(ids(outsiderAtTuesday.results)).not.toContain(privateV1);
+      expect(ids(outsiderAtTuesday.results)).not.toContain(publicV2);
+
+      // Default (as-of-now) reads are unchanged by any of the above: the
+      // superseded v1 is hidden, the current v2 serves — for both readers.
+      for (const reader of [insider(), outsider()]) {
+        const nowRead = await search(reader, { query: "Osprey rollout", include: ["fact"] });
+        expect(ids(nowRead.results)).toContain(publicV2);
+        expect(ids(nowRead.results)).not.toContain(privateV1);
+        expect("asOf" in nowRead).toBe(false);
+      }
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "hands over exactly at the supersession instant — half-open windows, no gap, no double answer",
+    async () => {
+      // asOf == v1.valid_to == v2.valid_from: the `<=` / `>` pair must compose
+      // against real timestamptz semantics so exactly ONE version answers at
+      // the boundary — v2 (its window is [from, ∞)), never v1 (its window is
+      // [from, to), half-open on the right).
+      const handover = new Date("2026-07-08T12:00:00Z");
+      const ep = await seedEpisode({ sourceId: "asof-boundary" });
+      const v1 = await seedFact({
+        subject: "Gannet migration",
+        object: "the legacy exporter",
+        episodeId: ep,
+        validFrom: new Date("2026-07-01T00:00:00Z"),
+        validTo: handover,
+      });
+      const v2 = await seedFact({
+        subject: "Gannet migration",
+        object: "the streaming exporter",
+        episodeId: ep,
+        validFrom: handover,
+      });
+
+      const atBoundary = await search(outsider(), {
+        query: "Gannet migration",
+        include: ["fact"],
+        asOf: handover.toISOString(),
+      });
+      expect(ids(atBoundary.results)).toContain(v2);
+      expect(ids(atBoundary.results)).not.toContain(v1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a NARROWING between versions leaves the once-public version historically readable — frozen grants cut both ways",
+    async () => {
+      // The converse of the widening scenario, pinned so the disclosure
+      // semantics cannot flip silently: v1 was published org-wide, v2
+      // re-narrowed the claim to a private audience. Under frozen per-version
+      // grants the org reader RETAINS historical access to the version that
+      // was public while it held — narrowing the current belief does not
+      // rewrite who was allowed to see the old one — and sees nothing current.
+      const monday = new Date("2026-07-06T09:00:00Z");
+      const wednesday = new Date("2026-07-08T09:00:00Z");
+      const ep = await seedEpisode({ sourceId: "asof-narrow" });
+      const publicV1 = await seedFact({
+        subject: "Skua incident review",
+        object: "published to all-hands",
+        episodeId: ep,
+        visibleTo: ["org"],
+        validFrom: monday,
+        validTo: wednesday,
+      });
+      const privateV2 = await seedFact({
+        subject: "Skua incident review",
+        object: "restricted to legal",
+        episodeId: ep,
+        visibleTo: ["audience:private-channel"],
+        validFrom: wednesday,
+      });
+
+      const outsiderAtTuesday = await search(outsider(), {
+        query: "Skua incident review",
+        include: ["fact"],
+        asOf: "2026-07-07T09:00:00Z",
+      });
+      expect(ids(outsiderAtTuesday.results)).toContain(publicV1);
+      expect(ids(outsiderAtTuesday.results)).not.toContain(privateV2);
+
+      const outsiderNow = await search(outsider(), {
+        query: "Skua incident review",
+        include: ["fact"],
+      });
+      // As of now: v1 is superseded, v2 is granted elsewhere — nothing serves.
+      expect(ids(outsiderNow.results)).not.toContain(publicV1);
+      expect(ids(outsiderNow.results)).not.toContain(privateV2);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps a TOMBSTONED fact hidden at every instant, even one inside its validity window",
+    async () => {
+      // Retraction is the only way to hide history, and hiding is what it
+      // does: a retracted fact whose window covers the asked-about instant
+      // still never answers. Distinct from supersession, which the previous
+      // test proves DOES answer inside its window.
+      const ep = await seedEpisode({ sourceId: "asof-tomb" });
+      const retracted = await seedFact({
+        subject: "Heron pricing",
+        object: "the old tier sheet",
+        episodeId: ep,
+        invalidated: true,
+        validFrom: new Date("2026-07-06T00:00:00Z"),
+        validTo: new Date("2026-07-20T00:00:00Z"),
+      });
+
+      const res = await search(outsider(), {
+        query: "Heron pricing",
+        include: ["fact"],
+        asOf: "2026-07-10T00:00:00Z",
+      });
+      expect(ids(res.results)).not.toContain(retracted);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "admits a NULL valid_from at any instant — an unrecorded start is not a late one",
+    async () => {
+      // The default read serves NULL-valid_from rows as current belief (it has
+      // no valid_from predicate at all), so the point read must admit them too
+      // or `asOf ≈ now` would diverge from the default read.
+      const ep = await seedEpisode({ sourceId: "asof-nullfrom" });
+      const openStart = await seedFact({
+        subject: "Puffin oncall",
+        object: "the infra rotation",
+        episodeId: ep,
+      });
+
+      const res = await search(outsider(), {
+        query: "Puffin oncall",
+        include: ["fact"],
+        asOf: "2026-01-01T00:00:00Z",
+      });
+      expect(ids(res.results)).toContain(openStart);
     },
     PG_TEST_TIMEOUT_MS,
   );

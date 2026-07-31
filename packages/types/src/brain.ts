@@ -262,6 +262,47 @@ export interface BrainFactTensionWithheld {
 export type BrainFactTensionView = BrainFactTensionVisible | BrainFactTensionWithheld;
 
 /**
+ * Advisory staleness bucket of one claim, derived at read time (#4914,
+ * ADR-0036 §Temporal — decay only surfaces, never auto-demotes).
+ *
+ * `unknown` is the honest arm for a row none of whose temporal anchors
+ * decoded: claiming any of the other three would fabricate an age.
+ */
+export type BrainFactDecayLevel = "fresh" | "aging" | "stale" | "unknown";
+
+/**
+ * The read-time decay signal attached to every primary fact view — the review
+ * queue row, the fact detail, and `searchBrain` results. Tension counterparts
+ * deliberately carry none: they are context for a conflict, not a claim being
+ * aged on its own card.
+ *
+ * ADVISORY ONLY, and computed at read time from the claim's newest observation
+ * (its corroborating episodes' `occurred_at`, each falling back to that
+ * episode's own ingest time), falling back to `validFrom`,
+ * then `ingestedAt`. There is no stored score, no expiry, and no write path
+ * from this signal to a fact row: a stale fact keeps its status, its trust
+ * tier, and its place in every read. What decay may do is SURFACE — the review
+ * queue floats stale claims for a human's attention, and the agent is told to
+ * present a fact's age rather than assert a stale claim as current.
+ */
+export interface BrainFactDecayView {
+  readonly level: BrainFactDecayLevel;
+  /**
+   * Days since the newest temporal anchor. `null` when the level is `unknown`
+   * — or when the anchor is an observation and this reader's provenance
+   * attribution is withheld (#4836): a day-precision age restates the withheld
+   * "when" as arithmetic, so a widened-in reader gets the coarse level only.
+   */
+  readonly ageDays: number | null;
+  /**
+   * The newest observation itself, ISO-8601. `null` when no observation
+   * decoded (the age, if any, is anchored on `validFrom` / `ingestedAt`) or
+   * when it is withheld for the reason {@link ageDays} states.
+   */
+  readonly lastObservedAt: string | null;
+}
+
+/**
  * A structural rule the atomic publish endpoint would refuse this claim on.
  *
  * A PRE-FLIGHT of `classifyFactForPromotion`, computed on read so the queue can
@@ -330,6 +371,8 @@ export interface BrainFactCandidate {
    * of published facts.
    */
   readonly promotionBlock: BrainFactPromotionBlock | null;
+  /** Read-time staleness signal — advisory, never a demotion. See {@link BrainFactDecayView}. */
+  readonly decay: BrainFactDecayView;
   readonly validFrom: string | null;
   readonly validTo: string | null;
   readonly extractedAt: string | null;
@@ -550,6 +593,74 @@ export interface BrainFactOversight {
    * disclosure stays exact even when the breakdown is clipped.
    */
   readonly bucketsTruncated: boolean;
+  /**
+   * What the next publish will SUPERSEDE (#4912) — the disclosure that makes
+   * "no silent supersession" true before the admin confirms.
+   *
+   * Optional on the TYPE for deploy-skew tolerance only (an older API omits
+   * it, and the panel then simply renders no supersession notice — the
+   * pre-#4912 behaviour, when there was nothing to disclose). The current API
+   * always emits it; the server-side wire schema requires it.
+   */
+  readonly willSupersede?: BrainFactWillSupersede;
+}
+
+/**
+ * One supersession the next publish will perform (#4912): promoting `draft`
+ * stamps `superseded`'s `valid_to` and writes a `supersedes` edge, in the same
+ * transaction. Both claims are rendered because the pair IS the disclosure —
+ * "X replaces Y" is what the admin is confirming.
+ *
+ * Unlike the oversight buckets this is CONTENT, so it is reader-scoped: a pair
+ * appears here only when the reader's own fail-closed ACL predicate admits
+ * BOTH rows. Everything else is a number in
+ * {@link BrainFactWillSupersede.withheld} — never a placeholder row, for
+ * the publish preview's stated reason: a row carrying only a fact id would
+ * disclose which facts exist without disclosing what they say.
+ */
+export interface BrainFactWillSupersedePair {
+  /** The draft whose promotion supersedes. */
+  readonly draftId: string;
+  /** The draft's SPO claim, `subject predicate object`. */
+  readonly draftLabel: string;
+  /** The published fact whose `valid_to` the promotion will stamp. */
+  readonly supersededId: string;
+  readonly supersededLabel: string;
+}
+
+/**
+ * The will-supersede disclosure (#4912). `pairs` is reader-scoped and capped;
+ * `withheld` counts the pairs the reader may not read (either side); the two
+ * never overlap, so `pairs.length + withheld` understates only when
+ * {@link truncated} is set.
+ */
+export interface BrainFactWillSupersede {
+  /**
+   * How many supersessions the next publish will perform, workspace-wide and
+   * uncapped — the headline number. Carried explicitly because
+   * `pairs.length + withheld` stops being it the moment {@link truncated}
+   * bites, for `distinctAudiences`' reason: the client must never infer a
+   * cardinality from a capped array.
+   */
+  readonly total: number;
+  readonly pairs: readonly BrainFactWillSupersedePair[];
+  /**
+   * Supersessions the next publish will perform that this reader may NOT see —
+   * a count, never content, mirroring the publish preview's
+   * `brainFactsWithheld`. Publish is workspace-scoped, so these happen
+   * regardless of who presses the button; the count is what keeps that from
+   * being silent.
+   */
+  readonly withheld: number;
+  /**
+   * True when `pairs` is clipped at the response cap — or when the producer
+   * dropped a drifted row, which is the same statement to the reader: you were
+   * entitled to more than is listed. The missing remainder is NOT folded into
+   * {@link withheld} in either case — that number means "hidden from you by
+   * ACL", and a truncation dressed as an ACL boundary would send the admin
+   * looking for private channels that do not exist.
+   */
+  readonly truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -596,38 +707,42 @@ export type BrainResultTier = "fact" | "raw-episode" | "document";
 export type BrainEpisodeExtractionState = "pending" | "complete";
 
 /**
- * A claim in advisory tension with a fused fact result — an `in-tension-with`
- * edge, surfaced in BOTH directions and NEVER ranked.
+ * The counterparts this reader may NOT see, as one aggregated entry (#4913).
  *
- * Arbitration is M2's. This slice reports the graph and stops: the agent is
- * told two claims conflict and neither is presented as the winner. Same rule
- * the review surface follows ({@link BrainFactTensionView}); this is the
- * lighter projection — no provenance, no corroboration, because a retrieval
- * caller needs to know a conflict EXISTS, and the review surface is where it
- * gets adjudicated.
+ * A COUNT rather than one `visible: false` row per rival, and that asymmetry
+ * with {@link BrainFactTensionWithheld} is deliberate: the review surface hands
+ * a human per-rival opaque handles worth keeping distinct (an id names a row a
+ * differently-entitled reviewer can resolve); `searchBrain` feeds an LLM
+ * context window, where N identical "you cannot see this" rows spend tokens
+ * without adding information. The COUNT is the whole
+ * signal — "two rivals exist that you cannot see" is exactly what should stop
+ * an agent asserting the claim as settled, and an omitted conflict reads as
+ * "nothing contradicts this" (the M1 rule).
+ *
+ * `z.strictObject` on the schema mirror keeps this arm structurally incapable
+ * of carrying the claim payload — the same enforcement every withheld arm in
+ * this file gets, because this is an ACL boundary.
  */
-export type BrainSearchTensionView =
-  | {
-      readonly visible: true;
-      readonly factId: string;
-      readonly edgeDirection: BrainFactTensionDirection;
-      readonly subject: string;
-      readonly predicate: string;
-      readonly object: string;
-      /** Non-null when the counterpart has been withdrawn — see {@link BrainFactTensionVisible.invalidatedAt}. */
-      readonly invalidatedAt: string | null;
-    }
-  /**
-   * A conflicting claim this reader may not see. Reported rather than dropped:
-   * "there is a rival you cannot see" is exactly what should stop an agent
-   * asserting the claim as settled, and an omitted row reads as "nothing
-   * contradicts this".
-   */
-  | {
-      readonly visible: false;
-      readonly factId: string;
-      readonly edgeDirection: BrainFactTensionDirection;
-    };
+export interface BrainSearchTensionWithheld {
+  readonly visible: false;
+  /** How many conflicting claims exist that this reader may not see. ≥ 1. */
+  readonly withheldCount: number;
+}
+
+/**
+ * One entry of a fused fact's conflict cluster — an `in-tension-with` edge,
+ * surfaced in BOTH directions and NEVER ranked (#4913, ADR-0036 §Temporal).
+ *
+ * Genuine coexisting tension is surfaced-both-with-provenance, never arbitrated:
+ * each ACL-visible counterpart is the FULL {@link BrainFactTensionVisible}
+ * projection — claim, provenance (attribution decided per counterpart row),
+ * corroboration, and recency — so the agent can present both sides with their
+ * evidence. Source authority and recency are surfacing hints for the READER;
+ * nothing in the ordering or the shape names a winner: entries are sorted by
+ * `factId` alone, with the withheld aggregate last. Arbitration belongs to the
+ * human gate (`/admin/brain-facts`, composing with supersession — #4912).
+ */
+export type BrainSearchTensionView = BrainFactTensionVisible | BrainSearchTensionWithheld;
 
 /** tier-2 — a reviewed claim. Authoritative for its class; yields to the warehouse. */
 export interface BrainFactResult {
@@ -653,6 +768,13 @@ export interface BrainFactResult {
   readonly provenance: BrainFactProvenanceView;
   /** DISTINCT `provenance` edges backing the claim — see {@link BrainFactCandidate.corroborationCount}. */
   readonly corroborationCount: number;
+  /**
+   * Read-time staleness signal (#4914) — advisory temporal metadata, carried
+   * so the agent can present a fact's age instead of asserting a stale claim
+   * as current. Never a demotion: `trustTier` and `status` are unaffected by
+   * it, and fusion never ranks by it.
+   */
+  readonly decay: BrainFactDecayView;
   readonly tensions: readonly BrainSearchTensionView[];
 }
 
@@ -813,6 +935,15 @@ export interface BrainSearchResponse {
    * stdio MCP actor has no workspace and takes this path on every call.
    */
   readonly unavailable?: BrainSearchUnavailable | null;
+  /**
+   * The bi-temporal point-read instant this page answered for (#4916), echoed
+   * back normalized to ISO-8601. Present ONLY on an as-of read — an as-of-now
+   * page omits it, so its absence is the statement "these are current beliefs".
+   * Carried because a historical fact page read WITHOUT this framing is
+   * indistinguishable from current belief, which is exactly the confusion a
+   * trust-labeled surface must not permit.
+   */
+  readonly asOf?: string;
 }
 
 /**
@@ -827,4 +958,46 @@ export interface BrainSearchResponse {
 export interface BrainFactRetractResponse {
   readonly id: string;
   readonly invalidatedAt: string;
+}
+
+/**
+ * The four correction verbs (#4915, ADR-0036 §Temporal, conflict &
+ * provenance) — T4's second human-authoritative entry point beside the review
+ * gate. `retract` is the ONLY tombstone path (and the GDPR-erasure verb);
+ * `supersede` stamps `valid_to` + the `supersedes` edge through #4912's
+ * publish-gate machinery; `re-authority` and `pin` re-anchor a claim on the
+ * correcting human as fresh evidence. The runtime tuple lives in
+ * `@useatlas/schemas` (`BRAIN_CORRECTION_VERBS`) for the usual
+ * no-value-exports-here reason.
+ */
+export type BrainCorrectionVerb = "retract" | "supersede" | "re-authority" | "pin";
+
+/**
+ * Result of applying one correction verb.
+ *
+ * Every correction materializes an immutable human-authored episode
+ * (`correctionEpisodeId`) and lands authoritative immediately — no draft
+ * queue. The verb-specific fields are `null` / empty on the verbs they do not
+ * belong to, rather than a discriminated union, because every consumer today
+ * renders the shared triple and treats the rest as annotations.
+ */
+export interface BrainFactCorrectionResponse {
+  readonly verb: BrainCorrectionVerb;
+  /** The corrected (target) fact. */
+  readonly factId: string;
+  /** The immutable human-authored correction episode recording the verb. */
+  readonly correctionEpisodeId: string;
+  /** `retract` only: the tombstone timestamp. */
+  readonly invalidatedAt: string | null;
+  /**
+   * `retract` only: live facts holding a `derives-from` edge onto the
+   * retracted one, flagged for human re-review. Opaque ids — never claims —
+   * and never a cascade: nothing about the flagged rows' own lifecycle
+   * changed.
+   */
+  readonly flaggedForReReview: readonly string[];
+  /** `supersede` only: the fact now serving as the current belief. */
+  readonly supersededBy: string | null;
+  /** `supersede` only: the `valid_to` stamped on the superseded fact. */
+  readonly validTo: string | null;
 }

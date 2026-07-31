@@ -25,11 +25,15 @@
  */
 import { z } from "zod";
 import type {
+  BrainCorrectionVerb,
   BrainEntityRole,
   BrainFactCandidate,
   BrainFactAttributionView,
+  BrainFactDecayLevel,
+  BrainFactDecayView,
   BrainFactCandidateListResponse,
   BrainFactCandidateSummary,
+  BrainFactCorrectionResponse,
   BrainFactEpisodeView,
   BrainFactOversight,
   BrainFactOversightBucket,
@@ -41,7 +45,10 @@ import type {
   BrainFactRetractResponse,
   BrainFactReviewStatus,
   BrainFactTensionView,
+  BrainFactWillSupersede,
+  BrainFactWillSupersedePair,
   BrainResultTier,
+  BrainSearchTensionView,
 } from "@useatlas/types";
 
 /** Mirrors `BRAIN_FACT_STATUSES` in `packages/api/src/lib/brain/types.ts`. */
@@ -116,6 +123,26 @@ void _brainResultTierOrder;
 export function isBrainResultTier(value: unknown): value is BrainResultTier {
   return typeof value === "string" && (BRAIN_RESULT_TIERS as readonly string[]).includes(value);
 }
+
+/**
+ * The read-time decay vocabulary (#4914) — the runtime half of
+ * {@link BrainFactDecayLevel}, in this package for the module header's reason.
+ */
+export const BRAIN_FACT_DECAY_LEVELS = [
+  "fresh",
+  "aging",
+  "stale",
+  "unknown",
+] as const satisfies readonly BrainFactDecayLevel[];
+
+/** Compile error if a level joins the union without joining the tuple. */
+type _BrainDecayLevelsCovered = [
+  Exclude<BrainFactDecayLevel, (typeof BRAIN_FACT_DECAY_LEVELS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainDecayLevelsCovered: _BrainDecayLevelsCovered = true;
+void _brainDecayLevelsCovered;
 
 /**
  * Review-queue status filter. `all` is a QUERY value only — it is not a fact
@@ -216,27 +243,57 @@ export const BrainFactEpisodeViewSchema = z.discriminatedUnion("visible", [
 
 const BrainFactTensionDirectionSchema = z.enum(["from", "to"]);
 
+/**
+ * The visible counterpart arm — one schema behind BOTH tension unions, because
+ * `BrainFactTensionVisible` is the one type behind both: the review queue and
+ * `searchBrain` project the same conflict cluster (#4913,
+ * `lib/brain/tensions.ts`) and differ only in their withheld arm.
+ */
+const BrainFactTensionVisibleSchema = z.object({
+  visible: z.literal(true),
+  factId: z.string(),
+  edgeDirection: BrainFactTensionDirectionSchema,
+  subject: z.string(),
+  predicate: z.string(),
+  object: z.string(),
+  status: z.enum(BRAIN_FACT_REVIEW_STATUSES),
+  validFrom: z.string().nullable(),
+  ingestedAt: z.string().nullable(),
+  invalidatedAt: z.string().nullable(),
+  corroborationCount: z.number().int().nonnegative(),
+  provenance: BrainFactProvenanceViewSchema,
+});
+
 export const BrainFactTensionViewSchema = z.discriminatedUnion("visible", [
-  z.object({
-    visible: z.literal(true),
-    factId: z.string(),
-    edgeDirection: BrainFactTensionDirectionSchema,
-    subject: z.string(),
-    predicate: z.string(),
-    object: z.string(),
-    status: z.enum(BRAIN_FACT_REVIEW_STATUSES),
-    validFrom: z.string().nullable(),
-    ingestedAt: z.string().nullable(),
-    invalidatedAt: z.string().nullable(),
-    corroborationCount: z.number().int().nonnegative(),
-    provenance: BrainFactProvenanceViewSchema,
-  }),
+  BrainFactTensionVisibleSchema,
   z.strictObject({
     visible: z.literal(false),
     factId: z.string(),
     edgeDirection: BrainFactTensionDirectionSchema,
   }),
 ]) satisfies z.ZodType<BrainFactTensionView, unknown>;
+
+/**
+ * `searchBrain`'s cluster entry (#4913): the same visible counterpart, but the
+ * withheld arm is an aggregated COUNT — the review surface hands a human
+ * per-rival opaque handles; the search surface hands an LLM the one number
+ * that matters. `z.strictObject` keeps the withheld arm structurally incapable
+ * of carrying the claim payload, per the M1 ACL-boundary rule.
+ *
+ * SCOPE, same as {@link BrainFactAttributionViewSchema}'s note: `searchBrain`
+ * has no runtime response parse today, so this schema's job is the
+ * compile-time pin against `BrainSearchTensionView` (a drifted field fails the
+ * `satisfies` below) and the enforcement seam for any parser that is added
+ * later. The runtime guarantee on that path is the discriminated union plus
+ * `loadTensions` in `lib/brain/search.ts` being the single constructor.
+ */
+export const BrainSearchTensionViewSchema = z.discriminatedUnion("visible", [
+  BrainFactTensionVisibleSchema,
+  z.strictObject({
+    visible: z.literal(false),
+    withheldCount: z.number().int().positive(),
+  }),
+]) satisfies z.ZodType<BrainSearchTensionView, unknown>;
 
 /**
  * `reasons` is `z.string()`, not an enum over the refusal vocabulary. That
@@ -250,6 +307,37 @@ export const BrainFactPromotionBlockSchema = z.object({
   reasons: z.array(z.string()),
   detail: z.string(),
 }) satisfies z.ZodType<BrainFactPromotionBlock, unknown>;
+
+/**
+ * The advisory decay signal (#4914). A plain nullable-fields object rather
+ * than a discriminated union: unlike attribution, the withheld-observation and
+ * nothing-decoded arms deliberately share one wire shape (a level with null
+ * numbers) — while a fact with no observation but a decodable fallback anchor
+ * keeps `ageDays` — so there is no discriminant on the wire and no payload a
+ * variant would have to be structurally incapable of carrying.
+ * `computeDecaySignal` is the single constructor and owns the entitlement
+ * decision.
+ *
+ * The refinements are the cross-field backstop that role otherwise loses:
+ * attribution's withheld arm gets `z.strictObject`, so a second producer that
+ * attached the withheld payload fails `checked()` on the REST surface — and a
+ * decay view carrying numbers the constructor forbids must fail the same gate.
+ * (`searchBrain` has no response parse, so on the agent path the constructor
+ * stays the only guarantee — the same honest limit the attribution schema
+ * documents.)
+ */
+export const BrainFactDecayViewSchema = z
+  .object({
+    level: z.enum(BRAIN_FACT_DECAY_LEVELS),
+    ageDays: z.number().int().nonnegative().nullable(),
+    lastObservedAt: z.string().nullable(),
+  })
+  .refine((v) => v.level !== "unknown" || (v.ageDays === null && v.lastObservedAt === null), {
+    message: "an unknown decay level carries no numbers — an age beside it fabricates a reading",
+  })
+  .refine((v) => v.lastObservedAt === null || v.ageDays !== null, {
+    message: "an observation timestamp never ships without its age — the constructor sets both or neither",
+  }) satisfies z.ZodType<BrainFactDecayView, unknown>;
 
 export const BrainFactCandidateSchema = z.object({
   id: z.string(),
@@ -266,6 +354,7 @@ export const BrainFactCandidateSchema = z.object({
   episode: BrainFactEpisodeViewSchema.nullable(),
   tensions: z.array(BrainFactTensionViewSchema),
   promotionBlock: BrainFactPromotionBlockSchema.nullable(),
+  decay: BrainFactDecayViewSchema,
   validFrom: z.string().nullable(),
   validTo: z.string().nullable(),
   extractedAt: z.string().nullable(),
@@ -290,6 +379,76 @@ export const BrainFactRetractResponseSchema = z.object({
   id: z.string(),
   invalidatedAt: z.string(),
 }) satisfies z.ZodType<BrainFactRetractResponse, unknown>;
+
+// ---------------------------------------------------------------------------
+// Correction verbs — `correct_fact` (#4915)
+// ---------------------------------------------------------------------------
+
+/** Mirrors `CORRECTION_VERBS` in `packages/api/src/lib/brain/correction.ts`. */
+export const BRAIN_CORRECTION_VERBS = [
+  "retract",
+  "supersede",
+  "re-authority",
+  "pin",
+] as const satisfies readonly BrainCorrectionVerb[];
+
+/** Compile error if a verb joins the union without joining the tuple. */
+type _BrainCorrectionVerbsCovered = [
+  Exclude<BrainCorrectionVerb, (typeof BRAIN_CORRECTION_VERBS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainCorrectionVerbsCovered: _BrainCorrectionVerbsCovered = true;
+void _brainCorrectionVerbsCovered;
+
+/** Narrow an untrusted verb string to the shared vocabulary. */
+export function isBrainCorrectionVerb(value: unknown): value is BrainCorrectionVerb {
+  return (
+    typeof value === "string" && (BRAIN_CORRECTION_VERBS as readonly string[]).includes(value)
+  );
+}
+
+/** Longest free-text `reason` accepted — recorded verbatim in the episode body. */
+export const BRAIN_CORRECTION_REASON_MAX_CHARS = 2_000;
+
+/** Longest replacement object accepted — an SPO column, not a document. */
+export const BRAIN_CORRECTION_OBJECT_MAX_CHARS = 2_000;
+
+/**
+ * The `POST /api/v1/admin/brain-facts/{id}/correct` request body. The target
+ * fact id travels in the path; `replacement` is required for `supersede`
+ * (enforced in the verb machinery, where the refusal carries actionable
+ * prose) and ignored elsewhere.
+ */
+export const BrainFactCorrectRequestSchema = z.object({
+  verb: z.enum(BRAIN_CORRECTION_VERBS),
+  reason: z.string().max(BRAIN_CORRECTION_REASON_MAX_CHARS).optional(),
+  replacement: z
+    .object({
+      object: z.string().min(1).max(BRAIN_CORRECTION_OBJECT_MAX_CHARS),
+      /**
+       * When the corrected value began to hold. Validated as ISO-8601 HERE —
+       * a 400 with a field path, not a silent degrade: this is a human's
+       * stated temporal boundary on a supersession, and discarding a
+       * malformed one quietly would bake the wrong `valid_from` into an
+       * immutable published fact. (`offset` admits `+02:00` spellings, not
+       * just `Z` — a correction is typed by a person, not a serializer.)
+       */
+      validFrom: z.string().datetime({ offset: true }).optional(),
+    })
+    .optional(),
+});
+export type BrainFactCorrectRequest = z.infer<typeof BrainFactCorrectRequestSchema>;
+
+export const BrainFactCorrectionResponseSchema = z.object({
+  verb: z.enum(BRAIN_CORRECTION_VERBS),
+  factId: z.string(),
+  correctionEpisodeId: z.string(),
+  invalidatedAt: z.string().nullable(),
+  flaggedForReReview: z.array(z.string()),
+  supersededBy: z.string().nullable(),
+  validTo: z.string().nullable(),
+}) satisfies z.ZodType<BrainFactCorrectionResponse, unknown>;
 
 // ---------------------------------------------------------------------------
 // Admin oversight — counts without content (#4825)
@@ -391,6 +550,28 @@ export const BrainFactOversightBucketSchema = z.discriminatedUnion("labelPolicy"
   }),
 ]) satisfies z.ZodType<BrainFactOversightBucket, unknown>;
 
+/**
+ * One supersession the next publish will perform (#4912). Strict on both arms'
+ * behalf: unlike the oversight buckets this DOES carry content (both SPO
+ * claims), which is legitimate — the list is reader-ACL-scoped, per the type —
+ * but exactly because content is allowed here, an extra key must be refused
+ * rather than stripped: this is the one object in the oversight envelope where
+ * "somebody attached the provenance payload" would otherwise ship.
+ */
+export const BrainFactWillSupersedePairSchema = z.strictObject({
+  draftId: z.string(),
+  draftLabel: z.string(),
+  supersededId: z.string(),
+  supersededLabel: z.string(),
+}) satisfies z.ZodType<BrainFactWillSupersedePair, unknown>;
+
+export const BrainFactWillSupersedeSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  pairs: z.array(BrainFactWillSupersedePairSchema),
+  withheld: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<BrainFactWillSupersede, unknown>;
+
 const OVERSIGHT_ENVELOPE_FIELDS = {
   buckets: z.array(BrainFactOversightBucketSchema),
   workspaceTotals: BrainFactOversightTotalsSchema,
@@ -420,7 +601,14 @@ const OVERSIGHT_ENVELOPE_FIELDS = {
  * cost of failing open for the disclosure.
  */
 export const BrainFactOversightSchema = z
-  .strictObject(OVERSIGHT_ENVELOPE_FIELDS)
+  .strictObject({
+    ...OVERSIGHT_ENVELOPE_FIELDS,
+    // REQUIRED server-side even though the TYPE marks it optional: the
+    // optionality exists for the CLIENT's deploy-skew window, and a server
+    // that stopped emitting it would silently retire the will-supersede
+    // disclosure — the "no silent supersession" rule enforced as a parse.
+    willSupersede: BrainFactWillSupersedeSchema,
+  })
   .superRefine((value, ctx) => {
     if (
       value.countsConsistent &&
@@ -464,6 +652,11 @@ export const BrainFactOversightSchema = z
  * a loud error Alert rather than a false all-clear, so it is the right way to
  * fail — just narrower than "additive changes are safe".
  */
-export const BrainFactOversightClientSchema = z.object(
-  OVERSIGHT_ENVELOPE_FIELDS,
-) satisfies z.ZodType<BrainFactOversight, unknown>;
+export const BrainFactOversightClientSchema = z.object({
+  ...OVERSIGHT_ENVELOPE_FIELDS,
+  // Optional HERE and only here: an older API omits the field during a deploy
+  // window, and the panel then renders no supersession notice — the pre-#4912
+  // behaviour — rather than losing the whole oversight surface. The pair
+  // objects themselves stay strict for the bucket-arm reason above.
+  willSupersede: BrainFactWillSupersedeSchema.optional(),
+}) satisfies z.ZodType<BrainFactOversight, unknown>;

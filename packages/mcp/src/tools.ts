@@ -27,7 +27,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { explore } from "@atlas/api/lib/tools/explore";
 import { executeSQL } from "@atlas/api/lib/tools/sql";
-import { BRAIN_TOOL_REASONS, searchBrain } from "@atlas/api/lib/tools/search-brain";
+import {
+  BRAIN_TOOL_REASONS,
+  searchBrain,
+  type BrainToolReason,
+} from "@atlas/api/lib/tools/search-brain";
+import type { AtlasMcpToolErrorCode } from "@useatlas/types/mcp";
 import { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
 import {
   EXECUTE_SQL_ERROR_CODES,
@@ -377,6 +382,12 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
           .string()
           .optional()
           .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
+        asOf: z
+          .string()
+          .optional()
+          .describe(
+            "Facts only: historical point read — the reviewed facts valid at that moment (superseded versions included; retracted never). ISO-8601 date (2026-07-27) or timestamp with an explicit zone (2026-07-27T09:00:00Z); zone-less times and future instants are rejected. Omit for current beliefs.",
+          ),
         limit: z
           .number()
           .int()
@@ -433,14 +444,37 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
           // refusal to `internal_error` with nothing catching it.
           const obj = result as Record<string, unknown>;
           if (typeof obj.error === "string") {
-            // `reader_unresolved` is the ACL boundary; everything else is an
-            // Atlas-side fault. `request_id` rides on BOTH — the refusal is
-            // documented as an upstream defect deserving log correlation, and
-            // dropping the id there would leave an operator with nothing to
-            // grep for the one failure this surface most wants reported.
-            const refused = obj.reason === BRAIN_TOOL_REASONS.readerUnresolved;
+            // `reader_unresolved` is the ACL boundary; `invalid_as_of` (#4916)
+            // is the caller's own argument refused — `validation_failed`, so an
+            // agent fixes the timestamp instead of retrying an "internal"
+            // fault. Everything else is an Atlas-side fault. `request_id`
+            // rides on ALL of them — the `reader_unresolved` refusal in
+            // particular is documented as an upstream defect deserving log
+            // correlation, and dropping the id there would leave an operator
+            // with nothing to grep for the one failure this surface most
+            // wants reported.
+            //
+            // A `satisfies`-checked map, not an if-chain: the next reason
+            // added to `BRAIN_TOOL_REASONS` is a COMPILE error here until
+            // somebody decides its envelope code — the silent-`internal_error`
+            // default is exactly the misclassification #4916 fixed for
+            // `invalid_as_of`. (`no_workspace` never accompanies `error` — it
+            // rides `unavailable` on a shaped response — but it still needs a
+            // row so the exhaustiveness check covers the whole vocabulary.)
+            const codeByReason = {
+              [BRAIN_TOOL_REASONS.readerUnresolved]: "forbidden",
+              [BRAIN_TOOL_REASONS.invalidAsOf]: "validation_failed",
+              [BRAIN_TOOL_REASONS.noInternalDb]: "internal_error",
+              [BRAIN_TOOL_REASONS.noWorkspace]: "internal_error",
+              [BRAIN_TOOL_REASONS.searchFailed]: "internal_error",
+            } as const satisfies Record<BrainToolReason, AtlasMcpToolErrorCode>;
+            const reason = obj.reason;
+            const code: AtlasMcpToolErrorCode =
+              typeof reason === "string" && reason in codeByReason
+                ? codeByReason[reason as BrainToolReason]
+                : "internal_error";
             return toEnvelopeResult(
-              envelope(refused ? "forbidden" : "internal_error", obj.error, {
+              envelope(code, obj.error, {
                 request_id: requestId,
               }),
             );

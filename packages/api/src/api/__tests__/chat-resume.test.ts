@@ -258,6 +258,30 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     expect(arg.resume?.priorStepIndex).toBe(2);
   });
 
+  it("#4936 — resumes on the WORKSPACE registry, keeping both write verbs", async () => {
+    // The web resume is the dashboards-owning twin of the chat-PLATFORM resume
+    // (`lib/chat-plugin/resume-turn.ts`, which resolves `buildHeadlessRegistry()`).
+    // `runAgent` now defaults to the least-privileged registry, so this route
+    // must name `defaultRegistry` — and over-correcting it to
+    // `nonDashboardRegistry` would silently strip dashboards and fact
+    // correction from a resumed web turn. The structural guard pins the
+    // variable NAME at this call site, not the registry it resolves to, so only
+    // this assertion catches that.
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(200);
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+
+    const arg = (mockRunAgent.mock.calls as unknown as Array<
+      [{ tools?: { getAll(): Record<string, unknown> } }]
+    >)[0]![0];
+    expect(arg.tools, "the web resume must pass `tools` explicitly").toBeDefined();
+
+    const names = Object.keys(arg.tools!.getAll());
+    expect(names).toContain("createDashboard");
+    expect(names).toContain("correct_fact");
+    expect(names).toContain("executeSQL");
+  });
+
   // #4302 — a resumed turn rebuilds its system prompt live (the checkpoint
   // stores the transcript, not the system param), so the conversation's
   // pinned answer style must be re-threaded from the row loaded for the

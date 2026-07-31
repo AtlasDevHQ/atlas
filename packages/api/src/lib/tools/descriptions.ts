@@ -71,20 +71,26 @@ Don't use this when no metric id matches; fall back to \`executeSQL\` with a que
 // Without them a model reads the whole cluster as unresolved and re-opens a
 // conflict a human already settled.
 //
-// This string is the tool description for BOTH readers — the in-process agent
-// (`defaultRegistry`) and any external MCP client — so a gap here is not an
-// MCP-only gap.
+// This string is the tool description for BOTH readers — it reaches the
+// in-process agent as `searchBrain.description` (the AI SDK tool object that
+// `defaultRegistry` registers; `registry.ts`'s own `description:` field is the
+// SYSTEM-PROMPT constant, a different string) and every external MCP client via
+// `withErrorContract`. A gap here is not an MCP-only gap.
 //
 // The lifecycle labels are trades, not additions: the string sat at 149 of the
 // rubric's 150 words (`__tests__/description-rubric.test.ts`), and the budget
-// came out of the tier, attribution, age and `asOf` clauses, the JSON example,
-// and both routing paragraphs. It now sits at 148 — two words of headroom, and
-// `KNOWLEDGE_TRUST_FRAMING` is interpolated, so growing that shared constant
-// spends this description's margin too.
+// came out of the opening sentence, the attribution and age clauses, the
+// folded-in `extraction: "pending"` sentence, the JSON example, and both
+// routing paragraphs. The `asOf` clause was restructured, not squeezed — it
+// still costs what it did, so it is not the place to look for slack. The
+// string now sits at 148: two words of headroom, and `KNOWLEDGE_TRUST_FRAMING`
+// is interpolated, so growing that shared constant spends this margin too.
 //
-// The system-prompt twin in `lib/tools/search-brain.ts` is a superset, not a
-// copy: uncapped, it also carries the as-of-NOW clarifier and the withheld-arm
-// rule, which do not fit here. Parity is on the labels only, and is pinned in
+// The system-prompt twin in `lib/tools/search-brain.ts` is longer and uncapped,
+// not a copy and not a strict superset (it carries the as-of-NOW clarifier and
+// the withheld-arm rule, which do not fit here; it does not carry
+// `KNOWLEDGE_TRUST_FRAMING`, which the prompt gets from the collection ToC).
+// Parity is on the labels only, and is pinned in
 // `__tests__/search-brain-tool.test.ts` — the never-arms are assertions, not
 // decoration, so trim anything here and re-run that suite.
 export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain. Trust-labeled results: \`tier: "fact"\` human-reviewed, \`"raw-episode"\` its source (maybe \`extraction: "pending"\`), \`"document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: use the claim, say attribution restricted; never anonymous, undated, unsourced, nor infer the author. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age, never assert as current or drop. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen), unranked: never pick a winner. Report those as settled once retired: \`invalidatedAt\` non-null = RETRACTED, \`validTo\` ALREADY IN THE PAST = SUPERSEDED; \`validTo\` still in the future = LIVE. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then, framed "as of <time>": superseded included, retracted only in \`tensions\`. Example: \`{ "query": "billing owner", "asOf": "2026-07-01" }\`.

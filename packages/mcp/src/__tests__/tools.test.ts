@@ -1024,10 +1024,17 @@ describe("MCP tools", () => {
       // The stub text comes from the module mock at the top of this file, so
       // this asserts the WIRING, not the prose — which is the only half that
       // can be checked here without duplicating a 148-word string.
+      //
+      // Exact-match on the pre-contract paragraph, not `toContain`: the stub
+      // ("Search the company brain") is a PREFIX of the real constant, so a
+      // hand-written literal copied from `descriptions.ts` would satisfy a
+      // substring check and `withErrorContract` would still append its section
+      // — i.e. both assertions would go green on the exact decoupling this
+      // test exists to catch.
       const { client } = await createTestClient();
       const { tools } = await client.listTools();
       const description = tools.find((t) => t.name === "searchBrain")?.description;
-      expect(description).toContain("Search the company brain");
+      expect(description?.split("\n\n")[0]).toBe("Search the company brain");
       expect(description).toContain("Error contract:");
     });
 
@@ -1047,10 +1054,15 @@ describe("MCP tools", () => {
       // REGISTERED schema.
       const { client } = await createTestClient();
       const { tools } = await client.listTools();
-      const asOf = tools.find((t) => t.name === "searchBrain")?.inputSchema.properties?.asOf as
-        | { description?: string }
-        | undefined;
-      const description = asOf?.description;
+      // Narrowed, not asserted: the MCP SDK types `properties` as
+      // `Record<string, object>`, so a cast here would re-introduce on this
+      // side exactly the blind widening the api-side twin was rewritten to
+      // avoid.
+      const asOf = tools.find((t) => t.name === "searchBrain")?.inputSchema.properties?.asOf;
+      const description =
+        asOf && "description" in asOf && typeof asOf.description === "string"
+          ? asOf.description
+          : undefined;
       expect(
         description,
         "searchBrain's registered inputSchema has no `asOf` description — the registration in src/tools.ts changed shape, so the retraction pins below would pass vacuously",
@@ -1064,15 +1076,20 @@ describe("MCP tools", () => {
       // is still never a RESULT, which is what makes `asOf` safe to trust.
       expect(description).toMatch(/never as a RESULT/);
       // And the arm the three pins above survive: a rewrite that keeps every
-      // token and re-adds the absolute in a neighbouring sentence. Mirrors
-      // `unqualifiedRetractionSentences` in the api suite; four short lines
-      // rather than a shared helper because the two packages do not share test
-      // utilities and the rule is stated in full at its api-side definition.
+      // token and re-adds the absolute in a neighbouring sentence.
+      //
+      // A deliberate second copy of `unqualifiedRetractionSentences` from the
+      // api suite, not a forced one — `@atlas/api` does export a `./testing/*`
+      // entrypoint these four lines could live behind. The rule is OWNED
+      // there, where it is stated in full; a tightening there has to be
+      // mirrored here by hand, which is the cost of not adding a cross-package
+      // test-utility export to a scoped fix. The `\n(?=[-*] )` bullet arm is
+      // omitted because this string is prose, not markdown.
       const unqualified = (description ?? "")
         .split(/(?<=\.)\s+/)
         .filter((s) => /retract/i.test(s))
         .filter((s) =>
-          /retract\w*\s+(?:facts?\s+)?(?:is |are )?never|never\s+(?:returned|surfaces?|appears?|as a RESULT)/i.test(
+          /retract\w*\s+(?:facts?\s+)?(?:is |are )?never|never\s+(?:returned|surfaces?|appears?|as a RESULT)|retract\w*[^.]{0,40}\b(?:excluded|omitted)\b/i.test(
             s,
           ),
         )

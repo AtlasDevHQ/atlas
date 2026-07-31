@@ -359,18 +359,22 @@ describe("searchBrain tool.execute", () => {
  *     guidance injected into the in-process agent's SYSTEM PROMPT via
  *     `registry.ts`'s `describe()`.
  *   - `SEARCH_BRAIN_TOOL_DESCRIPTION` (`lib/tools/descriptions.ts`) — the
- *     LLM-facing tool description `packages/mcp/src/tools.ts` registers, i.e.
- *     what an external MCP client's model reads.
+ *     LLM-facing TOOL description, served both to the in-process agent (as
+ *     `searchBrain.description`) and, via `withErrorContract`, to every
+ *     external MCP client.
  *
  * They are NOT the same string and neither is derived from the other, so
- * guidance added to one reaches only half the agents. The MCP half is the one
- * Atlas does not control the model of, which makes it the half where an
- * unguided `{ "visible": false }` is most likely to be narrated as "nobody
+ * guidance added to the system prompt alone never reaches an external MCP
+ * client — the one reader whose model Atlas does not control, and so the one
+ * most likely to narrate an unguided `{ "visible": false }` as "nobody
  * recorded who said this".
  */
 describe.each([
   ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
-  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+  [
+    "SEARCH_BRAIN_TOOL_DESCRIPTION (tool description — in-process agent and MCP)",
+    SEARCH_BRAIN_TOOL_DESCRIPTION,
+  ],
 ])("%s — withheld attribution is explained to the model", (_label, description) => {
   it("names the wire shape the model will actually see", () => {
     // A rule keyed on prose the response does not contain is unactionable.
@@ -400,11 +404,14 @@ describe.each([
  * Same two-surface pin, for #4914's staleness guidance — and for the same
  * reason the attribution block states: a description is a string nobody would
  * notice deleting, the two surfaces are not derived from each other, and
- * guidance added to one reaches only half the agents.
+ * guidance added to the system prompt alone never reaches an MCP client.
  */
 describe.each([
   ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
-  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+  [
+    "SEARCH_BRAIN_TOOL_DESCRIPTION (tool description — in-process agent and MCP)",
+    SEARCH_BRAIN_TOOL_DESCRIPTION,
+  ],
 ])("%s — staleness is presented, never arbitrated (#4914)", (_label, description) => {
   it("names the temporal wire fields the model will actually see", () => {
     for (const field of ["decay", "validFrom", "corroborationCount"]) {
@@ -448,16 +455,21 @@ describe.each([
  * buy immunity with a token.
  */
 const RETRACTION_ABSOLUTE =
-  /retract\w*\s+(?:facts?\s+)?(?:is |are )?never|never\s+(?:returned|surfaces?|appears?|as a RESULT)/i;
+  /retract\w*\s+(?:facts?\s+)?(?:is |are )?never|never\s+(?:returned|surfaces?|appears?|as a RESULT)|retract\w*[^.]{0,40}\b(?:excluded|omitted)\b/i;
 const RETRACTION_CARVE_OUT = /(only|except|still appears?|the one place)[^.]{0,80}tensions/i;
 
 /** Sentences that promise retracted facts are unreachable without naming the exception. */
 function unqualifiedRetractionSentences(description: string): readonly string[] {
   return (
     description
-      // Naive on purpose: prose with "e.g." fragments mid-sentence, which can
-      // only ever SPLIT an offender into smaller chunks that are still tested.
-      .split(/(?<=\.)\s+/)
+      // Two delimiters, and the bullet arm is the load-bearing one. Splitting
+      // on `. ` alone under-splits the system prompt, whose markdown bullets
+      // have no terminal period: bullet N's tail glues to bullet N+1's head,
+      // and an offender could then borrow a NEIGHBOUR's carve-out — the same
+      // "buy immunity with a token" hole this predicate exists to close, one
+      // level up. Over-splitting (an "e.g." mid-sentence) is the safe
+      // direction: it can only ever hand a smaller chunk to the same filters.
+      .split(/(?<=\.)\s+|\n(?=[-*] )/)
       .filter((s) => /retract/i.test(s))
       .filter((s) => RETRACTION_ABSOLUTE.test(s))
       .filter((s) => !RETRACTION_CARVE_OUT.test(s))
@@ -556,14 +568,16 @@ describe.each([
 });
 
 /**
- * The third of FOUR agent-facing strings, and the one neither block above
- * reaches: the `asOf` ARGUMENT description on this tool's input schema
- * (#4933). The four are the system prompt (`SEARCH_BRAIN_DESCRIPTION`), the
- * tool prose (`SEARCH_BRAIN_TOOL_DESCRIPTION`, both blocks above), this
- * argument, and its re-declared MCP twin. A model deciding whether to PASS
- * `asOf` reads the argument, not the tool prose, and this one shipped
- * promising "retracted facts never" — the same absolute, on a surface with its
- * own reader.
+ * The third of the four strings that CARRY THE RETRACTION PROMISE, and the one
+ * neither block above reaches: the `asOf` ARGUMENT description on this tool's
+ * input schema (#4933). The four are the system prompt
+ * (`SEARCH_BRAIN_DESCRIPTION`), the tool prose (`SEARCH_BRAIN_TOOL_DESCRIPTION`,
+ * both blocks above), this argument, and its re-declared MCP twin. (searchBrain
+ * has a dozen-odd other `.describe()` strings; none of them say anything about
+ * retraction, which is why the count here is four and not twenty.) A model
+ * deciding whether to PASS `asOf` reads the argument, not the tool prose, and
+ * this one shipped promising "retracted facts never" — the same absolute, on a
+ * surface with its own reader.
  *
  * `packages/mcp/src/tools.ts` re-declares the whole input schema rather than
  * importing it — `asOf` is only the argument where that drift is
@@ -579,21 +593,35 @@ describe("searchBrain `asOf` argument description — the carve-out travels with
     // instead would go red on a harmless `.describe()`/`.optional()` reorder
     // while the model still saw the right prose.
     //
-    // The narrowing throws rather than falling back, so an AI SDK reshape
-    // reports itself instead of collapsing to `""` and reading as a prose
-    // regression in the three assertions below.
+    // BOTH shape failures throw rather than falling back, so an AI SDK or zod
+    // reshape reports itself instead of collapsing to `""` and reading as a
+    // prose regression in the assertions below. Only a dropped `.describe()`
+    // returns `""`, which is the one case where an empty string IS the honest
+    // signal — that genuinely is a prose regression.
     const schema = searchBrain.inputSchema;
     if (!(schema instanceof z.ZodObject)) {
       throw new Error(
         "searchBrain.inputSchema is no longer a ZodObject — re-point this read at whatever now carries the argument prose, or the retraction pins below pass vacuously",
       );
     }
-    const asOf = z.toJSONSchema(schema).properties?.asOf;
-    return typeof asOf === "object" ? (asOf.description ?? "") : "";
+    const properties = z.toJSONSchema(schema).properties;
+    const asOf = properties?.asOf;
+    if (typeof asOf !== "object") {
+      throw new Error(
+        `searchBrain's input schema no longer exposes an \`asOf\` object property (saw: ${Object.keys(properties ?? {}).join(", ") || "none"}) — re-point this read, or the retraction pins below pass vacuously`,
+      );
+    }
+    return asOf.description ?? "";
   })();
 
   it("is readable at all — a reshape must fail here, not silently pass", () => {
-    expect(asOfDescription).toContain("historical point read");
+    // Deliberately not keyed on a phrase: a reworded-but-intact description
+    // ("point-in-time read") is not a failure of THIS pin, and the shape
+    // failures it used to stand in for now throw above.
+    expect(
+      asOfDescription,
+      "the `asOf` argument lost its `.describe()` — the retraction pins below would pass vacuously",
+    ).toBeTruthy();
   });
 
   it("names where a retracted fact still surfaces, and the field that labels it", () => {

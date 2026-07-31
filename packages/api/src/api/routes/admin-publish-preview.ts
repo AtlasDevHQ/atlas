@@ -53,7 +53,6 @@ import {
   brainFactPreviewSql,
   brainFactsCountSql,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
-import { WILL_SUPERSEDE_TOTAL_SQL } from "@atlas/api/lib/brain/oversight";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -135,19 +134,6 @@ const PublishPreviewSchema = z.object({
    * confident, false explanation above the publish button.
    */
   brainFactsScopeUnavailable: z.boolean(),
-  /**
-   * How many already-published facts this publish will SUPERSEDE (#4912):
-   * promoting a `single`-cardinality draft that collides with a live published
-   * fact stamps the old fact's `valid_to` atomically with the promotion, and
-   * as-of-now reads then hide it.
-   *
-   * A workspace-wide COUNT, unscoped like `brainFactsWithheld`'s other half
-   * and content-free like it — the modal is the confirm surface, so silence
-   * here would be silent supersession for any admin who publishes without
-   * visiting `/admin/brain-facts`, where the per-pair disclosure lives
-   * (`willSupersede` on the oversight response).
-   */
-  brainFactsWillSupersede: z.number().int().nonnegative(),
 });
 
 export type PublishPreview = z.infer<typeof PublishPreviewSchema>;
@@ -399,29 +385,6 @@ export async function loadBrainFactSegment(
   };
 }
 
-/**
- * The will-supersede count off `pg`, guarded like the brain draft count above
- * and for the same reason with the same asymmetry: 0 is the failure-silencing
- * answer — it drops the supersession notice from the modal precisely when the
- * count query is misbehaving, which is #4912's "no silent supersession"
- * reproduced as a driver drift. `COUNT(*)` cannot return NULL, so the throw is
- * unreachable from Postgres; it exists so drift is a 500 with a requestId
- * rather than a confident all-clear.
- */
-function readWillSupersedeTotal(
-  rows: ReadonlyArray<{ will_supersede_total: number }>,
-  orgId: string,
-): number {
-  const raw = rows[0]?.will_supersede_total;
-  const total = typeof raw === "number" ? raw : Number(raw);
-  if (raw === null || raw === undefined || !Number.isFinite(total) || total < 0) {
-    throw new Error(
-      `publish preview: the will-supersede count did not read back as a number for workspace ${orgId} — refusing to report a supersession scope Atlas cannot establish`,
-    );
-  }
-  return Math.trunc(total);
-}
-
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -482,7 +445,6 @@ export async function buildPreview(
       starterPromptRows,
       knowledgeRows,
       brainFactSegment,
-      willSupersedeRows,
     ] = await Promise.all([
       internalQuery<DbRow>(
         `SELECT install_id AS id, install_id AS label, updated_at
@@ -571,10 +533,6 @@ export async function buildPreview(
       // are about to publish. THE ONE ACL-GATED SEGMENT: see the module header
       // and `loadBrainFactSegment`.
       loadBrainFactSegment(orgId, mode, user, requestId),
-      // #4912 — how many published facts this publish will supersede. A
-      // workspace-wide count with no content and no reader in it, so it rides
-      // the plain fan-out rather than the ACL-gated segment above.
-      internalQuery<{ will_supersede_total: number }>(WILL_SUPERSEDE_TOTAL_SQL, [orgId]),
     ]);
 
     const response: PublishPreview = {
@@ -621,7 +579,6 @@ export async function buildPreview(
       })),
       brainFactsWithheld: brainFactSegment.withheld,
       brainFactsScopeUnavailable: brainFactSegment.scopeUnavailable,
-      brainFactsWillSupersede: readWillSupersedeTotal(willSupersedeRows, orgId),
     };
 
     return response;

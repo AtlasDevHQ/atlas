@@ -52,9 +52,7 @@ type BrainPrincipalContext = Parameters<typeof searchBrainCore>[1]["ctx"];
 
 const WS = "ws-search-logging";
 const SQL = {
-  // `valid_to` — the one column only the fact-page statement selects; the
-  // corroboration subquery appears in the counterpart statement too (#4913).
-  factPage: "f.valid_to",
+  factPage: "COUNT(DISTINCT ed.to_episode_id)",
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",

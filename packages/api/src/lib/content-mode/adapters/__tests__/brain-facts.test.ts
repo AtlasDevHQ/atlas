@@ -15,8 +15,6 @@ import { describe, expect, it } from "bun:test";
 import { Effect } from "effect";
 import {
   BRAIN_FACTS_TABLE,
-  SUPERSEDE_STAMP_SQL,
-  SUPERSESSION_TARGETS_SQL,
   brainFactStatusClause,
   brainFactsCountSql,
   promoteBrainFacts,
@@ -30,23 +28,16 @@ interface Call {
 }
 
 /**
- * A transaction double that answers the draft SELECT, the evidence-grants
- * SELECT (#4823), and the supersession trio (#4912), and records every call.
+ * A transaction double that answers the draft SELECT and the evidence-grants
+ * SELECT (#4823), and records every call.
  *
  * Routed on the SQL rather than on call ORDER: the adapter now issues up to
- * seven statements and an index-keyed double would silently feed draft rows to
+ * four statements and an index-keyed double would silently feed draft rows to
  * the evidence query the moment the plan changed again.
  */
 function txWithDrafts(
   drafts: readonly unknown[],
-  opts: {
-    readonly failOnUpdate?: boolean;
-    readonly evidence?: readonly unknown[];
-    /** `SUPERSESSION_TARGETS_SQL` rows: `{ draft_id, superseded_id }`. */
-    readonly supersessions?: readonly unknown[];
-    /** Overrides which old ids the stamp UPDATE confirms; defaults to all asked. */
-    readonly stampConfirms?: readonly string[];
-  } = {},
+  opts: { readonly failOnUpdate?: boolean; readonly evidence?: readonly unknown[] } = {},
 ): { tx: ModeTxClient; calls: Call[] } {
   const calls: Call[] = [];
   const tx: ModeTxClient = {
@@ -54,17 +45,6 @@ function txWithDrafts(
       calls.push({ sql, params });
       if (/^\s*UPDATE/i.test(sql)) {
         if (opts.failOnUpdate) throw new Error("update exploded");
-        if (sql.includes("valid_to = now()")) {
-          // The supersession stamp RETURNs the ids it actually stamped;
-          // emulate pg by confirming every requested id unless a test narrows
-          // it to model a concurrent retraction.
-          const asked = params[1] as readonly string[];
-          const confirmed = opts.stampConfirms ?? asked;
-          return {
-            rows: asked.filter((id) => confirmed.includes(id)).map((id) => ({ id })),
-            rowCount: confirmed.length,
-          };
-        }
         // Emulate `pg`: a non-RETURNING UPDATE reports through `rowCount`. The
         // plain statement binds an id array; the widening one binds a jsonb
         // string of `{id, grant}` entries.
@@ -74,15 +54,9 @@ function txWithDrafts(
           : (JSON.parse(String(target)) as readonly unknown[]).length;
         return { rows: [], rowCount };
       }
-      if (/^\s*INSERT/i.test(sql)) {
-        // The supersedes-edge batch insert RETURNs one id per inserted edge.
-        const pairs = JSON.parse(String(params[1])) as readonly unknown[];
-        return { rows: pairs.map((_, i) => ({ id: `edge-${i}` })) };
-      }
-      if (sql.includes("superseded_id")) return { rows: [...(opts.supersessions ?? [])] };
       if (sql.includes("brain_edges")) return { rows: [...(opts.evidence ?? [])] };
       if (sql.includes("FOR UPDATE")) return { rows: [...drafts] };
-      // Not a catch-all: a future eighth statement must FAIL here rather than
+      // Not a catch-all: a future fifth statement must FAIL here rather than
       // silently receive draft rows, which is how a shape mismatch would hide.
       throw new Error(`unrecognised statement in the tx double: ${sql}`);
     },
@@ -113,16 +87,8 @@ function draft(id: string, over: Record<string, unknown> = {}) {
     source_episode_id: EPISODE,
     provenance: { actor: "slack:U1" },
     visible_to: ["org"],
-    // The schema default, and the arm that never supersedes (#4912) — so every
-    // pre-supersession test keeps its exact statement plan.
-    predicate_cardinality: "multi",
     ...over,
   };
-}
-
-/** A `single`-cardinality draft — the only kind that can supersede (#4912). */
-function singleDraft(id: string, over: Record<string, unknown> = {}) {
-  return draft(id, { predicate_cardinality: "single", ...over });
 }
 
 const run = <A>(e: Effect.Effect<A, PublishPhaseError, never>) => Effect.runPromise(e);
@@ -132,13 +98,7 @@ describe("promoteBrainFacts", () => {
     const { tx, calls } = txWithDrafts([draft("fact-a"), draft("fact-b")]);
     const report = await run(promoteBrainFacts(tx, "ws-1"));
 
-    expect(report).toEqual({
-      table: "brain_facts",
-      promoted: 2,
-      refused: [],
-      widened: [],
-      superseded: [],
-    });
+    expect(report).toEqual({ table: "brain_facts", promoted: 2, refused: [], widened: [] });
     // draft SELECT → evidence SELECT → one UPDATE (nothing widened).
     expect(calls).toHaveLength(3);
     expect(calls[0].params).toEqual(["ws-1"]);
@@ -180,24 +140,17 @@ describe("promoteBrainFacts", () => {
     const { tx, calls } = txWithDrafts([]);
     const report = await run(promoteBrainFacts(tx, "ws-1"));
 
-    expect(report).toEqual({
-      table: "brain_facts",
-      promoted: 0,
-      refused: [],
-      widened: [],
-      superseded: [],
-    });
+    expect(report).toEqual({ table: "brain_facts", promoted: 0, refused: [], widened: [] });
     expect(calls).toHaveLength(1);
   });
 
-  it("reports `refused: []` / `widened: []` / `superseded: []` rather than omitting them", async () => {
+  it("reports `refused: []` / `widened: []` rather than omitting them", async () => {
     // `undefined` means "this table has no such concept"; `[]` means "it does,
     // and nothing happened this run". `admin-publish.ts` distinguishes them.
     const { tx } = txWithDrafts([draft("ok")]);
     const report = await run(promoteBrainFacts(tx, "ws-1"));
     expect(report.refused).toEqual([]);
     expect(report.widened).toEqual([]);
-    expect(report.superseded).toEqual([]);
   });
 
   it("takes the draft-selection lock — read-then-write needs FOR UPDATE", async () => {
@@ -481,244 +434,6 @@ describe("promoteBrainFacts — failure surfaces as PublishPhaseError", () => {
     const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
     expect(exit._tag).toBe("Left");
     if (exit._tag === "Left") expect(exit.left.phase).toBe("promote");
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════
-// Human-gated supersession at the publish gate (#4912)
-// ══════════════════════════════════════════════════════════════════════
-
-describe("promoteBrainFacts — supersession (#4912)", () => {
-  it("stamps the rival, writes the edge, and reports the pair — atomically with promotion", async () => {
-    const { tx, calls } = txWithDrafts([singleDraft("new-1")], {
-      supersessions: [{ draft_id: "new-1", superseded_id: "old-1" }],
-    });
-    const report = await run(promoteBrainFacts(tx, "ws-1"));
-
-    expect(report.promoted).toBe(1);
-    expect(report.superseded).toEqual([{ rowId: "new-1", superseded: ["old-1"] }]);
-
-    // Statement plan: draft SELECT → targets SELECT → evidence SELECT →
-    // promote UPDATE → stamp UPDATE → edge INSERT.
-    const targets = calls.find((c) => c.sql.includes("superseded_id"));
-    expect(targets?.params).toEqual(["ws-1", ["new-1"]]);
-    const stamp = calls.find((c) => c.sql.includes("valid_to = now()"));
-    expect(stamp?.params).toEqual(["ws-1", ["old-1"]]);
-    const edge = calls.find((c) => /^\s*INSERT/i.test(c.sql));
-    expect(edge?.sql).toContain("'supersedes'");
-    expect(JSON.parse(String(edge?.params[1]))).toEqual([{ newId: "new-1", oldId: "old-1" }]);
-  });
-
-  it("reads the collision targets BEFORE the promote UPDATEs — same-batch rivals must not see each other as published", async () => {
-    const { tx, calls } = txWithDrafts([singleDraft("new-1")], {
-      supersessions: [{ draft_id: "new-1", superseded_id: "old-1" }],
-    });
-    await run(promoteBrainFacts(tx, "ws-1"));
-
-    const targetsIndex = calls.findIndex((c) => c.sql.includes("superseded_id"));
-    const firstUpdateIndex = calls.findIndex((c) => /^\s*UPDATE/i.test(c.sql));
-    expect(targetsIndex).toBeGreaterThanOrEqual(0);
-    expect(targetsIndex).toBeLessThan(firstUpdateIndex);
-  });
-
-  it("never even asks about collisions for a multi-cardinality batch", async () => {
-    // `multi` values coexist and corroborate — the promotion must not spend a
-    // round trip on a question whose answer it may not act on.
-    const { tx, calls } = txWithDrafts([draft("m1"), draft("m2")]);
-    const report = await run(promoteBrainFacts(tx, "ws-1"));
-
-    expect(report.superseded).toEqual([]);
-    expect(calls.some((c) => c.sql.includes("superseded_id"))).toBe(false);
-    expect(calls.some((c) => c.sql.includes("valid_to"))).toBe(false);
-  });
-
-  it("scopes the targets query to the single-cardinality drafts only", async () => {
-    const { tx, calls } = txWithDrafts([draft("multi-1"), singleDraft("single-1")], {
-      supersessions: [],
-    });
-    await run(promoteBrainFacts(tx, "ws-1"));
-
-    const targets = calls.find((c) => c.sql.includes("superseded_id"));
-    expect(targets?.params[1]).toEqual(["single-1"]);
-  });
-
-  it("a REFUSED single draft supersedes nothing", async () => {
-    // The targets list is the classified-promotable subset, so a draft the
-    // gate refuses cannot retire a published belief on its way to not being
-    // published.
-    const { tx, calls } = txWithDrafts([singleDraft("bad", { visible_to: ["everyone"] })]);
-    const report = await run(promoteBrainFacts(tx, "ws-1"));
-
-    expect(report.refused).toHaveLength(1);
-    expect(report.superseded).toEqual([]);
-    expect(calls.some((c) => c.sql.includes("superseded_id"))).toBe(false);
-  });
-
-  it("no collision ⇒ no stamp, no edge, empty report", async () => {
-    const { tx, calls } = txWithDrafts([singleDraft("new-1")], { supersessions: [] });
-    const report = await run(promoteBrainFacts(tx, "ws-1"));
-
-    expect(report.promoted).toBe(1);
-    expect(report.superseded).toEqual([]);
-    expect(calls.some((c) => c.sql.includes("valid_to = now()"))).toBe(false);
-    expect(calls.some((c) => /^\s*INSERT/i.test(c.sql))).toBe(false);
-  });
-
-  it("groups several rivals under the one promoted fact, and stamps each old id once", async () => {
-    const { tx, calls } = txWithDrafts([singleDraft("new-1"), singleDraft("new-2")], {
-      supersessions: [
-        { draft_id: "new-1", superseded_id: "old-a" },
-        { draft_id: "new-1", superseded_id: "old-b" },
-        // The same incumbent contested by BOTH new facts: stamped once, but
-        // recorded as two edges — each arbitration is its own record.
-        { draft_id: "new-2", superseded_id: "old-a" },
-      ],
-    });
-    const report = await run(promoteBrainFacts(tx, "ws-1"));
-
-    expect(report.superseded).toEqual([
-      { rowId: "new-1", superseded: ["old-a", "old-b"] },
-      { rowId: "new-2", superseded: ["old-a"] },
-    ]);
-    const stamp = calls.find((c) => c.sql.includes("valid_to = now()"));
-    expect(stamp?.params[1]).toEqual(["old-a", "old-b"]);
-    const edge = calls.find((c) => /^\s*INSERT/i.test(c.sql));
-    expect(JSON.parse(String(edge?.params[1]))).toHaveLength(3);
-  });
-
-  it("drops — from edges AND the report — a pair whose stamp did not confirm", async () => {
-    // Models a rival retracted between the collision check and the stamp: the
-    // published side is not FOR-UPDATE locked, so the stamp re-checks its own
-    // predicates and RETURNs only what it touched. An edge or a report entry
-    // for an unstamped pair would be an arbitration record of an arbitration
-    // that never happened.
-    const { tx, calls } = txWithDrafts([singleDraft("new-1")], {
-      supersessions: [
-        { draft_id: "new-1", superseded_id: "old-kept" },
-        { draft_id: "new-1", superseded_id: "old-retracted" },
-      ],
-      stampConfirms: ["old-kept"],
-    });
-    const report = await run(promoteBrainFacts(tx, "ws-1"));
-
-    expect(report.superseded).toEqual([{ rowId: "new-1", superseded: ["old-kept"] }]);
-    const edge = calls.find((c) => /^\s*INSERT/i.test(c.sql));
-    expect(JSON.parse(String(edge?.params[1]))).toEqual([
-      { newId: "new-1", oldId: "old-kept" },
-    ]);
-  });
-
-  it("treats a draft with an unreadable cardinality as `multi` — it coexists, never destroys", async () => {
-    // The conservative fallback (`draftCardinality`): a row missing the column
-    // is query drift, and drift must not be able to retire a published belief.
-    // No supersession statement runs at all.
-    const missing = { ...draft("drifted") } as Record<string, unknown>;
-    delete missing.predicate_cardinality;
-    const { tx, calls } = txWithDrafts([missing]);
-    const report = await run(promoteBrainFacts(tx, "ws-1"));
-
-    expect(report.promoted).toBe(1);
-    expect(report.superseded).toEqual([]);
-    expect(calls.some((c) => c.sql.includes("superseded_id"))).toBe(false);
-  });
-
-  it("fails the phase when the stamp UPDATE throws — atomicity, not skip-and-warn", async () => {
-    // The stamp is half of "atomically with promotion": if it cannot run, the
-    // whole transaction must roll back rather than publish the new fact while
-    // leaving the rival current. `failOnUpdate` cannot reach it (the promote
-    // UPDATE fires first), so this double targets the stamp alone.
-    const tx: ModeTxClient = {
-      query: async (sql, params = []) => {
-        if (/^\s*UPDATE/i.test(sql)) {
-          if (sql.includes("valid_to = now()")) throw new Error("stamp exploded");
-          const target = params[1];
-          const rowCount = Array.isArray(target) ? target.length : 0;
-          return { rows: [], rowCount };
-        }
-        if (sql.includes("superseded_id")) {
-          return { rows: [{ draft_id: "new-1", superseded_id: "old-1" }] };
-        }
-        if (sql.includes("brain_edges")) return { rows: [] };
-        return { rows: [singleDraft("new-1")] };
-      },
-    };
-    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
-    expect(exit._tag).toBe("Left");
-    if (exit._tag === "Left") {
-      expect(exit.left).toBeInstanceOf(PublishPhaseError);
-      expect(exit.left.phase).toBe("promote");
-    }
-  });
-
-  it("fails the phase when the edge INSERT throws — a stamp without its record must roll back", async () => {
-    const tx: ModeTxClient = {
-      query: async (sql, params = []) => {
-        if (/^\s*INSERT/i.test(sql)) throw new Error("edge insert exploded");
-        if (/^\s*UPDATE/i.test(sql)) {
-          if (sql.includes("valid_to = now()")) {
-            const ids = params[1] as readonly string[];
-            return { rows: ids.map((id) => ({ id })), rowCount: ids.length };
-          }
-          const target = params[1];
-          const rowCount = Array.isArray(target) ? target.length : 0;
-          return { rows: [], rowCount };
-        }
-        if (sql.includes("superseded_id")) {
-          return { rows: [{ draft_id: "new-1", superseded_id: "old-1" }] };
-        }
-        if (sql.includes("brain_edges")) return { rows: [] };
-        return { rows: [singleDraft("new-1")] };
-      },
-    };
-    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
-    expect(exit._tag).toBe("Left");
-    if (exit._tag === "Left") expect(exit.left.phase).toBe("promote");
-  });
-
-  it("fails the phase — never a silent skip — when a stamp RETURNING row has no usable id", async () => {
-    // The one drift path in the supersession arm that must NOT degrade: the
-    // stamp COMMITTED for a fact this code can no longer name, so proceeding
-    // would retire a belief with no edge and no audit record. Failing rolls
-    // the stamp back with the rest of the transaction.
-    const { tx } = txWithDrafts([singleDraft("new-1")], {
-      supersessions: [{ draft_id: "new-1", superseded_id: "old-1" }],
-    });
-    const original = tx.query.bind(tx);
-    tx.query = async (sql, params) => {
-      if (sql.includes("valid_to = now()")) return { rows: [{ nope: true }], rowCount: 1 };
-      return original(sql, params);
-    };
-    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
-    expect(exit._tag).toBe("Left");
-    if (exit._tag === "Left") {
-      expect(String(exit.left.cause)).toContain("no usable id");
-    }
-  });
-
-  it("pins the collision join's invariants in the SQL itself", () => {
-    // The join is shared with the two disclosure surfaces, so these strings are
-    // the contract: BOTH sides single, the rival published, live, and current,
-    // and only a DIFFERENT object collides (same object = corroboration).
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.predicate_cardinality = 'single'");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("d.predicate_cardinality = 'single'");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.status = 'published'");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.invalidated_at IS NULL");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.valid_to IS NULL");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object <> d.object");
-  });
-
-  it("supersession is NOT retraction — the stamp never touches the tombstone or the review verdict", () => {
-    // `invalidated_at` may appear only as a WHERE predicate; the SET list is
-    // `valid_to` + `updated_at` and nothing else. A stamp that also tombstoned
-    // would delete the fact from as-of reads, which supersession must not do.
-    const setList = SUPERSEDE_STAMP_SQL.slice(0, SUPERSEDE_STAMP_SQL.indexOf("WHERE"));
-    expect(setList).toContain("valid_to = now()");
-    expect(setList).not.toContain("invalidated_at");
-    expect(setList).not.toContain("status");
-    // And it re-checks every predicate so it is correct standalone.
-    expect(SUPERSEDE_STAMP_SQL).toContain("status = 'published'");
-    expect(SUPERSEDE_STAMP_SQL).toContain("invalidated_at IS NULL");
-    expect(SUPERSEDE_STAMP_SQL).toContain("valid_to IS NULL");
   });
 });
 

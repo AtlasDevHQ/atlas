@@ -1040,59 +1040,6 @@ describe("MCP tools", () => {
       expect(envelope?.request_id).toBeTruthy();
     });
 
-    it("maps a rejected asOf to `validation_failed` — fix the argument, don't retry (#4916)", async () => {
-      // The caller's own timestamp refused. `internal_error` here would tell
-      // the agent to retry the identical call; `validation_failed` tells it
-      // the argument is the problem, which the message then names.
-      mockSearchBrainExecute.mockResolvedValueOnce({
-        error: 'asOf "yesterday-ish" is not an ISO-8601 instant.',
-        reason: REAL_BRAIN_TOOL_REASONS.invalidAsOf,
-      });
-      const { client } = await createTestClient();
-      const result = await client.callTool({
-        name: "searchBrain",
-        arguments: { query: "x", asOf: "yesterday-ish" },
-      });
-      expect(result.isError).toBe(true);
-      const envelope = parseAtlasMcpToolError(getContentText(result.content));
-      expect(envelope?.code).toBe("validation_failed");
-      // The MCP input schema is a strip-unknown z.object: if the `asOf` entry
-      // were dropped from the registration, the argument would be silently
-      // stripped and the tool would answer as-of-now — the exact fall-through
-      // #4916 forbids, invisible to every other assertion in this block.
-      expect(mockSearchBrainExecute).toHaveBeenCalledWith(
-        expect.objectContaining({ asOf: "yesterday-ish" }),
-        expect.anything(),
-      );
-    });
-
-    it("forwards asOf and passes the historical page's echo through untouched (#4916)", async () => {
-      mockSearchBrainExecute.mockResolvedValueOnce({
-        results: [],
-        neighbors: [],
-        stores: {
-          fact: { queried: true, matched: 0, truncated: false },
-          "raw-episode": { queried: false },
-          document: { queried: false },
-        },
-        tensionsTruncated: false,
-        asOf: "2026-07-01T00:00:00.000Z",
-      });
-      const { client } = await createTestClient();
-      const result = await client.callTool({
-        name: "searchBrain",
-        arguments: { query: "x", asOf: "2026-07-01T00:00:00Z" },
-      });
-      expect(result.isError).toBeFalsy();
-      expect(mockSearchBrainExecute).toHaveBeenCalledWith(
-        expect.objectContaining({ asOf: "2026-07-01T00:00:00Z" }),
-        expect.anything(),
-      );
-      // The echo is the page's only "this is historical" marker; the MCP edge
-      // must not strip it on the way to the agent.
-      expect(JSON.parse(getContentText(result.content)).asOf).toBe("2026-07-01T00:00:00.000Z");
-    });
-
     it("maps every other degraded reason to `internal_error`", async () => {
       mockSearchBrainExecute.mockResolvedValueOnce({
         error: "Company-brain search failed.",

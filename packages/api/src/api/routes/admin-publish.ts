@@ -42,9 +42,7 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   CONTENT_MODE_TABLES,
   collectRefusals,
-  collectSupersessions,
   collectWidenings,
-  type SupersessionRecord,
   type WidenedGrantRecord,
   makeService,
   promotedCountsFromReports,
@@ -268,7 +266,6 @@ adminPublish.openapi(publishRoute, async (c) =>
     let promoted: PublishPromotedCounts;
     let refusals: RefusalSweep;
     let widenedGrants: readonly WidenedGrantRecord[];
-    let supersededFacts: readonly SupersessionRecord[];
     let deletedEntityCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
@@ -360,13 +357,6 @@ adminPublish.openapi(publishRoute, async (c) =>
       // action from the admin, and the reason to record it is that "why can the
       // whole org see this?" is asked months later.
       widenedGrants = collectWidenings(tx.reports);
-      // Published facts this publish SUPERSEDED (#4912, `brain_facts` only
-      // today). Swept with the shared helper for the same anti-drift reason,
-      // and collected for `logAdminAction` alone — like a widening it needs no
-      // action from the admin (the will-supersede disclosure ran BEFORE the
-      // click), and the durable record is what answers "why did the agent stop
-      // saying X?" months later.
-      supersededFacts = collectSupersessions(tx.reports);
       deletedEntityCount =
         tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;
       archivedConnectionCount = tx.archived.connections;
@@ -430,12 +420,6 @@ adminPublish.openapi(publishRoute, async (c) =>
         // audit row, not a guarantee this field adds.)
         widenedGrants,
         widenedGrantCount: widenedGrants.length,
-        // Uncapped, for the widened reason with the temporal twist: a
-        // supersession permanently changed which claim answers as-of-now
-        // reads, and the superseded row is invisible to every default read
-        // afterwards — this row is where "what replaced what, and when" lives.
-        supersededFacts,
-        supersededFactCount: supersededFacts.length,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,

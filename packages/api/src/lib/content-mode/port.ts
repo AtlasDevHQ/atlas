@@ -153,30 +153,6 @@ export interface GrantWidening {
   readonly added: readonly [string, ...string[]];
 }
 
-/**
- * A promoted row that SUPERSEDED already-published rows on its way in (#4912,
- * ADR-0036 §Temporal). Only `brain_facts` produces these: promoting a
- * `single`-cardinality draft whose (subject, predicate) collides with a live
- * published fact holding a different object stamps the old fact's `valid_to`
- * and writes a `supersedes` edge, atomically with the promotion.
- *
- * Supersession is NOT deletion and not retraction — the superseded rows stay
- * `published`, keep `invalidated_at IS NULL`, and remain readable to as-of
- * reads. What changed is which fact answers an as-of-NOW read, which is why the
- * event is reported rather than only logged: this is the ONLY path allowed to
- * stamp `valid_to` (a human promotion), and a durable record of what it stamped
- * is the other half of "no autonomous supersession".
- *
- * `superseded` is a non-empty tuple for {@link GrantWidening.added}'s reason: a
- * supersession that superseded nothing is not an event.
- */
-export interface FactSupersession {
-  /** The newly-promoted fact — the `supersedes` edge's `from` end. */
-  readonly rowId: string;
-  /** The published facts whose `valid_to` this promotion stamped. */
-  readonly superseded: readonly [string, ...string[]];
-}
-
 /** Result of promoting drafts for a single table. */
 export interface PromotionReport {
   readonly table: string;
@@ -195,12 +171,6 @@ export interface PromotionReport {
    * {@link PromotionReport.refused}.
    */
   readonly widened?: readonly GrantWidening[];
-  /**
-   * Promoted rows that superseded already-published rows (#4912). Absent for
-   * every adapter with no supersession concept, on the same distinguishability
-   * grounds as {@link PromotionReport.refused}.
-   */
-  readonly superseded?: readonly FactSupersession[];
 }
 
 /**

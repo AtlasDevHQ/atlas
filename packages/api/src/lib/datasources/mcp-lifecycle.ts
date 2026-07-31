@@ -32,7 +32,6 @@ import {
   CONTENT_MODE_TABLES,
   makeService,
   collectRefusals,
-  collectSupersessions,
   collectWidenings,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode";
@@ -340,19 +339,6 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
       log.warn(
         { orgId, widenedCount: widened.length, widened },
         "Publish committed and WIDENED one or more grants to cover their evidence — who can read those claims has changed permanently, and on this seam no audit row records it",
-      );
-    }
-
-    // Supersessions (#4912) — same shared helper, same audit asymmetry as the
-    // widenings above: this seam writes no audit row for anything, so the log
-    // line is the only record on this path. Warn-level for the same reason —
-    // which claim answers as-of-now reads changed permanently, and the
-    // superseded rows are invisible to every default read from here on.
-    const superseded = collectSupersessions(reports);
-    if (superseded.length > 0) {
-      log.warn(
-        { orgId, supersededCount: superseded.length, superseded },
-        "Publish committed and SUPERSEDED one or more published facts — their valid_to is stamped and as-of-now reads now hide them; on this seam no audit row records it",
       );
     }
 

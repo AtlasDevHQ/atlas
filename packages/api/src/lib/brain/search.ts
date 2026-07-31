@@ -16,31 +16,22 @@
  * `executeSQL`, decision/rationale/ownership → `searchBrain` — with no hidden
  * classifier in the middle.
  *
- * ## The trap: four predicates, and the two that are not ADR gates
+ * ## The trap: three gates, and the one that is not a gate
  *
- * (Distinct from "the four ADR-0036 gates" one section down — those are the
- * ADR's governance axes; these are the WHERE-clause terms one statement must
- * compose.) A current-belief fact read composes FOUR predicates, and composing
- * only the two advertised seams is wrong:
+ * A current-belief fact read composes THREE predicates, and composing only the
+ * two advertised seams is wrong:
  *
  *   1. `aclVisibilityClause` — the fail-closed push-down grant predicate (#4768)
  *   2. `brainFactStatusClause` — content mode, i.e. REVIEW STATUS ONLY (#4769)
  *   3. `f.invalidated_at IS NULL` — the tombstone axis, which (2) explicitly
  *      does not cover
- *   4. `brainFactCurrentClause` — the SUPERSESSION axis (#4912), which neither
- *      (2) nor (3) covers: a superseded fact is still `published` and still
- *      not retracted; its `valid_to` is simply in the past
  *
  * ADR-0036 keeps retracted facts READABLE so "what we believed on Monday" still
  * answers, and #4772 made retraction the review gate's reject verb — so
  * retracted rows are routine, not hypothetical. A read that ANDs only (1) and
- * (2) serves withdrawn claims to the agent as current belief; one that skips
- * (4) serves SUPERSEDED claims — the belief a human explicitly replaced at the
- * publish gate — which on a trust-labeled surface is strictly worse.
- * `idx_brain_facts_subject` is partial on exactly `invalidated_at IS NULL`;
- * superseded rows stay IN the index (they are not tombstoned), so the same
- * index serves the four-predicate read with (4) applied as a filter over the
- * narrow candidate set the key columns already produced.
+ * (2) serves withdrawn claims to the agent as current belief.
+ * `idx_brain_facts_subject` is partial on exactly `invalidated_at IS NULL`, so
+ * the index is built for the correct predicate.
  *
  * ## How the four ADR-0036 gates land here, honestly
  *
@@ -62,8 +53,7 @@
  *     and a KB document are all workspace-scoped with no connection-group
  *     binding, so there is no reach dimension to gate on. Composing one would
  *     mean inventing a group for rows that have none. If M2 gives a fact a
- *     group, this is the seam that grows a fifth clause (the supersession
- *     predicate took the fourth slot, #4912).
+ *     group, this is the seam that grows a fourth clause.
  *
  * ## Push-down, and why the fail-closed test is written as a negative
  *
@@ -90,56 +80,9 @@
  *
  * FTS-first, per the M1 cut. Embeddings, RRF over dense lists, and rerank are
  * M4 — `fusion.ts` is the seam they extend, and there is no disabled embedding
- * path here to switch on. `in-tension-with` is surfaced as a conflict CLUSTER
- * (#4913): both directions, each visible counterpart with its own provenance,
- * invisible ones as a withheld count — and never ranked; arbitration belongs
- * to the human gate.
- *
- * ## `asOf` — the bi-temporal point read (#4916, ADR-0036 §Temporal)
- *
- * T4/T7's "what did we believe Monday": an optional `asOf` instant switches the
- * FACT store's temporal predicate from as-of-now to the point read
- * `valid_from <= asOf < COALESCE(valid_to, ∞)`, so a fact a later promotion
- * superseded answers again inside its own validity window — that is the point
- * of keeping superseded rows readable. Four boundary rules, all deliberate:
- *
- *   - **Tombstones stay hidden under ANY `asOf`.** Retraction is the only verb
- *     that hides history, and hiding history is what it is FOR (it is also the
- *     GDPR-erasure path) — so `invalidated_at IS NULL` survives in both
- *     branches, unconditionally.
- *   - **The ACL is the row's own frozen grant against as-of-NOW membership.**
- *     Each version carries the immutable `visible_to` it was published with,
- *     and `aclVisibilityClause` evaluates exactly that column per row — so
- *     "Monday's belief" is gated by Monday's grant with no code here doing
- *     anything: the bi-temporal ACL (T5) falls out of grant immutability. The
- *     reader's tokens, by contrast, are always resolved as of now — a member
- *     who since left an audience does not keep historical access through the
- *     read; membership is the live half and the revocation path.
- *   - **A NULL `valid_from` is an unrecorded start, not a late one.** The
- *     as-of-now read has no `valid_from` predicate at all — a fact with no
- *     recorded start IS served as current belief — so the point read must
- *     admit it too, or `asOf ≈ now()` would diverge from the default read.
- *   - **The default read is byte-identical to before #4916** — same clauses,
- *     same order, regression-pinned — and a malformed or future `asOf` is
- *     REJECTED with {@link BrainAsOfInvalidError}, never silently ignored: a
- *     caller who asked for history and silently got current belief would
- *     attribute today's claims to Monday.
- *
- * The episode and document stores are untouched by `asOf`: an episode is
- * append-only evidence of what was SAID (it has no validity window to point
- * into), and a KB document is deliberately outside the truth ordering. Only
- * the fact store makes claims about what was BELIEVED, so it is the only store
- * with a temporal axis to read against — and an `asOf` read that EXCLUDES the
- * fact store is refused outright, because echoing `asOf` over current-only
- * content would label it historical.
- *
- * One scope limit, stated so nobody reads more into the point read than it
- * does: metadata computed AT READ TIME — the decay signal, the corroboration
- * count, and the tension cluster — is evaluated as of NOW even on a historical
- * page. Those are advisory framing about the row as it stands today (how stale
- * it has since become, what has since come to contradict it), not part of the
- * belief being reported, and rewinding them would require versioned edges the
- * substrate does not keep.
+ * path here to switch on. `asOf` bi-temporal point reads are M2's, alongside
+ * the rest of the conflict machinery; this read is as-of-now. `in-tension-with`
+ * is surfaced in BOTH directions and never ranked.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -151,13 +94,8 @@ import {
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
 import { attributionDecision } from "@atlas/api/lib/brain/attribution";
-import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
-import { computeDecaySignal, LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
-import {
-  brainFactCurrentClause,
-  brainFactStatusClause,
-} from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import { brainFactStatusClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
   searchKnowledgeDocuments,
   type KnowledgeQueryExec,
@@ -170,6 +108,7 @@ import type {
   BrainEpisodeExtraction,
   BrainEpisodeResult,
   BrainFactResult,
+  BrainFactTensionDirection,
   BrainResultTier,
   BrainSearchResponse,
   BrainSearchResult,
@@ -202,7 +141,6 @@ export const EPISODE_BODY_MAX_CHARS = 4_000;
  * on a 200-row admin table. When it bites, `tensionsTruncated` reaches the
  * caller AND the log — a truncated conflict list reads as "nothing contradicts
  * this", which is the one thing a trust-labeled surface must never imply.
- * Both caps feed the shared `loadTensionClusters` (`lib/brain/tensions.ts`).
  */
 export const TENSION_FANOUT_CAP = 200;
 
@@ -243,126 +181,10 @@ export interface BrainSearchOptions {
   readonly tags?: readonly string[];
   readonly collection?: string;
   readonly since?: string;
-  /**
-   * Bi-temporal point read (#4916): the ISO-8601 instant to answer for.
-   * Fact store only — see the module header. Validated by
-   * {@link parseBrainAsOf}; malformed or future values THROW rather than fall
-   * through to as-of-now. Absent ⇒ current belief, unchanged.
-   */
-  readonly asOf?: string;
   /** Include the 1-hop KB link-graph expansion of matched documents. */
   readonly expand: boolean;
   readonly limit: number;
   readonly requestId?: string;
-}
-
-// ---------------------------------------------------------------------------
-// asOf validation (#4916)
-// ---------------------------------------------------------------------------
-
-/**
- * A caller-supplied `asOf` this read refuses to honor.
- *
- * A dedicated class rather than a bare `Error` so the tool wrapper can map it
- * to its machine-readable reason (`invalid_as_of`) by `instanceof`, the same
- * seam `BrainReaderIdentityError` rides — never by matching the prose, which
- * is user-facing and free to change.
- */
-export class BrainAsOfInvalidError extends Error {
-  override readonly name = "BrainAsOfInvalidError";
-  constructor(message: string) {
-    super(message);
-  }
-}
-
-declare const brainAsOfBrand: unique symbol;
-/**
- * An instant that has been through {@link parseBrainAsOf} — normalized
- * ISO-8601 UTC, in the past, inside `timestamptz` range. The brand makes
- * "validated" a compile-time property of {@link buildFactQuery}'s input rather
- * than a doc-comment precondition, and keeps the UNVALIDATED sibling params
- * (`since`, the documents filter) unpassable where `asOf` belongs.
- */
-export type BrainAsOfInstant = string & { readonly [brainAsOfBrand]: true };
-
-/**
- * The accepted spellings: a bare ISO date (`YYYY-MM-DD`, read as UTC midnight
- * per ECMA-262 — deterministic), or a timestamp with an EXPLICIT zone.
- *
- * Deliberately stricter than `new Date()`, which this feeds: bare `Date`
- * parsing admits `"July 2026"` and — worse — reads a zone-less
- * `"2026-07-27T09:00"` in the SERVER's local timezone, so the same call would
- * answer a different instant per deployment. A silent hours-scale shift of the
- * point read is the same class of failure as the silent fall-through this
- * function exists to refuse, so a time without a zone is malformed here.
- */
-const AS_OF_SHAPE =
-  /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|z|[+-]\d{2}:?\d{2}))?$/;
-
-/**
- * Everything `timestamptz` can hold starts here: Postgres admits no year zero
- * (and no negative years in ISO input), so a JS-parseable instant below this
- * would pass validation only to fail the bind at query time — surfacing as a
- * retryable internal fault when it is really the caller's argument.
- */
-const AS_OF_FLOOR_MS = Date.parse("0001-01-01T00:00:00Z");
-
-/** Longest slice of a rejected value echoed back — a bound on message/log size, not a policy. */
-const AS_OF_ECHO_CAP = 64;
-
-/**
- * Validate and normalize a caller-supplied `asOf`, or throw
- * {@link BrainAsOfInvalidError}.
- *
- * FAIL CLOSED, per the issue's boundary rule: a value the caller plainly meant
- * as a point-read instant but that cannot be honored must never degrade to the
- * as-of-now read — the caller would attribute today's beliefs to the instant
- * they asked about, silently. So blank, non-ISO, zone-less, out-of-range, and
- * FUTURE values are all refusals with a message naming the value and the fix.
- * Future bounds are refused rather than clamped because `valid_from` can
- * legitimately sit in the future (a region import restores it verbatim), so a
- * future point read is not "the same as now" — it is a question about beliefs
- * not yet held, which this surface does not answer.
- *
- * Returns the instant normalized to ISO-8601 UTC: it is bound as a
- * `timestamptz` parameter and echoed on the response, and both should carry
- * the canonical spelling rather than whatever the caller typed.
- */
-export function parseBrainAsOf(raw: string, now: () => number = Date.now): BrainAsOfInstant {
-  const trimmed = raw.trim();
-  // The caller's own input, so echoing it back is safe — but it is unbounded,
-  // so the echo is capped rather than pasted verbatim into an error message
-  // and a warn line.
-  const shown =
-    trimmed.length > AS_OF_ECHO_CAP ? `${trimmed.slice(0, AS_OF_ECHO_CAP)}…` : trimmed;
-  if (trimmed === "") {
-    throw new BrainAsOfInvalidError(
-      "asOf was blank. Pass an ISO-8601 instant (e.g. 2026-07-27T09:00:00Z) for a historical read, or omit asOf entirely for current beliefs.",
-    );
-  }
-  if (!AS_OF_SHAPE.test(trimmed)) {
-    throw new BrainAsOfInvalidError(
-      `asOf ${JSON.stringify(shown)} is not an ISO-8601 instant. Pass a date (2026-07-27) or a timestamp with an explicit zone (2026-07-27T09:00:00Z) — a time without a zone would be read in the server's timezone, so it is rejected. Omit asOf for current beliefs.`,
-    );
-  }
-  const parsed = new Date(trimmed);
-  if (Number.isNaN(parsed.getTime())) {
-    // Shape-valid but field-invalid — a 13th month, a 25th hour.
-    throw new BrainAsOfInvalidError(
-      `asOf ${JSON.stringify(shown)} is not a real instant — a field is out of range. Pass a valid ISO-8601 instant (e.g. 2026-07-27T09:00:00Z), or omit asOf for current beliefs.`,
-    );
-  }
-  if (parsed.getTime() < AS_OF_FLOOR_MS) {
-    throw new BrainAsOfInvalidError(
-      `asOf ${JSON.stringify(shown)} is before 0001-01-01, which the database cannot represent. Pass an instant on or after 0001-01-01T00:00:00Z.`,
-    );
-  }
-  if (parsed.getTime() > now()) {
-    throw new BrainAsOfInvalidError(
-      `asOf ${parsed.toISOString()} is in the future. As-of reads answer what was believed at a past instant; omit asOf for current beliefs.`,
-    );
-  }
-  return parsed.toISOString() as BrainAsOfInstant;
 }
 
 // ---------------------------------------------------------------------------
@@ -470,50 +292,16 @@ const FACT_COLUMNS = `f.id::text AS id,
  */
 export function buildFactQuery(
   mode: AtlasMode,
-  options: {
-    query?: string;
-    limit: number;
-    aclSql: string;
-    aclParams: readonly unknown[];
-    /**
-     * A point-read instant, or absent for the as-of-now read. The brand means
-     * it can only come from {@link parseBrainAsOf} — "validated" is a
-     * compile-time property here, not a doc-comment plea.
-     */
-    asOf?: BrainAsOfInstant;
-  },
+  options: { query?: string; limit: number; aclSql: string; aclParams: readonly unknown[] },
 ): { sql: string; params: unknown[] } {
   const params: unknown[] = [...options.aclParams];
   const where: string[] = [
     options.aclSql,
     brainFactStatusClause(mode, "f"),
     // NOT redundant with the mode clause — see the module header. Without it
-    // the agent is served retracted claims as current belief. Deliberately in
-    // BOTH temporal branches: a tombstone is hidden under any `asOf`, because
-    // retraction is the one verb whose JOB is hiding history (#4916).
+    // the agent is served retracted claims as current belief.
     "f.invalidated_at IS NULL",
   ];
-  if (options.asOf !== undefined) {
-    // The bi-temporal point read (#4916): the facts valid AT the instant —
-    // `valid_from <= asOf < COALESCE(valid_to, ∞)`. A superseded fact answers
-    // again inside its window (that is the point of keeping it readable); a
-    // NULL `valid_from` is an unrecorded start and is admitted, matching the
-    // default read's treatment of the same rows — see the module header.
-    // One bound parameter, referenced by both bounds, so the two sides of the
-    // window cannot be handed different instants.
-    params.push(options.asOf);
-    const asOfParam = `$${params.length}::timestamptz`;
-    where.push(
-      `(f.valid_from IS NULL OR f.valid_from <= ${asOfParam})`,
-      `(f.valid_to IS NULL OR f.valid_to > ${asOfParam})`,
-    );
-  } else {
-    // The FOURTH predicate (#4912): a fact whose `valid_to` has passed was
-    // superseded at the publish gate and is no longer current belief. Hidden
-    // exactly as tombstones are — the row stays readable to the `asOf` branch
-    // above, and this default read is as-of-now.
-    where.push(brainFactCurrentClause("f"));
-  }
 
   const trimmed = options.query?.trim();
   let tsq: string | null = null;
@@ -536,13 +324,8 @@ export function buildFactQuery(
     : `f.ingested_at DESC, f.id DESC`;
 
   params.push(options.limit);
-  // `last_observed_at` feeds the read-time decay signal (#4914). It is a
-  // SELECTed column only — never in this WHERE and never in ORDER BY, because
-  // retrieval ranking by age would be exactly the arbitration decay is
-  // forbidden to do. The agent is handed the age and told to present it.
   const sql = `SELECT ${FACT_COLUMNS},
          ${CORROBORATION_SELECT} AS corroboration_count,
-         ${LAST_OBSERVED_AT_SELECT} AS last_observed_at,
          ${snippetExpr} AS snippet,
          ${rankExpr} AS rank
     FROM brain_facts f
@@ -624,11 +407,12 @@ export function buildEpisodeQuery(options: {
  * A `brain_facts` row off `pg`.
  *
  * `subject` / `predicate` / `object` are typed `string` and read without
- * narrowing — trusting a column is the exception in this otherwise uniformly
- * `unknown`-in file, justified by `text NOT NULL` in migration 0180. The
- * tension path makes the identical exception through `TensionCounterpartRow`
- * (`lib/brain/tensions.ts`), so the two row shapes agree about which columns
- * are trusted and why.
+ * narrowing — the ONE place in this module that trusts a column, justified by
+ * `text NOT NULL` in migration 0180. Stated because the file is otherwise
+ * uniformly `unknown`-in, and because `loadTensions` reads the same three
+ * columns off the same table and narrows them: that asymmetry existed by
+ * accident and is now deliberate on both sides, with the tension path narrowing
+ * only because its rows arrive through a differently-shaped projection.
  */
 interface FactRow {
   readonly id: string;
@@ -647,8 +431,6 @@ interface FactRow {
   readonly invalidated_at: unknown;
   readonly ingested_at: unknown;
   readonly corroboration_count: unknown;
-  /** Newest corroborating observation — the decay anchor (#4914). */
-  readonly last_observed_at: unknown;
   readonly snippet: unknown;
 }
 
@@ -672,19 +454,6 @@ function toFactResult(
   requestId?: string,
 ): BrainFactResult {
   const workspaceId = ctx.workspaceId;
-  // One decision, both consumers — provenance and decay must agree about this
-  // reader's entitlement to the "when" (#4836, #4914).
-  const attribution = attributionDecision(row, ctx, requestId);
-  if (row.last_observed_at === undefined) {
-    // Selected-column drift on the decay anchor — the classifier reports
-    // "age unknown" instead of anchoring on ingest recency, and this is the
-    // log line that makes that degradation findable. Same posture as
-    // `attributionDecision`'s missing-column arm.
-    log.warn(
-      { rowId: row.id, workspaceId, requestId },
-      "brain search: `last_observed_at` absent from the row — the fact query no longer selects the decay anchor; reporting age unknown",
-    );
-  }
   return {
     tier: "fact",
     trustTier: 2,
@@ -698,16 +467,12 @@ function toFactResult(
     validTo: iso(row.valid_to),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    provenance: projectProvenance(row.provenance, row.source_episode_id, attribution),
-    corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
-    decay: computeDecaySignal(
-      {
-        lastObservedAt: row.last_observed_at,
-        validFrom: row.valid_from,
-        ingestedAt: row.ingested_at,
-      },
-      attribution,
+    provenance: projectProvenance(
+      row.provenance,
+      row.source_episode_id,
+      attributionDecision(row, ctx, requestId),
     ),
+    corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
     tensions,
   };
 }
@@ -750,35 +515,27 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
 // Tension lookup
 // ---------------------------------------------------------------------------
 
+interface TensionPair {
+  readonly owner: string;
+  readonly other: string;
+  readonly direction: BrainFactTensionDirection;
+}
+
 /**
- * The conflict clusters for the facts on this page — both directions, never
- * ranked (#4913).
+ * `in-tension-with` counterparts for the facts on this page — both directions,
+ * never ranked.
  *
- * The walk — edges, then counterpart facts through a FRESH fact predicate,
- * never a join onto the owner row — is `loadTensionClusters`
- * (`lib/brain/tensions.ts`, shared with the review queue). What stays here is
- * the SEARCH projection, which differs from the review surface's in both arms:
- *
- *   - A VISIBLE counterpart carries the full claim WITH its provenance — the
- *     T4 stance is surfaced-both-with-provenance, so the agent can present
- *     each side with its evidence. Attribution is re-decided per counterpart
- *     row (#4836): a counterpart is a fact in its own right, fetched through
- *     its own ACL predicate, so inheriting the owner's decision would be a
- *     guess about a different row's grant. Status, corroboration, and recency
- *     travel as surfacing hints; none of them orders anything.
- *   - Counterparts the reader may NOT see collapse into ONE
- *     `{ visible: false, withheldCount }` entry, appended after the
- *     id-sorted counterparts. Aggregated because this surface feeds an LLM
- *     context window, where N identical opaque handles spend tokens without
- *     adding information — the count IS the signal, and it is never dropped:
- *     an omitted conflict reads as "nothing contradicts this".
+ * Two statements: the edges (ungated — `brain_edges` carries no grant of its
+ * own), then the counterpart FACTS through a FRESH fact predicate, applied
+ * independently. A counterpart the reader may not see is reported as
+ * `visible: false` rather than dropped: "there is a rival you cannot see" is
+ * precisely what should stop an agent asserting the claim as settled, and an
+ * omitted row reads as "nothing contradicts this".
  *
  * `invalidated_at` is deliberately NOT filtered on the counterpart — a rival
  * that was retracted is still why this claim was contested — but it IS carried,
  * because retraction never writes `status` and an unlabeled withdrawn rival is
- * indistinguishable from a live one. `valid_to` is not filtered either, for
- * the same reason on the supersession axis (#4912): a rival that was
- * superseded is still why the claim was contested.
+ * indistinguishable from a live one.
  */
 async function loadTensions(
   db: BrainSearchReader,
@@ -786,45 +543,108 @@ async function loadTensions(
   ctx: BrainPrincipalContext,
   requestId: string | undefined,
 ): Promise<{ views: Map<string, BrainSearchTensionView[]>; truncated: boolean }> {
-  const { clusters, truncated } = await loadTensionClusters(db, factIds, {
-    ctx,
-    cap: TENSION_FANOUT_CAP,
-    surface: SEARCH_SURFACE,
-    log,
+  const views = new Map<string, BrainSearchTensionView[]>();
+  if (factIds.length === 0) return { views, truncated: false };
+  if (!ctx.workspaceId) {
+    // Unreachable — a workspace-less context denies at the caller. Loud rather
+    // than a bare return, because this guard's failure mode is a page that
+    // silently reports no conflicts at all.
+    log.warn(
+      { requestId, origin: ctx.origin },
+      "brain search: contradiction lookup reached with no workspace — reporting no conflicts, which is wrong; this is an Atlas bug",
+    );
+    return { views, truncated: false };
+  }
+
+  // `DISTINCT` because 0180 puts no unique index on the edge tuple —
+  // `reconcile.ts` dedupes with `WHERE NOT EXISTS`, which two concurrent passes
+  // can race, and a duplicate edge would surface as two identical conflicts.
+  const edgeResult = await db.query(
+    `SELECT DISTINCT from_fact_id::text AS from_id, to_fact_id::text AS to_id
+       FROM brain_edges
+      WHERE workspace_id = $1
+        AND edge_type = 'in-tension-with'
+        AND (from_fact_id = ANY($2::uuid[]) OR to_fact_id = ANY($2::uuid[]))
+      ORDER BY from_id, to_id
+      LIMIT $3`,
+    [ctx.workspaceId, [...factIds], TENSION_FANOUT_CAP + 1],
+  );
+  const edges = edgeResult.rows as ReadonlyArray<{ from_id: string | null; to_id: string | null }>;
+  if (edges.length === 0) return { views, truncated: false };
+
+  const truncated = edges.length > TENSION_FANOUT_CAP;
+  const usable = truncated ? edges.slice(0, TENSION_FANOUT_CAP) : edges;
+  if (truncated) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, requestId, cap: TENSION_FANOUT_CAP, facts: factIds.length },
+      "brain search: in-tension-with fan-out exceeded the per-page cap — some contradiction hints are omitted from this result set",
+    );
+  }
+
+  const onPage = new Set(factIds);
+  const pairs: TensionPair[] = [];
+  for (const edge of usable) {
+    const from = edge.from_id;
+    const to = edge.to_id;
+    if (!from || !to) continue;
+    // An edge with both ends on the page yields two entries — each fact names
+    // the other. Symmetric on purpose: neither end is the authority.
+    if (onPage.has(from)) pairs.push({ owner: from, other: to, direction: "to" });
+    if (onPage.has(to)) pairs.push({ owner: to, other: from, direction: "from" });
+  }
+  if (pairs.length === 0) return { views, truncated };
+
+  const counterpartIds = [...new Set(pairs.map((p) => p.other))];
+  const acl = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: "f",
+    paramIndex: 1,
     requestId,
   });
-
-  const views = new Map<string, BrainSearchTensionView[]>();
-  for (const [owner, cluster] of clusters) {
-    const list: BrainSearchTensionView[] = cluster.counterparts.map(({ row, direction }) => ({
-      visible: true,
-      factId: row.id,
-      edgeDirection: direction,
-      subject: row.subject,
-      predicate: row.predicate,
-      object: row.object,
-      status: factStatus(row.status, row.id, ctx.workspaceId),
-      validFrom: iso(row.valid_from),
-      ingestedAt: iso(row.ingested_at),
-      invalidatedAt: iso(row.invalidated_at),
-      corroborationCount: count(row.corroboration_count, "corroboration_count", ctx.workspaceId),
-      provenance: projectProvenance(
-        row.provenance,
-        row.source_episode_id,
-        attributionDecision(row, ctx, requestId),
-      ),
-    }));
-    if (cluster.withheld.length > 0) {
-      // DISTINCT rivals, not edge-ends: `reconcile.ts`'s `WHERE NOT EXISTS`
-      // dedupes one direction only, so a raced reciprocal pair (A→B and B→A)
-      // is representable and would otherwise report one hidden rival as two.
-      // The count is the whole signal this arm carries; overstating it is the
-      // one way it can lie.
-      const withheldRivals = new Set(cluster.withheld.map((w) => w.factId)).size;
-      list.push({ visible: false, withheldCount: withheldRivals });
-    }
-    views.set(owner, list);
+  if (acl.decision === "deny-all") {
+    // Unreachable — the caller already threw on this decision, against the same
+    // table with the same context. Throwing rather than skipping the query,
+    // because skipping leaves every counterpart unresolved and therefore
+    // rendered as "a conflicting claim you are not allowed to see" — fabricated
+    // ACL withholding, which a caller cannot tell from the real thing.
+    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, SEARCH_SURFACE);
   }
+
+  const params: unknown[] = [...acl.params, counterpartIds];
+  const result = await db.query(
+    `SELECT f.id::text AS id, f.subject, f.predicate, f.object, f.invalidated_at
+       FROM brain_facts f
+      WHERE ${acl.sql}
+        AND f.id = ANY($${params.length}::uuid[])`,
+    params,
+  );
+  const visible = new Map<string, Record<string, unknown>>();
+  for (const raw of result.rows) {
+    const r = raw as Record<string, unknown>;
+    if (typeof r.id === "string") visible.set(r.id, r);
+  }
+
+  for (const pair of pairs) {
+    const row = visible.get(pair.other);
+    const view: BrainSearchTensionView = row
+      ? {
+          visible: true,
+          factId: pair.other,
+          edgeDirection: pair.direction,
+          subject: typeof row.subject === "string" ? row.subject : "",
+          predicate: typeof row.predicate === "string" ? row.predicate : "",
+          object: typeof row.object === "string" ? row.object : "",
+          invalidatedAt: iso(row.invalidated_at),
+        }
+      : { visible: false, factId: pair.other, edgeDirection: pair.direction };
+    const list = views.get(pair.owner);
+    if (list) list.push(view);
+    else views.set(pair.owner, [view]);
+  }
+
+  // Deterministic, and deliberately NOT by time, status, or corroboration —
+  // any of those would be a ranking, and refusing to arbitrate is the point.
+  for (const list of views.values()) list.sort((a, b) => a.factId.localeCompare(b.factId));
 
   return { views, truncated };
 }
@@ -902,8 +722,6 @@ function queriedStore(matched: number, limit: number): BrainSearchStoreReport {
  *   principals. Deliberately not degraded to an empty result set: an agent told
  *   "the brain holds nothing about this" answers from the model's priors, which
  *   is the failure a trust-labeled surface exists to prevent.
- * @throws {BrainAsOfInvalidError} when `asOf` is malformed or in the future —
- *   fail closed, never fall through to as-of-now (#4916).
  */
 export async function searchBrainCore(
   db: BrainSearchReader,
@@ -916,22 +734,6 @@ export async function searchBrainCore(
   const wantFacts = include.has("fact");
   const wantEpisodes = include.has("raw-episode");
   const wantDocuments = include.has("document");
-
-  // Validated FIRST, before any store runs: an unusable point-read instant is
-  // the caller's input problem and must be reported as such, not spent a
-  // fan-out on. Throws — see parseBrainAsOf on why it never degrades.
-  const asOf = options.asOf === undefined ? undefined : parseBrainAsOf(options.asOf);
-  if (asOf !== undefined && !wantFacts) {
-    // A temporal question aimed only at stores with no temporal axis. Serving
-    // the current documents/episodes under an echoed `asOf` would label
-    // as-of-now content as a historical page — mislabeling on the one surface
-    // whose labels are the product — and silently dropping the parameter is
-    // the fall-through this module refuses. Same fail-closed verb as every
-    // other unusable asOf.
-    throw new BrainAsOfInvalidError(
-      'asOf was passed but `include` excludes "fact" — only reviewed facts have a validity window to read against. Add "fact" to include, or omit asOf.',
-    );
-  }
 
   // Resolved UNCONDITIONALLY, before any store runs, and the refusal is the
   // single gate for the whole read. Deliberately not scoped to
@@ -972,7 +774,6 @@ export async function searchBrainCore(
             limit,
             aclSql: acl.sql,
             aclParams: acl.params,
-            asOf,
           });
           const result = await db.query(built.sql, built.params);
           return result.rows as FactRow[];
@@ -1018,9 +819,9 @@ export async function searchBrainCore(
   // Same treatment the episode rows get below, and for the same reason: `id` is
   // the PK cast to text in the SELECT, so a missing one is query drift rather
   // than tenant data. It matters MORE on this path — a non-string `id` would
-  // reach `loadTensionClusters`' `$2::uuid[]` and fail the whole read with the
-  // generic message, and would collapse every malformed row onto one
-  // `fact:undefined` fusion key.
+  // reach `loadTensions`' `$2::uuid[]` and fail the whole read with the generic
+  // message, and would collapse every malformed row onto one `fact:undefined`
+  // fusion key.
   const facts = (factRows ?? []).filter((row) => {
     if (typeof row.id === "string" && row.id !== "") return true;
     log.warn(
@@ -1118,9 +919,5 @@ export async function searchBrainCore(
         : UNQUERIED_STORE,
     },
     tensionsTruncated: tensions.truncated,
-    // Echoed ONLY on an as-of read — spreading rather than `asOf: asOf` keeps
-    // the default response byte-identical to pre-#4916, and makes the field's
-    // absence itself the "these are current beliefs" statement.
-    ...(asOf !== undefined ? { asOf } : {}),
   };
 }

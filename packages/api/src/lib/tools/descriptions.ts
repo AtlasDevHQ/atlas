@@ -62,9 +62,9 @@ Use this whenever a metric exists for what the user asked — never re-derive me
 
 Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
 
-export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain — trust-labeled results across three stores. \`tier: "fact"\` is human-reviewed; \`tier: "raw-episode"\` its source record; \`tier: "document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: author, source id, timestamp withheld — use the claim, say attribution restricted, never call it anonymous, undated, unsourced, nor infer the author. Unextracted episodes carry \`extraction: "pending"\`. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age; never assert it as current or drop it. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen rivals), unranked: never pick winners. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then — superseded included, retracted never; frame as "as of <time>". Example: \`{ "query": "who owns billing", "asOf": "2026-07-01T00:00:00Z" }\`.
+export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain — a trust-labeled read over three stores. \`tier: "fact"\` is human-reviewed; \`tier: "raw-episode"\` is its source record; \`tier: "document"\` is hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. When a fact's \`provenance.attribution\` is \`{ "visible": false }\` its author, source id and timestamp are withheld: use the claim, say attribution is restricted, never call it anonymous, undated or unsourced, never infer the author. Retracted claims are excluded, drafts outside developer mode — see \`status\`. Unextracted episodes are tagged \`extraction: "pending"\`. Conflicting facts surface unranked \`tensions\`: report every side, never pick a winner. \`unavailable\` means the search failed — never report that as "nothing known". Example: \`{ "query": "who owns billing" }\`.
 
-Use this when asking about decisions, rationale, ownership, or policy — recorded knowledge.
+Use this when asking about decisions, rationale, ownership, or policy — what people wrote down, not what a warehouse counts.
 
 Don't use this for quantitative current state (\`executeSQL\`) or the semantic layer (\`explore\`).`;
 
@@ -139,12 +139,8 @@ export const RUN_METRIC_ERROR_CODES = [
 // the fail-closed ACL deny, which is an upstream defect and must NOT read to
 // the agent as "the brain knows nothing" — and, independently, from the
 // dispatch gate's own `minRole` denial, which never reaches the tool body.
-// `validation_failed` for a malformed/future `asOf` (#4916) — the caller's own
-// argument, refused rather than silently answered as-of-now, and distinct from
-// `internal_error` because the recovery is "fix the argument", not "retry".
 // Plus the per-client rate limit and the catch-all.
 export const SEARCH_BRAIN_ERROR_CODES = [
-  "validation_failed",
   "forbidden",
   "rate_limited",
   "internal_error",

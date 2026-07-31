@@ -10,11 +10,8 @@ _openapi:
     contents:
       - content: >-
           Rejects a candidate by stamping `invalidated_at` — the review gate's
-          negative verb, which since #4915 is the `retract` correction verb: the
-          same call also materializes an immutable human-authored correction
-          episode and flags any `derives-from` dependents for re-review (never a
-          cascade). It never writes `status`: `brain_facts.status` has exactly
-          one writer (the atomic publish endpoint), and ADR-0036 makes
+          negative verb. It never writes `status`: `brain_facts.status` has
+          exactly one writer (the atomic publish endpoint), and ADR-0036 makes
           withdrawal a tombstone rather than a demotion, so the claim stays
           readable to an as-of query while leaving the review queue, the publish
           preview, and draftCounts. Approval is `/api/v1/admin/publish`; there

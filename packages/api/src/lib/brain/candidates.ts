@@ -19,8 +19,9 @@
  * is the same pure classifier the publish transaction runs, so the queue shows
  * the verdict the endpoint will reach without importing the publish machinery.
  *
- * Rejection is {@link retractFactCandidate} — a tombstone on `invalidated_at`,
- * not a status write. See its own comment for why that is the archive verb.
+ * Rejection is the `retract` correction verb (`correctFact` in
+ * `lib/brain/correction.ts`, #4915) — a tombstone on `invalidated_at`, not a
+ * status write. See the note at the tail of this file.
  *
  * The same posture holds for #4914's decay signal: computed at read time in
  * `staleness.ts`, surfaced on every queue row, allowed to float stale claims
@@ -91,7 +92,6 @@ import type {
   BrainFactEpisodeView,
   BrainFactPromotionBlock,
   BrainFactProvenanceView,
-  BrainFactRetractResponse,
   BrainFactReviewStatus,
   BrainFactTensionView,
 } from "@useatlas/types";

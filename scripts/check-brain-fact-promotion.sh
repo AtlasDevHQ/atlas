@@ -106,16 +106,21 @@
 #
 #   packages/api/src/lib/brain/correction.ts
 #     `correct_fact` (#4915) — the SECOND gate-time decision maker this
-#     script's own remediation text forecast ("M2's correct_fact will be the
-#     second, through the same allowlisted review-gate machinery"). It writes
-#     `status` exactly once (promoting the human-authored replacement of a
-#     superseded fact to `published`, inside the correction transaction — the
-#     correction's author IS the reviewer, and the row is still screened
-#     through `classifyFactForPromotion` first), and it stamps `valid_to` by
-#     executing the publish adapter's own `SUPERSEDE_STAMP_SQL` rather than
-#     spelling a second stamp. Every write is actor-attributed, ACL-gated on
-#     the actor's own visibility, and recorded as an immutable human-authored
-#     correction episode in the same transaction.
+#     script's gated-column commentary forecast (pre-#4915 wording: "M2's
+#     correct_fact will be the second, through the same allowlisted
+#     review-gate machinery"). It writes `status` exactly once (promoting the
+#     human-authored replacement of a superseded fact to `published`, inside
+#     the correction transaction — the correction's author IS the reviewer,
+#     and the row is still screened through `classifyFactForPromotion` first),
+#     and it stamps `valid_to` by executing the publish adapter's own
+#     `SUPERSEDE_STAMP_SQL` rather than spelling a second stamp. Every write
+#     is actor-attributed and recorded as an immutable human-authored
+#     correction episode in the same transaction; the TARGET read/write is
+#     ACL-gated on the actor's own visibility, while the retraction's
+#     dependent re-review flags are deliberately NOT (opaque quality markers
+#     on rows the retraction undermined — see `DEPENDENT_FACTS_SQL`'s
+#     rationale in the module), and none of those flag writes touches a gated
+#     column.
 #
 # Comments are stripped before matching so an explanatory comment in a source
 # file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in
@@ -427,10 +432,12 @@ if [ -n "$OFFENDERS" ]; then
   echo ""
 
   if [ "$SAW_STATUS" -eq 1 ]; then
-    echo "\`brain_facts.status\` is the review gate (ADR-0036). Promotion must happen"
-    echo "ONLY in \`promoteBrainFacts\`, which \`/api/v1/admin/publish\` runs inside its"
-    echo "transaction — that is where no-provenance-no-promotion and"
-    echo "no-grant-no-promotion are enforced. A second writer bypasses both."
+    echo "\`brain_facts.status\` is the review gate (ADR-0036). Promotion happens only"
+    echo "in the allowlisted gate machinery: \`promoteBrainFacts\` (inside the"
+    echo "\`/api/v1/admin/publish\` transaction) and \`correct_fact\`'s in-transaction"
+    echo "promote of a human-authored replacement (#4915) — both screen through"
+    echo "\`classifyFactForPromotion\`, which is where no-provenance-no-promotion and"
+    echo "no-grant-no-promotion are enforced. Any other writer bypasses both."
     echo ""
     echo "Fixes for a \`status\` write:"
     echo "  * Writing a NEW fact? Omit \`status\` entirely — migration 0180 defaults it"
@@ -446,10 +453,12 @@ if [ -n "$OFFENDERS" ]; then
   if [ "$SAW_VALIDITY" -eq 1 ]; then
     echo "\`brain_facts.valid_to\` is the supersession stamp (ADR-0036 §Temporal):"
     echo "\"a human promotion stamps valid_to; there is no autonomous supersession\"."
-    echo "Its only writer is \`promoteBrainFacts\`' supersession arm, inside the"
-    echo "publish transaction, where the will-supersede disclosure ran BEFORE the"
-    echo "admin confirmed. A second writer retires a belief no human arbitrated —"
-    echo "and invisibly, because every as-of-now read hides the row it touched."
+    echo "Its writers are \`promoteBrainFacts\`' supersession arm (inside the publish"
+    echo "transaction, where the will-supersede disclosure ran BEFORE the admin"
+    echo "confirmed) and \`correct_fact\`'s supersede verb (#4915), which executes the"
+    echo "same allowlisted statement. Any other writer retires a belief no human"
+    echo "arbitrated — and invisibly, because every as-of-now read hides the row it"
+    echo "touched."
     echo ""
     echo "Fixes for a \`valid_to\` write:"
     echo "  * Superseding because a newer value arrived? Don't write it. Let the"

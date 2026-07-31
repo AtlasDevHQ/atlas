@@ -15,8 +15,10 @@
  * structural half (no mutating SQL statement anywhere in this file);
  * `candidates.test.ts` / `search.test.ts` pin the behavioral half (the read
  * models that call it emit only SELECTs). The single writer of
- * `brain_facts.status` stays `promoteBrainFacts`, and the tombstone verb stays
- * `retractFactCandidate`; decay influences neither.
+ * `brain_facts.status` stays the review-gate machinery (`promoteBrainFacts`,
+ * plus `correct_fact`'s allowlisted in-transaction promote, #4915), and the
+ * tombstone verb stays the `retract` correction verb (`correctFact`,
+ * `lib/brain/correction.ts`); decay influences neither.
  *
  * ## The anchor, and why corroboration enters through recency
  *

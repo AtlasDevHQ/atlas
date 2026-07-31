@@ -28,6 +28,10 @@ import {
   type CorrectionOutcome,
 } from "@atlas/api/lib/brain/correction";
 import {
+  BRAIN_CORRECTION_OBJECT_MAX_CHARS,
+  BRAIN_CORRECTION_REASON_MAX_CHARS,
+} from "@useatlas/schemas";
+import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
@@ -92,16 +96,24 @@ export const correctFactTool = tool({
       ),
     reason: z
       .string()
-      .max(2000)
+      // The shared bounds, imported rather than restated — the admin API's
+      // schema and this one must not drift into two different caps on the
+      // same write path.
+      .max(BRAIN_CORRECTION_REASON_MAX_CHARS)
       .optional()
       .describe("The user's stated rationale, recorded verbatim in the correction episode."),
     replacement: z
       .object({
-        object: z.string().min(1).describe("The corrected value (the claim's new object)."),
+        object: z
+          .string()
+          .min(1)
+          .max(BRAIN_CORRECTION_OBJECT_MAX_CHARS)
+          .describe("The corrected value (the claim's new object)."),
         validFrom: z
           .string()
+          .datetime({ offset: true })
           .optional()
-          .describe("ISO-8601: when the corrected value began to hold. Defaults to now."),
+          .describe("ISO-8601 timestamp: when the corrected value began to hold. Defaults to now."),
       })
       .optional()
       .describe("Required for `supersede`, ignored by the other verbs."),
@@ -127,6 +139,12 @@ export const correctFactTool = tool({
       };
     }
 
+    // The `try` covers ONLY the code that runs before the correction commits,
+    // so the catch's "nothing was changed — retry" instruction is true by
+    // construction. Outcome mapping happens OUTSIDE it: a (today unreachable)
+    // throw while shaping the success response must never tell the agent to
+    // retry a correction that already committed.
+    let outcome: CorrectionOutcome;
     try {
       const db = getInternalDB();
       const ctx = await resolveBrainReaderContext(db, {
@@ -138,7 +156,7 @@ export const correctFactTool = tool({
       const replacementValidFrom = input.replacement?.validFrom
         ? new Date(input.replacement.validFrom)
         : null;
-      const outcome: CorrectionOutcome = await correctFact({
+      outcome = await correctFact({
         ctx,
         factId: input.factId,
         verb: input.verb,
@@ -148,34 +166,6 @@ export const correctFactTool = tool({
           : undefined,
         requestId,
       });
-
-      switch (outcome.kind) {
-        case "corrected":
-          return {
-            corrected: true as const,
-            ...outcome.result,
-            summary: summarize(outcome),
-          };
-        case "refused":
-          // The machinery's prose is already actionable and secret-free; the
-          // structured `refusal` code lets a caller branch without parsing it.
-          return {
-            error: outcome.message,
-            reason: CORRECT_FACT_TOOL_REASONS.refused,
-            refusal: outcome.reason,
-          };
-        case "not-found":
-          return {
-            error:
-              "That fact could not be corrected. It may not exist, may already be retracted, or may not " +
-              "be visible to you. Use searchBrain to find the current fact id and try again.",
-            reason: CORRECT_FACT_TOOL_REASONS.notFound,
-          };
-        default: {
-          const unexpected: never = outcome;
-          throw new Error(`Unhandled correction outcome: ${JSON.stringify(unexpected)}`);
-        }
-      }
     } catch (err) {
       if (err instanceof BrainReaderIdentityError) {
         log.error(
@@ -205,6 +195,34 @@ export const correctFactTool = tool({
         ),
         reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
       };
+    }
+
+    switch (outcome.kind) {
+      case "corrected":
+        return {
+          corrected: true as const,
+          ...outcome.result,
+          summary: summarize(outcome),
+        };
+      case "refused":
+        // The machinery's prose is already actionable and secret-free; the
+        // structured `refusal` code lets a caller branch without parsing it.
+        return {
+          error: outcome.message,
+          reason: CORRECT_FACT_TOOL_REASONS.refused,
+          refusal: outcome.reason,
+        };
+      case "not-found":
+        return {
+          error:
+            "That fact could not be corrected. It may not exist, may already be retracted, or may not " +
+            "be visible to you. Use searchBrain to find the current fact id and try again.",
+          reason: CORRECT_FACT_TOOL_REASONS.notFound,
+        };
+      default: {
+        const unexpected: never = outcome;
+        throw new Error(`Unhandled correction outcome: ${JSON.stringify(unexpected)}`);
+      }
     }
   },
 });

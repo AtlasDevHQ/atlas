@@ -12,7 +12,10 @@
  *
  * ## The four verbs, and what each may touch
  *
- *   - **retract** — the ONLY tombstone path and the GDPR-erasure verb. Stamps
+ *   - **retract** — the ONLY tombstone path, and the verb a GDPR erasure
+ *     ROUTES THROUGH (the ADR's epithet; actual content deletion of the row
+ *     and its episodes is a separate operation this verb does not perform —
+ *     the claim stays readable to as-of reads by design). Stamps
  *     `invalidated_at` (never `status` — ADR-0036: withdrawal is a tombstone,
  *     not a demotion) and FLAGS every `derives-from` dependent for re-review.
  *     Flagging is a provenance marker (`reReview`), never a cascade: a
@@ -25,10 +28,15 @@
  *     `supersedes` edge by executing the SAME statements the publish gate runs
  *     (`SUPERSEDE_STAMP_SQL` / `INSERT_SUPERSEDES_EDGES_SQL`, #4912) —
  *     imported, not restated, so the two human arbitration paths cannot drift.
- *     The replacement claim enters through `reconcileFacts` as the THIRD
- *     producer (`correction`) — connector · warehouse-derived · correction all
- *     converge on that entry-point-agnostic seam — and is then promoted to
- *     `published` in the same transaction (see the allowlist note below).
+ *     The replacement claim enters through `reconcileFacts` as the second
+ *     IMPLEMENTED producer (`correction`) on the seam ADR-0036 designs for
+ *     three (connector · warehouse-derived · correction) — and is then
+ *     promoted to `published` in the same transaction (see the allowlist note
+ *     below). The stamp runs BEFORE the reconcile, deliberately: the belief
+ *     being retired must already have a closed window when the replacement's
+ *     tension pass runs, or reconcile would mint an `in-tension-with` edge
+ *     against the very fact this verb is resolving — permanent conflict noise
+ *     recording a question the human answered in the same transaction.
  *   - **re-authority** — re-anchors the claim's authority on the correcting
  *     human: the correction episode becomes EVIDENCE (a `provenance` edge, the
  *     same idempotent statement reconcile uses), and a `reAuthority` marker
@@ -63,10 +71,12 @@
  * The correction episode's grant is the TARGET FACT's own grant, verbatim:
  * everyone entitled to the claim is entitled to know it was corrected, and
  * nobody else learns a claim existed. The actor is inside that set by
- * construction — the ACL-gated target read is what found the fact. A
- * supersede replacement then inherits this grant through reconcile's ordinary
- * derive-at-ingest path, so the successor is served to exactly the audience
- * the superseded belief was.
+ * construction — the ACL-gated target read is what found the fact. A freshly
+ * created supersede replacement then inherits this grant through reconcile's
+ * ordinary derive-at-ingest path, so it is served to exactly the audience the
+ * superseded belief was; a CORROBORATED pre-existing rival keeps its own
+ * grant, which reconcile never rewrites (the correction episode still lands
+ * as evidence, so the next publish may widen it — #4823's ordinary path).
  *
  * ## Atomicity
  *
@@ -98,6 +108,7 @@ import {
   SUPERSEDE_STAMP_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { classifyFactForPromotion, isJsonObject, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { BRAIN_CORRECTION_VERBS } from "@useatlas/schemas";
 import type { BrainCorrectionVerb, BrainFactCorrectionResponse } from "@useatlas/types";
 
 const log = createLogger("brain-correction");
@@ -106,25 +117,13 @@ const log = createLogger("brain-correction");
 const CORRECTION_SURFACE = "correction";
 
 /**
- * The verb vocabulary, mirrored from the wire union in `@useatlas/types` (the
- * runtime tuple lives API-side and in `@useatlas/schemas` for the same
- * publish-dance reason every brain tuple does).
+ * The verb vocabulary — re-exported from `@useatlas/schemas`, which holds the
+ * one runtime tuple (with its exhaustiveness pin against the wire union), the
+ * same way every other brain tuple is consumed API-side. A second spelling
+ * here would be a membership-drift risk two compile pins would have to hold
+ * shut.
  */
-export const CORRECTION_VERBS = [
-  "retract",
-  "supersede",
-  "re-authority",
-  "pin",
-] as const satisfies readonly BrainCorrectionVerb[];
-
-/** Compile error if a verb joins the union without joining the tuple. */
-type _CorrectionVerbsCovered = [
-  Exclude<BrainCorrectionVerb, (typeof CORRECTION_VERBS)[number]>,
-] extends [never]
-  ? true
-  : never;
-const _correctionVerbsCovered: _CorrectionVerbsCovered = true;
-void _correctionVerbsCovered;
+export const CORRECTION_VERBS = BRAIN_CORRECTION_VERBS;
 
 export type CorrectionVerb = BrainCorrectionVerb;
 
@@ -215,8 +214,10 @@ export type CorrectionOutcome =
 // SQL
 // ---------------------------------------------------------------------------
 //
-// Exported so the real-Postgres test runs these exact strings against the live
-// schema instead of asserting a paraphrase of them (`correction-pg.test.ts`).
+// Exported for two test seams: `candidates-pg.test.ts` §7 executes these
+// strings against the live schema (via `correctFact`, on that file's existing
+// bootstrap), and `correction.test.ts` dispatches on their identity so a
+// paraphrased second spelling of any statement fails loudly.
 //
 // NOTE for the next editor: this file is on `check-brain-fact-promotion.sh`'s
 // ALLOWLIST — see the module header for the recorded rationale. That is a
@@ -276,9 +277,13 @@ export const CORRECTION_EPISODE_INSERT_SQL = `INSERT INTO brain_episodes
        RETURNING id::text AS id`;
 
 /**
- * The tombstone — the ONLY `invalidated_at` writer in the repository, now that
- * the review surface's retract routes through this module (#4915 unification
- * of #4772's negative verb). It never names `status`: withdrawal is a
+ * The tombstone — the only tombstone DECISION path, now that the review
+ * surface's retract routes through this module (#4915 unification of #4772's
+ * negative verb). The one other statement writing the column is the region
+ * import's INSERT (`admin-migrate.ts`), which restores an existing
+ * `invalidated_at` verbatim — a restore, not a new arbitration, the same
+ * distinction the promotion guard's allowlist draws. It never names `status`:
+ * withdrawal is a
  * tombstone, not a demotion, and the retracted row stays readable to as-of
  * reads. The ACL already ran at {@link correctionTargetSql}, which also holds
  * the row lock; the residual predicates make the statement correct standalone.
@@ -446,8 +451,9 @@ export async function correctFact(
         kind: "refused",
         reason: CORRECTION_REFUSAL_REASONS.replacementMissing,
         message:
-          "Superseding needs the corrected value: pass `replacement.object` (the subject and predicate " +
-          "are inherited from the fact being superseded). To withdraw the claim without replacing it, use `retract`.",
+          "Superseding needs the corrected value: pass a non-blank `replacement.object` (the subject and " +
+          "predicate are inherited from the fact being superseded). To withdraw the claim without replacing " +
+          "it, use `retract`.",
       };
     }
   }
@@ -651,6 +657,22 @@ async function applyRetract(
       marker,
     ]);
     flagged = idList(flaggedResult.rows);
+    if (flagged.length < dependentIds.length) {
+      // Reachable (a dependent retracted between the SELECT and the marker
+      // UPDATE — those need no flag) and also the only trace if the marker
+      // statement ever drifts, which would leave dependents permanently
+      // unflagged with the retraction reporting success.
+      log.warn(
+        {
+          workspaceId,
+          factId: target.id,
+          expected: dependentIds.length,
+          flagged: flagged.length,
+          missing: dependentIds.filter((id) => !flagged.includes(id)),
+        },
+        "brain correction: some derives-from dependents were not flagged — retracted concurrently, or MERGE_PROVENANCE_MARKER_SQL drifted",
+      );
+    }
     log.info(
       { workspaceId, factId: target.id, flagged: flagged.length },
       "brain correction: retraction flagged derives-from dependents for re-review — nothing cascaded",
@@ -677,6 +699,28 @@ async function applySupersede(
   base: BrainFactCorrectionResponse,
   inputs: SupersedeInputs,
 ): Promise<BrainFactCorrectionResponse> {
+  // #4912's stamp FIRST, via the publish gate's own statement — before the
+  // replacement reconciles. The ordering is load-bearing: reconcile's tension
+  // pass flags every LIVE same-subject/predicate rival of a new single-
+  // cardinality claim, and the target is exactly such a rival until its
+  // window closes. Stamping first means the belief being retired is already
+  // settled history when the pass runs (`TENSION_CANDIDATES_SQL` filters
+  // `valid_to IS NULL`), so this verb cannot mint a permanent
+  // `in-tension-with` edge recording a conflict the same transaction
+  // resolves. Any OTHER live rival still earns its advisory edge, which is
+  // correct — the human arbitrated this pair, not the whole field. A failure
+  // later in the verb rolls the stamp back with everything else.
+  const stampResult = await tx.query(SUPERSEDE_STAMP_SQL, [workspaceId, [target.id]]);
+  const stampedId = firstId(stampResult.rows);
+  if (stampedId === null) {
+    // The target is row-locked and was pre-checked published/current in this
+    // transaction, so an empty RETURNING is drift — and committing would
+    // record a supersession that never stamped.
+    throw new Error(
+      `brain correction: supersede stamped no row for fact ${target.id} — the target checks and SUPERSEDE_STAMP_SQL disagree`,
+    );
+  }
+
   // The replacement claim enters through the SAME seam every producer does —
   // reconcile is what attaches the provenance edge, the grant, and (if a live
   // rival already asserts the value) the corroboration instead of a duplicate.
@@ -766,17 +810,8 @@ async function applySupersede(
     );
   }
 
-  // #4912's stamp + edge, via the publish gate's own statements.
-  const stampResult = await tx.query(SUPERSEDE_STAMP_SQL, [workspaceId, [target.id]]);
-  const stampedId = firstId(stampResult.rows);
-  if (stampedId === null) {
-    // The target is row-locked and was pre-checked published/current in this
-    // transaction, so an empty RETURNING is drift — and committing would
-    // record a supersession that never stamped.
-    throw new Error(
-      `brain correction: supersede stamped no row for fact ${target.id} — the target checks and SUPERSEDE_STAMP_SQL disagree`,
-    );
-  }
+  // The arbitration record (new → old), via the publish gate's own statement.
+  // The stamp already ran — first in the verb, see the top of this function.
   await tx.query(INSERT_SUPERSEDES_EDGES_SQL, [
     workspaceId,
     JSON.stringify([{ newId: outcome.factId, oldId: target.id }]),
@@ -840,16 +875,50 @@ function normalizeReplacement(
   const object = replacement.object.trim();
   if (object === "") return null;
   const validFrom = replacement.validFrom ?? null;
-  return {
-    object,
-    validFrom: validFrom !== null && !Number.isNaN(validFrom.getTime()) ? validFrom : null,
-  };
+  if (validFrom !== null && Number.isNaN(validFrom.getTime())) {
+    // Both entry seams validate `validFrom` as ISO-8601 (`.datetime()`), so
+    // this backstop is for a future caller constructing the Date directly.
+    // Degrading is safe — the nullable slot already means "no stated start",
+    // and the verb then records the correction time — but degrading a HUMAN's
+    // stated temporal boundary silently is not; the warn is the trace.
+    log.warn(
+      { object },
+      "brain correction: replacement.validFrom is an invalid Date — recording the correction time as the validity start instead",
+    );
+    return { object, validFrom: null };
+  }
+  return { object, validFrom };
 }
 
+/**
+ * Narrow the locked target row, or say precisely why it cannot be narrowed.
+ *
+ * Returns `null` ONLY when there was no row at all — the genuine
+ * absent/retracted/invisible trio the caller reports as not-found. A row that
+ * EXISTS but fails narrowing is query drift in `correctionTargetSql`, and it
+ * THROWS (→ a 500 with a requestId) rather than masquerading as not-found:
+ * every column here is `NOT NULL text` at rest, and the drifted triple would
+ * otherwise flow into a `supersede` replacement's own subject and predicate —
+ * a published fact asserting `? ?`, the silent partial the module forswears.
+ * Same posture, same reason, as the grant-token throw below.
+ */
 function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
-  if (!isJsonObject(row)) return null;
-  if (typeof row.id !== "string" || row.id === "") return null;
-  const text = (value: unknown): string => (typeof value === "string" ? value : "?");
+  if (row === undefined || row === null) return null;
+  const drift = (what: string): never => {
+    throw new Error(
+      `brain correction: the target read returned a row this module cannot narrow (${what}) — correctionTargetSql drifted (workspace ${workspaceId})`,
+    );
+  };
+  if (!isJsonObject(row)) return drift("not an object");
+  if (typeof row.id !== "string" || row.id === "") return drift("no usable id");
+  if (
+    typeof row.subject !== "string" ||
+    typeof row.predicate !== "string" ||
+    typeof row.object !== "string" ||
+    typeof row.status !== "string"
+  ) {
+    return drift(`non-text SPO/status for fact ${row.id}`);
+  }
   const cardinality =
     row.predicate_cardinality === "single" || row.predicate_cardinality === "multi"
       ? row.predicate_cardinality
@@ -873,10 +942,10 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
   }
   return {
     id: row.id,
-    subject: text(row.subject),
-    predicate: text(row.predicate),
-    object: text(row.object),
-    status: text(row.status),
+    subject: row.subject,
+    predicate: row.predicate,
+    object: row.object,
+    status: row.status,
     cardinality,
     provenance: row.provenance,
     grantTokens,

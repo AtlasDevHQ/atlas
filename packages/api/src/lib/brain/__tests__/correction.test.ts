@@ -84,6 +84,8 @@ interface StoredFact {
   subject: string;
   predicate: string;
   object: string;
+  /** Set only by the reconcile insert; seeded facts default to null. */
+  validFrom?: string | null;
   status: string;
   cardinality: string;
   provenance: Record<string, unknown>;
@@ -290,6 +292,7 @@ class FakeCorrectionStore {
         subject: String(params[1]),
         predicate: String(params[2]),
         object: String(params[3]),
+        validFrom: params[4] === null ? null : String(params[4]),
         status: "draft",
         cardinality: String(params[9]),
         provenance: JSON.parse(String(params[7])) as Record<string, unknown>,
@@ -316,8 +319,34 @@ class FakeCorrectionStore {
       });
       return { rows: [{ id: `edge-${++this.seq}` }] };
     }
-    if (sql === TENSION_CANDIDATES_SQL) return { rows: [] };
-    if (sql === INSERT_TENSION_EDGE_SQL) return { rows: [{ id: `edge-${++this.seq}` }] };
+    // Implemented with the REAL statement's semantics rather than stubbed
+    // empty — this is what catches the supersede-ordering defect: a live
+    // (valid_to IS NULL) same-subject/predicate rival of a new single-
+    // cardinality claim earns an advisory edge, so if the verb reconciled the
+    // replacement BEFORE stamping the target, the target would show up here
+    // and the supersede test's no-tension-edge assertion would fail.
+    if (sql === TENSION_CANDIDATES_SQL) {
+      const [, subject, predicate, object, selfId] = params;
+      const rivals = this.facts.filter(
+        (f) =>
+          f.subject === subject &&
+          f.predicate === predicate &&
+          f.object !== object &&
+          f.id !== selfId &&
+          f.invalidatedAt === null &&
+          f.validTo === null,
+      );
+      return { rows: rivals.map((f) => ({ id: f.id })) };
+    }
+    if (sql === INSERT_TENSION_EDGE_SQL) {
+      this.edges.push({
+        edgeType: "in-tension-with",
+        fromFactId: String(params[1]),
+        toFactId: String(params[2]),
+        toEpisodeId: null,
+      });
+      return { rows: [{ id: `edge-${++this.seq}` }] };
+    }
 
     throw new Error(`FakeCorrectionStore: unrecognized statement:\n${sql}`);
   }
@@ -413,6 +442,26 @@ describe("retract", () => {
     expect(store.fact("conclusion-b").status).toBe("draft");
   });
 
+  test("flagging is ONE hop by design — a transitive dependent is untouched", async () => {
+    // A ← B ← C: retracting C flags B; A's re-review is B's reviewer's call,
+    // because only a human can say whether B (and therefore A) survives losing
+    // its premise. Auto-walking the chain would be the cascade this verb
+    // forswears, one edge at a time.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "c" });
+    store.seedFact({ id: "b", object: "Bo" });
+    store.seedFact({ id: "a", object: "Cy" });
+    store.edges.push(
+      { edgeType: "derives-from", fromFactId: "b", toFactId: "c", toEpisodeId: null },
+      { edgeType: "derives-from", fromFactId: "a", toFactId: "b", toEpisodeId: null },
+    );
+
+    const outcome = await run(store, { factId: "c", verb: "retract" });
+    if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+    expect(outcome.result.flaggedForReReview).toEqual(["b"]);
+    expect(store.fact("a").provenance.reReview).toBeUndefined();
+  });
+
   test("a retracted or invisible fact answers not-found, indistinguishably", async () => {
     const store = new FakeCorrectionStore();
     store.seedFact({ id: "gone", invalidatedAt: NOW.toISOString() });
@@ -424,27 +473,48 @@ describe("retract", () => {
     expect(store.episodes).toHaveLength(0);
   });
 
-  test("source scan: this module is the only `invalidated_at` writer", () => {
+  test("source scan: this module is the only `invalidated_at` UPDATE writer", () => {
     // The acceptance criterion is repository-wide ("retract remains the ONLY
     // invalidated_at writer"), which no fake-store assertion can pin — so scan
-    // the API source the way the promotion guard does. Test files are excluded
-    // for the guard's own reason: fixtures may stage tombstoned rows.
-    const root = join(import.meta.dir, "..", "..", "..");
+    // source the way the promotion guard does, across every root that can
+    // hold server code (`ee/` and `plugins/` included — the audit-grep
+    // blind-spot lesson), in BOTH spellings: raw SQL (`SET invalidated_at`)
+    // and the Drizzle builder (`.set({ … invalidatedAt … })`). Deliberately
+    // NOT matched: the region import's INSERT, which restores a stored
+    // tombstone verbatim (a restore, not a new arbitration — the same line
+    // the promotion guard's allowlist draws). Test files are excluded for the
+    // guard's own reason: fixtures may stage tombstoned rows.
+    const repoRoot = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
+    const roots = ["packages/api/src", "packages/mcp/src", "ee", "plugins"]
+      .map((r) => join(repoRoot, r))
+      .filter((r) => {
+        try {
+          return statSync(r).isDirectory();
+        } catch {
+          // intentionally ignored: an absent optional root is not scannable
+          return false;
+        }
+      });
+    const RAW_SQL_WRITE = /SET\s+invalidated_at/i;
+    const ORM_WRITE = /\.set\(\{[^}]*invalidatedAt/s;
     const writers: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir)) {
         const path = join(dir, entry);
         if (statSync(path).isDirectory()) {
-          if (entry === "__tests__" || entry === "node_modules") continue;
+          if (entry === "__tests__" || entry === "node_modules" || entry === "dist") continue;
           walk(path);
           continue;
         }
         if (!entry.endsWith(".ts") || entry.endsWith(".test.ts")) continue;
-        if (/SET\s+invalidated_at/i.test(readFileSync(path, "utf8"))) writers.push(path);
+        const source = readFileSync(path, "utf8");
+        if (RAW_SQL_WRITE.test(source) || ORM_WRITE.test(source)) writers.push(path);
       }
     };
-    walk(root);
-    expect(writers.map((p) => p.split("/src/")[1])).toEqual(["lib/brain/correction.ts"]);
+    for (const root of roots) walk(root);
+    expect(writers.map((p) => p.substring(repoRoot.length + 1))).toEqual([
+      "packages/api/src/lib/brain/correction.ts",
+    ]);
   });
 });
 
@@ -504,6 +574,72 @@ describe("supersede", () => {
       toEpisodeId: store.episodes[0]!.id,
     });
     expect(store.transactions).toBe(1);
+
+    // The ordering property: because the stamp ran BEFORE the replacement
+    // reconciled, the retired belief was already settled history when the
+    // tension pass looked for live rivals — so the verb that RESOLVES this
+    // conflict must not have minted an advisory edge recording it. The fake's
+    // tension pass implements the real statement's semantics, so a reordered
+    // implementation fails here.
+    const pairEdges = store.edges.filter(
+      (e) =>
+        (e.fromFactId === newId && e.toFactId === "old") ||
+        (e.fromFactId === "old" && e.toFactId === newId),
+    );
+    expect(pairEdges.map((e) => e.edgeType)).toEqual(["supersedes"]);
+  });
+
+  test("a THIRD live rival still earns its advisory tension edge — only the arbitrated pair is settled", async () => {
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana", status: "published", cardinality: "single" });
+    store.seedFact({ id: "third", object: "Cy", status: "published", cardinality: "single" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+    if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+    const newId = outcome.result.supersededBy;
+    if (newId === null) throw new Error("expected a superseding fact id");
+
+    // The human arbitrated old-vs-new; the third value is still a live
+    // contested rival of the replacement and must keep its advisory edge.
+    expect(store.edges).toContainEqual({
+      edgeType: "in-tension-with",
+      fromFactId: newId,
+      toFactId: "third",
+      toEpisodeId: null,
+    });
+    expect(store.fact("third").validTo).toBeNull();
+  });
+
+  test("an invalid replacement.validFrom degrades to the correction time, never an invalid write", async () => {
+    // Both entry seams validate ISO-8601; this pins the machinery's own
+    // backstop for a future direct caller.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana", status: "published", cardinality: "single" });
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo", validFrom: new Date("not a date") },
+    });
+    if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+    expect(store.fact(outcome.result.supersededBy as string).validFrom).toBe(NOW.toISOString());
+  });
+
+  test("a whitespace-only replacement object is refused as missing, before anything is written", async () => {
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old" });
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "   " },
+    });
+    if (outcome.kind !== "refused") throw new Error(`expected refused, got ${outcome.kind}`);
+    expect(outcome.reason).toBe(CORRECTION_REFUSAL_REASONS.replacementMissing);
+    expect(outcome.message).toContain("non-blank");
+    expect(store.transactions).toBe(0);
   });
 
   test("a live rival already asserting the value is corroborated and promoted, not duplicated", async () => {

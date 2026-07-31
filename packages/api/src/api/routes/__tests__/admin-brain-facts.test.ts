@@ -92,6 +92,9 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
   // anything in the graph imports a name this object omits.
   PROVISIONAL_PREDICATE: "(TRUE)",
   TENSION_EXISTS_SELECT: "(TRUE)",
+  // The module's re-export — listed so a future importer of it through
+  // `candidates` doesn't hit the partial-mock landmine.
+  BrainReaderUnresolvedError: class BrainReaderUnresolvedError extends Error {},
   projectProvenance: () => ({}),
   loadFactCandidates: async (_db: unknown, options: Record<string, unknown>) => {
     listCalls.push(options);
@@ -870,5 +873,25 @@ describe("POST /{id}/correct", () => {
     expect(res.status).toBe(404);
     const body = (await res.json()) as { message: string };
     expect(body.message).toContain("may not exist");
+  });
+
+  it("refuses to ship a correction payload that violates its own wire schema", async () => {
+    // Same `checked()` posture as the list route: a machinery result the
+    // schema refuses must become a 500, never reach the browser.
+    correctionOutcome = {
+      kind: "corrected",
+      result: {
+        verb: "pin",
+        factId: FACT_ID,
+        correctionEpisodeId: "ep-corr-3",
+        invalidatedAt: 42, // not a string|null — the violation
+        flaggedForReReview: [],
+        supersededBy: null,
+        validTo: null,
+      },
+    };
+    const res = await correct({ verb: "pin" });
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain("ep-corr-3");
   });
 });

@@ -426,8 +426,15 @@ export const BrainFactCorrectRequestSchema = z.object({
   replacement: z
     .object({
       object: z.string().min(1).max(BRAIN_CORRECTION_OBJECT_MAX_CHARS),
-      /** ISO-8601; when the corrected value began to hold. */
-      validFrom: z.string().optional(),
+      /**
+       * When the corrected value began to hold. Validated as ISO-8601 HERE —
+       * a 400 with a field path, not a silent degrade: this is a human's
+       * stated temporal boundary on a supersession, and discarding a
+       * malformed one quietly would bake the wrong `valid_from` into an
+       * immutable published fact. (`offset` admits `+02:00` spellings, not
+       * just `Z` — a correction is typed by a person, not a serializer.)
+       */
+      validFrom: z.string().datetime({ offset: true }).optional(),
     })
     .optional(),
 });

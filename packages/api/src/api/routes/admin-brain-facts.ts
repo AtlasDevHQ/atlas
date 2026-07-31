@@ -505,9 +505,14 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
         return c.json(correctionNotFoundBody(requestId), 404);
       }
       if (outcome.kind === "refused") {
-        // Reachable only for a warehouse-derived target (the route is already
-        // admin-gated, and retract takes no replacement). The prose is the
-        // verb machinery's own actionable message.
+        // Reachable for a warehouse-derived target (409) and for an actor
+        // without an org owner/admin role (403) — e.g. a bare platform_admin,
+        // whose platform role resolves to NO org role in the reader context
+        // and so does not carry the correction verb. That bar is #4915's, new
+        // relative to the pre-unification retract, and deliberate: a
+        // correction lands authoritative immediately, so it takes org
+        // authority, not platform reach. The prose is the verb machinery's
+        // own actionable message.
         return c.json(
           { error: "correction_refused", message: outcome.message, requestId },
           refusalStatus(outcome.reason),
@@ -580,8 +585,8 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
             factId,
             verb: body.verb,
             reason: body.reason,
-            // An unparseable `validFrom` degrades to the correction time
-            // inside the machinery rather than 500ing a valid correction.
+            // Always a valid Date past the body schema's `.datetime()` gate;
+            // the machinery keeps a warn-and-degrade backstop regardless.
             replacement: body.replacement
               ? { object: body.replacement.object, validFrom: replacementValidFrom }
               : undefined,

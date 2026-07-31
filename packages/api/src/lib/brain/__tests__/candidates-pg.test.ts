@@ -56,6 +56,7 @@ import {
 } from "@atlas/api/lib/brain/candidates";
 import { CORRECTION_REFUSAL_REASONS, correctFact } from "@atlas/api/lib/brain/correction";
 import type { ReconcileTransactionRunner } from "@atlas/api/lib/brain/reconcile";
+import { LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { BrainFactCandidateListResponseSchema } from "@useatlas/schemas";
 
@@ -651,12 +652,20 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       expect(newRow.rows[0]!.provenance.producer).toBe("correction");
       expect(newRow.rows[0]!.provenance.actor).toBe("user:reviewer");
 
-      // The arbitration record, new → old.
-      const supersedes = await pool.query(
-        `SELECT 1 FROM brain_edges WHERE edge_type = 'supersedes' AND from_fact_id = $1 AND to_fact_id = $2`,
+      // The COMPLETE fact→fact edge set between the pair is exactly the
+      // arbitration record — in particular, NO `in-tension-with` edge: the
+      // stamp runs before the replacement reconciles, so the tension pass
+      // cannot flag the belief this same transaction retires. Without that
+      // ordering, every human supersession would leave the review queue and
+      // oversight `inTension` counts permanently reporting a conflict the
+      // human resolved.
+      const pairEdges = await pool.query<{ edge_type: string }>(
+        `SELECT edge_type FROM brain_edges
+          WHERE (from_fact_id = $1 AND to_fact_id = $2)
+             OR (from_fact_id = $2 AND to_fact_id = $1)`,
         [newId, oldId],
       );
-      expect(supersedes.rows).toHaveLength(1);
+      expect(pairEdges.rows.map((r) => r.edge_type)).toEqual(["supersedes"]);
 
       // And the evidence pointer: the correction episode backs the NEW claim.
       const evidence = await pool.query(
@@ -669,7 +678,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
   );
 
   it(
-    "pin attaches the correction episode as fresh evidence and marks the payload",
+    "pin attaches the correction episode as fresh evidence, resetting the decay anchor",
     async () => {
       const ep = await seedEpisode({ sourceId: "pin-1" });
       const id = await seedFact({ subject: "PinMe", episodeId: ep, status: "published" });
@@ -690,6 +699,81 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         [id, outcome.result.correctionEpisodeId],
       );
       expect(evidence.rows).toHaveLength(1);
+
+      // The cross-module claim three doc comments make: because #4914's decay
+      // anchor is the newest provenance-edge episode, the human vouching IS
+      // the freshest observation. Run the REAL aggregate, not a paraphrase,
+      // so a change to the staleness query re-litigates this here.
+      const observed = await pool.query<{ last_observed_at: Date | null }>(
+        `SELECT ${LAST_OBSERVED_AT_SELECT} AS last_observed_at FROM brain_facts f WHERE f.id = $1`,
+        [id],
+      );
+      const lastObserved = observed.rows[0]!.last_observed_at;
+      expect(lastObserved).not.toBeNull();
+      // The correction episode's occurred_at is the correction time — minted
+      // seconds ago in this test, unlike the seeded episode's older row.
+      expect(Date.now() - lastObserved!.getTime()).toBeLessThan(60_000);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a refusal AFTER the episode insert rolls the whole correction back",
+    async () => {
+      // The one refusal reachable past the episode write: the replacement
+      // corroborates a rival that is neither draft nor published. The module
+      // header promises "a correction that half-happened must not leave an
+      // authored episode asserting it did" — this is the only path where that
+      // promise is load-bearing, and the unit fake's runner cannot express
+      // rollback, so the live transaction is the only place to prove it.
+      const ep = await seedEpisode({ sourceId: "rollback-1" });
+      const oldId = await seedFact({
+        subject: "Rollback",
+        predicate: "is owned by",
+        object: "Ana",
+        episodeId: ep,
+        status: "published",
+        cardinality: "single",
+      });
+      await pool.query(`UPDATE brain_facts SET status = 'archived' WHERE id = $1`, [
+        await seedFact({
+          subject: "Rollback",
+          predicate: "is owned by",
+          object: "Bo",
+          episodeId: ep,
+          cardinality: "single",
+        }),
+      ]);
+
+      const outcome = await correctFact(
+        {
+          ctx: reviewer(),
+          factId: oldId,
+          verb: "supersede",
+          replacement: { object: "Bo" },
+        },
+        { withTransaction: poolTx },
+      );
+      expect(outcome).toMatchObject({
+        kind: "refused",
+        reason: CORRECTION_REFUSAL_REASONS.replacementUnpublishable,
+      });
+
+      // Nothing half-happened: no correction episode, and the target's
+      // window is still open (the stamp rolled back with everything else).
+      const episodes = await pool.query(
+        `SELECT 1 FROM brain_episodes
+          WHERE workspace_id = $1
+            AND source_id LIKE 'correction:%'
+            AND body::jsonb ->> 'factId' = $2`,
+        [WS, oldId],
+      );
+      expect(episodes.rows).toHaveLength(0);
+      const target = await pool.query<{ valid_to: Date | null }>(
+        `SELECT valid_to FROM brain_facts WHERE id = $1`,
+        [oldId],
+      );
+      expect(target.rows[0]!.valid_to).toBeNull();
     },
     PG_TEST_TIMEOUT_MS,
   );

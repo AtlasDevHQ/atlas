@@ -935,6 +935,15 @@ export interface BrainSearchResponse {
    * stdio MCP actor has no workspace and takes this path on every call.
    */
   readonly unavailable?: BrainSearchUnavailable | null;
+  /**
+   * The bi-temporal point-read instant this page answered for (#4916), echoed
+   * back normalized to ISO-8601. Present ONLY on an as-of read — an as-of-now
+   * page omits it, so its absence is the statement "these are current beliefs".
+   * Carried because a historical fact page read WITHOUT this framing is
+   * indistinguishable from current belief, which is exactly the confusion a
+   * trust-labeled surface must not permit.
+   */
+  readonly asOf?: string;
 }
 
 /**

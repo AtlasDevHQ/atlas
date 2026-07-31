@@ -1040,6 +1040,24 @@ describe("MCP tools", () => {
       expect(envelope?.request_id).toBeTruthy();
     });
 
+    it("maps a rejected asOf to `validation_failed` — fix the argument, don't retry (#4916)", async () => {
+      // The caller's own timestamp refused. `internal_error` here would tell
+      // the agent to retry the identical call; `validation_failed` tells it
+      // the argument is the problem, which the message then names.
+      mockSearchBrainExecute.mockResolvedValueOnce({
+        error: 'asOf "yesterday-ish" is not a parseable timestamp.',
+        reason: REAL_BRAIN_TOOL_REASONS.invalidAsOf,
+      });
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "searchBrain",
+        arguments: { query: "x", asOf: "yesterday-ish" },
+      });
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope?.code).toBe("validation_failed");
+    });
+
     it("maps every other degraded reason to `internal_error`", async () => {
       mockSearchBrainExecute.mockResolvedValueOnce({
         error: "Company-brain search failed.",

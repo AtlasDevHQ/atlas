@@ -141,12 +141,15 @@ describeIfPg("searchBrain against the live schema", () => {
     visibleTo?: readonly string[];
     status?: "draft" | "published";
     invalidated?: boolean;
+    /** Validity window (#4916) — `validTo` set simulates a supersession stamp. */
+    validFrom?: Date;
+    validTo?: Date;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, invalidated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9)
+          status, visible_to, invalidated_at, valid_from, valid_to)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9, $10, $11)
        RETURNING id`,
       [
         WS,
@@ -158,6 +161,8 @@ describeIfPg("searchBrain against the live schema", () => {
         opts.status ?? "published",
         opts.visibleTo ?? ["org"],
         opts.invalidated ? new Date() : null,
+        opts.validFrom ?? null,
+        opts.validTo ?? null,
       ],
     );
     return rows[0]!.id;
@@ -452,6 +457,129 @@ describeIfPg("searchBrain against the live schema", () => {
       expect(rival.provenance.source).toBe("slack");
       expect(rival.provenance.attribution).toMatchObject({ visible: true, actor: "U1" });
       expect(rival.status).toBe("published");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ══════════════════════════════════════════════════════════════════
+  // 7. asOf — the bi-temporal point read (#4916)
+  // ══════════════════════════════════════════════════════════════════
+
+  it(
+    "answers a point read under each version's FROZEN grant — a widening between versions does not reach back",
+    async () => {
+      // The acceptance scenario: the grant CHANGED between versions. Monday's
+      // version was private to `audience:private-channel`; Wednesday's
+      // supersession republished the claim org-wide. "What did we believe
+      // Monday" must use Monday's grant — the org reader gets NOTHING at
+      // Monday even though the CURRENT version is public, because each row is
+      // gated by its own immutable `visible_to`, not by the lineage's newest.
+      const monday = new Date("2026-07-06T09:00:00Z");
+      const tuesday = "2026-07-07T09:00:00Z";
+      const wednesday = new Date("2026-07-08T09:00:00Z");
+      const ep = await seedEpisode({
+        sourceId: "asof-grant",
+        visibleTo: ["audience:private-channel"],
+      });
+      const privateV1 = await seedFact({
+        subject: "Osprey rollout",
+        predicate: "led_by",
+        object: "the skunkworks pod",
+        episodeId: ep,
+        visibleTo: ["audience:private-channel"],
+        validFrom: monday,
+        validTo: wednesday, // superseded at Wednesday's publish
+      });
+      const publicV2 = await seedFact({
+        subject: "Osprey rollout",
+        predicate: "led_by",
+        object: "the platform team",
+        episodeId: ep,
+        visibleTo: ["org"],
+        validFrom: wednesday,
+      });
+
+      // The insider at Tuesday: Monday's belief, through Monday's grant.
+      const insiderAtTuesday = await search(insider(), {
+        query: "Osprey rollout",
+        include: ["fact"],
+        asOf: tuesday,
+      });
+      expect(ids(insiderAtTuesday.results)).toContain(privateV1);
+      // v2's window has not opened at Tuesday — a later belief must not
+      // answer for an earlier instant.
+      expect(ids(insiderAtTuesday.results)).not.toContain(publicV2);
+      expect(insiderAtTuesday.asOf).toBe("2026-07-07T09:00:00.000Z");
+
+      // The org reader at Tuesday: NOTHING. v1's frozen grant excludes them,
+      // and v2 had not begun. The current version being org-visible earns no
+      // historical access.
+      const outsiderAtTuesday = await search(outsider(), {
+        query: "Osprey rollout",
+        include: ["fact"],
+        asOf: tuesday,
+      });
+      expect(ids(outsiderAtTuesday.results)).not.toContain(privateV1);
+      expect(ids(outsiderAtTuesday.results)).not.toContain(publicV2);
+
+      // Default (as-of-now) reads are unchanged by any of the above: the
+      // superseded v1 is hidden, the current v2 serves — for both readers.
+      for (const reader of [insider(), outsider()]) {
+        const nowRead = await search(reader, { query: "Osprey rollout", include: ["fact"] });
+        expect(ids(nowRead.results)).toContain(publicV2);
+        expect(ids(nowRead.results)).not.toContain(privateV1);
+        expect("asOf" in nowRead).toBe(false);
+      }
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps a TOMBSTONED fact hidden at every instant, even one inside its validity window",
+    async () => {
+      // Retraction is the only way to hide history, and hiding is what it
+      // does: a retracted fact whose window covers the asked-about instant
+      // still never answers. Distinct from supersession, which the previous
+      // test proves DOES answer inside its window.
+      const ep = await seedEpisode({ sourceId: "asof-tomb" });
+      const retracted = await seedFact({
+        subject: "Heron pricing",
+        object: "the old tier sheet",
+        episodeId: ep,
+        invalidated: true,
+        validFrom: new Date("2026-07-06T00:00:00Z"),
+        validTo: new Date("2026-07-20T00:00:00Z"),
+      });
+
+      const res = await search(outsider(), {
+        query: "Heron pricing",
+        include: ["fact"],
+        asOf: "2026-07-10T00:00:00Z",
+      });
+      expect(ids(res.results)).not.toContain(retracted);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "admits a NULL valid_from at any instant — an unrecorded start is not a late one",
+    async () => {
+      // The default read serves NULL-valid_from rows as current belief (it has
+      // no valid_from predicate at all), so the point read must admit them too
+      // or `asOf ≈ now` would diverge from the default read.
+      const ep = await seedEpisode({ sourceId: "asof-nullfrom" });
+      const openStart = await seedFact({
+        subject: "Puffin oncall",
+        object: "the infra rotation",
+        episodeId: ep,
+      });
+
+      const res = await search(outsider(), {
+        query: "Puffin oncall",
+        include: ["fact"],
+        asOf: "2026-01-01T00:00:00Z",
+      });
+      expect(ids(res.results)).toContain(openStart);
     },
     PG_TEST_TIMEOUT_MS,
   );

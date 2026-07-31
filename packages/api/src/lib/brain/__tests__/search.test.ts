@@ -25,8 +25,10 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  BrainAsOfInvalidError,
   buildEpisodeQuery,
   buildFactQuery,
+  parseBrainAsOf,
   searchBrainCore,
   TENSION_FANOUT_CAP,
   type BrainSearchReader,
@@ -226,6 +228,150 @@ describe("buildFactQuery — push-down and the tombstone trap", () => {
     expect(sql).toContain("f.fts @@ websearch_to_tsquery('english', $3)");
     expect(sql).toContain("ts_rank(f.fts,");
     expect(sql).not.toContain("to_tsvector(");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// asOf — the bi-temporal point read (#4916)
+// ---------------------------------------------------------------------------
+
+describe("asOf — the bi-temporal point read (#4916)", () => {
+  const AS_OF = "2026-07-01T00:00:00.000Z";
+
+  it("switches the temporal predicate to the validity window, both bounds off ONE parameter", () => {
+    const { sql, params } = buildFactQuery("published", {
+      limit: 10,
+      asOf: AS_OF,
+      ...acl(ctx(), "brain_facts"),
+    });
+    // `valid_from <= asOf < COALESCE(valid_to, ∞)` — a NULL `valid_from`
+    // (an unrecorded start) is admitted, matching the default read.
+    expect(sql).toContain("(f.valid_from IS NULL OR f.valid_from <= $3::timestamptz)");
+    expect(sql).toContain("(f.valid_to IS NULL OR f.valid_to > $3::timestamptz)");
+    // The as-of-now supersession clause is REPLACED, not composed: composing
+    // both would hide every superseded fact from the historical read — the
+    // exact rows the point read exists to serve.
+    expect(sql).not.toContain("now()");
+    expect(params).toContain(AS_OF);
+  });
+
+  it("keeps the tombstone filter under asOf — retraction hides history at EVERY instant", () => {
+    // The boundary rule cut both ways in the ADR: superseded facts DO appear
+    // inside their window (previous test); tombstoned facts NEVER do, because
+    // retraction (the review gate's reject verb, and the GDPR-erasure path) is
+    // the one verb whose job is hiding.
+    const { sql } = buildFactQuery("published", {
+      limit: 10,
+      asOf: AS_OF,
+      ...acl(ctx(), "brain_facts"),
+    });
+    expect(sql).toContain("f.invalidated_at IS NULL");
+  });
+
+  it("leaves the default read byte-identical — the regression pin", () => {
+    // Not "still contains the old clauses" — BYTE-identical, so any reordering
+    // or reformatting the asOf branch leaks into the default arm fails here.
+    const withBranch = buildFactQuery("published", {
+      query: "billing",
+      limit: 10,
+      ...acl(ctx(), "brain_facts"),
+    });
+    expect(withBranch.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+    expect(withBranch.sql).not.toContain("valid_from IS NULL OR");
+    expect(withBranch.sql).not.toContain("timestamptz");
+    // Predicate order unchanged: ACL → mode → tombstone → supersession.
+    const order = [
+      "visible_to &&",
+      "f.status = 'published'",
+      "f.invalidated_at IS NULL",
+      "f.valid_to IS NULL OR f.valid_to > now()",
+    ].map((clause) => withBranch.sql.indexOf(clause));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("rejects a malformed asOf loudly, naming the value — never falls through to as-of-now", () => {
+    expect(() => parseBrainAsOf("last tuesday")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("last tuesday")).toThrow(/"last tuesday"/);
+    expect(() => parseBrainAsOf("last tuesday")).toThrow(/ISO-8601/);
+  });
+
+  it("rejects a BLANK asOf rather than treating it as absent", () => {
+    // '   '.trim() || undefined is the sibling params' normalization, and it
+    // is exactly the silent fall-through #4916 forbids on this one.
+    expect(() => parseBrainAsOf("")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("   ")).toThrow(BrainAsOfInvalidError);
+  });
+
+  it("rejects a FUTURE asOf — beliefs not yet held are not a point this surface answers", () => {
+    const now = () => Date.parse("2026-07-30T00:00:00Z");
+    expect(() => parseBrainAsOf("2026-08-01T00:00:00Z", now)).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("2026-08-01T00:00:00Z", now)).toThrow(/future/);
+    // The boundary itself is admitted: `asOf === now` is a valid past-or-present instant.
+    expect(parseBrainAsOf("2026-07-30T00:00:00Z", now)).toBe("2026-07-30T00:00:00.000Z");
+  });
+
+  it("normalizes the instant to canonical ISO-8601 UTC", () => {
+    // Bound as `timestamptz` and echoed on the response, so both carry the
+    // canonical spelling rather than the caller's local-offset one.
+    expect(parseBrainAsOf(" 2026-07-01T02:00:00+02:00 ")).toBe(AS_OF);
+  });
+
+  it("echoes the normalized asOf on the response — a historical page must say it is one", async () => {
+    const db = reader([{ match: SQL.factPage, rows: [factRow()] }]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      asOf: "2026-07-01T02:00:00+02:00",
+      limit: 10,
+      expand: false,
+    });
+    expect(res.asOf).toBe(AS_OF);
+    const factCall = db.calls.find((c) => c.sql.includes(SQL.factPage))!;
+    expect(factCall.params).toContain(AS_OF);
+  });
+
+  it("omits the field entirely on a default read — absence IS the 'current belief' statement", async () => {
+    const db = reader([{ match: SQL.factPage, rows: [factRow()] }]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    expect("asOf" in res).toBe(false);
+  });
+
+  it("refuses an unusable asOf BEFORE any store runs", async () => {
+    const db = reader();
+    await expect(
+      searchBrainCore(db, {
+        ctx: ctx(),
+        mode: "published",
+        asOf: "garbage",
+        limit: 10,
+        expand: false,
+      }),
+    ).rejects.toBeInstanceOf(BrainAsOfInvalidError);
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it("does NOT leak the temporal predicate into the episode store — episodes have no validity window", async () => {
+    const db = reader();
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact", "raw-episode"],
+      asOf: AS_OF,
+      limit: 10,
+      expand: false,
+    });
+    const episodeCall = db.calls.find((c) => c.sql.includes(SQL.episodePage))!;
+    expect(episodeCall.sql).not.toContain("valid_from");
+    expect(episodeCall.sql).not.toContain("valid_to");
+    expect(episodeCall.params).not.toContain(AS_OF);
   });
 });
 

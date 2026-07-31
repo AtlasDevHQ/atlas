@@ -377,6 +377,12 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
           .string()
           .optional()
           .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
+        asOf: z
+          .string()
+          .optional()
+          .describe(
+            "Facts only: ISO-8601 instant for a historical point read — the reviewed facts valid at that moment (superseded versions included; retracted never). Must be in the past. Omit for current beliefs.",
+          ),
         limit: z
           .number()
           .int()
@@ -433,14 +439,22 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
           // refusal to `internal_error` with nothing catching it.
           const obj = result as Record<string, unknown>;
           if (typeof obj.error === "string") {
-            // `reader_unresolved` is the ACL boundary; everything else is an
-            // Atlas-side fault. `request_id` rides on BOTH — the refusal is
-            // documented as an upstream defect deserving log correlation, and
-            // dropping the id there would leave an operator with nothing to
-            // grep for the one failure this surface most wants reported.
-            const refused = obj.reason === BRAIN_TOOL_REASONS.readerUnresolved;
+            // `reader_unresolved` is the ACL boundary; `invalid_as_of` (#4916)
+            // is the caller's own argument refused — `validation_failed`, so an
+            // agent fixes the timestamp instead of retrying an "internal"
+            // fault. Everything else is an Atlas-side fault. `request_id` rides
+            // on ALL of them — the refusal is documented as an upstream defect
+            // deserving log correlation, and dropping the id there would leave
+            // an operator with nothing to grep for the one failure this
+            // surface most wants reported.
+            const code =
+              obj.reason === BRAIN_TOOL_REASONS.readerUnresolved
+                ? "forbidden"
+                : obj.reason === BRAIN_TOOL_REASONS.invalidAsOf
+                  ? "validation_failed"
+                  : "internal_error";
             return toEnvelopeResult(
-              envelope(refused ? "forbidden" : "internal_error", obj.error, {
+              envelope(code, obj.error, {
                 request_id: requestId,
               }),
             );

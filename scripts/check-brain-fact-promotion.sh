@@ -56,8 +56,10 @@
 # as a completeness proof:
 #   - A table name assembled at runtime (`UPDATE ${t} SET status`) — ungreppable
 #     by construction.
-#   - A statement whose `SET … status` is more than 400 characters past the
-#     table name (the window bound below).
+#   - A statement the splitter cannot bound: statement segmentation is by `;`,
+#     so an unterminated final statement folds into its neighbour. (This
+#     replaced an earlier `.{0,400}`-window blind spot — the window form was
+#     dropped for the backtracking reason documented further down.)
 #   - Any language or file type outside `--include` (`.ts`/`.tsx`/`.js`).
 # The structural half of the guarantee is therefore NOT this script: it is
 # `adapters/__tests__/brain-facts.test.ts`, which asserts the registry entry

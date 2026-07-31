@@ -212,10 +212,14 @@ export interface IngestDocumentsOk {
    * is nowhere to put a pre-disclosure without splitting the endpoint into
    * preview + commit. That is not a gap in the gate: the facts a publish
    * supersedes are pending brain drafts that ALREADY existed in the workspace
-   * — a bundle of markdown documents mints none — so the same pending
-   * supersessions are visible in the publish preview before the admin ever
-   * uploads. What only this path can record is what actually happened, and
-   * that is what rides here → the route's `audit_log` row.
+   * — a bundle of markdown documents mints none, the two ingest targets are
+   * disjoint (`catalog-claims.ts`) — so those supersessions are disclosable in
+   * the publish preview independently of this upload. Two caveats keep that an
+   * argument rather than a proof: the extraction fiber mints drafts on its own
+   * clock, so a preview fetched earlier is not guaranteed to be the same set,
+   * and a scripted caller of the ingest endpoint never opens the preview at
+   * all. What only this path can record is what actually happened, and that is
+   * what rides here → the route's `audit_log` row.
    */
   readonly supersededFacts: readonly SupersessionRecord[];
   /** Per-file rejections from extraction + oversize + lenient parsing — never silently dropped. */
@@ -338,11 +342,13 @@ export async function ingestDocuments(
           );
           // Since #4912 that workspace-wide promotion can stamp `valid_to` on
           // published brain facts, so the reports are NOT discardable here —
-          // this is the third `runPublishPhases` caller, and dropping them made
-          // it the one publish path that retired a belief with no record of
-          // what replaced it (#4937). Swept with the SAME helper
-          // `admin-publish.ts` and the MCP seam use, for `collectRefusals`'
-          // reason: three callers, one sweep, nothing to keep in sync by hand.
+          // dropping them made this the one publish path that retired a belief
+          // with no record of what replaced it (#4937). Swept with the SAME
+          // helper `admin-publish.ts` and the MCP seam use, for
+          // `collectRefusals`' stated reason: one sweep, nothing to keep in
+          // sync by hand. NOTE this path sweeps ONLY the supersessions — an
+          // upload & publish that refuses a draft or widens a grant still
+          // records neither (the deliberate #4937 scope; see `promoted.ts`).
           superseded = collectSupersessions(reports);
         }
         return {
@@ -380,7 +386,10 @@ export async function ingestDocuments(
   // the retired side is hidden from every default read from here on. Uncapped —
   // "which facts" is the entire point, and unlike the adapter's own sampled
   // line this one is the seam's complete list. The upload route mirrors it into
-  // `audit_log`; this fires for any caller of the seam, audited or not.
+  // `audit_log`; this fires at the seam, so a future caller that publishes
+  // without an audit row still leaves a trace. (Today the only other caller is
+  // `connector-sync.ts`, which structurally cannot publish — ADR-0028 §4 — so
+  // this is forward coverage, not a live second case.)
   if (supersededFacts.length > 0) {
     log.warn(
       {

@@ -55,7 +55,12 @@ import {
   INSTALL_RECHECK_SQL,
 } from "@atlas/api/lib/knowledge/collection-lifecycle";
 import { SYNC_CREDENTIAL_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync-credentials";
-import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
+import {
+  CONTENT_MODE_TABLES,
+  collectSupersessions,
+  makeService,
+  type PromotionReport,
+} from "@atlas/api/lib/content-mode";
 import { Effect } from "effect";
 import type { PoolClient } from "pg";
 
@@ -937,13 +942,43 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       docs: docsFrom({ "a.md": "# A", "b.md": "# B" }),
     });
 
+    // A published brain fact plus a colliding `single`-cardinality draft in the
+    // SAME workspace. This is what makes an "upload & publish" retire a belief
+    // the bundle never mentioned (#4937): the publish is workspace-wide, so
+    // promoting these docs also promotes this draft and stamps the old fact's
+    // `valid_to`. Seeded here — rather than only in `promotion-pg.test.ts`,
+    // which calls `promoteBrainFacts` directly — so the chain under test is the
+    // full `CONTENT_MODE_TABLES` registry → `PromotionReport.superseded` →
+    // `collectSupersessions`, which is exactly what `ingest-bundle.ts` depends
+    // on and what a mocked seam test cannot reach.
+    const { rows: epRows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+       VALUES ($1, 'test', 'promote-supersede', 'evidence', '{org}')
+       RETURNING id`,
+      [wsPromote],
+    );
+    const episodeId = epRows[0]!.id;
+    const seedFact = async (object: string, status: "draft" | "published") => {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_facts
+           (workspace_id, subject, predicate, object, source_episode_id,
+            provenance, status, visible_to, predicate_cardinality)
+         VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}', 'single')
+         RETURNING id`,
+        [wsPromote, object, episodeId, status],
+      );
+      return rows[0]!.id;
+    };
+    const supersededFactId = await seedFact("bob", "published");
+    const supersedingFactId = await seedFact("carol", "draft");
+
     // Run the SAME registry promote the atomic publish endpoint runs, inside a
     // real transaction — this executes the derived
     // `UPDATE knowledge_documents … SET status='published'` against Postgres,
     // which no mocked route test can pin.
     const registry = makeService(CONTENT_MODE_TABLES);
     const txClient = await pool.connect();
-    let reports: ReadonlyArray<{ table: string; promoted: number }>;
+    let reports: ReadonlyArray<PromotionReport>;
     try {
       await txClient.query("BEGIN");
       reports = await Effect.runPromise(
@@ -966,6 +1001,20 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     );
     expect(statuses.rows).toHaveLength(2);
     expect(statuses.rows.every((r) => r.status === "published")).toBe(true);
+
+    // The chain `ingest-bundle.ts` reads: the registry's reports carry the
+    // supersession, and the SHARED sweep projects it. If an adapter
+    // registration or `table` name drifts, this goes red while every mocked
+    // seam test stays green — the original #4937 symptom, restored.
+    expect(collectSupersessions(reports)).toEqual([
+      { surface: "brain_facts", id: supersedingFactId, superseded: [supersededFactId] },
+    ]);
+    // And the stamp is real, not just reported.
+    const stamped = await pool.query<{ valid_to: Date | null }>(
+      `SELECT valid_to FROM brain_facts WHERE id = $1`,
+      [supersededFactId],
+    );
+    expect(stamped.rows[0]?.valid_to).not.toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 
   it("archives absent paths via ARCHIVE_COLLECTION_DOCS_SQL without touching present or rejected paths", async () => {

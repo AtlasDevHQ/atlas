@@ -18,14 +18,34 @@
  * asserted where a fourth caller cannot dodge it.
  *
  * The caller list is DISCOVERED, not enumerated: any non-test source file that
- * invokes `runPublishPhases` is in scope the day it lands.
+ * invokes `runPublishPhases` is in scope the day it lands — across every root
+ * that can reach `@atlas/api/lib/**`, not just `packages/api`.
+ *
+ * What this does NOT prove: that the swept records are then persisted. It is a
+ * source-shape guard — it pins that a caller binds the reports and passes them
+ * into the shared sweep. What each caller DOES with the result is pinned
+ * behaviorally by that caller's own suite.
  */
 
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 
 const API_SRC = join(import.meta.dir, "..", "..", "..");
+const REPO = join(API_SRC, "..", "..", "..");
+
+/**
+ * Every root a caller could land in — not just `packages/api/src`. `ee/` and
+ * `packages/mcp` both import `@atlas/api/lib/**` today, so a fourth caller
+ * landing in either is exactly the silent-inheritance scenario this file
+ * exists to prevent, and a single-root walk would never see it. (Same reason
+ * the repo's audit greps are required to cover `ee/`.)
+ */
+const ROOTS = [
+  API_SRC,
+  join(REPO, "ee", "src"),
+  join(REPO, "packages", "mcp", "src"),
+].filter((root) => existsSync(root));
 
 /** The module that DEFINES the method — this is a caller list, not a mention list. */
 const REGISTRY_MODULE = join("lib", "content-mode", "registry.ts");
@@ -45,18 +65,30 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Files that CALL `runPublishPhases`, relative to `src/`. A doc mention is not a call. */
+/** Files that CALL `runPublishPhases`, relative to the repo root. A doc mention is not a call. */
 function publishPhaseCallers(): string[] {
-  return sourceFiles(API_SRC)
+  return ROOTS.flatMap((root) => sourceFiles(root))
     .filter((full) => !full.endsWith(REGISTRY_MODULE))
     .filter((full) => readFileSync(full, "utf8").includes(CALL_SITE))
-    .map((full) => full.slice(API_SRC.length + 1))
+    .map((full) => full.slice(REPO.length + 1))
     .sort();
 }
 
 /** Drop comments so prose can neither satisfy nor break the shape checks below. */
 function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+}
+
+/**
+ * Comparison and arrow operators, blanked so they cannot pass for an
+ * assignment. Without this, `if (mode === "publish") await Effect.runPromise(
+ * reg.runPublishPhases(...))` and an arrow-bodied `const run = async (...) =>
+ * Effect.runPromise(reg.runPublishPhases(...))` both satisfy the bind check on
+ * their `===` / `=>` while discarding the reports — two ordinary refactors of
+ * the very code this guards.
+ */
+function blankNonAssignmentOperators(src: string): string {
+  return src.replace(/=>|[=!<>]==?/g, "  ");
 }
 
 /**
@@ -67,7 +99,7 @@ function stripComments(src: string): string {
  * three.
  */
 function callStatementPrefixes(src: string): string[] {
-  const clean = stripComments(src);
+  const clean = blankNonAssignmentOperators(stripComments(src));
   const out: string[] = [];
   for (let from = 0; ; ) {
     const at = clean.indexOf(CALL_SITE, from);
@@ -90,21 +122,49 @@ describe("every runPublishPhases caller handles the supersession report (#4937)"
     // A floor plus the three known names, so a broken predicate cannot make
     // every assertion below pass vacuously by discovering nothing.
     expect(CALLERS.length).toBeGreaterThanOrEqual(3);
-    expect(CALLERS).toContain(join("api", "routes", "admin-publish.ts"));
-    expect(CALLERS).toContain(join("lib", "datasources", "mcp-lifecycle.ts"));
-    expect(CALLERS).toContain(join("lib", "knowledge", "ingest-bundle.ts"));
+    const API = join("packages", "api", "src");
+    expect(CALLERS).toContain(join(API, "api", "routes", "admin-publish.ts"));
+    expect(CALLERS).toContain(join(API, "lib", "datasources", "mcp-lifecycle.ts"));
+    expect(CALLERS).toContain(join(API, "lib", "knowledge", "ingest-bundle.ts"));
   });
 
   for (const file of CALLERS) {
     describe(file, () => {
-      const src = readFileSync(join(API_SRC, file), "utf8");
+      const src = readFileSync(join(REPO, file), "utf8");
+      // Both shape checks run on the COMMENT-STRIPPED source, so prose can
+      // neither satisfy nor break them: a caller could otherwise pass by
+      // writing `// deliberately not calling collectSupersessions(reports)`,
+      // and a comment quoting the forbidden `.find(...)` shape could false-FAIL
+      // an innocent file.
+      const clean = stripComments(src);
 
       it("sweeps the reports through the shared collectSupersessions helper", () => {
         // The shared sweep, never a hand-rolled `reports.find(...)?.superseded`
         // fan-out — that layout is what let knowledge documents ship
         // under-reported in milestone #81, and what `promoted.ts` exists to end.
-        expect(src).toContain("collectSupersessions(");
-        expect(src).not.toMatch(/\.find\([^)]*\)[^;\n]*\.superseded/);
+        expect(clean).toContain("collectSupersessions(");
+        expect(clean).not.toMatch(/\.find\([^)]*\)[^;\n]*\.superseded/);
+      });
+
+      it("passes the bound reports INTO the sweep, not merely alongside it", () => {
+        // Closes the "binds and discards" gap: the two checks either side of
+        // this one are satisfied by `const reports = await ...` plus a
+        // `collectSupersessions(` anywhere in the file, even on an unrelated
+        // value. At least one call site's bound identifier must actually reach
+        // the sweep — directly (`collectSupersessions(reports)`) or relayed out
+        // of the transaction closure it was bound in, as `admin-publish.ts`
+        // does with `collectSupersessions(tx.reports)`.
+        const bound = callStatementPrefixes(src)
+          .map((prefix) => /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/.exec(prefix)?.[1])
+          .filter((name): name is string => name !== undefined);
+        expect(bound.length).toBeGreaterThan(0);
+        expect(
+          bound.some((name) =>
+            new RegExp(`collectSupersessions\\(\\s*(?:[A-Za-z_$][\\w$]*\\.)*${name}\\b`).test(
+              clean,
+            ),
+          ),
+        ).toBe(true);
       });
 
       it("binds the promotion reports rather than discarding them", () => {

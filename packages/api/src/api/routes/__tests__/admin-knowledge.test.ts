@@ -17,6 +17,7 @@ import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 // the barrel re-exports the registry and every adapter, and pulling that graph
 // in for one pure projection helper is what the leaf import avoids.
 import { collectSupersessions } from "@atlas/api/lib/content-mode/promoted";
+import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
 // Type-only import — erased at compile time, so it coexists with the
 // mock.module() of the same path below.
 import type { KnowledgeSyncOutcome } from "@atlas/api/lib/knowledge/sync";
@@ -137,11 +138,23 @@ void mock.module("@atlas/api/lib/logger", () => {
 // "upload & publish" path the row IS the record — the endpoint has no confirm
 // step, so nothing else on this path retains what the publish superseded
 // (#4937).
-const auditRows: Array<{ actionType: string; metadata: Record<string, unknown> }> = [];
+const auditRows: Array<{ actionType: string; metadata: Record<string, unknown>; awaited: boolean }> =
+  [];
+
+/** Set to make the AWAITED audit write reject — the circuit-open / DB-down case. */
+let AUDIT_AWAIT_THROWS = false;
 
 void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (row: { actionType: string; metadata: Record<string, unknown> }) => {
-    auditRows.push(row);
+    auditRows.push({ ...row, awaited: false });
+  },
+  // The route uses the AWAITED variant when a publish superseded something,
+  // because the fire-and-forget one drops the row silently on a circuit-open
+  // and that row is the only actor-attributed record of the `valid_to` stamp.
+  // Captured separately so a regression to fire-and-forget is visible here.
+  logAdminActionAwait: async (row: { actionType: string; metadata: Record<string, unknown> }) => {
+    if (AUDIT_AWAIT_THROWS) throw new Error("internal DB unavailable");
+    auditRows.push({ ...row, awaited: true });
   },
   ADMIN_ACTIONS: {
     knowledge: { ingest: "knowledge.ingest", sync: "knowledge.sync", uninstall: "knowledge.uninstall" },
@@ -284,7 +297,10 @@ void mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
 // unmocked export reached later fails loudly as `undefined is not a function`.
 // What the fake registry's publish phases report. Default: nothing superseded.
-let PUBLISH_REPORTS: Array<Record<string, unknown>> = [];
+// Typed as the REAL `PromotionReport` — see `lib/knowledge/__tests__/
+// ingest-bundle.test.ts` for why a hand-written shape here would silently
+// accept fixtures production's `collectSupersessions` cannot project.
+let PUBLISH_REPORTS: PromotionReport[] = [];
 
 void mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
@@ -387,6 +403,7 @@ beforeEach(() => {
   publishRan = false;
   PUBLISH_REPORTS = [];
   auditRows.length = 0;
+  AUDIT_AWAIT_THROWS = false;
   archivedDocRows = 0;
   nextId = 1;
   DOCUMENTS = [];
@@ -660,6 +677,26 @@ describe("POST /{collectionSlug}/ingest — happy path", () => {
         { surface: "brain_facts", id: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] },
       ],
     });
+    // Awaited, not fire-and-forget: a silently dropped row here would leave the
+    // `valid_to` stamp with no actor recorded anywhere.
+    expect(row?.awaited).toBe(true);
+  });
+
+  it("still returns 200 when the supersession audit row fails to commit (#4937)", async () => {
+    // The ingest transaction already committed — the stamp is durable. Failing
+    // the request would tell the admin nothing was written, which is worse than
+    // a 200 plus a loud error log. The `supersedes` edges survive regardless.
+    AUDIT_AWAIT_THROWS = true;
+    PUBLISH_REPORTS = [
+      {
+        table: "brain_facts",
+        promoted: 1,
+        superseded: [{ rowId: "new-fact-1", superseded: ["old-fact-1"] }],
+      },
+    ];
+    const res = await ingest("/runbooks/ingest?publish=true", zipSync({ "a.md": strToU8("# A") }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { published: boolean }).published).toBe(true);
   });
 
   it("records an empty supersession list when the publish superseded nothing (#4937)", async () => {
@@ -670,6 +707,9 @@ describe("POST /{collectionSlug}/ingest — happy path", () => {
     expect(res.status).toBe(200);
     const row = auditRows.find((r) => r.actionType === "knowledge.ingest");
     expect(row?.metadata).toMatchObject({ published: true, supersededFacts: [], supersededFactCount: 0 });
+    // Nothing was retired, so the ordinary fire-and-forget write is right —
+    // awaiting every ingest row would put the internal DB on the request path.
+    expect(row?.awaited).toBe(false);
   });
 
   it("400s an upload into a bundle-sync collection — synced trees are endpoint-owned (#4211)", async () => {

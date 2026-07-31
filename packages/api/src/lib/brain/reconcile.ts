@@ -372,7 +372,7 @@ const NO_BLOCKS: Readonly<Record<ReconcileBlockReason, number>> = Object.freeze(
 // widens only at the review gate; the INSERT below names it and must, because
 // derive-at-ingest is that snapshot being taken). Nor may ANY statement here
 // WRITE `valid_to` (#4912): "a human promotion stamps `valid_to`; there is no
-// autonomous supersession" — the publish gate (and later `correct_fact`) are
+// autonomous supersession" — the publish gate and `correct_fact` (#4915) are
 // its only writers, and this stage runs unattended on every ingest pass.
 // Reading it is fine and required (two SELECTs below filter on it, and the
 // guard's own fixtures pass a SELECT doing exactly that);

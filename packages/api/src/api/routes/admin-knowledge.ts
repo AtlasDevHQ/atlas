@@ -36,7 +36,7 @@ import type {
   KnowledgeUninstallResponse,
 } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ingestBundle } from "@atlas/api/lib/knowledge/ingest-bundle";
@@ -800,7 +800,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
 
     const { report, rejected, supersededFacts } = outcome;
 
-    logAdminAction({
+    const auditEntry = {
       actionType: ADMIN_ACTIONS.knowledge.ingest,
       targetType: "knowledge",
       targetId: collectionSlug,
@@ -816,20 +816,48 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         unchanged: report.unchanged,
         linksWritten: report.linksWritten,
         rejected: rejected.length,
-        published: shouldPublish,
+        // Read off the OUTCOME, not the query param: `supersededFactCount`
+        // below comes from the outcome, and a row claiming a publish the seam
+        // declined alongside an empty supersession list would be worse than
+        // useless. They agree by construction today.
+        published: outcome.published,
         // Published brain facts an "upload & publish" retired (#4912, #4937).
         // Uncapped ids, for `admin-publish.ts`'s reason with one extra edge:
         // that route's modal disclosed the supersession BEFORE the click, so
         // its audit row is the second record. This endpoint has no confirm
-        // step, so this row is the FIRST and only durable one — "what replaced
-        // what, and when" lives nowhere else on this path.
+        // step, so this row is the only ACTOR-ATTRIBUTED record on this path —
+        // the `supersedes` edges the adapter writes in the same transaction are
+        // the durable floor beneath it, but they carry no admin, ip, or
+        // requestId.
         supersededFacts,
         supersededFactCount: supersededFacts.length,
       },
-    });
+    } as const;
+
+    if (supersededFacts.length > 0) {
+      // Awaited, not fire-and-forget: `logAdminAction` drops the row silently
+      // when the internal-DB circuit breaker is open, and on this path that row
+      // is the only place the actor behind a `valid_to` stamp is recorded.
+      // Failure does NOT fail the request — the ingest transaction already
+      // committed — but it must be loud rather than a `_droppedCount++`.
+      await logAdminActionAwait(auditEntry).catch((err: unknown) => {
+        log.error(
+          {
+            requestId,
+            orgId,
+            collectionSlug,
+            supersededFacts,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "audit row for an upload & publish SUPERSESSION was not committed — the valid_to stamp is durable but now unattributed; the supersedes edges in brain_facts are the surviving record",
+        );
+      });
+    } else {
+      logAdminAction(auditEntry);
+    }
 
     log.info(
-      { requestId, orgId, collectionSlug, format: outcome.format, ...report, published: shouldPublish, rejected: rejected.length, superseded: supersededFacts.length },
+      { requestId, orgId, collectionSlug, format: outcome.format, ...report, published: outcome.published, rejected: rejected.length, superseded: supersededFacts.length },
       "Knowledge bundle ingested",
     );
 

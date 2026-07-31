@@ -24,7 +24,14 @@
  * What this does NOT prove: that the swept records are then persisted. It is a
  * source-shape guard — it pins that a caller binds the reports and passes them
  * into the shared sweep. What each caller DOES with the result is pinned
- * behaviorally by that caller's own suite.
+ * behaviorally by that caller's own suite, so a sweep whose result is then
+ * dropped, or one sitting in a dead branch, passes here by design.
+ *
+ * One discovery blind spot, currently unreachable: a destructured or aliased
+ * call (`const { runPublishPhases } = registry; runPublishPhases(...)`) has no
+ * `.runPublishPhases(` and would not be found. Verified zero such call sites
+ * today; if an Effect-style service destructure becomes idiomatic here, widen
+ * `CALL_SITE` to a bare-identifier pattern.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -35,13 +42,17 @@ const API_SRC = join(import.meta.dir, "..", "..", "..");
 const REPO = join(API_SRC, "..", "..", "..");
 
 /**
- * Every root a caller could land in — not just `packages/api/src`. `ee/`,
- * `packages/mcp` and `packages/cli` all import `@atlas/api/lib/**` today, so a
- * fourth caller landing in any of them is exactly the silent-inheritance
- * scenario this file exists to prevent, and a single-root walk would never see
- * it. (Same reason the repo's audit greps are required to cover `ee/`.
- * `packages/cli` is here because `docs/development/content-mode.md` already
- * describes a CLI publish surface.)
+ * Every root a publish surface could PLAUSIBLY land in — not just
+ * `packages/api/src`. `ee/`, `packages/mcp` and `packages/cli` all import
+ * `@atlas/api/lib/**` and all three already host admin-shaped or
+ * content-shaped code, so a fourth caller landing in any of them is exactly the
+ * silent-inheritance scenario this file exists to prevent, and a single-root
+ * walk would never see it. (Same reason the repo's audit greps are required to
+ * cover `ee/`. `packages/cli` is here because
+ * `docs/development/content-mode.md` already describes a CLI publish surface.)
+ * Other workspaces import `@atlas/api` too — `sandbox-sidecar`,
+ * `fumadocs-okf` — and are deliberately out: neither could host a publish
+ * surface without a redesign that would surface this file anyway.
  *
  * NOT filtered by `existsSync` — a renamed or restructured root would silently
  * shrink the guarded surface, which is the same failure shape as the bug being
@@ -157,6 +168,25 @@ describe("every runPublishPhases caller handles the supersession report (#4937)"
     });
   });
 
+  it("strips nothing that changes WHO is a caller", () => {
+    // The stripper is the one thing standing between discovery and a silent
+    // miss, in both directions: the template-literal pattern is deliberately
+    // not newline-bounded (templates are multi-line), so an ODD number of
+    // backticks in a comment can swallow a real call site and drop the file out
+    // of CALLERS entirely; and a prose mention in raw source would enrol a
+    // non-caller. Asserting the two sets agree catches both, and prints the
+    // delta rather than a bare boolean.
+    const raw = ROOTS.flatMap((root) => sourceFiles(root))
+      .filter((full) => !full.endsWith(REGISTRY_MODULE))
+      .filter((full) => readFileSync(full, "utf8").includes(CALL_SITE))
+      .map((full) => full.slice(REPO.length + 1))
+      .sort();
+    expect({ onlyInRaw: raw.filter((f) => !CALLERS.includes(f)) }).toEqual({ onlyInRaw: [] });
+    expect({ onlyInStripped: CALLERS.filter((f) => !raw.includes(f)) }).toEqual({
+      onlyInStripped: [],
+    });
+  });
+
   it("discovers the known callers", () => {
     // A floor plus the three known names, so a broken predicate cannot make
     // every assertion below pass vacuously by discovering nothing.
@@ -193,20 +223,30 @@ describe("every runPublishPhases caller handles the supersession report (#4937)"
         // value. EVERY call site's bound identifier must reach the sweep —
         // directly (`collectSupersessions(reports)`) or relayed out of the
         // transaction closure it was bound in, as `admin-publish.ts` does with
-        // `collectSupersessions(tx.reports)`. `every`, not `some`: a file with
-        // two call sites where only one is swept is the #4937 regression at a
-        // finer granularity.
+        // `collectSupersessions(tx.reports)`. Every, not some: a file with two
+        // call sites where only one is swept is the #4937 regression at a finer
+        // granularity.
+        //
+        // The per-name check alone would NOT catch that, because `reachesSweep`
+        // is textual per identifier: two call sites both binding `reports` are
+        // satisfied by a single sweep — and all three callers today bind exactly
+        // `reports`, so that is the likeliest shape the regression would take.
+        // The sweep COUNT is what closes it: one `collectSupersessions(` per
+        // call site.
         //
         // Known false-FAIL shapes, all currently unused: a destructured bind
         // (`const { reports } = await …`), an assignment to a pre-declared
-        // `let`, and a bind into an object literal. If one of those becomes the
-        // natural way to write a caller, broaden the pattern — do not delete
-        // the assertion.
-        const bound = callStatementPrefixes(src)
+        // `let`, a bind into an object literal, an inline compose
+        // (`return collectSupersessions(await …)`), and `export const`. If one
+        // becomes the natural way to write a caller, broaden the pattern — do
+        // not delete the assertion.
+        const prefixes = callStatementPrefixes(src);
+        const bound = prefixes
           .map((prefix) => /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/.exec(prefix)?.[1])
           .filter((name): name is string => name !== undefined);
-        expect(bound).toHaveLength(callStatementPrefixes(src).length);
+        expect(bound).toHaveLength(prefixes.length);
         expect(bound.length).toBeGreaterThan(0);
+        expect(clean.match(/collectSupersessions\(/g) ?? []).toHaveLength(prefixes.length);
         for (const name of bound) {
           // `$` is a regex anchor and a legal identifier character, so it is
           // escaped rather than interpolated raw.

@@ -537,15 +537,21 @@ function toDraftFactRow(row: unknown): DraftFactRow | null {
 /**
  * Bound on any id list this file spells out in a log line.
  *
- * The two uses have different backstops, which is worth knowing before raising
- * or lowering it. For `widened`, the sample is a convenience ON THE TWO SEAMS
- * THAT SWEEP IT — the complete list rides `PromotionReport.widened` to a
- * durable record for the REST route and the MCP seam. It is NOT a convenience
- * on `knowledge/ingest-bundle.ts`, which discards the report: there this cap is
- * the record, so lowering it silently narrows the only surviving account of an
- * ACL change. For the evidence-drift warnings there is NO complete record
- * anywhere: the sample plus the count is all that exists, so the count is the
- * number to act on.
+ * The four uses have DIFFERENT backstops, which is worth knowing before raising
+ * or lowering it:
+ *
+ *   - `widened` — a convenience on the two seams that sweep it (the complete
+ *     list rides `PromotionReport.widened` to the REST route's and the MCP
+ *     seam's durable records). NOT a convenience on
+ *     `knowledge/ingest-bundle.ts`, which discards the report: there this cap
+ *     IS the record, so lowering it silently narrows the only surviving
+ *     account of an ACL change.
+ *   - `superseded` — a convenience on all three publish surfaces since #4937;
+ *     every one of them now sweeps `PromotionReport.superseded`.
+ *   - the evidence-drift `factIds`, and the `missing` list when
+ *     `SUPERSEDE_STAMP_SQL` stamps fewer rows than asked — NO complete record
+ *     anywhere. The sample plus the count is all that exists, so the count is
+ *     the number to act on, and these are the two that argue against lowering.
  */
 const LOGGED_ID_SAMPLE_CAP = 20;
 

@@ -82,8 +82,11 @@ const log = createLogger("admin.knowledge");
  * Deadline on the one audit write this router AWAITS (the supersession record
  * on "upload & publish"). Same value and same reason as `auth/middleware.ts`'s:
  * `internalQuery` bypasses the circuit breaker and the internal pool sets no
- * statement timeout, so an unreachable internal Postgres would otherwise stall
- * the response. Unlike middleware's, a timeout here logs and returns 200 — the
+ * statement timeout, so a DEGRADED internal Postgres would otherwise stall the
+ * response. (An unreachable-but-routable DB is already bounded by the pool's
+ * `connectionTimeoutMillis`; this cap is the tighter, independent one — the
+ * same distinction `middleware.ts` draws.) Unlike middleware's, a timeout here
+ * logs and returns 200 — the
  * ingest transaction has already committed, so failing closed would misreport.
  */
 const AUDIT_WRITE_TIMEOUT_MS = 5_000;
@@ -876,7 +879,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
             supersededFacts,
             err: err instanceof Error ? err.message : String(err),
           },
-          "audit_log row for an upload & publish SUPERSESSION was not committed — the valid_to stamp is durable but has no queryable audit row; the actor-attributed `admin_action` pino line for this requestId, and the supersedes edges in brain_facts, are the surviving records",
+          "admin_action_log row for an upload & publish SUPERSESSION was not committed — the valid_to stamp is durable but has no queryable audit row; the actor-attributed `admin_action` pino line for this requestId, and the supersedes edges in brain_edges, are the surviving records",
         );
       });
     } else {

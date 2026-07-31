@@ -144,6 +144,12 @@ export const correctFactTool = tool({
     // construction. Outcome mapping happens OUTSIDE it: a (today unreachable)
     // throw while shaping the success response must never tell the agent to
     // retry a correction that already committed.
+    //
+    // `correctFact` does post-commit work of its own since #4934 — it emits the
+    // `admin_action_log` row — so that "by construction" now rests on
+    // `emitCorrectionAudit` never throwing, which its own body enforces by
+    // holding everything inside the try. If that ever changes, this catch
+    // starts telling users to re-run a correction that already landed.
     let outcome: CorrectionOutcome;
     try {
       const db = getInternalDB();

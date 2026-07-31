@@ -100,10 +100,47 @@
  * mid-transaction throws {@link CorrectionRefusedError}, which rolls the
  * episode back — a correction that half-happened must not leave an authored
  * episode asserting it did.
+ *
+ * ## THIS layer owns the admin-actions audit row — not the entry points
+ *
+ * A correction has two entry points onto this one write: the admin HTTP routes
+ * (`api/routes/admin-brain-facts.ts`) and the `correct_fact` agent tool
+ * (`lib/tools/correct-fact.ts`). #4915 built both and wired the
+ * `admin_action_log` vocabulary to only the first, so the same verb through
+ * chat produced the in-brain episode and no forensic row (#4934). The row is
+ * emitted HERE, once, for the `corrected` outcome only.
+ *
+ * The principle is one write, one audit row, emitted where the write is — so a
+ * THIRD entry point inherits the audit trail instead of having to remember it,
+ * and two entry points cannot drift into two metadata shapes (they already had:
+ * `/retract` logged `flaggedForReReview` unconditionally, `/correct` only when
+ * non-empty). `lib/` writing this table is thoroughly established —
+ * `auth/middleware.ts`, `auth/invitations.ts`, `rate-limit/middleware.ts`,
+ * `lib/brain/extract.ts` and two schedulers all do it — though the schedulers'
+ * case is unattended loops labelling themselves with `systemActor`, which is a
+ * different argument from this one.
+ * `resolveEntry` reads actor, org and requestId off the AsyncLocalStorage
+ * request context, which both entry points run inside, so attribution needs no
+ * plumbing from either — and {@link emitCorrectionAudit} warns loudly if a
+ * future caller arrives without one.
+ *
+ * REFUSALS AND NOT-FOUNDS STAY UNAUDITED — a scope call, not a semantic one
+ * (#4934 non-goal). The table is NOT success-only: `AdminActionEntry.status`
+ * takes `"failure"` and dozens of call sites pass it, including a refusal on
+ * the closest precedent to this change (`sso.enforcement_block` in
+ * `auth/middleware.ts`). So auditing refused corrections is legitimate and can
+ * be added later; it just needs its own decision about volume, and about
+ * whether a not-found — which is deliberately indistinguishable from "not
+ * visible to you" — is an event at all.
+ *
+ * The write is AWAITED with a deadline rather than fire-and-forget — see
+ * {@link emitCorrectionAudit} for why that is not a contradiction of "a failed
+ * audit never affects a committed correction".
  */
 
 import { randomUUID } from "node:crypto";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { ADMIN_ACTIONS, logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
 import {
   aclVisibilityClause,
   isUnknownArray,
@@ -207,6 +244,18 @@ export interface CorrectionDeps {
   readonly now?: () => Date;
   /** Test seam for the episode's unique `source_id` suffix. */
   readonly newCorrectionId?: () => string;
+  /**
+   * Test seam for {@link AUDIT_WRITE_TIMEOUT_MS}. Exists so the deadline on the
+   * post-commit audit write is provable in milliseconds instead of seconds —
+   * without it the only way to pin "a hung internal DB cannot hold a chat turn
+   * open" is a 5-second test, which sits exactly on bun's default per-test
+   * timeout.
+   *
+   * A positive, finite number of milliseconds no greater than 2_147_483_647.
+   * Anything else falls back to the real bound — see `resolveAuditDeadline`,
+   * which is where that is enforced, because the type cannot say it.
+   */
+  readonly auditWriteTimeoutMs?: number;
 }
 
 /** What became of one correction request. */
@@ -480,8 +529,14 @@ export async function correctFact(
   // that deployment declared it has no ids to record.
   const sourcePrincipal = ctx.userId !== null ? `user:${ctx.userId}` : "human:local-operator";
 
+  // Bound OUTSIDE the try, and the try holds nothing but the transaction. The
+  // audit write below is post-commit work, and a post-commit throw reaching
+  // this catch would be classified as a refusal or rethrown to a caller whose
+  // own error copy says "nothing was changed — retry" (`lib/tools/correct-fact.ts`).
+  // Placement, not a comment, is what keeps that impossible.
+  let result: BrainFactCorrectionResponse | null;
   try {
-    const result = await withTransaction(async (tx) => {
+    result = await withTransaction(async (tx) => {
       // ── The target, ACL-gated and row-locked ──────────────────────────
       const params: unknown[] = [...acl.params, factId];
       const targetResult = await tx.query(correctionTargetSql(acl.sql, params.length), params);
@@ -591,29 +646,6 @@ export async function correctFact(
         }
       }
     });
-
-    if (result === null) {
-      log.info(
-        { workspaceId: ctx.workspaceId, factId, verb, userId: ctx.userId, requestId },
-        "brain correction: verb matched no row — absent, already retracted, or not visible to this actor",
-      );
-      return { kind: "not-found" };
-    }
-
-    log.info(
-      {
-        workspaceId: ctx.workspaceId,
-        factId,
-        verb,
-        userId: ctx.userId,
-        correctionEpisodeId: result.correctionEpisodeId,
-        supersededBy: result.supersededBy,
-        flaggedForReReview: result.flaggedForReReview.length,
-        requestId,
-      },
-      "brain correction: verb applied — human-authoritative, recorded as an immutable correction episode",
-    );
-    return { kind: "corrected", result };
   } catch (err) {
     if (err instanceof CorrectionRefusedError) {
       // The throw already rolled the transaction (and any episode row) back.
@@ -625,6 +657,310 @@ export async function correctFact(
     }
     throw err;
   }
+
+  if (result === null) {
+    log.info(
+      { workspaceId: ctx.workspaceId, factId, verb, userId: ctx.userId, requestId },
+      "brain correction: verb matched no row — absent, already retracted, or not visible to this actor",
+    );
+    return { kind: "not-found" };
+  }
+
+  log.info(
+    {
+      workspaceId: ctx.workspaceId,
+      factId,
+      verb,
+      userId: ctx.userId,
+      correctionEpisodeId: result.correctionEpisodeId,
+      supersededBy: result.supersededBy,
+      flaggedForReReview: result.flaggedForReReview.length,
+      requestId,
+    },
+    "brain correction: verb applied — human-authoritative, recorded as an immutable correction episode",
+  );
+  // Emitted from here, not from either entry point — see the module header.
+  await emitCorrectionAudit({
+    ctx,
+    result,
+    requestId,
+    timeoutMs: resolveAuditDeadline(deps.auditWriteTimeoutMs),
+  });
+  return { kind: "corrected", result };
+}
+
+/**
+ * How long an awaited audit write may hold a committed correction's response
+ * open. Same bound and same reason as `auth/middleware.ts` and
+ * `admin-knowledge.ts`: `logAdminActionAwait` goes through `internalQuery`,
+ * which deliberately bypasses the internal-DB circuit breaker, and the internal
+ * pool sets no statement timeout — so without a deadline a DEGRADED internal DB
+ * (reachable, not answering) would hang this call indefinitely. An UNREACHABLE
+ * one is already bounded by the pool's `connectionTimeoutMillis`.
+ *
+ * Not yet shared with those two hand-rolled copies on purpose: consolidating
+ * would mean editing `auth/middleware.ts`'s fail-closed 500 path, which is a
+ * security-surface change that does not belong in a brain-audit fix. One thing
+ * for whoever does consolidate: as of #4934 this copy CLEARS its deadline in a
+ * `finally` and neither precedent does, so they leave a timer armed for the full
+ * bound on every fast path. This is the side to keep.
+ */
+const AUDIT_WRITE_TIMEOUT_MS = 5_000;
+
+/**
+ * `setTimeout`'s 32-bit ceiling. Above it the delay is CLAMPED TO 1ms, with
+ * nothing but a `TimeoutOverflowWarning` on stderr — so `Infinity`, the natural
+ * spelling of "no deadline for this test", would silently make every audit
+ * write time out instantly. That is the same failure the lower bound guards,
+ * entered from the other end.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * The deadline actually used, normalized here rather than at the read site so
+ * the invariant lives beside the constant that expresses it: a POSITIVE, FINITE
+ * number of milliseconds that a timer can represent. `??` alone would not do —
+ * it only catches nullish, so `0`, a negative, `NaN` and anything past
+ * {@link MAX_TIMER_MS} would all pass through and mean "time out immediately".
+ */
+function resolveAuditDeadline(ms: number | undefined): number {
+  if (ms === undefined) return AUDIT_WRITE_TIMEOUT_MS;
+  if (!Number.isFinite(ms) || ms <= 0 || ms > MAX_TIMER_MS) {
+    // Named, not silently substituted. A mis-specified seam that quietly became
+    // 5s is exactly the kind of silent fallback that turns a wrong test into a
+    // five-second mystery.
+    log.warn(
+      { requested: ms, using: AUDIT_WRITE_TIMEOUT_MS, max: MAX_TIMER_MS },
+      "brain correction: auditWriteTimeoutMs is out of range (must be finite, positive, and within the " +
+        "32-bit timer ceiling) — falling back to the default audit deadline",
+    );
+    return AUDIT_WRITE_TIMEOUT_MS;
+  }
+  return ms;
+}
+
+/**
+ * The forensic `admin_action_log` row for a correction that already committed.
+ *
+ * AWAITED, not fire-and-forget, and that is not a contradiction of #4934's
+ * "a failed audit write never affects a committed correction" — the two claims
+ * are about different things. The correction is never rolled back and this
+ * function never throws; what awaiting buys is that a DROPPED row is LOUD.
+ * `logAdminAction` posts the insert into the circuit breaker and returns, so
+ * an open breaker discards the row with nothing but an internal counter — the
+ * shape #4937's fix (#4944) adopted on the adjacent publish path after finding
+ * it there, and a silent gap here reproduces the very bug this call site exists
+ * to fix. CLAUDE.md: never silently swallow errors; prefer errors over silent
+ * fallbacks.
+ *
+ * Failure is logged at ERROR and the correction still returns `corrected`,
+ * because it HAS been corrected: the episode, the tombstone/stamp/marker and
+ * the edges are committed, and reporting failure would invite a retry that
+ * mints a SECOND correction episode for one human decision.
+ *
+ * The message names what actually survives, so the line is a usable recovery
+ * instruction rather than an alarm — and it names DIFFERENT things depending on
+ * how far the emitter got, which is what `writeAttempted` is for. Once
+ * `logAdminActionAwait` has been called the actor-attributed `admin_action`
+ * pino line exists (it emits BEFORE the insert), so only the queryable row is
+ * at risk; a throw while BUILDING the entry never reached the writer, so no
+ * pino line exists either and the correction episode in `brain_episodes` is the
+ * sole surviving record.
+ *
+ * NEVER THROWS: the entry construction is inside the `try` rather than just the
+ * `await`, so a synchronous throw there is contained instead of landing on an
+ * already-committed correction and reaching a caller whose error copy says
+ * "nothing was changed — retry". Two residuals, both deliberate: the `lost`
+ * payload is assembled before the `try` because the `catch` reads it (it only
+ * copies fields that are non-optional on `BrainFactCorrectionResponse`), and the
+ * `catch`'s own `log.error` is outside the guarantee — a logger broken badly
+ * enough to throw is not a failure mode this module can absorb.
+ */
+async function emitCorrectionAudit(args: {
+  readonly ctx: BrainPrincipalContext;
+  readonly result: BrainFactCorrectionResponse;
+  readonly requestId: string | undefined;
+  readonly timeoutMs: number;
+}): Promise<void> {
+  const { ctx, result, requestId, timeoutMs } = args;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  /** Distinguishes the write's own rejection from a post-deadline one. */
+  let timedOut = false;
+  /**
+   * Whether `logAdminActionAwait` was ever CALLED. It emits the actor-attributed
+   * `admin_action` pino line before its insert, so this is exactly the predicate
+   * for "does that line exist" — and the recovery instruction below is a
+   * different instruction depending on the answer.
+   */
+  let writeAttempted = false;
+  // Everything an operator needs to reconstruct the row BY HAND, shared by all
+  // three lines that can report it lost. The row IS the actor-attributed
+  // record, so a line saying it is gone without the actor is not a recovery
+  // instruction.
+  const lost = {
+    workspaceId: ctx.workspaceId,
+    actorId: ctx.userId,
+    factId: result.factId,
+    verb: result.verb,
+    correctionEpisodeId: result.correctionEpisodeId,
+    requestId,
+  } as const;
+  try {
+    // Retract keeps its dedicated action type so existing audit consumers see
+    // one vocabulary for one semantics; the other three verbs share `correct`
+    // with the verb in `metadata.verb`. `satisfies` rather than a bare
+    // annotation so the literal types survive; `as const` alone would leave a
+    // misspelled optional key (`staus`, `ipaddress`) compiling to a silent
+    // no-op, because excess-property checking does not apply to a variable.
+    //
+    // `result.factId` rather than the caller's `factId`: the response carries
+    // `f.id::text` as Postgres canonicalized it, while the agent tool accepts
+    // the id as a bare `z.string()`, so an LLM echoing a differently-cased uuid
+    // would otherwise produce a `target_id` that does not string-join to
+    // `brain_facts.id`.
+    const entry = {
+      actionType:
+        result.verb === "retract"
+          ? ADMIN_ACTIONS.brainFact.retract
+          : ADMIN_ACTIONS.brainFact.correct,
+      targetType: "brainFact",
+      targetId: result.factId,
+      metadata: {
+        verb: result.verb,
+        workspaceId: ctx.workspaceId,
+        correctionEpisodeId: result.correctionEpisodeId,
+        ...(result.invalidatedAt !== null ? { invalidatedAt: result.invalidatedAt } : {}),
+        ...(result.flaggedForReReview.length > 0
+          ? { flaggedForReReview: result.flaggedForReReview }
+          : {}),
+        ...(result.supersededBy !== null ? { supersededBy: result.supersededBy } : {}),
+        ...(result.validTo !== null ? { validTo: result.validTo } : {}),
+      },
+    } as const satisfies AdminActionEntry;
+
+    // The module header claims a future entry point INHERITS the audit trail.
+    // It inherits the row; it does not inherit the attribution — `resolveEntry`
+    // reads the actor off the AsyncLocalStorage context and falls back to the
+    // literal `"unknown"` with no complaint. The test is the ACTOR, not the
+    // context: `withRequestContext({ requestId })` with no `user` is the
+    // canonical scheduler/background shape, and it resolves to `"unknown"` just
+    // as a missing context does. Both entry points today supply a user, so this
+    // never fires; a future one that does not would produce a row that exists
+    // and lies, which is a worse artifact than the missing row #4934 fixed.
+    // The `unauthenticated-local` arm is exempt: that deployment has DECLARED
+    // it has no ids to record (see the authority gate at the top of
+    // `correctFact`), so `actor 'unknown'` is the correct row there, not a
+    // finding. Warning on it would fire on every correction in a
+    // correctly-configured deployment, which is how a guard gets deleted.
+    if (ctx.origin !== "unauthenticated-local" && getRequestContext()?.user?.id === undefined) {
+      log.warn(
+        { ...lost },
+        "brain correction: no actor in the request context at audit time — the admin_action_log row will " +
+          "record actor 'unknown'. A correction entry point must run inside withRequestContext with a user",
+      );
+    }
+
+    writeAttempted = true;
+    const write = logAdminActionAwait(entry);
+    // A deadline does not CANCEL the insert, and `Promise.race` discards the
+    // losing branch's outcome. Without this continuation the pg error that
+    // explains a slow write — `relation ... does not exist`, pool exhaustion —
+    // is dropped and the only line an operator ever sees is "timed out".
+    void write
+      .then(
+        () => {
+          if (timedOut) {
+            log.warn(
+              { ...lost },
+              "brain correction: admin_action_log write COMPLETED after its deadline — the earlier timeout " +
+                "line for this requestId reports the same event; a row is present unless this deployment " +
+                "has no internal DB",
+            );
+          }
+        },
+        (err: unknown) => {
+          if (timedOut) {
+            log.error(
+              { ...lost, ...pgErrorFields(err), err: err instanceof Error ? err : new Error(String(err)) },
+              "brain correction: admin_action_log write FAILED after its deadline — this is the underlying " +
+                "cause behind the earlier timeout line for this requestId",
+            );
+          }
+        },
+      )
+      // This chain is DETACHED — it settles after the response has gone out, so
+      // no `try` on the correction path can reach it, and an unhandled rejection
+      // is process-fatal by default. A committed correction's bookkeeping must
+      // not be able to take down the worker.
+      .catch(() => {
+        // intentionally ignored: best-effort observability on a detached
+        // promise; the only way here is the logger itself throwing.
+      });
+
+    await Promise.race([
+      write,
+      // Cleared in the `finally` — an uncleared 5s timer would hold the event
+      // loop open on every correction, which on the agent-tool path is a
+      // per-chat-turn cost.
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`audit write timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (err: unknown) {
+    log.error(
+      {
+        ...lost,
+        writeAttempted,
+        ...pgErrorFields(err),
+        // The Error OBJECT, matching `auth/middleware.ts`, so pino's
+        // `scrubErrSerializer` captures the stack. It rebuilds the error into
+        // `{ type, message, stack }` and DROPS everything else, which is why the
+        // pg fields are lifted out separately above rather than left to ride on
+        // the error.
+        err: err instanceof Error ? err : new Error(String(err)),
+      },
+      // Two structurally different failures share this catch, and they need
+      // different instructions. A WRITE failure is a database problem and the
+      // `admin_action` pino line already exists (`logAdminActionAwait` emits it
+      // BEFORE its insert); it also may still commit, because a deadline does
+      // not cancel an insert — so "may not have been committed", since telling
+      // an operator the row is gone invites a hand-inserted duplicate. A
+      // BUILD failure never called the writer at all, so no pino line exists
+      // and no amount of checking the database will help.
+      writeAttempted
+        ? "brain correction: admin_action_log row may not have been committed — the correction itself IS " +
+            "committed. Check admin_action_log for this requestId before re-creating anything; the " +
+            "surviving records are the correction episode in brain_episodes and the actor-attributed " +
+            "`admin_action` pino line for this requestId"
+        : "brain correction: the admin_action_log entry could not even be BUILT — neither a row nor an " +
+            "`admin_action` pino line exists for this correction. This is a code or wiring defect, not a " +
+            "database one; the only surviving record is the correction episode in brain_episodes",
+    );
+  } finally {
+    if (deadline !== undefined) clearTimeout(deadline);
+  }
+}
+
+/**
+ * A pg rejection's diagnostic triple, lifted onto the log payload as its own
+ * fields.
+ *
+ * Necessary because `scrubErrSerializer` reduces the `err` object to
+ * `{ type, message, stack }`, so `code` / `constraint` — the difference between
+ * "which failure mode was this" being an answer and a guess (`42P01` a missing
+ * relation, `53300` pool exhaustion) — do not survive on the error itself.
+ * `detail` is deliberately left off: pg echoes row values into it.
+ */
+function pgErrorFields(err: unknown): { pgCode?: string; pgConstraint?: string } {
+  if (typeof err !== "object" || err === null) return {};
+  const { code, constraint } = err as { code?: unknown; constraint?: unknown };
+  return {
+    ...(typeof code === "string" ? { pgCode: code } : {}),
+    ...(typeof constraint === "string" ? { pgConstraint: constraint } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

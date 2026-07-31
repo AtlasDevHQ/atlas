@@ -993,16 +993,35 @@ export const ADMIN_ACTIONS = {
    * `metadata.invalidatedAt` is the tombstone timestamp. A retraction is never
    * a delete (ADR-0036: supersession is not deletion), so the row it points at
    * is still there to be read as-of.
+   *
+   * BOTH rows are emitted by `lib/brain/correction.ts`, whichever entry point
+   * asked for the correction — the admin HTTP routes or the `correct_fact`
+   * agent tool. Neither entry point emits one of its own; see that module's
+   * header for why the machinery owns the row (#4934).
+   *
+   * `metadata` shape, one rule for both action types: `verb`, `workspaceId` and
+   * `correctionEpisodeId` always; `invalidatedAt`, `flaggedForReReview`,
+   * `supersededBy` and `validTo` only when the verb actually produced them. A
+   * consumer must read an ABSENT key as "this verb decided nothing there", not
+   * as missing data — a `pin` row carrying `invalidatedAt: null` would read as
+   * a tombstone decision that was made and came back empty.
+   *
+   * This unified two divergent shapes, so there is a discontinuity at the #4934
+   * boundary in both directions: pre-#4934 `/retract` rows emitted
+   * `flaggedForReReview` even when empty, and carried NO `metadata.verb` at all.
+   * A consumer pivoting on `metadata.verb` sees it only on rows from #4934
+   * onward.
    */
   brainFact: {
     retract: "brain_fact.retract",
     /**
-     * A `correct_fact` verb applied over the admin API (#4915) — retract via
-     * the correction machinery still records `retract` above (one retract
-     * semantics, one audit vocabulary); this row covers `supersede`,
-     * `re-authority`, and `pin`, with the verb in `metadata.verb` and the
-     * correction episode id beside it. The correction episode itself is the
-     * durable in-brain record; this is the admin-actions trail's copy.
+     * A `correct_fact` verb applied over EITHER entry point — the admin API or
+     * the agent tool (#4915, #4934). Retract via the correction machinery still
+     * records `retract` above (one retract semantics, one audit vocabulary);
+     * this row covers `supersede`, `re-authority`, and `pin`, with the verb in
+     * `metadata.verb` and the correction episode id beside it. The correction
+     * episode itself is the durable in-brain record; this is the admin-actions
+     * trail's copy.
      */
     correct: "brain_fact.correct",
   },

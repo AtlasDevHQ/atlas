@@ -3,8 +3,9 @@
  *
  * The read model's behaviour is pinned in `lib/brain/__tests__/candidates.test.ts`;
  * here the assertions are about THIS router — the filter guard, the deliberately
- * ambiguous retract 404, the audit row, and the two seams that would be silent
- * if they broke:
+ * ambiguous retract 404, the ABSENCE of a router-level audit row (#4934 moved it
+ * into `correctFact` so both entry points get one), and the two seams that would
+ * be silent if they broke:
  *
  *   - the reviewer's principal context is built from `resolveEffectiveRole`,
  *     never a back-filled auth-mode default (which mints `role:admin` for every
@@ -17,6 +18,13 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect, Layer } from "effect";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+// Type-only: erased at compile time, so it does not evaluate the module this
+// file `mock.module`s below.
+import type {
+  CorrectionOutcome,
+  CorrectionRefusalReason,
+} from "@atlas/api/lib/brain/correction";
 
 const CURRENT_ORG = "org-1";
 
@@ -35,12 +43,25 @@ void mock.module("@atlas/api/lib/logger", () => {
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test-req" }) };
 });
 
+// BOTH audit helpers land in one array, so the "this router emits nothing"
+// guard below is true for whichever one a re-added call reaches for — a partial
+// factory would fail it with `undefined is not a function` instead, which reads
+// as a broken test rather than a double-log. Mock-all-exports besides: since
+// #4934 `lib/brain/correction.ts` imports `logAdminActionAwait`, so a partial
+// factory here link-fails the moment that module is un-stubbed.
 const auditRows: Array<Record<string, unknown>> = [];
 void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => auditRows.push(entry),
-  ADMIN_ACTIONS: {
-    brainFact: { retract: "brain_fact.retract", correct: "brain_fact.correct" },
+  logAdminActionAwait: async (entry: Record<string, unknown>) => {
+    auditRows.push(entry);
   },
+  // The REAL catalog rather than a hand-copy, for `correction-audit.test.ts`'s
+  // reason: a copy drifts silently through a rename. `lib/audit/actions.ts` is
+  // a zero-import constant module, so reaching past the mocked barrel into it
+  // pulls nothing back in and the factory stays synchronous.
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
 
 // Records the role lookup so a test can prove the ROLE SOURCE, which is
@@ -110,10 +131,11 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
 
 /**
  * The verb machinery (#4915), stubbed on the same terms as the read model: the
- * route's own obligations — the UUID guard, outcome→HTTP mapping, the audit
- * row, the wire parse — are what these tests exercise. The verbs' semantics
- * are pinned in `lib/brain/__tests__/correction.test.ts` against a fake store
- * and in `candidates-pg.test.ts` §7 against the live schema.
+ * route's own obligations — the UUID guard, outcome→HTTP mapping, the wire
+ * parse — are what these tests exercise. The verbs' semantics are pinned in
+ * `lib/brain/__tests__/correction.test.ts` against a fake store and in
+ * `candidates-pg.test.ts` §7 against the live schema; the audit row they emit
+ * is pinned in `lib/brain/__tests__/correction-audit.test.ts` (#4934).
  */
 const REFUSAL_REASONS = {
   notAuthorized: "NOT_AUTHORIZED",
@@ -125,7 +147,14 @@ const REFUSAL_REASONS = {
   replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
 } as const;
 let correctCalls: Array<Record<string, unknown>> = [];
-let correctionOutcome: Record<string, unknown> = {
+/**
+ * Typed as the real union rather than `Record<string, unknown>`, so a reshape of
+ * the machinery's contract breaks every fixture in this file at compile time
+ * instead of leaving hand-written literals asserting against a shape that moved.
+ * The one exception below (`invalidatedAt: 42`) is a DELIBERATE violation and
+ * says so at its site.
+ */
+let correctionOutcome: CorrectionOutcome = {
   kind: "corrected",
   result: {
     verb: "retract",
@@ -689,7 +718,7 @@ describe("GET /oversight", () => {
 });
 
 describe("POST /{id}/retract", () => {
-  it("runs the retract CORRECTION verb and records the decision in the admin action log", async () => {
+  it("runs the retract CORRECTION verb and emits NO audit row of its own", async () => {
     correctionOutcome = {
       kind: "corrected",
       result: {
@@ -712,20 +741,14 @@ describe("POST /{id}/retract", () => {
     expect(correctCalls).toHaveLength(1);
     expect(correctCalls[0]).toMatchObject({ factId: FACT_ID, verb: "retract" });
 
-    expect(auditRows).toHaveLength(1);
-    expect(auditRows[0]).toMatchObject({
-      actionType: "brain_fact.retract",
-      targetType: "brainFact",
-      targetId: FACT_ID,
-      // The tombstone pointer. A retraction is never a delete, so the row this
-      // names is still there to be read as-of.
-      metadata: {
-        invalidatedAt: "2026-07-01T00:00:00.000Z",
-        workspaceId: CURRENT_ORG,
-        correctionEpisodeId: "ep-corr-9",
-        flaggedForReReview: ["dep-1"],
-      },
-    });
+    // #4934 moved the `admin_action_log` row DOWN into `correctFact`, so the
+    // agent tool's corrections are audited on the same terms as these routes.
+    // `correctFact` is stubbed here, so zero rows is the correct expectation —
+    // and a non-zero count means a route-level call came back and every
+    // correction is now double-logged. The row's own shape and the
+    // both-entry-points claim are pinned in
+    // `lib/brain/__tests__/correction-audit.test.ts`.
+    expect(auditRows).toHaveLength(0);
   });
 
   it("400s a malformed id instead of letting Postgres 500 on the uuid cast", async () => {
@@ -810,25 +833,81 @@ describe("POST /{id}/correct", () => {
       replacement: { object: "Bo" },
     });
 
-    // The non-retract verbs share the `correct` audit action, verb in metadata.
-    expect(auditRows[0]).toMatchObject({
-      actionType: "brain_fact.correct",
-      targetType: "brainFact",
-      targetId: FACT_ID,
-      metadata: {
-        verb: "supersede",
-        workspaceId: CURRENT_ORG,
-        correctionEpisodeId: "ep-corr-2",
-        supersededBy: "fact-new-1",
-        validTo: "2026-07-30T12:00:00.000Z",
-      },
-    });
+    // The audit row is `correctFact`'s (#4934), and `correctFact` is stubbed.
+    expect(auditRows).toHaveLength(0);
   });
 
-  it("a retract through /correct audits as brain_fact.retract — one verb, one audit vocabulary", async () => {
-    const res = await correct({ verb: "retract" });
-    expect(res.status).toBe(200);
-    expect(auditRows[0]).toMatchObject({ actionType: "brain_fact.retract" });
+  it("emits NO audit row on ANY path of EITHER route — the machinery owns it (#4934)", async () => {
+    // The double-logging guard, swept rather than enumerated: whatever this
+    // router does, it must not write an `admin_action_log` row, because
+    // `correctFact` already writes exactly one for every entry point. Re-adding
+    // either audit helper to either handler turns one human decision into two
+    // forensic rows, and this fails — both are captured into `auditRows`.
+    //
+    // Deliberately reaches `/retract` as well as `/correct` despite living in
+    // the `/correct` block: the two handlers are the pair that has to stay in
+    // step, and splitting the sweep across two describes is how one of them
+    // stops being swept.
+    //
+    // Typed as the real `CorrectionOutcome` union, so a reshape of the
+    // machinery's contract breaks these fixtures at compile time rather than
+    // leaving four hand-written literals asserting against a shape that moved.
+    const outcomes: CorrectionOutcome[] = [
+      {
+        kind: "corrected",
+        result: {
+          verb: "retract",
+          factId: FACT_ID,
+          correctionEpisodeId: "ep-corr-a",
+          invalidatedAt: "2026-07-01T00:00:00.000Z",
+          flaggedForReReview: ["dep-1"],
+          supersededBy: null,
+          validTo: null,
+        },
+      },
+      {
+        kind: "corrected",
+        result: {
+          verb: "pin",
+          factId: FACT_ID,
+          correctionEpisodeId: "ep-corr-b",
+          invalidatedAt: null,
+          flaggedForReReview: [],
+          supersededBy: null,
+          validTo: null,
+        },
+      },
+      { kind: "not-found" },
+      {
+        kind: "refused",
+        reason: REFUSAL_REASONS.warehouseTarget,
+        message: "tier-1 has no correction path",
+      },
+    ];
+    // Statuses asserted per iteration, not just the final row count. Without
+    // them a request that 500s BEFORE reaching the line where the deleted
+    // `logAdminAction` used to sit leaves this green while proving nothing — and
+    // one fixture does exactly that: `/retract` rejects a `corrected` outcome
+    // whose `invalidatedAt` is null (the `pin` shape), so it never traverses the
+    // handler's tail. Pinning the expected status is what makes each iteration a
+    // statement about a path that was actually walked.
+    const expected: Array<{ retract: number; correct: number }> = [
+      { retract: 200, correct: 200 },
+      // `pin` through `/retract`: no tombstone in the outcome ⇒ the route's own
+      // shape guard 500s. Deliberately kept — it is the one path that stops
+      // early, and naming it here is cheaper than a fixture that avoids it.
+      { retract: 500, correct: 200 },
+      { retract: 404, correct: 404 },
+      { retract: 409, correct: 409 },
+    ];
+    for (const [i, outcome] of outcomes.entries()) {
+      correctionOutcome = outcome;
+      const retractRes = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+      expect(retractRes.status, `outcome ${i} via /retract`).toBe(expected[i]?.retract);
+      const correctRes = await correct({ verb: "pin" });
+      expect(correctRes.status, `outcome ${i} via /correct`).toBe(expected[i]?.correct);
+    }
+    expect(auditRows).toHaveLength(0);
   });
 
   it("400s an unknown verb at the schema, before the machinery runs", async () => {
@@ -848,7 +927,7 @@ describe("POST /{id}/correct", () => {
   });
 
   it("maps refusals onto their HTTP classes: 403 authority, 400 request shape, 409 target state", async () => {
-    const cases: Array<{ reason: string; status: number }> = [
+    const cases: Array<{ reason: CorrectionRefusalReason; status: number }> = [
       { reason: REFUSAL_REASONS.notAuthorized, status: 403 },
       { reason: REFUSAL_REASONS.replacementMissing, status: 400 },
       { reason: REFUSAL_REASONS.replacementIdentical, status: 400 },
@@ -878,6 +957,11 @@ describe("POST /{id}/correct", () => {
   it("refuses to ship a correction payload that violates its own wire schema", async () => {
     // Same `checked()` posture as the list route: a machinery result the
     // schema refuses must become a 500, never reach the browser.
+    //
+    // The one fixture in this file that is deliberately ILL-TYPED — `42` where
+    // the contract says `string | null` — because the whole point is a producer
+    // that broke the contract. Cast at this site only, so every other fixture
+    // stays compile-checked against the real union.
     correctionOutcome = {
       kind: "corrected",
       result: {
@@ -889,7 +973,7 @@ describe("POST /{id}/correct", () => {
         supersededBy: null,
         validTo: null,
       },
-    };
+    } as unknown as CorrectionOutcome;
     const res = await correct({ verb: "pin" });
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain("ep-corr-3");

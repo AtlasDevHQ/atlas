@@ -71,7 +71,6 @@ import {
   type CorrectionRefusalReason,
 } from "@atlas/api/lib/brain/correction";
 import { loadFactOversight, loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
 import {
@@ -528,22 +527,10 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
         );
       }
 
-      // Durable record of a human trust decision. The `log.info` inside
-      // `correctFact` is operational; this is the forensic trail.
-      // `logAdminAction` is fire-and-forget by design and handles its own
-      // failures — a lost audit row must never roll back a retraction that
-      // already committed, since the caller would then retract again.
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.brainFact.retract,
-        targetType: "brainFact",
-        targetId: factId,
-        metadata: {
-          invalidatedAt: result.invalidatedAt,
-          workspaceId: orgId,
-          correctionEpisodeId: result.correctionEpisodeId,
-          flaggedForReReview: result.flaggedForReReview,
-        },
-      });
+      // No `logAdminAction` here on purpose: `correctFact` emits the
+      // `admin_action_log` row for every entry point onto the correction write,
+      // so the agent tool's corrections are audited too (#4934). Adding a call
+      // back here would double-log. See `lib/brain/correction.ts`'s header.
 
       return c.json(
         checked(BrainFactRetractResponseSchema, {
@@ -607,30 +594,8 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
       }
 
       const { result } = outcome;
-      // The forensic trail beside the in-brain record. Retract keeps its
-      // dedicated action type so existing audit consumers see one vocabulary
-      // for one semantics; the other verbs share `correct` with the verb in
-      // metadata.
-      logAdminAction({
-        actionType:
-          result.verb === "retract"
-            ? ADMIN_ACTIONS.brainFact.retract
-            : ADMIN_ACTIONS.brainFact.correct,
-        targetType: "brainFact",
-        targetId: factId,
-        metadata: {
-          verb: result.verb,
-          workspaceId: orgId,
-          correctionEpisodeId: result.correctionEpisodeId,
-          ...(result.invalidatedAt !== null ? { invalidatedAt: result.invalidatedAt } : {}),
-          ...(result.flaggedForReReview.length > 0
-            ? { flaggedForReReview: result.flaggedForReReview }
-            : {}),
-          ...(result.supersededBy !== null ? { supersededBy: result.supersededBy } : {}),
-          ...(result.validTo !== null ? { validTo: result.validTo } : {}),
-        },
-      });
-
+      // The forensic trail is `correctFact`'s, not this route's — see the
+      // retract handler above and `lib/brain/correction.ts`'s header.
       return c.json(checked(BrainFactCorrectionResponseSchema, result), 200);
     }),
     { label: "apply brain fact correction verb" },

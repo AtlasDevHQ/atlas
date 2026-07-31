@@ -25,6 +25,7 @@ import {
 import {
   _resetBrainSourceConnectors,
   registerBrainSourceConnector,
+  type BrainSourceConnector,
 } from "@atlas/api/lib/brain/ingest/types";
 import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
 
@@ -41,7 +42,7 @@ function knowledgeConnector(catalogId = CATALOG) {
   };
 }
 
-function brainConnector(catalogId = CATALOG) {
+function brainConnector(catalogId = CATALOG): BrainSourceConnector {
   return {
     catalogId,
     source: SLACK_SOURCE,

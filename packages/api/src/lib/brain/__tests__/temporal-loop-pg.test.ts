@@ -1151,7 +1151,12 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // file's fixture discipline: Slack's roster changes, `syncAudiences`
       // reconciles `fact_audience_member`, and the reader is re-resolved.
       channelRoster = { ...channelRoster, [EXEC_CHANNEL]: ["U_ALAN"] };
-      await syncAudiences();
+      const revoked = await syncAudiences();
+      // The counter, per this file's standard (see the first `syncAudiences`
+      // above): it distinguishes "the roster reconcile revoked them" from
+      // "they vanished some other way", which the membership check below
+      // cannot tell apart on its own.
+      expect(revoked).toMatchObject({ membersRevoked: 1, workspacesFailed: 0 });
       const adminLeft = await admin();
       // The premise. Without it every assertion below would be satisfied by a
       // sync that silently did nothing.
@@ -1170,6 +1175,13 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // org member of step 5.
       const leftNow = await search(adminLeft);
       expect(deployObjectsOf(leftNow.results)).toEqual([]);
+      // Paired with a POSITIVE assertion, because `toEqual([])` alone is also
+      // what a read that returned nothing at all looks like. It comes back
+      // BYTE-IDENTICAL to the org member's step-5 read (`["release freeze"]`),
+      // which is the arm's claim stated as an equality: losing the audience
+      // makes this reader the org member, on both the default and the point
+      // read, with no residue of the entitlement they used to hold.
+      expect(subjectsOf(leftNow.results)).toEqual(subjectsOf(memberNow.results));
 
       // Rejoining restores it, and that direction matters just as much: a
       // one-way narrowing would be indistinguishable from the removal above on
@@ -1177,7 +1189,8 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // regain history. Restored before step 7 so the retract arm below runs
       // against the state it was written for.
       channelRoster = { ...CHANNEL_ROSTER };
-      await syncAudiences();
+      const rejoined = await syncAudiences();
+      expect(rejoined).toMatchObject({ membersAdded: 1, workspacesFailed: 0 });
       const adminRejoined = await admin();
       expect(adminRejoined.audienceIds).toContain(EXEC_AUDIENCE);
       const rejoinedThen = await search(adminRejoined, { asOf: AS_OF });

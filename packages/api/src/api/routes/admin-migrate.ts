@@ -9,6 +9,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { EPISODE_SOURCES, isEpisodeSource } from "@atlas/api/lib/brain/sources";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
 import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
@@ -1034,6 +1035,21 @@ export async function importBundle(
       }
       result.brainEpisodes.skipped++;
     } else {
+      if (!isEpisodeSource(episode.source)) {
+        // The one producer NOT gated by the episode-source vocabulary, and
+        // deliberately so: a bundle written by a newer vocabulary must still
+        // import, because an import is a RESTORE of evidence some other
+        // region's registry already admitted, not a new class entering the
+        // system (`lib/brain/sources.ts`). But the value is read downstream as
+        // a discriminator — `isWarehouseDerived` refuses tier-1 correction on
+        // `WAREHOUSE_SOURCE` alone — so an unrecognised class means every fact
+        // derived from this episode silently keeps a correction path ADR-0036
+        // forbids. Accepting it is the decision; accepting it INVISIBLY is not.
+        log.warn(
+          { orgId, episodeId: episode.id, source: episode.source, vocabulary: EPISODE_SOURCES },
+          "Imported a brain episode whose source class is outside the vocabulary — restored verbatim by design, but tier-1 correction refusal will not recognise facts derived from it",
+        );
+      }
       await client.query(
         `INSERT INTO brain_episodes (id, workspace_id, source, source_id, source_actor, body, locator, occurred_at, ingested_at, extracted_at, visible_to, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,

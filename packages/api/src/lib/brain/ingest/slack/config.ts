@@ -72,14 +72,18 @@ export const SLACK_HISTORY_SLUG = "slack-history";
 export const SLACK_HISTORY_CATALOG_ID = "catalog:slack-history";
 
 /**
- * The value stamped into `brain_episodes.source`. ADR-0036 orders SOURCES
- * class-major, vendor-minor (chat → transcripts → email → docs); the column
- * stores the VENDOR within that class, so the chat class will hold `slack`
- * today and `teams`/`discord`/… as M3 adds them.
+ * The value stamped into `brain_episodes.source`. ADR-0036 sequences SOURCES
+ * class-major, vendor-minor (chat → transcripts → email → docs); within the
+ * chat class the stored value is the VENDOR, because the source-id contract
+ * above is vendor-specific and two vendors sharing one stored value would share
+ * one dedupe namespace. So `teams`/`discord` become their OWN members when M3
+ * adds them — not reuses of this one.
  *
  * Aliased off `lib/brain/sources.ts` rather than spelled again here: the column
  * is read as a discriminator (`isWarehouseDerived`), so its vocabulary is one
- * shared fact, not a literal each producer repeats.
+ * shared fact and not a literal each producer repeats. That file's header
+ * carries the mixed-grain argument — `warehouse` and `human` are kinds with no
+ * vendor at all — and the rule that binds a future warehouse producer.
  */
 export const SLACK_HISTORY_SOURCE = SLACK_SOURCE;
 

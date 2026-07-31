@@ -502,16 +502,24 @@ describe("retract", () => {
     // was first written. Test files are excluded for the guard's own reason:
     // fixtures may stage tombstoned rows.
     const repoRoot = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
-    const roots = ["packages", "apps", "ee", "examples", "create-atlas", "create-atlas-plugin", "plugins"]
-      .map((r) => join(repoRoot, r))
-      .filter((r) => {
-        try {
-          return statSync(r).isDirectory();
-        } catch {
-          // intentionally ignored: an absent optional root is not scannable
-          return false;
-        }
-      });
+    // REQUIRED vs OPTIONAL, because "absent" and "drifted" are different
+    // failures and collapsing them is how a repo-wide scan quietly covers less
+    // than it says. `packages`/`apps`/`ee`/`plugins` always exist in a clone;
+    // the scaffold roots do not always carry scannable source (the generated
+    // `create-atlas/templates/*/src/` is gitignored, so it is present locally
+    // after `prepare-templates.sh` and absent in CI — which is exactly why its
+    // absence must not read as coverage).
+    const REQUIRED_ROOTS = ["packages", "apps", "ee", "plugins"];
+    const OPTIONAL_ROOTS = ["examples", "create-atlas", "create-atlas-plugin"];
+    const roots = [...REQUIRED_ROOTS, ...OPTIONAL_ROOTS].filter((r) => {
+      try {
+        return statSync(join(repoRoot, r)).isDirectory();
+      } catch {
+        // intentionally ignored: an absent optional root is not scannable, and
+        // a missing REQUIRED root is caught by the per-root count below
+        return false;
+      }
+    });
 
     // The guard's own vocabulary, mirrored: an optional schema qualifier with
     // either identifier independently quoted, so `public.brain_facts`,
@@ -519,7 +527,7 @@ describe("retract", () => {
     // a namespace-qualified Drizzle reference.
     const QUALIFIED = String.raw`("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?`;
     const ORM_TABLE = String.raw`([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts`;
-    const UPDATE_TABLE = new RegExp(String.raw`UPDATE\s+${QUALIFIED}\b`, "i");
+    const UPDATE_TABLE = new RegExp(String.raw`UPDATE\s+(ONLY\s+)?${QUALIFIED}\b`, "i");
     const INSERT_TABLE = new RegExp(String.raw`INSERT\s+INTO\s+${QUALIFIED}\b`, "i");
     const SET_KEYWORD = /\bSET\b/i;
     const ON_CONFLICT = /ON\s+CONFLICT/i;
@@ -567,9 +575,25 @@ describe("retract", () => {
       "db.update(schema.brainFacts).set({ meta: { flagged: true }, invalidatedAt: new Date() })",
       "INSERT INTO brain_facts (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET invalidated_at = now()",
       "db.insert(brainFacts).values({ id }).onConflictDoUpdate({ set: { invalidatedAt: new Date() } })",
+      "UPDATE ONLY brain_facts SET invalidated_at = now() WHERE id = $1",
     ]) {
       expect([evasion, writesTombstone(evasion)]).toEqual([evasion, true]);
     }
+    // KNOWN RESIDUALS, recorded so the block above is not read as totality.
+    // Each of these also evades the shell guard's `statement_writes_gated_column`,
+    // so the scan mirrors the guard faithfully rather than regressing from it —
+    // but "ordinary refactor" covers them too, and a reader who trusts this
+    // scan absolutely should know where it stops:
+    //
+    //   - an ALIASED import (`import { brainFacts as facts }`), which defeats
+    //     both `ORM_TABLE` and the `statementsOf` pre-filter;
+    //   - an INTERPOLATED table name (`` `UPDATE ${TABLE} SET …` ``), where the
+    //     statement text contains neither spelling;
+    //   - a builder SPLIT across statements (`const q = db.update(brainFacts);`
+    //     then `q.set({ invalidatedAt })`), which the `;` split separates.
+    //
+    // Closing them means teaching the shell guard the same tricks, and the two
+    // must move together or the mirror claim above stops being true.
     // …and the shapes that are NOT a new arbitration stay out, so the rules
     // above are not merely "mentions the column anywhere".
     for (const legal of [
@@ -609,25 +633,64 @@ describe("retract", () => {
       "__snapshots__",
     ]);
     const matched = new Map<string, string[]>();
-    const walk = (dir: string) => {
+    /** Files actually read, per root — the coverage ledger the asserts below use. */
+    const scanned = new Map<string, number>();
+    const walk = (root: string, dir: string) => {
       for (const entry of readdirSync(dir)) {
         const path = join(dir, entry);
-        if (statSync(path).isDirectory()) {
+        let stat;
+        try {
+          stat = statSync(path);
+        } catch (err) {
+          // A broken symlink must not turn a guard into a hard error — but it
+          // must not vanish either, because an unreadable path is unscanned
+          // surface and this scan's whole claim is coverage.
+          console.debug(
+            `invalidated_at scan: skipping unreadable path ${path}`,
+            err instanceof Error ? err.message : String(err),
+          );
+          continue;
+        }
+        if (stat.isDirectory()) {
           if (SKIP_DIRS.has(entry)) continue;
-          walk(path);
+          walk(root, path);
           continue;
         }
         if (!/\.(ts|tsx|js)$/.test(entry) || /\.(test|spec)\.(ts|tsx)$/.test(entry)) continue;
+        scanned.set(root, (scanned.get(root) ?? 0) + 1);
         const hits = statementsOf(readFileSync(path, "utf8")).filter(writesTombstone);
         if (hits.length > 0) matched.set(path.substring(repoRoot.length + 1), hits);
       }
     };
-    for (const root of roots) walk(root);
+    for (const root of roots) walk(root, join(repoRoot, root));
+
+    // COVERAGE FIRST, per root. The sole-writer assertion below is satisfied by
+    // an EMPTY result, so every one of its failure modes is a false green: a
+    // root that drifted or was renamed, a skip rule that swallowed `lib/`, an
+    // extension filter that stopped matching. `toContain` on `correction.ts`
+    // alone would only ever prove `packages` was walked — `ee` and `plugins`
+    // could each go to zero files and this test would stay green, which is the
+    // audit-grep blind spot the comment at the top invokes.
+    for (const root of REQUIRED_ROOTS) {
+      expect([root, (scanned.get(root) ?? 0) > 0]).toEqual([root, true]);
+    }
 
     // The scaffold templates carry generated copies of the same modules, so the
-    // allowance is a shape rather than a list — the guard's ALLOWLIST draws the
-    // identical line, and for the same reason names the FILE rather than a
-    // `src/…` suffix any package could adopt.
+    // allowance is a shape rather than a list — the guard's ALLOWLIST makes the
+    // same template-glob decision, and for the same reason names the FILE
+    // rather than a `src/…` suffix any package could adopt. (The two lists are
+    // NOT identical and should not be diffed: the guard also allowlists
+    // `admin-migrate.ts`, which this scan never matches because the region
+    // import is a plain INSERT; and this list allows the publish adapter, which
+    // the guard has no need to name.)
+    //
+    // Those two template entries are LOCAL-ONLY by construction:
+    // `create-atlas/templates/*/src/` is gitignored and regenerated by
+    // `prepare-templates.sh`, so they match on a developer's machine after a
+    // template build and match nothing in CI. That is why the roots list treats
+    // the scaffold roots as optional and asserts coverage only for the four
+    // that always exist — an absent template tree must read as "not scanned",
+    // never as "scanned and clean".
     //
     // `content-mode/adapters/brain-facts.ts` is here because the match above is
     // deliberately over-broad in the guard's direction: `SUPERSEDE_STAMP_SQL`
@@ -651,19 +714,46 @@ describe("retract", () => {
     expect(relative).toContain("packages/api/src/lib/brain/correction.ts");
     expect(relative.filter((p) => !ALLOWED.some((allowed) => allowed.test(p)))).toEqual([]);
 
-    // The publish adapter READS the tombstone, never writes it: nothing before
-    // the first `WHERE` may name it. Best-effort by construction (a SET list
-    // holding a subquery would truncate the slice), which is why it narrows an
-    // already-bounded set rather than standing alone — and the SET list of the
-    // statement that actually matters, `SUPERSEDE_STAMP_SQL`, is pinned
-    // directly in `adapters/__tests__/brain-facts.test.ts`.
+    // Every matched statement EXCEPT the tombstone itself only READS the column:
+    // nothing before its first `WHERE` may name it. Best-effort by construction
+    // (a SET list holding a subquery would truncate the slice), which is why it
+    // narrows an already-bounded set rather than standing alone — and the SET
+    // list of the two statements that actually matter is pinned directly, here
+    // for `RETRACT_FACT_SQL` and in `adapters/__tests__/brain-facts.test.ts`
+    // for `SUPERSEDE_STAMP_SQL`.
+    //
+    // `correction.ts` is NOT exempted wholesale, and that distinction is the
+    // difference between "this MODULE is the only writer" and "this STATEMENT
+    // is the only writer". Only the latter is the invariant: adding
+    // `invalidated_at = now()` to `MERGE_PROVENANCE_MARKER_SQL` — which runs
+    // against the `derives-from` DEPENDENTS, i.e. the exact cascade the module
+    // header forbids — is a second tombstone writer inside the allowed file,
+    // and a file-level exemption would wave it through.
+    // `includes`, not `===`: the scanned statement carries the surrounding
+    // TypeScript (`export const RETRACT_FACT_SQL = \`…\``) around the same
+    // whitespace-collapsed SQL body, so the exemption is "this statement
+    // CONTAINS the tombstone" rather than "is" it.
+    const retractStatement = statementsOf(RETRACT_FACT_SQL)[0];
+    // The exemption must name a statement that exists; if `RETRACT_FACT_SQL`
+    // stopped matching, every statement in `correction.ts` would be checked
+    // against a rule the tombstone legitimately breaks, and the failure would
+    // read as a cascade bug rather than as drift here.
+    expect(typeof retractStatement === "string" && retractStatement.length > 0).toBe(true);
+
+    let readOnlyStatementsChecked = 0;
     for (const [path, statements] of matched) {
-      if (/brain\/correction\.ts$/.test(path)) continue;
       for (const stmt of statements) {
+        if (retractStatement !== undefined && stmt.includes(retractStatement)) continue;
+        readOnlyStatementsChecked++;
         const where = stmt.search(/\bWHERE\b/i);
         expect([path, RAW_COLUMN.test(where < 0 ? stmt : stmt.slice(0, where))]).toEqual([path, false]);
       }
     }
+    // …and the loop ran. Without this it iterates zero times the moment the
+    // publish adapter is renamed or stops naming the column, and asserts
+    // nothing — silently, which is the same false green the coverage check
+    // above exists to refuse.
+    expect(readOnlyStatementsChecked).toBeGreaterThan(0);
   });
 
   test("RETRACT_FACT_SQL's SET list is the tombstone and nothing else", () => {

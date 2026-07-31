@@ -1026,7 +1026,8 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       // `UPDATE … valid_to` repo-wide — but all three are statements about the
       // SOURCE. None of them observes the row after a corroboration actually
       // ran, and `temporal-loop-pg` deliberately asserts `factsCorroborated: 0`
-      // on every arm, so the flagship e2e never reaches this state at all.
+      // on every arm that extracts anything, so the flagship e2e never reaches
+      // this state at all.
       // A corroborated fact that came back with a closed window would read to
       // every default query as no longer believed — the claim silently
       // disappearing at the moment it was reinforced.

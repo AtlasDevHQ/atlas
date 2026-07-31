@@ -8,7 +8,8 @@
  * fact has NO correction path, because the fix belongs in the data or the
  * semantic layer rather than in an override the next sync overwrites. Its only
  * trigger is `isWarehouseDerived`, a `===` against one string, and the value it
- * compares arrives from a connector that **does not exist yet** (#4770/#4771).
+ * compares arrives from a producer ADR-0036 commits to but that **no milestone
+ * in the M1–M6 cut has scoped yet**.
  *
  * Before `sources.ts`, the two sides each spelled their own literal and every
  * test on the refusal hand-seeded `{ source: "warehouse" }` and asserted
@@ -41,11 +42,19 @@ describe("the episode-source vocabulary", () => {
     // vendor identity belongs in the catalog id and in `provenance.producer`.
     // A test that merely checked membership would wave `"snowflake"` through.
     expect([...EPISODE_SOURCES]).toEqual(["slack", "warehouse", "human"]);
-    // Each named export is a member, so a rename cannot leave a dangling
-    // constant that still type-checks against the widened union.
-    expect([SLACK_SOURCE, WAREHOUSE_SOURCE, HUMAN_SOURCE].every(isEpisodeSource)).toBe(true);
-    // Three distinct classes, not one value aliased three times.
-    expect(new Set([SLACK_SOURCE, WAREHOUSE_SOURCE, HUMAN_SOURCE]).size).toBe(3);
+    // Each named export is pinned to its VALUE, not merely to membership. This
+    // file exists to defeat self-referential agreement, so it must not commit
+    // the same sin: with only an `every(isEpisodeSource)` check, swapping
+    // `SLACK_SOURCE` and `WAREHOUSE_SOURCE`'s values leaves every assertion in
+    // this file green (the sweep below is driven by the same constant
+    // `correction.ts` reads, so the two stay agreed while both are wrong).
+    // These three lines are the only place the constants are anchored to
+    // strings, and that is deliberate — everything else asserts agreement.
+    expect([SLACK_SOURCE, WAREHOUSE_SOURCE, HUMAN_SOURCE]).toEqual([
+      "slack",
+      "warehouse",
+      "human",
+    ]);
   });
 
   test("narrows an arbitrary stored value, and refuses the vendor names a warehouse connector would reach for", () => {
@@ -78,8 +87,8 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
 
   test("refuses the vendor spellings the same connector might have used", () => {
     // The literal-agreement failure, stated directly: these are what
-    // #4770/#4771 would plausibly stamp if the class were spelled at the
-    // connector instead of imported. `registerBrainSourceConnector` now
+    // a future warehouse producer would plausibly stamp if the kind were
+    // spelled at the producer instead of imported. `registerBrainSourceConnector` now
     // refuses each of them at wiring time (`episode-sync-archive.test.ts`) —
     // this arm pins what would happen if one ever reached the payload anyway,
     // via the region import, which restores a bundle's `source` verbatim.
@@ -102,13 +111,14 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
   });
 
   test("the correction episode stamps the vocabulary's human class", () => {
-    // `CORRECTION_EPISODE_INSERT_SQL` inlines the class as a SQL literal (it is
-    // structural to the statement, not a bound parameter), so the constant
-    // cannot be imported INTO the statement — asserting the statement against
-    // the constant is what keeps the two from drifting apart. A correction
+    // `CORRECTION_EPISODE_INSERT_SQL` inlines the kind as a SQL literal rather
+    // than binding it, so the two are separate spellings — asserting the
+    // statement against the constant is what keeps them from drifting apart.
+    // Matched WITH its column position, so a reordered VALUES list that moved
+    // `'human'` into another slot fails here rather than passing. A correction
     // episode landing outside the vocabulary would be invisible to every
     // discriminator that reads the column.
-    expect(CORRECTION_EPISODE_INSERT_SQL).toContain(`'${HUMAN_SOURCE}'`);
+    expect(CORRECTION_EPISODE_INSERT_SQL).toContain(`VALUES ($1, '${HUMAN_SOURCE}', `);
     expect(isEpisodeSource(HUMAN_SOURCE)).toBe(true);
     // And it is NOT the warehouse class: a human's own words must stay
     // correctable, which is the opposite end of the same predicate.

@@ -23,7 +23,7 @@ import type {
   BrainSourceConnector,
   BrainSourceFetchParams,
 } from "@atlas/api/lib/brain/ingest/types";
-import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
+import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 
 // ── Stubs ──────────────────────────────────────────────────────────────────
 // Recorded per test; the mocks below close over these.
@@ -150,7 +150,12 @@ function connectorReturning(
     warnings?: readonly string[];
   }>,
 ): BrainSourceConnector {
-  return { catalogId: "catalog:fixture", source: SLACK_SOURCE, createClient: () => ({ fetchEpisodes }) };
+  // `HUMAN_SOURCE`, not `SLACK_SOURCE`: closing the vocabulary took the old
+  // `"fixture"` sentinel away, and a Slack-named fixture would let a pipeline
+  // that stopped threading `connector.source` and hardcoded `"slack"` pass the
+  // pass-through assertion below. A member this path would never produce keeps
+  // that property.
+  return { catalogId: "catalog:fixture", source: HUMAN_SOURCE, createClient: () => ({ fetchEpisodes }) };
 }
 
 function run(connector: BrainSourceConnector) {
@@ -361,7 +366,7 @@ describe("bookkeeping", () => {
     const outcome = await syncBrainEpisodeSource({
       connector: {
         catalogId: "catalog:fixture",
-        source: SLACK_SOURCE,
+        source: HUMAN_SOURCE,
         createClient: () => {
           throw new Error("unreachable");
         },
@@ -396,7 +401,7 @@ describe("never throws", () => {
     await run(
       connectorReturning(async () => ({ episodes: [episode("a")], highWaterMark: null })),
     );
-    expect(ingested[0]!.source).toBe(SLACK_SOURCE);
+    expect(ingested[0]!.source).toBe(HUMAN_SOURCE);
     expect(ingested[0]!.workspaceId).toBe("ws-1");
   });
 });

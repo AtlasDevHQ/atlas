@@ -64,10 +64,10 @@
  * stored at all — an id that names no brain row is an ordinary not-found.
  *
  * The class comes from `lib/brain/sources.ts`, and that indirection is load
- * bearing rather than tidiness: the connector that will produce these facts
- * does not exist yet (#4770/#4771), so while both sides spelled their own
- * literal this refusal was one naming decision away from silently never
- * firing (#4938).
+ * bearing rather than tidiness: ADR-0036 commits to warehouse-derived facts as
+ * tier-1, but no milestone in the M1–M6 cut has scoped the producer yet — so
+ * while both sides spelled their own literal, this refusal was one future
+ * naming decision away from silently never firing (#4938).
  *
  * ## Why this file is on `check-brain-fact-promotion.sh`'s ALLOWLIST
  *
@@ -881,10 +881,10 @@ async function applyVouch(
  * likewise exempts from correction.
  *
  * The constant, not the literal `"warehouse"`, and that is the whole strength
- * of this predicate: the class comes from a connector that does not exist yet
- * (#4770/#4771), and while both sides spelled their own string their agreement
- * was a coincidence — a connector naming itself `"snowflake"` would have
- * silently stopped every tier-1 refusal without failing a test. See
+ * of this predicate: the kind comes from a producer ADR-0036 commits to but no
+ * milestone has scoped, and while both sides spelled their own string their
+ * agreement was a coincidence — a producer naming itself `"snowflake"` would
+ * have silently stopped every tier-1 refusal without failing a test. See
  * `lib/brain/sources.ts`.
  */
 export function isWarehouseDerived(provenance: unknown): boolean {

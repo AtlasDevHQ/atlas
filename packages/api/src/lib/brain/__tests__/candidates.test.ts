@@ -513,9 +513,9 @@ describe("loadFactCandidates — contradiction hints", () => {
     // `preferred` field would do the most damage, because it would read as
     // Atlas having already decided.
     //
-    // The other arms here all pose rivals that differ ONLY by id, so id order
-    // is the only order they could come back in and they cannot tell a neutral
-    // sort from a ranked one. Here every surfacing hint is stacked in favour of
+    // The other arms here pose rivals whose id order is the only order they
+    // could come back in, so none of them can tell a neutral sort from a ranked
+    // one. Here every surfacing hint is stacked in favour of
     // the LATER-sorting rival: 900 corroborations against 0, `published`
     // against `draft`, 2026 against 2020. If any code path ranked by
     // authority, recency, or status, `rival-z-strong` would lead.

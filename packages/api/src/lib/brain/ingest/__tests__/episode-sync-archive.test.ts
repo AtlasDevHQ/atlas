@@ -128,10 +128,11 @@ describe("the episode path cannot reach the engine's archive/upsert half", () =>
 });
 
 describe("the brain source registry", () => {
-  // The fixture's CLASS is a real vocabulary member (`lib/brain/sources.ts`)
-  // while its CATALOG ID stays fixture-shaped — the two are independent, and
-  // that is the point of the class column: many vendors, one class. A
-  // made-up class here would no longer register (see the vocabulary test).
+  // The fixture's SOURCE KIND is a real vocabulary member
+  // (`lib/brain/sources.ts`) while its CATALOG ID stays fixture-shaped — the
+  // two are independent, which is the point: one kind can back many catalog
+  // rows. A made-up kind here would no longer register (see the vocabulary
+  // test below).
   function connector(overrides: Partial<BrainSourceConnector> = {}): BrainSourceConnector {
     return {
       catalogId: "catalog:fixture",
@@ -174,8 +175,8 @@ describe("the brain source registry", () => {
   });
 
   it("refuses a well-formed slug that is not in the episode-source vocabulary", () => {
-    // The regression this exists for: #4770/#4771's warehouse connector naming
-    // its class after the VENDOR. `snowflake` is a perfectly legal slug, so
+    // The regression this exists for: a future warehouse producer naming its
+    // kind after the VENDOR. `snowflake` is a perfectly legal slug, so
     // the pattern check above waves it through — and `isWarehouseDerived`
     // would then never match it, so tier-1 correction refusal would fail OPEN
     // with every existing test still green. Registration is where that has to

@@ -535,6 +535,87 @@ describeIfPg("searchBrain against the live schema", () => {
   );
 
   it(
+    "hands over exactly at the supersession instant — half-open windows, no gap, no double answer",
+    async () => {
+      // asOf == v1.valid_to == v2.valid_from: the `<=` / `>` pair must compose
+      // against real timestamptz semantics so exactly ONE version answers at
+      // the boundary — v2 (its window is [from, ∞)), never v1 (its window is
+      // [from, to), half-open on the right).
+      const handover = new Date("2026-07-08T12:00:00Z");
+      const ep = await seedEpisode({ sourceId: "asof-boundary" });
+      const v1 = await seedFact({
+        subject: "Gannet migration",
+        object: "the legacy exporter",
+        episodeId: ep,
+        validFrom: new Date("2026-07-01T00:00:00Z"),
+        validTo: handover,
+      });
+      const v2 = await seedFact({
+        subject: "Gannet migration",
+        object: "the streaming exporter",
+        episodeId: ep,
+        validFrom: handover,
+      });
+
+      const atBoundary = await search(outsider(), {
+        query: "Gannet migration",
+        include: ["fact"],
+        asOf: handover.toISOString(),
+      });
+      expect(ids(atBoundary.results)).toContain(v2);
+      expect(ids(atBoundary.results)).not.toContain(v1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a NARROWING between versions leaves the once-public version historically readable — frozen grants cut both ways",
+    async () => {
+      // The converse of the widening scenario, pinned so the disclosure
+      // semantics cannot flip silently: v1 was published org-wide, v2
+      // re-narrowed the claim to a private audience. Under frozen per-version
+      // grants the org reader RETAINS historical access to the version that
+      // was public while it held — narrowing the current belief does not
+      // rewrite who was allowed to see the old one — and sees nothing current.
+      const monday = new Date("2026-07-06T09:00:00Z");
+      const wednesday = new Date("2026-07-08T09:00:00Z");
+      const ep = await seedEpisode({ sourceId: "asof-narrow" });
+      const publicV1 = await seedFact({
+        subject: "Skua incident review",
+        object: "published to all-hands",
+        episodeId: ep,
+        visibleTo: ["org"],
+        validFrom: monday,
+        validTo: wednesday,
+      });
+      const privateV2 = await seedFact({
+        subject: "Skua incident review",
+        object: "restricted to legal",
+        episodeId: ep,
+        visibleTo: ["audience:private-channel"],
+        validFrom: wednesday,
+      });
+
+      const outsiderAtTuesday = await search(outsider(), {
+        query: "Skua incident review",
+        include: ["fact"],
+        asOf: "2026-07-07T09:00:00Z",
+      });
+      expect(ids(outsiderAtTuesday.results)).toContain(publicV1);
+      expect(ids(outsiderAtTuesday.results)).not.toContain(privateV2);
+
+      const outsiderNow = await search(outsider(), {
+        query: "Skua incident review",
+        include: ["fact"],
+      });
+      // As of now: v1 is superseded, v2 is granted elsewhere — nothing serves.
+      expect(ids(outsiderNow.results)).not.toContain(publicV1);
+      expect(ids(outsiderNow.results)).not.toContain(privateV2);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "keeps a TOMBSTONED fact hidden at every instant, even one inside its validity window",
     async () => {
       // Retraction is the only way to hide history, and hiding is what it

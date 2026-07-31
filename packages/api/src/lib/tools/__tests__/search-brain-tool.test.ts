@@ -63,11 +63,14 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 }));
 
 let loggedError: unknown;
+let loggedWarn: unknown;
 // Mock all value exports of the logger module (mock.module is file-global; a
 // partial stub would hand `undefined` to any importer reaching an unmocked one).
 const noopLogger = {
   info: () => {},
-  warn: () => {},
+  warn: (obj: unknown) => {
+    loggedWarn = obj;
+  },
   debug: () => {},
   error: (obj: unknown) => {
     loggedError = obj;
@@ -126,6 +129,7 @@ beforeEach(() => {
   queryCalls.length = 0;
   queryImpl = async () => [];
   loggedError = undefined;
+  loggedWarn = undefined;
 });
 
 describe("searchBrain tool.execute", () => {
@@ -252,6 +256,9 @@ describe("searchBrain tool.execute", () => {
     // Fail closed: nothing was searched — a page of CURRENT beliefs under a
     // rejected historical ask would be attributed to the asked-about instant.
     expect(queryCalls).toHaveLength(0);
+    // Logged at warn (a caller mistake, not a server fault), with correlation.
+    expect(loggedWarn).toMatchObject({ workspaceId: "ws-1", requestId: "req-1" });
+    expect(loggedError).toBeUndefined();
   });
 
   it("rejects a BLANK asOf rather than normalizing it away like the document filters", async () => {

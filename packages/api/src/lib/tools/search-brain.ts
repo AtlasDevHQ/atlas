@@ -272,7 +272,7 @@ export const searchBrain = tool({
       .string()
       .optional()
       .describe(
-        "Facts only: ISO-8601 instant for a historical point read — returns the reviewed facts that were valid at that moment (later-superseded versions included; retracted facts never). Must be in the past; malformed or future values are rejected. Omit for current beliefs.",
+        "Facts only: historical point read — returns the reviewed facts valid at that moment (later-superseded versions included; retracted facts never). An ISO-8601 date (2026-07-27) or a timestamp with an EXPLICIT zone (2026-07-27T09:00:00Z); zone-less times, non-ISO forms, and future instants are rejected. Requires the fact store in `include`. Omit for current beliefs.",
       ),
     limit: z
       .number()

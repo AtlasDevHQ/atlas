@@ -241,7 +241,7 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
   it("switches the temporal predicate to the validity window, both bounds off ONE parameter", () => {
     const { sql, params } = buildFactQuery("published", {
       limit: 10,
-      asOf: AS_OF,
+      asOf: parseBrainAsOf(AS_OF),
       ...acl(ctx(), "brain_facts"),
     });
     // `valid_from <= asOf < COALESCE(valid_to, ∞)` — a NULL `valid_from`
@@ -262,38 +262,107 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     // the one verb whose job is hiding.
     const { sql } = buildFactQuery("published", {
       limit: 10,
-      asOf: AS_OF,
+      asOf: parseBrainAsOf(AS_OF),
       ...acl(ctx(), "brain_facts"),
     });
     expect(sql).toContain("f.invalidated_at IS NULL");
   });
 
   it("leaves the default read byte-identical — the regression pin", () => {
-    // Not "still contains the old clauses" — BYTE-identical, so any reordering
-    // or reformatting the asOf branch leaks into the default arm fails here.
-    const withBranch = buildFactQuery("published", {
+    // A GOLDEN pin, not a contains-check: the literal below is the statement
+    // the pre-#4916 builder emitted (captured from it verbatim), so any
+    // reordering, reformatting, or new clause the asOf branch leaks into the
+    // default arm fails byte-for-byte. If this fails because you CHANGED the
+    // default fact read on purpose, re-capture the literal — that is the
+    // deliberate act this pin exists to force.
+    const { sql, params } = buildFactQuery("published", {
       query: "billing",
       limit: 10,
       ...acl(ctx(), "brain_facts"),
     });
-    expect(withBranch.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
-    expect(withBranch.sql).not.toContain("valid_from IS NULL OR");
-    expect(withBranch.sql).not.toContain("timestamptz");
-    // Predicate order unchanged: ACL → mode → tombstone → supersession.
-    const order = [
-      "visible_to &&",
-      "f.status = 'published'",
-      "f.invalidated_at IS NULL",
-      "f.valid_to IS NULL OR f.valid_to > now()",
-    ].map((clause) => withBranch.sql.indexOf(clause));
-    expect(order.every((i) => i >= 0)).toBe(true);
-    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(sql).toBe(`SELECT f.id::text AS id,
+         f.subject,
+         f.predicate,
+         f.object,
+         f.status,
+         f.predicate_cardinality,
+         f.visible_to,
+         f.pre_widening_visible_to,
+         f.provenance,
+         f.source_episode_id::text AS source_episode_id,
+         f.valid_from,
+         f.valid_to,
+         f.invalidated_at,
+         f.ingested_at,
+         (
+    SELECT COUNT(DISTINCT ed.to_episode_id)
+      FROM brain_edges ed
+     WHERE ed.workspace_id = f.workspace_id
+       AND ed.edge_type = 'provenance'
+       AND ed.from_fact_id = f.id
+  )::int AS corroboration_count,
+         (
+    SELECT MAX(COALESCE(ep.occurred_at, ep.ingested_at))
+      FROM brain_edges ed
+      JOIN brain_episodes ep
+        ON ep.workspace_id = ed.workspace_id
+       AND ep.id = ed.to_episode_id
+     WHERE ed.workspace_id = f.workspace_id
+       AND ed.edge_type = 'provenance'
+       AND ed.from_fact_id = f.id
+  ) AS last_observed_at,
+         ts_headline('english', f.subject || ' ' || f.predicate || ' ' || f.object, websearch_to_tsquery('english', $3),
+        'StartSel=**, StopSel=**, MaxFragments=1, MaxWords=28, MinWords=4') AS snippet,
+         ts_rank(f.fts, websearch_to_tsquery('english', $3)) AS rank
+    FROM brain_facts f
+   WHERE (f.workspace_id = $1 AND f.visible_to && $2::text[])
+     AND f.status = 'published'
+     AND f.invalidated_at IS NULL
+     AND (f.valid_to IS NULL OR f.valid_to > now())
+     AND f.fts @@ websearch_to_tsquery('english', $3)
+   ORDER BY rank DESC NULLS LAST, f.ingested_at DESC, f.id DESC
+   LIMIT $4`);
+    expect(params).toEqual([WS, ["org", "role:member", "user:user-1"], "billing", 10]);
   });
 
   it("rejects a malformed asOf loudly, naming the value — never falls through to as-of-now", () => {
     expect(() => parseBrainAsOf("last tuesday")).toThrow(BrainAsOfInvalidError);
     expect(() => parseBrainAsOf("last tuesday")).toThrow(/"last tuesday"/);
     expect(() => parseBrainAsOf("last tuesday")).toThrow(/ISO-8601/);
+    // `new Date()` would happily parse these; the ISO shape gate must not.
+    expect(() => parseBrainAsOf("July 1 2026")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("07/01/2026")).toThrow(BrainAsOfInvalidError);
+  });
+
+  it("rejects a zone-less time — it would be read in the SERVER's timezone", () => {
+    // `new Date("2026-07-01T02:00:00")` is interpreted in the process's local
+    // zone (ECMA-262), so the same call would answer a different instant per
+    // deployment — a silent hours-scale shift of the point read. Malformed.
+    expect(() => parseBrainAsOf("2026-07-01T02:00:00")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("2026-07-01T02:00:00")).toThrow(/zone/);
+    // A bare DATE is fine: ECMA-262 reads it as UTC midnight, deterministically.
+    const dateOnly: string = parseBrainAsOf("2026-07-01");
+    expect(dateOnly).toBe(AS_OF);
+  });
+
+  it("rejects instants below the timestamptz floor instead of failing the bind as an internal fault", () => {
+    // JS parses year zero; Postgres has no year zero. Without the floor this
+    // would surface at the bind as a retryable `search_failed` — the wrong
+    // recovery signal for a caller-argument problem.
+    expect(() => parseBrainAsOf("0000-01-05T00:00:00Z")).toThrow(BrainAsOfInvalidError);
+    expect(() => parseBrainAsOf("0000-01-05T00:00:00Z")).toThrow(/0001-01-01/);
+  });
+
+  it("caps the echoed value in the rejection message — caller input is unbounded", () => {
+    const huge = `${"9".repeat(500)}!`;
+    try {
+      parseBrainAsOf(huge);
+      throw new Error("expected a rejection");
+    } catch (err) {
+      if (!(err instanceof BrainAsOfInvalidError)) throw err;
+      expect(err.message.length).toBeLessThan(400);
+      expect(err.message).toContain("…");
+    }
   });
 
   it("rejects a BLANK asOf rather than treating it as absent", () => {
@@ -308,13 +377,15 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     expect(() => parseBrainAsOf("2026-08-01T00:00:00Z", now)).toThrow(BrainAsOfInvalidError);
     expect(() => parseBrainAsOf("2026-08-01T00:00:00Z", now)).toThrow(/future/);
     // The boundary itself is admitted: `asOf === now` is a valid past-or-present instant.
-    expect(parseBrainAsOf("2026-07-30T00:00:00Z", now)).toBe("2026-07-30T00:00:00.000Z");
+    const atNow: string = parseBrainAsOf("2026-07-30T00:00:00Z", now);
+    expect(atNow).toBe("2026-07-30T00:00:00.000Z");
   });
 
   it("normalizes the instant to canonical ISO-8601 UTC", () => {
     // Bound as `timestamptz` and echoed on the response, so both carry the
     // canonical spelling rather than the caller's local-offset one.
-    expect(parseBrainAsOf(" 2026-07-01T02:00:00+02:00 ")).toBe(AS_OF);
+    const normalized: string = parseBrainAsOf(" 2026-07-01T02:00:00+02:00 ");
+    expect(normalized).toBe(AS_OF);
   });
 
   it("echoes the normalized asOf on the response — a historical page must say it is one", async () => {
@@ -351,6 +422,24 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
         ctx: ctx(),
         mode: "published",
         asOf: "garbage",
+        limit: 10,
+        expand: false,
+      }),
+    ).rejects.toBeInstanceOf(BrainAsOfInvalidError);
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it("refuses asOf when `include` excludes the fact store — a temporal ask of atemporal stores", async () => {
+    // Echoing `asOf` over current-only documents/episodes would label
+    // as-of-now content as a historical page; dropping the parameter silently
+    // is the fall-through #4916 forbids. So it is a refusal, before any store.
+    const db = reader();
+    await expect(
+      searchBrainCore(db, {
+        ctx: ctx(),
+        mode: "published",
+        include: ["document", "raw-episode"],
+        asOf: AS_OF,
         limit: 10,
         expand: false,
       }),

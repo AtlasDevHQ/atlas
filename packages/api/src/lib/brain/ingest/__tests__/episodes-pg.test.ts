@@ -30,13 +30,14 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import { ingestEpisodes } from "@atlas/api/lib/brain/ingest/episodes";
 import type { BrainEpisodeRecord } from "@atlas/api/lib/brain/ingest/types";
+import { SLACK_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 const PG_TEST_TIMEOUT_MS = 60_000;
 
 const WORKSPACE = "ws-brain-ingest";
-const SOURCE = "slack";
+const SOURCE = SLACK_SOURCE;
 
 function record(overrides: Partial<BrainEpisodeRecord> = {}): BrainEpisodeRecord {
   return {
@@ -141,9 +142,13 @@ describeIfPg("brain episode ingest core (real Postgres)", () => {
   it("dedupes per (workspace, source, source_id) — not across sources or tenants", async () => {
     const shared = record({ sourceId: "SAME:1.000001" });
     await ingestEpisodes({ workspaceId: WORKSPACE, source: SOURCE, episodes: [shared] });
+    // A different vocabulary member (`lib/brain/sources.ts`), not a made-up
+    // one: the dedupe key is `(workspace, source, source_id)` and `source` is
+    // now a closed set, so the second value has to be a kind that exists. Which
+    // member is immaterial — what the arm pins is that the KEY is composite.
     const otherSource = await ingestEpisodes({
       workspaceId: WORKSPACE,
-      source: "teams",
+      source: WAREHOUSE_SOURCE,
       episodes: [shared],
     });
     const otherWorkspace = await ingestEpisodes({

@@ -3167,7 +3167,11 @@ export const brainEpisodes = pgTable(
     // Better-Auth organization id — workspace-global, TEXT/no-FK like the
     // other org-scoped Atlas tables.
     workspaceId: text("workspace_id").notNull(),
-    // Connector class/vendor ('slack', 'warehouse', 'human').
+    // Connector class/vendor ('slack', 'warehouse', 'human'). The vocabulary
+    // is CLOSED and lives in `lib/brain/sources.ts` — `isWarehouseDerived`
+    // reads this column as a discriminator, so a value outside it silently
+    // escapes tier-1 correction refusal. Plain `text` rather than an enum on
+    // purpose: the region import restores a bundle's value verbatim.
     source: text("source").notNull(),
     // The source's own stable id — the dedupe key. Per-connector obligation:
     // stable across BOTH the webhook fast-path and the polling path.

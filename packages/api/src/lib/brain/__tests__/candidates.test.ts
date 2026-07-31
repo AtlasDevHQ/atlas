@@ -505,6 +505,107 @@ describe("loadFactCandidates — contradiction hints", () => {
     ).toEqual(["fact-0:false", "fact-2:true", "fact-9:false"]);
   });
 
+  it("never picks a winner — ordering ignores every authority signal, and no entry carries a verdict", async () => {
+    // The review queue's half of the `search.test.ts` arm of the same name
+    // (#4938). Both surfaces project the shared cluster INDEPENDENTLY, so
+    // proving neutrality on retrieval says nothing about the surface where a
+    // human is about to make the call — and this is the surface where a
+    // `preferred` field would do the most damage, because it would read as
+    // Atlas having already decided.
+    //
+    // The other arms here pose rivals whose id order is the only order they
+    // could come back in, so none of them can tell a neutral sort from a ranked
+    // one. Here every surfacing hint is stacked in favour of
+    // the LATER-sorting rival: 900 corroborations against 0, `published`
+    // against `draft`, 2026 against 2020. If any code path ranked by
+    // authority, recency, or status, `rival-z-strong` would lead.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      {
+        match: "edge_type = 'in-tension-with'",
+        rows: [
+          { from_id: "fact-1", to_id: "rival-z-strong" },
+          { from_id: "fact-1", to_id: "rival-a-weak" },
+          // Withheld — the counterpart statement below never returns it. In
+          // the merged list it must sit at its ID position like any other
+          // rival: sorting the invisible ones to the end would tell a reviewer
+          // which rivals they are allowed to see, and would also be the
+          // search surface's append-last shape leaking across.
+          { from_id: "fact-1", to_id: "rival-m-hidden" },
+        ],
+      },
+      {
+        match: "f.id = ANY(",
+        rows: [
+          factRow({
+            id: "rival-z-strong",
+            object: "MySQL",
+            status: "published",
+            corroboration_count: 900,
+            ingested_at: "2026-07-01T00:00:00.000Z",
+            total_count: undefined,
+          }),
+          factRow({
+            id: "rival-a-weak",
+            object: "SQLite",
+            status: "draft",
+            corroboration_count: 0,
+            ingested_at: "2020-01-01T00:00:00.000Z",
+            total_count: undefined,
+          }),
+        ],
+      },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    const tensions = page.candidates[0]?.tensions ?? [];
+
+    expect(tensions.map((t) => t.factId)).toEqual([
+      "rival-a-weak",
+      "rival-m-hidden",
+      "rival-z-strong",
+    ]);
+    // The signals really are present and really are adverse — without this the
+    // assertion above would also pass against a projection that dropped them,
+    // and then it would be pinning nothing.
+    const strong = tensions.find((t) => t.factId === "rival-z-strong");
+    expect(strong).toMatchObject({ visible: true, status: "published", corroborationCount: 900 });
+
+    // The entry's key set is CLOSED, per variant. Authority signals travel as
+    // display fields for the reviewer to weigh; there is no `rank`, `score`,
+    // `winner`, or `preferred` for a producer to start setting, and a withheld
+    // rival stays an opaque handle rather than acquiring a payload.
+    //
+    // `validTo` is on this list because #4942 added it, and it belongs on the
+    // display side of that line: a superseded rival LABELLED as superseded is
+    // the reviewer being told the counterpart's status, which is the same
+    // service `invalidatedAt` performs for a retracted one. The distinction
+    // this assertion protects is not "no temporal fields" — it is that nothing
+    // here tells the reviewer which rival WINS.
+    for (const entry of tensions) {
+      expect([entry.factId, Object.keys(entry).toSorted()]).toEqual([
+        entry.factId,
+        entry.visible
+          ? [
+              "corroborationCount",
+              "edgeDirection",
+              "factId",
+              "ingestedAt",
+              "invalidatedAt",
+              "object",
+              "predicate",
+              "provenance",
+              "status",
+              "subject",
+              "validFrom",
+              "validTo",
+              "visible",
+            ]
+          : ["edgeDirection", "factId", "visible"],
+      ]);
+    }
+  });
+
   it("lists a reciprocal rival once per direction — the graph, not a double-count", async () => {
     // `reconcile.ts`'s `WHERE NOT EXISTS` dedupes one direction only, so a
     // raced reciprocal pair (A→B and B→A) is representable. Each review entry

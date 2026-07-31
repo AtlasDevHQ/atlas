@@ -1139,6 +1139,36 @@ describe("validateBundle — company brain (#4767)", () => {
     expect(insert!.params[visibleToAt + 1]).toBeNull();
   });
 
+  it("restores an out-of-vocabulary episode source VERBATIM — the carve-out is real", async () => {
+    // `lib/brain/sources.ts` closes the episode-source vocabulary and
+    // `registerBrainSourceConnector` enforces it, but the region import is the
+    // documented exception: a bundle written by a NEWER vocabulary must still
+    // import, or a workspace whose source region has shipped a new connector
+    // becomes permanently unmigratable. That is the same reasoning
+    // `grantProblem` records — anything Postgres stores must remain migratable.
+    //
+    // Pinned in BOTH directions, because each has a real cost. Rejecting the
+    // value strands the workspace; NORMALISING it (to `human`, to `null`, to a
+    // nearest member) would silently rewrite provenance and, if the true kind
+    // were warehouse-shaped, hand tier-1 facts a correction path ADR-0036
+    // forbids. Verbatim is the only answer that is neither.
+    const bundle = brainBundle();
+    (bundle.brainEpisodes![0] as unknown as Record<string, unknown>).source = "snowflake";
+    // Validation does not gate it — the carve-out starts here, not at the INSERT.
+    expect(validateBundle(bundle).ok).toBe(true);
+
+    const { client, calls } = v2CaptureClient();
+    await importBundle(client, bundle, "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO brain_episodes"));
+    expect(insert).toBeDefined();
+    expect(insert!.params).toContain("snowflake");
+    // The route logs this (`admin-migrate.ts`) precisely because the value then
+    // escapes `isWarehouseDerived`; the log is the operator's only signal, and
+    // `lib/brain/__tests__/sources.test.ts` pins that the predicate really does
+    // decline `"snowflake"`.
+  });
+
   it("REFUSES a pre-widening grant of the wrong shape", () => {
     // Caught in `validateBundle`, not at the INSERT. `"org"` would otherwise
     // abort the whole cutover on a raw `malformed array literal` after every

@@ -50,6 +50,7 @@ import {
   _resetCatalogIngestClaims,
 } from "@atlas/api/lib/knowledge/catalog-claims";
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
+import { EPISODE_SOURCES, isEpisodeSource, type EpisodeSource } from "@atlas/api/lib/brain/sources";
 
 /**
  * One record a source produced, ready to become a tier-3 episode row.
@@ -196,13 +197,17 @@ export interface BrainSourceConnector {
   /** The catalog row this connector serves — the cycle-walk dispatch key. */
   readonly catalogId: string;
   /**
-   * The connector class stamped into `brain_episodes.source` (`slack`,
-   * `warehouse`, `human` — ADR-0036 is class-major, vendor-minor). Constrained
-   * to `[a-z0-9-]+` for the same reason ADR-0030 constrains its vendor slug:
-   * it is a stored discriminator, and a stored discriminator with free-form
-   * text in it stops being one.
+   * The connector class stamped into `brain_episodes.source` — ADR-0036 is
+   * class-major, vendor-minor, and the closed vocabulary lives in
+   * `lib/brain/sources.ts`.
+   *
+   * A CLOSED type rather than a slug pattern, because downstream predicates
+   * read this value as a discriminator: `isWarehouseDerived` refuses tier-1
+   * correction on `WAREHOUSE_SOURCE` alone, so a warehouse connector that
+   * named its class `"snowflake"` would fail that ADR-level invariant OPEN and
+   * nothing would go red. `sources.ts`'s header carries the full argument.
    */
-  readonly source: string;
+  readonly source: EpisodeSource;
   createClient(
     ctx: BrainSourceInstallContext,
   ): Promise<BrainSourceVendorClient> | BrainSourceVendorClient;
@@ -218,14 +223,28 @@ const registry = new Map<string, BrainSourceConnector>();
 
 /**
  * Register a brain source for its catalog row. Called once per source at
- * wiring time. Duplicate catalog ids and malformed source slugs fail loudly —
- * a silent overwrite would let one source shadow another's installs, and a
- * malformed slug would land unqueryable garbage in `brain_episodes.source`.
+ * wiring time. Duplicate catalog ids, malformed source slugs, and classes
+ * outside the vocabulary all fail loudly — a silent overwrite would let one
+ * source shadow another's installs, a malformed slug would land unqueryable
+ * garbage in `brain_episodes.source`, and an unknown class would land a value
+ * that every downstream discriminator silently declines to recognise.
  */
 export function registerBrainSourceConnector(connector: BrainSourceConnector): void {
   if (!SOURCE_SLUG.test(connector.source)) {
     throw new Error(
       `Brain source slug "${connector.source}" is invalid — expected a lowercase alphanumeric slug matching ${SOURCE_SLUG.source} (it is stored verbatim in brain_episodes.source)`,
+    );
+  }
+  // The runtime half of the closed vocabulary. `source` is typed
+  // `EpisodeSource`, which covers every in-repo connector at compile time —
+  // but a plugin is compiled separately and arrives here as data, so the
+  // check has to exist at runtime too. Failing loudly is the whole point: the
+  // alternative is a novel class flowing into `provenance.source`, where
+  // `isWarehouseDerived` would simply stop matching and tier-1 correction
+  // refusal would fail OPEN without a single red test.
+  if (!isEpisodeSource(connector.source)) {
+    throw new Error(
+      `Brain source class "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to lib/brain/sources.ts, and if it is warehouse-shaped it must BE "warehouse" or tier-1 correction refusal stops applying to it`,
     );
   }
   if (registry.has(connector.catalogId)) {

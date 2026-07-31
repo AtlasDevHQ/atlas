@@ -62,20 +62,33 @@
  *
  * The one thing that must never change is the FORMAT. It is a stored key; a
  * reformat re-ingests every message in every workspace as a new episode, and
- * #4771 would then re-extract facts from all of them.
+ * the extraction fiber (`lib/brain/extract.ts`) would then re-extract facts
+ * from all of them.
  */
+
+import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
 
 /** The built-in catalog slug + row id for the Slack chat-history brain source. */
 export const SLACK_HISTORY_SLUG = "slack-history";
 export const SLACK_HISTORY_CATALOG_ID = "catalog:slack-history";
 
 /**
- * The value stamped into `brain_episodes.source`. ADR-0036 orders SOURCES
- * class-major, vendor-minor (chat → transcripts → email → docs); the column
- * stores the VENDOR within that class, so the chat class will hold `slack`
- * today and `teams`/`discord`/… as M3 adds them.
+ * The value stamped into `brain_episodes.source`. ADR-0036 sequences SOURCES
+ * class-major, vendor-minor (chat → transcripts → email → docs); within the
+ * chat class the stored value is the VENDOR, because the source-id contract
+ * above is vendor-specific and two vendors sharing one stored value would share
+ * one dedupe namespace. So `teams`/`discord` become their OWN members whenever
+ * they arrive — not reuses of this one. (ADR-0036's M3 scopes CLASS expansion —
+ * transcripts, email, docs — and commits to no second chat vendor, so this is a
+ * shape rather than a scheduled change.)
+ *
+ * Aliased off `lib/brain/sources.ts` rather than spelled again here: the column
+ * is read as a discriminator (`isWarehouseDerived`), so its vocabulary is one
+ * shared fact and not a literal each producer repeats. That file's header
+ * carries the mixed-grain argument — `warehouse` and `human` are kinds with no
+ * vendor at all — and the rule that binds a future warehouse producer.
  */
-export const SLACK_HISTORY_SOURCE = "slack";
+export const SLACK_HISTORY_SOURCE = SLACK_SOURCE;
 
 /**
  * Slack channel ids are `[A-Z0-9]` after a leading letter (`C…` public, `G…`
@@ -86,8 +99,8 @@ export const SLACK_HISTORY_SOURCE = "slack";
  *
  * 1:1 DMs (`D…`) are deliberately NOT admitted: their audience is two people,
  * and ADR-0036 puts source-principal-resolution failure on the BLOCK side. M1
- * ingests channels the bot was invited to; DM ingestion needs the membership
- * work #4771 owns. NOTE this does not exclude every kind of DM — legacy
+ * ingests channels the bot was invited to; DM ingestion needs the
+ * audience-membership sync (#4801, shipped as `lib/brain/audience/sync.ts`). NOTE this does not exclude every kind of DM — legacy
  * multi-person DMs (mpim) carry `G…` ids and are admitted, ingested as private
  * channels with a channel-scoped `audience:` grant. That is fail-closed and
  * correct, just broader than "no DMs" would suggest.

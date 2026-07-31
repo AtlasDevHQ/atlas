@@ -66,6 +66,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { isUsableGrant } from "./grant";
 import type { BrainEpisodeRecord } from "./types";
+import type { EpisodeSource } from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain.ingest.episodes");
 
@@ -141,8 +142,16 @@ const NO_REFUSALS: Readonly<Record<EpisodeRefusalReason, number>> = Object.freez
 
 export interface IngestEpisodesParams {
   readonly workspaceId: string;
-  /** The connector class stamped into `brain_episodes.source`. */
-  readonly source: string;
+  /**
+   * The source kind stamped into `brain_episodes.source`.
+   *
+   * Typed to the closed vocabulary (`lib/brain/sources.ts`) because THIS is the
+   * write path: `registerBrainSourceConnector`'s check runs once at wiring
+   * time, so a caller reaching `ingestEpisodes` directly — a backfill script, a
+   * future producer — would otherwise bypass it entirely and land a value that
+   * `isWarehouseDerived` silently declines to recognise.
+   */
+  readonly source: EpisodeSource;
   readonly episodes: readonly BrainEpisodeRecord[];
 }
 

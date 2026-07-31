@@ -267,7 +267,8 @@ export async function executeAgentQuery(
     // Build the tool registry for this surface. `executeAgentQuery` serves the
     // non-web programmatic surfaces — the SDK query route, chat-platform
     // adapters (Slack), the MCP query tool, and the scheduler. None of them own
-    // a dashboards route and none has a human in the loop, so this is the
+    // a dashboards route and none has a confirmation UI in the surface itself
+    // (the approval park/resume flow is out-of-band), so this is the
     // canonical HEADLESS surface: `buildHeadlessRegistry` omits `createDashboard`
     // (#4566, PRD #4553 L2 — a `/dashboards/[id]` handoff is unreachable from
     // Slack or a scheduled digest) and `correct_fact` (#4915), keeps action
@@ -276,9 +277,11 @@ export async function executeAgentQuery(
     // build failure so both omissions hold on the error path too.
     //
     // #4936 — that construction moved into `registry.ts` so the chat-plugin
-    // approval RESUME of a turn started here rebuilds the identical set instead
-    // of re-deriving it (or, as it did, omitting `tools` and inheriting the
-    // workspace registry). We still pass `tools` explicitly: `runAgent`'s
+    // approval RESUME of a turn started here rebuilds from the identical POLICY
+    // instead of re-deriving it (or, as it did, omitting `tools` and inheriting
+    // the workspace registry). Policy, not set: `ATLAS_ACTIONS_ENABLED` is
+    // re-read at resume time, so a turn parked across an operator flag flip
+    // resumes on a different set. We still pass `tools` explicitly: `runAgent`'s
     // default now fails closed, but the surface's choice belongs in the surface.
     const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
     const toolRegistry = await buildHeadlessRegistry();

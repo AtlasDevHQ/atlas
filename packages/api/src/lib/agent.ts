@@ -669,7 +669,8 @@ When a question spans more than one source in the catalog above — several SQL 
 export interface BuildSystemParamOptions {
   /**
    * Tool registry the prompt's tool-guidance sections are built from.
-   * Defaults to `nonDashboardRegistry` — the least-privileged core set (#4936).
+   * Defaults to `nonDashboardRegistry` — the lesser-privileged of the two core
+   * registries (#4936).
    * `runAgent` always passes its resolved `activeRegistry`, so the default only
    * serves callers that build a prompt outside a turn; it fails closed so such
    * a caller can't advertise `createDashboard`/`correct_fact` guidance to a
@@ -1079,20 +1080,26 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  * Run the Atlas agent loop.
  *
  * @param messages - The conversation history from the chat UI.
- * @param tools - The surface's {@link ToolRegistry}. **Every production call
- *   site passes it explicitly** — `agent-runagent-call-sites.test.ts` is the
- *   tripwire that keeps that true across `packages/**` and `ee/**`.
+ * @param tools - The surface's {@link ToolRegistry}. Every production call site
+ *   passes it explicitly, and `agent-runagent-call-sites.test.ts` pins WHICH
+ *   registry each one must resolve to. That guard scans the roots listed in its
+ *   `SCAN_ROOTS` (`packages/api|mcp|sdk/src` + `ee/src`) — add a root there when
+ *   a new package can reach `runAgent`.
  *
- *   It stays optional for tests and for callers that legitimately want the
- *   read-safe core set, but the default is now
- *   {@link nonDashboardRegistry}, not the dashboards-owning
- *   `defaultRegistry` (#4936). The old default was write-carrying: any caller
- *   that omitted `tools` silently received `createDashboard` AND `correct_fact`
- *   — re-opening, from the outside, the surface gate `registry.ts` applies from
- *   the inside (#4915). Defaulting to the least-privileged registry makes
- *   forgetting fail CLOSED. A surface that owns `/dashboards/[id]` must now
- *   opt in by passing `defaultRegistry`; a headless one should pass
- *   `buildHeadlessRegistry()`.
+ *   The parameter stays optional for TESTS; production callers are required to
+ *   name a registry. The default is now {@link nonDashboardRegistry}, not the
+ *   dashboards-owning `defaultRegistry` (#4936). The old default was
+ *   write-carrying: any caller that omitted `tools` silently received
+ *   `createDashboard` AND `correct_fact` — re-opening, from the outside, the
+ *   surface gate `registry.ts` applies from the inside (#4915). Defaulting to
+ *   the lesser-privileged registry makes forgetting fail CLOSED. A surface that
+ *   owns `/dashboards/[id]` opts in by passing `defaultRegistry`; a headless one
+ *   passes `buildHeadlessRegistry()`.
+ *
+ *   `nonDashboardRegistry` is lesser-privileged, not side-effect-free: `sendEmail`
+ *   / `createLinearIssue` / `querySalesforce` are core tools, gated at execute
+ *   time on the workspace install. Rationale: the `correct_fact` gate comment in
+ *   `lib/tools/registry.ts`.
  *
  *   The loop terminates when the step limit is reached (configurable via
  *   `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing tool calls.

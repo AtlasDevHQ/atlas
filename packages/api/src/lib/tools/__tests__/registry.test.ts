@@ -41,6 +41,7 @@ const {
   defaultRegistry,
   nonDashboardRegistry,
   buildRegistry,
+  buildHeadlessRegistry,
   WORKSPACE_DASHBOARD_URL_RESOLVER,
   INTENTIONAL_TOOL_SHADOWS,
   TOOL_SHADOW_REMEDIATIONS,
@@ -444,5 +445,77 @@ describe("tool-shadow policy (#3326)", () => {
   it("remediation copy exists for the known querySalesforce collision", () => {
     expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("SALESFORCE_CLIENT_ID");
     expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("salesforce://");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4936 — buildHeadlessRegistry
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with the given env keys set/cleared, restoring them afterwards. */
+async function withEnv(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const saved = new Map(Object.keys(overrides).map((k) => [k, process.env[k]]));
+  try {
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await fn();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+describe("buildHeadlessRegistry (#4936)", () => {
+  // The named seam three surfaces now share — `executeAgentQuery` (SDK / Slack
+  // / MCP / scheduler) and the chat-plugin approval RESUME of a turn started
+  // there. It exists so resume rebuilds the same policy the parked turn ran
+  // under instead of re-deriving it, which is how the surface silently widened
+  // across the approval boundary before this fix.
+  it("omits both write verbs but keeps the core query tools", async () => {
+    const names = Object.keys((await buildHeadlessRegistry()).getAll());
+
+    expect(names).not.toContain("createDashboard");
+    expect(names).not.toContain("correct_fact");
+    // Not vacuous — a headless surface is still a full read surface.
+    for (const core of ["explore", "executeSQL", "searchBrain"]) {
+      expect(names).toContain(core);
+    }
+  });
+
+  it("keeps operator action tools opt-in behind ATLAS_ACTIONS_ENABLED", async () => {
+    await withEnv({ ATLAS_ACTIONS_ENABLED: undefined }, async () => {
+      expect(Object.keys((await buildHeadlessRegistry()).getAll())).not.toContain("sendEmailReport");
+    });
+    await withEnv({ ATLAS_ACTIONS_ENABLED: "true" }, async () => {
+      expect(Object.keys((await buildHeadlessRegistry()).getAll())).toContain("sendEmailReport");
+    });
+  });
+
+  it("falls back to nonDashboardRegistry — NOT defaultRegistry — when buildRegistry throws", async () => {
+    // The security-relevant branch, and the one the pre-refactor inline version
+    // in agent-query.ts never had a test for. `ATLAS_PYTHON_ENABLED` without
+    // `ATLAS_SANDBOX_URL` is the fatal misconfiguration buildRegistry throws on
+    // (pinned above). Both omissions must hold on the error path too, or a
+    // misconfigured box quietly hands every headless surface the write verbs.
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined },
+      async () => {
+        await expect(buildRegistry()).rejects.toThrow("ATLAS_SANDBOX_URL");
+
+        const registry = await buildHeadlessRegistry();
+        expect(registry).toBe(nonDashboardRegistry);
+        const names = Object.keys(registry.getAll());
+        expect(names).not.toContain("createDashboard");
+        expect(names).not.toContain("correct_fact");
+        expect(names).toContain("executeSQL");
+      },
+    );
   });
 });

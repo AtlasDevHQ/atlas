@@ -649,8 +649,10 @@ demo.openapi(demoChatRoute, async (c) => {
         // zero-signup demo is anonymous and owns no `/dashboards/[id]` route,
         // so `createDashboard` proposes a draft the visitor can't open and
         // `correct_fact` advertises an admin write verb the demo actor can
-        // never satisfy (`createAtlasUser` sets no `activeOrganizationId`, so
-        // the verb refuses with `no_workspace`). Both were reaching the demo
+        // never satisfy (the demo's `createAtlasUser` call passes no
+        // `activeOrganizationId`, so the verb refuses with `no_workspace` —
+        // or `no_internal_db`, checked first, on a deploy without one). Both
+        // were reaching the demo
         // purely because `runAgent` used to default to the workspace registry.
         const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
         const agentResult = await runAgent({

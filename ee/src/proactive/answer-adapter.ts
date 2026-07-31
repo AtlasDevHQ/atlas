@@ -188,12 +188,19 @@ export function createProactiveAnswerAdapter(
     // (`...(toolRegistry ? { tools: toolRegistry } : {})`), so a linked asker
     // fell through to whatever `runAgent` defaulted to — then the dashboards-
     // owning `defaultRegistry`, which carries the brain-mutating `correct_fact`.
-    // `resolveLinkedActor` returns a REAL user with a real
-    // `activeOrganizationId` and `resolveBrainReaderContext` re-resolves their
-    // real `member.role`, so for an org owner/admin a proactive Slack answer
-    // could retract or supersede brain facts — autonomously, with no
-    // confirmation UI, guarded only by prose in `CORRECT_FACT_DESCRIPTION`.
-    // No `undefined` state now exists to fall through.
+    // `resolveLinkedActor` returns a REAL user, with a real
+    // `activeOrganizationId` whenever they have a member row, and
+    // `resolveBrainReaderContext` re-resolves their real `member.role` — so for
+    // an org owner/admin a proactive Slack answer could retract or supersede
+    // brain facts, autonomously, with no confirmation UI, guarded only by prose
+    // in `CORRECT_FACT_DESCRIPTION`.
+    //
+    // LATENT rather than live today: the wired SaaS resolver
+    // (`createSlackProactiveUserResolver`) returns `unlinked` for every asker
+    // until a Slack-user link table lands (#2624), so this branch is unreachable
+    // in production. That is exactly why it must be closed BEFORE that branch
+    // goes live — the type now makes the `undefined` state unrepresentable, so
+    // there is no path left to fall through.
     let actor: AtlasUser;
     let toolRegistry: ToolRegistry;
     try {
@@ -204,9 +211,17 @@ export function createProactiveAnswerAdapter(
           resolveActor,
         );
         // Linked asker — full identity, but still a HEADLESS surface: a
-        // proactive Slack answer owns no dashboards route and has no human in
-        // the loop, exactly like the `executeAgentQuery` turns the chat plugin
-        // drives. Same registry, named explicitly.
+        // proactive Slack answer owns no dashboards route and has no
+        // confirmation UI, like the `executeAgentQuery` turns the chat plugin
+        // drives.
+        //
+        // Deliberately the STATIC core set, not `buildHeadlessRegistry()`.
+        // They are not the same registry: the dynamic builder adds the operator
+        // action tools (`sendEmailReport`, `createJiraTicket`) under
+        // `ATLAS_ACTIONS_ENABLED`, plus `executePython`. Handing external-write
+        // verbs to the most autonomous, least supervised surface in the product,
+        // under a real linked user's identity, is the widening this issue is
+        // about — so do NOT "dedupe" these two into one call.
         toolRegistry = nonDashboardRegistry;
       } else {
         // Unlinked asker — MUST resolve the workspace's public dataset
@@ -324,10 +339,7 @@ export function createProactiveAnswerAdapter(
               },
             ],
             aiModel,
-            // #4936 — unconditional: the linked branch pins
-            // `nonDashboardRegistry`, the unlinked branch pins the
-            // public-dataset registry. Neither can be `undefined`, so there is
-            // no path left that inherits `runAgent`'s default.
+            // #4936 — unconditional; see the branch comment above.
             tools: toolRegistry,
             // #2705/#4299 — the proactive seam still speaks the legacy
             // presentation-mode signal; resolve it through the answer-style

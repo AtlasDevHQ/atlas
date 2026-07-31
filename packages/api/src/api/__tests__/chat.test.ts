@@ -1681,6 +1681,13 @@ describe("POST /api/v1/chat", () => {
     expect(names).not.toContain(ACTION_TOOL);
     // Not vacuous — the core surface is intact, only the actions are absent.
     expect(names).toContain("executeSQL");
+    // #4936 — and the web surface must KEEP the workspace write verbs. It owns
+    // `/dashboards/[id]` and has a human in the loop, so it is the one place
+    // they belong. Without this, over-correcting the route's fallback to
+    // `nonDashboardRegistry` would silently strip dashboards and fact
+    // correction from web chat and every test in the fix would stay green.
+    expect(names).toContain("createDashboard");
+    expect(names).toContain("correct_fact");
   });
 
   it("does not pass action tools when ATLAS_ACTIONS_ENABLED=false", async () => {

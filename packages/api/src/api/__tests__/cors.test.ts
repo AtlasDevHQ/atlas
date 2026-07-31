@@ -76,6 +76,7 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
+  // #4936 — same cause as the `lib/tools/explore` mock above.
   getSettingOverride: () => undefined,
   getSettingLive: async () => undefined,
   setSetting: async () => {},

@@ -154,10 +154,16 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         // here used to hand the resume the workspace registry instead, so the
         // tool surface silently WIDENED across the approval boundary — adding
         // `correct_fact` to an autonomous Slack turn with no confirmation UI.
-        // (Execute time still refused: the actor is `botActorUser`, role
-        // `member` with no member row, so the owner/admin gate said no. The
-        // posture is that a brain-mutating tool must not be on this surface at
-        // all, however well execute-time gating held.)
+        // Execute time did NOT uniformly refuse. In authenticated modes it did
+        // — `botActorUser` is role `member` with no member row, so
+        // `correction.ts`'s owner/admin gate said no. But under
+        // `ATLAS_AUTH_MODE=none` the principal resolves to
+        // `origin: "unauthenticated-local"`, which that gate deliberately lets
+        // through ("the local operator is the only identity there is"), so on a
+        // self-hosted no-auth deploy running the Slack plugin the widened
+        // resume could actually have mutated the brain. Even where the gate did
+        // hold, the posture is that a brain-mutating tool must not be on this
+        // surface at all.
         const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
         const agentResult = await runAgent({
           messages: [],

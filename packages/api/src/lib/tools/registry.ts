@@ -311,10 +311,10 @@ function registerCoreTools(
   // site passes. That used to be a silent decision (`runAgent` defaulted to
   // the write-carrying `defaultRegistry`, so an omitted `tools` re-opened this
   // gate from the outside). The default now fails CLOSED to
-  // `nonDashboardRegistry`, and `agent-runagent-call-sites.test.ts` requires
-  // every production call site — `packages/**` and `ee/**` — to pass `tools`
-  // explicitly, so a new headless surface can neither inherit nor omit its way
-  // into a brain-mutating tool set.
+  // `nonDashboardRegistry`, and `agent-runagent-call-sites.test.ts` pins the
+  // registry each production call site must resolve to. This is the canonical
+  // account of that fix; the other touched files carry a one-line pointer here
+  // rather than restating it.
   if (dashboardUrlResolver) {
     registry.register({
       name: "correct_fact",
@@ -376,7 +376,8 @@ registerCoreTools(defaultRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER);
 defaultRegistry.freeze();
 
 // --- Non-dashboard registry (#4566) ---
-// Core tools MINUS createDashboard, for surfaces that own no dashboards route
+// Core tools MINUS createDashboard AND correct_fact (both gate on the same
+// `dashboardUrlResolver` signal), for surfaces that own no dashboards route
 // (SDK / Slack / MCP / scheduler via `executeAgentQuery`). Also the
 // guaranteed-safe fallback when `buildRegistry` throws — so the createDashboard
 // omission holds even on the error path instead of falling through to the

@@ -41,7 +41,15 @@ interface ObservedRunAgentCall {
   orgId?: string | null;
   agentOrigin?: string;
   requestId?: string;
-  hasCustomToolRegistry: boolean;
+  /**
+   * #4936 — the tool NAMES the adapter handed this run. This used to be a
+   * boolean (`params.tools !== undefined`), which only discriminated the two
+   * branches while the linked branch passed no registry at all. Now that BOTH
+   * branches name one, the boolean is true either way — so it is replaced with
+   * the names, which say what each branch actually got and keep the
+   * unlinked-asker assertion (AC #2614) from going vacuous.
+   */
+  toolNames: readonly string[] | undefined;
   /** #4299 — the answer style the adapter resolved for this run. */
   answerStyle?: string;
 }
@@ -91,10 +99,9 @@ mock.module("@atlas/api/lib/agent", () => ({
       orgId: ctx?.user?.activeOrganizationId ?? null,
       agentOrigin: ctx?.agentOrigin,
       requestId: ctx?.requestId,
-      // Non-null when the adapter built a restricted registry for the
-      // unlinked-asker path. The unlinked path test asserts truthy;
-      // linked path tests assert falsy.
-      hasCustomToolRegistry: params.tools !== undefined,
+      toolNames: params.tools
+        ? Object.keys((params.tools as { getAll(): Record<string, unknown> }).getAll())
+        : undefined,
       ...(params.answerStyle !== undefined ? { answerStyle: params.answerStyle } : {}),
     });
 
@@ -230,9 +237,23 @@ describe("createProactiveAnswerAdapter — linked path", () => {
     expect(observedRunAgentCalls[0].orgId).toBe("org-linked");
     expect(observedRunAgentCalls[0].agentOrigin).toBe("slack");
     expect(observedRunAgentCalls[0].question).toBe("how many customers?");
-    // Linked askers get the default ToolRegistry — no `tools` arg
-    // passed through to runAgent.
-    expect(observedRunAgentCalls[0].hasCustomToolRegistry).toBe(false);
+    // #4936 — the linked branch names `nonDashboardRegistry`. It used to pass
+    // no `tools` at all and inherit `runAgent`'s then-default `defaultRegistry`,
+    // which carries the brain-mutating `correct_fact`: a proactive Slack answer
+    // is autonomous and has no confirmation UI, so the write verb must not be
+    // on the surface however well execute-time gating holds.
+    const linkedTools = observedRunAgentCalls[0].toolNames;
+    expect(linkedTools, "the linked branch must name a registry").toBeDefined();
+    expect(linkedTools).not.toContain("correct_fact");
+    expect(linkedTools).not.toContain("createDashboard");
+    // Not vacuous — a linked asker still gets full data access under their own
+    // identity, which is the whole point of the linked branch.
+    expect(linkedTools).toContain("executeSQL");
+    expect(linkedTools).toContain("explore");
+    // `searchBrain` also separates this from the unlinked branch's
+    // two-tool public-dataset registry, so the two assertions can't both be
+    // satisfied by the same registry.
+    expect(linkedTools).toContain("searchBrain");
     // #4299 — no presentationMode on the context: the adapter resolves the
     // analyst fallback (successor of the retired addendum-free "developer"
     // posture for hosts predating #2705).
@@ -371,11 +392,26 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
     // model routing both branch on `activeOrganizationId`, so an empty
     // string here is the unlinked-asker fingerprint.
     expect(observedRunAgentCalls[0].orgId === null || observedRunAgentCalls[0].orgId === "").toBe(true);
-    // AC #2614 belt-and-braces: agent runs with a restricted registry,
-    // not the default workspace toolset. The listener's post-filter is
-    // a backstop — the adapter-side gate prevents the agent from
-    // reading sensitive entities in the first place.
-    expect(observedRunAgentCalls[0].hasCustomToolRegistry).toBe(true);
+    // AC #2614 belt-and-braces: agent runs with the restricted PUBLIC-DATASET
+    // registry, not a workspace toolset. The listener's post-filter is a
+    // backstop — the adapter-side gate prevents the agent from reading
+    // sensitive entities in the first place.
+    //
+    // #4936 — asserted on the tool NAMES, not on "a registry was passed". Now
+    // that the linked branch also names one, "passed something" no longer
+    // discriminates: a regression that dropped `createPublicDatasetToolRegistry`
+    // and fell through to a warehouse-wide registry would satisfy it. The
+    // public-dataset registry is defined by what it does NOT carry.
+    // Pinned as an EXACT set, not a subset: `explore`/`executeSQL` here are the
+    // public-dataset REIMPLEMENTATIONS (`public-dataset-tools.ts`), so matching
+    // on their names alone cannot tell this registry from a workspace one. What
+    // distinguishes it is everything it does NOT also carry — `searchBrain`,
+    // `sendEmail`, `createLinearIssue`, `correct_fact`, `createDashboard`. A
+    // regression that fell through to `nonDashboardRegistry` or
+    // `defaultRegistry` fails on the extra names.
+    const unlinkedTools = observedRunAgentCalls[0].toolNames;
+    expect(unlinkedTools, "the unlinked branch must name a registry").toBeDefined();
+    expect([...unlinkedTools!].sort()).toEqual(["executeSQL", "explore"]);
     await runtime.dispose();
   });
 

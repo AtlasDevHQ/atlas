@@ -1570,14 +1570,11 @@ chat.openapi(chatRoute, async (c) => {
 
           // #4936 — the web chat surface OWNS `/dashboards/[id]` and has a human
           // in the loop, so it is one of the two callers that opts IN to the
-          // dashboards-owning `defaultRegistry` (`createDashboard`,
-          // `correct_fact`). `runAgent` now defaults to the least-privileged
-          // `nonDashboardRegistry`, so the fallback is resolved HERE rather than
-          // inherited: the workspace tool set stays attached to the surface that
-          // can actually reach it, instead of leaking to every headless caller
-          // that happened to omit `tools`. `toolRegistry` is still undefined on
-          // the ordinary path (actions off, no plugin tools, not bound), which is
-          // exactly why this cannot be left implicit.
+          // dashboards-owning `defaultRegistry`. Resolved HERE rather than
+          // inherited: `toolRegistry` is still undefined on the ordinary path
+          // (actions off, no plugin tools, not bound), which is exactly why it
+          // cannot be left implicit. Rationale: the `correct_fact` gate comment
+          // in lib/tools/registry.ts.
           const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
           const resolvedToolRegistry = toolRegistry ?? defaultRegistry;
 
@@ -2177,14 +2174,12 @@ chat.openapi(chatResumeRoute, async (c) => {
             log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to merge plugin tools on resume — continuing without");
           }
 
-          // #4936 — same opt-in as the chat route above: this is the WEB resume,
-          // on the dashboards-owning workspace surface, so it names
-          // `defaultRegistry` explicitly rather than inheriting a default that
-          // `runAgent` now points at the least-privileged registry. (The
-          // chat-PLATFORM resume — `lib/chat-plugin/resume-turn.ts` — is the
-          // headless twin and resolves `buildHeadlessRegistry()` instead; the
-          // two resume paths must not share one implicit default, which is how
-          // the widening went unnoticed.)
+          // #4936 — same opt-in as the chat route above: the WEB resume, on the
+          // dashboards-owning workspace surface. Its headless twin is the
+          // chat-PLATFORM resume (`lib/chat-plugin/resume-turn.ts`), which
+          // resolves `buildHeadlessRegistry()`. The two resume paths must not
+          // share one implicit default — that is how the widening went
+          // unnoticed.
           const { defaultRegistry: workspaceRegistry } = await import(
             "@atlas/api/lib/tools/registry"
           );

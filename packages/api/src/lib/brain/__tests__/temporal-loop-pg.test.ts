@@ -1016,6 +1016,45 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       const memberNow = await search(memberCtx);
       expect(subjectsOf(memberNow.results)).toEqual(["release freeze"]);
 
+      // The conflict cluster, RE-READ after the gate — the assertion that was
+      // missing (#4935). Step 3 asserted this cluster before the publish, when
+      // both sides were live, and never looked again: nothing deletes the
+      // `in-tension-with` edge, so the winner carries its loser as a
+      // counterpart forever. Without `validTo` on the counterpart every signal
+      // on it still reads live, and a conflict this very reviewer arbitrated
+      // one step ago is served back as open.
+      const winnerNow = adminNow.results.filter(isFact).find((f) => f.subject === "deploy window");
+      if (winnerNow === undefined) {
+        throw new Error("the survivor was not served — the post-gate cluster assertion would be vacuous");
+      }
+      expect(winnerNow.object).toBe("Fridays");
+      expect(winnerNow.tensions).toHaveLength(1);
+      const retiredRival = winnerNow.tensions[0];
+      if (retiredRival?.visible !== true) {
+        throw new Error("the superseded rival is not visible to the admin — expected a labelled counterpart");
+      }
+      expect(retiredRival.factId).toBe(thursdays.id);
+      expect(retiredRival.object).toBe("Thursdays");
+      // The label, carried straight off the counterpart's own row and equal to
+      // the stamp the GATE wrote — not a value the fixture chose. Named throw
+      // rather than `?? null`, which would let a gate that stopped stamping
+      // satisfy this by making both sides null.
+      if (loser.valid_to === null) {
+        throw new Error("the gate did not stamp valid_to — the label assertion would be vacuous");
+      }
+      expect(retiredRival.validTo).toBe(loser.valid_to.toISOString());
+      // In the PAST, which is what makes it a closed window rather than a
+      // scheduled one — the distinction every label consumer keys on.
+      expect(loser.valid_to.getTime()).toBeLessThanOrEqual(Date.now());
+      // ...and the negative that says WHY the label is load-bearing: every
+      // other signal on this rival is indistinguishable from a live one.
+      expect(retiredRival.status).toBe("published");
+      expect(retiredRival.invalidatedAt).toBeNull();
+      // The survivor itself is current — the label belongs to the rival alone,
+      // so a projection leaking the owner's window onto its counterparts (or
+      // the reverse) fails here.
+      expect(winnerNow.validTo).toBeNull();
+
       // ---- 6. asOf: yesterday's truth under the frozen grant --------------
       // The org member's point read serves the superseded claim again — gated
       // by the row's own frozen `['org']` grant, with its provenance intact —

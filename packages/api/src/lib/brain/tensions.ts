@@ -88,6 +88,9 @@ export interface TensionCounterpartRow {
   readonly provenance: unknown;
   readonly source_episode_id: string | null;
   readonly valid_from: unknown;
+  /** Supersession stamp — `invalidated_at`'s twin on the other axis (#4912, carried onto the counterpart in #4935). */
+  readonly valid_to: unknown;
+  /** Retraction tombstone — see `loadTensionClusters` for why both axes are carried. */
   readonly invalidated_at: unknown;
   readonly ingested_at: unknown;
   readonly corroboration_count: unknown;
@@ -156,6 +159,7 @@ const COUNTERPART_COLUMNS = `f.id::text AS id,
          f.provenance,
          f.source_episode_id::text AS source_episode_id,
          f.valid_from,
+         f.valid_to,
          f.invalidated_at,
          f.ingested_at`;
 
@@ -285,13 +289,19 @@ export async function loadTensionClusters(
   }
 
   const params: unknown[] = [...acl.params, counterpartIds];
-  // `invalidated_at` is deliberately NOT filtered — a rival that was retracted
-  // is still why this claim was contested, and hiding it would make a conflict
-  // vanish the moment somebody rejected one side. It IS selected and carried,
-  // because retraction never writes `status` and an unlabeled withdrawn rival
-  // is indistinguishable from a live one. `valid_to` is not filtered either,
-  // for the same reason on the supersession axis (#4912): a superseded rival
-  // is still why the claim was contested.
+  // NEITHER temporal axis is filtered, and BOTH are selected — the argument is
+  // one argument applied twice.
+  //
+  // Not filtered: a rival that was retracted (`invalidated_at`) or superseded
+  // (`valid_to`) is still why this claim was contested, and hiding it would
+  // make a conflict vanish the moment somebody resolved one side.
+  //
+  // Selected and carried, RAW rather than as a boolean: neither verb writes
+  // `status`, so a retired rival still reports whatever status it held, and a
+  // future-dated `valid_to` is a live fact — only the reader can decide
+  // whether a window has actually closed. Why either stamp is load-bearing,
+  // and what a reader owes it, is on `BrainFactTensionVisible.validTo`
+  // (#4935).
   const result = await db.query(
     `SELECT ${COUNTERPART_COLUMNS},
             ${COUNTERPART_CORROBORATION} AS corroboration_count

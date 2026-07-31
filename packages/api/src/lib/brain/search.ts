@@ -773,12 +773,9 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
  *     adding information — the count IS the signal, and it is never dropped:
  *     an omitted conflict reads as "nothing contradicts this".
  *
- * `invalidated_at` is deliberately NOT filtered on the counterpart — a rival
- * that was retracted is still why this claim was contested — but it IS carried,
- * because retraction never writes `status` and an unlabeled withdrawn rival is
- * indistinguishable from a live one. `valid_to` is not filtered either, for
- * the same reason on the supersession axis (#4912): a rival that was
- * superseded is still why the claim was contested.
+ * Neither temporal axis is filtered on the counterpart and both are carried —
+ * see `loadTensionClusters` in `tensions.ts` for the argument, and
+ * `BrainFactTensionVisible.validTo` for what a reader must do with the stamps.
  */
 async function loadTensions(
   db: BrainSearchReader,
@@ -807,6 +804,7 @@ async function loadTensions(
       validFrom: iso(row.valid_from),
       ingestedAt: iso(row.ingested_at),
       invalidatedAt: iso(row.invalidated_at),
+      validTo: iso(row.valid_to),
       corroborationCount: count(row.corroboration_count, "corroboration_count", ctx.workspaceId),
       provenance: projectProvenance(
         row.provenance,

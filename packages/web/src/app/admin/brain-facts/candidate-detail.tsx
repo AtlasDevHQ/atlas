@@ -181,10 +181,30 @@ function TensionCard({ tension }: { tension: BrainFactTensionView }) {
 
   const badge = statusBadge[tension.status];
   const withdrawn = tension.invalidatedAt !== null;
+  // A CLOSED window, not merely a stamped one. `brainFactCurrentClause` reads
+  // `valid_to IS NULL OR valid_to > now()`, so a future-dated `valid_to` — a
+  // region import (`admin-migrate.ts`) can carry one — is a LIVE fact whose
+  // end is merely scheduled. Badging that as settled would suppress a real
+  // conflict from the reviewer, the exact inverse of the bug this fixes, so
+  // the label uses the same boundary the database does.
+  //
+  // Against the CLIENT clock, accepted: within a skewed browser's offset of
+  // the supersession instant this can disagree with the server. The badge is
+  // advisory, never a gate. An unparseable stamp yields NaN, whose comparison
+  // is false, so it falls through to "live" — the recoverable direction, since
+  // over-reporting a conflict costs a second look and under-reporting hides one.
+  const validToMs = tension.validTo === null ? null : Date.parse(tension.validTo);
+  const superseded = validToMs !== null && validToMs <= Date.now();
   return (
     <div className="rounded-md border p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
-        <p className={`text-sm ${withdrawn ? "line-through decoration-muted-foreground" : ""}`}>
+        {/* Struck through on either axis: retired is retired, and supersession
+            gets the treatment retraction already had. The badges carry the
+            distinction between the two verbs; the strike carries only "this is
+            no longer the current claim". */}
+        <p
+          className={`text-sm ${withdrawn || superseded ? "line-through decoration-muted-foreground" : ""}`}
+        >
           <span className="font-medium">{tension.subject}</span>{" "}
           <span className="text-muted-foreground">{tension.predicate}</span>{" "}
           <span className="font-medium">{tension.object}</span>
@@ -198,6 +218,19 @@ function TensionCard({ tension }: { tension: BrainFactTensionView }) {
           {withdrawn && (
             <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
               Withdrawn
+            </Badge>
+          )}
+          {/* The other temporal axis — why it is load-bearing, and why the
+              publish gate makes it the common case, is on
+              `BrainFactTensionVisible.validTo`. Local to this surface: its own
+              badge rather than a shared "Retired" one, because the two verbs
+              differ ("should never have been served" vs "was true, then
+              stopped being"), and an independent `&&` rather than an `else`,
+              because one rival can carry both. A label, not a verdict —
+              pinned by `review-honesty.test.tsx`. */}
+          {superseded && (
+            <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+              Superseded
             </Badge>
           )}
           <Badge variant={badge.variant} className={badge.className}>

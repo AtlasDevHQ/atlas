@@ -425,3 +425,68 @@ describe.each([
     expect(description).toMatch(/(as current|current[.,])/i);
   });
 });
+
+/**
+ * The tension-counterpart lifecycle labels (#4935), pinned for the reason the
+ * base commit exists: this block's `asOf` sentence claimed "Retracted facts
+ * never appear, at any time" until #4913 made it false, and NOTHING failed.
+ * Guidance prose is the one part of a wire contract with no compiler behind
+ * it, so the never-arms have to be assertions or the next prompt-tightening
+ * pass collapses them back to a blunt "surface both sides, never pick a
+ * winner" — which is precisely the instruction that turns an arbitrated
+ * conflict into a live one.
+ *
+ * ONE surface, deliberately, unlike the `describe.each` pins above:
+ * `SEARCH_BRAIN_TOOL_DESCRIPTION` — and through it `packages/mcp/src/tools.ts`
+ * — is #4933's, which owns the same omission and has to trade words against
+ * the 80–150 rubric to fit any of it. Note #4933's acceptance criteria PREDATE
+ * `validTo` and name only `invalidatedAt`: those two surfaces now lag on BOTH
+ * axes, so closing #4933 as literally written would leave the MCP model still
+ * unable to tell a superseded rival from a live one. Widening this block to
+ * `describe.each` over both strings is the assertion that actually closes it.
+ */
+describe("SEARCH_BRAIN_DESCRIPTION — a retired tension counterpart is labelled, not re-litigated (#4935)", () => {
+  it("names BOTH wire fields, so neither axis can be dropped in a rewrite", () => {
+    expect(SEARCH_BRAIN_DESCRIPTION).toContain("invalidatedAt");
+    expect(SEARCH_BRAIN_DESCRIPTION).toContain("validTo");
+  });
+
+  it("distinguishes the two verbs rather than merging them into one label", () => {
+    // Retracted means "should never have been served"; superseded means "was
+    // true, then stopped being". A prompt that says only "retired" loses the
+    // ability to tell a reader which happened.
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/RETRACTED/);
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/SUPERSEDED/);
+  });
+
+  it("tells the model a retired rival is SETTLED, which is the actionable half", () => {
+    // Naming the fields without saying what to do with them leaves the model
+    // on its "never pick winners" default and changes nothing.
+    //
+    // Anchored to the INSTRUCTION, not to the word: a bare /settled/i passes
+    // on the pre-#4935 string, which already says "never as settled" about
+    // withheld rivals. Deleting this whole clause would have left it green.
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/report (those|them) as settled/i);
+  });
+
+  it("qualifies `validTo` by the clock, so a future window is not called settled", () => {
+    // Non-null is not retired: `valid_to IS NULL OR valid_to > now()` is the
+    // database's own liveness test, so a future-dated stamp is a LIVE rival.
+    // Without this qualifier the prompt instructs the model to suppress an
+    // open conflict — the exact inverse of the bug #4935 fixes.
+    //
+    // Both arms are anchored past the words themselves. `/in the past/i` alone
+    // is matched by the pre-existing `asOf` bullet ("ISO-8601, in the past"),
+    // and `/future/` alone would accept a prompt that called a future window
+    // settled too — so the future arm has to carry its VERDICT.
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/ALREADY IN THE PAST/);
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/still in the future[^.]*\b(LIVE|contested)/);
+  });
+
+  it("keeps the never-arm that a labelling clause could plausibly displace", () => {
+    // Labelling lifecycle state is not ranking. The moment this ban goes, the
+    // model is free to read the labels as a verdict and pick a side on the
+    // pair that is still genuinely live.
+    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/never pick a winner/i);
+  });
+});

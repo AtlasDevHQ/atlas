@@ -63,11 +63,23 @@ interface Call {
  * subquery names `brain_edges`, and the tension-counterpart query names
  * `brain_facts` too — so a loose key silently answers the wrong statement and
  * the assertion passes vacuously on the withheld arm. Since #4913 the
- * counterpart statement carries the corroboration subquery as well, so the
- * fact page is keyed on `valid_to` — the one column only it selects.
+ * counterpart statement carries the corroboration subquery as well.
+ *
+ * The fact page is keyed on `predicate_cardinality` — the one column only it
+ * selects. It was `valid_to` until #4935 gave the counterpart statement that
+ * column too, at which point the counterpart query matched the fact page's key
+ * first and was answered with the fact page's rows. If a future slice adds
+ * `predicate_cardinality` to `COUNTERPART_COLUMNS`, this key has to move again:
+ * the invariant is "a column exactly one statement selects", not any particular
+ * column.
+ *
+ * `reader()` ENFORCES that rather than trusting this paragraph. #4935 got a
+ * loud failure only by luck of array order — `find()` is first-match-wins, so
+ * the same collision with the keys listed the other way round yields a
+ * VACUOUS PASS instead. The throw makes the next collision self-reporting.
  */
 const SQL = {
-  factPage: "f.valid_to",
+  factPage: "f.predicate_cardinality",
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",
@@ -81,8 +93,13 @@ function reader(
     calls,
     query: async (sql: string, params?: unknown[]) => {
       calls.push({ sql, params: params ?? [] });
-      const hit = responses.find((r) => sql.includes(r.match));
-      return { rows: hit?.rows ?? [] };
+      const hits = responses.filter((r) => sql.includes(r.match));
+      if (hits.length > 1) {
+        throw new Error(
+          `ambiguous SQL fixture key: ${hits.map((h) => JSON.stringify(h.match)).join(", ")} all match one statement — one of them must move to a column exactly one statement selects`,
+        );
+      }
+      return { rows: hits[0]?.rows ?? [] };
     },
   };
 }
@@ -1045,6 +1062,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
         "status",
         "subject",
         "validFrom",
+        "validTo",
         "visible",
       ]);
     }
@@ -1099,8 +1117,16 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
       expand: false,
     });
     const counterpart = db.calls.find((c) => c.sql.includes("= ANY(") && !c.sql.includes("in-tension-with"));
-    expect(counterpart?.sql).not.toContain("valid_to");
-    expect(counterpart?.sql).not.toContain("invalidated_at IS NULL");
+    // Both columns are SELECTED (that is #4935's label) — what must never
+    // appear is a PREDICATE on either axis. Matched as a SHAPE, not as the two
+    // spellings the fact query happens to use today: `IS NOT NULL`, `>=`, and
+    // `COALESCE(valid_to, ...)` would all slip past a literal check.
+    const temporalPredicate = /(valid_to|invalidated_at)\s*(IS\b|[<>=]|BETWEEN)|COALESCE\s*\(\s*f?\.?(valid_to|invalidated_at)/i;
+    expect(counterpart?.sql).not.toMatch(temporalPredicate);
+    // ...and both are still selected, which is the half a filter-only
+    // assertion would let a regression drop silently.
+    expect(counterpart?.sql).toContain("f.valid_to");
+    expect(counterpart?.sql).toContain("f.invalidated_at");
   });
 
   it("carries a retracted counterpart's tombstone, because retraction never writes status", async () => {
@@ -1124,6 +1150,100 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
     expect(tension.visible).toBe(true);
     if (!tension.visible) throw new Error("unreachable");
     expect(tension.invalidatedAt).toBe("2026-06-05T00:00:00.000Z");
+    // The other axis is untouched: retraction does not close the window.
+    expect(tension.validTo).toBeNull();
+  });
+
+  it("carries a superseded counterpart's closed window, because supersession never writes status either (#4935)", async () => {
+    // The publish-gate path, and the reason this matters more than the
+    // tombstone axis: `reconcile.ts` writes the `in-tension-with` edge at
+    // ingest, the gate later stamps `valid_to` on the claim it retires, and
+    // nothing deletes the edge. So the winner permanently carries the loser as
+    // a counterpart. Without `validTo` that counterpart reports `published` /
+    // `invalidatedAt: null` — a conflict a human already arbitrated, served to
+    // the agent as live and unresolved.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival" }] },
+      {
+        match: SQL.tensionCounterparts,
+        rows: [rivalRow("rival", { valid_to: new Date("2026-06-05T00:00:00Z") })],
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const fact = res.results[0] as BrainFactResult;
+    const tension = fact.tensions[0];
+    expect(tension.visible).toBe(true);
+    if (!tension.visible) throw new Error("unreachable");
+    expect(tension.validTo).toBe("2026-06-05T00:00:00.000Z");
+    // The negative that pins WHY the field is needed: every other signal on
+    // this counterpart still reads exactly like a live rival.
+    expect(tension.status).toBe("published");
+    expect(tension.invalidatedAt).toBeNull();
+  });
+
+  it("leaves a live counterpart's validTo null", async () => {
+    // The negative. A projection hard-coding a timestamp, or one carrying the
+    // OWNER's window onto its rivals, would satisfy the assertion above.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow({ valid_to: new Date("2026-06-09T00:00:00Z") })] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival" }] },
+      { match: SQL.tensionCounterparts, rows: [rivalRow("rival")] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+    });
+    const tension = (res.results[0] as BrainFactResult).tensions[0];
+    if (!tension.visible) throw new Error("unreachable");
+    expect(tension.validTo).toBeNull();
+  });
+
+  it("keeps the counterpart labels absolute under asOf — neither rewound nor filtered (#4935)", async () => {
+    // `loadTensionClusters` takes no `asOf`, which the agent prompt now states
+    // as a promise ("both labels are as of NOW"). Nothing pinned it: the shape
+    // assertion above runs on a non-`asOf` call, and the pg loop never reads
+    // `.tensions` on its point read. So a later "consistency" pass that
+    // threaded `asOf` into the counterpart query would go undetected — and it
+    // has two bad outcomes, both silent. Filtering makes a rival superseded
+    // before `asOf` VANISH, which is this module's cardinal sin: an omitted
+    // conflict reads as "nothing contradicts this". Rewinding makes the label
+    // `asOf`-relative while the prompt still tells the model it is not.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.tensionEdges, rows: [{ from_id: "fact-1", to_id: "rival" }] },
+      {
+        match: SQL.tensionCounterparts,
+        rows: [rivalRow("rival", { valid_to: new Date("2026-06-05T00:00:00Z") })],
+      },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 10,
+      expand: false,
+      asOf: "2026-06-01T00:00:00.000Z",
+    });
+    const counterpartSql = db.calls.find(
+      (c) => c.sql.includes("= ANY(") && !c.sql.includes("in-tension-with"),
+    )?.sql;
+    // No temporal predicate reached the counterpart query, so the rival is
+    // still listed even though it was live at the requested instant.
+    expect(counterpartSql).not.toMatch(/(valid_to|invalidated_at)\s*(IS\b|[<>=]|BETWEEN)/i);
+    const tension = (res.results[0] as BrainFactResult).tensions[0];
+    if (!tension.visible) throw new Error("the counterpart was dropped under asOf");
+    // The stamp itself, not a value relative to `asOf` — which is BEFORE it.
+    expect(tension.validTo).toBe("2026-06-05T00:00:00.000Z");
   });
 
   it("reports the fan-out cap instead of silently shortening the conflict list", async () => {

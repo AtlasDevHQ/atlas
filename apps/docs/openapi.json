@@ -24751,6 +24751,12 @@
                                         "null"
                                       ]
                                     },
+                                    "validTo": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
                                     "corroborationCount": {
                                       "type": "integer",
                                       "minimum": 0
@@ -24883,6 +24889,7 @@
                                     "validFrom",
                                     "ingestedAt",
                                     "invalidatedAt",
+                                    "validTo",
                                     "corroborationCount",
                                     "provenance"
                                   ]

@@ -137,15 +137,25 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
  * `candidates-pg.test.ts` §7 against the live schema; the audit row they emit
  * is pinned in `lib/brain/__tests__/correction-audit.test.ts` (#4934).
  */
+/**
+ * `satisfies` the real vocabulary (#4939). A type-only import is erased before
+ * `mock.module` runs, so this borrows the shape without un-stubbing anything —
+ * and a reason added to the machinery is now a COMPILE error here rather than
+ * a stub that quietly disagrees with the module it stands in for. Without it,
+ * `REFUSAL_REASONS.targetNotCurrent` would evaluate to `undefined` under the
+ * mock, `refusalStatus` would fall through to its `default:` throw, and this
+ * harness would report a 500 where production returns 409.
+ */
 const REFUSAL_REASONS = {
   notAuthorized: "NOT_AUTHORIZED",
   warehouseTarget: "WAREHOUSE_TARGET",
   targetNotPublished: "TARGET_NOT_PUBLISHED",
   validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
+  targetNotCurrent: "TARGET_NOT_CURRENT",
   replacementMissing: "REPLACEMENT_MISSING",
   replacementIdentical: "REPLACEMENT_IDENTICAL",
   replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
-} as const;
+} as const satisfies typeof import("@atlas/api/lib/brain/correction").CORRECTION_REFUSAL_REASONS;
 let correctCalls: Array<Record<string, unknown>> = [];
 /**
  * Typed as the real union rather than `Record<string, unknown>`, so a reshape of
@@ -796,6 +806,41 @@ describe("POST /{id}/retract", () => {
     expect(body.message).toContain("semantic layer");
     expect(auditRows).toHaveLength(0);
   });
+
+  it("refuses to ship a retract payload that violates its own wire schema", async () => {
+    // #4939 widened this response, so it now runs the same `checked()` posture
+    // `/correct` has always had: a machinery result the schema refuses is a
+    // 500 with a requestId, never a body the browser has to guess at. Without
+    // this, a `correctFact` that stopped returning `correctionEpisodeId` would
+    // reach the console as a partial object and the flagged-dependent notice
+    // would silently never render.
+    correctionOutcome = {
+      kind: "corrected",
+      result: {
+        verb: "retract",
+        factId: FACT_ID,
+        // The field the widening added, present but the wrong TYPE — the
+        // shape a drifted machinery actually produces.
+        correctionEpisodeId: 7,
+        invalidatedAt: "2026-07-01T00:00:00.000Z",
+        flaggedForReReview: [],
+        supersededBy: null,
+        validTo: null,
+      },
+    };
+    const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+    expect(res.status).toBe(500);
+    // Same assertion shape as `/correct`'s twin below: the refused payload
+    // must not leak through the error path either.
+    expect(await res.text()).not.toContain("7");
+
+    // …and the audit row IS written, deliberately. The retraction already
+    // committed; only the response serialization failed. A caller who sees a
+    // 500 and retracts again must still find the first one on the record —
+    // suppressing the audit row here would make a committed trust decision
+    // invisible precisely when the operator has the least information.
+    expect(auditRows).toHaveLength(1);
+  });
 });
 
 describe("POST /{id}/correct", () => {
@@ -936,15 +981,36 @@ describe("POST /{id}/correct", () => {
   });
 
   it("maps refusals onto their HTTP classes: 403 authority, 400 request shape, 409 target state", async () => {
-    const cases: Array<{ reason: CorrectionRefusalReason; status: number }> = [
-      { reason: REFUSAL_REASONS.notAuthorized, status: 403 },
-      { reason: REFUSAL_REASONS.replacementMissing, status: 400 },
-      { reason: REFUSAL_REASONS.replacementIdentical, status: 400 },
-      { reason: REFUSAL_REASONS.warehouseTarget, status: 409 },
-      { reason: REFUSAL_REASONS.targetNotPublished, status: 409 },
-      { reason: REFUSAL_REASONS.validityAlreadyClosed, status: 409 },
-      { reason: REFUSAL_REASONS.replacementUnpublishable, status: 409 },
-    ];
+    // A `Record` over the vocabulary, not a hand-written list (#4939). The
+    // `default:` arm's `never` check in `refusalStatus` catches an UNHANDLED
+    // reason; nothing caught a MIS-GROUPED one, and nothing caught a new
+    // reason simply never reaching this table — which is what happened when
+    // `targetNotCurrent` was added. Typed this way, a new reason fails to
+    // compile until it is assigned an expected status here, so the decision
+    // is forced rather than remembered.
+    const expectedStatus: Record<keyof typeof REFUSAL_REASONS, number> = {
+      notAuthorized: 403,
+      replacementMissing: 400,
+      replacementIdentical: 400,
+      warehouseTarget: 409,
+      targetNotPublished: 409,
+      validityAlreadyClosed: 409,
+      targetNotCurrent: 409,
+      replacementUnpublishable: 409,
+    };
+    // `reason` stays typed as `CorrectionRefusalReason` (#4934) rather than
+    // widening to `string` through `Object.entries` — the stub's values are
+    // `satisfies`-pinned to the real vocabulary, so this annotation is what
+    // carries that guarantee into the loop below.
+    const cases: Array<{ reason: CorrectionRefusalReason; status: number }> = Object.entries(
+      expectedStatus,
+    ).map(([key, status]) => ({
+      reason: REFUSAL_REASONS[key as keyof typeof REFUSAL_REASONS],
+      status,
+    }));
+    // Non-vacuity: the loop must actually cover the whole vocabulary.
+    expect(cases).toHaveLength(Object.keys(REFUSAL_REASONS).length);
+
     for (const { reason, status } of cases) {
       auditRows.length = 0;
       correctionOutcome = { kind: "refused", reason, message: "why, and what to do instead" };

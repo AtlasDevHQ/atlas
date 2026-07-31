@@ -343,7 +343,7 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
     case CORRECTION_REFUSAL_REASONS.warehouseTarget:
     case CORRECTION_REFUSAL_REASONS.targetNotPublished:
     case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:
-    case CORRECTION_REFUSAL_REASONS.targetSuperseded:
+    case CORRECTION_REFUSAL_REASONS.targetNotCurrent:
     case CORRECTION_REFUSAL_REASONS.replacementUnpublishable:
       return 409;
     default: {
@@ -539,12 +539,11 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
           id: result.factId,
           invalidatedAt: result.invalidatedAt,
           // The verb's own two disclosures, echoed to the caller rather than
-          // only to the audit row above (#4939). Ids, not a count: this route
-          // is reached by a reviewer who is already entitled to the queue
-          // these name, and the flagged rows are the ones they now have to go
-          // look at. The AGENT path deliberately reports a count instead —
-          // `DEPENDENT_FACTS_SQL` is un-ACL-gated by design, so ids there
-          // would hand an LLM opaque handles for rows it cannot read.
+          // only to the audit row above (#4939). Ids here, a count on the
+          // agent path — the asymmetry and its precise justification are on
+          // `BrainFactRetractResponse`; in short, the ids are already in this
+          // actor's own audit row and they are the human who has to act on the
+          // flag, neither of which is true of an LLM.
           correctionEpisodeId: result.correctionEpisodeId,
           flaggedForReReview: [...result.flaggedForReReview],
         }),

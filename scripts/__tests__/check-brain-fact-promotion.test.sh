@@ -369,6 +369,32 @@ run_fixture "Drizzle .insert().onConflictDoUpdate({set:{validTo}}) fails" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { validTo: new Date() } });'
 
+# ── pre_widening_visible_to (#4836): the grant arm's second column ────────
+#
+# It rides the SAME alternation as `visible_to` — `(pre_widening_)?visible_to`
+# — and had no fixture of its own until #4939, which is a gap rather than a
+# style choice: `\b` sits at a `_`/`v` boundary that is NOT a word boundary, so
+# `\bvisible_to\b` does not match inside `pre_widening_visible_to`. The
+# optional-prefix group is load-bearing, and nothing held it. Corrupting this
+# column is silent in both directions (#4836's disclosure returns in full, or
+# attribution is withheld corpus-wide), and the header of migration 0183
+# explicitly forecloses the backfill script that would be the likeliest rogue
+# writer — so the arm has to be pinned, not assumed.
+run_fixture "UPDATE … SET pre_widening_visible_to fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET pre_widening_visible_to = ARRAY['"'"'org'"'"'] WHERE workspace_id = $1`);'
+
+run_fixture "Drizzle .update().set({preWideningVisibleTo}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ preWideningVisibleTo: tokens }).where(eq(brainFacts.id, id));'
+
+# Same asymmetry as the grant it shadows: an INSERT naming it is a restore, not
+# a widening decision — the region import writes the column verbatim.
+run_fixture "INSERT naming pre_widening_visible_to passes (restore, not a widening)" pass \
+  "packages/api/src/lib/brain/import-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, visible_to, pre_widening_visible_to, provenance, source_episode_id)
+  VALUES ($1,$2,$3,$4, ARRAY(SELECT jsonb_array_elements_text($5::jsonb)), ARRAY(SELECT jsonb_array_elements_text($6::jsonb)), $7::jsonb, $8::uuid)`);'
+
 echo ""
 
 echo ""

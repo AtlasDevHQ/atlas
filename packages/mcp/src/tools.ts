@@ -394,9 +394,10 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         // HARD-REFUSES an `asOf` read whose `include` omits facts
         // (`lib/brain/search.ts`), and the AI SDK twin has always said so —
         // so the MCP model was the only caller told to combine two arguments
-        // it would be refused for combining. Both spellings are pinned by
-        // `search-brain-tool.test.ts`, which reads this one out of the SERVED
-        // JSON Schema.
+        // it would be refused for combining. The rule is pinned in two suites,
+        // one per spelling: `search-brain-tool.test.ts` for the api argument,
+        // and this package's `__tests__/tools.test.ts`, which reads THIS one
+        // back out of the SERVED JSON Schema via `listTools()`.
         asOf: z
           .string()
           .optional()

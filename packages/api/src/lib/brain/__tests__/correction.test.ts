@@ -352,7 +352,21 @@ class FakeCorrectionStore {
     throw new Error(`FakeCorrectionStore: unrecognized statement:\n${sql}`);
   }
 
+  /**
+   * Columns to OMIT from the target projection — the drift `readTargetRow`
+   * exists to catch. `pg` yields `undefined` for a column a SELECT never
+   * named, so dropping the key here is exactly what a drifted
+   * `correctionTargetSql` produces.
+   */
+  dropTargetColumns: string[] = [];
+
   private targetRow(fact: StoredFact): Record<string, unknown> {
+    const row = this.fullTargetRow(fact);
+    for (const column of this.dropTargetColumns) delete row[column];
+    return row;
+  }
+
+  private fullTargetRow(fact: StoredFact): Record<string, unknown> {
     return {
       id: fact.id,
       subject: fact.subject,
@@ -363,6 +377,13 @@ class FakeCorrectionStore {
       provenance: fact.provenance,
       visible_to: fact.visibleTo,
       valid_to: fact.validTo,
+      // Postgres computes this in `correctionTargetSql`
+      // (`valid_to IS NOT NULL AND valid_to <= now()`), so the fake has to as
+      // well — against the SAME injected clock the verb is run with, which is
+      // the point of moving the decision into the statement. `candidates-pg.
+      // test.ts` §7 executes the real SQL, so the two spellings are checked
+      // against each other rather than only against this file.
+      window_closed: fact.validTo !== null && new Date(fact.validTo).getTime() <= NOW.getTime(),
       source_episode_id: fact.sourceEpisodeId,
     };
   }
@@ -1057,7 +1078,7 @@ describe("re-authority and pin", () => {
       const outcome = await run(store, { factId: "settled", verb });
       expect(outcome).toMatchObject({
         kind: "refused",
-        reason: CORRECTION_REFUSAL_REASONS.targetSuperseded,
+        reason: CORRECTION_REFUSAL_REASONS.targetNotCurrent,
       });
       if (outcome.kind !== "refused") throw new Error("narrowing");
       // The remedy has to be actionable, not just a "no": the caller reached
@@ -1098,7 +1119,7 @@ describe("re-authority and pin", () => {
 
       expect(await run(store, { factId: "edge", verb })).toMatchObject({
         kind: "refused",
-        reason: CORRECTION_REFUSAL_REASONS.targetSuperseded,
+        reason: CORRECTION_REFUSAL_REASONS.targetNotCurrent,
       });
       expect(store.episodes).toHaveLength(0);
     });
@@ -1124,10 +1145,33 @@ describe("re-authority and pin", () => {
     pinning.seedFact({ id: "f", status: "published", validTo: "2027-01-01T00:00:00.000Z" });
     expect(await run(pinning, { factId: "f", verb: "pin" })).toMatchObject({ kind: "corrected" });
 
-    expect(CORRECTION_REFUSAL_REASONS.targetSuperseded).not.toBe(
+    expect(CORRECTION_REFUSAL_REASONS.targetNotCurrent).not.toBe(
       CORRECTION_REFUSAL_REASONS.validityAlreadyClosed,
     );
   });
+
+  // Both temporal gates fail OPEN on a value this module cannot read — an
+  // absent column reaches them as "no end date" and silently re-admits the
+  // write each exists to refuse, with no log and no refusal. `readTargetRow`
+  // therefore treats either column's absence as drift and THROWS (→ a 500 with
+  // a requestId), which is the posture its own header states for every other
+  // column. Asserted per column so a narrowing that covers only one is a
+  // failure, not a coincidence.
+  for (const [column, fragment] of [
+    ["window_closed", "window_closed"],
+    ["valid_to", "valid_to absent"],
+  ] as const) {
+    test(`a target projection missing \`${column}\` THROWS rather than admitting the vouch`, async () => {
+      const store = new FakeCorrectionStore();
+      store.dropTargetColumns = [column];
+      store.seedFact({ id: "settled", status: "published", validTo: "2026-01-01T00:00:00.000Z" });
+
+      // Not a refusal and not a not-found: this is query drift, and the two
+      // outcomes a caller can act on must stay reserved for real answers.
+      await expect(run(store, { factId: "settled", verb: "pin" })).rejects.toThrow(fragment);
+      expect(store.episodes).toHaveLength(0);
+    });
+  }
 
   // Retract has no such gate and must not grow one by sympathy: withdrawing a
   // superseded claim is exactly how a GDPR erasure reaches settled history,

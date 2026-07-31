@@ -33,8 +33,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "fs";
-import { join } from "path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const REPO = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
 const GUARD = join(REPO, "scripts", "check-brain-fact-promotion.sh");
@@ -65,13 +65,21 @@ function allowlistEntries(): string[] {
 }
 
 /**
- * The column names the UPDATE arm gates, both spellings.
+ * The column names the UPDATE arm gates.
  *
  * The script writes them as regex alternations with an OPTIONAL prefix group
- * (`(pre_widening_)?visible_to`), so expanding that group is what turns two
- * alternations into the three real column names. Without the expansion
+ * (`(pre_widening_)?visible_to`), so expanding that group is what turns the
+ * three alternations into the four real column names. Without the expansion
  * `pre_widening_visible_to` — the column whose corruption is silent in both
  * directions — would never be required of the doc.
+ *
+ * ⚠️ `UPDATE_GATED_COLUMNS` is the guard's DECLARED vocabulary, not the thing
+ * that runs: `statement_writes_gated_column` matches with inline `grep -qiE`
+ * patterns instead. Reading the declaration is right for a DOC guard — the doc
+ * documents the vocabulary — but it means the declaration could drift from the
+ * enforcement and this test would keep checking the stale list. So the
+ * declaration is separately cross-checked against the enforcing patterns
+ * below.
  */
 function gatedColumns(): string[] {
   const names = new Set<string>();
@@ -101,11 +109,21 @@ function gatedColumns(): string[] {
  * The doc section that documents this gate — `## The fact class …` up to the
  * next `## `.
  *
- * The count assertion is scoped to it deliberately. "Carve-out" is a word this
- * doc uses for TWO different things: a table that bypasses content mode at all
- * (`/use-demo`, semantic-improve) and a second writer on the brain-fact
- * promotion guard's allowlist. Only the second kind is what the allowlist
- * counts, and a doc-wide count would fire on a sentence about the first.
+ * EVERY assertion is scoped to it, and the scoping is the guard rather than a
+ * tidiness choice. Two independent reasons, and the first is a false pass this
+ * test actually had:
+ *
+ * 1. A doc-wide file-name check is satisfied by any mention ANYWHERE. This doc
+ *    is long and names source paths in unrelated sections (semantic-improve
+ *    names `lib/semantic/expert/apply.ts`), so allowlisting a path the doc
+ *    happens to mention elsewhere passed while the register itself said
+ *    nothing about it — and the count could then be repaired by editing one
+ *    number word, with no bullet and no rationale. That is the exact defect
+ *    #4939 was filed for, wearing a green guard.
+ * 2. "Carve-out" is a word this doc uses for TWO different things: a table
+ *    that bypasses content mode at all (`/use-demo`, semantic-improve) and a
+ *    second writer on the promotion guard's allowlist. Only the second is what
+ *    the allowlist counts.
  */
 function factClassSection(): string {
   const start = /^## The fact class\b.*$/m.exec(doc);
@@ -157,26 +175,72 @@ describe("the brain-fact promotion carve-out register (#4939)", () => {
       "no ALLOWLIST entry is under `packages/api/` — the entry-shape assumption behind this guard changed",
     ).toBeGreaterThan(0);
 
+    const section = factClassSection();
     for (const entry of canonical) {
       // The path relative to `packages/api/src/`, which is how the doc refers
       // to a source file. Matched as a SUFFIX so the doc may write
       // `lib/brain/correction.ts` or the full path and satisfy this either way.
       const relative = entry.replace(/^packages\/api\/src\//, "");
       expect(
-        doc.includes(relative),
-        `${DOC} never names \`${relative}\`, which is on check-brain-fact-promotion.sh's ALLOWLIST. ` +
-          "`.claude/rules/content-mode.md` points a reader at this doc as the register a carve-out is recorded in, " +
-          "so an unlisted writer is one nobody following the rule can discover.",
+        section.includes(relative),
+        `${DOC}'s fact-class section never names \`${relative}\`, which is on ` +
+          "check-brain-fact-promotion.sh's ALLOWLIST. `.claude/rules/content-mode.md` points a reader at that " +
+          "section as the register a carve-out is recorded in, so an unlisted writer is one nobody following " +
+          "the rule can discover. A mention elsewhere in this doc does not count — it is not where the reader " +
+          "was sent.",
       ).toBe(true);
     }
   });
 
   it("names every gated column, so a doc reader learns which writes are refused", () => {
+    const section = factClassSection();
+    for (const column of gatedColumns()) {
+      // Backtick-delimited, in the gate's own section. A bare `includes` over
+      // the whole doc was two-thirds vacuous: `status` appears dozens of times
+      // in a content-mode doc as an ordinary English word, and `visible_to` is
+      // satisfied by any mention of `pre_widening_visible_to`. Requiring the
+      // column as CODE in the section that documents the gate is the claim
+      // this test means to make.
+      expect(
+        section.includes(`\`${column}\``),
+        `${DOC}'s fact-class section never names \`${column}\` as a gated column (in backticks). The guard ` +
+          "refuses writes to it outside the allowlist; a doc that lists only some of the gated columns " +
+          "understates the gate.",
+      ).toBe(true);
+    }
+  });
+
+  // The declared vocabulary this file reads is not the code that runs — the
+  // gate matches with inline patterns inside `statement_writes_gated_column`.
+  // A declaration that drifted from the enforcement would make BOTH this
+  // guard's column assertion and the doc it checks describe a gate that no
+  // longer exists, quietly. Discovered while mutation-testing the arm above:
+  // deleting `(pre_widening_)?` from the DECLARATION changed nothing at all.
+  it("declares the same gated columns it actually enforces", () => {
+    const body = guardSource.slice(guardSource.indexOf("statement_writes_gated_column()"));
+    expect(
+      body.length,
+      "check-brain-fact-promotion.sh no longer defines statement_writes_gated_column() — re-point this cross-check",
+    ).toBeGreaterThan(0);
+
+    // The arms spell a column the same way the declaration does — `\b`-bounded,
+    // with the same optional prefix group — so the enforced set is read with
+    // the same expansion the declared set gets, and the two are compared as
+    // SETS rather than by substring.
+    const enforced = new Set<string>();
+    for (const [, prefix, name] of body.matchAll(
+      /\\b(?:\(([a-z_]+)\)\?)?([a-z][a-z_]*)\\b/g,
+    ) as Iterable<RegExpMatchArray>) {
+      enforced.add(name!);
+      if (prefix) enforced.add(prefix + name!);
+    }
+
     for (const column of gatedColumns()) {
       expect(
-        doc.includes(column),
-        `${DOC} never names the gated column \`${column}\`. The guard refuses writes to it outside the allowlist; ` +
-          "a doc that lists only some of the gated columns understates the gate.",
+        enforced.has(column),
+        `check-brain-fact-promotion.sh declares \`${column}\` in UPDATE_GATED_COLUMNS but no arm of ` +
+          "statement_writes_gated_column() matches it. The declaration is documentation; the arms are the gate. " +
+          "A column that is declared and not enforced is a gate everyone believes in and nothing applies.",
       ).toBe(true);
     }
   });
@@ -207,5 +271,20 @@ describe("the brain-fact promotion carve-out register (#4939)", () => {
           "carve-out(s) beyond the promotion adapter itself. Update the doc, or drop the carve-out.",
       ).toBe(expected);
     }
+
+    // …and the number has to be backed by an ENUMERATION, so the doc cannot be
+    // repaired by editing one word. The bullet list under the counted claim is
+    // where each carve-out states which writer it trusts and why; a count that
+    // outran its list would leave the new writer named nowhere a reader looks.
+    const enumerated = factClassSection()
+      .slice(claims[0]!.index)
+      .split(/\n\s*\n/)
+      .flatMap((block) => [...block.matchAll(/^- \*\*/gm)]).length;
+    expect(
+      enumerated,
+      `${DOC}'s fact-class section counts ${expected} carve-out(s) but lists ${enumerated}. Bumping the ` +
+        "number without adding the bullet is how this register drifted in the first place — every carve-out " +
+        "has to state which file it trusts and why.",
+    ).toBe(expected);
   });
 });

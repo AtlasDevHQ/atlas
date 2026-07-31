@@ -74,15 +74,20 @@ let correctCalls: Array<Record<string, unknown>> = [];
 let correctionResult: () => unknown = () => ({ kind: "not-found" });
 void mock.module("@atlas/api/lib/brain/correction", () => ({
   CORRECTION_VERBS: ["retract", "supersede", "re-authority", "pin"],
+  // `satisfies` the real vocabulary (#4939) — a type-only import, erased
+  // before `mock.module` runs, so it borrows the shape without un-stubbing
+  // anything. A reason added to the machinery is a compile error here rather
+  // than a stub that silently disagrees with the module it stands in for.
   CORRECTION_REFUSAL_REASONS: {
     notAuthorized: "NOT_AUTHORIZED",
     warehouseTarget: "WAREHOUSE_TARGET",
     targetNotPublished: "TARGET_NOT_PUBLISHED",
     validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
+    targetNotCurrent: "TARGET_NOT_CURRENT",
     replacementMissing: "REPLACEMENT_MISSING",
     replacementIdentical: "REPLACEMENT_IDENTICAL",
     replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
-  },
+  } satisfies typeof import("@atlas/api/lib/brain/correction").CORRECTION_REFUSAL_REASONS,
   CorrectionRefusedError: class CorrectionRefusedError extends Error {},
   CORRECTION_EPISODE_INSERT_SQL: "INSERT",
   RETRACT_FACT_SQL: "UPDATE",
@@ -303,12 +308,16 @@ describe("the documented disclosure split", () => {
     );
 
     const countKey = /(\w+):\s*outcome\.result\.flaggedForReReview\.length/.exec(toolSource)?.[1];
-    expect(
-      countKey,
-      "correct-fact.ts no longer derives a count field from `flaggedForReReview.length` — either the agent path went back to shipping ids (which #4939 forbids) or this parse needs re-pointing",
-    ).toBeTruthy();
+    if (!countKey) {
+      // `throw`, not `expect(...).toBeTruthy()` + `!`: TypeScript cannot
+      // narrow through an assertion, and the non-null assertion it would
+      // otherwise need is exactly the thing CLAUDE.md asks to minimize.
+      throw new Error(
+        "correct-fact.ts no longer derives a count field from `flaggedForReReview.length` — either the agent path went back to shipping ids (which #4939 forbids) or this parse needs re-pointing",
+      );
+    }
 
-    for (const field of ["flaggedForReReview", countKey!]) {
+    for (const field of ["flaggedForReReview", countKey]) {
       // Word-bounded, and that is load-bearing rather than tidiness: the count
       // field's name CONTAINS the id field's, so a plain `includes` reports
       // the ids as documented off a guide that only ever mentions the count.
@@ -317,6 +326,30 @@ describe("the documented disclosure split", () => {
         `brain-corrections.mdx never names \`${field}\` (as a whole word). The admin routes return ids and the agent tool returns a count; a guide that documents only one of them tells half its readers the wrong thing about the surface they use.`,
       ).toBe(true);
     }
+
+    // Presence is not enough: a guide that SWAPS the two ("the tool returns
+    // `flaggedForReReview`, the admin routes return the count") names both and
+    // misinforms every reader — the same half-the-audience failure the issue
+    // describes, inverted. So each field has to sit in a clause with its own
+    // surface.
+    //
+    // Split on `;` as well as `.`, and that is load-bearing rather than
+    // thorough: the guide states the split in ONE sentence with a semicolon
+    // between its halves, so a sentence-level check finds both surfaces in the
+    // same chunk and passes on the swapped text too. Verified by mutation —
+    // the `.`-only version of this assertion did not fail against the swap.
+    const sentences = guide.split(/(?<=[.;])\s+/);
+    const attributed = (field: string, surface: RegExp): boolean =>
+      sentences.some((s) => new RegExp(`\\b${field}\\b`).test(s) && surface.test(s));
+
+    expect(
+      attributed("flaggedForReReview", /\/retract|\/correct|admin route/i),
+      "brain-corrections.mdx names `flaggedForReReview` but never in the same sentence as the admin surface that returns it — a reader cannot tell which surface gives ids and which gives a count",
+    ).toBe(true);
+    expect(
+      attributed(countKey, /correct_fact|tool\b/i),
+      `brain-corrections.mdx names \`${countKey}\` but never in the same sentence as the agent tool that returns it — see above`,
+    ).toBe(true);
   });
 });
 

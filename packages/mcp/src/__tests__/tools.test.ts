@@ -1127,9 +1127,12 @@ describe("MCP tools", () => {
       // string: it already says "superseded versions INCLUDED". A deliberate
       // second copy of the api suite's `statesIncludePrecondition`, on the
       // same terms as the `unqualifiedRetractionSentences` copy above — the
-      // rule is owned there.
+      // rule is OWNED there and a tightening there has to be mirrored here by
+      // hand. Kept byte-identical to it on purpose, bullet arm included: that
+      // arm is inert against this prose string, but a copy that diverged
+      // "harmlessly" is how the two stop being the same rule.
       const statesPrecondition = (description ?? "")
-        .split(/(?<=\.)\s+/)
+        .split(/(?<=\.)\s+|\n(?=[-*] )/)
         .some((s) => /\binclude\b/.test(s) && /\b(requires?|needs?|must|only with)\b/i.test(s));
       expect(
         statesPrecondition,

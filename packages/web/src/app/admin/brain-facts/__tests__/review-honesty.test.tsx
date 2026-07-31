@@ -426,11 +426,14 @@ describe("rejecting a claim", () => {
     const notice = Array.from(document.querySelectorAll('[role="alert"]')).find((el) =>
       /other claims/.test(el.textContent ?? ""),
     );
-    expect(notice, "the flagged-dependent notice did not render as an alert").toBeTruthy();
+    // `throw`, not `expect(...).toBeTruthy()` + `!` — TypeScript cannot narrow
+    // through an assertion, and the non-null assertions it would otherwise
+    // need are what CLAUDE.md asks to minimize.
+    if (!notice) throw new Error("the flagged-dependent notice did not render as an alert");
     // Named, so the reviewer knows which rejection caused it, and honest about
     // the cascade that did NOT happen.
-    expect(notice!.textContent).toContain("Acme uses Postgres");
-    expect(notice!.textContent).toMatch(/nothing was withdrawn automatically/i);
+    expect(notice.textContent).toContain("Acme uses Postgres");
+    expect(notice.textContent).toMatch(/nothing was withdrawn automatically/i);
   });
 
   test("stays silent when a retraction flagged nothing — silence is the baseline", async () => {
@@ -457,6 +460,77 @@ describe("rejecting a claim", () => {
 
     await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
     expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+  });
+
+  // The arm that actually discriminates PARSE from CAST. A missing field
+  // degrades the same way under both (`?.length ?? 0` is also silent), so the
+  // test above does not defend the parse. A field of the WRONG TYPE does: a
+  // cast reads `.length` off a string and renders a count nobody flagged.
+  test("renders no count when `flaggedForReReview` arrives with the wrong type", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      // A string has a `.length`. A hand-cast would render "7 other claims"
+      // for a retraction that flagged nothing.
+      flaggedForReReview: "dep-1,2",
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+  });
+
+  // The notice names the claim that caused it, so it must not outlive that
+  // rejection: a stale banner over a different row is a misattribution the
+  // count alone cannot correct.
+  test("does not leave a previous rejection's notice standing over the next one", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1", "dep-2"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+    await waitFor(() => expect(document.body.textContent).toContain("2 other claims"));
+
+    // A second rejection that flagged nothing must clear it, not leave the
+    // first one's count hanging over the queue.
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-2",
+      flaggedForReReview: [],
+    };
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+  });
+
+  test("the notice can be dismissed", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+    await waitFor(() => expect(document.body.textContent).toContain("1 other claim"));
+
+    clickButton(view, /Dismiss/i);
+    await waitFor(() => expect(document.body.textContent).not.toMatch(/other claims?\b/i));
   });
 });
 

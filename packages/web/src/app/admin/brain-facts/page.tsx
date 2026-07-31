@@ -170,6 +170,11 @@ export default function BrainFactsPage() {
 
   async function rejectCandidate(candidate: BrainFactCandidate) {
     setRejectError(null);
+    // Cleared before, not after: the notice names the claim that caused it, so
+    // a stale one standing over a DIFFERENT rejection invites exactly the
+    // misattribution it exists to prevent. Nothing is lost — it is only ever
+    // rewritten by a rejection that has something of its own to report.
+    setFlaggedNotice(null);
     inProgress.start(candidate.id);
 
     const result = await retractMutation.mutate({
@@ -182,12 +187,27 @@ export default function BrainFactsPage() {
       if (detail?.id === candidate.id) setDetail(null);
       setRejectTarget(null);
 
-      // Parsed, not read off `result.data`: `useAdminMutation` is untyped at
-      // the wire and a hand-cast would let a drifted body render "0 other
-      // claims" — which reads as a guarantee that none were flagged. A parse
-      // failure leaves the notice absent, which claims nothing.
-      const parsed = BrainFactRetractResponseSchema.safeParse(result.data);
-      if (parsed.success && parsed.data.flaggedForReReview.length > 0) {
+      // Parsed, not cast. `useAdminMutation` is untyped at the wire, and a
+      // hand-cast reads `.length` off whatever arrived — a `flaggedForReReview`
+      // that came back as a string would render a fabricated count, and one
+      // that came back as a number would render nothing while claiming the
+      // shape was fine. `web` and `api` are separate Railway services, so a
+      // rolling deploy makes wire skew a real window rather than a hypothetical.
+      //
+      // `.pick()`, so the notice depends only on the field it renders: an API
+      // that skewed on `correctionEpisodeId` alone would otherwise suppress a
+      // disclosure whose own input arrived intact.
+      const parsed = BrainFactRetractResponseSchema.pick({ flaggedForReReview: true }).safeParse(
+        result.data,
+      );
+      if (!parsed.success) {
+        // Never silent (CLAUDE.md). `console.warn`, not `debug` — the default
+        // log level filters `debug`, which would hide exactly this bug class.
+        console.warn(
+          "brain-facts: the retract response did not carry a readable `flaggedForReReview` — the flagged-dependent disclosure was dropped for this rejection",
+          parsed.error.issues,
+        );
+      } else if (parsed.data.flaggedForReReview.length > 0) {
         setFlaggedNotice({
           claim: `${candidate.subject} ${candidate.predicate} ${candidate.object}`,
           count: parsed.data.flaggedForReReview.length,
@@ -378,8 +398,8 @@ export default function BrainFactsPage() {
                       {flaggedNotice.count} other claim{flaggedNotice.count === 1 ? "" : "s"}
                     </strong>{" "}
                     derived from it for re-review. Nothing was withdrawn automatically — a
-                    conclusion can outlive one of its premises. This notice is the only place
-                    the flag is reported, so act on it now.
+                    conclusion can outlive one of its premises. No queue lists these; the
+                    durable record is this rejection&apos;s audit-log entry.
                   </span>
                   <Button
                     variant="ghost"

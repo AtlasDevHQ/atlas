@@ -717,6 +717,70 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
+  // #4939. The vouch refusal is decided by `correctionTargetSql`'s
+  // `window_closed` expression, evaluated by POSTGRES against the same `now()`
+  // `brainFactCurrentClause` uses. The unit suite's fake computes that
+  // expression itself, so it pins the fake's arithmetic; only this arm proves
+  // the real SQL parses, projects a boolean, and lands on the same side of the
+  // boundary the reads do. Both directions, because a predicate that always
+  // fired would pass a one-sided test.
+  it(
+    "pin is refused on a fact Postgres reports as no longer current, and admitted on a future window",
+    async () => {
+      const ep = await seedEpisode({ sourceId: "vouch-window-1" });
+      const closed = await seedFact({ subject: "ClosedWindow", episodeId: ep, status: "published" });
+      const scheduled = await seedFact({
+        subject: "ScheduledEnd",
+        episodeId: ep,
+        status: "published",
+      });
+      // Set through raw SQL rather than a seed argument: `valid_to` is a gated
+      // column, and this file's inserts deliberately never name it.
+      await pool.query(`UPDATE brain_facts SET valid_to = now() - interval '1 day' WHERE id = $1`, [
+        closed,
+      ]);
+      await pool.query(`UPDATE brain_facts SET valid_to = now() + interval '30 days' WHERE id = $1`, [
+        scheduled,
+      ]);
+
+      const refused = await correctFact(
+        { ctx: reviewer(), factId: closed, verb: "pin" },
+        { withTransaction: poolTx },
+      );
+      expect(refused).toMatchObject({
+        kind: "refused",
+        reason: CORRECTION_REFUSAL_REASONS.targetNotCurrent,
+      });
+      // Refused BEFORE the episode, against the live schema too.
+      const marker = await pool.query<{ provenance: Record<string, unknown> }>(
+        `SELECT provenance FROM brain_facts WHERE id = $1`,
+        [closed],
+      );
+      expect(marker.rows[0]!.provenance.pinned).toBeUndefined();
+      const edges = await pool.query(
+        `SELECT 1 FROM brain_edges WHERE edge_type = 'provenance' AND from_fact_id = $1`,
+        [closed],
+      );
+      expect(edges.rows).toHaveLength(0);
+
+      // The other side of the same boundary: a scheduled end is a live claim,
+      // and `brainFactCurrentClause` still serves it — so the vouch lands.
+      const admitted = await correctFact(
+        { ctx: reviewer(), factId: scheduled, verb: "pin" },
+        { withTransaction: poolTx },
+      );
+      expect(admitted.kind).toBe("corrected");
+      const vouched = await pool.query<{ provenance: Record<string, unknown>; valid_to: Date }>(
+        `SELECT provenance, valid_to FROM brain_facts WHERE id = $1`,
+        [scheduled],
+      );
+      expect(vouched.rows[0]!.provenance.pinned).toMatchObject({ actor: "reviewer" });
+      // Vouching is not an arbitration: the scheduled end is untouched.
+      expect(vouched.rows[0]!.valid_to.getTime()).toBeGreaterThan(Date.now());
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
   it(
     "a refusal AFTER the episode insert rolls the whole correction back",
     async () => {

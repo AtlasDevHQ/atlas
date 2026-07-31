@@ -151,6 +151,10 @@ describeIfPg("correction audit row (real Postgres)", () => {
     } catch (err) {
       await client.query("ROLLBACK").catch((rbErr: unknown) => {
         rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+        // Logged, not just captured: without this a failed ROLLBACK is
+        // invisible and the fixture's real problem is a destroyed connection
+        // with no stated reason.
+        console.warn(`correction-audit-pg: ROLLBACK failed — ${rollbackErr.message}`);
       });
       throw err;
     } finally {

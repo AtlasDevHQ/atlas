@@ -253,6 +253,20 @@ function errOf(call: LogCall | undefined): Error {
   return err;
 }
 
+/**
+ * Poll until `predicate` holds, or throw. Generous cap because the bound is
+ * only there to turn "never happens" into a failure rather than a hang — it is
+ * not the thing being measured, so it costs nothing to make it far larger than
+ * any plausible scheduling delay.
+ */
+async function waitFor(predicate: () => boolean, capMs = 2_000): Promise<void> {
+  const deadline = Date.now() + capMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`condition did not hold within ${capMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /** `JSON.stringify` that cannot itself throw on a circular ref or a BigInt. */
 function describe_(value: unknown): string {
   try {
@@ -483,10 +497,12 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       { ctx: admin, factId: FACT, verb: "pin", requestId: "req-late" },
       { ...fakeTransaction(), auditWriteTimeoutMs: 10 },
     );
-    // No intermediate count assertion: under an event-loop stall the late
-    // rejection can land before it, which would fail the test for a scheduling
-    // reason rather than a behavioural one. The message content is what matters.
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    // Polled, not slept. A fixed sleep couples the assertion to the scheduler:
+    // under a 4-way-sharded CI runner or a WSL2 stall the second line can land
+    // after the sleep expires, and the test then fails for a timing reason
+    // rather than a behavioural one. There is also no intermediate count
+    // assertion, for the mirror-image reason — the rejection can land EARLY.
+    await waitFor(() => logCalls.filter((c) => c.level === "error").length === 2);
 
     const errors = logCalls.filter((c) => c.level === "error");
     expect(errors).toHaveLength(2);
@@ -593,6 +609,12 @@ describe("the write is awaited, bounded, and never swallowed", () => {
 
       expect(committed, `deadline ${label} dropped the row`).toHaveLength(1);
       expect(logCalls.filter((c) => c.level === "error")).toHaveLength(0);
+      // Falling back SILENTLY would be the CLAUDE.md silent-fallback shape and,
+      // practically, a mis-specified seam that turns into a five-second mystery.
+      // The rejected value has to appear, or the line cannot say what was wrong.
+      const warns = logCalls.filter((c) => c.level === "warn" && c.message.includes("out of range"));
+      expect(warns, `deadline ${label} was substituted silently`).toHaveLength(1);
+      expect(warns[0]?.payload).toMatchObject({ requested: ms, using: 5_000 });
     }
   });
 
@@ -632,6 +654,31 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       { ctx: admin, factId: FACT, verb: "pin", requestId: "req-ok" },
       fakeTransaction(),
     );
+    expect(logCalls.filter((c) => c.level === "warn")).toHaveLength(0);
+  });
+
+  test("the LOCAL OPERATOR is exempt — `actor unknown` is the correct row there", async () => {
+    // `unauthenticated-local` is a deployment that has DECLARED it has no ids to
+    // record; `correctFact`'s authority gate lets it through for exactly that
+    // reason. Warning on it would fire on every correction in a
+    // correctly-configured self-hosted deployment, and a guard that cries wolf
+    // on the happy path is a guard someone deletes.
+    requestContext = undefined;
+    const localOperator = {
+      origin: "unauthenticated-local",
+      workspaceId: WS,
+      userId: null,
+      role: null,
+      audienceIds: [],
+    } as const;
+
+    const outcome = await correctFact(
+      { ctx: localOperator, factId: FACT, verb: "pin", requestId: "req-local" },
+      fakeTransaction(),
+    );
+
+    expect(outcome.kind).toBe("corrected");
+    expect(committed).toHaveLength(1);
     expect(logCalls.filter((c) => c.level === "warn")).toHaveLength(0);
   });
 
@@ -853,8 +900,10 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
 
     expect(
       offenders,
-      "a second file reaches for the correction audit vocabulary — that is either the #4934 double-log " +
-        "or a second metadata shape for one decision. The row belongs to lib/brain/correction.ts",
+      "a second file reaches for the correction audit vocabulary. If it WRITES a row, that is the #4934 " +
+        "double-log or a second metadata shape for one decision — the row belongs to " +
+        "lib/brain/correction.ts. If it only READS the vocabulary (an audit-log filter, a console label " +
+        "map), add it to this test's exemption list beside lib/audit/actions.ts. Do not delete the sweep",
     ).toEqual([]);
   });
 

@@ -724,7 +724,16 @@ const MAX_TIMER_MS = 2_147_483_647;
  * {@link MAX_TIMER_MS} would all pass through and mean "time out immediately".
  */
 function resolveAuditDeadline(ms: number | undefined): number {
-  if (ms === undefined || !Number.isFinite(ms) || ms <= 0 || ms > MAX_TIMER_MS) {
+  if (ms === undefined) return AUDIT_WRITE_TIMEOUT_MS;
+  if (!Number.isFinite(ms) || ms <= 0 || ms > MAX_TIMER_MS) {
+    // Named, not silently substituted. A mis-specified seam that quietly became
+    // 5s is exactly the kind of silent fallback that turns a wrong test into a
+    // five-second mystery.
+    log.warn(
+      { requested: ms, using: AUDIT_WRITE_TIMEOUT_MS, max: MAX_TIMER_MS },
+      "brain correction: auditWriteTimeoutMs is out of range (must be finite, positive, and within the " +
+        "32-bit timer ceiling) — falling back to the default audit deadline",
+    );
     return AUDIT_WRITE_TIMEOUT_MS;
   }
   return ms;
@@ -758,12 +767,14 @@ function resolveAuditDeadline(ms: number | undefined): number {
  * pino line exists either and the correction episode in `brain_episodes` is the
  * sole surviving record.
  *
- * NEVER THROWS, and the whole body is inside the `try` rather than just the
- * `await`, so a synchronous throw anywhere in the entry construction is
- * contained instead of landing on an already-committed correction and reaching
- * a caller whose error copy says "nothing was changed — retry". (The residual:
- * the `catch`'s own `log.error` is outside that guarantee. A logger broken
- * badly enough to throw is not a failure mode this module can absorb.)
+ * NEVER THROWS: the entry construction is inside the `try` rather than just the
+ * `await`, so a synchronous throw there is contained instead of landing on an
+ * already-committed correction and reaching a caller whose error copy says
+ * "nothing was changed — retry". Two residuals, both deliberate: the `lost`
+ * payload is assembled before the `try` because the `catch` reads it (it only
+ * copies fields that are non-optional on `BrainFactCorrectionResponse`), and the
+ * `catch`'s own `log.error` is outside the guarantee — a logger broken badly
+ * enough to throw is not a failure mode this module can absorb.
  */
 async function emitCorrectionAudit(args: {
   readonly ctx: BrainPrincipalContext;
@@ -836,7 +847,12 @@ async function emitCorrectionAudit(args: {
     // as a missing context does. Both entry points today supply a user, so this
     // never fires; a future one that does not would produce a row that exists
     // and lies, which is a worse artifact than the missing row #4934 fixed.
-    if (getRequestContext()?.user?.id === undefined) {
+    // The `unauthenticated-local` arm is exempt: that deployment has DECLARED
+    // it has no ids to record (see the authority gate at the top of
+    // `correctFact`), so `actor 'unknown'` is the correct row there, not a
+    // finding. Warning on it would fire on every correction in a
+    // correctly-configured deployment, which is how a guard gets deleted.
+    if (ctx.origin !== "unauthenticated-local" && getRequestContext()?.user?.id === undefined) {
       log.warn(
         { ...lost },
         "brain correction: no actor in the request context at audit time — the admin_action_log row will " +

@@ -27,7 +27,7 @@ import { Effect, Duration } from "effect";
 import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, getSummaryModel, isGatewayAnthropicModel, type ProviderType } from "./providers";
-import { defaultRegistry, ToolRegistry } from "./tools/registry";
+import { nonDashboardRegistry, ToolRegistry } from "./tools/registry";
 import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow } from "./openapi/workspace-datasource";
 import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
@@ -667,7 +667,14 @@ When a question spans more than one source in the catalog above — several SQL 
 - **Never silently fall back to an unrelated source.** If the source that actually holds the answer is empty or errors, say so plainly and state the gap — do not answer from a different source and imply it is equivalent.`;
 
 export interface BuildSystemParamOptions {
-  /** Tool registry the prompt's tool-guidance sections are built from. Defaults to `defaultRegistry`. */
+  /**
+   * Tool registry the prompt's tool-guidance sections are built from.
+   * Defaults to `nonDashboardRegistry` — the least-privileged core set (#4936).
+   * `runAgent` always passes its resolved `activeRegistry`, so the default only
+   * serves callers that build a prompt outside a turn; it fails closed so such
+   * a caller can't advertise `createDashboard`/`correct_fact` guidance to a
+   * surface whose tool set doesn't carry them.
+   */
   readonly registry?: ToolRegistry;
   /** Startup/context warnings surfaced to the agent under a `## Warnings` section. */
   readonly warnings?: readonly string[];
@@ -785,7 +792,7 @@ export function buildSystemParam(
   options: BuildSystemParamOptions = {},
 ): string | SystemModelMessage {
   const {
-    registry = defaultRegistry,
+    registry = nonDashboardRegistry,
     warnings,
     persona,
     briefing,
@@ -1072,16 +1079,29 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  * Run the Atlas agent loop.
  *
  * @param messages - The conversation history from the chat UI.
- * @param tools - Optional custom {@link ToolRegistry}. Defaults to
- *   {@link defaultRegistry} (explore + executeSQL). The loop terminates
- *   when the step limit is reached (configurable via `ATLAS_AGENT_MAX_STEPS`,
- *   default 25) or the model stops issuing tool calls.
+ * @param tools - The surface's {@link ToolRegistry}. **Every production call
+ *   site passes it explicitly** — `agent-runagent-call-sites.test.ts` is the
+ *   tripwire that keeps that true across `packages/**` and `ee/**`.
+ *
+ *   It stays optional for tests and for callers that legitimately want the
+ *   read-safe core set, but the default is now
+ *   {@link nonDashboardRegistry}, not the dashboards-owning
+ *   `defaultRegistry` (#4936). The old default was write-carrying: any caller
+ *   that omitted `tools` silently received `createDashboard` AND `correct_fact`
+ *   — re-opening, from the outside, the surface gate `registry.ts` applies from
+ *   the inside (#4915). Defaulting to the least-privileged registry makes
+ *   forgetting fail CLOSED. A surface that owns `/dashboards/[id]` must now
+ *   opt in by passing `defaultRegistry`; a headless one should pass
+ *   `buildHeadlessRegistry()`.
+ *
+ *   The loop terminates when the step limit is reached (configurable via
+ *   `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing tool calls.
  * @param conversationId - Optional conversation ID for token usage tracking.
  *   When provided, the recorded token usage row links to this conversation.
  */
 export async function runAgent({
   messages,
-  tools: toolRegistry = defaultRegistry,
+  tools: toolRegistry = nonDashboardRegistry,
   conversationId,
   warnings,
   persona,

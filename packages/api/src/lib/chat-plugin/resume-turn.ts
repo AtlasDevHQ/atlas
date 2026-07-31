@@ -147,8 +147,21 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         // Re-enter the loop from the checkpoint. `messages: []` is inert — the
         // rewritten transcript (carrying the "approved, re-run now" result) is
         // the model input. The tools re-resolve connection/whitelist/RLS live.
+        //
+        // #4936 — the registry is named explicitly, and it is the SAME one the
+        // parked turn ran under: the original chat-platform turn went through
+        // `executeAgentQuery` → `buildHeadlessRegistry()`. Omitting `tools`
+        // here used to hand the resume the workspace registry instead, so the
+        // tool surface silently WIDENED across the approval boundary — adding
+        // `correct_fact` to an autonomous Slack turn with no confirmation UI.
+        // (Execute time still refused: the actor is `botActorUser`, role
+        // `member` with no member row, so the owner/admin gate said no. The
+        // posture is that a brain-mutating tool must not be on this surface at
+        // all, however well execute-time gating held.)
+        const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
         const agentResult = await runAgent({
           messages: [],
+          tools: await buildHeadlessRegistry(),
           conversationId,
           resume: {
             runId: handle.runId,

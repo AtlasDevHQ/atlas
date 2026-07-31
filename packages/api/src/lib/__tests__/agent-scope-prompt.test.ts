@@ -254,6 +254,7 @@ function makeSpyingModel(toolCallArgs: Record<string, unknown>): InstanceType<ty
 const { runAgent } = await import("@atlas/api/lib/agent");
 const { buildSystemParam, buildRestDatasourceScopeNote } = await import("@atlas/api/lib/agent");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
+const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
 
 function userMessages(content: string): UIMessage[] {
   return [
@@ -559,6 +560,15 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
 });
 
 describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
+  // #4936 — these turns name `defaultRegistry` explicitly. The assertions below
+  // are about what the FOCUS STRIP removes, so they need a registry that has
+  // `createDashboard` to begin with: `runAgent`'s default is now the
+  // least-privileged `nonDashboardRegistry`, under which every
+  // `not.toContain("createDashboard")` would pass without the strip running at
+  // all. `defaultRegistry` is what the web chat surface passes in production,
+  // so this also keeps the test on the path the strip actually serves.
+  const focusTurnRegistry = defaultRegistry;
+
   // Text-only model: emits no tool call, so the agent just builds the prompt +
   // tool set (captured via doStream opts) and finishes.
   function makeCapturingTextModel(): InstanceType<typeof MockLanguageModelV3> {
@@ -607,7 +617,7 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
     restOrThrowResult = [restDatasourceStub("stripe")];
     const result = await withRequestContext(
       { requestId: "focus-1", user: focusUser, restFocusDatasourceId: "stripe" },
-      () => runAgent({ messages: userMessages("ask stripe only") }),
+      () => runAgent({ messages: userMessages("ask stripe only"), tools: focusTurnRegistry }),
     );
     await result.steps; // consume the stream so doStream captures tools + prompt
     // Resolved via the THROWING resolver, focus only (group + exclude inert).
@@ -635,7 +645,7 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
         restExcludedDatasourceIds: ["other"],
         connectionGroupId: "prod",
       },
-      () => runAgent({ messages: userMessages("ask stripe only") }),
+      () => runAgent({ messages: userMessages("ask stripe only"), tools: focusTurnRegistry }),
     );
     // No `excluded` / `activeGroupId` key — focus short-circuits both.
     expect(capturedOrThrowArgs!.deps).toEqual({ focus: "stripe" });
@@ -652,7 +662,7 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
         connectionGroupId: "prod",
         restExcludedDatasourceIds: ["x"],
       },
-      () => runAgent({ messages: userMessages("hello") }),
+      () => runAgent({ messages: userMessages("hello"), tools: focusTurnRegistry }),
     );
     await result.steps; // consume the stream so doStream captures tools + prompt
     // The focus resolve (empty), THEN the default-scope never-rejects fallback.
@@ -673,7 +683,7 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
     const contextWarnings: ChatContextWarning[] = [];
     const result = await withRequestContext(
       { requestId: "focus-4", user: focusUser, restFocusDatasourceId: "stripe" },
-      () => runAgent({ messages: userMessages("ask stripe only"), contextWarnings }),
+      () => runAgent({ messages: userMessages("ask stripe only"), contextWarnings, tools: focusTurnRegistry }),
     );
     await result.steps; // consume the stream so doStream captures tools + prompt
     expect(lastToolNames).not.toContain("executeSQL");

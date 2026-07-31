@@ -305,6 +305,16 @@ function registerCoreTools(
   // surface with a human in the loop), and today those classes coincide
   // exactly with where a correction verb belongs — if they ever diverge,
   // split the signal rather than re-globalizing this tool.
+  //
+  // #4936 — this gate only decides what each REGISTRY contains; the surface a
+  // given turn actually gets is decided by which registry its `runAgent` call
+  // site passes. That used to be a silent decision (`runAgent` defaulted to
+  // the write-carrying `defaultRegistry`, so an omitted `tools` re-opened this
+  // gate from the outside). The default now fails CLOSED to
+  // `nonDashboardRegistry`, and `agent-runagent-call-sites.test.ts` requires
+  // every production call site — `packages/**` and `ee/**` — to pass `tools`
+  // explicitly, so a new headless surface can neither inherit nor omit its way
+  // into a brain-mutating tool set.
   if (dashboardUrlResolver) {
     registry.register({
       name: "correct_fact",
@@ -526,6 +536,45 @@ export async function buildRegistry(options?: {
 
   registry.freeze();
   return { registry, warnings };
+}
+
+/**
+ * The registry for a HEADLESS agent surface — one that owns no dashboards
+ * route and has no human in the loop (#4936).
+ *
+ * This is `executeAgentQuery`'s registry construction, lifted to a named seam
+ * so the surfaces that re-enter the SAME turn get the SAME tool set. Chat
+ * resume (`lib/chat-plugin/resume-turn.ts`) was the case that forced it: the
+ * original Slack turn ran through `executeAgentQuery`, but the approval-resume
+ * of that turn called `runAgent` with no `tools` at all — so the tool surface
+ * silently widened across the resume boundary. Rebuilding it here keeps resume
+ * faithful (an approved action tool is still executable) without either caller
+ * re-deriving the policy.
+ *
+ * `dashboardUrlResolver: null` is the whole policy: it drops `createDashboard`
+ * (a `/dashboards/[id]` handoff is unreachable from Slack or a scheduled
+ * digest, #4566) and `correct_fact` (a brain-mutating write has no place on an
+ * autonomous surface with no confirmation UI, #4915). Action tools stay opt-in
+ * via `ATLAS_ACTIONS_ENABLED`.
+ *
+ * A build failure falls back to `nonDashboardRegistry`, NOT the dashboards-
+ * owning `defaultRegistry`, so both omissions hold on the error path too.
+ */
+export async function buildHeadlessRegistry(): Promise<ToolRegistry> {
+  try {
+    const { registry } = await buildRegistry({
+      includeActions: process.env.ATLAS_ACTIONS_ENABLED === "true",
+      dashboardUrlResolver: null,
+    });
+    return registry;
+  } catch (err) {
+    const { createLogger } = await import("@atlas/api/lib/logger");
+    createLogger("registry").error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to build headless tool registry — falling back to the non-dashboard core registry",
+    );
+    return nonDashboardRegistry;
+  }
 }
 
 export { defaultRegistry, nonDashboardRegistry };

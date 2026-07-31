@@ -267,31 +267,21 @@ export async function executeAgentQuery(
     // Build the tool registry for this surface. `executeAgentQuery` serves the
     // non-web programmatic surfaces — the SDK query route, chat-platform
     // adapters (Slack), the MCP query tool, and the scheduler. None of them own
-    // a dashboards route, so we pass `dashboardUrlResolver: null` to omit
-    // `createDashboard` entirely (#4566, PRD #4553 L2): a handoff link to
-    // `/dashboards/[id]` is unreachable from Slack or a scheduled digest, so the
-    // agent must never be offered the tool here. Action tools stay opt-in via
-    // ATLAS_ACTIONS_ENABLED. On a build failure we fall back to
-    // `nonDashboardRegistry` (NOT the dashboards-owning `defaultRegistry`) so the
-    // createDashboard omission holds on the error path too — and we always pass
-    // `tools` so `runAgent` never defaults to `defaultRegistry`.
-    const { buildRegistry, nonDashboardRegistry } = await import(
-      "@atlas/api/lib/tools/registry"
-    );
-    let toolRegistry = nonDashboardRegistry;
-    const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
-    try {
-      const result = await buildRegistry({
-        includeActions,
-        dashboardUrlResolver: null,
-      });
-      toolRegistry = result.registry;
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Failed to build tool registry — falling back to the non-dashboard core registry",
-      );
-    }
+    // a dashboards route and none has a human in the loop, so this is the
+    // canonical HEADLESS surface: `buildHeadlessRegistry` omits `createDashboard`
+    // (#4566, PRD #4553 L2 — a `/dashboards/[id]` handoff is unreachable from
+    // Slack or a scheduled digest) and `correct_fact` (#4915), keeps action
+    // tools opt-in via ATLAS_ACTIONS_ENABLED, and falls back to
+    // `nonDashboardRegistry` (NOT the dashboards-owning `defaultRegistry`) on a
+    // build failure so both omissions hold on the error path too.
+    //
+    // #4936 — that construction moved into `registry.ts` so the chat-plugin
+    // approval RESUME of a turn started here rebuilds the identical set instead
+    // of re-deriving it (or, as it did, omitting `tools` and inheriting the
+    // workspace registry). We still pass `tools` explicitly: `runAgent`'s
+    // default now fails closed, but the surface's choice belongs in the surface.
+    const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
+    const toolRegistry = await buildHeadlessRegistry();
 
     const result = await runAgent({
       messages,

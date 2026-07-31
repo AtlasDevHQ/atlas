@@ -40,8 +40,14 @@ void mock.module("@atlas/api/lib/durable-resume", () => ({
 void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockBillingGate,
 }));
+// `getRequestContext` is not used by `resume-turn` itself — it is pulled in by
+// the tool-registry module graph that `buildHeadlessRegistry()` reaches (#4936).
+// A partial mock of a module the graph imports fails the whole import with
+// "Export named 'getRequestContext' not found", which `resume-turn`'s catch
+// would then report as an opaque `agent_run_error`.
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  getRequestContext: () => undefined,
   withRequestContext: async (ctx: Record<string, unknown>, fn: () => Promise<unknown>) => {
     capturedContext = ctx;
     return fn();
@@ -87,6 +93,25 @@ describe("resumeChatTurn (#3750)", () => {
     expect(runArgs.resume?.runId).toBe("run_1");
     // Lease released.
     expect(mockFinishResume).toHaveBeenCalledTimes(1);
+  });
+
+  it("#4936 — resumes on the headless tool set, not the workspace one", async () => {
+    // The parked turn ran through `executeAgentQuery` → `buildHeadlessRegistry()`.
+    // Resume used to omit `tools` entirely and inherit `runAgent`'s default, so
+    // the surface WIDENED across the approval boundary — picking up the
+    // brain-mutating `correct_fact` on an autonomous Slack turn with no
+    // confirmation UI. The registry must now be named here, and be the same one.
+    await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+
+    const runArgs = mockRunAgent.mock.calls[0]![0] as { tools?: { getAll(): Record<string, unknown> } };
+    expect(runArgs.tools, "resume must pass `tools` explicitly").toBeDefined();
+
+    const names = Object.keys(runArgs.tools!.getAll());
+    expect(names).not.toContain("correct_fact");
+    expect(names).not.toContain("createDashboard");
+    // Not vacuous — the read surface the parked turn had is intact.
+    expect(names).toContain("executeSQL");
+    expect(names).toContain("explore");
   });
 
   it("blocks (does not resume) when billing re-resolution refuses", async () => {

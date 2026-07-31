@@ -1642,14 +1642,34 @@ describe("POST /api/v1/chat", () => {
     expect(response.status).toBe(422);
   });
 
+  // #4936 — these three used to read `call.tools === undefined` as the proxy for
+  // "no action tools", which only worked because the chat route omitted `tools`
+  // and let `runAgent` default. The route now names its registry explicitly (it
+  // is the one surface that OWNS `/dashboards/[id]`, so it opts in to the
+  // workspace set), and `undefined` is no longer reachable. Assert on the tool
+  // NAMES instead — that is what the tests were always trying to say, and it
+  // survives any future change to how the route resolves its registry.
+  function toolNamesFromRunAgentCall(): string[] {
+    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+    const call = calls[0]![0] as { tools?: { getAll(): Record<string, unknown> } };
+    expect(call.tools, "the chat route must pass `tools` explicitly (#4936)").toBeDefined();
+    return Object.keys(call.tools!.getAll());
+  }
+
+  /**
+   * An operator-env ACTION tool (`lib/tools/actions/`) — registered only when
+   * `buildRegistry({ includeActions: true })` runs. Not to be confused with the
+   * integration tools `sendEmail` / `createLinearIssue`, which are core (always
+   * registered, gated at execute time on the workspace install).
+   */
+  const ACTION_TOOL = "sendEmailReport";
+
   it("passes action tools to runAgent when ATLAS_ACTIONS_ENABLED=true", async () => {
     process.env.ATLAS_ACTIONS_ENABLED = "true";
     const response = await app.fetch(makeRequest());
     expect(response.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
-    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
-    const call = calls[0]![0] as { tools?: unknown };
-    expect(call.tools).toBeDefined();
+    expect(toolNamesFromRunAgentCall()).toContain(ACTION_TOOL);
   });
 
   it("does not pass action tools when ATLAS_ACTIONS_ENABLED is unset", async () => {
@@ -1657,9 +1677,10 @@ describe("POST /api/v1/chat", () => {
     const response = await app.fetch(makeRequest());
     expect(response.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
-    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
-    const call = calls[0]![0] as { tools?: unknown };
-    expect(call.tools).toBeUndefined();
+    const names = toolNamesFromRunAgentCall();
+    expect(names).not.toContain(ACTION_TOOL);
+    // Not vacuous — the core surface is intact, only the actions are absent.
+    expect(names).toContain("executeSQL");
   });
 
   it("does not pass action tools when ATLAS_ACTIONS_ENABLED=false", async () => {
@@ -1667,9 +1688,9 @@ describe("POST /api/v1/chat", () => {
     const response = await app.fetch(makeRequest());
     expect(response.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
-    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
-    const call = calls[0]![0] as { tools?: unknown };
-    expect(call.tools).toBeUndefined();
+    const names = toolNamesFromRunAgentCall();
+    expect(names).not.toContain(ACTION_TOOL);
+    expect(names).toContain("executeSQL");
   });
 
   it("passes warnings to runAgent when buildRegistry throws", async () => {

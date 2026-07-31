@@ -57,6 +57,13 @@ void mock.module("@atlas/api/lib/tools/explore", () => ({
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
   invalidateExploreBackend: mock(() => {}),
+  // #4936 — the chat route now resolves its tool registry explicitly instead of
+  // inheriting `runAgent`'s default, so `lib/tools/registry` is loaded on the
+  // ordinary path (this file mocks `lib/agent`, which used to be the only thing
+  // pulling it in). A partial mock of a module that registry's graph imports
+  // fails the whole import, which surfaces here as a JSON error instead of the
+  // SSE stream under test — so these mocks must cover the real export surface.
+  invalidateOrgExploreBackends: mock(() => {}),
   markNsjailFailed: mock(() => {}),
   markSidecarFailed: mock(() => {}),
 }));
@@ -69,6 +76,7 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
+  getSettingOverride: () => undefined,
   getSettingLive: async () => undefined,
   setSetting: async () => {},
   deleteSetting: async () => {},

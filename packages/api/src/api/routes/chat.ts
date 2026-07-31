@@ -1567,7 +1567,20 @@ chat.openapi(chatRoute, async (c) => {
             );
             toolRegistry = buildBoundDashboardRegistry(boundDashboardForAgent.toolContext);
           }
-  
+
+          // #4936 — the web chat surface OWNS `/dashboards/[id]` and has a human
+          // in the loop, so it is one of the two callers that opts IN to the
+          // dashboards-owning `defaultRegistry` (`createDashboard`,
+          // `correct_fact`). `runAgent` now defaults to the least-privileged
+          // `nonDashboardRegistry`, so the fallback is resolved HERE rather than
+          // inherited: the workspace tool set stays attached to the surface that
+          // can actually reach it, instead of leaking to every headless caller
+          // that happened to omit `tools`. `toolRegistry` is still undefined on
+          // the ordinary path (actions off, no plugin tools, not bound), which is
+          // exactly why this cannot be left implicit.
+          const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+          const resolvedToolRegistry = toolRegistry ?? defaultRegistry;
+
           // #1988 B5 — out-array the agent's preflight loaders push into
           // when the org semantic layer or learned-patterns lookup fail.
           // We forward each as an SSE `data-context-warning` frame below
@@ -1681,7 +1694,7 @@ chat.openapi(chatRoute, async (c) => {
             () =>
               runAgent({
                 messages,
-                ...(toolRegistry && { tools: toolRegistry }),
+                tools: resolvedToolRegistry,
                 conversationId,
                 ...(warnings.length > 0 && { warnings }),
                 contextWarnings,
@@ -2164,6 +2177,19 @@ chat.openapi(chatResumeRoute, async (c) => {
             log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to merge plugin tools on resume — continuing without");
           }
 
+          // #4936 — same opt-in as the chat route above: this is the WEB resume,
+          // on the dashboards-owning workspace surface, so it names
+          // `defaultRegistry` explicitly rather than inheriting a default that
+          // `runAgent` now points at the least-privileged registry. (The
+          // chat-PLATFORM resume — `lib/chat-plugin/resume-turn.ts` — is the
+          // headless twin and resolves `buildHeadlessRegistry()` instead; the
+          // two resume paths must not share one implicit default, which is how
+          // the widening went unnoticed.)
+          const { defaultRegistry: workspaceRegistry } = await import(
+            "@atlas/api/lib/tools/registry"
+          );
+          const resolvedToolRegistry = toolRegistry ?? workspaceRegistry;
+
           // Re-enter the agent loop from the checkpoint. `messages: []` is inert
           // — the `resume.transcript` is the model input; the loop continues from
           // the last completed step. The resumed step accounting counts against
@@ -2182,7 +2208,7 @@ chat.openapi(chatResumeRoute, async (c) => {
 
           const agentResult = await runAgent({
             messages: [],
-            ...(toolRegistry && { tools: toolRegistry }),
+            tools: resolvedToolRegistry,
             conversationId,
             // #4302 — a resumed turn rebuilds its system prompt live (the
             // checkpoint stores the message transcript, not the system

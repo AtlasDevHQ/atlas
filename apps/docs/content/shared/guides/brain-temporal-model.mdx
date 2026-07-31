@@ -1,0 +1,129 @@
+---
+title: Company Brain — Temporal Model
+description: How the company brain records when a claim held, the difference between superseding and retracting a fact, reading the brain as of a past instant, and the advisory staleness signal.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The company brain stores **reviewed facts** — claims a human approved at the review gate — alongside the raw **episodes** they were drawn from. A claim that was right on Monday can be quietly wrong by Friday, so every fact carries time on two axes and nothing in the brain is ever deleted.
+
+This page covers what those axes mean, the difference between a claim being *replaced* and a claim being *withdrawn*, how to read the brain as it stood at a past instant, and the advisory age signal attached to every fact.
+
+<Callout type="info" title="Where facts sit in the trust order">
+  Reviewed facts are authoritative *for their class* and yield to the warehouse in any overlap. They never govern the query surface: the [semantic layer](/semantic-layer) remains the sole authority over what can be queried, what a metric means, and what the agent must clarify first. Every retrieval result carries its tier label, so an answer grounded in a reviewed fact is always distinguishable from one grounded in a warehouse query.
+</Callout>
+
+---
+
+## Two axes of time
+
+Each fact records both when the claim was true in the world and when Atlas learned of it.
+
+| Field | Axis | Meaning |
+|-------|------|---------|
+| `validFrom` | Valid time | When the claim began holding in the world. `null` means the start was never recorded — not that it started late. |
+| `validTo` | Valid time | When the claim stopped holding. Stamped **only** by a human promotion or correction; there is no autonomous supersession. `null` means the claim is still current. |
+| `ingestedAt` | Transaction time | When Atlas recorded the claim. Never null. |
+| `invalidatedAt` | Tombstone | When the claim was **withdrawn**. `null` for every live fact. |
+
+The two valid-time fields describe the *world*; `ingestedAt` describes *Atlas's knowledge of it*. Keeping them apart is what lets the brain answer "what did we believe on Monday" without pretending Monday's belief was correct.
+
+## Supersession is not retraction
+
+These are different verbs with different consequences, and conflating them is the single most common misreading of the model.
+
+| | **Supersede** | **Retract** |
+|---|---|---|
+| What it means | The claim *was* true and has since been replaced | The claim should never have been served |
+| Field stamped | `validTo` | `invalidatedAt` |
+| `status` | Unchanged — the fact stays `published` | Unchanged — retraction is a tombstone, not a demotion |
+| Served as current belief | No | No |
+| Visible to an `asOf` read inside its old window | **Yes** | **No** — hidden under any `asOf` |
+| Edge written | `supersedes`, new claim → old claim | None |
+
+A superseded fact is still `published` and still not retracted; its validity window has simply closed. That is why a current-belief read has to filter on the supersession axis explicitly — a read that only checks review status and the tombstone would serve back the exact belief a human replaced.
+
+**Nothing is ever deleted.** Retraction stamps a tombstone; the row stays stored. This is deliberate — "what we believed on Monday" only answers if Monday's rows are still there.
+
+<Callout type="warn" title="Retraction hides history; supersession preserves it">
+  A retracted fact disappears from every fact-serving read, `asOf` included, because hiding history is what the verb is *for*. If you retract a claim you meant to supersede, you lose the ability to explain what the brain believed before the change.
+</Callout>
+
+## Reading the brain as of a past instant
+
+`searchBrain` takes an optional `asOf` instant. Without it, you get current belief. With it, the fact store switches to a point read: a fact answers when `validFrom <= asOf < validTo`, so a claim a later promotion superseded answers again inside its own window.
+
+Ask the agent directly — "what did we believe about the Q3 revenue definition on 2026-06-01?" — or pass `asOf` on the tool call:
+
+```json
+{
+  "query": "Q3 revenue definition",
+  "include": ["fact"],
+  "asOf": "2026-06-01T00:00:00Z"
+}
+```
+
+`asOf` accepts a date (`2026-06-01`) or a timestamp with an explicit zone (`2026-06-01T09:00:00Z`). A time without a zone is rejected — it would be read in the server's timezone.
+
+A response that carries `asOf` back is **historical**. The agent is instructed to frame every fact in it as "as of *time*", never as current belief.
+
+### Four boundary rules
+
+These are deliberate, and each one exists because the obvious alternative is wrong:
+
+- **Tombstones stay hidden under any `asOf`.** Retraction is the only verb that hides history, and it hides it unconditionally.
+- **The grant is frozen; membership is live.** Each fact version carries the immutable access grant it was published with, and the point read evaluates exactly that grant — so Monday's belief is gated by Monday's grant, with no special-casing. The *reader's* memberships, by contrast, always resolve as of now: someone who has since left an audience does not keep historical access through an `asOf` read. Membership is the live half, and it is the revocation path.
+- **A `null` `validFrom` is served.** An unrecorded start is not a late start. The current-belief read serves such a fact, so the point read admits it too — otherwise `asOf ≈ now()` would disagree with the default read.
+- **A bad `asOf` is refused, never ignored.** A malformed or future `asOf` returns an error rather than silently falling back to current belief, because a caller who asked for history and quietly got today's claims would attribute today's beliefs to Monday.
+
+<Callout type="info" title="What `asOf` does not rewind">
+  `asOf` applies to the fact store only. Episodes are append-only evidence of what was *said* and have no validity window; knowledge documents sit outside the truth ordering entirely. An `asOf` read that excludes facts is refused outright rather than echoing `asOf` over current-only content.
+
+  Read-time metadata — the staleness signal, the corroboration count, and the conflict cluster — is always evaluated as of **now**, even on a historical page. Those describe the claim as it stands today (how stale it has since become, what has since come to contradict it), not the belief being reported.
+</Callout>
+
+---
+
+## Staleness is advisory
+
+Every fact carries a read-time `decay` signal. It is derived on read from timestamps the query already holds — there is no stored score, no expiry, and no background job.
+
+| Level | Age of the newest observation |
+|-------|-------------------------------|
+| `fresh` | Under 30 days |
+| `aging` | 30 to 119 days |
+| `stale` | 120 days or more |
+| `unknown` | No temporal anchor decoded — the honest arm, rather than fabricating an age |
+
+The signal is anchored on the **newest observation** of the claim: the latest event time across the episodes its provenance edges point at, falling back to `validFrom`, then `ingestedAt`. Re-observing a claim adds a provenance edge, so **every corroboration moves the anchor forward** — that is how corroboration slows decay.
+
+**Decay only surfaces; it never demotes.** A published fact never expires, never loses its trust tier, and is never changed by any background job. What the signal is allowed to do:
+
+- The review queue **floats** stale claims for a human's attention. Staleness affects ordering only — a stale fact is surfaced, never filtered out.
+- The agent is told to **present a fact's age** ("as of March…") rather than assert a stale claim as current — and explicitly never to discard or overrule a fact because of its age. A `stale` fact is still the reviewed record.
+
+Acting on the signal is a human decision, taken through the [correction verbs](/guides/brain-corrections) or the review gate.
+
+<Callout type="info" title="Age precision and provenance entitlement">
+  The newest-observation timestamp is episode data. A reader whose provenance attribution is withheld for a fact receives the coarse `level` only — `ageDays` and `lastObservedAt` come back `null`, because a day-precision age would restate the withheld timestamp as arithmetic. The level itself is still computed from the real anchor.
+</Callout>
+
+---
+
+## Enabling the brain
+
+<WhenSaaS>
+Nothing to set up. The company brain is available to every workspace on Atlas Cloud, and the review queue lives in the admin console under **Intelligence → Brain Facts**.
+</WhenSaaS>
+
+<WhenSelfHosted>
+The brain stores its facts and episodes in the internal database, so a deployment needs `DATABASE_URL`. Access is resolved per reader against the workspace's `member` role, so reviewers reach the queue in the admin console under **Intelligence → Brain Facts**.
+
+Fact **extraction** is off by default and enabled with `ATLAS_BRAIN_EXTRACTION_ENABLED=true`. This is a platform-scoped setting applied at restart. Episodes are stored either way, so turning extraction on later extracts the accumulated backlog rather than losing it.
+</WhenSelfHosted>
+
+## Related
+
+- [Company Brain — Corrections](/guides/brain-corrections) — the four verbs a human uses to fix a fact
+- [Company Brain — Conflicts](/guides/brain-conflicts) — what Atlas does when two claims disagree
+- <AudienceLink saas="/guides/knowledge-base">Knowledge Base</AudienceLink> — the document store `searchBrain` reads alongside the brain

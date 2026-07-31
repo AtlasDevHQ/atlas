@@ -15,7 +15,9 @@
  *   - **retract** — the ONLY tombstone path, and the verb a GDPR erasure
  *     ROUTES THROUGH (the ADR's epithet; actual content deletion of the row
  *     and its episodes is a separate operation this verb does not perform —
- *     the claim stays readable to as-of reads by design). Stamps
+ *     the row stays stored, but every read INCLUDING `asOf` hides it: #4916
+ *     keeps `invalidated_at IS NULL` in both temporal branches, because
+ *     hiding history is what this verb is for). Stamps
  *     `invalidated_at` (never `status` — ADR-0036: withdrawal is a tombstone,
  *     not a demotion) and FLAGS every `derives-from` dependent for re-review.
  *     Flagging is a provenance marker (`reReview`), never a cascade: a
@@ -284,8 +286,10 @@ export const CORRECTION_EPISODE_INSERT_SQL = `INSERT INTO brain_episodes
  * `invalidated_at` verbatim — a restore, not a new arbitration, the same
  * distinction the promotion guard's allowlist draws. It never names `status`:
  * withdrawal is a
- * tombstone, not a demotion, and the retracted row stays readable to as-of
- * reads. The ACL already ran at {@link correctionTargetSql}, which also holds
+ * tombstone, not a demotion — and the tombstone hides the row from every fact
+ * read, `asOf` included (#4916); only the tension surfaces still list it,
+ * labelled, as a withdrawn rival. The ACL already ran at
+ * {@link correctionTargetSql}, which also holds
  * the row lock; the residual predicates make the statement correct standalone.
  */
 export const RETRACT_FACT_SQL = `UPDATE brain_facts

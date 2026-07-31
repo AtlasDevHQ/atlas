@@ -3,8 +3,9 @@
  *
  * The read model's behaviour is pinned in `lib/brain/__tests__/candidates.test.ts`;
  * here the assertions are about THIS router — the filter guard, the deliberately
- * ambiguous retract 404, the audit row, and the two seams that would be silent
- * if they broke:
+ * ambiguous retract 404, the ABSENCE of a router-level audit row (#4934 moved it
+ * into `correctFact` so both entry points get one), and the two seams that would
+ * be silent if they broke:
  *
  *   - the reviewer's principal context is built from `resolveEffectiveRole`,
  *     never a back-filled auth-mode default (which mints `role:admin` for every
@@ -110,10 +111,11 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
 
 /**
  * The verb machinery (#4915), stubbed on the same terms as the read model: the
- * route's own obligations — the UUID guard, outcome→HTTP mapping, the audit
- * row, the wire parse — are what these tests exercise. The verbs' semantics
- * are pinned in `lib/brain/__tests__/correction.test.ts` against a fake store
- * and in `candidates-pg.test.ts` §7 against the live schema.
+ * route's own obligations — the UUID guard, outcome→HTTP mapping, the wire
+ * parse — are what these tests exercise. The verbs' semantics are pinned in
+ * `lib/brain/__tests__/correction.test.ts` against a fake store and in
+ * `candidates-pg.test.ts` §7 against the live schema; the audit row they emit
+ * is pinned in `lib/brain/__tests__/correction-audit.test.ts` (#4934).
  */
 const REFUSAL_REASONS = {
   notAuthorized: "NOT_AUTHORIZED",
@@ -689,7 +691,7 @@ describe("GET /oversight", () => {
 });
 
 describe("POST /{id}/retract", () => {
-  it("runs the retract CORRECTION verb and records the decision in the admin action log", async () => {
+  it("runs the retract CORRECTION verb and emits NO audit row of its own", async () => {
     correctionOutcome = {
       kind: "corrected",
       result: {
@@ -712,20 +714,14 @@ describe("POST /{id}/retract", () => {
     expect(correctCalls).toHaveLength(1);
     expect(correctCalls[0]).toMatchObject({ factId: FACT_ID, verb: "retract" });
 
-    expect(auditRows).toHaveLength(1);
-    expect(auditRows[0]).toMatchObject({
-      actionType: "brain_fact.retract",
-      targetType: "brainFact",
-      targetId: FACT_ID,
-      // The tombstone pointer. A retraction is never a delete, so the row this
-      // names is still there to be read as-of.
-      metadata: {
-        invalidatedAt: "2026-07-01T00:00:00.000Z",
-        workspaceId: CURRENT_ORG,
-        correctionEpisodeId: "ep-corr-9",
-        flaggedForReReview: ["dep-1"],
-      },
-    });
+    // #4934 moved the `admin_action_log` row DOWN into `correctFact`, so the
+    // agent tool's corrections are audited on the same terms as these routes.
+    // `correctFact` is stubbed here, so zero rows is the correct expectation —
+    // and a non-zero count means a route-level call came back and every
+    // correction is now double-logged. The row's own shape and the
+    // both-entry-points claim are pinned in
+    // `lib/brain/__tests__/correction-audit.test.ts`.
+    expect(auditRows).toHaveLength(0);
   });
 
   it("400s a malformed id instead of letting Postgres 500 on the uuid cast", async () => {
@@ -810,25 +806,54 @@ describe("POST /{id}/correct", () => {
       replacement: { object: "Bo" },
     });
 
-    // The non-retract verbs share the `correct` audit action, verb in metadata.
-    expect(auditRows[0]).toMatchObject({
-      actionType: "brain_fact.correct",
-      targetType: "brainFact",
-      targetId: FACT_ID,
-      metadata: {
-        verb: "supersede",
-        workspaceId: CURRENT_ORG,
-        correctionEpisodeId: "ep-corr-2",
-        supersededBy: "fact-new-1",
-        validTo: "2026-07-30T12:00:00.000Z",
-      },
-    });
+    // The audit row is `correctFact`'s (#4934), and `correctFact` is stubbed.
+    expect(auditRows).toHaveLength(0);
   });
 
-  it("a retract through /correct audits as brain_fact.retract — one verb, one audit vocabulary", async () => {
-    const res = await correct({ verb: "retract" });
-    expect(res.status).toBe(200);
-    expect(auditRows[0]).toMatchObject({ actionType: "brain_fact.retract" });
+  it("emits NO audit row on ANY path — the correction machinery owns it (#4934)", async () => {
+    // The double-logging guard, swept rather than enumerated: whatever this
+    // router does, it must not write an `admin_action_log` row, because
+    // `correctFact` already writes exactly one for every entry point. Re-adding
+    // a `logAdminAction` call to either handler turns one human decision into
+    // two forensic rows, and this fails.
+    const outcomes: Array<Record<string, unknown>> = [
+      {
+        kind: "corrected",
+        result: {
+          verb: "retract",
+          factId: FACT_ID,
+          correctionEpisodeId: "ep-corr-a",
+          invalidatedAt: "2026-07-01T00:00:00.000Z",
+          flaggedForReReview: ["dep-1"],
+          supersededBy: null,
+          validTo: null,
+        },
+      },
+      {
+        kind: "corrected",
+        result: {
+          verb: "pin",
+          factId: FACT_ID,
+          correctionEpisodeId: "ep-corr-b",
+          invalidatedAt: null,
+          flaggedForReReview: [],
+          supersededBy: null,
+          validTo: null,
+        },
+      },
+      { kind: "not-found" },
+      {
+        kind: "refused",
+        reason: REFUSAL_REASONS.warehouseTarget,
+        message: "tier-1 has no correction path",
+      },
+    ];
+    for (const outcome of outcomes) {
+      correctionOutcome = outcome;
+      await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+      await correct({ verb: "pin" });
+    }
+    expect(auditRows).toHaveLength(0);
   });
 
   it("400s an unknown verb at the schema, before the machinery runs", async () => {

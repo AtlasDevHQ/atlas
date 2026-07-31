@@ -1028,9 +1028,12 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       // ran, and `temporal-loop-pg` deliberately asserts `factsCorroborated: 0`
       // on every arm that extracts anything, so the flagship e2e never reaches
       // this state at all.
-      // A corroborated fact that came back with a closed window would read to
-      // every default query as no longer believed — the claim silently
-      // disappearing at the moment it was reinforced.
+      // A corroborated fact that came back with a PAST-dated `valid_to` would
+      // read to every default query as no longer believed — the claim silently
+      // disappearing at the moment it was reinforced. The precision matters:
+      // liveness is `valid_to IS NULL OR valid_to > now()`, so a FUTURE-dated
+      // stamp is still a live fact (#4942). What this asserts is the stronger
+      // claim that re-observation stamps the column at all — neither direction.
       const { rows: validity } = await pool.query<{
         valid_to: Date | null;
         invalidated_at: Date | null;

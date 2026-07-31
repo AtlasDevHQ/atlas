@@ -1033,7 +1033,8 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       // disappearing at the moment it was reinforced. The precision matters:
       // liveness is `valid_to IS NULL OR valid_to > now()`, so a FUTURE-dated
       // stamp is still a live fact (#4942). What this asserts is the stronger
-      // claim that re-observation stamps the column at all — neither direction.
+      // claim that re-observation NEVER stamps the column at all — so it holds
+      // whichever direction a stamp would have gone.
       const { rows: validity } = await pool.query<{
         valid_to: Date | null;
         invalidated_at: Date | null;

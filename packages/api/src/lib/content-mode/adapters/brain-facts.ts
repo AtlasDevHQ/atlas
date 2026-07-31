@@ -537,11 +537,21 @@ function toDraftFactRow(row: unknown): DraftFactRow | null {
 /**
  * Bound on any id list this file spells out in a log line.
  *
- * The two uses have different backstops, which is worth knowing before raising
- * or lowering it. For `widened`, the sample is a convenience — the complete
- * list rides `PromotionReport.widened` to a durable record. For the
- * evidence-drift warnings there is NO complete record anywhere: the sample plus
- * the count is all that exists, so the count is the number to act on.
+ * The four uses have DIFFERENT backstops, which is worth knowing before raising
+ * or lowering it:
+ *
+ *   - `widened` — a convenience on the two seams that sweep it (the complete
+ *     list rides `PromotionReport.widened` to the REST route's and the MCP
+ *     seam's durable records). NOT a convenience on
+ *     `knowledge/ingest-bundle.ts`, which discards the report: there this cap
+ *     IS the record, so lowering it silently narrows the only surviving
+ *     account of an ACL change.
+ *   - `superseded` — a convenience on all three publish surfaces since #4937;
+ *     every one of them now sweeps `PromotionReport.superseded`.
+ *   - the evidence-drift `factIds`, and the `missing` list when
+ *     `SUPERSEDE_STAMP_SQL` stamps fewer rows than asked — NO complete record
+ *     anywhere. The sample plus the count is all that exists, so the count is
+ *     the number to act on, and these are the two that argue against lowering.
  */
 const LOGGED_ID_SAMPLE_CAP = 20;
 
@@ -1003,11 +1013,13 @@ export function promoteBrainFacts(
     if (widened.length > 0) {
       // An ACL widened, so it is stated at INFO rather than left to a debug
       // level: over-restriction is invisible by construction — nobody can report
-      // a fact they cannot read — so this is the signal, on both publish seams,
+      // a fact they cannot read — so this is the signal, on every publish seam,
       // that a publish changed who can see a claim. Sampled purely for LINE
       // SIZE: the first publish after a history backfill can widen a lot at
-      // once. Not a privacy bound — the complete list travels in
-      // `PromotionReport.widened` and both callers record it in full.
+      // once. Not a privacy bound on the two seams that sweep it — the complete
+      // list travels in `PromotionReport.widened`, which the REST route and the
+      // MCP seam record in full. `knowledge/ingest-bundle.ts` discards it, so
+      // on THAT path this sampled line is all there is.
       log.info(
         {
           workspaceId: orgId,

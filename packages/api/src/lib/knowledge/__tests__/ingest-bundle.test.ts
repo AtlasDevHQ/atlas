@@ -12,6 +12,11 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { Effect } from "effect";
 import { zipSync, strToU8 } from "fflate";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+// Imported from the leaf module, not the `content-mode` barrel this file mocks:
+// the barrel re-exports the registry and every adapter, and pulling that graph
+// in for one pure projection helper is what the leaf import avoids.
+import { collectSupersessions } from "@atlas/api/lib/content-mode/promoted";
+import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
 
 let MAX_DOCS = 100;
 let MAX_DOC_BYTES = 100_000;
@@ -93,15 +98,33 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
 }));
 
+// Warn lines the seam emitted. Captured rather than noop'd: the supersession
+// warn is the record for any caller the route does not audit, so it is a
+// behaviour, not a debug line (#4937).
+const warns: Array<{ payload: Record<string, unknown>; msg: string }> = [];
+
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
-  const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
+  const logger = {
+    info: noop,
+    warn: (payload: Record<string, unknown>, msg: string) => warns.push({ payload, msg }),
+    error: noop,
+    debug: noop,
+    child: () => logger,
+  };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
 // Partial mock, justified: this file's import graph reaches only the exports
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
 // unmocked export reached later fails loudly as `undefined is not a function`.
+// What the fake registry's publish phases report. Default: nothing superseded.
+// Typed as the REAL `PromotionReport` so a reshape of `FactSupersession` (say
+// `rowId` renamed, or `superseded` becoming an object array) is a compile error
+// here rather than a green suite asserting a hand-written literal that
+// production's `collectSupersessions` would project as `undefined`.
+let PUBLISH_REPORTS: PromotionReport[] = [];
+
 void mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
   makeService: () => ({
@@ -109,9 +132,13 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
       Effect.sync(() => {
         publishRan = true;
         publishRanInTx = txActive;
-        return [];
+        return PUBLISH_REPORTS;
       }),
   }),
+  // The REAL sweep, not a stub: the property under test is that this seam runs
+  // the same helper `admin-publish.ts` and the MCP seam do (#4937), so stubbing
+  // it would assert only that the seam calls something.
+  collectSupersessions,
 }));
 
 void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
@@ -190,6 +217,8 @@ beforeEach(() => {
   insertedSources = [];
   nextId = 1;
   invalidations = [];
+  PUBLISH_REPORTS = [];
+  warns.length = 0;
 });
 
 describe("typed failure outcomes (no writes)", () => {
@@ -308,6 +337,78 @@ describe("the committed write", () => {
     expect(publishRanInTx).toBe(true);
     // Publish is workspace-wide (entities/prompts promote too) → full-root bust.
     expect(invalidations).toEqual([{ orgId: WS, scope: "full" }]);
+  });
+
+  it("reports what the publish superseded — the seam's disclosure half (#4937)", async () => {
+    // The workspace-wide publish retires a published brain fact that this
+    // bundle never mentioned. Before #4937 the reports were discarded and the
+    // stamped `valid_to` left no trace anywhere on this path.
+    PUBLISH_REPORTS = [
+      { table: "knowledge_documents", promoted: 1 },
+      {
+        table: "brain_facts",
+        promoted: 2,
+        superseded: [{ rowId: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] }],
+      },
+    ];
+    const outcome = await run(zipSync({ "a.md": strToU8("# A") }), { publish: true });
+    expect(outcome).toMatchObject({
+      kind: "ok",
+      published: true,
+      supersededFacts: [
+        { surface: "brain_facts", id: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] },
+      ],
+    });
+  });
+
+  it("warns at the seam with the full list — the record for callers the route never audits", async () => {
+    // Asserted at the seam, not the route: the comment on this warn claims it
+    // is what leaves a trace when a caller publishes without writing an
+    // audit row, which makes it a behaviour rather than a debug line.
+    PUBLISH_REPORTS = [
+      {
+        table: "brain_facts",
+        promoted: 1,
+        superseded: [{ rowId: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] }],
+      },
+    ];
+    await run(zipSync({ "a.md": strToU8("# A") }), { publish: true });
+    const superseded = warns.filter((w) => w.msg.includes("SUPERSEDED"));
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]?.payload).toMatchObject({
+      supersededCount: 1,
+      // Uncapped: "which facts" is the entire point of the line.
+      superseded: [
+        { surface: "brain_facts", id: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] },
+      ],
+    });
+  });
+
+  it("does NOT warn when the publish superseded nothing", async () => {
+    // The negative half — a warn that fires unconditionally is noise, and
+    // would train the reader to ignore the one that matters.
+    PUBLISH_REPORTS = [{ table: "brain_facts", promoted: 1, superseded: [] }];
+    await run(zipSync({ "a.md": strToU8("# A") }), { publish: true });
+    expect(warns.filter((w) => w.msg.includes("SUPERSEDED"))).toHaveLength(0);
+  });
+
+  it("reports an empty supersession list when the publish superseded nothing", async () => {
+    // The distinguishing signal is `published`, not an absent field — a caller
+    // never has to tell `undefined` apart from "superseded nothing".
+    PUBLISH_REPORTS = [{ table: "brain_facts", promoted: 1, superseded: [] }];
+    const outcome = await run(zipSync({ "a.md": strToU8("# A") }), { publish: true });
+    expect(outcome).toMatchObject({ kind: "ok", published: true, supersededFacts: [] });
+  });
+
+  it("reports an empty supersession list when no publish ran at all", async () => {
+    // A plain ingest never reaches the publish phases, so nothing can be
+    // stamped — and the field is still present, never undefined.
+    PUBLISH_REPORTS = [
+      { table: "brain_facts", promoted: 9, superseded: [{ rowId: "n", superseded: ["o"] }] },
+    ];
+    const outcome = await run(zipSync({ "a.md": strToU8("# A") }));
+    expect(outcome).toMatchObject({ kind: "ok", published: false, supersededFacts: [] });
+    expect(publishRan).toBe(false);
   });
 
   it("rejects publish for a non-upload source — ADR-0028 §4 as a property of the seam", async () => {

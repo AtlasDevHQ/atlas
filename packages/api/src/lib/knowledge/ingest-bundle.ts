@@ -27,6 +27,8 @@
  *     same transaction (`publish: true` — the "upload & publish" convenience;
  *     the seam itself rejects `publish` for non-upload sources, ADR-0028 §4 —
  *     connectors structurally cannot publish);
+ *   - a publish REPORTS what it superseded (#4937) — see
+ *     {@link IngestDocumentsOk.supersededFacts};
  *   - the subtractive diff (`archiveAbsent: true` — sync semantics) shares the
  *     ingest transaction, so a sync is all-or-nothing;
  *   - the knowledge mirror is invalidated exactly when the committed write
@@ -35,7 +37,12 @@
 
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
+import {
+  CONTENT_MODE_TABLES,
+  collectSupersessions,
+  makeService,
+  type SupersessionRecord,
+} from "@atlas/api/lib/content-mode";
 import { withInternalTransaction } from "@atlas/api/lib/db/with-internal-transaction";
 import type { InteropFile } from "@atlas/api/lib/semantic/okf";
 import {
@@ -185,6 +192,38 @@ export interface IngestDocumentsOk {
   /** Docs archived because their path left the incoming set; null unless `archiveAbsent`. */
   readonly archivedAbsent: number | null;
   readonly published: boolean;
+  /**
+   * Published brain facts this ingest's publish SUPERSEDED (#4912, #4937).
+   * Always `[]` when `published` is false — the flag, not an absent field, is
+   * what says "no publish ran here", so a caller never has to distinguish
+   * `undefined` from "superseded nothing".
+   *
+   * Reported rather than discarded because `runPublishPhases` is workspace-wide:
+   * an "upload & publish" promotes every pending draft in the workspace, so it
+   * can retire a belief this bundle never mentioned. Stamping `valid_to` hides
+   * the superseded fact from every as-of-now read the instant the transaction
+   * commits, which makes an unrecorded stamp invisible by construction — the
+   * durable record is the other half of #4912's human gate.
+   *
+   * **Disclosure posture: after-the-fact record, deliberately (#4937 AC2).**
+   * The console's publish surface discloses BEFORE the click
+   * (`admin-publish-preview.ts`'s `brainFactsWillSupersede` → the confirm
+   * modal); an upload is a single-shot request with no confirm step, so there
+   * is nowhere to put a pre-disclosure without splitting the endpoint into
+   * preview + commit. That is not a gap in the gate: the facts a publish
+   * supersedes are pending brain drafts that ALREADY existed in the workspace
+   * — a bundle of markdown documents mints none: this seam writes
+   * `knowledge_documents` only, and the `brain_episodes` writers are
+   * `brain/ingest/episodes.ts` plus the correction and region-import paths,
+   * none reachable from here — so those supersessions are disclosable in
+   * the publish preview independently of this upload. Two caveats keep that an
+   * argument rather than a proof: the extraction fiber mints drafts on its own
+   * clock, so a preview fetched earlier is not guaranteed to be the same set,
+   * and a scripted caller of the ingest endpoint never opens the preview at
+   * all. What only this path can record is what actually happened, and that is
+   * what rides here → the route's `audit_log` row.
+   */
+  readonly supersededFacts: readonly SupersessionRecord[];
   /** Per-file rejections from extraction + oversize + lenient parsing — never silently dropped. */
   readonly rejected: readonly BundleEntryError[];
   /** Non-markdown / asset files skipped by design (only `.md` ingests). */
@@ -264,8 +303,9 @@ export async function ingestDocuments(
   const presentPaths = [...parsed.docs.map((d) => d.path), ...rejected.map((r) => r.path)];
   let report: IngestReport;
   let archivedAbsent: number | null;
+  let supersededFacts: readonly SupersessionRecord[];
   try {
-    ({ report, archivedAbsent } = await withInternalTransaction(
+    ({ report, archivedAbsent, supersededFacts } = await withInternalTransaction(
       "knowledge-ingest-bundle",
       async (client) => {
         // Re-check the install INSIDE the transaction (`FOR UPDATE`, so this
@@ -292,15 +332,34 @@ export async function ingestDocuments(
               exceptPaths: presentPaths,
             })
           : null;
+        let superseded: readonly SupersessionRecord[] = [];
         if (publish) {
           // Promote through the SAME content-mode phases the atomic publish
           // endpoint uses, inside this transaction. NOTE: `runPublishPhases` is
           // workspace-wide (ADR-0028 §4 "runs that same endpoint") — it promotes
           // EVERY pending draft in the workspace across all content-mode tables,
           // not just this bundle's docs, exactly as clicking Publish would.
-          await Effect.runPromise(contentModeRegistry.runPublishPhases(client, workspaceId));
+          const reports = await Effect.runPromise(
+            contentModeRegistry.runPublishPhases(client, workspaceId),
+          );
+          // Since #4912 that workspace-wide promotion can stamp `valid_to` on
+          // published brain facts, so the reports are NOT discardable here —
+          // dropping them made this the one publish path that retired a belief
+          // with no record of what replaced it (#4937). Swept with the SAME
+          // helper `admin-publish.ts` and the MCP seam use, for
+          // `collectRefusals`' stated reason: one sweep, nothing to keep in
+          // sync by hand. NOTE this path sweeps ONLY the supersessions (the
+          // deliberate #4937 scope): a refusal or a widening here reaches the
+          // adapter's own log line and no durable record — and the widening
+          // line SAMPLES at 20 ids, so discarding the report truncates it. See
+          // `promoted.ts`.
+          superseded = collectSupersessions(reports);
         }
-        return { report: ingestReport, archivedAbsent: archivedCount };
+        return {
+          report: ingestReport,
+          archivedAbsent: archivedCount,
+          supersededFacts: superseded,
+        };
       },
     ));
   } catch (err) {
@@ -322,15 +381,37 @@ export async function ingestDocuments(
   }
 
   log.info(
-    { workspaceId, collectionId, source, ...report, archivedAbsent, published: publish, rejected: rejected.length },
+    { workspaceId, collectionId, source, ...report, archivedAbsent, published: publish, rejected: rejected.length, superseded: supersededFacts.length },
     "Knowledge documents ingested",
   );
+
+  // Its own line, at warn, for the reason `mcp-lifecycle.ts` warns: a
+  // supersession permanently changed which claim answers as-of-now reads, and
+  // the retired side is hidden from every default read from here on. Uncapped —
+  // "which facts" is the entire point, and unlike the adapter's own sampled
+  // line this one is the seam's complete list. The upload route mirrors it into
+  // `audit_log`; this fires at the seam, so a future caller that publishes
+  // without an audit row still leaves a trace. (Today's other callers —
+  // connector sync and the bundle-sync engine — structurally cannot publish,
+  // ADR-0028 §4, so this is forward coverage rather than a live second case.)
+  if (supersededFacts.length > 0) {
+    log.warn(
+      {
+        workspaceId,
+        collectionId,
+        supersededCount: supersededFacts.length,
+        superseded: supersededFacts,
+      },
+      "Upload & publish SUPERSEDED one or more published brain facts — their valid_to is stamped and as-of-now reads now hide them; the facts stay readable to as-of reads",
+    );
+  }
 
   return {
     kind: "ok",
     report,
     archivedAbsent,
     published: publish,
+    supersededFacts,
     rejected,
     skippedNonMarkdown: parsed.skippedNonMarkdown,
   };

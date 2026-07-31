@@ -163,9 +163,32 @@ export interface GrantWidening {
  * Supersession is NOT deletion and not retraction — the superseded rows stay
  * `published`, keep `invalidated_at IS NULL`, and remain readable to as-of
  * reads. What changed is which fact answers an as-of-NOW read, which is why the
- * event is reported rather than only logged: this is the ONLY path allowed to
- * stamp `valid_to` (a human promotion), and a durable record of what it stamped
- * is the other half of "no autonomous supersession".
+ * event is reported rather than only logged: a durable record of what a human
+ * arbitration stamped is the other half of "no autonomous supersession".
+ *
+ * The publish gate is one of exactly TWO allowlisted `valid_to` STAMPERS, not
+ * the only one — `correct_fact`'s supersede verb (#4915,
+ * `lib/brain/correction.ts`) is the other, and it imports the adapter's own
+ * `SUPERSEDE_STAMP_SQL` so the two arbitration paths cannot drift. (A third
+ * file, `admin-migrate.ts`, writes the column by INSERT: a region import
+ * restoring an already-closed window verbatim, a restore rather than a new
+ * arbitration — see `adapters/brain-facts.ts`'s allowlist note.) Both stampers
+ * are human-attributed — the publish gate behind an authenticated admin action
+ * (a confirm modal on the console route; none on the MCP seam or on "upload &
+ * publish"), `correct_fact` behind owner/admin authority on a human-in-the-loop
+ * surface — so nothing unattended stamps the column.
+ * `check-brain-fact-promotion.sh` refuses UPDATE-shape writes outside its
+ * allowlist, but it is a grep with stated blind spots, not a completeness
+ * proof; the structural half is the adapter test pinning the registry entry as
+ * `exotic`.
+ *
+ * This type covers only the PUBLISH path's events — a `PromotionReport` is
+ * emitted by a publish phase, so `collectSupersessions` structurally cannot see
+ * a correction's supersession, which records itself through the correction
+ * response and `admin-brain-facts.ts`'s own audit row (`supersededBy` /
+ * `validTo`) instead. Neither record is a superset of the other; a reader
+ * asking "everything that retired this fact" must consult the `supersedes`
+ * edges, which both paths write.
  *
  * `superseded` is a non-empty tuple for {@link GrantWidening.added}'s reason: a
  * supersession that superseded nothing is not an event.

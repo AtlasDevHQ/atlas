@@ -25910,7 +25910,8 @@
                         "maxLength": 2000
                       },
                       "validFrom": {
-                        "type": "string"
+                        "type": "string",
+                        "format": "date-time"
                       }
                     },
                     "required": [

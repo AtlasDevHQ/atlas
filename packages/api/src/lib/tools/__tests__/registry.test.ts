@@ -227,11 +227,14 @@ describe("defaultRegistry", () => {
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
     expect(defaultRegistry.get("createDashboard")).toBeDefined();
     expect(defaultRegistry.get("searchBrain")).toBeDefined();
+    // #4915 — the four correction verbs, under the ADR's own spelling.
+    expect(defaultRegistry.get("correct_fact")).toBeDefined();
   });
 
   it("getAll returns exactly the core tools", () => {
     const all = defaultRegistry.getAll();
     expect(Object.keys(all).sort()).toEqual([
+      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -247,6 +250,7 @@ describe("defaultRegistry", () => {
     expect(text).toContain("### 3. Write and Execute SQL");
     expect(text).toContain("### Create a Dashboard");
     expect(text).toContain("### Search the Company Brain");
+    expect(text).toContain("### Correct a Company-Brain Fact");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -285,6 +289,7 @@ describe("buildRegistry", () => {
       const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
       expect(names).toEqual([
+        "correct_fact",
         "createDashboard",
         "createLinearIssue",
         "executePython",
@@ -306,6 +311,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
+      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -319,6 +325,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
+      "correct_fact",
       "createDashboard",
       "createJiraTicket",
       "createLinearIssue",

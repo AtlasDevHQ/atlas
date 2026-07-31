@@ -104,6 +104,19 @@
 #     grant over-WITHHOLDS attribution, which is recoverable, where a bad
 #     `visible_to` would over-disclose.
 #
+#   packages/api/src/lib/brain/correction.ts
+#     `correct_fact` (#4915) — the SECOND gate-time decision maker this
+#     script's own remediation text forecast ("M2's correct_fact will be the
+#     second, through the same allowlisted review-gate machinery"). It writes
+#     `status` exactly once (promoting the human-authored replacement of a
+#     superseded fact to `published`, inside the correction transaction — the
+#     correction's author IS the reviewer, and the row is still screened
+#     through `classifyFactForPromotion` first), and it stamps `valid_to` by
+#     executing the publish adapter's own `SUPERSEDE_STAMP_SQL` rather than
+#     spelling a second stamp. Every write is actor-attributed, ACL-gated on
+#     the actor's own visibility, and recorded as an immutable human-authored
+#     correction episode in the same transaction.
+#
 # Comments are stripped before matching so an explanatory comment in a source
 # file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in
 # neither the search roots nor `--include`, so the gate can never scan itself.)
@@ -140,8 +153,10 @@ set -euo pipefail
 ALLOWLIST=(
   "packages/api/src/lib/content-mode/adapters/brain-facts.ts"
   "packages/api/src/api/routes/admin-migrate.ts"
+  "packages/api/src/lib/brain/correction.ts"
   "create-atlas/templates/*/src/lib/content-mode/adapters/brain-facts.ts"
   "create-atlas/templates/*/src/api/routes/admin-migrate.ts"
+  "create-atlas/templates/*/src/lib/brain/correction.ts"
 )
 
 # `BRAIN_PROMOTION_ROOT` points the scan at a throwaway tree — used ONLY by the
@@ -227,9 +242,10 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 #
 # `valid_to` (#4912) is the third gated column, UPDATE-only like the grant:
 # "a human promotion stamps `valid_to`; there is no autonomous supersession"
-# (ADR-0036 §Temporal). Its only writer is `promoteBrainFacts`' supersession
-# stamp (M2's `correct_fact` will be the second, through the same allowlisted
-# review-gate machinery); a second writer would retire a belief no human
+# (ADR-0036 §Temporal). Its writers are `promoteBrainFacts`' supersession
+# stamp and `correct_fact`'s supersede verb (#4915) — which EXECUTES the
+# adapter's stamp statement rather than spelling its own; both are allowlisted
+# review-gate machinery. Any other writer would retire a belief no human
 # arbitrated — and unlike a stray `status` write the damage is INVISIBLE, since
 # every as-of-now read hides the row it touched. INSERT is deliberately not
 # gated: `INSERT_FACT_SQL` names `valid_from` (a producer may know when a claim

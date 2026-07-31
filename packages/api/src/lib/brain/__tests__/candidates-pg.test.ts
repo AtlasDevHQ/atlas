@@ -53,8 +53,9 @@ import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import {
   loadFactCandidateSummary,
   loadFactCandidates,
-  retractFactCandidate,
 } from "@atlas/api/lib/brain/candidates";
+import { CORRECTION_REFUSAL_REASONS, correctFact } from "@atlas/api/lib/brain/correction";
+import type { ReconcileTransactionRunner } from "@atlas/api/lib/brain/reconcile";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { BrainFactCandidateListResponseSchema } from "@useatlas/schemas";
 
@@ -465,18 +466,49 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
   );
 
   // ══════════════════════════════════════════════════════════════════
-  // 7. Retraction — the one write on this surface
+  // 7. Correction verbs — the writes that left this surface (#4915)
   // ══════════════════════════════════════════════════════════════════
+  //
+  // The unit suite (`correction.test.ts`) pins the decision matrix against a
+  // fake store; nothing there proves the correction SQL parses or that the
+  // episode insert satisfies 0180's CHECKs. These run the exported statements
+  // against the live schema, on this file's existing seed harness — which is
+  // why they live here rather than in a fourth `-pg` bootstrap.
+
+  /** One transaction on the test pool — the runner `correctFact` injects. */
+  const poolTx: ReconcileTransactionRunner = async (fn) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await fn({
+        query: async (sql: string, params?: unknown[]) => {
+          const res = await client.query(sql, params);
+          return { rows: res.rows as readonly unknown[] };
+        },
+      });
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
 
   it(
-    "retracts a candidate, is idempotent, and never touches `status`",
+    "retract stamps the tombstone, materializes the correction episode, and is not repeatable",
     async () => {
       const ep = await seedEpisode({ sourceId: "retract-1" });
       const id = await seedFact({ subject: "RetractMe", episodeId: ep });
 
-      const first = await retractFactCandidate(pool, { ctx: reviewer(), factId: id });
-      expect(first?.id).toBe(id);
-      expect(first?.invalidatedAt).toBeTruthy();
+      const first = await correctFact(
+        { ctx: reviewer(), factId: id, verb: "retract", reason: "wrong on arrival" },
+        { withTransaction: poolTx },
+      );
+      if (first.kind !== "corrected") throw new Error(`expected corrected, got ${first.kind}`);
+      expect(first.result.factId).toBe(id);
+      expect(first.result.invalidatedAt).toBeTruthy();
 
       const { rows } = await pool.query<{ status: string; invalidated_at: Date | null }>(
         `SELECT status, invalidated_at FROM brain_facts WHERE id = $1`,
@@ -487,17 +519,186 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       expect(rows[0]!.status).toBe("draft");
       expect(rows[0]!.invalidated_at).not.toBeNull();
 
-      // Second call matches nothing: `invalidated_at IS NULL` already failed.
-      expect(await retractFactCandidate(pool, { ctx: reviewer(), factId: id })).toBeNull();
+      // The immutable human record, off the extraction queue by construction,
+      // seeded with the fact's own grant.
+      const episode = await pool.query<{
+        source: string;
+        source_actor: string;
+        extracted_at: Date | null;
+        visible_to: string[];
+        body: string;
+      }>(`SELECT source, source_actor, extracted_at, visible_to, body FROM brain_episodes WHERE id = $1`, [
+        first.result.correctionEpisodeId,
+      ]);
+      expect(episode.rows[0]!.source).toBe("human");
+      expect(episode.rows[0]!.source_actor).toBe("reviewer");
+      expect(episode.rows[0]!.extracted_at).not.toBeNull();
+      expect(episode.rows[0]!.visible_to).toEqual(["org"]);
+      expect(JSON.parse(episode.rows[0]!.body).verb).toBe("retract");
+
+      // Lineage, not evidence: `derives-from`, so the retraction cannot count
+      // as corroboration of the claim it withdrew.
+      const edges = await pool.query<{ edge_type: string }>(
+        `SELECT edge_type FROM brain_edges WHERE from_fact_id = $1 AND to_episode_id = $2`,
+        [id, first.result.correctionEpisodeId],
+      );
+      expect(edges.rows.map((r) => r.edge_type)).toEqual(["derives-from"]);
+
+      // Second call matches nothing: `invalidated_at IS NULL` already failed —
+      // indistinguishable from absence.
+      const second = await correctFact(
+        { ctx: reviewer(), factId: id, verb: "retract" },
+        { withTransaction: poolTx },
+      );
+      expect(second.kind).toBe("not-found");
     },
     PG_TEST_TIMEOUT_MS,
   );
 
   it(
-    "refuses to retract a fact the reviewer cannot see",
+    "retract flags derives-from dependents for re-review and cascades nothing",
     async () => {
-      // Retraction is a write and must be gated by the same predicate the read
-      // is, or a reviewer could withdraw a claim they were never shown.
+      const ep = await seedEpisode({ sourceId: "retract-dep-1" });
+      const premise = await seedFact({ subject: "Premise", object: "holds", episodeId: ep });
+      const conclusion = await seedFact({
+        subject: "Conclusion",
+        object: "follows",
+        episodeId: ep,
+        status: "published",
+      });
+      await pool.query(
+        `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id) VALUES ($1, 'derives-from', $2, $3)`,
+        [WS, conclusion, premise],
+      );
+
+      const outcome = await correctFact(
+        { ctx: reviewer(), factId: premise, verb: "retract" },
+        { withTransaction: poolTx },
+      );
+      if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+      expect(outcome.result.flaggedForReReview).toEqual([conclusion]);
+
+      const { rows } = await pool.query<{
+        status: string;
+        invalidated_at: Date | null;
+        valid_to: Date | null;
+        provenance: Record<string, unknown>;
+      }>(`SELECT status, invalidated_at, valid_to, provenance FROM brain_facts WHERE id = $1`, [
+        conclusion,
+      ]);
+      // Flagged — and ONLY flagged: the dependent's own lifecycle is untouched.
+      expect(rows[0]!.provenance.reReview).toMatchObject({
+        reason: "derives-from-retracted",
+        retractedFactId: premise,
+      });
+      expect(rows[0]!.status).toBe("published");
+      expect(rows[0]!.invalidated_at).toBeNull();
+      expect(rows[0]!.valid_to).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "supersede publishes the replacement and stamps the target through the #4912 machinery",
+    async () => {
+      const ep = await seedEpisode({ sourceId: "supersede-1" });
+      const oldId = await seedFact({
+        subject: "Billing",
+        predicate: "is owned by",
+        object: "Ana",
+        episodeId: ep,
+        status: "published",
+        cardinality: "single",
+      });
+
+      const outcome = await correctFact(
+        {
+          ctx: reviewer(),
+          factId: oldId,
+          verb: "supersede",
+          reason: "Ana left; Bo took over",
+          replacement: { object: "Bo" },
+        },
+        { withTransaction: poolTx },
+      );
+      if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+      const newId = outcome.result.supersededBy;
+      expect(newId).toBeTruthy();
+      expect(outcome.result.validTo).toBeTruthy();
+
+      const oldRow = await pool.query<{ valid_to: Date | null; invalidated_at: Date | null }>(
+        `SELECT valid_to, invalidated_at FROM brain_facts WHERE id = $1`,
+        [oldId],
+      );
+      // Superseded, not tombstoned: the belief ENDED, it was not withdrawn.
+      expect(oldRow.rows[0]!.valid_to).not.toBeNull();
+      expect(oldRow.rows[0]!.invalidated_at).toBeNull();
+
+      // Authoritative immediately — the replacement never sat in the queue.
+      const newRow = await pool.query<{
+        status: string;
+        subject: string;
+        object: string;
+        visible_to: string[];
+        provenance: Record<string, unknown>;
+      }>(`SELECT status, subject, object, visible_to, provenance FROM brain_facts WHERE id = $1`, [
+        newId,
+      ]);
+      expect(newRow.rows[0]!.status).toBe("published");
+      expect(newRow.rows[0]!.subject).toBe("Billing");
+      expect(newRow.rows[0]!.object).toBe("Bo");
+      expect(newRow.rows[0]!.visible_to).toEqual(["org"]);
+      expect(newRow.rows[0]!.provenance.producer).toBe("correction");
+      expect(newRow.rows[0]!.provenance.actor).toBe("user:reviewer");
+
+      // The arbitration record, new → old.
+      const supersedes = await pool.query(
+        `SELECT 1 FROM brain_edges WHERE edge_type = 'supersedes' AND from_fact_id = $1 AND to_fact_id = $2`,
+        [newId, oldId],
+      );
+      expect(supersedes.rows).toHaveLength(1);
+
+      // And the evidence pointer: the correction episode backs the NEW claim.
+      const evidence = await pool.query(
+        `SELECT 1 FROM brain_edges WHERE edge_type = 'provenance' AND from_fact_id = $1 AND to_episode_id = $2`,
+        [newId, outcome.result.correctionEpisodeId],
+      );
+      expect(evidence.rows).toHaveLength(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "pin attaches the correction episode as fresh evidence and marks the payload",
+    async () => {
+      const ep = await seedEpisode({ sourceId: "pin-1" });
+      const id = await seedFact({ subject: "PinMe", episodeId: ep, status: "published" });
+
+      const outcome = await correctFact(
+        { ctx: reviewer(), factId: id, verb: "pin" },
+        { withTransaction: poolTx },
+      );
+      if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+
+      const { rows } = await pool.query<{ provenance: Record<string, unknown> }>(
+        `SELECT provenance FROM brain_facts WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]!.provenance.pinned).toMatchObject({ actor: "reviewer" });
+      const evidence = await pool.query(
+        `SELECT 1 FROM brain_edges WHERE edge_type = 'provenance' AND from_fact_id = $1 AND to_episode_id = $2`,
+        [id, outcome.result.correctionEpisodeId],
+      );
+      expect(evidence.rows).toHaveLength(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "gates every verb on the actor's own visibility and role",
+    async () => {
+      // Correction is a write and must be gated by the same predicate the read
+      // is, or an admin could withdraw a claim they were never shown.
       const ep = await seedEpisode({ sourceId: "retract-acl-1" });
       const id = await seedFact({
         subject: "NotYoursToRetract",
@@ -505,25 +706,54 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         visibleTo: ["audience:private-channel"],
       });
 
-      expect(await retractFactCandidate(pool, { ctx: reviewer(), factId: id })).toBeNull();
-
-      const { rows } = await pool.query<{ invalidated_at: Date | null }>(
+      const asOutsider = await correctFact(
+        { ctx: reviewer(), factId: id, verb: "retract" },
+        { withTransaction: poolTx },
+      );
+      expect(asOutsider.kind).toBe("not-found");
+      const untouched = await pool.query<{ invalidated_at: Date | null }>(
         `SELECT invalidated_at FROM brain_facts WHERE id = $1`,
         [id],
       );
-      expect(rows[0]!.invalidated_at).toBeNull();
+      expect(untouched.rows[0]!.invalidated_at).toBeNull();
 
-      // The reader who IS entitled can.
-      expect(await retractFactCandidate(pool, { ctx: insider(), factId: id })).not.toBeNull();
+      // A MEMBER who can see it still lacks the verb: corrections land
+      // authoritative immediately, so they carry the review gate's bar.
+      const asMember = await correctFact(
+        { ctx: insider(), factId: id, verb: "retract" },
+        { withTransaction: poolTx },
+      );
+      expect(asMember).toMatchObject({
+        kind: "refused",
+        reason: CORRECTION_REFUSAL_REASONS.notAuthorized,
+      });
+
+      // An admin inside the audience can.
+      const insiderAdmin: BrainPrincipalContext = {
+        origin: "authenticated",
+        workspaceId: WS,
+        userId: "insider",
+        role: "admin",
+        audienceIds: ["private-channel"],
+      };
+      const allowed = await correctFact(
+        { ctx: insiderAdmin, factId: id, verb: "retract" },
+        { withTransaction: poolTx },
+      );
+      expect(allowed.kind).toBe("corrected");
     },
     PG_TEST_TIMEOUT_MS,
   );
 
   it(
-    "answers null for an id that does not exist, without erroring",
+    "answers not-found for an id that does not exist, without erroring",
     async () => {
       const absent = "00000000-0000-4000-8000-000000000000";
-      expect(await retractFactCandidate(pool, { ctx: reviewer(), factId: absent })).toBeNull();
+      const outcome = await correctFact(
+        { ctx: reviewer(), factId: absent, verb: "retract" },
+        { withTransaction: poolTx },
+      );
+      expect(outcome.kind).toBe("not-found");
     },
     PG_TEST_TIMEOUT_MS,
   );

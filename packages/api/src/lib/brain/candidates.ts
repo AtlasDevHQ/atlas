@@ -1079,88 +1079,11 @@ export async function loadFactCandidateSummary(
 // ---------------------------------------------------------------------------
 // Rejection
 // ---------------------------------------------------------------------------
-
-/**
- * Reject a candidate by RETRACTING it — the review gate's negative verb.
- *
- * ## Why this stamps `invalidated_at` and not `status`
- *
- * `brain_facts.status` has exactly one writer, the atomic publish endpoint, and
- * `scripts/check-brain-fact-promotion.sh` refuses every other status-writing
- * shape — including one that merely FILTERS on the column inside an UPDATE. A
- * "reject" that wrote `status = 'archived'` would be a second gate writer, and
- * the guard's own remediation text names the alternative: a fact is never
- * deleted and never demoted by status, so withdrawal is a tombstone
- * (ADR-0036 — supersession is not deletion).
- *
- * The tombstone does the queue work for free. `DRAFT_FACTS_SQL`,
- * `brainFactsCountSql`, the publish preview, and this module's own list all
- * exclude `invalidated_at IS NOT NULL`, so a retracted claim leaves the queue,
- * stops being counted in `draftCounts`, and is never re-offered for promotion —
- * while staying readable to an as-of query, which is exactly what ADR-0036 asks
- * of a withdrawn belief.
- *
- * ## Not restricted to drafts
- *
- * A published claim can also be wrong, and retracting one is the same
- * operation. Constraining this to drafts would need `status` in the statement,
- * which the guard refuses — and would be the wrong behaviour anyway.
- *
- * Returns `null` when nothing was updated: no such fact, already retracted, or
- * not visible to this reader. The three are deliberately indistinguishable —
- * telling a reader that a fact they cannot see exists is the leak the
- * predicate is there to prevent.
- *
- * @throws {BrainReaderUnresolvedError} when the reader has no usable principals.
- */
-export async function retractFactCandidate(
-  db: BrainCandidateReader,
-  options: {
-    readonly ctx: BrainPrincipalContext;
-    readonly factId: string;
-    readonly requestId?: string;
-  },
-): Promise<BrainFactRetractResponse | null> {
-  const { ctx, factId, requestId } = options;
-
-  const acl = aclVisibilityClause(ctx, {
-    table: "brain_facts",
-    alias: "f",
-    paramIndex: 1,
-    requestId,
-  });
-  if (acl.decision === "deny-all") {
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
-  }
-
-  const params: unknown[] = [...acl.params, factId];
-  const result = await db.query(
-    `UPDATE brain_facts AS f
-        SET invalidated_at = now(), updated_at = now()
-      WHERE ${acl.sql}
-        AND f.id = $${params.length}::uuid
-        AND f.invalidated_at IS NULL
-    RETURNING f.id::text AS id, f.invalidated_at`,
-    params,
-  );
-
-  const row = result.rows[0] as Record<string, unknown> | undefined;
-  if (!row) return null;
-
-  const invalidatedAt = iso(row.invalidated_at);
-  if (typeof row.id !== "string" || !invalidatedAt) {
-    // `RETURNING` on an UPDATE that matched a row cannot produce this. If it
-    // ever does, the write HAPPENED and reporting failure would send an admin
-    // to retract again; throwing surfaces a 500 with a requestId instead.
-    throw new Error(
-      `retractFactCandidate: RETURNING gave an unusable row for fact ${factId} — the retraction committed but cannot be reported`,
-    );
-  }
-
-  log.info(
-    { workspaceId: ctx.workspaceId, factId, userId: ctx.userId, requestId },
-    "brain review: fact candidate retracted — it leaves the review queue and is never offered for promotion",
-  );
-
-  return { id: row.id, invalidatedAt };
-}
+//
+// Rejection is the `retract` CORRECTION verb, and it moved (#4915): the
+// tombstone stamp, the correction-episode materialization, and the
+// derives-from re-review flags all live in `lib/brain/correction.ts`
+// (`correctFact({ verb: "retract" })`), which the admin route's
+// `POST /:id/retract` now runs. This module deliberately keeps no retract
+// spelling of its own — a second `invalidated_at` writer here would be exactly
+// the two-retract-semantics split the unification removed.

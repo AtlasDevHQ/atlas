@@ -100,6 +100,20 @@ run_fixture "the allowlisted region import passes" pass \
   "packages/api/src/api/routes/admin-migrate.ts" \
 'await client.query(`INSERT INTO brain_facts (id, workspace_id, subject, status, visible_to) VALUES ($1,$2,$3,$4,$5)`);'
 
+# (i2) The allowlisted correction machinery (#4915) → must PASS: `correct_fact`
+#      is the second gate-time decision maker the remediation text forecast,
+#      promoting the human-authored replacement inside the correction
+#      transaction.
+run_fixture "the allowlisted correction machinery passes" pass \
+  "packages/api/src/lib/brain/correction.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1 AND id = $2::uuid AND status = '"'"'draft'"'"'`);'
+
+# (i3) The carve-out is the FILE, not the directory: a sibling under
+#      `lib/brain/` writing the same shape must still FAIL.
+run_fixture "a non-allowlisted lib/brain sibling still fails" fail \
+  "packages/api/src/lib/brain/reconcile.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1`);'
+
 # (j) A test file staging a published fixture → must PASS (excluded by pattern).
 run_fixture "a .test.ts fixture is excluded" pass \
   "packages/api/src/lib/brain/__tests__/seed.test.ts" \

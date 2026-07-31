@@ -30,7 +30,6 @@ import {
   loadFactCandidateSummary,
   loadFactCandidates,
   projectProvenance,
-  retractFactCandidate,
   type BrainCandidateReader,
 } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
@@ -719,63 +718,8 @@ describe("loadFactCandidateSummary", () => {
   });
 });
 
-describe("retractFactCandidate", () => {
-  const retracted = [{ id: "fact-1", invalidated_at: ISO }];
-
-  it("stamps invalidated_at and NEVER writes or reads `status`", async () => {
-    // `scripts/check-brain-fact-promotion.sh` refuses any UPDATE on this table
-    // that so much as mentions `status` — including in a WHERE clause. That
-    // guard is a grep over source; this is what keeps the INTENT from being
-    // refactored away by someone who "fixes" the query to be draft-only.
-    const db = reader([{ match: "UPDATE brain_facts", rows: retracted }]);
-    const result = await retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" });
-
-    const sql = db.calls[0]?.sql ?? "";
-    expect(sql).toContain("invalidated_at = now()");
-    expect(sql).not.toContain("status");
-    // Nor `valid_to` (#4912) — retraction is the tombstone axis, supersession
-    // is the validity axis, and the same guard now refuses this column too. A
-    // retract that also closed the validity window would rewrite when a belief
-    // ENDED out of a verb that only says it was withdrawn.
-    expect(sql).not.toContain("valid_to");
-    expect(result).toEqual({ id: "fact-1", invalidatedAt: ISO });
-  });
-
-  it("is a no-op on an already-retracted fact", async () => {
-    const db = reader([{ match: "UPDATE brain_facts", rows: [] }]);
-    expect(await retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" })).toBeNull();
-    expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
-  });
-
-  it("refuses without touching the database when the reader is unresolvable", async () => {
-    const db = reader([{ match: "UPDATE brain_facts", rows: retracted }]);
-    await expect(
-      retractFactCandidate(db, {
-        ctx: { origin: "unresolved", workspaceId: WS, userId: null, role: null, audienceIds: [] },
-        factId: "fact-1",
-      }),
-    ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
-    expect(db.calls).toHaveLength(0);
-  });
-
-  it("carries the reader's grant tokens into the UPDATE", async () => {
-    // Retraction is a write; it must be gated by the same predicate the read
-    // is, or a reviewer could withdraw a claim they were never shown.
-    const db = reader([{ match: "UPDATE brain_facts", rows: retracted }]);
-    await retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" });
-    expect(db.calls[0]?.sql).toContain("f.visible_to &&");
-    expect(db.calls[0]?.params).toContainEqual(expect.arrayContaining(["org", "role:admin"]));
-  });
-
-  it("throws rather than reporting failure when a committed write cannot be described", async () => {
-    // Reporting `null` here would send the admin to retract again a row that
-    // was already retracted.
-    const db = reader([{ match: "UPDATE brain_facts", rows: [{ id: "fact-1", invalidated_at: null }] }]);
-    await expect(retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" })).rejects.toThrow(
-      /cannot be reported/,
-    );
-  });
-});
+// Rejection (`retract`) moved to `lib/brain/correction.ts` (#4915) — the
+// tombstone tests live in `correction.test.ts` beside the other three verbs.
 
 // ---------------------------------------------------------------------------
 // Provenance attribution on a widened fact (#4836)

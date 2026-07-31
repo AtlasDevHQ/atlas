@@ -950,3 +950,45 @@ export interface BrainFactRetractResponse {
   readonly id: string;
   readonly invalidatedAt: string;
 }
+
+/**
+ * The four correction verbs (#4915, ADR-0036 §Temporal, conflict &
+ * provenance) — T4's second human-authoritative entry point beside the review
+ * gate. `retract` is the ONLY tombstone path (and the GDPR-erasure verb);
+ * `supersede` stamps `valid_to` + the `supersedes` edge through #4912's
+ * publish-gate machinery; `re-authority` and `pin` re-anchor a claim on the
+ * correcting human as fresh evidence. The runtime tuple lives in
+ * `@useatlas/schemas` (`BRAIN_CORRECTION_VERBS`) for the usual
+ * no-value-exports-here reason.
+ */
+export type BrainCorrectionVerb = "retract" | "supersede" | "re-authority" | "pin";
+
+/**
+ * Result of applying one correction verb.
+ *
+ * Every correction materializes an immutable human-authored episode
+ * (`correctionEpisodeId`) and lands authoritative immediately — no draft
+ * queue. The verb-specific fields are `null` / empty on the verbs they do not
+ * belong to, rather than a discriminated union, because every consumer today
+ * renders the shared triple and treats the rest as annotations.
+ */
+export interface BrainFactCorrectionResponse {
+  readonly verb: BrainCorrectionVerb;
+  /** The corrected (target) fact. */
+  readonly factId: string;
+  /** The immutable human-authored correction episode recording the verb. */
+  readonly correctionEpisodeId: string;
+  /** `retract` only: the tombstone timestamp. */
+  readonly invalidatedAt: string | null;
+  /**
+   * `retract` only: live facts holding a `derives-from` edge onto the
+   * retracted one, flagged for human re-review. Opaque ids — never claims —
+   * and never a cascade: nothing about the flagged rows' own lifecycle
+   * changed.
+   */
+  readonly flaggedForReReview: readonly string[];
+  /** `supersede` only: the fact now serving as the current belief. */
+  readonly supersededBy: string | null;
+  /** `supersede` only: the `valid_to` stamped on the superseded fact. */
+  readonly validTo: string | null;
+}

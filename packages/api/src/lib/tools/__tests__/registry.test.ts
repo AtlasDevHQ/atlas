@@ -227,11 +227,14 @@ describe("defaultRegistry", () => {
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
     expect(defaultRegistry.get("createDashboard")).toBeDefined();
     expect(defaultRegistry.get("searchBrain")).toBeDefined();
+    // #4915 — the four correction verbs, under the ADR's own spelling.
+    expect(defaultRegistry.get("correct_fact")).toBeDefined();
   });
 
   it("getAll returns exactly the core tools", () => {
     const all = defaultRegistry.getAll();
     expect(Object.keys(all).sort()).toEqual([
+      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -247,6 +250,7 @@ describe("defaultRegistry", () => {
     expect(text).toContain("### 3. Write and Execute SQL");
     expect(text).toContain("### Create a Dashboard");
     expect(text).toContain("### Search the Company Brain");
+    expect(text).toContain("### Correct a Company-Brain Fact");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -285,6 +289,7 @@ describe("buildRegistry", () => {
       const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
       expect(names).toEqual([
+        "correct_fact",
         "createDashboard",
         "createLinearIssue",
         "executePython",
@@ -306,6 +311,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
+      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -319,6 +325,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
+      "correct_fact",
       "createDashboard",
       "createJiraTicket",
       "createLinearIssue",
@@ -367,10 +374,14 @@ describe("buildRegistry", () => {
       const { registry } = await buildRegistry({ dashboardUrlResolver: null });
       expect(registry.get("createDashboard")).toBeUndefined();
       const names = Object.keys(registry.getAll());
-      // Only createDashboard is dropped — the rest of the core set is intact.
+      // Two tools are dropped on a headless surface — createDashboard (#4566,
+      // unreachable handoff) and correct_fact (#4915, a brain WRITE that must
+      // not be reachable through the read-safe POST /api/v1/query admission,
+      // #4707) — the rest of the core set is intact.
       // (Assert the delta, not an exact list: querySalesforce / executePython
       // are env-gated and would break an exact-equality check on a dev box.)
       expect(names).not.toContain("createDashboard");
+      expect(names).not.toContain("correct_fact");
       for (const core of ["explore", "executeSQL", "searchBrain", "sendEmail", "createLinearIssue"]) {
         expect(names).toContain(core);
       }
@@ -383,8 +394,13 @@ describe("buildRegistry", () => {
     // The exported fallback the non-web surfaces (and the buildRegistry error
     // path in agent-query) land on — it must never carry createDashboard, so a
     // build failure can't silently reintroduce the tool.
-    it("nonDashboardRegistry omits createDashboard but keeps the core query tools", () => {
+    it("nonDashboardRegistry omits createDashboard AND correct_fact but keeps the core query tools", () => {
       expect(nonDashboardRegistry.get("createDashboard")).toBeUndefined();
+      // #4915/#4707 — this registry is what POST /api/v1/query reaches, and
+      // that operation is admitted to READ-SAFE Agent-Auth keys; a brain-
+      // mutating tool here would break the read-only-engine guarantee (the
+      // agent-auth tripwire test pins the same surface from the other side).
+      expect(nonDashboardRegistry.get("correct_fact")).toBeUndefined();
       expect(nonDashboardRegistry.get("executeSQL")).toBeDefined();
       expect(nonDashboardRegistry.get("explore")).toBeDefined();
       expect(nonDashboardRegistry.get("searchBrain")).toBeDefined();

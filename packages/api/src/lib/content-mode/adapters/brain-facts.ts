@@ -411,13 +411,16 @@ export const SUPERSESSION_TARGETS_SQL = `
 `;
 
 /**
- * Stamp the end of a superseded fact's validity — the ONE in-region writer of
- * `valid_to` (#4912): a human promotion, inside the publish transaction.
- * `correct_fact` (M2 #2) will be the second; nothing autonomous ever is, and
- * `check-brain-fact-promotion.sh` now refuses UPDATE-shape writes to the
- * column outside its allowlist (this file, plus `admin-migrate.ts` — the
- * region import restores an already-closed window verbatim, a restore rather
- * than a new arbitration).
+ * Stamp the end of a superseded fact's validity — the ONE spelling of the
+ * `valid_to` write (#4912), executed by exactly two allowlisted callers: this
+ * adapter (a human promotion, inside the publish transaction) and
+ * `correct_fact`'s supersede verb (#4915, `lib/brain/correction.ts` — a human
+ * correction, inside the correction transaction, importing THIS constant so
+ * the two arbitration paths cannot drift). Nothing autonomous ever writes it,
+ * and `check-brain-fact-promotion.sh` refuses UPDATE-shape writes to the
+ * column outside its allowlist (this file, `correction.ts`, plus
+ * `admin-migrate.ts` — the region import restores an already-closed window
+ * verbatim, a restore rather than a new arbitration).
  *
  * Every predicate is re-checked even though the targets SELECT just evaluated
  * them: the published rows are NOT covered by `DRAFT_FACTS_SQL`'s `FOR

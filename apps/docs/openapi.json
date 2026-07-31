@@ -25700,7 +25700,7 @@
           "Admin — Brain Facts"
         ],
         "summary": "Reject a fact candidate",
-        "description": "Rejects a candidate by stamping `invalidated_at` — the review gate's negative verb. It never writes `status`: `brain_facts.status` has exactly one writer (the atomic publish endpoint), and ADR-0036 makes withdrawal a tombstone rather than a demotion, so the claim stays readable to an as-of query while leaving the review queue, the publish preview, and draftCounts. Approval is `/api/v1/admin/publish`; there is no per-fact approve verb.",
+        "description": "Rejects a candidate by stamping `invalidated_at` — the review gate's negative verb, which since #4915 is the `retract` correction verb: the same call also materializes an immutable human-authored correction episode and flags any `derives-from` dependents for re-review (never a cascade). It never writes `status`: `brain_facts.status` has exactly one writer (the atomic publish endpoint), and ADR-0036 makes withdrawal a tombstone rather than a demotion, so the claim stays readable to an as-of query while leaving the review queue, the publish preview, and draftCounts. Approval is `/api/v1/admin/publish`; there is no per-fact approve verb.",
         "parameters": [
           {
             "schema": {
@@ -25808,6 +25808,31 @@
               }
             }
           },
+          "409": {
+            "description": "The fact cannot be retracted — it is warehouse-derived (tier-1), which has no correction path; fix the data or the semantic layer instead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -25835,6 +25860,257 @@
           }
         },
         "operationId": "postAdminBrainFactsByIdRetract"
+      }
+    },
+    "/api/v1/admin/brain-facts/{id}/correct": {
+      "post": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Apply a correct_fact verb to a fact",
+        "description": "Applies one of the four correction verbs (#4915, ADR-0036 §Temporal) — the second human-authoritative entry point beside the review gate. Every correction materializes an immutable, actor-attributed correction episode and lands authoritative immediately, without the draft queue. `retract` stamps `invalidated_at` (the only tombstone path and the GDPR-erasure verb) and flags `derives-from` dependents for re-review — never a cascade. `supersede` publishes the human's replacement claim (same subject and predicate, the corrected `replacement.object`) through the ordinary reconcile seam and stamps the target's `valid_to` plus the `supersedes` edge via the publish gate's own machinery (#4912). `re-authority` and `pin` attach the correction episode as fresh human evidence, resetting the staleness clock and recording who vouched. Tier-1 warehouse-derived facts are refused for every verb: fix the data or the semantic layer, not the brain.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Fact id"
+            },
+            "required": true,
+            "description": "Fact id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "verb": {
+                    "type": "string",
+                    "enum": [
+                      "retract",
+                      "supersede",
+                      "re-authority",
+                      "pin"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "replacement": {
+                    "type": "object",
+                    "properties": {
+                      "object": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      },
+                      "validFrom": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "object"
+                    ]
+                  }
+                },
+                "required": [
+                  "verb"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The correction was applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "retract",
+                        "supersede",
+                        "re-authority",
+                        "pin"
+                      ]
+                    },
+                    "factId": {
+                      "type": "string"
+                    },
+                    "correctionEpisodeId": {
+                      "type": "string"
+                    },
+                    "invalidatedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "flaggedForReReview": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "supersededBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "validTo": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "verb",
+                    "factId",
+                    "correctionEpisodeId",
+                    "invalidatedAt",
+                    "flaggedForReReview",
+                    "supersededBy",
+                    "validTo"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such fact, already retracted, or not visible to this admin — deliberately indistinguishable, so the response cannot confirm the existence of a fact the reader may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainFactsByIdCorrect"
       }
     },
     "/api/v1/admin/sessions": {

@@ -25,6 +25,7 @@
  */
 import { z } from "zod";
 import type {
+  BrainCorrectionVerb,
   BrainEntityRole,
   BrainFactCandidate,
   BrainFactAttributionView,
@@ -32,6 +33,7 @@ import type {
   BrainFactDecayView,
   BrainFactCandidateListResponse,
   BrainFactCandidateSummary,
+  BrainFactCorrectionResponse,
   BrainFactEpisodeView,
   BrainFactOversight,
   BrainFactOversightBucket,
@@ -377,6 +379,76 @@ export const BrainFactRetractResponseSchema = z.object({
   id: z.string(),
   invalidatedAt: z.string(),
 }) satisfies z.ZodType<BrainFactRetractResponse, unknown>;
+
+// ---------------------------------------------------------------------------
+// Correction verbs — `correct_fact` (#4915)
+// ---------------------------------------------------------------------------
+
+/** Mirrors `CORRECTION_VERBS` in `packages/api/src/lib/brain/correction.ts`. */
+export const BRAIN_CORRECTION_VERBS = [
+  "retract",
+  "supersede",
+  "re-authority",
+  "pin",
+] as const satisfies readonly BrainCorrectionVerb[];
+
+/** Compile error if a verb joins the union without joining the tuple. */
+type _BrainCorrectionVerbsCovered = [
+  Exclude<BrainCorrectionVerb, (typeof BRAIN_CORRECTION_VERBS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainCorrectionVerbsCovered: _BrainCorrectionVerbsCovered = true;
+void _brainCorrectionVerbsCovered;
+
+/** Narrow an untrusted verb string to the shared vocabulary. */
+export function isBrainCorrectionVerb(value: unknown): value is BrainCorrectionVerb {
+  return (
+    typeof value === "string" && (BRAIN_CORRECTION_VERBS as readonly string[]).includes(value)
+  );
+}
+
+/** Longest free-text `reason` accepted — recorded verbatim in the episode body. */
+export const BRAIN_CORRECTION_REASON_MAX_CHARS = 2_000;
+
+/** Longest replacement object accepted — an SPO column, not a document. */
+export const BRAIN_CORRECTION_OBJECT_MAX_CHARS = 2_000;
+
+/**
+ * The `POST /api/v1/admin/brain-facts/{id}/correct` request body. The target
+ * fact id travels in the path; `replacement` is required for `supersede`
+ * (enforced in the verb machinery, where the refusal carries actionable
+ * prose) and ignored elsewhere.
+ */
+export const BrainFactCorrectRequestSchema = z.object({
+  verb: z.enum(BRAIN_CORRECTION_VERBS),
+  reason: z.string().max(BRAIN_CORRECTION_REASON_MAX_CHARS).optional(),
+  replacement: z
+    .object({
+      object: z.string().min(1).max(BRAIN_CORRECTION_OBJECT_MAX_CHARS),
+      /**
+       * When the corrected value began to hold. Validated as ISO-8601 HERE —
+       * a 400 with a field path, not a silent degrade: this is a human's
+       * stated temporal boundary on a supersession, and discarding a
+       * malformed one quietly would bake the wrong `valid_from` into an
+       * immutable published fact. (`offset` admits `+02:00` spellings, not
+       * just `Z` — a correction is typed by a person, not a serializer.)
+       */
+      validFrom: z.string().datetime({ offset: true }).optional(),
+    })
+    .optional(),
+});
+export type BrainFactCorrectRequest = z.infer<typeof BrainFactCorrectRequestSchema>;
+
+export const BrainFactCorrectionResponseSchema = z.object({
+  verb: z.enum(BRAIN_CORRECTION_VERBS),
+  factId: z.string(),
+  correctionEpisodeId: z.string(),
+  invalidatedAt: z.string().nullable(),
+  flaggedForReReview: z.array(z.string()),
+  supersededBy: z.string().nullable(),
+  validTo: z.string().nullable(),
+}) satisfies z.ZodType<BrainFactCorrectionResponse, unknown>;
 
 // ---------------------------------------------------------------------------
 // Admin oversight — counts without content (#4825)

@@ -260,6 +260,7 @@ const BrainFactTensionVisibleSchema = z.object({
   validFrom: z.string().nullable(),
   ingestedAt: z.string().nullable(),
   invalidatedAt: z.string().nullable(),
+  validTo: z.string().nullable(),
   corroborationCount: z.number().int().nonnegative(),
   provenance: BrainFactProvenanceViewSchema,
 });

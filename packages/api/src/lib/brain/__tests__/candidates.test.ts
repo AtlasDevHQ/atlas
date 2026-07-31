@@ -63,6 +63,16 @@ interface Call {
  * SQL, and records every call so a test can assert on the emitted statement
  * itself — which is the only way to prove the episode read carries the EPISODE
  * table's predicate rather than the fact's.
+ *
+ * A key must match EXACTLY ONE of the statements this module emits, and that
+ * is enforced rather than assumed (the same guard `search.test.ts` carries,
+ * for the same reason). The collision is already live: `TENSION_EXISTS_SELECT`
+ * puts `edge_type = 'in-tension-with'` into the FACT PAGE's `WHERE` whenever
+ * `inTensionOnly` is set, so the first test combining that filter with a
+ * tension fixture has two keys matching one statement. Whether that is loud
+ * or silent is down to array order alone — `find()` is first-match-wins, so
+ * listing the tension fixture first hands the fact page the WRONG rows and the
+ * assertions pass against them.
  */
 function reader(
   responses: Array<{ match: string; rows: Record<string, unknown>[]; rowCount?: number }>,
@@ -72,7 +82,13 @@ function reader(
     calls,
     query: async (sql: string, params?: unknown[]) => {
       calls.push({ sql, params: params ?? [] });
-      const hit = responses.find((r) => sql.includes(r.match));
+      const hits = responses.filter((r) => sql.includes(r.match));
+      if (hits.length > 1) {
+        throw new Error(
+          `ambiguous SQL fixture key: ${hits.map((h) => JSON.stringify(h.match)).join(", ")} all match one statement — one of them must move to a fragment exactly one statement emits`,
+        );
+      }
+      const hit = hits[0];
       return { rows: hit?.rows ?? [], rowCount: hit?.rowCount ?? hit?.rows.length ?? 0 };
     },
   };
@@ -370,6 +386,7 @@ describe("loadFactCandidates — contradiction hints", () => {
     if (tensions[0]?.visible !== true) throw new Error("expected a visible counterpart");
     expect(tensions[0].provenance.producer).toBe("extraction:v1");
     expect(tensions[0].invalidatedAt).toBeNull();
+    expect(tensions[0].validTo).toBeNull();
   });
 
   it("reports an unreadable counterpart rather than dropping the conflict", async () => {
@@ -634,6 +651,40 @@ describe("loadFactCandidates — wire contract", () => {
     if (tension?.visible !== true) throw new Error("expected a visible counterpart");
     expect(tension.status).toBe("draft");
     expect(tension.invalidatedAt).toBe(ISO);
+    expect(tension.validTo).toBeNull();
+  });
+
+  it("labels a superseded counterpart, because supersession never writes status either (#4935)", async () => {
+    // The reviewer's half of the same defect. After the publish gate retires a
+    // rival, its counterpart entry still reads `published` with no tombstone —
+    // so without `validTo` the queue renders a conflict the reviewer already
+    // arbitrated as if it were still open.
+    const db = reader([
+      { match: "COUNT(*) OVER ()", rows: [factRow()] },
+      { match: "FROM brain_episodes e", rows: [] },
+      { match: "edge_type = 'in-tension-with'", rows: [{ from_id: "fact-1", to_id: "fact-2" }] },
+      {
+        match: "f.id = ANY(",
+        rows: [
+          factRow({
+            id: "fact-2",
+            object: "MySQL",
+            status: "published",
+            valid_to: ISO,
+            total_count: undefined,
+          }),
+        ],
+      },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    const tension = page.candidates[0]?.tensions[0];
+    if (tension?.visible !== true) throw new Error("expected a visible counterpart");
+    expect(tension.validTo).toBe(ISO);
+    // Every other signal still reads as live — which is the whole reason the
+    // label has to exist.
+    expect(tension.status).toBe("published");
+    expect(tension.invalidatedAt).toBeNull();
   });
 });
 

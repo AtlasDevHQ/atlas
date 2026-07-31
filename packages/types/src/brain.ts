@@ -242,6 +242,36 @@ export interface BrainFactTensionVisible {
    * labelled.
    */
   readonly invalidatedAt: string | null;
+  /**
+   * The end of the counterpart's own validity window — the supersession axis,
+   * peer to {@link BrainFactTensionVisible.invalidatedAt}'s retraction axis.
+   * This is the canonical statement of why both labels exist; other surfaces
+   * point here rather than restating it.
+   *
+   * Load-bearing for the same reason, and reached with no human action on the
+   * counterpart at all: the publish gate stamps `validTo` on the claim it
+   * retires and leaves that row's `status` untouched, while nothing deletes
+   * the `in-tension-with` edge written at ingest. So the winner permanently
+   * carries its loser as a counterpart, and without this field that
+   * counterpart reads `status: "published", invalidatedAt: null` — a conflict
+   * a human already arbitrated, presented as live and unresolved.
+   *
+   * PAST vs FUTURE matters. Non-null does not mean retired: the database's own
+   * liveness predicate is `valid_to IS NULL OR valid_to > now()`, so a
+   * future-dated stamp (a region import can carry one) is a LIVE rival whose
+   * end is merely scheduled. Derive any "superseded" label from `validTo` in
+   * the PAST; labelling a future window would suppress a real conflict.
+   *
+   * Both axes can be stamped on one rival — supersede-then-retract is
+   * reachable, the reverse is not: every correction verb reads its target
+   * through `invalidated_at IS NULL` (`correctionTargetSql`), so a tombstoned
+   * fact answers not-found rather than being refused.
+   *
+   * A LABEL, never a ranking. It reports a lifecycle transition that already
+   * happened; it is not a signal to compute a winner FROM. Do not sort or rank
+   * counterparts by it.
+   */
+  readonly validTo: string | null;
   readonly corroborationCount: number;
   readonly provenance: BrainFactProvenanceView;
 }

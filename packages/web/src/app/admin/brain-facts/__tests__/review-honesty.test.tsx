@@ -521,6 +521,7 @@ describe("contradictions are surfaced, not arbitrated", () => {
             object: "MySQL",
             status: "published",
             validFrom: null,
+            validTo: null,
             ingestedAt: ISO,
             invalidatedAt: null,
             corroborationCount: 5,
@@ -535,9 +536,16 @@ describe("contradictions are surfaced, not arbitrated", () => {
     const text = document.body.textContent ?? "";
     expect(text).toContain("MySQL");
     expect(text).toContain("is not choosing between them");
-    // No language that ranks one side. M2 owns arbitration; this surface must
-    // not pre-empt it with a "preferred"/"superseded" label.
-    expect(text).not.toMatch(/superseded|preferred|winner|more reliable/i);
+    // No language that RANKS one side — that ban is permanent and outlives
+    // M2. What is no longer banned is the word "superseded": #4935 made it a
+    // lifecycle LABEL on a rival's own closed window, the exact peer of the
+    // "Withdrawn" badge, and labelling what already happened to a claim is not
+    // pre-empting arbitration. The label must still stay off a LIVE rival,
+    // which this fixture is — so both lifecycle badges are asserted absent
+    // here, and each is asserted PRESENT on its own fixture below.
+    expect(text).not.toMatch(/preferred|winner|more reliable/i);
+    expect(text).not.toContain("Superseded");
+    expect(text).not.toContain("Withdrawn");
   });
 
   test("reports a rival the reviewer cannot see rather than hiding the conflict", async () => {
@@ -727,6 +735,7 @@ describe("truncation is admitted", () => {
             object: "MySQL",
             status: "draft",
             validFrom: null,
+            validTo: null,
             ingestedAt: ISO,
             invalidatedAt: ISO,
             corroborationCount: 1,
@@ -738,6 +747,133 @@ describe("truncation is admitted", () => {
     fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
     await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
     expect(document.body.textContent).toContain("Withdrawn");
+    // The axes are distinct verbs and must not share a badge.
+    expect(document.body.textContent).not.toContain("Superseded");
+    // The strike-through, which predates #4935 but whose condition #4935
+    // widened to `withdrawn || superseded`. Unasserted, the retraction arm can
+    // be dropped while the supersession fixture keeps every test green.
+    expect(document.querySelector(".line-through")?.textContent).toContain("MySQL");
+  });
+
+  test("labels a SUPERSEDED rival, which its status alone cannot show either (#4935)", async () => {
+    // Reached with no human action on the counterpart at all: the publish gate
+    // stamps `validTo` on the claim it retires, leaves that row's `status`
+    // alone, and nothing deletes the `in-tension-with` edge — so this
+    // counterpart otherwise renders exactly like a live rival ("Published", no
+    // tombstone) and the reviewer is shown a conflict they themselves already
+    // arbitrated as still open.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          {
+            visible: true,
+            factId: "fact-2",
+            edgeDirection: "to",
+            subject: "Acme",
+            predicate: "uses",
+            object: "MySQL",
+            status: "published",
+            validFrom: null,
+            validTo: ISO,
+            ingestedAt: ISO,
+            invalidatedAt: null,
+            corroborationCount: 1,
+            provenance: PROVENANCE,
+          },
+        ],
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Superseded");
+    expect(text).not.toContain("Withdrawn");
+    // The claim is struck through, the treatment retraction already had. The
+    // badge carries WHICH verb; the strike carries "not the current claim" —
+    // and it is the half no text assertion can see.
+    expect(document.querySelector(".line-through")?.textContent).toContain("MySQL");
+    // Labelled, not ranked: the surviving candidate gains no "preferred"
+    // marker and the cluster still names no winner.
+    expect(text).not.toMatch(/preferred|winner|more reliable/i);
+    expect(text).toContain("is not choosing between them");
+  });
+
+  test("does NOT call a rival superseded while its window is still open (#4935)", async () => {
+    // The inverse failure, and the one a `validTo !== null` label walks
+    // straight into. `brainFactCurrentClause` is `valid_to IS NULL OR valid_to
+    // > now()`, so a FUTURE-dated stamp — a region import can carry one — is a
+    // fact the search surface still serves as current. Badging it settled
+    // would hide an open conflict from the reviewer, which is worse than the
+    // bug this issue fixes: an unlabelled live rival is merely unhelpful, a
+    // mislabelled one is a lie the reviewer acts on.
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          {
+            visible: true,
+            factId: "fact-2",
+            edgeDirection: "to",
+            subject: "Acme",
+            predicate: "uses",
+            object: "MySQL",
+            status: "published",
+            validFrom: null,
+            validTo: future,
+            ingestedAt: ISO,
+            invalidatedAt: null,
+            corroborationCount: 1,
+            provenance: PROVENANCE,
+          },
+        ],
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+    expect(document.body.textContent).not.toContain("Superseded");
+    expect(document.body.textContent).not.toContain("Withdrawn");
+    // Not struck through either — a live rival must read as a live rival on
+    // every channel this card uses, not just the badge row.
+    expect(document.querySelector(".line-through")).toBeNull();
+  });
+
+  test("labels a rival retired on BOTH axes with both badges (#4935)", async () => {
+    // Reachable, and asserted because the badges are independent `&&` arms
+    // that an `else if` refactor would silently collapse: `supersede` refuses
+    // a target whose window is already closed, but `retract` does not refuse a
+    // superseded one, so supersede-then-retract reaches this state. Every
+    // other fixture in this file pins exactly-one badge, which is precisely
+    // the shape that lets a dropped label pass.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          {
+            visible: true,
+            factId: "fact-2",
+            edgeDirection: "to",
+            subject: "Acme",
+            predicate: "uses",
+            object: "MySQL",
+            status: "published",
+            validFrom: null,
+            validTo: ISO,
+            ingestedAt: ISO,
+            invalidatedAt: ISO,
+            corroborationCount: 1,
+            provenance: PROVENANCE,
+          },
+        ],
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Withdrawn");
+    expect(text).toContain("Superseded");
+    // Two labels are still not a ranking.
+    expect(text).not.toMatch(/preferred|winner|more reliable/i);
   });
 });
 

@@ -990,6 +990,7 @@ async function loadTensions(
       validFrom: iso(row.valid_from),
       ingestedAt: iso(row.ingested_at),
       invalidatedAt: iso(row.invalidated_at),
+      validTo: iso(row.valid_to),
       corroborationCount: count(row.corroboration_count),
       // Decided per COUNTERPART, off its own row. A tension counterpart is
       // a fact in its own right and was fetched through its own ACL

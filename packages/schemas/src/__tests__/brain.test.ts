@@ -25,6 +25,7 @@ const visibleCounterpart = {
   validFrom: null,
   ingestedAt: "2026-06-01T00:00:00.000Z",
   invalidatedAt: null,
+  validTo: null,
   corroborationCount: 2,
   provenance: {
     source: "slack",
@@ -47,6 +48,15 @@ const visibleCounterpart = {
 describe("BrainSearchTensionViewSchema — the searchBrain cluster entry", () => {
   test("parses a visible counterpart carrying claim + provenance", () => {
     expect(BrainSearchTensionViewSchema.parse(visibleCounterpart)).toEqual(visibleCounterpart);
+  });
+
+  test("REFUSES a visible counterpart missing validTo — the label is required, not optional (#4935)", () => {
+    // `.parse(x)).toEqual(x)` above pins that the FIELD exists, but a schema
+    // relaxed to `.optional()` still round-trips. `apps/docs/openapi.json`
+    // lists `validTo` in `required`, and a client that treats "absent" as
+    // "live" reads an arbitrated conflict as open — the whole defect.
+    const { validTo: _dropped, ...withoutValidTo } = visibleCounterpart;
+    expect(() => BrainSearchTensionViewSchema.parse(withoutValidTo)).toThrow();
   });
 
   test("parses the withheld count", () => {

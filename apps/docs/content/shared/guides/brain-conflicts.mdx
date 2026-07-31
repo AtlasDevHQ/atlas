@@ -32,8 +32,14 @@ Each visible counterpart arrives as a full claim in its own right: subject, pred
 
 Counterparts are sorted by fact id. That is deterministic and deliberately meaningless: not by time, not by status, not by source authority, not by corroboration count. Any of those orderings would imply a winner.
 
-<Callout type="info" title="Retracted rivals stay listed, and stay labelled">
-  A withdrawn claim is still why a live claim was contested, so the cluster is the one read that deliberately does not hide tombstoned facts. Each carries its `invalidatedAt`, because retraction never writes `status` — without that field you could not tell a live conflict from one somebody already resolved by rejecting the other side.
+<Callout type="info" title="Retired rivals stay listed, and stay labelled">
+  A claim that has since been withdrawn or replaced is still why a live claim was contested, so the cluster lists both: it is the one read that does not hide a tombstoned rival, and the one *current-belief* read that does not hide a superseded one. Every counterpart carries the stamps for **both** [temporal axes](/guides/brain-temporal-model#supersession-is-not-retraction) — `invalidatedAt` if it was retracted, `validTo` for the end of its validity window, either or both possible — because neither verb writes `status`. Without them you could not tell a live conflict from one somebody already resolved.
+
+  `validTo` arrives without anyone acting on the rival: the publish gate stamps it on the claim it retires, and nothing deletes the `in-tension-with` edge written when the two claims first disagreed. So a promoted claim keeps its predecessor as a counterpart permanently — correctly labelled as settled, not as an open contradiction.
+
+  Read `validTo` against the clock, not against null. A stamp **in the past** closes the window; a future-dated one is a live rival whose end is merely scheduled, and labelling it settled would hide a conflict that is still open. Both fields are as of now — an `asOf` read does not rewind them.
+
+  Both are **labels, not rankings**. They say what already happened to the rival; the cluster still names no winner.
 </Callout>
 
 ## Counterparts you cannot see

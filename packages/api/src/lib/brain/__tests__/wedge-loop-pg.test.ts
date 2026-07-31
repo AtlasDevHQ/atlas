@@ -271,6 +271,8 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
 
   /** Bodies the model was asked about — the "was the seam even exercised" pin. */
   let modelCalls: string[] = [];
+  /** Workspaces the cycle resolved a model for — asserted outside the callback. */
+  let resolveModelCalls: string[] = [];
   /** Extra messages a single test appends to a channel (the corroboration case). */
   let extraMessages: Readonly<Record<string, readonly SlackHistoryMessage[]>> = {};
 
@@ -399,11 +401,22 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = priorDatabaseUrl;
     if (pool) {
-      await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
-      await pool.end();
+      // `DROP SCHEMA … CASCADE` over a fully-migrated schema is slow under a
+      // loaded runner, and a lingering lock can make it throw outright. The
+      // `finally` is what keeps that from ALSO leaking the pool: open handles
+      // would keep the bun process alive, turning a leaked scratch schema into
+      // a hung run. Same discipline the bootstrap pool gets above.
+      try {
+        await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+      } catch (err) {
+        console.debug(
+          `afterAll(): DROP SCHEMA "${schemaName}" failed — the scratch schema is leaking`,
+          err instanceof Error ? err.message : String(err),
+        );
+      } finally {
+        await pool.end();
+      }
     }
-    // `DROP SCHEMA … CASCADE` over a fully-migrated schema is slow under a
-    // loaded runner, and a hook timeout here leaves the scratch schema behind.
   }, PG_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
@@ -422,6 +435,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       // becomes a cascade of unrelated ones.
       _resetBrainExtractionFailures();
       modelCalls = [];
+      resolveModelCalls = [];
       extraMessages = {};
       resetRosters();
     }
@@ -546,10 +560,15 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     const cycle = await Effect.runPromise(
       runBrainExtractionCycle({
         extract: llmFactExtractor,
+        // RECORDED here, ASSERTED below — never `expect`-ed inside the
+        // callback. The per-episode apply runs under `Effect.tryPromise`
+        // (`scheduler/periodic-db-job.ts`), which converts any throw into a
+        // counted `failed` outcome — so an `expect` here would have its
+        // "expected X, received Y" message destroyed on the way out and
+        // surface only as `failed: 0` mismatching, naming neither the
+        // assertion nor the wrong workspace.
         resolveModel: async (workspaceId) => {
-          // The cycle must resolve the model for the EPISODE's workspace — the
-          // BYO-mis-billing class `resolveExtractionModel` exists to prevent.
-          expect(workspaceId).toBe(WORKSPACE);
+          resolveModelCalls.push(workspaceId);
           return EXTRACTION_MODEL;
         },
       }),
@@ -564,6 +583,10 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       outageRefunded: 0,
     });
     expect(cycle.skipped).toEqual({ model_unavailable: 0, no_body: 0, quarantined: 0 });
+    // The cycle must resolve the model for the EPISODE's workspace — the
+    // BYO-mis-billing class `resolveExtractionModel` exists to prevent. A
+    // `Set` because one cycle resolves once per drained episode.
+    expect(new Set(resolveModelCalls)).toEqual(new Set([WORKSPACE]));
     return cycle;
   }
 
@@ -712,16 +735,28 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
         },
       });
       await client.query("COMMIT");
+      client.release();
       return out;
     } catch (err) {
+      // Surfaced, not swallowed, and NARROWED: a failed rollback would
+      // otherwise present as the ORIGINAL error over a silently poisoned
+      // connection, and a raw `unknown` names neither the operation nor the
+      // failure (pg can reject with a plain object on a destroyed socket).
+      let rolledBack = true;
       await client.query("ROLLBACK").catch((rbErr: unknown) => {
-        // Surfaced, not swallowed: a failed rollback here would otherwise
-        // present as the ORIGINAL error with a silently poisoned connection.
-        console.debug("fixture rollback failed", rbErr);
+        rolledBack = false;
+        console.debug(
+          "poolTransaction(): ROLLBACK failed after a fixture transaction error",
+          rbErr instanceof Error ? rbErr.message : String(rbErr),
+        );
       });
+      // Destroyed, not recycled, when the rollback itself failed — same hazard
+      // `publish()` documents: a client returned to the pool with an in-doubt
+      // transaction still holds its locks, and `afterEach`'s TRUNCATE would
+      // then block until the hook times out, reporting "timed out after
+      // 60000ms" instead of the reconcile error that actually happened.
+      client.release(rolledBack ? undefined : err instanceof Error ? err : new Error(String(err)));
       throw err;
-    } finally {
-      client.release();
     }
   };
 

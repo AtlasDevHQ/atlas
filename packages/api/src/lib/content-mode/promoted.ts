@@ -121,42 +121,6 @@ export function collectWidenings(
   );
 }
 
-/** One promoted row that superseded published rows, attributed to its table. */
-export interface SupersessionRecord {
-  readonly surface: string;
-  /** The newly-promoted row. */
-  readonly id: string;
-  /** The published rows whose `valid_to` this promotion stamped. */
-  readonly superseded: readonly [string, ...string[]];
-}
-
-/**
- * Every supersession any adapter performed this publish (#4912), attributed by
- * surface.
- *
- * Lives beside {@link collectWidenings} and for the same stated reason: both
- * publish surfaces run the identical `runPublishPhases`, and a supersession
- * recorded by one seam and dropped by the other is a difference nothing would
- * keep in sync. Like a widening it is permanent from the promoted side —
- * nothing re-offers it — and it is MORE consequential for readers: the
- * superseded fact stops answering as-of-now reads the moment the transaction
- * commits, so "why did the agent stop saying X?" is answered by this record.
- *
- * Uncapped, for {@link collectWidenings}' reason: both callers put it in a
- * durable-ish record rather than an HTTP response.
- */
-export function collectSupersessions(
-  reports: ReadonlyArray<PromotionReport>,
-): readonly SupersessionRecord[] {
-  return reports.flatMap((report) =>
-    (report.superseded ?? []).map((s) => ({
-      surface: report.table,
-      id: s.rowId,
-      superseded: s.superseded,
-    })),
-  );
-}
-
 /**
  * One promoted count per registered entry, keyed by the entry's wire key
  * (`key` for simple entries, `promotedKey` for exotic adapters), looked up by

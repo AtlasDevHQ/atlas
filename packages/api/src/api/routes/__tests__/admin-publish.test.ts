@@ -15,7 +15,6 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import {
   collectRefusals,
-  collectSupersessions,
   collectWidenings,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode/promoted";
@@ -101,9 +100,8 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
   promotedCountsFromReports,
   collectRefusals,
   // Re-exported through the real implementation, not a stub: the point of the
-  // #4823 / #4912 audit assertions is that the ROUTE's sweep is the shared one.
+  // #4823 audit assertions is that the ROUTE's sweep is the shared one.
   collectWidenings,
-  collectSupersessions,
   makeService: () => ({
     runPublishPhases: () =>
       Effect.try({
@@ -376,46 +374,6 @@ describe("POST /api/v1/admin/publish — refused drafts (#4769)", () => {
     expect(auditCalls[0].metadata).toMatchObject({
       widenedGrantCount: 0,
       widenedGrants: [],
-    });
-  });
-
-  it("records a SUPERSESSION in the durable audit row (#4912)", async () => {
-    // Same argument as the widening, one axis over: a supersession permanently
-    // changed which claim answers as-of-now reads, and the superseded row is
-    // invisible to every default read afterwards — "why did the agent stop
-    // saying X?" months later is answerable only from `audit_log`.
-    REPORTS = [
-      {
-        table: "brain_facts",
-        promoted: 1,
-        refused: [],
-        widened: [],
-        superseded: [{ rowId: "fact-new", superseded: ["fact-old-1", "fact-old-2"] }],
-      },
-    ];
-    const res = await publish();
-
-    expect(auditCalls[0].metadata).toMatchObject({
-      supersededFactCount: 1,
-      supersededFacts: [
-        {
-          surface: "brain_facts",
-          id: "fact-new",
-          superseded: ["fact-old-1", "fact-old-2"],
-        },
-      ],
-    });
-    // Absent from the RESPONSE, like the widenings: the will-supersede
-    // disclosure ran BEFORE the click, so the response asks nothing further.
-    expect(await res.json()).not.toHaveProperty("supersededFacts");
-  });
-
-  it("distinguishes 'nothing superseded' from the field having regressed", async () => {
-    REPORTS = [{ table: "brain_facts", promoted: 5, refused: [] }];
-    await publish();
-    expect(auditCalls[0].metadata).toMatchObject({
-      supersededFactCount: 0,
-      supersededFacts: [],
     });
   });
 });

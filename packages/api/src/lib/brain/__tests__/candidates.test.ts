@@ -30,13 +30,12 @@ import {
   loadFactCandidateSummary,
   loadFactCandidates,
   projectProvenance,
+  retractFactCandidate,
   type BrainCandidateReader,
 } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import { DECAY_STALE_AFTER_DAYS } from "@atlas/api/lib/brain/staleness";
 import {
   BrainFactCandidateListResponseSchema,
-  BrainFactDecayViewSchema,
   BrainFactProvenanceViewSchema,
 } from "@useatlas/schemas";
 
@@ -108,10 +107,6 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     ingested_at: ISO,
     updated_at: ISO,
     corroboration_count: 2,
-    // Selected by the page query (#4914) and NULL when the fact has no
-    // provenance edges — faithful to the real projection, so no test row
-    // trips the decay drift arm by accident.
-    last_observed_at: null,
     total_count: 1,
     ...overrides,
   };
@@ -284,17 +279,6 @@ describe("loadFactCandidates — visibility", () => {
     await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
   });
-
-  it("excludes SUPERSEDED facts exactly as tombstoned ones (#4912)", async () => {
-    // A stamped `valid_to` means a human promotion replaced this belief; there
-    // is no trust call left to make on it and it leaves the queue the way a
-    // retraction does. The OR arm is the regression pin for the other
-    // direction: every `valid_to IS NULL` row — the whole pre-supersession
-    // corpus — still satisfies the predicate.
-    const db = reader([{ match: "FROM brain_facts f", rows: [factRow()] }]);
-    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-    expect(db.calls[0]?.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
-  });
 });
 
 describe("loadFactCandidates — filters", () => {
@@ -388,25 +372,6 @@ describe("loadFactCandidates — contradiction hints", () => {
     ]);
   });
 
-  it("does NOT hide a superseded rival — settled history is still why the claim was contested (#4912)", async () => {
-    // The negative that keeps a future "apply the current-validity predicate
-    // everywhere" sweep honest: the queue itself now filters `valid_to`, but
-    // the counterpart lookup must not — a rival retired at the publish gate is
-    // still the reason this claim earned its tension edge, exactly like a
-    // retracted one.
-    const db = reader([
-      { match: "COUNT(*) OVER ()", rows: [factRow()] },
-      { match: "FROM brain_episodes e", rows: [] },
-      { match: "edge_type = 'in-tension-with'", rows: edgeRows },
-      { match: "f.id = ANY(", rows: [] },
-    ]);
-    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-
-    const counterpart = db.calls.find((c) => c.sql.includes("f.id = ANY("));
-    expect(counterpart?.sql).not.toContain("valid_to IS NULL OR");
-    expect(counterpart?.sql).not.toContain("invalidated_at IS NULL");
-  });
-
   it("gives each end of an on-page edge the other as a peer", async () => {
     const db = reader([
       {
@@ -422,95 +387,6 @@ describe("loadFactCandidates — contradiction hints", () => {
     // Symmetric on purpose — neither end is the authority over the other.
     expect(page.candidates[0]?.tensions[0]?.factId).toBe("fact-2");
     expect(page.candidates[1]?.tensions[0]?.factId).toBe("fact-1");
-  });
-
-  it("fetches counterparts in a SEPARATE ACL-gated statement, never a join onto the fact row", async () => {
-    // The likeliest leak in the slice (#4913): a counterpart join gated by the
-    // OWNER's predicate would hand a reviewer a rival's claim and provenance
-    // because they were entitled to the fact it conflicts with.
-    const db = reader([
-      { match: "COUNT(*) OVER ()", rows: [factRow()] },
-      { match: "FROM brain_episodes e", rows: [] },
-      { match: "edge_type = 'in-tension-with'", rows: edgeRows },
-      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
-    ]);
-    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-
-    const pageCall = db.calls.find((c) => c.sql.includes("COUNT(*) OVER ()"))!;
-    // The page statement resolves no counterpart. Pinned on `to_fact_id`
-    // rather than a blanket no-JOIN: #4914's decay anchor legitimately joins
-    // `brain_episodes` for a timestamp inside the page query, so "no JOIN"
-    // stopped being the invariant — "no tension-edge traversal" is.
-    expect(pageCall.sql).not.toContain("to_fact_id");
-    const counterpartCall = db.calls.find((c) => c.sql.includes("f.id = ANY("))!;
-    // The FRESH fact predicate, with the reader's own bound tokens — not the
-    // owner row's decision carried over, and no join in the statement. The
-    // bound array is the real pin: `not.toContain("JOIN")` alone would pass a
-    // correlated EXISTS against the owner row.
-    expect(counterpartCall.sql).toContain("f.visible_to && $2::text[]");
-    expect(counterpartCall.sql).not.toContain("JOIN");
-    expect(counterpartCall.params[1]).toEqual([
-      "org",
-      "role:admin",
-      "role:member",
-      "user:user-1",
-    ]);
-    // And the edge fetch binds cap + 1 — the overflow row is how truncation is
-    // detected, and the literal reader ignores LIMIT, so only the parameter
-    // can pin it (and which cap this surface budgets).
-    const edgeCall = db.calls.find((c) => c.sql.includes("edge_type = 'in-tension-with'"))!;
-    expect(edgeCall.params[2]).toBe(TENSION_FANOUT_CAP + 1);
-  });
-
-  it("interleaves visible and withheld rivals by factId — the review surface's historical order", async () => {
-    // The search surface appends its aggregate withheld arm LAST; the review
-    // surface deliberately does not — each withheld rival is its own entry,
-    // merged into one factId-sorted list. A regression copying the search
-    // projection's append-last shape here would pass every other test.
-    const db = reader([
-      { match: "COUNT(*) OVER ()", rows: [factRow()] },
-      { match: "FROM brain_episodes e", rows: [] },
-      {
-        match: "edge_type = 'in-tension-with'",
-        rows: [
-          { from_id: "fact-1", to_id: "fact-2" },
-          { from_id: "fact-1", to_id: "fact-0" },
-          { from_id: "fact-9", to_id: "fact-1" },
-        ],
-      },
-      // Only fact-2 is visible to this reader.
-      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
-    ]);
-    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-
-    expect(
-      (page.candidates[0]?.tensions ?? []).map((t) => `${t.factId}:${t.visible}`),
-    ).toEqual(["fact-0:false", "fact-2:true", "fact-9:false"]);
-  });
-
-  it("lists a reciprocal rival once per direction — the graph, not a double-count", async () => {
-    // `reconcile.ts`'s `WHERE NOT EXISTS` dedupes one direction only, so a
-    // raced reciprocal pair (A→B and B→A) is representable. Each review entry
-    // carries its `edgeDirection`, so one entry per edge is a faithful report
-    // of the graph — pinned so the search surface's direction-less
-    // withheld-count dedupe is never "helpfully" copied here.
-    const db = reader([
-      { match: "COUNT(*) OVER ()", rows: [factRow()] },
-      { match: "FROM brain_episodes e", rows: [] },
-      {
-        match: "edge_type = 'in-tension-with'",
-        rows: [
-          { from_id: "fact-1", to_id: "fact-2" },
-          { from_id: "fact-2", to_id: "fact-1" },
-        ],
-      },
-      { match: "f.id = ANY(", rows: [factRow({ id: "fact-2", total_count: undefined })] },
-    ]);
-    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-
-    expect(
-      (page.candidates[0]?.tensions ?? []).map((t) => `${t.factId}:${t.edgeDirection}`),
-    ).toEqual(["fact-2:to", "fact-2:from"]);
   });
 });
 
@@ -711,15 +587,61 @@ describe("loadFactCandidateSummary", () => {
       publishedTotal: 9,
     });
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
-    // The supersession axis (#4912): a superseded fact leaves the stats bar
-    // the same way a tombstoned one does — including `publishedTotal`, which
-    // otherwise counts rows the queue's own published filter would hide.
-    expect(db.calls[0]?.sql).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
   });
 });
 
-// Rejection (`retract`) moved to `lib/brain/correction.ts` (#4915) — the
-// tombstone tests live in `correction.test.ts` beside the other three verbs.
+describe("retractFactCandidate", () => {
+  const retracted = [{ id: "fact-1", invalidated_at: ISO }];
+
+  it("stamps invalidated_at and NEVER writes or reads `status`", async () => {
+    // `scripts/check-brain-fact-promotion.sh` refuses any UPDATE on this table
+    // that so much as mentions `status` — including in a WHERE clause. That
+    // guard is a grep over source; this is what keeps the INTENT from being
+    // refactored away by someone who "fixes" the query to be draft-only.
+    const db = reader([{ match: "UPDATE brain_facts", rows: retracted }]);
+    const result = await retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" });
+
+    const sql = db.calls[0]?.sql ?? "";
+    expect(sql).toContain("invalidated_at = now()");
+    expect(sql).not.toContain("status");
+    expect(result).toEqual({ id: "fact-1", invalidatedAt: ISO });
+  });
+
+  it("is a no-op on an already-retracted fact", async () => {
+    const db = reader([{ match: "UPDATE brain_facts", rows: [] }]);
+    expect(await retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" })).toBeNull();
+    expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
+  });
+
+  it("refuses without touching the database when the reader is unresolvable", async () => {
+    const db = reader([{ match: "UPDATE brain_facts", rows: retracted }]);
+    await expect(
+      retractFactCandidate(db, {
+        ctx: { origin: "unresolved", workspaceId: WS, userId: null, role: null, audienceIds: [] },
+        factId: "fact-1",
+      }),
+    ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it("carries the reader's grant tokens into the UPDATE", async () => {
+    // Retraction is a write; it must be gated by the same predicate the read
+    // is, or a reviewer could withdraw a claim they were never shown.
+    const db = reader([{ match: "UPDATE brain_facts", rows: retracted }]);
+    await retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" });
+    expect(db.calls[0]?.sql).toContain("f.visible_to &&");
+    expect(db.calls[0]?.params).toContainEqual(expect.arrayContaining(["org", "role:admin"]));
+  });
+
+  it("throws rather than reporting failure when a committed write cannot be described", async () => {
+    // Reporting `null` here would send the admin to retract again a row that
+    // was already retracted.
+    const db = reader([{ match: "UPDATE brain_facts", rows: [{ id: "fact-1", invalidated_at: null }] }]);
+    await expect(retractFactCandidate(db, { ctx: ctx(), factId: "fact-1" })).rejects.toThrow(
+      /cannot be reported/,
+    );
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Provenance attribution on a widened fact (#4836)
@@ -927,171 +849,6 @@ describe("BrainFactAttributionViewSchema — the withheld arm is enforced, not c
     for (const decision of ["disclose", "withhold"] as const) {
       const built = projectProvenance(factRow().provenance, "ep-1", decision);
       expect(BrainFactProvenanceViewSchema.safeParse(built).success).toBe(true);
-    }
-  });
-});
-
-/**
- * Read-time decay on the review queue (#4914, ADR-0036 §Temporal).
- *
- * The stance under test: decay only SURFACES — a label on the wire and a
- * float-to-top hint in ORDER BY — and never demotes. The structural half
- * (the staleness module holds no mutating SQL) is `staleness.test.ts`'s;
- * this suite pins the read model's use of it.
- */
-describe("loadFactCandidates — read-time decay (#4914)", () => {
-  const OLD = "2020-01-01T00:00:00.000Z";
-  const HINT = `make_interval(days => ${DECAY_STALE_AFTER_DAYS})`;
-
-  it("labels a long-unobserved claim stale and carries the observation", async () => {
-    const db = reader([
-      { match: "FROM brain_facts f", rows: [factRow({ last_observed_at: OLD })] },
-      { match: "FROM brain_episodes e", rows: [] },
-    ]);
-    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-    const decay = page.candidates[0]?.decay;
-    expect(decay?.level).toBe("stale");
-    expect(decay?.lastObservedAt).toBe(OLD);
-    expect(decay?.ageDays).toBeGreaterThanOrEqual(DECAY_STALE_AFTER_DAYS);
-    // The whole page still satisfies the wire contract the browser parses.
-    expect(BrainFactCandidateListResponseSchema.safeParse(page).success).toBe(true);
-  });
-
-  it("keeps the trust surface untouched by decay — status is whatever the row holds", async () => {
-    // The acceptance criterion stated as a negative: a stale fact is not
-    // demoted, re-labelled, or excluded. It arrives with its stored status.
-    const db = reader([
-      {
-        match: "FROM brain_facts f",
-        rows: [factRow({ status: "published", last_observed_at: OLD })],
-      },
-      { match: "FROM brain_episodes e", rows: [] },
-    ]);
-    const page = await loadFactCandidates(db, { ctx: ctx(), status: "all", limit: 50, offset: 0 });
-    expect(page.candidates[0]?.status).toBe("published");
-    expect(page.candidates[0]?.decay.level).toBe("stale");
-  });
-
-  it("uses the stale hint in ORDER BY and nowhere else", async () => {
-    const db = reader([{ match: "FROM brain_facts f", rows: [] }]);
-    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-    const sql = db.calls[0]?.sql ?? "";
-    const orderAt = sql.indexOf("ORDER BY");
-    expect(orderAt).toBeGreaterThan(-1);
-    // The hint keys on the SAME constant as the label (`staleness.test.ts`
-    // pins the interpolation), floats stale first, and keeps the familiar
-    // newest-ingest order beneath it.
-    expect(sql.slice(orderAt)).toContain(HINT);
-    expect(sql.slice(orderAt)).toContain("f.ingested_at DESC, f.id DESC");
-    // …and it is a SURFACING hint only: the WHERE half of the statement never
-    // mentions it, so a stale fact is floated, never filtered.
-    expect(sql.slice(0, orderAt)).not.toContain(HINT);
-  });
-
-  it("emits only reads while serving a stale page — no write path from the signal", async () => {
-    // The behavioral half of the acceptance criterion: rendering decay over a
-    // stale queue performs zero writes of any kind, so there is no statement a
-    // decay value could reach a fact row through.
-    const db = reader([
-      { match: "FROM brain_facts f", rows: [factRow({ last_observed_at: OLD })] },
-      { match: "FROM brain_episodes e", rows: [] },
-    ]);
-    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-    expect(db.calls.length).toBeGreaterThan(0);
-    for (const call of db.calls) {
-      expect(call.sql.trimStart()).toMatch(/^SELECT/i);
-    }
-  });
-
-  it("withholds the numbers from a widened-in reader but keeps the level (#4836)", async () => {
-    // For a singly-corroborated fact the newest observation IS the withheld
-    // `occurredAt`; a day-precision age restates it as arithmetic. The coarse
-    // bucket stays, because lying about the level would defeat the surface.
-    const db = reader([
-      {
-        match: "FROM brain_facts f",
-        rows: [
-          factRow({
-            visible_to: ["audience:chat-channel:slack:C-FOUNDERS", "org"],
-            pre_widening_visible_to: ["audience:chat-channel:slack:C-FOUNDERS"],
-            last_observed_at: OLD,
-          }),
-        ],
-      },
-      { match: "FROM brain_episodes e", rows: [] },
-    ]);
-    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-    expect(page.candidates[0]?.decay).toEqual({
-      level: "stale",
-      ageDays: null,
-      lastObservedAt: null,
-    });
-    // ONE decision feeds both consumers — the refactor's invariant. If decay
-    // withheld while attribution disclosed (or vice versa) the row would
-    // contradict itself about the same reader's entitlement to the "when".
-    expect(page.candidates[0]?.provenance.attribution).toEqual({ visible: false });
-  });
-
-  it("reports drift, not a fabricated label, when the SELECT drops the decay anchor", async () => {
-    // `pg` never yields `undefined` for a selected column, so a row without
-    // the key means the page query stopped selecting `last_observed_at`.
-    // Anchoring on ingest would label confidently while the ORDER BY hint —
-    // which interpolates the subquery independently — kept sorting by the
-    // real observation. The classifier refuses: age unknown.
-    const { last_observed_at: _dropped, ...row } = factRow();
-    const db = reader([
-      { match: "FROM brain_facts f", rows: [row] },
-      { match: "FROM brain_episodes e", rows: [] },
-    ]);
-    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-    expect(page.candidates[0]?.decay).toEqual({
-      level: "unknown",
-      ageDays: null,
-      lastObservedAt: null,
-    });
-  });
-
-  it("reports `unknown` rather than fabricating an age when nothing decodes", async () => {
-    const db = reader([
-      {
-        match: "FROM brain_facts f",
-        rows: [factRow({ last_observed_at: null, valid_from: null, ingested_at: "junk" })],
-      },
-      { match: "FROM brain_episodes e", rows: [] },
-    ]);
-    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
-    expect(page.candidates[0]?.decay).toEqual({
-      level: "unknown",
-      ageDays: null,
-      lastObservedAt: null,
-    });
-  });
-
-  it("REFUSES decay states the constructor cannot build, at the schema gate", () => {
-    // The refinements are the cross-field backstop for a hypothetical second
-    // producer — the same role `z.strictObject` plays on the withheld
-    // attribution arm. Deleting either refine must fail HERE, not surface as
-    // a contradictory view shipped through `checked()`.
-    const invalid = [
-      { level: "unknown", ageDays: 5, lastObservedAt: null },
-      { level: "unknown", ageDays: null, lastObservedAt: ISO },
-      { level: "stale", ageDays: null, lastObservedAt: ISO },
-    ];
-    for (const decay of invalid) {
-      expect(BrainFactDecayViewSchema.safeParse(decay).success).toBe(false);
-    }
-    // …and the polarity check: every state the constructor DOES build parses,
-    // most importantly the withheld shape — a refine that rejected valid
-    // withheld pages would take the review queue down for exactly the widened
-    // readers #4836 protects.
-    const valid = [
-      { level: "stale", ageDays: null, lastObservedAt: null },
-      { level: "unknown", ageDays: null, lastObservedAt: null },
-      { level: "aging", ageDays: 50, lastObservedAt: null },
-      { level: "fresh", ageDays: 5, lastObservedAt: ISO },
-    ];
-    for (const decay of valid) {
-      expect(BrainFactDecayViewSchema.safeParse(decay).success).toBe(true);
     }
   });
 });

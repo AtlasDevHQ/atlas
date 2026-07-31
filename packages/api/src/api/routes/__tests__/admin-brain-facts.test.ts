@@ -38,9 +38,7 @@ void mock.module("@atlas/api/lib/logger", () => {
 const auditRows: Array<Record<string, unknown>> = [];
 void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => auditRows.push(entry),
-  ADMIN_ACTIONS: {
-    brainFact: { retract: "brain_fact.retract", correct: "brain_fact.correct" },
-  },
+  ADMIN_ACTIONS: { brainFact: { retract: "brain_fact.retract" } },
 }));
 
 // Records the role lookup so a test can prove the ROLE SOURCE, which is
@@ -83,6 +81,10 @@ void mock.module("@atlas/api/lib/auth/effective-role", () => ({
 let listCalls: Array<Record<string, unknown>> = [];
 /** Mutable so a test can make the read model emit a schema-violating payload. */
 let listResponse: Record<string, unknown> = { candidates: [], total: 0, tensionsTruncated: false };
+let retractResult: { id: string; invalidatedAt: string } | null = {
+  id: "fact-1",
+  invalidatedAt: "2026-07-01T00:00:00.000Z",
+};
 void mock.module("@atlas/api/lib/brain/candidates", () => ({
   CANDIDATE_PAGE_MAX: 200,
   EPISODE_BODY_MAX_CHARS: 4000,
@@ -92,9 +94,6 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
   // anything in the graph imports a name this object omits.
   PROVISIONAL_PREDICATE: "(TRUE)",
   TENSION_EXISTS_SELECT: "(TRUE)",
-  // The module's re-export — listed so a future importer of it through
-  // `candidates` doesn't hit the partial-mock landmine.
-  BrainReaderUnresolvedError: class BrainReaderUnresolvedError extends Error {},
   projectProvenance: () => ({}),
   loadFactCandidates: async (_db: unknown, options: Record<string, unknown>) => {
     listCalls.push(options);
@@ -106,54 +105,7 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
     inTensionTotal: 0,
     publishedTotal: 7,
   }),
-}));
-
-/**
- * The verb machinery (#4915), stubbed on the same terms as the read model: the
- * route's own obligations — the UUID guard, outcome→HTTP mapping, the audit
- * row, the wire parse — are what these tests exercise. The verbs' semantics
- * are pinned in `lib/brain/__tests__/correction.test.ts` against a fake store
- * and in `candidates-pg.test.ts` §7 against the live schema.
- */
-const REFUSAL_REASONS = {
-  notAuthorized: "NOT_AUTHORIZED",
-  warehouseTarget: "WAREHOUSE_TARGET",
-  targetNotPublished: "TARGET_NOT_PUBLISHED",
-  validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
-  replacementMissing: "REPLACEMENT_MISSING",
-  replacementIdentical: "REPLACEMENT_IDENTICAL",
-  replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
-} as const;
-let correctCalls: Array<Record<string, unknown>> = [];
-let correctionOutcome: Record<string, unknown> = {
-  kind: "corrected",
-  result: {
-    verb: "retract",
-    factId: "fact-1",
-    correctionEpisodeId: "ep-corr-1",
-    invalidatedAt: "2026-07-01T00:00:00.000Z",
-    flaggedForReReview: [],
-    supersededBy: null,
-    validTo: null,
-  },
-};
-void mock.module("@atlas/api/lib/brain/correction", () => ({
-  CORRECTION_VERBS: ["retract", "supersede", "re-authority", "pin"],
-  CORRECTION_REFUSAL_REASONS: REFUSAL_REASONS,
-  CorrectionRefusedError: class CorrectionRefusedError extends Error {},
-  CORRECTION_EPISODE_INSERT_SQL: "INSERT",
-  RETRACT_FACT_SQL: "UPDATE",
-  DERIVES_FROM_EDGE_SQL: "INSERT",
-  DEPENDENT_FACTS_SQL: "SELECT",
-  MERGE_PROVENANCE_MARKER_SQL: "UPDATE",
-  PROMOTE_CORRECTION_FACT_SQL: "UPDATE",
-  REPLACEMENT_ROW_SQL: "SELECT",
-  correctionTargetSql: () => "SELECT",
-  isWarehouseDerived: () => false,
-  correctFact: async (request: Record<string, unknown>) => {
-    correctCalls.push(request);
-    return correctionOutcome;
-  },
+  retractFactCandidate: async () => retractResult,
 }));
 
 /**
@@ -182,15 +134,6 @@ let oversightResponse: Record<string, unknown> = {
 let oversightCalls = 0;
 /** The principal context the route handed the aggregate — see the test below. */
 let oversightCtx: unknown;
-/** The will-supersede half (#4912), stubbed on the same terms as the counts. */
-let supersessionPreviewResponse: Record<string, unknown> = {
-  total: 0,
-  pairs: [],
-  withheld: 0,
-  truncated: false,
-};
-let supersessionPreviewCalls = 0;
-let supersessionPreviewCtx: unknown;
 // EVERY named export, not just the two this route reaches: `mock.module` is
 // file-global, so a partial factory link-fails the moment anything else in the
 // graph imports one of the omitted names.
@@ -200,20 +143,12 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
   OVERSIGHT_BUCKETS_SQL: "SELECT token FROM brain_facts",
   OVERSIGHT_TOTALS_SQL: "SELECT 1 FROM brain_facts",
   OVERSIGHT_DISTINCT_TOKENS_SQL: "SELECT 1 FROM brain_facts",
-  WILL_SUPERSEDE_PAIR_MAX: 100,
-  WILL_SUPERSEDE_TOTAL_SQL: "SELECT 1 FROM brain_facts",
-  willSupersedePairsSql: () => "SELECT 1 FROM brain_facts",
   loadConfiguredChannels: async () => new Map(),
   classifyToken: () => ({ kind: "org", labelPolicy: "intrinsic" }),
   loadFactOversight: async (_db: unknown, ctx: unknown) => {
     oversightCalls++;
     oversightCtx = ctx;
     return oversightResponse;
-  },
-  loadSupersessionPreview: async (_db: unknown, ctx: unknown) => {
-    supersessionPreviewCalls++;
-    supersessionPreviewCtx = ctx;
-    return supersessionPreviewResponse;
   },
 }));
 
@@ -272,26 +207,11 @@ beforeEach(() => {
   memberLookupFails = false;
   listCalls = [];
   listResponse = { candidates: [], total: 0, tensionsTruncated: false };
-  correctCalls = [];
-  correctionOutcome = {
-    kind: "corrected",
-    result: {
-      verb: "retract",
-      factId: "fact-1",
-      correctionEpisodeId: "ep-corr-1",
-      invalidatedAt: "2026-07-01T00:00:00.000Z",
-      flaggedForReReview: [],
-      supersededBy: null,
-      validTo: null,
-    },
-  };
+  retractResult = { id: "fact-1", invalidatedAt: "2026-07-01T00:00:00.000Z" };
   AUTH_USER = { id: "user-1", role: "member" };
   ORG_ID = CURRENT_ORG;
   oversightCalls = 0;
   oversightCtx = undefined;
-  supersessionPreviewCalls = 0;
-  supersessionPreviewCtx = undefined;
-  supersessionPreviewResponse = { total: 0, pairs: [], withheld: 0, truncated: false };
   oversightResponse = {
     buckets: [],
     workspaceTotals: {
@@ -525,39 +445,6 @@ describe("GET /oversight", () => {
     expect((body.workspaceTotals as { awaitingReview: number }).awaitingReview).toBe(32);
   });
 
-  it("merges the will-supersede disclosure into the same response (#4912)", async () => {
-    // The strict schema REQUIRES the section, so a route that stopped merging
-    // it would 500 rather than quietly retire the disclosure — but the happy
-    // path is pinned too: the pairs must actually ship.
-    supersessionPreviewResponse = {
-      total: 2,
-      pairs: [
-        {
-          draftId: "d1",
-          draftLabel: "alice manager bob",
-          supersededId: "o1",
-          supersededLabel: "alice manager carol",
-        },
-      ],
-      withheld: 1,
-      truncated: false,
-    };
-    const res = await adminBrainFacts.request("/oversight");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { willSupersede: unknown };
-    expect(body.willSupersede).toEqual(supersessionPreviewResponse);
-    expect(supersessionPreviewCalls).toBe(1);
-  });
-
-  it("hands the will-supersede loader the SAME reviewer context as the counts", async () => {
-    // The pair labels are content, and the reader context is what scopes them.
-    // A route that resolved a second, wider context for this half would hand
-    // the disclosure claims the queue itself refuses to show.
-    await adminBrainFacts.request("/oversight");
-    expect(supersessionPreviewCtx).toEqual(oversightCtx);
-    expect(JSON.stringify(supersessionPreviewCtx)).not.toContain("override");
-  });
-
   it("hands the aggregate the reviewer's OWN member-table context", async () => {
     // `reviewableAwaitingReview` is the denominator of the entire disclosure. A
     // route that passed a fabricated or over-broad context — the session role
@@ -689,28 +576,11 @@ describe("GET /oversight", () => {
 });
 
 describe("POST /{id}/retract", () => {
-  it("runs the retract CORRECTION verb and records the decision in the admin action log", async () => {
-    correctionOutcome = {
-      kind: "corrected",
-      result: {
-        verb: "retract",
-        factId: FACT_ID,
-        correctionEpisodeId: "ep-corr-9",
-        invalidatedAt: "2026-07-01T00:00:00.000Z",
-        flaggedForReReview: ["dep-1"],
-        supersededBy: null,
-        validTo: null,
-      },
-    };
+  it("retracts and records the decision in the admin action log", async () => {
+    retractResult = { id: FACT_ID, invalidatedAt: "2026-07-01T00:00:00.000Z" };
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(200);
-    // The wire shape is unchanged by the #4915 unification — the richer
-    // correction payload is `/correct`'s; this route keeps its contract.
     expect(await res.json()).toEqual({ id: FACT_ID, invalidatedAt: "2026-07-01T00:00:00.000Z" });
-
-    // One code path, not two: the route called the verb machinery.
-    expect(correctCalls).toHaveLength(1);
-    expect(correctCalls[0]).toMatchObject({ factId: FACT_ID, verb: "retract" });
 
     expect(auditRows).toHaveLength(1);
     expect(auditRows[0]).toMatchObject({
@@ -719,12 +589,7 @@ describe("POST /{id}/retract", () => {
       targetId: FACT_ID,
       // The tombstone pointer. A retraction is never a delete, so the row this
       // names is still there to be read as-of.
-      metadata: {
-        invalidatedAt: "2026-07-01T00:00:00.000Z",
-        workspaceId: CURRENT_ORG,
-        correctionEpisodeId: "ep-corr-9",
-        flaggedForReReview: ["dep-1"],
-      },
+      metadata: { invalidatedAt: "2026-07-01T00:00:00.000Z", workspaceId: CURRENT_ORG },
     });
   });
 
@@ -733,12 +598,11 @@ describe("POST /{id}/retract", () => {
     // exhaustion, and the reviewer is told "Failed to process request".
     const res = await adminBrainFacts.request("/not-a-uuid/retract", { method: "POST" });
     expect(res.status).toBe(400);
-    expect(correctCalls).toHaveLength(0);
     expect(auditRows).toHaveLength(0);
   });
 
   it("answers one 404 for absent, already-retracted, and not-visible alike", async () => {
-    correctionOutcome = { kind: "not-found" };
+    retractResult = null;
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(404);
 
@@ -750,148 +614,5 @@ describe("POST /{id}/retract", () => {
     expect(body.message).toContain("not be visible to you");
     // …and nothing was audited, because nothing happened.
     expect(auditRows).toHaveLength(0);
-  });
-
-  it("409s a warehouse-derived target with the machinery's actionable prose", async () => {
-    correctionOutcome = {
-      kind: "refused",
-      reason: REFUSAL_REASONS.warehouseTarget,
-      message: "This fact is warehouse-derived — fix the data or the semantic layer.",
-    };
-    const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as { message: string };
-    expect(body.message).toContain("semantic layer");
-    expect(auditRows).toHaveLength(0);
-  });
-});
-
-describe("POST /{id}/correct", () => {
-  const correct = (body: Record<string, unknown>) =>
-    adminBrainFacts.request(`/${FACT_ID}/correct`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-  it("applies a verb and ships the correction payload through the wire schema", async () => {
-    correctionOutcome = {
-      kind: "corrected",
-      result: {
-        verb: "supersede",
-        factId: FACT_ID,
-        correctionEpisodeId: "ep-corr-2",
-        invalidatedAt: null,
-        flaggedForReReview: [],
-        supersededBy: "fact-new-1",
-        validTo: "2026-07-30T12:00:00.000Z",
-      },
-    };
-    const res = await correct({
-      verb: "supersede",
-      reason: "Ana left",
-      replacement: { object: "Bo" },
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      verb: "supersede",
-      factId: FACT_ID,
-      correctionEpisodeId: "ep-corr-2",
-      invalidatedAt: null,
-      flaggedForReReview: [],
-      supersededBy: "fact-new-1",
-      validTo: "2026-07-30T12:00:00.000Z",
-    });
-
-    expect(correctCalls[0]).toMatchObject({
-      factId: FACT_ID,
-      verb: "supersede",
-      reason: "Ana left",
-      replacement: { object: "Bo" },
-    });
-
-    // The non-retract verbs share the `correct` audit action, verb in metadata.
-    expect(auditRows[0]).toMatchObject({
-      actionType: "brain_fact.correct",
-      targetType: "brainFact",
-      targetId: FACT_ID,
-      metadata: {
-        verb: "supersede",
-        workspaceId: CURRENT_ORG,
-        correctionEpisodeId: "ep-corr-2",
-        supersededBy: "fact-new-1",
-        validTo: "2026-07-30T12:00:00.000Z",
-      },
-    });
-  });
-
-  it("a retract through /correct audits as brain_fact.retract — one verb, one audit vocabulary", async () => {
-    const res = await correct({ verb: "retract" });
-    expect(res.status).toBe(200);
-    expect(auditRows[0]).toMatchObject({ actionType: "brain_fact.retract" });
-  });
-
-  it("400s an unknown verb at the schema, before the machinery runs", async () => {
-    const res = await correct({ verb: "obliterate" });
-    expect(res.status).toBe(400);
-    expect(correctCalls).toHaveLength(0);
-  });
-
-  it("400s a malformed id instead of letting Postgres 500 on the uuid cast", async () => {
-    const res = await adminBrainFacts.request("/not-a-uuid/correct", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ verb: "pin" }),
-    });
-    expect(res.status).toBe(400);
-    expect(correctCalls).toHaveLength(0);
-  });
-
-  it("maps refusals onto their HTTP classes: 403 authority, 400 request shape, 409 target state", async () => {
-    const cases: Array<{ reason: string; status: number }> = [
-      { reason: REFUSAL_REASONS.notAuthorized, status: 403 },
-      { reason: REFUSAL_REASONS.replacementMissing, status: 400 },
-      { reason: REFUSAL_REASONS.replacementIdentical, status: 400 },
-      { reason: REFUSAL_REASONS.warehouseTarget, status: 409 },
-      { reason: REFUSAL_REASONS.targetNotPublished, status: 409 },
-      { reason: REFUSAL_REASONS.validityAlreadyClosed, status: 409 },
-      { reason: REFUSAL_REASONS.replacementUnpublishable, status: 409 },
-    ];
-    for (const { reason, status } of cases) {
-      auditRows.length = 0;
-      correctionOutcome = { kind: "refused", reason, message: "why, and what to do instead" };
-      const res = await correct({ verb: "supersede", replacement: { object: "Bo" } });
-      expect(res.status).toBe(status);
-      // A refusal is not a correction; nothing may be audited as one.
-      expect(auditRows).toHaveLength(0);
-    }
-  });
-
-  it("answers the same indistinguishable 404 as /retract", async () => {
-    correctionOutcome = { kind: "not-found" };
-    const res = await correct({ verb: "pin" });
-    expect(res.status).toBe(404);
-    const body = (await res.json()) as { message: string };
-    expect(body.message).toContain("may not exist");
-  });
-
-  it("refuses to ship a correction payload that violates its own wire schema", async () => {
-    // Same `checked()` posture as the list route: a machinery result the
-    // schema refuses must become a 500, never reach the browser.
-    correctionOutcome = {
-      kind: "corrected",
-      result: {
-        verb: "pin",
-        factId: FACT_ID,
-        correctionEpisodeId: "ep-corr-3",
-        invalidatedAt: 42, // not a string|null — the violation
-        flaggedForReReview: [],
-        supersededBy: null,
-        validTo: null,
-      },
-    };
-    const res = await correct({ verb: "pin" });
-    expect(res.status).toBe(500);
-    expect(await res.text()).not.toContain("ep-corr-3");
   });
 });

@@ -23,7 +23,6 @@ export {
   type ContentModeEntry,
   type SimpleModeTable,
   type ExoticModeAdapter,
-  type FactSupersession,
   type PromotionRefusal,
   type PromotionReport,
   ExoticReadFilterUnavailableError,
@@ -36,10 +35,8 @@ export { CONTENT_MODE_TABLES } from "./tables";
 export type { InferDraftCounts, InferPromotedCounts } from "./infer";
 export {
   collectRefusals,
-  collectSupersessions,
   collectWidenings,
   promotedCountsFromReports,
   type RefusalSweep,
-  type SupersessionRecord,
   type WidenedGrantRecord,
 } from "./promoted";

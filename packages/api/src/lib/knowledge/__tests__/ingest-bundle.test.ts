@@ -12,6 +12,10 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { Effect } from "effect";
 import { zipSync, strToU8 } from "fflate";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+// Imported from the leaf module, not the `content-mode` barrel this file mocks:
+// the barrel re-exports the registry and every adapter, and pulling that graph
+// in for one pure projection helper is what the leaf import avoids.
+import { collectSupersessions } from "@atlas/api/lib/content-mode/promoted";
 
 let MAX_DOCS = 100;
 let MAX_DOC_BYTES = 100_000;
@@ -102,6 +106,9 @@ void mock.module("@atlas/api/lib/logger", () => {
 // Partial mock, justified: this file's import graph reaches only the exports
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
 // unmocked export reached later fails loudly as `undefined is not a function`.
+// What the fake registry's publish phases report. Default: nothing superseded.
+let PUBLISH_REPORTS: Array<Record<string, unknown>> = [];
+
 void mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
   makeService: () => ({
@@ -109,9 +116,13 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
       Effect.sync(() => {
         publishRan = true;
         publishRanInTx = txActive;
-        return [];
+        return PUBLISH_REPORTS;
       }),
   }),
+  // The REAL sweep, not a stub: the property under test is that this seam runs
+  // the same helper `admin-publish.ts` and the MCP seam do (#4937), so stubbing
+  // it would assert only that the seam calls something.
+  collectSupersessions,
 }));
 
 void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
@@ -190,6 +201,7 @@ beforeEach(() => {
   insertedSources = [];
   nextId = 1;
   invalidations = [];
+  PUBLISH_REPORTS = [];
 });
 
 describe("typed failure outcomes (no writes)", () => {
@@ -308,6 +320,47 @@ describe("the committed write", () => {
     expect(publishRanInTx).toBe(true);
     // Publish is workspace-wide (entities/prompts promote too) → full-root bust.
     expect(invalidations).toEqual([{ orgId: WS, scope: "full" }]);
+  });
+
+  it("reports what the publish superseded — the seam's disclosure half (#4937)", async () => {
+    // The workspace-wide publish retires a published brain fact that this
+    // bundle never mentioned. Before #4937 the reports were discarded and the
+    // stamped `valid_to` left no trace anywhere on this path.
+    PUBLISH_REPORTS = [
+      { table: "knowledge_documents", promoted: 1 },
+      {
+        table: "brain_facts",
+        promoted: 2,
+        superseded: [{ rowId: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] }],
+      },
+    ];
+    const outcome = await run(zipSync({ "a.md": strToU8("# A") }), { publish: true });
+    expect(outcome).toMatchObject({
+      kind: "ok",
+      published: true,
+      supersededFacts: [
+        { surface: "brain_facts", id: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] },
+      ],
+    });
+  });
+
+  it("reports an empty supersession list when the publish superseded nothing", async () => {
+    // The distinguishing signal is `published`, not an absent field — a caller
+    // never has to tell `undefined` apart from "superseded nothing".
+    PUBLISH_REPORTS = [{ table: "brain_facts", promoted: 1, superseded: [] }];
+    const outcome = await run(zipSync({ "a.md": strToU8("# A") }), { publish: true });
+    expect(outcome).toMatchObject({ kind: "ok", published: true, supersededFacts: [] });
+  });
+
+  it("reports an empty supersession list when no publish ran at all", async () => {
+    // A plain ingest never reaches the publish phases, so nothing can be
+    // stamped — and the field is still present, never undefined.
+    PUBLISH_REPORTS = [
+      { table: "brain_facts", promoted: 9, superseded: [{ rowId: "n", superseded: ["o"] }] },
+    ];
+    const outcome = await run(zipSync({ "a.md": strToU8("# A") }));
+    expect(outcome).toMatchObject({ kind: "ok", published: false, supersededFacts: [] });
+    expect(publishRan).toBe(false);
   });
 
   it("rejects publish for a non-upload source — ADR-0028 §4 as a property of the seam", async () => {

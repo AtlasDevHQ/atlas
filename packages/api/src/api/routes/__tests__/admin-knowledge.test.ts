@@ -13,6 +13,10 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { zipSync, strToU8 } from "fflate";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+// Imported from the leaf module, not the `content-mode` barrel this file mocks:
+// the barrel re-exports the registry and every adapter, and pulling that graph
+// in for one pure projection helper is what the leaf import avoids.
+import { collectSupersessions } from "@atlas/api/lib/content-mode/promoted";
 // Type-only import — erased at compile time, so it coexists with the
 // mock.module() of the same path below.
 import type { KnowledgeSyncOutcome } from "@atlas/api/lib/knowledge/sync";
@@ -129,8 +133,16 @@ void mock.module("@atlas/api/lib/logger", () => {
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
+// Audit rows this router wrote. Captured rather than no-op'd because for the
+// "upload & publish" path the row IS the record — the endpoint has no confirm
+// step, so nothing else on this path retains what the publish superseded
+// (#4937).
+const auditRows: Array<{ actionType: string; metadata: Record<string, unknown> }> = [];
+
 void mock.module("@atlas/api/lib/audit", () => ({
-  logAdminAction: () => {},
+  logAdminAction: (row: { actionType: string; metadata: Record<string, unknown> }) => {
+    auditRows.push(row);
+  },
   ADMIN_ACTIONS: {
     knowledge: { ingest: "knowledge.ingest", sync: "knowledge.sync", uninstall: "knowledge.uninstall" },
   },
@@ -271,15 +283,22 @@ void mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({
 // Partial mock, justified: this file's import graph reaches only the exports
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
 // unmocked export reached later fails loudly as `undefined is not a function`.
+// What the fake registry's publish phases report. Default: nothing superseded.
+let PUBLISH_REPORTS: Array<Record<string, unknown>> = [];
+
 void mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
   makeService: () => ({
     runPublishPhases: () =>
       Effect.sync(() => {
         publishRan = true;
-        return [];
+        return PUBLISH_REPORTS;
       }),
   }),
+  // The REAL sweep, not a stub: the property under test is that an "upload &
+  // publish" records what it superseded through the SAME helper the other two
+  // publish surfaces use (#4937), which a stub would not prove.
+  collectSupersessions,
 }));
 
 // Full mock of every ingest-limits export (mock-all-exports): `mirror.ts` —
@@ -366,6 +385,8 @@ beforeEach(() => {
   COLLECTION = { install_id: "runbooks", catalog_id: "catalog:okf-upload", status: "published", config: {} };
   store = new Map();
   publishRan = false;
+  PUBLISH_REPORTS = [];
+  auditRows.length = 0;
   archivedDocRows = 0;
   nextId = 1;
   DOCUMENTS = [];
@@ -613,6 +634,42 @@ describe("POST /{collectionSlug}/ingest — happy path", () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { published: boolean }).published).toBe(true);
     expect(publishRan).toBe(true);
+  });
+
+  it("records what an upload & publish superseded in the audit row (#4937)", async () => {
+    // The workspace-wide publish retires a published brain fact this bundle
+    // never mentioned. Stamping `valid_to` hides it from every as-of-now read,
+    // so an unrecorded stamp is invisible by construction — and this endpoint
+    // has no confirm modal, which makes the audit row the FIRST and only
+    // durable record on this path.
+    PUBLISH_REPORTS = [
+      { table: "knowledge_documents", promoted: 1 },
+      {
+        table: "brain_facts",
+        promoted: 2,
+        superseded: [{ rowId: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] }],
+      },
+    ];
+    const res = await ingest("/runbooks/ingest?publish=true", zipSync({ "a.md": strToU8("# A") }));
+    expect(res.status).toBe(200);
+    const row = auditRows.find((r) => r.actionType === "knowledge.ingest");
+    expect(row?.metadata).toMatchObject({
+      published: true,
+      supersededFactCount: 1,
+      supersededFacts: [
+        { surface: "brain_facts", id: "new-fact-1", superseded: ["old-fact-1", "old-fact-2"] },
+      ],
+    });
+  });
+
+  it("records an empty supersession list when the publish superseded nothing (#4937)", async () => {
+    // The field is present either way: a reader of `audit_log` never has to
+    // tell "superseded nothing" apart from "this row predates the disclosure".
+    PUBLISH_REPORTS = [{ table: "brain_facts", promoted: 1, superseded: [] }];
+    const res = await ingest("/runbooks/ingest?publish=true", zipSync({ "a.md": strToU8("# A") }));
+    expect(res.status).toBe(200);
+    const row = auditRows.find((r) => r.actionType === "knowledge.ingest");
+    expect(row?.metadata).toMatchObject({ published: true, supersededFacts: [], supersededFactCount: 0 });
   });
 
   it("400s an upload into a bundle-sync collection — synced trees are endpoint-owned (#4211)", async () => {

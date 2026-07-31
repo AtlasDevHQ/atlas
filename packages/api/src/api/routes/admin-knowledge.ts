@@ -798,7 +798,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       }
     }
 
-    const { report, rejected } = outcome;
+    const { report, rejected, supersededFacts } = outcome;
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.knowledge.ingest,
@@ -817,11 +817,19 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         linksWritten: report.linksWritten,
         rejected: rejected.length,
         published: shouldPublish,
+        // Published brain facts an "upload & publish" retired (#4912, #4937).
+        // Uncapped ids, for `admin-publish.ts`'s reason with one extra edge:
+        // that route's modal disclosed the supersession BEFORE the click, so
+        // its audit row is the second record. This endpoint has no confirm
+        // step, so this row is the FIRST and only durable one — "what replaced
+        // what, and when" lives nowhere else on this path.
+        supersededFacts,
+        supersededFactCount: supersededFacts.length,
       },
     });
 
     log.info(
-      { requestId, orgId, collectionSlug, format: outcome.format, ...report, published: shouldPublish, rejected: rejected.length },
+      { requestId, orgId, collectionSlug, format: outcome.format, ...report, published: shouldPublish, rejected: rejected.length, superseded: supersededFacts.length },
       "Knowledge bundle ingested",
     );
 

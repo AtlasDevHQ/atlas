@@ -1011,6 +1011,38 @@ describe("MCP tools", () => {
   // --- searchBrain dispatch (#4773) ---
 
   describe("searchBrain", () => {
+    it("the advertised `asOf` argument does not promise retracted facts are unreachable (#4933)", async () => {
+      // This string is written HERE, not imported from the api package, so it
+      // is the one half of the searchBrain description that a fix in
+      // `lib/tools/descriptions.ts` cannot reach — and it shipped saying
+      // "retracted never", full stop. #4913 kept a retracted rival in
+      // `tensions` precisely so it stays distinguishable, so the absolute was
+      // false of the response and true only of `results`; a model reading it
+      // reports a settled retraction as a live contradiction.
+      //
+      // Asserted through `listTools()` rather than against the source constant
+      // because what an external client's model actually reads is the
+      // REGISTERED schema. `searchBrain.description` is module-mocked at the
+      // top of this file, so the tool-level prose is pinned in the api package
+      // (`lib/tools/__tests__/search-brain-tool.test.ts`); the argument prose
+      // has no other home.
+      const { client } = await createTestClient();
+      const { tools } = await client.listTools();
+      const asOf = tools.find((t) => t.name === "searchBrain")?.inputSchema.properties?.asOf as
+        | { description?: string }
+        | undefined;
+      expect(asOf?.description).toBeTruthy();
+      const description = asOf?.description ?? "";
+      // Both arms, so neither half can be dropped: the carve-out has to be
+      // stated (`tensions`) AND the field that labels it has to be nameable
+      // (`invalidatedAt`), or the guidance is unactionable.
+      expect(description).toContain("tensions");
+      expect(description).toContain("invalidatedAt");
+      // The never-arm the carve-out could plausibly displace: a retracted fact
+      // is still never a RESULT, which is what makes `asOf` safe to trust.
+      expect(description).toMatch(/never as a RESULT/);
+    });
+
     it("returns the fused payload as JSON on success", async () => {
       const { client } = await createTestClient();
       const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });

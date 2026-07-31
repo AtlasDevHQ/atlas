@@ -436,27 +436,34 @@ describe.each([
  * winner" — which is precisely the instruction that turns an arbitrated
  * conflict into a live one.
  *
- * ONE surface, deliberately, unlike the `describe.each` pins above:
- * `SEARCH_BRAIN_TOOL_DESCRIPTION` — and through it `packages/mcp/src/tools.ts`
- * — is #4933's, which owns the same omission and has to trade words against
- * the 80–150 rubric to fit any of it. Note #4933's acceptance criteria PREDATE
- * `validTo` and name only `invalidatedAt`: those two surfaces now lag on BOTH
- * axes, so closing #4933 as literally written would leave the MCP model still
- * unable to tell a superseded rival from a live one. Widening this block to
- * `describe.each` over both strings is the assertion that actually closes it.
+ * BOTH surfaces, as of #4933. The block shipped with #4935 covering only
+ * `SEARCH_BRAIN_DESCRIPTION` and said so, because `SEARCH_BRAIN_TOOL_DESCRIPTION`
+ * — and through it `packages/mcp/src/tools.ts`, which registers that exact
+ * string — had to trade words against the 80–150 rubric
+ * (`description-rubric.test.ts`) before it could carry any of this. #4933 paid
+ * that price, so the parameterisation is now the assertion.
+ *
+ * Note #4933's acceptance criteria PREDATE `validTo` and name only
+ * `invalidatedAt`. Closing it that literally would have left the MCP model
+ * able to spot a retracted rival and still unable to tell a superseded one
+ * from a live one — half a fix on the surface Atlas does not control the model
+ * of. Both axes are pinned on both strings for that reason.
  */
-describe("SEARCH_BRAIN_DESCRIPTION — a retired tension counterpart is labelled, not re-litigated (#4935)", () => {
+describe.each([
+  ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
+  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+])("%s — a retired tension counterpart is labelled, not re-litigated (#4935, #4933)", (_label, description) => {
   it("names BOTH wire fields, so neither axis can be dropped in a rewrite", () => {
-    expect(SEARCH_BRAIN_DESCRIPTION).toContain("invalidatedAt");
-    expect(SEARCH_BRAIN_DESCRIPTION).toContain("validTo");
+    expect(description).toContain("invalidatedAt");
+    expect(description).toContain("validTo");
   });
 
   it("distinguishes the two verbs rather than merging them into one label", () => {
     // Retracted means "should never have been served"; superseded means "was
     // true, then stopped being". A prompt that says only "retired" loses the
     // ability to tell a reader which happened.
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/RETRACTED/);
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/SUPERSEDED/);
+    expect(description).toMatch(/RETRACTED/);
+    expect(description).toMatch(/SUPERSEDED/);
   });
 
   it("tells the model a retired rival is SETTLED, which is the actionable half", () => {
@@ -466,7 +473,7 @@ describe("SEARCH_BRAIN_DESCRIPTION — a retired tension counterpart is labelled
     // Anchored to the INSTRUCTION, not to the word: a bare /settled/i passes
     // on the pre-#4935 string, which already says "never as settled" about
     // withheld rivals. Deleting this whole clause would have left it green.
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/report (those|them) as settled/i);
+    expect(description).toMatch(/report (those|them) as settled/i);
   });
 
   it("qualifies `validTo` by the clock, so a future window is not called settled", () => {
@@ -479,14 +486,74 @@ describe("SEARCH_BRAIN_DESCRIPTION — a retired tension counterpart is labelled
     // is matched by the pre-existing `asOf` bullet ("ISO-8601, in the past"),
     // and `/future/` alone would accept a prompt that called a future window
     // settled too — so the future arm has to carry its VERDICT.
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/ALREADY IN THE PAST/);
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/still in the future[^.]*\b(LIVE|contested)/);
+    expect(description).toMatch(/ALREADY IN THE PAST/);
+    expect(description).toMatch(/still in the future[^.]*\b(LIVE|contested)/);
   });
 
   it("keeps the never-arm that a labelling clause could plausibly displace", () => {
     // Labelling lifecycle state is not ranking. The moment this ban goes, the
     // model is free to read the labels as a verdict and pick a side on the
     // pair that is still genuinely live.
-    expect(SEARCH_BRAIN_DESCRIPTION).toMatch(/never pick a winner/i);
+    expect(description).toMatch(/never pick a winner/i);
+  });
+
+  it("never states the absolute the wire does not keep (#4933)", () => {
+    // The defect both #4932 and #4933 fixed was not a missing clause, it was a
+    // PRESENT one: "retracted never", unqualified, in a sentence about what
+    // `asOf` returns. True of results, false of the response — and a model
+    // cannot tell which from the prose, so it reports a settled retraction as
+    // a live contradiction.
+    //
+    // Sentence-scoped rather than a blocklist of the two exact wordings that
+    // shipped: any future sentence that mentions retraction has to say, in
+    // that same sentence, where a retracted fact still surfaces. A blocklist
+    // would pass the moment someone rephrased the absolute.
+    const offenders = description
+      .split(/(?<=\.)\s+/)
+      .filter((s) => /retract/i.test(s))
+      .filter((s) => !s.includes("tensions") && !s.includes("invalidatedAt"));
+    expect(
+      offenders,
+      "every sentence mentioning retraction must name `tensions` or `invalidatedAt` — an unqualified absolute teaches the model retracted facts are unreachable",
+    ).toEqual([]);
+  });
+});
+
+/**
+ * The third agent-facing string, and the one neither block above reaches: the
+ * `asOf` ARGUMENT description on the tool's input schema (#4933). A model
+ * deciding whether to pass `asOf` reads the argument prose, not the tool
+ * prose, and this one shipped promising "retracted facts never" — the same
+ * absolute, in the same place, on a surface with its own reader.
+ *
+ * `packages/mcp/src/tools.ts` re-declares this argument rather than importing
+ * it, so the MCP half is pinned there (`__tests__/tools.test.ts`, via
+ * `listTools()`). Two assertions, two files, because there are genuinely two
+ * strings.
+ */
+describe("searchBrain `asOf` argument description — the carve-out travels with the promise (#4933)", () => {
+  const asOfDescription = ((): string => {
+    // The AI SDK keeps the zod object it was handed, so the argument prose an
+    // LLM is served is readable straight off the shape. Narrowed rather than
+    // cast blind: a schema reshape should fail loudly here, not silently pin
+    // an empty string.
+    const shape = (searchBrain.inputSchema as unknown as { shape?: Record<string, unknown> }).shape;
+    const asOf = shape?.asOf as { description?: string } | undefined;
+    return asOf?.description ?? "";
+  })();
+
+  it("is readable at all — a reshape must fail here, not silently pass", () => {
+    expect(asOfDescription).toContain("historical point read");
+  });
+
+  it("names where a retracted fact still surfaces, and the field that labels it", () => {
+    expect(asOfDescription).toContain("tensions");
+    expect(asOfDescription).toContain("invalidatedAt");
+  });
+
+  it("keeps the never-arm: retracted is still never a RESULT", () => {
+    // The carve-out is what makes the sentence true; this is what makes it
+    // useful. Drop it and the model has no reason to trust an `asOf` read.
+    expect(asOfDescription).toMatch(/never as a RESULT/);
   });
 });

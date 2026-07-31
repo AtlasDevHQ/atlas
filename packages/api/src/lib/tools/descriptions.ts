@@ -62,11 +62,23 @@ Use this whenever a metric exists for what the user asked — never re-derive me
 
 Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
 
-export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain — trust-labeled results across three stores. \`tier: "fact"\` is human-reviewed; \`tier: "raw-episode"\` its source record; \`tier: "document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: author, source id, timestamp withheld — use the claim, say attribution restricted, never call it anonymous, undated, unsourced, nor infer the author. Unextracted episodes carry \`extraction: "pending"\`. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age; never assert it as current or drop it. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen rivals), unranked: never pick winners. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then — superseded included, retracted never; frame as "as of <time>". Example: \`{ "query": "who owns billing", "asOf": "2026-07-01T00:00:00Z" }\`.
+// The `tensions` clause is the one place in this file where prose is load-
+// bearing for correctness rather than routing (#4933). `invalidatedAt` and
+// `validTo` are carried on every counterpart precisely so a withdrawn or
+// replaced rival is distinguishable from a live one; without the labels here
+// an MCP model reads the whole cluster as unresolved and re-opens a conflict a
+// human already settled. The two lifecycle words are trades, not additions —
+// the string sat at 149/150 rubric words, so the retraction guidance was paid
+// for by compressing the tier, attribution, age, and `asOf` clauses. The
+// system-prompt twin in `lib/tools/search-brain.ts` carries the same semantics
+// at full length because it is not rubric-capped; the two are pinned together
+// in `__tests__/search-brain-tool.test.ts`. Trim anything here and re-run that
+// suite — the never-arms are assertions, not decoration.
+export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain. Trust-labeled results: \`tier: "fact"\` human-reviewed, \`"raw-episode"\` its source (maybe \`extraction: "pending"\`), \`"document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: use the claim, say attribution restricted; never anonymous, undated, unsourced, nor infer the author. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age, never assert as current or drop. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen), unranked: never pick a winner. Report those as settled once retired: \`invalidatedAt\` non-null = RETRACTED, \`validTo\` ALREADY IN THE PAST = SUPERSEDED; \`validTo\` still in the future = LIVE. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then, framed "as of <time>": superseded included, retracted only in \`tensions\`. Example: \`{ "query": "billing owner", "asOf": "2026-07-01" }\`.
 
-Use this when asking about decisions, rationale, ownership, or policy — recorded knowledge.
+Use this when asked about decisions, rationale, ownership, or policy.
 
-Don't use this for quantitative current state (\`executeSQL\`) or the semantic layer (\`explore\`).`;
+Don't use this for quantitative state (\`executeSQL\`) or the semantic layer (\`explore\`).`;
 
 export const QUERY_TOOL_DESCRIPTION = `Ask Atlas's server-side analyst agent a natural-language question; it explores the semantic layer, writes and runs the SELECTs itself, and returns a prose \`answer\` plus every SQL statement it ran and the result rows. This is the recommended path for question-answering — the agent knows the catalog, glossary, canonical metrics, joins, and RLS, so it composes better SQL than a generic client writing raw SQL blind. It runs a second server-side LLM and spends Atlas plan tokens; prefer it when answer quality matters. Example call: \`{ "question": "top 5 products by revenue last quarter" }\`. Example response: \`{ "answer": "...", "sql": ["SELECT ..."], "data": [...] }\`.
 

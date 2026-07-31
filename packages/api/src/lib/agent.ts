@@ -1087,7 +1087,8 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  *   a new package can reach `runAgent`.
  *
  *   The parameter stays optional for TESTS; production callers are required to
- *   name a registry. The default is now {@link nonDashboardRegistry}, not the
+ *   name a registry. Making it required outright — so the compiler enforces this
+ *   instead of a source scanner — is #4943. The default is now {@link nonDashboardRegistry}, not the
  *   dashboards-owning `defaultRegistry` (#4936). The old default was
  *   write-carrying: any caller that omitted `tools` silently received
  *   `createDashboard` AND `correct_fact` — re-opening, from the outside, the

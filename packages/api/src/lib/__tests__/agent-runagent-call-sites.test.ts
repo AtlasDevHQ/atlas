@@ -24,11 +24,16 @@
  *      called `tools`": `EXPECTED_REGISTRY` pins the actual expression per
  *      file, because "passed a registry" is satisfied just as well by passing
  *      the WRONG one, and a text match for `tools:` is satisfied by a
- *      CONDITIONAL spread — which is the exact shape two of the three
- *      pre-fix call sites had (`...(toolRegistry ? { tools: toolRegistry } :
- *      {})`). A guard that misses the spelling the bug actually used is
- *      theatre, so `SCANNER_FIXTURES` below pins the scanner against the
- *      historical spellings.
+ *      CONDITIONAL spread — `...(toolRegistry ? { tools: toolRegistry } : {})`,
+ *      which is what `ee/.../answer-adapter.ts` and `api/routes/chat.ts`
+ *      contained (the latter inheriting the default harmlessly, being the
+ *      surface that wants it — which is why the shape survived review). A guard
+ *      that misses the spelling the bug actually used is theatre, so
+ *      `SCANNER_FIXTURES` below pins the scanner against it.
+ *
+ *      Where an entry in `EXPECTED_REGISTRY` pins a LOCAL IDENTIFIER rather
+ *      than a registry name, the identifier's value is guaranteed only by that
+ *      surface's behavioural test — named per entry.
  *
  * The safe default is the backstop for anything the scan cannot see (an
  * untyped caller, a plugin compiled separately); naming the registry at the
@@ -38,7 +43,7 @@
  * axis (F-54/F-55), but over a DIFFERENT set — its roots are
  * `packages/api/src/api/routes` + `packages/api/src/lib/scheduler` only, so it
  * covers neither `ee/**` nor `lib/chat-plugin/**`. The two files overlap on
- * three call sites; they are complementary, not co-extensive.
+ * three FILES; they are complementary, not co-extensive.
  */
 
 import { describe, expect, it, mock } from "bun:test";
@@ -232,7 +237,9 @@ const REPO_ROOT = resolve(import.meta.dir, "..", "..", "..", "..", "..");
  * included deliberately: the proactive answer adapter — the call site with the
  * most authority (a real linked user, resolved to their real `member.role`)
  * and the least supervision (autonomous Slack answer, no confirmation UI) —
- * lives there, and an audit that stops at `packages/` misses it entirely.
+ * lives there, and an audit that stops at `packages/` misses it entirely. That
+ * branch is latent on the SaaS wiring today (see the adapter), which is why it
+ * needs a guard rather than a fix-on-report.
  *
  * This is an allowlist, so it can rot silently as packages are added.
  * `no runAgent call site lives outside SCAN_ROOTS` below is the drift guard.
@@ -284,39 +291,131 @@ function findRunAgentCalls(file: string, source: string): CallSite[] {
         if (depth === 0) break;
       }
     }
+    if (depth !== 0) {
+      // Never found the closing paren. `slice(start, i)` would return the rest
+      // of the FILE as the "arguments" — which almost certainly contains a
+      // `tools:` somewhere, so the call site would be silently ACCEPTED. Same
+      // rule as the sweep's read-fault handling: a degraded scan fails loudly.
+      throw new Error(
+        `unbalanced runAgent(...) at ${file} offset ${match.index} — the comment ` +
+          `stripper likely ate a paren; an unterminated scan silently ACCEPTS the call site`,
+      );
+    }
     out.push({ file, args: source.slice(start, i) });
   }
   return out;
 }
 
+type ToolsProp =
+  /** An unconditional `tools: <expr>` at the top level of the options object. */
+  | { readonly kind: "value"; readonly text: string }
+  /** An unconditional `tools` shorthand property. */
+  | { readonly kind: "shorthand" }
+  /** `tools` appears, but only inside a spread element. */
+  | { readonly kind: "spread-only" }
+  | { readonly kind: "absent" };
+
 /**
- * A call site is an offender if it does not name `tools` UNCONDITIONALLY.
+ * Locate the `tools` property of a `runAgent(...)` options object.
  *
- * The three rejected shapes are not hypothetical — the first two are verbatim
- * what `ee/src/proactive/answer-adapter.ts` and `packages/api/src/api/routes/
- * chat.ts` contained before this fix. A predicate that only asks "does the
- * substring `tools:` appear?" passes both, i.e. would have reported #4936 as
- * clean. `SCANNER_FIXTURES` pins that it does not.
+ * Deliberately a small brace-depth scanner rather than a regex. Every regex
+ * spelling of this check has a blind spot that matters:
+ *
+ *   - `/tools\s*:/` alone accepts a CONDITIONAL spread — and
+ *     `...(toolRegistry ? { tools: toolRegistry } : {})` is verbatim what
+ *     `ee/src/proactive/answer-adapter.ts` contained before this fix. A guard
+ *     that misses the spelling the bug actually used is theatre.
+ *   - narrowing the spread to `/\.\.\.\s*\([^)]*tools\s*:/` then misses any
+ *     condition containing a paren (`...(hasTools() ? … : {})`).
+ *   - either way, a `tools:` nested in `resume: { tools }` counts as a hit.
+ *
+ * Splitting on top-level commas has none of those holes: spread elements are
+ * identified as elements and skipped wholesale however they are spelled, and
+ * nesting is excluded by construction.
  */
-function offenceFor(args: string): string | undefined {
-  if (/\.\.\.\s*\([^)]*\btools\s*:/.test(args)) {
-    return "passes `tools` through a CONDITIONAL spread — the surface inherits the default whenever the condition is false";
+function inspectToolsProp(args: string): ToolsProp {
+  const open = args.indexOf("{");
+  // `runAgent(opts)` — no literal to inspect, so the surface's posture is not
+  // visible here. Treated as absent: fail closed and make the author inline it.
+  if (open === -1) return { kind: "absent" };
+
+  const props: string[] = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let i = open; i < args.length; i++) {
+    const ch = args[i];
+    if (ch === "{" || ch === "(" || ch === "[") {
+      depth++;
+    } else if (ch === "}" || ch === ")" || ch === "]") {
+      depth--;
+      if (depth === 0) {
+        props.push(args.slice(start, i));
+        break;
+      }
+    } else if (ch === "," && depth === 1) {
+      props.push(args.slice(start, i));
+      start = i + 1;
+    }
   }
-  if (/(^|[\s{,])tools\s*:\s*undefined\b/.test(args)) {
-    return "passes `tools: undefined`, which is the same as omitting it";
+
+  let sawToolsInSpread = false;
+  for (const raw of props) {
+    const prop = raw.trim();
+    if (prop.startsWith("...")) {
+      if (/\btools\b/.test(prop)) sawToolsInSpread = true;
+      continue;
+    }
+    const match = /^(?:"tools"|'tools'|tools)\s*(:?)/.exec(prop);
+    if (!match) continue;
+    if (match[1] !== ":") {
+      // Guard against `toolsFoo` matching the bare-identifier arm.
+      if (prop !== "tools") continue;
+      return { kind: "shorthand" };
+    }
+    return { kind: "value", text: prop.slice(match[0].length).trim() };
   }
-  if (!/(^|[\s{,])tools\s*:/.test(args)) {
-    return "omits `tools`";
-  }
-  return undefined;
+
+  return sawToolsInSpread ? { kind: "spread-only" } : { kind: "absent" };
 }
 
 /**
- * The registry each production surface must resolve to. Pinning the EXPRESSION,
- * not just the presence of a `tools` key, is what makes this a security guard
- * rather than a style check: "passed a registry" is satisfied equally well by
- * passing the wrong one, and `tools: defaultRegistry` on a new headless surface
- * is precisely the regression #4936 is about.
+ * A call site is an offender if it does not name `tools` UNCONDITIONALLY, with
+ * a value that cannot be `undefined`.
+ *
+ * The last clause matters because `exactOptionalPropertyTypes` is off, so
+ * `tools: ToolRegistry | undefined` typechecks against `tools?: ToolRegistry`:
+ * `tools: cond ? registry : undefined` reads as explicit and behaves as
+ * omission. `SCANNER_FIXTURES` pins every one of these shapes.
+ */
+function offenceFor(args: string): string | undefined {
+  const prop = inspectToolsProp(args);
+  switch (prop.kind) {
+    case "absent":
+      return "omits `tools`";
+    case "spread-only":
+      return "names `tools` only inside a SPREAD — the surface inherits the default whenever the spread's condition is false";
+    case "shorthand":
+      return undefined;
+    case "value":
+      return /\bundefined\b/.test(prop.text)
+        ? "passes a `tools` value that can be `undefined`, which is the same as omitting it"
+        : undefined;
+  }
+}
+
+/**
+ * The registry each production surface must resolve to. Pinning what is PASSED,
+ * not just that something called `tools` is passed, is what makes this a
+ * security guard rather than a style check: "passed a registry" is satisfied
+ * equally well by passing the wrong one, and `tools: defaultRegistry` on a new
+ * headless surface is precisely the regression #4936 is about.
+ *
+ * Where the pin is a REGISTRY NAME (`demo.ts`, `resume-turn.ts`) it is exact.
+ * Where it is a LOCAL IDENTIFIER (`chat.ts`, `agent-query.ts`,
+ * `answer-adapter.ts`) it only proves the surface chose deliberately — what the
+ * identifier resolves to is pinned by that surface's behavioural test, named in
+ * the `why` string. A text scan cannot close that gap; the behavioural layer is
+ * not optional decoration.
  *
  * A call-site file absent from this map fails. That is the point — a new
  * `runAgent` surface must make its tool posture a reviewed decision here, not
@@ -326,7 +425,7 @@ const EXPECTED_REGISTRY: ReadonlyArray<readonly [file: string, expected: RegExp,
   [
     "packages/api/src/api/routes/chat.ts",
     /tools:\s*(resolvedToolRegistry|workspaceRegistry)\b/,
-    "web chat + web resume OWN /dashboards/[id] and have a human in the loop — the two surfaces that opt IN to defaultRegistry",
+    "web chat + web resume OWN /dashboards/[id] and have a human in the loop — the two surfaces that opt IN to defaultRegistry. Identity backstopped by chat.test.ts + chat-resume.test.ts",
   ],
   [
     "packages/api/src/api/routes/demo.ts",
@@ -341,7 +440,7 @@ const EXPECTED_REGISTRY: ReadonlyArray<readonly [file: string, expected: RegExp,
   [
     "packages/api/src/lib/agent-query.ts",
     /tools:\s*toolRegistry\b/,
-    "the canonical headless surface — resolves buildHeadlessRegistry() just above",
+    "the canonical headless surface — resolves buildHeadlessRegistry() just above. Identity backstopped by agent-query.test.ts",
   ],
   [
     "packages/api/src/lib/chat-plugin/resume-turn.ts",
@@ -351,7 +450,7 @@ const EXPECTED_REGISTRY: ReadonlyArray<readonly [file: string, expected: RegExp,
   [
     "ee/src/proactive/answer-adapter.ts",
     /tools:\s*toolRegistry\b/,
-    "both proactive branches assign toolRegistry: nonDashboardRegistry (linked) / public-dataset (unlinked)",
+    "both proactive branches assign toolRegistry: nonDashboardRegistry (linked) / public-dataset (unlinked). Identity backstopped by ee answer-adapter.test.ts",
   ],
 ];
 
@@ -421,10 +520,12 @@ const REQUIRED_CALL_SITE_FILES = [...EXPECTED_REGISTRY_FILES];
 
 describe("#4936 — the call-site scanner detects the shapes the bug actually had", () => {
   /**
-   * Fixtures are the VERBATIM pre-fix argument text of the three regressed call
-   * sites, plus the shapes a reasonable person might reach for next. Without
-   * these, the scanner's own correctness is untested and it can silently
-   * degrade into a check that nothing can fail.
+   * Fixtures reproduce the exact offending SPELLINGS the pre-fix call sites
+   * used (condensed to the relevant argument shape), plus the variants a
+   * reasonable person reaches for next — several of which escaped an earlier,
+   * regex-based version of `offenceFor`. Without these the scanner's own
+   * correctness is untested and it can silently degrade into a check nothing
+   * can fail.
    */
   const SCANNER_FIXTURES: ReadonlyArray<readonly [label: string, args: string, isOffender: boolean]> = [
     [
@@ -442,10 +543,42 @@ describe("#4936 — the call-site scanner detects the shapes the bug actually ha
       `{ messages: [], conversationId, resume }`,
       true,
     ],
+    // A condition containing a paren — the shape that escaped the first,
+    // regex-based version of this predicate.
+    [
+      "conditional spread whose condition contains a paren",
+      `{ messages, ...(hasTools() ? { tools: toolRegistry } : {}), conversationId }`,
+      true,
+    ],
+    [
+      "conditional spread, && with a call in the condition",
+      `{ messages, ...(isEnabled(ctx) && { tools: toolRegistry }) }`,
+      true,
+    ],
+    [
+      "conditional spread across several lines",
+      `{\n  messages,\n  ...(toolRegistry\n    ? { tools: toolRegistry }\n    : {}),\n}`,
+      true,
+    ],
     ["explicit undefined", `{ messages, tools: undefined }`, true],
+    // `exactOptionalPropertyTypes` is off, so a value that MAY be undefined
+    // typechecks against `tools?: ToolRegistry` and behaves as an omission.
+    ["ternary that can yield undefined", `{ messages, tools: cond ? reg : undefined }`, true],
+    ["nullish-coalescing to undefined", `{ messages, tools: reg ?? undefined }`, true],
+    // A nested `tools` is not the options-object property.
+    ["tools nested under another key", `{ messages, resume: { runId, tools: r } }`, true],
+    ["a pre-built options bag hides the posture", `opts`, true],
     ["unconditional — the fixed shape", `{ messages, tools: resolvedToolRegistry }`, false],
     ["unconditional, first key", `{ tools: nonDashboardRegistry, messages }`, false],
     ["unconditional await", `{ messages: [], tools: await buildHeadlessRegistry() }`, false],
+    ["shorthand property", `{ messages, tools }`, false],
+    // A legitimate conditional spread of something OTHER than tools must not
+    // be flagged — the real chat.ts call site contains one.
+    [
+      "unconditional tools beside an unrelated conditional spread",
+      `{ messages, tools: resolvedToolRegistry, ...(warnings.length > 0 && { warnings }) }`,
+      false,
+    ],
   ];
 
   for (const [label, args, isOffender] of SCANNER_FIXTURES) {
@@ -560,11 +693,14 @@ describe("#4936 — SCAN_ROOTS has not rotted", () => {
     // calling `runAgent` would otherwise be invisible to every check above,
     // forever, with no signal. Grep the whole repo and assert every production
     // hit is inside a declared root.
+    // `--untracked` matters locally: without it the file a developer just wrote
+    // — exactly the one at risk — is invisible to this guard until it is staged.
     const proc = Bun.spawn(
       [
         "git",
         "grep",
         "-l",
+        "--untracked",
         "-E",
         String.raw`\brunAgent\s*\(`,
         "--",
@@ -573,20 +709,32 @@ describe("#4936 — SCAN_ROOTS has not rotted", () => {
       ],
       { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },
     );
-    const stdout = await new Response(proc.stdout).text();
-    expect(await proc.exited, "git grep failed").toBe(0);
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(exitCode, `git grep failed: ${stderr}`).toBe(0);
 
-    const outside = stdout
+    const hits = stdout
       .split("\n")
       .filter(Boolean)
-      .filter((f) => !f.endsWith(".test.ts") && f !== AGENT_MODULE)
-      .filter((f) => !SCAN_ROOTS.some((root) => f.startsWith(`${root}/`)));
+      .filter((f) => !f.endsWith(".test.ts") && f !== AGENT_MODULE);
 
     expect(
-      outside,
+      hits.filter((f) => !SCAN_ROOTS.some((root) => f.startsWith(`${root}/`))),
       "file(s) reference runAgent outside SCAN_ROOTS, so no call-site guard above can see " +
         "them. Add the package's src root to SCAN_ROOTS (and the call site to " +
         "EXPECTED_REGISTRY).",
+    ).toEqual([]);
+
+    // The walker reads `.ts` only, so a `.tsx` call site INSIDE a scan root
+    // would satisfy the assertion above and still be unscanned. None exists
+    // today; this fails the moment one does, rather than covering it silently.
+    expect(
+      hits.filter((f) => f.endsWith(".tsx")),
+      "a .tsx file references runAgent — `walk()` only reads .ts, so every call-site check " +
+        "above is blind to it. Widen the extension filter in `walk()`.",
     ).toEqual([]);
   });
 });

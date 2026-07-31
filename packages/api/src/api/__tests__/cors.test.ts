@@ -62,10 +62,14 @@ void mock.module("@atlas/api/lib/tools/explore", () => ({
   // ordinary path (this file mocks `lib/agent`, which used to be the only thing
   // pulling it in). A partial mock of a module that registry's graph imports
   // fails the whole import, which surfaces here as a JSON error instead of the
-  // SSE stream under test — so these mocks must cover the real export surface.
+  // SSE stream under test — so this and the `lib/settings` mock below cover
+  // their modules' full named-export surface, not just the names that broke.
   invalidateOrgExploreBackends: mock(() => {}),
   markNsjailFailed: mock(() => {}),
   markSidecarFailed: mock(() => {}),
+  snapshotExploreSandboxEnv: () => ({}),
+  _formatSandboxPriorityFailureForTest: () => "",
+  _resetSandboxFailureFlagsForTest: () => {},
 }));
 
 void mock.module("@atlas/api/lib/auth/detect", () => ({
@@ -78,6 +82,12 @@ void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: () => undefined,
   // #4936 — same cause as the `lib/tools/explore` mock above.
   getSettingOverride: () => undefined,
+  isSaasModeForGuard: () => false,
+  refreshSettingsTick: async () => {},
+  isHotReloadedKey: () => false,
+  HOT_RELOADED_KEYS: new Set<string>(),
+  SECURITY_SENSITIVE_KEYS: new Set<string>(),
+  securitySensitiveAuditFields: () => ({}),
   getSettingLive: async () => undefined,
   setSetting: async () => {},
   deleteSetting: async () => {},

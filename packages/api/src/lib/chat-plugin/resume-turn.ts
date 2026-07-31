@@ -148,15 +148,21 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         // rewritten transcript (carrying the "approved, re-run now" result) is
         // the model input. The tools re-resolve connection/whitelist/RLS live.
         //
-        // #4936 — the registry is named explicitly, and it is the SAME one the
-        // parked turn ran under: the original chat-platform turn went through
-        // `executeAgentQuery` → `buildHeadlessRegistry()`. Omitting `tools`
+        // #4936 — the registry is named explicitly, and it is rebuilt from the
+        // SAME POLICY the parked turn ran under: the original chat-platform turn
+        // went through `executeAgentQuery` → `buildHeadlessRegistry()`. Policy,
+        // not set — `ATLAS_ACTIONS_ENABLED` / `ATLAS_PYTHON_ENABLED` are re-read
+        // here, so a turn parked across an operator flag flip resumes on a
+        // different set. Omitting `tools`
         // here used to hand the resume the workspace registry instead, so the
         // tool surface silently WIDENED across the approval boundary — adding
         // `correct_fact` to an autonomous Slack turn with no confirmation UI.
-        // Execute time did NOT uniformly refuse. In authenticated modes it did
-        // — `botActorUser` is role `member` with no member row, so
-        // `correction.ts`'s owner/admin gate said no. But under
+        // Execute time did NOT uniformly refuse. In authenticated modes it did:
+        // the role is re-resolved from the `member` table and the session role
+        // is discarded by design (`reader-context.ts`), the bot has no member
+        // row, so `ctx.role` is null and `correction.ts`'s owner/admin gate said
+        // no. Note the bot's synthetic `role: "member"` is NOT what refuses —
+        // raising it would change nothing. But under
         // `ATLAS_AUTH_MODE=none` the principal resolves to
         // `origin: "unauthenticated-local"`, which that gate deliberately lets
         // through ("the local operator is the only identity there is"), so on a

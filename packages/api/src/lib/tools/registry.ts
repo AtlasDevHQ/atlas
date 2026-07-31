@@ -295,7 +295,8 @@ function registerCoreTools(
   // own spelling (`correct_fact`). Workspace, identity, and the owner/admin
   // authority gate all run at execute time inside the verb machinery — but
   // unlike `searchBrain` it is NOT registered globally, because it WRITES:
-  // `nonDashboardRegistry` is the surface `POST /api/v1/query` reaches, and
+  // `nonDashboardRegistry` is the policy `POST /api/v1/query` reaches (via
+  // `buildHeadlessRegistry()`; this singleton is that path's fallback), and
   // that operation is admitted to READ-SAFE Agent-Auth keys on a read-only-
   // engine guarantee (#4707, pinned by `agent-auth-read-safe-engine.test.ts`'s
   // tool-surface tripwire). A brain-mutating tool on that surface would break
@@ -313,8 +314,8 @@ function registerCoreTools(
   // gate from the outside). The default now fails CLOSED to
   // `nonDashboardRegistry`, and `agent-runagent-call-sites.test.ts` pins the
   // registry each production call site must resolve to. This is the canonical
-  // account of that fix; the other touched files carry a one-line pointer here
-  // rather than restating it.
+  // account of the GATE; each call site narrates only its own surface-specific
+  // exposure rather than restating this.
   if (dashboardUrlResolver) {
     registry.register({
       name: "correct_fact",
@@ -379,9 +380,9 @@ defaultRegistry.freeze();
 // Core tools MINUS createDashboard AND correct_fact (both gate on the same
 // `dashboardUrlResolver` signal), for surfaces that own no dashboards route
 // (SDK / Slack / MCP / scheduler via `executeAgentQuery`). Also the
-// guaranteed-safe fallback when `buildRegistry` throws — so the createDashboard
-// omission holds even on the error path instead of falling through to the
-// dashboards-owning `defaultRegistry`.
+// guaranteed-safe fallback when `buildRegistry` throws — so BOTH omissions hold
+// even on the error path instead of falling through to the dashboards-owning
+// `defaultRegistry`.
 const nonDashboardRegistry = new ToolRegistry();
 registerCoreTools(nonDashboardRegistry, null);
 nonDashboardRegistry.freeze();
@@ -544,7 +545,8 @@ export async function buildRegistry(options?: {
  * route and has no human in the loop (#4936).
  *
  * This is `executeAgentQuery`'s registry construction, lifted to a named seam
- * so the surfaces that re-enter the SAME turn get the SAME tool set. Chat
+ * so the surfaces that re-enter the SAME turn rebuild from the SAME POLICY
+ * (not necessarily the same SET — the env flags below are re-read). Chat
  * resume (`lib/chat-plugin/resume-turn.ts`) was the case that forced it: the
  * original Slack turn ran through `executeAgentQuery`, but the approval-resume
  * of that turn called `runAgent` with no `tools` at all — so the tool surface
@@ -560,6 +562,13 @@ export async function buildRegistry(options?: {
  *
  * A build failure falls back to `nonDashboardRegistry`, NOT the dashboards-
  * owning `defaultRegistry`, so both omissions hold on the error path too.
+ *
+ * Two known limits, deliberately out of #4936's scope and tracked separately:
+ * this catch also swallows `buildRegistry`'s DELIBERATE fatal throws (#4940 —
+ * every caller in the repo already does, and the fallback preserves the
+ * isolation invariant by not carrying `executePython`), and the return type has
+ * nowhere for `BuildRegistryResult.warnings` to go, so a degraded action-tool
+ * load is invisible to the user on every headless surface (#4941).
  */
 export async function buildHeadlessRegistry(): Promise<ToolRegistry> {
   try {

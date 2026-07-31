@@ -195,10 +195,10 @@ export function createProactiveAnswerAdapter(
     // brain facts, autonomously, with no confirmation UI, guarded only by prose
     // in `CORRECT_FACT_DESCRIPTION`.
     //
-    // LATENT rather than live today: the wired SaaS resolver
+    // LATENT rather than live on the SaaS wiring today: the wired resolver
     // (`createSlackProactiveUserResolver`) returns `unlinked` for every asker
-    // until a Slack-user link table lands (#2624), so this branch is unreachable
-    // in production. That is exactly why it must be closed BEFORE that branch
+    // until a Slack-user link table exists, so this branch is unreachable there.
+    // A self-hosted host may still supply its own `userResolver`. That is exactly why it must be closed BEFORE that branch
     // goes live — the type now makes the `undefined` state unrepresentable, so
     // there is no path left to fall through.
     let actor: AtlasUser;
@@ -218,10 +218,15 @@ export function createProactiveAnswerAdapter(
         // Deliberately the STATIC core set, not `buildHeadlessRegistry()`.
         // They are not the same registry: the dynamic builder adds the operator
         // action tools (`sendEmailReport`, `createJiraTicket`) under
-        // `ATLAS_ACTIONS_ENABLED`, plus `executePython`. Handing external-write
-        // verbs to the most autonomous, least supervised surface in the product,
-        // under a real linked user's identity, is the widening this issue is
-        // about — so do NOT "dedupe" these two into one call.
+        // `ATLAS_ACTIONS_ENABLED`, and `executePython` under
+        // `ATLAS_PYTHON_ENABLED`. Adding OPERATOR-configured write verbs to the
+        // most autonomous, least supervised surface in the product, under a real
+        // linked user's identity, is the widening this issue is about — so do
+        // NOT "dedupe" these two into one call.
+        //
+        // This set is lesser-privileged, not side-effect-free: `sendEmail` and
+        // `createLinearIssue` are core tools here too, gated at execute time on
+        // the workspace install.
         toolRegistry = nonDashboardRegistry;
       } else {
         // Unlinked asker — MUST resolve the workspace's public dataset

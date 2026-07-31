@@ -473,9 +473,9 @@ async function withEnv(
 }
 
 describe("buildHeadlessRegistry (#4936)", () => {
-  // The named seam three surfaces now share — `executeAgentQuery` (SDK / Slack
-  // / MCP / scheduler) and the chat-plugin approval RESUME of a turn started
-  // there. It exists so resume rebuilds the same policy the parked turn ran
+  // The named seam two call sites now share — `executeAgentQuery` (serving the
+  // SDK / Slack / MCP / scheduler surfaces) and the chat-plugin approval RESUME
+  // of a turn started there. It exists so resume rebuilds the same policy the parked turn ran
   // under instead of re-deriving it, which is how the surface silently widened
   // across the approval boundary before this fix.
   it("omits both write verbs but keeps the core query tools", async () => {

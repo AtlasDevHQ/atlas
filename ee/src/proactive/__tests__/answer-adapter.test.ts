@@ -411,7 +411,11 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
     // `defaultRegistry` fails on the extra names.
     const unlinkedTools = observedRunAgentCalls[0].toolNames;
     expect(unlinkedTools, "the unlinked branch must name a registry").toBeDefined();
-    expect([...unlinkedTools!].sort()).toEqual(["executeSQL", "explore"]);
+    expect(
+      [...unlinkedTools!].sort(),
+      "the public-dataset registry is defined by what it does NOT carry — an extra name " +
+        "means the unlinked asker reached a workspace registry",
+    ).toEqual(["executeSQL", "explore"]);
     await runtime.dispose();
   });
 

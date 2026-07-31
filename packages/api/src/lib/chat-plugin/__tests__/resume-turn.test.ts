@@ -40,14 +40,22 @@ void mock.module("@atlas/api/lib/durable-resume", () => ({
 void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockBillingGate,
 }));
-// `getRequestContext` is not used by `resume-turn` itself — it is pulled in by
-// the tool-registry module graph that `buildHeadlessRegistry()` reaches (#4936).
-// A partial mock of a module the graph imports fails the whole import with
-// "Export named 'getRequestContext' not found", which `resume-turn`'s catch
-// would then report as an opaque `agent_run_error`.
+// Mocked at its FULL named-export surface, not just the names `resume-turn`
+// itself uses. `buildHeadlessRegistry()` (#4936) pulls the tool-registry module
+// graph in here, and a partial `mock.module` fails the whole import with
+// "Export named 'X' not found" — which `resume-turn`'s catch then reports as an
+// opaque `agent_run_error`. Mocking only the name that breaks today guarantees
+// the next unrelated PR re-hits this.
 void mock.module("@atlas/api/lib/logger", () => ({
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"],
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  getLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   getRequestContext: () => undefined,
+  hashShareToken: (t: string) => t,
+  redactPaths: [],
+  scrubErrSerializer: (v: unknown) => v,
+  scrubLogFormatter: (o: unknown) => o,
+  setLogLevel: () => true,
   withRequestContext: async (ctx: Record<string, unknown>, fn: () => Promise<unknown>) => {
     capturedContext = ctx;
     return fn();
@@ -100,7 +108,8 @@ describe("resumeChatTurn (#3750)", () => {
     // Resume used to omit `tools` entirely and inherit `runAgent`'s default, so
     // the surface WIDENED across the approval boundary — picking up the
     // brain-mutating `correct_fact` on an autonomous Slack turn with no
-    // confirmation UI. The registry must now be named here, and be the same one.
+    // confirmation UI. The registry must now be named here, and rebuilt from the
+    // same policy.
     await resumeChatTurn({ ...BASE, externalUserId: "U999" });
 
     const runArgs = mockRunAgent.mock.calls[0]![0] as { tools?: { getAll(): Record<string, unknown> } };

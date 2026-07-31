@@ -8,6 +8,9 @@
     "multi-tenancy",
     "plugin-marketplace",
     "onboarding-emails",
+    "brain-temporal-model",
+    "brain-corrections",
+    "brain-conflicts",
     "self-serve-signup",
     "self-hosted-billing",
     "self-hosted-models"

@@ -17,14 +17,17 @@
  *   1. **Does the tension edge RECONCILE writes reach both surfaces?** The
  *      advisory `in-tension-with` edge is written by `reconcile.ts` for a
  *      `single`-cardinality rival and read back by `loadTensionClusters`
- *      behind BOTH the review queue and `searchBrain` — three modules, one
- *      edge row, and the failure mode is a conflict that silently reads as
- *      "nothing contradicts this".
+ *      behind BOTH the review queue and `searchBrain` — one writer, one
+ *      shared walk, two surfaces, one edge row, and the failure mode is a
+ *      conflict that silently reads as "nothing contradicts this".
  *   2. **Does the gate's stamp close the window the reads open?** The
- *      `SUPERSEDE_STAMP_SQL` write and `supersedes` edge come from the row
- *      version the promote transaction saw; the default read hides the loser
- *      through `brainFactCurrentClause` and the `asOf` branch re-admits it —
- *      the two branches of `buildFactQuery` against a stamp neither wrote.
+ *      `SUPERSEDE_STAMP_SQL` write and `supersedes` edge come from the
+ *      collision the promote transaction computed, re-checked at stamp time
+ *      against whatever the published rows have since become (the published
+ *      side is NOT covered by `DRAFT_FACTS_SQL`'s `FOR UPDATE`). The default
+ *      read then hides the loser through `brainFactCurrentClause` and the
+ *      `asOf` branch re-admits it — the two branches of `buildFactQuery`
+ *      against a stamp neither wrote.
  *   3. **Does `correct_fact` retract hide history from EVERY read?** The
  *      tombstone is stamped by `RETRACT_FACT_SQL` inside the correction
  *      transaction; `invalidated_at IS NULL` survives in BOTH temporal
@@ -35,13 +38,23 @@
  * ## What is faked, precisely
  *
  * Exactly what `wedge-loop-pg.test.ts` fakes, for the reasons its header
- * records: Slack's HTTP surface (the REAL `createSlackHistoryClient` runs on
- * top of a fixture `SlackHistoryApi`) and the extraction model (a
- * `MockLanguageModelV3` returning fixed JSON under the real `generateObject`
- * parse). Everything else — ingest, extraction, reconcile with its tension
- * pass, the publish gate with its supersession collision, the audience sync,
- * `correct_fact`, and both read surfaces — is production code against real
- * Postgres.
+ * records:
+ *
+ *   - **Slack's HTTP surface** — a fixture `SlackHistoryApi`, with the REAL
+ *     `createSlackHistoryClient` on top of it. NOT on the path:
+ *     `createSlackHistoryConnector` and its `parseSlackHistoryConfig` /
+ *     `resolveSlackHistoryToken` (`slack-connector.test.ts` owns those), which
+ *     is why the connector below is a test-owned shim.
+ *   - **The extraction model** — a `MockLanguageModelV3` returning fixed JSON
+ *     under the real `generateObject` schema parse.
+ *   - **The audience sync's install scan and token resolution** — this suite
+ *     deliberately seeds no `workspace_plugins` row, so the scan is supplied
+ *     directly. Its staleness sweep, principal resolver, and membership
+ *     reconcile all run for real (see `syncAudiences`).
+ *
+ * Everything else — ingest, extraction, reconcile with its tension pass, the
+ * publish gate with its supersession collision, `correct_fact`, and both read
+ * surfaces — is production code against real Postgres.
  *
  * ## Fixture discipline (inherited from #4775)
  *
@@ -70,18 +83,26 @@
  *   - **Supersession is grant-blind.** The collision join never reads
  *     `visible_to`, so an audience-granted winner retires an org-granted
  *     loser for readers who will never see the winner: the org reader's
- *     current belief simply ends. The frozen grant still serves them
- *     yesterday's truth under `asOf` — that asymmetry IS the T5 design.
+ *     current belief simply ends. That the frozen grant still serves them
+ *     yesterday's truth under `asOf` IS T5, and falls out of grant
+ *     immutability. That the COLLISION is grant-blind is a separate thing
+ *     and a consequence no ADR and no `supersessionCollisionJoin` doc states
+ *     — pinned here so a future change to it has to argue with a test.
  *   - **The correction episode never reaches the extraction queue.**
  *     `extracted_at` is stamped at INSERT (#4915), so the drain after a
  *     correction inspects nothing — a human's exact words are never re-derived
  *     into a second, machine-produced claim.
  *
  * The `derives-from` fact→fact edge behind the flag-not-cascade arm is
- * INSERTed by hand: ADR-0036 §M5's write-back is the producer that will mint
- * those edges, and `DEPENDENT_FACTS_SQL` (the retraction's reader) is already
- * live against the shape migration 0180 admits. Same posture as the wedge
- * suite's import-shaped INSERT.
+ * INSERTed by hand, and the shape is not speculative: it is FORK LINEAGE
+ * (ADR-0036 §T4, migration 0180), and the region import accepts it today —
+ * `admin-migrate.ts`'s validator lets `derives-from` "legitimately reach
+ * either kind" where every other edge type is constrained. So this INSERT
+ * mimics an import bundle, exactly as the wedge suite's does, rather than
+ * standing in for a producer that does not exist yet. (M5's write-back may
+ * also mint these; what it is documented to mint is fact→EPISODE, which is
+ * the shape `DERIVES_FROM_EDGE_SQL` already writes.) `DEPENDENT_FACTS_SQL`,
+ * the retraction's reader, is live against it either way.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -109,6 +130,8 @@ import { getChatBackfillWindowMs } from "@atlas/api/lib/brain/ingest/slack/conne
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import {
+  AUDIENCE_STALENESS_SQL,
+  AUDIENCE_SYNC_INSTALLS_SQL,
   runAudienceSyncCycle,
   type AudienceSyncCycleResult,
   type AudienceSyncDeps,
@@ -122,8 +145,14 @@ import {
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import type { BrainSourceConnector } from "@atlas/api/lib/brain/ingest/types";
+import type { BrainEdgeType, PredicateCardinality } from "@atlas/api/lib/brain/types";
 import type { AtlasMode } from "@useatlas/types/auth";
-import type { BrainFactResult, BrainSearchResult } from "@useatlas/types";
+import type {
+  BrainEpisodeResult,
+  BrainFactResult,
+  BrainFactReviewStatus,
+  BrainSearchResult,
+} from "@useatlas/types";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -150,18 +179,33 @@ const EXEC_GRANT_TOKEN = `${AUDIENCE_PREFIX}${EXEC_AUDIENCE}`;
 const CLOCK = () => new Date("2026-06-27T00:00:00.000Z");
 
 /**
- * When the correction runs, on the same pinned timeline. Only the correction
- * EPISODE's instants come from this; `invalidated_at` and `valid_to` are
- * stamped by SQL `now()`, which is the production shape and is why the `asOf`
- * instants below sit safely before the real test-run time.
+ * When the correction runs, on the same pinned timeline.
+ *
+ * It supplies the correction EPISODE's instants and the retraction's
+ * `reReview.flaggedAt` marker — both asserted below. It does NOT supply
+ * `invalidated_at` or `valid_to`: those are stamped by SQL `now()`, which is
+ * the production shape and is why the `asOf` instants here sit safely before
+ * the real test-run time.
  */
 const CORRECTION_CLOCK = () => new Date("2026-06-27T12:00:00.000Z");
+const CORRECTION_AT = CORRECTION_CLOCK().toISOString();
 
 /**
- * The point-read instant: after both beliefs were ingested and the loser
- * published, before the publish that superseded it (`valid_to` is stamped at
- * real run time, far later than this). Past-relative-to-now, as
- * `parseBrainAsOf` requires.
+ * The instant the "yesterday's truth" arms read at.
+ *
+ * Be precise about what it does and does not discriminate. Both facts here are
+ * born of the extraction path, whose schema carries no `validFrom`, so both
+ * rows have `valid_from NULL` — and `valid_to` is stamped with SQL `now()` at
+ * real run time, far in this instant's future. So the point read admits both
+ * rows through the `valid_from IS NULL` arm and the far-future upper bound:
+ * ANY past instant would satisfy the assertions that use this constant, and it
+ * is chosen for readability (it sits between the two beliefs' arrival) rather
+ * than because a boundary turns on it.
+ *
+ * The predicates are falsified instead at the one instant where they must
+ * bite — `loser.valid_to` exactly, the value the GATE stamped — in the final
+ * arm of the loop. That is the assertion to keep if this one ever looks
+ * redundant.
  */
 const AS_OF = "2026-06-26T12:00:00Z";
 const AS_OF_ECHO = "2026-06-26T12:00:00.000Z";
@@ -225,15 +269,26 @@ type Candidate = {
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
-  readonly cardinality: "single" | "multi";
+  /**
+   * The SSOT union, never hand-listed — `extract.ts`'s `ExtractionSchema`
+   * derives the same arm list from `PREDICATE_CARDINALITIES`, and this fixture
+   * feeds the REAL `generateObject` parse. A hand-spelled pair would drift the
+   * first time M2 adds an arm, and the drift would surface as a parse failure
+   * rather than a compile error.
+   */
+  readonly cardinality: PredicateCardinality;
 };
 
 /**
- * What the mock model "extracts" from each body. `Partial` + a `BODY`-derived
- * key type: editing a body then fails to COMPILE here rather than silently
- * turning an extraction into the empty arm. Both deploy-window claims are
- * `single` — that cardinality, on both sides, is what arms the tension pass
- * and the gate's supersession collision.
+ * What the mock model "extracts" from each body.
+ *
+ * The keys are COMPUTED from `BODY`, so editing a body moves both sides in
+ * lockstep. What the `Partial<Record<(typeof BODY)[keyof typeof BODY], …>>`
+ * type adds is the other direction: a hand-spelled key matching no `BODY`
+ * value fails to COMPILE, so an extraction can never be keyed to a body that
+ * no longer exists — which would silently turn that episode into the empty
+ * arm. Both deploy-window claims are `single`: that cardinality, on both
+ * sides, is what arms the tension pass and the gate's supersession collision.
  */
 const EXTRACTIONS: Partial<Record<(typeof BODY)[keyof typeof BODY], readonly Candidate[]>> = {
   [BODY.thursdays]: [
@@ -256,9 +311,9 @@ type FactRow = {
   readonly id: string;
   readonly subject: string;
   readonly object: string;
-  readonly status: string;
-  readonly predicate_cardinality: string;
-  readonly visible_to: string[];
+  readonly status: BrainFactReviewStatus;
+  readonly predicate_cardinality: PredicateCardinality;
+  readonly visible_to: readonly string[];
   readonly valid_from: Date | null;
   readonly valid_to: Date | null;
   readonly invalidated_at: Date | null;
@@ -272,6 +327,8 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
 
   /** Bodies the model was asked about — the "was the seam even exercised" pin. */
   let modelCalls: string[] = [];
+  /** Workspaces the cycle resolved a model for — asserted outside the callback. */
+  let resolveModelCalls: string[] = [];
   /** Extra messages appended to a channel between sync passes (the rival's arrival). */
   let extraMessages: Readonly<Record<string, readonly SlackHistoryMessage[]>> = {};
 
@@ -374,8 +431,21 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
     if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = priorDatabaseUrl;
     if (pool) {
-      await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
-      await pool.end();
+      // `DROP SCHEMA … CASCADE` over a fully-migrated schema is slow under a
+      // loaded runner, and a lingering lock can make it throw outright. The
+      // `finally` is what keeps that from ALSO leaking the pool: open handles
+      // would keep the bun process alive, turning a leaked scratch schema into
+      // a hung run. Same discipline the bootstrap pool gets above.
+      try {
+        await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+      } catch (err) {
+        console.debug(
+          `afterAll(): DROP SCHEMA "${schemaName}" failed — the scratch schema is leaking`,
+          err instanceof Error ? err.message : String(err),
+        );
+      } finally {
+        await pool.end();
+      }
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -389,6 +459,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
     } finally {
       _resetBrainExtractionFailures();
       modelCalls = [];
+      resolveModelCalls = [];
       extraMessages = {};
     }
   });
@@ -466,8 +537,15 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
     const cycle = await Effect.runPromise(
       runBrainExtractionCycle({
         extract: llmFactExtractor,
+        // RECORDED here, ASSERTED below — never `expect`-ed inside the
+        // callback. The per-episode apply runs under `Effect.tryPromise`
+        // (`scheduler/periodic-db-job.ts`), which converts any throw into a
+        // counted `failed` outcome — so an `expect` here would have its
+        // "expected X, received Y" message destroyed on the way out and
+        // surface only as `failed: 0` mismatching, naming neither the
+        // assertion nor the wrong workspace.
         resolveModel: async (workspaceId) => {
-          expect(workspaceId).toBe(WORKSPACE);
+          resolveModelCalls.push(workspaceId);
           return EXTRACTION_MODEL;
         },
       }),
@@ -480,6 +558,10 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       outageRefunded: 0,
     });
     expect(cycle.skipped).toEqual({ model_unavailable: 0, no_body: 0, quarantined: 0 });
+    // The cycle must resolve the model for the EPISODE's workspace — the
+    // BYO-mis-billing class `resolveExtractionModel` exists to prevent. A
+    // `Set` because one cycle resolves once per drained episode.
+    expect(new Set(resolveModelCalls)).toEqual(new Set([WORKSPACE]));
     return cycle;
   }
 
@@ -561,10 +643,29 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
             dropped: 0,
           }),
       },
-      query: (<T extends Record<string, unknown>>() =>
-        Promise.resolve([
-          { workspace_id: WORKSPACE, install_id: INSTALL_ID, config: { channels: [PUBLIC_CHANNEL, EXEC_CHANNEL] } },
-        ] as unknown as T[])) as AudienceSyncDeps["query"],
+      // `deps.query` has TWO consumers — the install scan and the staleness
+      // sweep — so a stub that ignores `sql` hands the sweep an install row,
+      // which it defensively reports as "counters unavailable" and warns
+      // about. That is a production degradation path running silently under a
+      // green test, and it is exactly the plausible-fallback shape the
+      // `oldest` guard above refuses.
+      //
+      // Dispatched on statement IDENTITY (both constants are exported), so a
+      // paraphrase fails loudly instead of falling into the wrong arm — the
+      // same seam `correction.test.ts` uses. Only the INSTALL scan is faked,
+      // and only because this suite deliberately seeds no `workspace_plugins`
+      // row; the sweep runs for real against the scratch schema.
+      query: (async <T extends Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        if (sql === AUDIENCE_SYNC_INSTALLS_SQL) {
+          return [
+            { workspace_id: WORKSPACE, install_id: INSTALL_ID, config: { channels: [PUBLIC_CHANNEL, EXEC_CHANNEL] } },
+          ] as unknown as T[];
+        }
+        if (sql === AUDIENCE_STALENESS_SQL) return poolQuery<T>(sql, params);
+        throw new Error(
+          `fixture: unstubbed AudienceSyncDeps.query — a new consumer appeared: ${sql.slice(0, 120)}`,
+        );
+      }) as AudienceSyncDeps["query"],
       resolveToken: () => Promise.resolve("xoxb-test"),
       resolve: (workspaceId, principals) =>
         resolvePrincipals(workspaceId, principals, { query: poolQuery }),
@@ -596,14 +697,28 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
         },
       });
       await client.query("COMMIT");
+      client.release();
       return out;
     } catch (err) {
+      // Surfaced, not swallowed, and NARROWED: a failed rollback would
+      // otherwise present as the ORIGINAL error over a silently poisoned
+      // connection, and a raw `unknown` names neither the operation nor the
+      // failure (pg can reject with a plain object on a destroyed socket).
+      let rolledBack = true;
       await client.query("ROLLBACK").catch((rbErr: unknown) => {
-        console.debug("fixture rollback failed", rbErr);
+        rolledBack = false;
+        console.debug(
+          "poolTransaction(): ROLLBACK failed after a fixture transaction error",
+          rbErr instanceof Error ? rbErr.message : String(rbErr),
+        );
       });
+      // Destroyed, not recycled, when the rollback itself failed — same hazard
+      // `publish()` documents: a client returned to the pool with an in-doubt
+      // transaction still holds its locks, and `afterEach`'s TRUNCATE would
+      // then block until the hook times out, reporting "timed out after
+      // 60000ms" instead of the reconcile error that actually happened.
+      client.release(rolledBack ? undefined : err instanceof Error ? err : new Error(String(err)));
       throw err;
-    } finally {
-      client.release();
     }
   };
 
@@ -631,25 +746,51 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
     return row;
   }
 
+  /**
+   * Edges of one type between two named endpoints.
+   *
+   * `to` is an exclusive union, not an all-optional pair: the two-optional
+   * shape admits `{}`, which binds `undefined` → SQL NULL → a count of 0. Every
+   * caller today asserts `toBe(1)` so that would fail loudly — but this file's
+   * own discipline is to assert negatives, and the first `toBe(0)` written
+   * against a typo'd key would pass vacuously. The union makes that
+   * unspellable.
+   */
   async function edgeCount(
-    edgeType: string,
+    edgeType: BrainEdgeType,
     fromFactId: string,
-    to: { factId?: string; episodeId?: string },
+    to: { readonly factId: string } | { readonly episodeId: string },
   ): Promise<number> {
-    const toClause = to.factId !== undefined ? `to_fact_id = $4::uuid` : `to_episode_id = $4::uuid`;
+    const [toClause, toId] =
+      "factId" in to
+        ? ([`to_fact_id = $4::uuid`, to.factId] as const)
+        : ([`to_episode_id = $4::uuid`, to.episodeId] as const);
     const { rows } = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM brain_edges
         WHERE workspace_id = $1 AND edge_type = $2 AND from_fact_id = $3::uuid AND ${toClause}`,
-      [WORKSPACE, edgeType, fromFactId, to.factId ?? to.episodeId],
+      [WORKSPACE, edgeType, fromFactId, toId],
     );
     return Number(rows[0]?.n ?? "0");
   }
 
+  // Typed as the union, not `{ tier: string }`: that is what keeps the
+  // compiler checking the literal against the discriminant, so a tier rename
+  // in `@useatlas/types` is a TS2367 rather than a filter that silently
+  // returns `[]` and satisfies every empty-list assertion in the file.
   const isFact = (r: BrainSearchResult): r is BrainFactResult => r.tier === "fact";
+  const isEpisode = (r: BrainSearchResult): r is BrainEpisodeResult => r.tier === "raw-episode";
 
   const byText = (a: string, b: string) => a.localeCompare(b);
   const subjectsOf = (results: readonly BrainSearchResult[]) =>
     results.filter(isFact).map((f) => f.subject).toSorted(byText);
+  const bodiesOf = (results: readonly BrainSearchResult[]) =>
+    results
+      .filter(isEpisode)
+      // `body` is nullable — a by-reference episode carries none. This loop
+      // never creates one, so a null is a real regression and is surfaced as a
+      // value rather than sorted into an ambiguous slot.
+      .map((e) => e.body ?? "(null body)")
+      .toSorted(byText);
   /** The deploy-window objects a read served — the loop's central projection. */
   const deployObjectsOf = (results: readonly BrainSearchResult[]) =>
     results
@@ -665,9 +806,26 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
     async () => {
       // ---- 1. the incumbent belief, published -----------------------------
       const sync = await syncHistory();
-      expect(sync.episodes).toMatchObject({ inserted: 3, duplicate: 0 });
+      // BY VALUE, not `toMatchObject`: `refused` and `batchDuplicate` are the
+      // ingest core's entire silent-drop-prevention mechanism, and a subset
+      // match discards exactly them (the rule `wedge-loop-pg.test.ts` states).
+      expect(sync.episodes).toEqual({
+        inserted: 3,
+        duplicate: 0,
+        batchDuplicate: 0,
+        refused: { blank_source_id: 0, blank_body: 0, unusable_grant: 0, invalid_occurred_at: 0 },
+      });
       const cycle = await extract();
-      expect(cycle).toMatchObject({ inspected: 3, extracted: 3, factsCreated: 2 });
+      // `factsCorroborated: 0` even on the first cycle, where there is nothing
+      // to corroborate: it is the assertion that catches a conflict silently
+      // merged into an existing claim, and omitting it here would make the
+      // rival cycle's identical pin look like the special case.
+      expect(cycle).toMatchObject({
+        inspected: 3,
+        extracted: 3,
+        factsCreated: 2,
+        factsCorroborated: 0,
+      });
       expect(modelCalls.toSorted(byText)).toEqual(
         [BODY.thursdays, BODY.freeze, "(no match)"].toSorted(byText),
       );
@@ -679,7 +837,15 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       expect(firstPublish.superseded).toEqual([]);
 
       const synced = await syncAudiences();
-      expect(synced.membersAdded).toBe(1);
+      // `principalsUnresolved` is asserted, not just `membersAdded`: the added
+      // count catches a resolver that MIS-resolves `U_ALAN` (it would become
+      // 2), but only this catches one that silently DROPS an unresolvable
+      // principal without counting it — the "logged, never guessed" arm.
+      expect(synced).toMatchObject({
+        membersAdded: 1,
+        principalsUnresolved: 1,
+        workspacesFailed: 0,
+      });
 
       let rows = await facts();
       const thursdays = factByClaim(rows, "deploy window", "Thursdays");
@@ -695,7 +861,12 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // ---- 2. the rival arrives — draft + advisory tension edge -----------
       extraMessages = { [EXEC_CHANNEL]: [FRIDAYS_MESSAGE] };
       const second = await syncHistory();
-      expect(second.episodes).toMatchObject({ inserted: 1, duplicate: 3 });
+      expect(second.episodes).toEqual({
+        inserted: 1,
+        duplicate: 3,
+        batchDuplicate: 0,
+        refused: { blank_source_id: 0, blank_body: 0, unusable_grant: 0, invalid_occurred_at: 0 },
+      });
       const rivalCycle = await extract();
       expect(rivalCycle).toMatchObject({ inspected: 1, extracted: 1, factsCreated: 1, factsCorroborated: 0 });
 
@@ -766,6 +937,15 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
           object: "Thursdays",
           status: "published",
           invalidatedAt: null,
+          // The AC is "surfaced with provenance to reader AND reviewer", and
+          // the review surface re-decides attribution per counterpart through
+          // its OWN projection (`candidates.ts`). Without this, a regression
+          // that dropped provenance from the reviewer's counterpart while
+          // leaving the search surface intact would pass.
+          provenance: expect.objectContaining({
+            source: SLACK_HISTORY_SOURCE,
+            attribution: expect.objectContaining({ visible: true, actor: "slack:U_ADA" }),
+          }),
         }),
       ]);
 
@@ -784,8 +964,16 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       expect(loser).toMatchObject({ status: "published", invalidated_at: null });
       // The winner is current, with an UNRECORDED start — the extraction
       // schema carries no validFrom, so only the loser's closed window encodes
-      // the arbitration (see the header pin).
-      expect(winner).toMatchObject({ status: "published", valid_to: null, valid_from: null });
+      // the arbitration (see the header pin). `visible_to` asserted directly:
+      // the whole frozen-grant arm below rests on the winner NOT having
+      // widened to `org` through #4823's evidence union, and proving that only
+      // through "the member sees nothing" leaves three possible causes.
+      expect(winner).toMatchObject({
+        status: "published",
+        valid_to: null,
+        valid_from: null,
+        visible_to: [EXEC_GRANT_TOKEN],
+      });
       // The arbitration record, new → old.
       expect(await edgeCount("supersedes", winner.id, { factId: loser.id })).toBe(1);
 
@@ -807,8 +995,15 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       expect(memberThen.asOf).toBe(AS_OF_ECHO);
       expect(deployObjectsOf(memberThen.results)).toEqual(["Thursdays"]);
       const memberThenFact = memberThen.results.filter(isFact).find((f) => f.subject === "deploy window");
-      expect(memberThenFact?.validTo).not.toBeNull();
-      expect(memberThenFact?.provenance).toMatchObject({
+      // Named throw, not `?.`: `expect(undefined).not.toBeNull()` PASSES, so
+      // the next assertion would be vacuous the moment the read returned
+      // nothing — and "the point read served nothing" is precisely the
+      // regression this arm exists to catch.
+      if (memberThenFact === undefined) {
+        throw new Error("the member's asOf read served no deploy-window fact — the point read is broken");
+      }
+      expect(memberThenFact.validTo).not.toBeNull();
+      expect(memberThenFact.provenance).toMatchObject({
         source: SLACK_HISTORY_SOURCE,
         attribution: { visible: true, actor: "slack:U_ADA" },
       });
@@ -818,6 +1013,39 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // `valid_from`). Pinned, not worked around.
       const adminThen = await search(adminCtx, { asOf: AS_OF });
       expect(deployObjectsOf(adminThen.results)).toEqual(["Fridays", "Thursdays"]);
+      // `asOf` leaves the EPISODE store alone (`search.ts`: an episode is
+      // append-only evidence of what was SAID and has no validity window), so
+      // the same reader's evidence is identical either side of the point read.
+      // Without this an `asOf` that accidentally narrowed the episode store
+      // would pass every fact assertion above.
+      expect(bodiesOf(adminThen.results)).toEqual(bodiesOf(adminNow.results));
+
+      // THE UPPER BOUND, falsified by BRACKETING the boundary the GATE
+      // stamped. Every other asOf assertion here is satisfied through the
+      // `valid_from IS NULL` arm and a `valid_to` far in the future of
+      // `AS_OF` — delete both temporal predicates and they all still pass.
+      // This pair cannot: one millisecond either side of the stamp flips
+      // whether the superseded claim answers, and the bound is the value
+      // `SUPERSEDE_STAMP_SQL` wrote rather than one the fixture chose, which
+      // is the handoff this file exists to prove.
+      //
+      // BRACKETED rather than read AT the stamp, and the reason is a real
+      // trap: `timestamptz` keeps MICROseconds, but `parseBrainAsOf` round
+      // trips through a JS `Date` and so can only ever bind millisecond
+      // precision. An `asOf` built from `valid_to.toISOString()` is therefore
+      // the stamp TRUNCATED — strictly less than it — and the loser stays
+      // visible through `valid_to > asOf`. Equality at the half-open bound is
+      // unreachable through this API; ±1ms is exact regardless.
+      // (`search-pg.test.ts` pins the equality semantics directly, against
+      // hand-built rows whose bounds it controls to the microsecond.)
+      if (loser.valid_to === null) {
+        throw new Error("the gate stamped no valid_to — the bracket below would be vacuous");
+      }
+      const stampMs = loser.valid_to.getTime();
+      const justAfter = await search(adminCtx, { asOf: new Date(stampMs + 1).toISOString() });
+      expect(deployObjectsOf(justAfter.results)).toEqual(["Fridays"]);
+      const justBefore = await search(adminCtx, { asOf: new Date(stampMs - 1).toISOString() });
+      expect(deployObjectsOf(justBefore.results)).toEqual(["Fridays", "Thursdays"]);
 
       // ---- 7. correct_fact retract: tombstone + flag, never cascade -------
       // The write-back-shaped lineage edge (header note): the freeze claim
@@ -855,12 +1083,21 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
         `SELECT source, source_actor, visible_to, extracted_at FROM brain_episodes WHERE id = $1::uuid`,
         [correction.result.correctionEpisodeId],
       );
-      expect(correctionEpisodes[0]).toMatchObject({
+      const correctionEpisode = correctionEpisodes[0];
+      // Named throw for the same reason as the asOf arm below: the
+      // `extracted_at` pin two lines on would pass vacuously against an
+      // `undefined` row.
+      if (correctionEpisode === undefined) {
+        throw new Error(
+          `no brain_episodes row for correction episode ${correction.result.correctionEpisodeId}`,
+        );
+      }
+      expect(correctionEpisode).toMatchObject({
         source: "human",
         source_actor: "user-admin",
         visible_to: [EXEC_GRANT_TOKEN],
       });
-      expect(correctionEpisodes[0]?.extracted_at).not.toBeNull();
+      expect(correctionEpisode.extracted_at).not.toBeNull();
       // Lineage, fact → correction episode: `derives-from`, not evidence.
       expect(
         await edgeCount("derives-from", winner.id, {
@@ -869,6 +1106,17 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       ).toBe(1);
       // …and the drain confirms the pre-stamp: nothing queued, nothing
       // re-derived from the human's words.
+      //
+      // The QUEUE is asserted directly rather than only the cycle counters,
+      // because `{inspected: 0, extracted: 0}` is byte-identical to the
+      // zeroed result `runPeriodicDbCycle` returns when `hasInternalDB()` is
+      // false — the very path `beforeAll`'s `DATABASE_URL` line exists to
+      // avoid. This distinguishes "nothing was queued" from "the drain never
+      // ran", which is the premise-pinning discipline `syncHistory` follows.
+      const { rows: queued } = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM brain_episodes WHERE extracted_at IS NULL`,
+      );
+      expect(queued[0]?.n).toBe("0");
       const afterCorrection = await extract();
       expect(afterCorrection).toMatchObject({ inspected: 0, extracted: 0, factsCreated: 0 });
 
@@ -881,6 +1129,9 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
         reason: "derives-from-retracted",
         retractedFactId: winner.id,
         correctionEpisodeId: correction.result.correctionEpisodeId,
+        // The injected clock reaches the marker — without this the clock is
+        // decoration and the human record's instant is unpinned.
+        flaggedAt: CORRECTION_AT,
       });
 
       // ---- 8. the tombstone is hidden from EVERY read ---------------------

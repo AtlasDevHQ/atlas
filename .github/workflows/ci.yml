@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, "milestone/**", "hotfix/**"]
   pull_request:
-    branches: [main, "milestone/**"]
+    branches: [main, "milestone/**", chore/brain-m2-to-main]
   # Manual lever: lets an operator/agent re-create required check runs when
   # GitHub drops pull_request event deliveries (observed 2026-06-10 on #3358).
   workflow_dispatch:
@@ -16,6 +16,20 @@ on:
 # merge. The `push:` half is deliberate too: it gives the milestone branch a
 # post-merge integration signal, which is what catches a semantic conflict
 # between two stacked PRs that were each green in isolation.
+#
+# `chore/brain-m2-to-main` is a NAMED, TEMPORARY exception — delete it when #4932
+# merges. Brain M2 was reverted from `main` (`0bb5d9130`), so its re-landing arc
+# needed an integration branch, and it was cut as `chore/**` instead of
+# `milestone/**`. That put it outside the filter above, which is exactly the
+# failure this block exists to prevent: PRs #4942/#4944/#4945/#4946/#4947 all
+# merged onto it with `fork-pr-gate` as their ONLY check. Nothing was bypassed —
+# branch protection is `main`-only, so there was no gate to override — but the
+# safety of the whole arc rested on each author's local `/ci` run.
+#
+# The real fix is the naming convention, not this line: a long-running
+# integration branch belongs in `milestone/**`, which is already gated and needs
+# no config change. (`milestone/brain-m2` existed the whole time; the arc simply
+# branched from the wrong namespace.) Prefer that over adding another name here.
 #
 # Caveat, by design: `Analyze (javascript-typescript)` (CodeQL default setup) is
 # `main`-only and cannot be branch-filtered here, so milestone-branch PRs are

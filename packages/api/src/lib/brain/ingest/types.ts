@@ -262,9 +262,10 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   // region can resolve to a class. Since #4964 that fails CLOSED rather than
   // open — every fact derived from it is correction-quarantined under
   // UNRECOGNIZED_SOURCE_KIND — so the hazard is no longer a silent tier-1
-  // downgrade. It is a loud, permanent one: the connector's own facts become
-  // uncorrectable everywhere, which is still a class the registry must never
-  // admit. (The neighbouring hazard at the top of this file — a member
+  // downgrade. It is a loud one that persists until the vocabulary admits the
+  // kind: until then the connector's own facts are uncorrectable everywhere,
+  // which is still a class the registry must never admit. (The neighbouring
+  // hazard `BrainSourceConnector.source`'s own docstring names above — a member
   // declaring the WRONG class — is unaffected and still fails open; nothing in
   // the type system knows what "warehouse-shaped" means.)
   if (!isEpisodeSource(connector.source)) {

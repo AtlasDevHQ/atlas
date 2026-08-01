@@ -323,7 +323,7 @@ const correctRoute = createRoute({
     },
     409: {
       description:
-        "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
+        "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a fact whose source kind this deployment does not recognise or whose recorded source is malformed (so its tier cannot be determined), a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -341,14 +341,17 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
     case CORRECTION_REFUSAL_REASONS.replacementMissing:
     case CORRECTION_REFUSAL_REASONS.replacementIdentical:
       return 400;
-    // 409 and not 501/503: the client-observable contract is this arm's —
-    // "the verb cannot apply to this target" — and it is not permanent. Once
-    // this deployment runs a vocabulary that knows the kind, the correct gate
-    // takes over: tier-1 refusal if the kind turns out warehouse-class, an
-    // ordinary correction otherwise. Unlike its neighbours the retry condition
-    // is a DEPLOY rather than anything the client or the target can change,
-    // which is the one way it does not fit the arm (#4964).
+    // 409 and not 501/503: the client-observable contract is this arm's — "the
+    // verb cannot apply to this target". For `unrecognizedSourceKind` it is not
+    // permanent; once this deployment runs a vocabulary that knows the kind the
+    // correct gate takes over (tier-1 refusal if the kind is warehouse-class,
+    // an ordinary correction otherwise). The retry condition is a DEPLOY rather
+    // than anything the client or the target can change, which is unusual
+    // though not unique here — `warehouseTarget` is not client-fixable either,
+    // and is permanent besides. `malformedSourceKind` is a stored-data defect:
+    // still a target-state 409, but no deploy resolves it (#4964).
     case CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind:
+    case CORRECTION_REFUSAL_REASONS.malformedSourceKind:
     case CORRECTION_REFUSAL_REASONS.warehouseTarget:
     case CORRECTION_REFUSAL_REASONS.targetNotPublished:
     case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:

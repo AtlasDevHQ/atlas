@@ -428,8 +428,11 @@ export function isEpisodeSourceClass(value: unknown): value is EpisodeSourceClas
  * which names an internal expression rather than the bad value; and an
  * inherited key (`"toString"`, `"valueOf"`) resolves up the PROTOTYPE CHAIN to
  * a function, whose `.class` is `undefined` — so a class-keyed predicate
- * silently answers "not warehouse" and tier-1 refusal fails OPEN with nothing
- * logged. `Object.hasOwn` refuses both, and throwing names the value.
+ * silently answers "not warehouse". Since #4964 that lands in the correction
+ * quarantine rather than in a lost refusal, so it no longer fails OPEN — but it
+ * refuses under a reason that names the wrong problem, and `"toString"` is not
+ * a source kind anyone should be reasoning about. `Object.hasOwn` refuses both,
+ * and throwing names the value.
  *
  * Callers that expect untrusted input must still narrow with
  * {@link isEpisodeSource} first — this is the backstop, not the gate.

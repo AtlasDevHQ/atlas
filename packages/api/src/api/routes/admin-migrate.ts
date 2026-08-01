@@ -1053,9 +1053,9 @@ export async function importBundle(
         //
         // #4964 closed that fail-open at the other end rather than this one.
         // Refusing the bundle was the alternative and it is worse: 0180 leaves
-        // `source` plain `text` with no CHECK, so this validator would be
-        // stricter than the database is at rest — the thing `lib/brain/acl.ts`'s
-        // header forbids, and with all-or-nothing bundle validation one episode
+        // `source` plain `text` with no CHECK, so this route would be stricter
+        // than the database is at rest — the rule `lib/brain/acl.ts`'s header
+        // states for GRANTS, holding here for the same reason, and with all-or-nothing bundle validation one episode
         // from a newer region would strand the entire workspace, at cutover.
         // Instead `correction.ts`'s `unrecognizedSourceKind` refuses to CORRECT
         // a fact whose kind cannot be classified. The episode imports, reads and
@@ -1063,14 +1063,14 @@ export async function importBundle(
         // is shut, and it reopens when this region learns the kind.
         //
         // Note the two columns are not the same one: that quarantine reads each
-        // FACT's `provenance.source`, restored verbatim a few lines below and
-        // never cross-checked against this episode row. They agree because
+        // FACT's `provenance.source`, restored verbatim in the fact loop below
+        // and never cross-checked against this episode row. They agree because
         // `reconcile.ts` copies `episode.source` into the payload — a producer
         // convention, not an invariant this route enforces — so a hand-built
         // bundle can quarantine facts this log never named, and vice versa.
         log.warn(
           { orgId, episodeId: episode.id, source: episode.source, vocabulary: EPISODE_SOURCES },
-          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design; facts derived from it are correction-quarantined (UNRECOGNIZED_SOURCE_KIND) until this deployment's vocabulary includes the kind, so no remediation is needed here",
+          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design; any fact whose OWN provenance.source carries this kind is correction-quarantined until this deployment's vocabulary includes it. This route does not verify that the bundle's facts carry the same value",
         );
       }
       await client.query(

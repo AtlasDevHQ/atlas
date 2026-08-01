@@ -1153,7 +1153,18 @@ describe("validateBundle — company brain (#4767)", () => {
     // were warehouse-shaped, hand tier-1 facts a correction path ADR-0036
     // forbids. Verbatim is the only answer that is neither.
     const bundle = brainBundle();
-    (bundle.brainEpisodes![0] as unknown as Record<string, unknown>).source = "snowflake";
+    const episode = bundle.brainEpisodes![0] as unknown as Record<string, unknown>;
+    episode.source = "snowflake";
+    // The FACT's own provenance too, and that is the load-bearing half: the
+    // #4964 quarantine reads `brain_facts.provenance.source`, NOT this episode
+    // row, and nothing cross-checks the two (`admin-migrate.ts` says so at the
+    // insert). If a future normalisation or key-allowlist stripped this value
+    // on the way in, the quarantine would become silently unreachable while
+    // every fake-store unit test stayed green.
+    (episode.facts as Array<Record<string, unknown>>)[0]!.provenance = {
+      source: "snowflake",
+      producer: "region-import",
+    };
     // Validation does not gate it — the carve-out starts here, not at the INSERT.
     expect(validateBundle(bundle).ok).toBe(true);
 
@@ -1163,6 +1174,13 @@ describe("validateBundle — company brain (#4767)", () => {
     const insert = calls.find((c) => c.sql.includes("INSERT INTO brain_episodes"));
     expect(insert).toBeDefined();
     expect(insert!.params).toContain("snowflake");
+
+    // The fact's provenance survives byte-for-byte, `source` included.
+    const factInsert = calls.find((c) => c.sql.includes("INSERT INTO brain_facts"));
+    expect(factInsert).toBeDefined();
+    expect(factInsert!.params).toContain(
+      JSON.stringify({ source: "snowflake", producer: "region-import" }),
+    );
     // The route logs this (`admin-migrate.ts`) precisely because the value then
     // escapes `isWarehouseDerived` — `lib/brain/__tests__/sources.test.ts` pins
     // that the predicate really does decline `"snowflake"`.

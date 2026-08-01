@@ -156,7 +156,9 @@ const {
   correctFact,
 } = await import("@atlas/api/lib/brain/correction");
 const { INSERT_PROVENANCE_EDGE_SQL } = await import("@atlas/api/lib/brain/reconcile");
-const { SLACK_SOURCE, WAREHOUSE_SOURCE } = await import("@atlas/api/lib/brain/sources");
+const { EPISODE_SOURCES, SLACK_SOURCE, WAREHOUSE_SOURCE } = await import(
+  "@atlas/api/lib/brain/sources"
+);
 type CorrectionDeps = Parameters<typeof correctFact>[1];
 
 const WS = "ws-audit";
@@ -186,13 +188,19 @@ const admin = {
  * for real.
  */
 function fakeTransaction(
-  options: { dependents?: readonly string[]; warehouseDerived?: boolean; source?: string } = {},
+  options: { dependents?: readonly string[]; warehouseDerived?: boolean; source?: unknown } = {},
 ): CorrectionDeps {
   const dependents = options.dependents ?? [];
-  // `source` overrides `warehouseDerived` so the #4964 quarantine can be
-  // driven from here without a second boolean per refusal shape.
-  const source =
-    options.source ?? (options.warehouseDerived === true ? WAREHOUSE_SOURCE : SLACK_SOURCE);
+  // `source` overrides `warehouseDerived` so the #4964 quarantine can be driven
+  // from here without a second boolean per refusal shape. Typed `unknown` and
+  // selected with `hasOwn` rather than `??`, because the malformed half of that
+  // quarantine is tested with `source: null` — which `??` would silently
+  // replace with the default, quietly turning that test into a no-op.
+  const source = Object.hasOwn(options, "source")
+    ? options.source
+    : options.warehouseDerived === true
+      ? WAREHOUSE_SOURCE
+      : SLACK_SOURCE;
   return {
     now: () => NOW,
     newCorrectionId: () => "corr-1",
@@ -400,7 +408,8 @@ describe("the correction audit row", () => {
     expect(rolledBack.kind).toBe("refused");
 
     // The #4964 quarantine — same inside-the-transaction throw, and the one
-    // refusal that also emits an operator log.
+    // refusal that also emits an operator WARN. (Every refusal emits an
+    // `info`; the assertions below filter on `warn` for that reason.)
     logCalls.length = 0;
     const quarantined = await correctFact(
       { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4c" },
@@ -410,8 +419,11 @@ describe("the correction audit row", () => {
 
     // The log is load-bearing, not decoration: `source` and `vocabulary` are
     // deliberately withheld from the HTTP response, so this line is the only
-    // place an operator can learn WHICH kind was declined. Deleting it, or
-    // dropping either field, would otherwise pass every other test in the repo.
+    // place an operator can learn WHICH kind was declined and what it was
+    // measured against. Deleting it, or dropping either field, would otherwise
+    // pass every other test in the repo — so both are matched, not just the
+    // first. (`vocabulary` was missing from this matcher while the sentence
+    // above already claimed it was covered; the review panel caught it.)
     const warns = logCalls.filter((c) => c.level === "warn");
     expect(warns).toHaveLength(1);
     expect(warns[0]?.payload).toMatchObject({
@@ -420,6 +432,8 @@ describe("the correction audit row", () => {
       factId: FACT,
       verb: "pin",
       source: "warehouse:prod",
+      resolvable: true,
+      vocabulary: EPISODE_SOURCES,
     });
     // Must not name a cause it cannot establish — a rollback below the release
     // that added a member reaches this arm with no import in its history.
@@ -427,6 +441,48 @@ describe("the correction audit row", () => {
 
     expect(attempted).toHaveLength(0);
     expect(fireAndForgetCalls).toBe(0);
+  });
+
+  test("a MALFORMED source logs its own line — no false promise of a deploy", async () => {
+    // The non-string half (#4964). `isEpisodeSource` requires a string, so no
+    // release can ever admit this; the log must not tell an operator to wait
+    // for one, because the same gate also blocks `retract`.
+    logCalls.length = 0;
+    const outcome = await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4e" },
+      // `null` rather than a string — the shape the import can restore because
+      // its fact validator never inspects `provenance.source`.
+      fakeTransaction({ source: null }),
+    );
+    expect(outcome.kind).toBe("refused");
+    if (outcome.kind !== "refused") throw new Error("unreachable");
+    expect(outcome.reason).toBe("MALFORMED_SOURCE_KIND");
+
+    const warns = logCalls.filter((c) => c.level === "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.payload).toMatchObject({ resolvable: false, source: "null" });
+    // The type, never the content: `String(["warehouse"])` is `"warehouse"`,
+    // which reads as an in-vocabulary member beside a refusal saying it is not.
+    expect(warns[0]?.message).toContain("not a string");
+    expect(warns[0]?.message).not.toContain("until a release");
+
+    expect(attempted).toHaveLength(0);
+  });
+
+  test("the logged kind is bounded, and says so when it truncates", async () => {
+    // Bundle-controlled and entirely unvalidated, on a path the `correct_fact`
+    // tool can retry — so the line is bounded. The MARKER is the point: a
+    // silently-cut kind reads as complete to whoever greps the vocabulary for
+    // it, and this field is the only place the value appears at all.
+    logCalls.length = 0;
+    const huge = "x".repeat(5000);
+    await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4f" },
+      fakeTransaction({ source: huge }),
+    );
+    const logged = logCalls.filter((c) => c.level === "warn")[0]?.payload as { source: string };
+    expect(logged.source.length).toBeLessThan(300);
+    expect(logged.source).toContain("(5000 chars)");
   });
 
   test("the quarantine log is not always-on noise — an ordinary correction is silent", async () => {

@@ -1319,13 +1319,16 @@ describe("shared gates", () => {
     // test and the predicate agree with each other while the vocabulary drifted
     // away from both, the #4938 failure `sources.ts` exists to defeat.
     //
-    // The last three are not drift shapes but TYPE shapes, and they are on this
-    // list because the import can produce them: `validateBundle` requires only
-    // that a fact's `provenance` be a non-empty object and never inspects
-    // `.source`, so `{ "source": null }` on a warehouse-derived fact would
-    // otherwise defeat tier-1 refusal AND this quarantine both. `""` is the
-    // one that also pins `unknownKind !== null` against a truthiness check.
+    // `""` is a string like the three above it — a degenerate one, and the case
+    // that pins `unknownKind !== null` at the gate against a truthiness check.
+    // The last two are NON-STRING shapes, on this list because the import can
+    // produce them: `validateBundle` requires only that a fact's `provenance`
+    // be a non-empty object and never inspects `.source`, so `{"source": null}`
+    // on a warehouse-derived fact would otherwise defeat tier-1 refusal AND
+    // this quarantine both. They refuse under a DIFFERENT reason — see the
+    // resolvable split below.
     for (const source of ["warehouse:prod", "snowflake", "bigquery", "", 42, null]) {
+      const resolvable = typeof source === "string";
       for (const verb of CORRECTION_VERBS) {
         const store = new FakeCorrectionStore();
         store.seedFact({ id: "imported", provenance: { source, producer: "region-import" } });
@@ -1341,17 +1344,29 @@ describe("shared gates", () => {
         // would assert the fact IS warehouse-derived, which for a newer chat
         // vendor's message is simply false — and would send an operator
         // looking for a warehouse table that does not exist.
+        // A string kind can join the vocabulary in a later release, so it heals
+        // and says so. A non-string never can — `isEpisodeSource` requires a
+        // string — so promising a deploy there would be a false promise about a
+        // fact that also cannot be RETRACTED, the GDPR-erasure verb. Different
+        // remediation, different reason.
         expect([source, verb, outcome.reason]).toEqual([
           source,
           verb,
-          CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind,
+          resolvable
+            ? CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind
+            : CORRECTION_REFUSAL_REASONS.malformedSourceKind,
         ]);
         // The PROSE, not just the code. The reason's whole justification is
         // that an operator must not be told "warehouse-derived" about what is
         // probably a newer chat vendor's message — a regression that kept the
         // code and reused the tier-1 copy would be green on the line above.
-        expect(outcome.message).toContain("does not recognise");
+        // `not.toContain("semantic layer")` is what actually discriminates
+        // against that copy-paste; the positive half anchors on the remediation
+        // each branch promises, which is the half that must never be swapped.
         expect(outcome.message).not.toContain("semantic layer");
+        expect(outcome.message).toContain(
+          resolvable ? "until this deployment runs a version" : "No release will resolve this",
+        );
         // Refused BEFORE any write, exactly like tier-1: the correction
         // episode is what a late refusal would have to roll back.
         expect(store.episodes).toHaveLength(0);

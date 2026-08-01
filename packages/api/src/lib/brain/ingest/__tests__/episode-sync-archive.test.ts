@@ -191,9 +191,12 @@ describe("the brain source registry", () => {
     // The regression this exists for: a future warehouse producer naming its
     // kind after the VENDOR. `snowflake` is a perfectly legal slug, so
     // the pattern check above waves it through — and `isWarehouseDerived`
-    // would then never match it, so tier-1 correction refusal would fail OPEN
-    // with every existing test still green. Registration is where that has to
-    // stop, because nothing downstream can tell a novel class from a typo.
+    // would then never match it. Since #4964 that no longer fails OPEN (the
+    // correction path is quarantined instead, and `correction.test.ts` loops
+    // these very slugs), but the hazard is only converted, not removed: every
+    // fact the connector produced becomes uncorrectable workspace-wide until
+    // the vocabulary admits the kind. Registration is where that has to stop,
+    // because nothing downstream can tell a novel class from a typo.
     _resetBrainSourceConnectors();
     for (const vendor of ["snowflake", "bigquery", "warehouse-prod", "fixture"]) {
       expect(() => registerBrainSourceConnector(connector({ source: asClass(vendor) }))).toThrow(

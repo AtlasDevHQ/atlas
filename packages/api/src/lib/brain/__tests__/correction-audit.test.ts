@@ -472,7 +472,8 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       requestId: "req-7",
     });
     // The Error OBJECT, not `err.message`: pino's `scrubErrSerializer` then
-    // captures the stack and, for a pg rejection, `code`/`detail`/`constraint`.
+    // captures the stack, plus whatever `ERROR_DIAGNOSTIC_FIELDS` the rejection
+    // carries (`code`/`constraint` — never `detail`, which echoes row values).
     // An `err`-less "audit failed" is not actionable at all — `errOf` throws
     // rather than letting a missing field pass as a match.
     expect(errOf(failure).message).toBe("internal DB circuit breaker is open");

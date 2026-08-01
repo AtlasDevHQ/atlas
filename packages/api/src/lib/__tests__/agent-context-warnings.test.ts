@@ -274,3 +274,59 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
     expect(true).toBe(true);
   });
 });
+
+/**
+ * #4941 — the LAST hop, and the one every other test in that arc trusts.
+ *
+ * `contextWarnings` above is the SSE/UI channel. `warnings` is the independent
+ * MODEL channel: it exists so the agent can say "temporarily unavailable" rather
+ * than "I can't do that", which is the whole point of routing a degraded tool
+ * load into it. Every #4941 test on the surfaces asserts `runAgent` was CALLED
+ * with `warnings` — delete the `warnings,` forwarding at the `buildSystemParam`
+ * call site and all of them stay green while the model hears nothing again.
+ * This pins the edge those tests stand on: caller option → `## Warnings` in the
+ * prompt the model actually receives.
+ */
+describe("#4941 — runAgent renders caller `warnings` into the model's system prompt", () => {
+  let capturedPrompt: unknown;
+
+  beforeEach(() => {
+    capturedPrompt = undefined;
+    mockModel = new MockLanguageModelV3({
+      doStream: async (options) => {
+        capturedPrompt = options.prompt;
+        const final: LanguageModelV3StreamPart[] = [
+          { type: "text-delta", id: "t0", delta: "ok" },
+          { type: "finish", usage: MOCK_USAGE, finishReason: { unified: "stop", raw: "end_turn" } },
+        ];
+        return { stream: convertArrayToReadableStream(final) };
+      },
+    });
+    // Both preflight loaders succeed, so `warnings` carries only what the
+    // caller passed — otherwise the negative case below could not be written.
+    semanticState.whitelistThrows = false;
+    semanticState.patternsThrows = false;
+  });
+
+  it("a caller warning reaches the model under a `## Warnings` heading", async () => {
+    const result = await runAgent({
+      messages: userMessages("email me the Q3 numbers"),
+      warnings: ["SENTINEL-4941: the operator action tools did not load."],
+    });
+    await result.steps;
+
+    const prompt = JSON.stringify(capturedPrompt);
+    expect(prompt).toContain("## Warnings");
+    expect(prompt).toContain("SENTINEL-4941: the operator action tools did not load.");
+  });
+
+  it("no `## Warnings` section at all when the caller passes none", async () => {
+    const result = await runAgent({ messages: userMessages("how many companies?") });
+    await result.steps;
+
+    const prompt = JSON.stringify(capturedPrompt);
+    // Not vacuous — the prompt really was captured and really is the system one.
+    expect(prompt).toContain("Atlas");
+    expect(prompt).not.toContain("## Warnings");
+  });
+});

@@ -4,12 +4,14 @@
  * `buildRegistry` authors a warning addressed to the agent ("...are unavailable
  * for this session. Inform the user and suggest they check server logs or retry
  * later"), and `api/routes/chat.ts` threads it into `runAgent({ warnings })` so
- * a web user hears "temporarily unavailable, retry". Every headless surface —
- * the SDK query route, Slack, MCP, the scheduler — goes through
- * `executeAgentQuery`, which resolved a seam that returned a bare registry and
- * dropped the warnings at the destructure. The agent then reported the
- * capability as ABSENT rather than degraded: a wrong explanation, not a missing
- * one, which is what makes it a truthfulness bug rather than a papercut.
+ * a web user hears "temporarily unavailable, retry". Every headless surface that
+ * BUILDS a registry — the SDK query route, Slack, MCP, the scheduler — goes
+ * through `executeAgentQuery`, which resolved a seam that returned a bare
+ * registry and dropped the warnings at the destructure. The agent then reported
+ * the capability as ABSENT rather than degraded: a wrong explanation, not a
+ * missing one, which is what makes it a truthfulness bug rather than a papercut.
+ * (`ee/src/proactive/answer-adapter.ts` is headless too, but passes a STATIC
+ * registry — no build to fail, so nothing to relay.)
  *
  * Own file because proving it needs the action-tool module to actually FAIL,
  * and `mock.module` is file-wide: `lib/tools/__tests__/registry.test.ts` mocks
@@ -18,9 +20,15 @@
  *
  * The assertion is on what `runAgent` RECEIVES, not on what the registry
  * builder returns — "the warning was produced" was already true before the fix.
- * `agent.ts` renders `warnings` under a `## Warnings` heading in the system
- * prompt (pinned by `agent-cache.test.ts`), so the option is the seam where
- * this surface's obligation ends.
+ * The remaining hop, `runAgent({ warnings })` → `## Warnings` in the prompt the
+ * model is handed, is pinned by `agent-context-warnings.test.ts`; without that
+ * this file (and its two siblings) would all stay green if the forwarding were
+ * deleted.
+ *
+ * The real logger is deliberately NOT mocked here: the failing action load must
+ * still emit its operator-facing `error` line, and asserting the user-facing
+ * half while silencing the operator half would miss the point of the issue. The
+ * pino line in this file's output is expected.
  */
 
 import { describe, it, expect, mock } from "bun:test";
@@ -44,6 +52,12 @@ void mock.module("@atlas/api/lib/tools/actions", () => {
 /** Every `runAgent` options bag the surface produced, in call order. */
 const runAgentCalls: { tools?: { getAll(): Record<string, unknown> }; warnings?: string[] }[] = [];
 
+// Partial mock of `lib/agent`, deliberately: `runAgent` is the only symbol any
+// module in this file's reachable graph imports from it (`agent-query.ts:9`), so
+// the "Export named 'X' not found" failure mode that bit `resume-turn.test.ts`
+// cannot fire here. Mocking the full ~11-export surface would drag the real
+// agent module graph in for no gain. If a future import from `lib/agent` appears
+// under `agent-query.ts`, this comment is where to widen the mock.
 void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(async (args: { tools?: { getAll(): Record<string, unknown> }; warnings?: string[] }) => {
     runAgentCalls.push(args);

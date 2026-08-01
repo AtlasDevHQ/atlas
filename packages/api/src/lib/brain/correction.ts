@@ -147,6 +147,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { ADMIN_ACTIONS, logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
 import {
   aclVisibilityClause,
@@ -1090,28 +1091,39 @@ async function emitCorrectionAudit(args: {
 }
 
 /**
- * A pg rejection's diagnostic triple, lifted onto the log payload as its own
- * fields.
+ * A pg rejection's `code` / `constraint`, lifted onto the log payload as its
+ * own fields — the difference between "which failure mode was this" being an
+ * answer and a guess (`42P01` a missing relation, `53300` pool exhaustion).
  *
- * `code` / `constraint` are the difference between "which failure mode was
- * this" being an answer and a guess (`42P01` a missing relation, `53300` pool
- * exhaustion). #4941 added both to `scrubErrSerializer`'s whitelist, so they
- * now survive on the serialized `err` as well — this lift is no longer the only
- * copy, and it stays for two reasons. It names them at the TOP level under
- * stable keys the operator runbook and this module's test already key on; and
- * it does not depend on `scrubErrSerializer` being installed, which is per-pino-
- * instance and opt-in (a caller that builds its own logger without
- * `serializers.err` still gets these fields from here).
+ * #4941 added both to `scrubErrSerializer`'s whitelist, so they now survive on
+ * the serialized `err` too. This lift is therefore no longer the only copy, and
+ * it stays for a reason that copy cannot cover: the `err:` field above is
+ * normalized with `err instanceof Error ? err : new Error(String(err))`, which
+ * discards a NON-`Error` thrower's own properties before the serializer ever
+ * sees them. `pgErrorFields` reads the raw rejection, so on that path it is
+ * still the only copy. It also names the fields at the top level under the
+ * stable keys this module's test pins.
  *
- * `detail` is deliberately left off, on both paths: pg echoes row values into
- * it.
+ * Bounded and scrubbed to the same policy as the serializer's whitelist,
+ * deliberately: two doors onto one log line must not enforce two different
+ * disclosure rules. `detail` is left off on both: pg echoes row values into it.
  */
+const PG_FIELD_MAX = 63;
+
+function pgDiagnostic(value: unknown): string | undefined {
+  const text = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+  if (text === undefined || text.length === 0) return undefined;
+  return text.length <= PG_FIELD_MAX ? errorMessage(text) : "[dropped: oversized]";
+}
+
 function pgErrorFields(err: unknown): { pgCode?: string; pgConstraint?: string } {
   if (typeof err !== "object" || err === null) return {};
   const { code, constraint } = err as { code?: unknown; constraint?: unknown };
+  const pgCode = pgDiagnostic(code);
+  const pgConstraint = pgDiagnostic(constraint);
   return {
-    ...(typeof code === "string" ? { pgCode: code } : {}),
-    ...(typeof constraint === "string" ? { pgConstraint: constraint } : {}),
+    ...(pgCode !== undefined && { pgCode }),
+    ...(pgConstraint !== undefined && { pgConstraint }),
   };
 }
 

@@ -166,7 +166,9 @@ describe("resumeChatTurn (#3750)", () => {
   });
 
   it("#4941 — a healthy build passes no warnings (the resumed model is not told to apologise)", async () => {
-    await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+    const result = await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+    // Non-vacuous: the resume really ran and really answered.
+    expect(result).toEqual({ status: "answered", answer: "continued answer" });
     const runArgs = mockRunAgent.mock.calls[0]![0] as { warnings?: string[] };
     expect(runArgs.warnings).toBeUndefined();
   });

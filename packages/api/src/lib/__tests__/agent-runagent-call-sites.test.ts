@@ -596,7 +596,11 @@ describe("#4936 — the call-site scanner detects the shapes the bug actually ha
     ["a pre-built options bag hides the posture", `opts`, true],
     ["unconditional — the fixed shape", `{ messages, tools: resolvedToolRegistry }`, false],
     ["unconditional, first key", `{ tools: nonDashboardRegistry, messages }`, false],
-    ["unconditional await", `{ messages: [], tools: await buildHeadlessRegistry() }`, false],
+    [
+      "unconditional await",
+      `{ messages: [], tools: (await buildHeadlessRegistry()).registry }`,
+      false,
+    ],
     ["shorthand property", `{ messages, tools }`, false],
     // Last-write-wins escalation — the only escape shape that fails UPWARD.
     [
@@ -663,7 +667,8 @@ describe("#4936 — every production runAgent call site names the right registry
         "fail-closed (`nonDashboardRegistry`), so this is not an open door — but the " +
         "surface's tool posture must be declared AT the surface, unconditionally. Pass " +
         "`defaultRegistry` if it owns `/dashboards/[id]` and has a human in the loop; " +
-        "`buildHeadlessRegistry()` if it is an SDK / chat-platform / MCP / scheduler " +
+        "the `registry` half of `await buildHeadlessRegistry()` if it is an SDK / " +
+        "chat-platform / MCP / scheduler " +
         "surface; a purpose-built registry otherwise. See #4936 and the gating comment " +
         "in lib/tools/registry.ts.",
     ).toEqual([]);

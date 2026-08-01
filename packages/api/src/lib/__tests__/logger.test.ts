@@ -370,7 +370,7 @@ describe("logger", () => {
       expect(Object.keys(out).sort()).toEqual(["message", "stack", "type"]);
     });
 
-    test("only the whitelisted fields ride along — pg's row-echoing detail does not", () => {
+    test("only the whitelisted fields ride along an ERROR — pg's row-echoing detail does not", () => {
       // The disclosure line. `detail` is where pg writes the offending VALUES
       // ("Key (email)=(a@b.com) already exists"), and `where`/`internalQuery`
       // carry statement text. Diagnostic value does not justify putting
@@ -387,18 +387,95 @@ describe("logger", () => {
       expect(JSON.stringify(out)).not.toContain("alice@example.com");
     });
 
-    test("a non-string or oversized code is dropped rather than echoed", () => {
-      // A SQLSTATE is 5 chars and a pg identifier is capped at 63 bytes, so a
-      // longer value is not the field the disclosure argument reasoned about —
-      // it is some other library's `code` carrying a payload. A numeric code is
-      // dropped for the same reason the field's type must not vary by thrower.
-      const numeric = Object.assign(new Error("http failure"), { code: 500 });
-      expect((scrubErrSerializer(numeric) as Record<string, unknown>).code).toBeUndefined();
+    test("the whitelist guards the Error branch only — a pre-serialized object still passes through", () => {
+      // Pins the LIMIT of the guarantee above, so nobody reads that test as
+      // repo-wide. The object branch spreads the caller's fields verbatim; no
+      // live producer hands a raw pg object to `err` (the audit path normalizes
+      // to an Error first), but a future one would not be covered.
+      const out = scrubErrSerializer({
+        message: "duplicate key",
+        code: "23505",
+        detail: "Key (email)=(alice@example.com) already exists.",
+      }) as Record<string, unknown>;
+      expect(out.detail).toBe("Key (email)=(alice@example.com) already exists.");
+    });
 
+    test("a numeric code is coerced, not dropped", () => {
+      // `mysql2` and Node both use numeric codes; dropping real signal to keep
+      // the field's type stable is a worse trade than coercing, which keeps
+      // both. Non-numeric, non-string values are still skipped.
+      const numeric = Object.assign(new Error("http failure"), { code: 500 });
+      expect((scrubErrSerializer(numeric) as Record<string, unknown>).code).toBe("500");
+
+      const objectish = Object.assign(new Error("odd driver"), { code: { nested: true } });
+      expect((scrubErrSerializer(objectish) as Record<string, unknown>).code).toBeUndefined();
+    });
+
+    test("an oversized code is replaced by a sentinel, not silently dropped", () => {
+      // A SQLSTATE is 5 chars and a pg identifier caps at 63, so a longer value
+      // is not the field the disclosure argument reasoned about — it is some
+      // other library's `code` carrying a payload, and must not be echoed. But
+      // vanishing reads to an operator as "the driver set no code", which is a
+      // different and wrong diagnosis, so the field survives as a sentinel.
       const oversized = Object.assign(new Error("odd driver"), {
         code: `postgres://user:hunter2@db.internal/atlas ${"x".repeat(64)}`,
       });
-      expect((scrubErrSerializer(oversized) as Record<string, unknown>).code).toBeUndefined();
+      const out = scrubErrSerializer(oversized) as Record<string, unknown>;
+      expect(out.code).toBe("[dropped: oversized]");
+      expect(JSON.stringify(out)).not.toContain("hunter2");
+    });
+
+    // Two independent defenses, one per test — together they stop a hostile
+    // thrower from collapsing the whole payload to "[log scrub failed]" (losing
+    // type, message AND stack, a strictly worse line than the one this feature
+    // set out to improve). Split because either alone makes the other's
+    // mutation survive, and a defense nothing can fail is not a defense.
+
+    test("a diagnostic accessor is never INVOKED — own data properties only", () => {
+      let invoked = false;
+      const hostile = new Error("write failed");
+      Object.defineProperty(hostile, "code", {
+        get() {
+          invoked = true;
+          throw new Error("trap");
+        },
+        enumerable: true,
+        configurable: true,
+      });
+
+      const out = scrubErrSerializer(hostile) as Record<string, unknown>;
+      expect(invoked, "the lift read through an accessor instead of its own descriptor").toBe(false);
+      expect(out.type).toBe("Error");
+      expect(out.message).toBe("write failed");
+      expect(out.code).toBeUndefined();
+    });
+
+    test("a trapping descriptor lookup costs only the diagnostics, not the whole error", () => {
+      // Belt to the descriptor read's braces: a Proxy can trap the descriptor
+      // lookup itself, which no amount of careful reading avoids. Without the
+      // lift's own catch this reaches the serializer's outer catch.
+      const hostile = new Proxy(new Error("write failed"), {
+        getOwnPropertyDescriptor() {
+          throw new Error("trap");
+        },
+      });
+
+      const out = scrubErrSerializer(hostile) as Record<string, unknown>;
+      expect(out.type).toBe("Error");
+      expect(out.message).toBe("write failed");
+      expect(out.code).toBeUndefined();
+    });
+
+    test("a whitelisted field can never clobber the scrubbed core fields", () => {
+      // The diagnostics spread runs FIRST, so even an own `message`/`stack` on
+      // the thrower loses to the scrubbed value. (`message` is not on today's
+      // whitelist; this pins the ORDER that keeps a future addition harmless.)
+      const shadowing = Object.assign(new Error("real postgres://u:pw@h/db message"), {
+        code: "23505",
+      });
+      const out = scrubErrSerializer(shadowing) as Record<string, unknown>;
+      expect(out.message).toBe("real postgres://***@h/db message");
+      expect(out.code).toBe("23505");
     });
 
     test("a diagnostic field is still scrubbed, not trusted", () => {

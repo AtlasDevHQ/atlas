@@ -42,7 +42,7 @@ const {
   nonDashboardRegistry,
   buildRegistry,
   buildHeadlessRegistry,
-  HEADLESS_REGISTRY_FALLBACK_WARNING,
+  headlessRegistryFallbackWarning,
   WORKSPACE_DASHBOARD_URL_RESOLVER,
   INTENTIONAL_TOOL_SHADOWS,
   TOOL_SHADOW_REMEDIATIONS,
@@ -531,20 +531,61 @@ describe("buildHeadlessRegistry (#4936)", () => {
 
   it("#4941 — the fallback path authors its own warning instead of degrading silently", async () => {
     // The degrade above is deliberate and stays; what was missing is that the
-    // user was never told. `nonDashboardRegistry` carries no action tools and no
-    // executePython no matter how the env is set, so a turn that lands here has
-    // lost capability the operator believes is configured.
+    // user was never told, so a turn that lands here lost capability the
+    // operator believes is configured and the model called it absent.
     await withEnv(
       { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined, ATLAS_ACTIONS_ENABLED: "true" },
       async () => {
         const { registry, warnings } = await buildHeadlessRegistry();
         expect(registry).toBe(nonDashboardRegistry);
-        expect(warnings).toEqual([HEADLESS_REGISTRY_FALLBACK_WARNING]);
+        expect(warnings).toEqual([headlessRegistryFallbackWarning()]);
         // Copy addressed to the MODEL, not to an operator reading logs — it has
         // to be relayable as-is, which is the whole point of #4941.
-        expect(HEADLESS_REGISTRY_FALLBACK_WARNING).toContain("temporarily unavailable");
+        expect(warnings[0]).toContain("temporarily unavailable");
       },
     );
+  });
+
+  // The copy is DERIVED from the env, not fixed, and these two pin why. The
+  // fallback registry is lesser-privileged, not stripped: `sendEmail` and
+  // `createLinearIssue` are core tools and survive it. A fixed string claiming
+  // "action tools (JIRA, email) are unavailable" would hand the model a live
+  // `sendEmail` while telling it email is down — the same wrong-explanation bug
+  // #4941 fixes, one capability over.
+  describe("#4941 — the fallback warning never over-claims", () => {
+    it("names only what the env asked for and the fallback could not carry", async () => {
+      await withEnv({ ATLAS_ACTIONS_ENABLED: "true", ATLAS_PYTHON_ENABLED: "true" }, async () => {
+        const warning = headlessRegistryFallbackWarning();
+        expect(warning).toContain("createJiraTicket");
+        expect(warning).toContain("executePython");
+      });
+    });
+
+    it("claims nothing lost when nothing was configured, and never disowns a surviving tool", async () => {
+      await withEnv({ ATLAS_ACTIONS_ENABLED: undefined, ATLAS_PYTHON_ENABLED: undefined }, async () => {
+        const warning = headlessRegistryFallbackWarning();
+        expect(warning).not.toContain("createJiraTicket");
+        expect(warning).not.toContain("executePython");
+      });
+
+      // Whatever the env, the copy must never name a tool the fallback still
+      // carries — `sendEmail` is the one that made the first draft wrong.
+      for (const env of [{ ATLAS_ACTIONS_ENABLED: "true" }, { ATLAS_ACTIONS_ENABLED: undefined }]) {
+        await withEnv({ ...env, ATLAS_PYTHON_ENABLED: undefined }, async () => {
+          const warning = headlessRegistryFallbackWarning();
+          const survivors = Object.keys(nonDashboardRegistry.getAll());
+          expect(survivors).toContain("sendEmail");
+          for (const survivor of survivors) {
+            // Word-bounded on purpose: the action tool `sendEmailReport` may
+            // legitimately be named, and it CONTAINS the surviving `sendEmail`.
+            expect(
+              new RegExp(`\\b${survivor}\\b`).test(warning),
+              `the warning disowns ${survivor}, which the fallback still carries`,
+            ).toBe(false);
+          }
+        });
+      }
+    });
   });
 
   // The OTHER warning source — `buildRegistry`'s action-tool load failure, seen

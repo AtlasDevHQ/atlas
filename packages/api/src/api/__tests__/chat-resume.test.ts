@@ -282,6 +282,44 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     expect(names).toContain("executeSQL");
   });
 
+  // #4941 — the WEB half of the same defect the headless surfaces had: this
+  // route kept `result.registry` and dropped `result.warnings`, so a resumed web
+  // turn whose action tools failed to load reported the capability as ABSENT
+  // rather than temporarily unavailable. The INITIAL web turn (`chat.ts`, pinned
+  // by chat.test.ts) always threaded them; only the resume did not.
+  describe("#4941 — a degraded registry build reaches the resumed model", () => {
+    it("threads the build-failure warning into the resumed runAgent", async () => {
+      process.env.ATLAS_ACTIONS_ENABLED = "true";
+      // The fatal misconfiguration `buildRegistry` throws on, and the same
+      // lever chat.test.ts uses for the initial turn.
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      delete process.env.ATLAS_SANDBOX_URL;
+      try {
+        const res = await app.fetch(resumeRequest());
+        expect(res.status).toBe(200);
+        expect(mockRunAgent).toHaveBeenCalledTimes(1);
+
+        const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+        expect(
+          arg.warnings,
+          "the resumed web turn ran on a degraded tool set and told the model nothing",
+        ).toBeDefined();
+        expect(arg.warnings).toHaveLength(1);
+        expect(arg.warnings![0]).toContain("tool registry failed to build");
+      } finally {
+        delete process.env.ATLAS_ACTIONS_ENABLED;
+        delete process.env.ATLAS_PYTHON_ENABLED;
+      }
+    });
+
+    it("passes no warnings when the build is healthy — the signal is not always-on", async () => {
+      const res = await app.fetch(resumeRequest());
+      expect(res.status).toBe(200);
+      const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+      expect(arg.warnings).toBeUndefined();
+    });
+  });
+
   // #4302 — a resumed turn rebuilds its system prompt live (the checkpoint
   // stores the transcript, not the system param), so the conversation's
   // pinned answer style must be re-threaded from the row loaded for the

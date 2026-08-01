@@ -231,8 +231,9 @@ const CREDENTIAL_URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s@/]*@/i;
  * Driver diagnostic fields carried through the `Error` branch of
  * {@link scrubErrSerializer} (#4941).
  *
- * The serializer rebuilds an `Error` from a whitelist, so every own property
- * that is not named here is dropped. `code` and `constraint` are what separate
+ * The serializer rebuilds an `Error`, keeping an own property only if it is
+ * `message` / `stack` or is named here. Everything else — `cause`, and every
+ * driver field below — is dropped. `code` and `constraint` are what separate
  * "the write failed" from "WHICH invariant rejected the write" — `23505` a
  * unique violation, `23503` a foreign key, `42P01` a missing relation, `53300`
  * pool exhaustion — and without them a pg error in the log is materially less
@@ -242,9 +243,14 @@ const CREDENTIAL_URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s@/]*@/i;
  * NOT extended to pg's other diagnostic fields, and that is the disclosure
  * line: `detail` echoes ROW VALUES (`Key (email)=(a@b.com) already exists`),
  * and `where`/`internalQuery` echo statement text. Those are user data. `code`
- * is a fixed SQLSTATE and `constraint` is a schema identifier authored in this
- * repo's migrations — neither is derived from a request, a credential, or a
- * customer row.
+ * is a fixed SQLSTATE; `constraint` is a schema identifier — from this repo's
+ * migrations, a plugin's, or the customer's own analytics schema, since this is
+ * the GLOBAL `err` serializer and datasource errors pass through it too. None
+ * of those is derived from a request, a credential, or a row value.
+ *
+ * Spread BEFORE `type` / `message` / `stack` at the call site, so a future
+ * addition here can never clobber a scrubbed core field — and could only do so
+ * for short values, which is the kind of intermittent corruption nobody spots.
  */
 const ERROR_DIAGNOSTIC_FIELDS = ["code", "constraint"] as const;
 
@@ -253,26 +259,47 @@ const ERROR_DIAGNOSTIC_FIELDS = ["code", "constraint"] as const;
  *
  * A SQLSTATE is 5 characters and a Postgres identifier is capped at 63 bytes
  * (`NAMEDATALEN - 1`), so anything longer is not the field this whitelist
- * reasoned about — it is some other library's `code` carrying a payload. Drop
- * it rather than echo an unbounded value the disclosure argument above never
- * covered.
+ * reasoned about — it is some other library's `code` carrying a payload, which
+ * the disclosure argument above never covered. Measured in UTF-16 code units
+ * rather than bytes: conservative for a multi-byte identifier, which is the
+ * direction to err in.
  */
-const ERROR_DIAGNOSTIC_MAX = 64;
+const ERROR_DIAGNOSTIC_MAX = 63;
+
+/** Stands in for an over-length diagnostic value. See {@link errorDiagnostics}. */
+const ERROR_DIAGNOSTIC_OVERSIZED = "[dropped: oversized]";
 
 /**
  * Lift the whitelisted diagnostic fields off an error, scrubbed and bounded.
- * Non-string values are skipped so the serialized shape stays stable (some
- * SDKs use a numeric `code`; a number is not what an operator greps for and
- * carrying it would make the field's type depend on the thrower).
+ *
+ * Three deliberate behaviours:
+ *   - A number is coerced (`mysql2`'s and Node's numeric codes are real
+ *     signal); anything else is skipped, so the serialized field's type never
+ *     depends on the thrower.
+ *   - An over-length value becomes {@link ERROR_DIAGNOSTIC_OVERSIZED} rather
+ *     than vanishing. Dropping it silently reads to an operator as "the driver
+ *     set no code", which is a different — and wrong — diagnosis.
+ *   - Values are read as OWN, non-accessor properties and the whole lift has
+ *     its own `catch`. Without both, a hostile or half-initialized getter on
+ *     `code` would throw past the caller's `try` and collapse the entire
+ *     serialized error to `"[log scrub failed]"`, costing the operator the
+ *     type, message and stack it used to get for free.
  */
 function errorDiagnostics(err: Error): Record<string, string> {
-  const source = err as unknown as Record<string, unknown>;
   const out: Record<string, string> = {};
-  for (const field of ERROR_DIAGNOSTIC_FIELDS) {
-    const raw = source[field];
-    if (typeof raw === "string" && raw.length > 0 && raw.length <= ERROR_DIAGNOSTIC_MAX) {
-      out[field] = errorMessage(raw);
+  try {
+    for (const field of ERROR_DIAGNOSTIC_FIELDS) {
+      const raw = Object.getOwnPropertyDescriptor(err, field)?.value as unknown;
+      const text = typeof raw === "string" || typeof raw === "number" ? String(raw) : undefined;
+      if (text === undefined || text.length === 0) continue;
+      out[field] =
+        text.length <= ERROR_DIAGNOSTIC_MAX ? errorMessage(text) : ERROR_DIAGNOSTIC_OVERSIZED;
     }
+  } catch (err_) {
+    // intentionally ignored: a thrower whose diagnostic property is a trap must
+    // not cost the caller the error's type/message/stack. `err_` is unusable
+    // here — logging it would re-enter this serializer.
+    void err_;
   }
   return out;
 }
@@ -284,7 +311,10 @@ function errorDiagnostics(err: Error): Record<string, string> {
  *
  * Accepts:
  *   - Error instance → `{ type, message, stack }` with scrubbed message +
- *     stack, plus any {@link ERROR_DIAGNOSTIC_FIELDS} the error carries
+ *     stack, plus any {@link ERROR_DIAGNOSTIC_FIELDS} the error carries as a
+ *     non-empty own value. Note the whitelist guards this branch only: a
+ *     PRE-SERIALIZED error-shape object (below) is passed through field-for-
+ *     field, so a raw pg object logged as `err` would still carry `detail`
  *   - pre-serialized error-shape object (`{ message, ... }`) → same object
  *     with scrubbed `message`
  *   - string → scrubbed string (this is the hot path — most call sites
@@ -300,10 +330,13 @@ export function scrubErrSerializer(value: unknown): unknown {
     if (value instanceof Error) {
       const scrubbedStack = value.stack ? errorMessage(value.stack) : undefined;
       return {
+        // Diagnostics FIRST — see ERROR_DIAGNOSTIC_FIELDS. A future whitelist
+        // entry named `message`/`stack`/`type` must lose to the scrubbed core
+        // fields, not overwrite them.
+        ...errorDiagnostics(value),
         type: value.name,
         message: errorMessage(value),
         ...(scrubbedStack !== undefined && { stack: scrubbedStack }),
-        ...errorDiagnostics(value),
       };
     }
     if (typeof value === "string") return errorMessage(value);

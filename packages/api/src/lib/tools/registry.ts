@@ -451,9 +451,10 @@ export const TOOL_SHADOW_REMEDIATIONS: Readonly<Record<string, string>> = {
  * under `## Warnings` in the system prompt so the agent says "temporarily
  * unavailable, retry" instead of "I can't do that" (#4941).
  *
- * Exported because `buildHeadlessRegistry` returns the same shape and its
- * callers destructure it; a parallel headless-only type would be one more place
- * for the two to drift.
+ * `buildHeadlessRegistry` returns the same shape, so both builders share one
+ * type rather than growing a parallel headless-only one that can drift.
+ * Exported because it is the return type of two exported functions — a consumer
+ * that wants to hold the result in a named local cannot spell it otherwise.
  */
 export interface BuildRegistryResult {
   registry: ToolRegistry;
@@ -463,17 +464,39 @@ export interface BuildRegistryResult {
 /**
  * The warning `buildHeadlessRegistry` authors when it falls back.
  *
- * Distinct from `buildRegistry`'s action-tool warning: that one says "the
- * action tools are gone", this one says "the whole build failed, so everything
- * beyond the core read tools is gone" — the fallback registry carries no action
- * tools and no `executePython` regardless of how the env is configured.
- * Exported so a test can pin the wording it asserts on rather than re-typing a
- * substring that silently stops matching.
+ * Distinct from `buildRegistry`'s action-tool warning, which says "the operator
+ * action tools are gone". This one says "the build failed outright, so the
+ * session is on the known-good core set" — and it has to be careful, because
+ * the fallback (`nonDashboardRegistry`) is lesser-privileged, NOT stripped: it
+ * still carries `sendEmail`, `createLinearIssue` and (when the OAuth env is
+ * wired) `querySalesforce`, exactly as a successful build would. What the
+ * fallback actually loses, relative to a build that succeeded, is only what the
+ * env asked for on top: the `tools/actions` operator pair under
+ * `ATLAS_ACTIONS_ENABLED`, and `executePython` under `ATLAS_PYTHON_ENABLED`.
+ *
+ * So the copy is DERIVED from that env rather than fixed. A fixed string
+ * claiming "action tools (JIRA, email) are unavailable" would hand the model a
+ * live `sendEmail` tool while instructing it to tell the user email is down —
+ * re-creating, one capability over, the exact wrong-explanation bug #4941
+ * exists to fix. The closing instruction pins the same rule for the model.
  */
-export const HEADLESS_REGISTRY_FALLBACK_WARNING =
-  "The tool registry failed to build, so this session is running on the core query tools only — " +
-  "action tools (JIRA, email) and Python execution are unavailable. Inform the user that those " +
-  "capabilities are temporarily unavailable and suggest they check server logs or retry later.";
+export function headlessRegistryFallbackWarning(): string {
+  const lost: string[] = [];
+  if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
+    lost.push("the operator action tools (createJiraTicket, sendEmailReport)");
+  }
+  if (process.env.ATLAS_PYTHON_ENABLED === "true") {
+    lost.push("Python execution (executePython)");
+  }
+  return (
+    "A server configuration problem stopped the tool registry from building, so this session fell " +
+    "back to a known-good core tool set" +
+    (lost.length > 0 ? `; ${lost.join(" and ")} did not load.` : ".") +
+    " Every tool you can see in your tool list works — do NOT tell the user that one of them is " +
+    "unavailable. If the user asks for a capability you do not have, say it is temporarily " +
+    "unavailable and suggest they retry or contact their Atlas administrator."
+  );
+}
 
 /**
  * Build a dynamic ToolRegistry with optional action and Python support.
@@ -617,7 +640,7 @@ export async function buildHeadlessRegistry(): Promise<BuildRegistryResult> {
       { err: err instanceof Error ? err : new Error(String(err)) },
       "Failed to build headless tool registry — falling back to the non-dashboard core registry",
     );
-    return { registry: nonDashboardRegistry, warnings: [HEADLESS_REGISTRY_FALLBACK_WARNING] };
+    return { registry: nonDashboardRegistry, warnings: [headlessRegistryFallbackWarning()] };
   }
 }
 

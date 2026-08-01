@@ -2151,14 +2151,24 @@ chat.openapi(chatResumeRoute, async (c) => {
           // resolved inside executeSQL at call time) are bound to the live
           // request, never the checkpoint.
           let toolRegistry: import("@atlas/api/lib/tools/registry").ToolRegistry | undefined;
+          // #4941 — same defect as the headless surfaces had, one route over:
+          // this path kept `result.registry` and dropped `result.warnings`, so a
+          // resumed WEB turn whose action tools failed to load was told nothing
+          // and reported the capability as absent. The initial web turn above
+          // (which threads both) is the reference; this mirrors it.
+          const resumeWarnings: string[] = [];
           const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
           if (includeActions) {
             try {
               const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
               const result = await buildRegistry({ includeActions });
               toolRegistry = result.registry;
+              resumeWarnings.push(...result.warnings);
             } catch (err) {
               log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to build tool registry on resume — falling back to default tools");
+              resumeWarnings.push(
+                "Actions were requested but the tool registry failed to build. Action tools are unavailable for this session. Inform the user that actions are currently unavailable and suggest they check server logs or retry later.",
+              );
             }
           }
           try {
@@ -2204,6 +2214,7 @@ chat.openapi(chatResumeRoute, async (c) => {
           const agentResult = await runAgent({
             messages: [],
             tools: resolvedToolRegistry,
+            ...(resumeWarnings.length > 0 && { warnings: resumeWarnings }),
             conversationId,
             // #4302 — a resumed turn rebuilds its system prompt live (the
             // checkpoint stores the message transcript, not the system

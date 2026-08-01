@@ -53,6 +53,7 @@ const SLUG_TO_SOURCE: Readonly<Record<string, KnowledgeCollectionSource>> = {
   freshdesk: "freshdesk",
   "slack-history": "slack-history",
   "zoom-transcripts": "zoom-transcripts",
+  "outlook-mail": "outlook-mail",
 };
 
 /**
@@ -84,6 +85,7 @@ const CONNECTOR_ICONS: Readonly<Record<string, LucideIcon>> = {
   freshdesk: Headset,
   "slack-history": Brain,
   "zoom-transcripts": Brain,
+  "outlook-mail": Brain,
 };
 
 /** Tile icon for a slug; a future connector falls back to the generic glyph. */
@@ -129,10 +131,11 @@ export const KNOWLEDGE_DISPLAY_ORDER: readonly string[] = [
   "front",
   "helpscout",
   "freshdesk",
-  // #4770 / #4965: brain SOURCES, not document mirrors. Last in the picker
-  // because they are the odd ones out — their collections report zero
+  // #4770 / #4965 / #4966: brain SOURCES, not document mirrors. Last in the
+  // picker because they are the odd ones out — their collections report zero
   // documents, since their rows land in `brain_episodes` rather than
   // `knowledge_documents`.
   "slack-history",
   "zoom-transcripts",
+  "outlook-mail",
 ];

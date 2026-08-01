@@ -6,23 +6,32 @@
  * half — the revocation path — is `audience:` membership. This module is where
  * a source's visibility becomes that principal set.
  *
- * ## Two classes, two derivations, one grammar
+ * ## Three classes, three derivations, one grammar
  *
- * `chat` (#4770) and `transcript` (#4965) each get their own deriver, and they
- * do NOT share a code path even though both end in a single `audience:` token.
- * The reason is that their SHAPES differ in the one place that matters:
+ * `chat` (#4770), `transcript` (#4965) and `email` (#4966) each get their own
+ * deriver, and they do NOT share a code path even though all three end in a
+ * single `audience:` token. The reason is that their SHAPES differ in the one
+ * place that matters:
  *
  *   - a chat channel has a public mode, so {@link deriveChatChannelGrant}
  *     branches and `[org]` is a faithful answer for half its inputs;
  *   - a recorded meeting has none, so {@link deriveMeetingParticipantGrant} has
- *     no `[org]` arm at all and could not acquire one by accident.
+ *     no `[org]` arm at all and could not acquire one by accident;
+ *   - a mail message has none either, and additionally cannot state its own
+ *     audience exactly, so {@link deriveEmailRecipientGrant} derives a
+ *     deliberate LOWER BOUND. Its header carries that decision in full — it is
+ *     the class's ACL posture, not one connector's implementation note.
  *
  * A single "generic" deriver taking an optional visibility bit would have made
- * the public arm reachable from the transcript path, and the failure mode there
- * is publishing a private meeting to the whole org — a leak no downstream
- * review gate can catch, because the reviewer is shown the grant Atlas derived
- * rather than the one the vendor had. Two functions, one of which cannot
- * express the dangerous answer, is worth the duplication.
+ * the public arm reachable from the transcript and email paths, and the failure
+ * mode there is publishing a private meeting — or somebody's mail — to the whole
+ * org, a leak no downstream review gate can catch, because the reviewer is shown
+ * the grant Atlas derived rather than the one the vendor had. Three functions,
+ * two of which cannot express the dangerous answer, is worth the duplication.
+ *
+ * The count is the point, incidentally: each new class adds a FUNCTION here, not
+ * a branch. That is what has kept `deriveChatChannelGrant`'s public arm from
+ * spreading to two classes that must never have one.
  *
  * What they DO share is the grammar (`acl.ts`'s exported constants), the
  * usability gate ({@link isUsableGrant}), and the rule below.
@@ -366,6 +375,276 @@ export function deriveMeetingParticipantGrant(
   // Belt-and-braces, the same one `deriveChatChannelGrant` carries: the arm
   // above cannot construct an unusable token today, but a future edit to the id
   // builder could, and this is the one place that mistake is cheap to catch.
+  return isUsableGrant(grant) ? grant : null;
+}
+
+// ---------------------------------------------------------------------------
+// Mail messages (#4966) — the email class's grant derivation
+// ---------------------------------------------------------------------------
+
+/**
+ * The `audience:` id prefix for a source-derived MAIL MESSAGE — the stored form
+ * is `audience:email-message:<source>:<mailboxId>:<messageId>`.
+ *
+ * A third namespace rather than a reuse, on the same lifecycle argument the
+ * meeting namespace makes against the chat one, plus one that is specific to
+ * this class: an email audience is not merely frozen, it is **not fully
+ * knowable** (see {@link deriveEmailRecipientGrant}). A reader that treated an
+ * `email-message:` audience as the same kind of object as a `chat-channel:` one
+ * would be treating a lower bound as a complete set, and #4825's oversight view
+ * exists precisely to tell an admin which is which.
+ *
+ * ## Why there are THREE segments here and two everywhere else
+ *
+ * The mailbox is in the token, and it is not decoration. It is the only thing
+ * that tells the re-verifier WHERE to re-read the message's headers from: Graph
+ * has no tenant-wide message lookup outside eDiscovery, so a message can only be
+ * found inside a mailbox. Chat and transcript audiences need no equivalent
+ * because a channel id and a meeting uuid are account-global.
+ *
+ * `mailboxId` is the Graph user OBJECT ID — a GUID — never a
+ * userPrincipalName, and that is a deliberate constraint rather than a
+ * convenience. A UPN is a personal email address, and this token is stored in
+ * `brain_episodes.visible_to`, which is admin-readable and travels verbatim in a
+ * region-migration bundle; a GUID carries the same routing information with none
+ * of the disclosure. It also survives a rename, which a UPN does not.
+ * `outlook/client.ts` resolves the configured mailbox (which an admin may well
+ * have typed as a UPN) to its object id once per pass for exactly this reason.
+ */
+export const EMAIL_MESSAGE_AUDIENCE_NAMESPACE = "email-message" as const;
+
+/**
+ * Build the mail-message audience id (WITHOUT the `audience:` prefix — that is
+ * grammar).
+ *
+ * `source` and `mailboxId` must both contain NO COLON, and both are ENFORCED
+ * rather than documented, for the reason {@link meetingAudienceId} gives: the
+ * parser splits at the first two separators, so a colon in either would
+ * round-trip into the wrong halves and mint an audience nobody is a member of —
+ * silently, and in the direction that mis-NAMES rather than withholds.
+ *
+ * `messageId` may contain colons and the parser takes the whole remainder. That
+ * is not theoretical here the way it was for a Zoom uuid: RFC 5322 permits a
+ * `no-fold-literal` right-hand side, so `<x@[IPv6:2001:db8::1]>` is a legal
+ * Message-ID. It is rare, it is legal, and truncating it at the first colon
+ * would produce a prefix that matches no real message.
+ */
+export function emailMessageAudienceId(
+  source: string,
+  mailboxId: string,
+  messageId: string,
+): string | null {
+  const cleanSource = source.trim();
+  const cleanMailboxId = mailboxId.trim();
+  const cleanMessageId = messageId.trim();
+  if (cleanSource === "" || cleanMailboxId === "" || cleanMessageId === "") return null;
+  if (cleanSource.includes(":") || cleanMailboxId.includes(":")) return null;
+  return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${cleanSource}:${cleanMailboxId}:${cleanMessageId}`;
+}
+
+/** The three halves {@link emailMessageAudienceId} joins. */
+export interface EmailMessageAudienceParts {
+  readonly source: string;
+  /** The Graph user object id of the mailbox the message was read from. */
+  readonly mailboxId: string;
+  /** The RFC 5322 Message-ID, angle brackets already stripped. */
+  readonly messageId: string;
+}
+
+/**
+ * The INVERSE of {@link emailMessageAudienceId}, or `null` when the id does not
+ * name a mail message at all.
+ *
+ * Same direction-of-safety argument as its two siblings: a second MINTER could
+ * disagree with the first about which id a message gets and the disagreement
+ * would be silent, but a PARSER cannot — it consumes ids the deriver already
+ * produced, and if the format changed under it, it stops matching and the caller
+ * falls back to opaque, which is fail-CLOSED for a disclosure decision. The
+ * audience re-verifier (`outlook/audience.ts`) is the consumer, and it reads
+ * both the mailbox and the message id back out of a stored grant rather than
+ * re-deriving either.
+ */
+export function parseEmailMessageAudienceId(audienceId: string): EmailMessageAudienceParts | null {
+  const namespacePrefix = `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:`;
+  if (!audienceId.startsWith(namespacePrefix)) return null;
+  const rest = audienceId.slice(namespacePrefix.length);
+  const firstSeparator = rest.indexOf(":");
+  if (firstSeparator <= 0 || firstSeparator === rest.length - 1) return null;
+  const source = rest.slice(0, firstSeparator);
+  const afterSource = rest.slice(firstSeparator + 1);
+  const secondSeparator = afterSource.indexOf(":");
+  if (secondSeparator <= 0 || secondSeparator === afterSource.length - 1) return null;
+  return {
+    source,
+    mailboxId: afterSource.slice(0, secondSeparator),
+    messageId: afterSource.slice(secondSeparator + 1),
+  };
+}
+
+/** The visibility facts one mail message exposes, normalised across vendors. */
+export interface EmailMessageParticipation {
+  /** The connector's stored source kind (`brain_episodes.source`), e.g. `outlook`. */
+  readonly source: string;
+  /** The Graph user OBJECT ID of the mailbox this copy was read from. */
+  readonly mailboxId: string;
+  /** The normalised RFC 5322 Message-ID — see `outlook/config.ts`. */
+  readonly messageId: string;
+  /**
+   * True only when the vendor returned a message whose PARTICIPANT HEADERS were
+   * all present and readable.
+   *
+   * This is the email analogue of `MeetingParticipation.rosterComplete`, and it
+   * makes a narrower claim than its name suggests, so read it precisely: it says
+   * the FIELDS Atlas asked for came back, not that the resulting set is everyone
+   * who saw the message. The latter is unknowable and this module does not
+   * pretend otherwise — see the header of {@link deriveEmailRecipientGrant}.
+   *
+   * A vendor that could not distinguish "this message has no Cc" from "the Cc
+   * field was not returned" must pass `false`. The two are opposite situations:
+   * a genuinely empty Cc narrows the audience correctly, while an OMITTED Cc
+   * narrows it by dropping people who really are in it — and because the roster
+   * is also what `reconcileAudienceMembership` deletes against, the second one
+   * REVOKES them. `outlook/api.ts` keys this on the presence of the keys rather
+   * than on their contents for exactly that reason.
+   */
+  readonly headersComplete: boolean;
+  /**
+   * How many distinct participant addresses the headers yielded (sender plus
+   * To plus Cc). Zero is an audience that cannot be established at all.
+   */
+  readonly participantCount: number;
+}
+
+/**
+ * Derive the grant for one mail message's episode.
+ *
+ * ══════════════════════════════════════════════════════════════════════
+ * ██  THE UNDER-GRANT POSTURE — decided here, for the whole email class
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * **The grant is `From` + `To` + `Cc`. `Bcc` is IGNORED — even on the copy that
+ * exposes it — and forwarding is invisible. The derived grant is therefore a
+ * LOWER BOUND on who has seen this content, deliberately, and never an exact
+ * set.**
+ *
+ * ADR-0036 §T6 puts email third in the class-major order precisely because this
+ * decision has to be made and every earlier class got to skip it. A chat channel
+ * and a meeting have ENUMERABLE audiences: ask the vendor, get the whole set. An
+ * email does not, in two independent ways.
+ *
+ *   - **BCC is invisible to recipients.** Alice BCCs Carol. Bob's copy of the
+ *     message carries no trace of Carol at all; only Alice's Sent copy does.
+ *   - **Forwarding mutates the audience after the fact**, and leaves NO signal
+ *     on the original message. Bob forwards to Dave and the message Atlas
+ *     ingested is byte-identical to what it was before. There is nothing to
+ *     read, so this half is not even a choice — it is named here only so nobody
+ *     later reads its absence as an oversight.
+ *
+ * ### Why ignore BCC rather than honour it where it IS visible
+ *
+ * The safety argument is the obvious one and it is the weaker one: under-granting
+ * costs a person an affordance (they cannot see Atlas-derived facts about a mail
+ * they can still read in their own client), over-granting is a leak, and §T6's
+ * asymmetry says prefer the loss. True, and not the reason.
+ *
+ * The reason is DETERMINISM. `outlook/config.ts` keys the episode's `source_id`
+ * on the RFC 5322 Message-ID specifically so that one mail to five colleagues
+ * collapses to ONE episode however many of their mailboxes Atlas walks — and a
+ * consequence of that collapse is that **which copy wins is undetermined**. It
+ * depends on configured mailbox order and on which pass had budget left.
+ *
+ * `bccRecipients` is populated only on the sender's copy. So a grant that
+ * honoured BCC would name a different set of people depending on whether the
+ * sender's mailbox happened to be walked before the recipients' — the same
+ * stored row, granted differently on different days, for reasons no operator
+ * could reconstruct. That is not a stricter posture or a looser one; it is not a
+ * posture at all. Ignoring BCC everywhere makes every copy of a message derive
+ * a byte-identical grant, which is what makes the dedupe safe.
+ *
+ * ⚠️ The two decisions are therefore LOAD-BEARING ON EACH OTHER. If a future
+ * change makes the grant depend on which copy was read, the Message-ID dedupe
+ * has to be revisited in the same PR, and vice versa. Neither is safe alone.
+ *
+ * ### What this costs, plainly
+ *
+ * A BCC'd colleague, and anyone a message was forwarded to, cannot see facts
+ * extracted from it through Atlas. They lose an Atlas affordance; they lose no
+ * information they ever had, because they still have the mail.
+ *
+ * ### What every downstream reader must NOT conclude
+ *
+ * `visible_to` on an email episode does not answer "who has seen this". It
+ * answers "who can Atlas prove was addressed". Any feature that reads the grant
+ * as a disclosure record — an audit of who knew what, a leak investigation —
+ * would be reading a lower bound as a complete set and would be wrong in the
+ * direction that exonerates.
+ *
+ * ## The outcomes
+ *
+ * There is no `[org]` arm and, as with {@link deriveMeetingParticipantGrant},
+ * that is the design rather than an omission. A mail message has no public mode
+ * for a vendor field to report, so an org-wide arm could only ever be reached by
+ * mistake — and the mistake would publish someone's mail to the whole company,
+ * which no downstream review gate can catch because the reviewer is shown the
+ * grant Atlas derived rather than the one the mail system had.
+ *
+ * - **Derivable → `[audience:email-message:<source>:<mailboxId>:<messageId>]`.**
+ *   Membership is written at ingest from the same header set this derivation was
+ *   licensed by, and re-verified periodically — `outlook/audience.ts` carries
+ *   why a header set that CANNOT change still needs re-verification, and what
+ *   the per-message audience grain costs at scale.
+ *
+ * - **Underivable → `null`, and the caller BLOCKS and logs.** No wider-grant
+ *   fallback exists. Three things make it underivable, and all three are
+ *   failures to ESTABLISH the audience rather than facts about its size:
+ *     - `headersComplete === false` — the participant headers were not readable,
+ *       so the set Atlas would reconcile against is not the set the message has;
+ *     - zero participants — a message with no sender and no To/Cc names nobody,
+ *       so there is no audience to mint;
+ *     - a blank or colon-bearing source or mailbox id, or a blank message id,
+ *       any of which makes the audience id ambiguous.
+ *
+ * ⚠️ NOT on that list, and this is the same line {@link
+ * deriveMeetingParticipantGrant} draws: **a participant who resolves to no Atlas
+ * user.** That is the FLAG side. A mail whose recipients are all external
+ * customers has a perfectly well-established audience that currently contains
+ * nobody; the faithful result is a stored, gated, invisible episode that repairs
+ * itself the moment one of them gets an account. #4966's acceptance criteria ask
+ * whether an unresolvable participant should block — it must not, and the reason
+ * is that "unresolvable participant" and "unestablishable audience" are answers
+ * to different questions. Blocking on the first would discard evidence
+ * permanently on a condition that is temporary and routine.
+ */
+export function deriveEmailRecipientGrant(
+  participation: EmailMessageParticipation,
+): BrainGrant | null {
+  // Checked FIRST, before the id is built, for the same reason
+  // `rosterComplete` is: unreadable headers are not a malformed input — every id
+  // below may be perfectly well-formed — so a reader scanning for the guard
+  // would not find it among the string checks.
+  if (!participation.headersComplete) return null;
+  // A message that names nobody. Distinct from "names people Atlas does not
+  // know", which is the flag side above and must reach the audience arm.
+  if (participation.participantCount <= 0) return null;
+
+  const audienceId = emailMessageAudienceId(
+    participation.source,
+    participation.mailboxId,
+    participation.messageId,
+  );
+  if (audienceId === null) return null;
+
+  const grant: BrainGrant = [`${AUDIENCE_PREFIX}${audienceId}`];
+  // Belt-and-braces, the same one both siblings carry: the arm above cannot
+  // construct an unusable token today, but a future edit to the id builder
+  // could, and this is the one place that mistake is cheap to catch.
+  //
+  // Deliberately UNTESTABLE, and verified so: removing this line leaves the
+  // whole suite green, because `emailMessageAudienceId` has already refused
+  // every input that could produce an unusable token. That is the guard being
+  // genuinely redundant TODAY rather than a test gap — writing a test for it
+  // would mean reaching past the id builder to construct a state this function
+  // cannot be handed, and would pin the redundancy rather than the property.
   return isUsableGrant(grant) ? grant : null;
 }
 

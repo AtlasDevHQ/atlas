@@ -331,6 +331,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "freshdesk",
       "slack-history",
       "zoom-transcripts",
+      "outlook-mail",
     ]);
   });
 
@@ -365,6 +366,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "freshdesk",
       "slack-history",
       "zoom-transcripts",
+      "outlook-mail",
     ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);

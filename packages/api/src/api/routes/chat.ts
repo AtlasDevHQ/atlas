@@ -1522,9 +1522,15 @@ chat.openapi(chatRoute, async (c) => {
                 { err: errObj },
                 "Failed to build tool registry — falling back to default tools",
               );
-              warnings.push(
-                "Actions were requested but the tool registry failed to build. Action tools are unavailable for this session. Inform the user that actions are currently unavailable and suggest they check server logs or retry later.",
+              // #4941 — one shared copy across all three fallback sites. The
+              // string this replaced said "action tools are unavailable" while
+              // the `defaultRegistry` fallback still carried the core
+              // `sendEmail` / `createLinearIssue`, so the model was primed to
+              // disown a tool it could see.
+              const { registryBuildFailedWarning } = await import(
+                "@atlas/api/lib/tools/registry"
               );
+              warnings.push(registryBuildFailedWarning());
             }
           }
   
@@ -2151,16 +2157,28 @@ chat.openapi(chatResumeRoute, async (c) => {
           // resolved inside executeSQL at call time) are bound to the live
           // request, never the checkpoint.
           let toolRegistry: import("@atlas/api/lib/tools/registry").ToolRegistry | undefined;
+          // #4941 — same defect as the headless surfaces had, one route over:
+          // this path kept `result.registry` and dropped `result.warnings`, so a
+          // resumed WEB turn whose action tools failed to load was told nothing
+          // and reported the capability as absent. The initial web turn above
+          // (which threads both) is the reference; this mirrors it.
+          const resumeWarnings: string[] = [];
           const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
           if (includeActions) {
             try {
               const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
               const result = await buildRegistry({ includeActions });
               toolRegistry = result.registry;
+              resumeWarnings.push(...result.warnings);
             } catch (err) {
-              log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to build tool registry on resume — falling back to default tools");
+              log.error({ err: err instanceof Error ? err : new Error(String(err)), conversationId, runId: handle.runId }, "Failed to build tool registry on resume — falling back to default tools");
+              const { registryBuildFailedWarning } = await import(
+                "@atlas/api/lib/tools/registry"
+              );
+              resumeWarnings.push(registryBuildFailedWarning());
             }
           }
+          const prePluginResumeRegistry = toolRegistry;
           try {
             const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
             const pluginTools = getPluginTools();
@@ -2171,7 +2189,19 @@ chat.openapi(chatResumeRoute, async (c) => {
               toolRegistry.freeze();
             }
           } catch (err) {
-            log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to merge plugin tools on resume — continuing without");
+            // #4941 — the initial turn restores the pre-merge registry and warns
+            // the model; this path did neither. The restore is symmetry rather
+            // than a live fix (every statement in the `try` throws BEFORE the
+            // assignment lands, so `toolRegistry` already holds its pre-merge
+            // value) — the real gap is the warning: a resumed turn whose plugin
+            // tools vanished told the user nothing, which bites hardest when the
+            // call the user just APPROVED is itself the plugin tool.
+            toolRegistry = prePluginResumeRegistry;
+            const errObj = err instanceof Error ? err : new Error(String(err));
+            log.error({ err: errObj, conversationId, runId: handle.runId }, "Failed to merge plugin tools on resume — continuing without");
+            resumeWarnings.push(
+              `Plugin tools failed to load: ${errObj.message}. This turn will continue without plugin tools. Inform the user that plugin-provided tools are unavailable for this session.`,
+            );
           }
 
           // #4936 — same opt-in as the chat route above: the WEB resume, on the
@@ -2204,6 +2234,7 @@ chat.openapi(chatResumeRoute, async (c) => {
           const agentResult = await runAgent({
             messages: [],
             tools: resolvedToolRegistry,
+            ...(resumeWarnings.length > 0 && { warnings: resumeWarnings }),
             conversationId,
             // #4302 — a resumed turn rebuilds its system prompt live (the
             // checkpoint stores the message transcript, not the system

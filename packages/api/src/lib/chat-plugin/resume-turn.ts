@@ -170,10 +170,30 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         // resume could actually have mutated the brain. Even where the gate did
         // hold, the posture is that a brain-mutating tool must not be on this
         // surface at all.
+        //
+        // #4941 — the seam also hands back the warnings the model must relay
+        // (degraded action tools, or a fallback to the core set). A resumed
+        // turn is as headless as the parked one, so it needs the same telling.
         const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
+        const { registry: toolRegistry, warnings: registryWarnings } =
+          await buildHeadlessRegistry();
+        if (registryWarnings.length > 0) {
+          // The operator half. The registry's own error line already carries a
+          // requestId (the pino mixin reads the context bound above) but
+          // nothing domain-level; conversationId / orgId / runId are the
+          // identifiers whoever fields "why did Slack say X was unavailable"
+          // actually has.
+          log.warn(
+            { conversationId, orgId, runId: handle.runId, warningCount: registryWarnings.length },
+            "Chat resume running on a DEGRADED tool set — the approved turn may lack the tool it parked on",
+          );
+        }
         const agentResult = await runAgent({
           messages: [],
-          tools: await buildHeadlessRegistry(),
+          tools: toolRegistry,
+          // Copied: `runAgent` pushes its own warnings into the array it is
+          // handed, and that array belongs to the registry seam.
+          ...(registryWarnings.length > 0 && { warnings: [...registryWarnings] }),
           conversationId,
           resume: {
             runId: handle.runId,

@@ -42,6 +42,8 @@ const {
   nonDashboardRegistry,
   buildRegistry,
   buildHeadlessRegistry,
+  registryBuildFailedWarning,
+  ACTION_TOOLS_UNAVAILABLE_WARNING,
   WORKSPACE_DASHBOARD_URL_RESOLVER,
   INTENTIONAL_TOOL_SHADOWS,
   TOOL_SHADOW_REMEDIATIONS,
@@ -479,7 +481,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
   // the parked turn ran under instead of re-deriving it, which is how the
   // surface silently widened across the approval boundary before this fix.
   it("omits both write verbs but keeps the core query tools", async () => {
-    const names = Object.keys((await buildHeadlessRegistry()).getAll());
+    const names = Object.keys((await buildHeadlessRegistry()).registry.getAll());
 
     expect(names).not.toContain("createDashboard");
     expect(names).not.toContain("correct_fact");
@@ -491,10 +493,19 @@ describe("buildHeadlessRegistry (#4936)", () => {
 
   it("keeps operator action tools opt-in behind ATLAS_ACTIONS_ENABLED", async () => {
     await withEnv({ ATLAS_ACTIONS_ENABLED: undefined }, async () => {
-      expect(Object.keys((await buildHeadlessRegistry()).getAll())).not.toContain("sendEmailReport");
+      expect(Object.keys((await buildHeadlessRegistry()).registry.getAll())).not.toContain("sendEmailReport");
     });
     await withEnv({ ATLAS_ACTIONS_ENABLED: "true" }, async () => {
-      expect(Object.keys((await buildHeadlessRegistry()).getAll())).toContain("sendEmailReport");
+      expect(Object.keys((await buildHeadlessRegistry()).registry.getAll())).toContain("sendEmailReport");
+    });
+  });
+
+  it("#4941 — a clean build carries no warnings (the degraded signal is not always-on)", async () => {
+    // The negative half of the pair below. Without it "warnings is non-empty on
+    // failure" is satisfiable by a seam that always warns, which would train
+    // every headless agent to open with an apology.
+    await withEnv({ ATLAS_ACTIONS_ENABLED: "true" }, async () => {
+      expect((await buildHeadlessRegistry()).warnings).toEqual([]);
     });
   });
 
@@ -509,7 +520,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
       async () => {
         await expect(buildRegistry()).rejects.toThrow("ATLAS_SANDBOX_URL");
 
-        const registry = await buildHeadlessRegistry();
+        const { registry } = await buildHeadlessRegistry();
         expect(registry).toBe(nonDashboardRegistry);
         const names = Object.keys(registry.getAll());
         expect(names).not.toContain("createDashboard");
@@ -518,4 +529,97 @@ describe("buildHeadlessRegistry (#4936)", () => {
       },
     );
   });
+
+  it("#4941 — the fallback path authors its own warning instead of degrading silently", async () => {
+    // The degrade above is deliberate and stays; what was missing is that the
+    // user was never told, so a turn that lands here lost capability the
+    // operator believes is configured and the model called it absent.
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined, ATLAS_ACTIONS_ENABLED: "true" },
+      async () => {
+        const { registry, warnings } = await buildHeadlessRegistry();
+        expect(registry).toBe(nonDashboardRegistry);
+        expect(warnings).toEqual([registryBuildFailedWarning()]);
+        // Copy addressed to the MODEL, not to an operator reading logs — it has
+        // to be relayable as-is, which is the whole point of #4941.
+        expect(warnings[0]).toContain("temporarily unavailable");
+      },
+    );
+  });
+
+  // The copy is DERIVED from the env, not fixed, and this block pins why. A
+  // degraded registry is lesser-privileged, not stripped: `sendEmail` and
+  // `createLinearIssue` are CORE tools and survive both the action-load failure
+  // and the whole-build failure. A fixed string claiming "action tools (JIRA,
+  // email) are unavailable" hands the model a live `sendEmail` while telling it
+  // email is down — the same wrong-explanation bug #4941 fixes, one capability
+  // over. Both strings are swept, against both registries a surface can fall
+  // back to, because the over-claim was found in the second one after the first
+  // was fixed.
+  describe("#4941 — no degraded-tools warning ever over-claims", () => {
+    it("names only what the env asked for and the fallback could not carry", async () => {
+      await withEnv({ ATLAS_ACTIONS_ENABLED: "true", ATLAS_PYTHON_ENABLED: "true" }, async () => {
+        const warning = registryBuildFailedWarning();
+        expect(warning).toContain("createJiraTicket");
+        expect(warning).toContain("executePython");
+      });
+    });
+
+    it("claims nothing lost when nothing was configured", async () => {
+      await withEnv({ ATLAS_ACTIONS_ENABLED: undefined, ATLAS_PYTHON_ENABLED: undefined }, async () => {
+        const warning = registryBuildFailedWarning();
+        expect(warning).not.toContain("createJiraTicket");
+        expect(warning).not.toContain("executePython");
+      });
+    });
+
+    it("every warning ends with the never-disown-a-visible-tool instruction", async () => {
+      // Naming only what was lost is necessary but not sufficient: the model
+      // generalizes from "the action tools are gone" to "email is gone".
+      await withEnv({ ATLAS_ACTIONS_ENABLED: "true", ATLAS_PYTHON_ENABLED: undefined }, async () => {
+        for (const warning of [ACTION_TOOLS_UNAVAILABLE_WARNING, registryBuildFailedWarning()]) {
+          expect(warning).toContain("do NOT tell the user that one of them is unavailable");
+          expect(warning).toContain("temporarily unavailable");
+          // Addressed to the reader of the answer, who on Slack / SDK / MCP has
+          // no server logs. The operator half is the pino line.
+          expect(warning).not.toContain("server logs");
+        }
+      });
+    });
+
+    it("no warning ever disowns a tool the surface still carries", async () => {
+      // Swept against BOTH fallback registries: `nonDashboardRegistry` (the
+      // headless seam) and `defaultRegistry` (both web chat paths).
+      for (const env of [{ ATLAS_ACTIONS_ENABLED: "true" }, { ATLAS_ACTIONS_ENABLED: undefined }]) {
+        await withEnv({ ...env, ATLAS_PYTHON_ENABLED: undefined }, async () => {
+          const warnings = [ACTION_TOOLS_UNAVAILABLE_WARNING, registryBuildFailedWarning()];
+          const survivors = [
+            ...Object.keys(nonDashboardRegistry.getAll()),
+            ...Object.keys(defaultRegistry.getAll()),
+          ];
+          // Non-vacuous, and these two are the ones that made the drafts wrong.
+          expect(survivors).toContain("sendEmail");
+          expect(survivors).toContain("createLinearIssue");
+
+          for (const warning of warnings) {
+            for (const survivor of survivors) {
+              // Word-bounded on purpose: the action tool `sendEmailReport` is
+              // legitimately named, and it CONTAINS the surviving `sendEmail`.
+              expect(
+                new RegExp(`\\b${survivor}\\b`).test(warning),
+                `"${warning.slice(0, 60)}…" disowns ${survivor}, which the surface still carries`,
+              ).toBe(false);
+            }
+          }
+        });
+      }
+    });
+  });
+
+  // The OTHER warning source — `buildRegistry`'s action-tool load failure, seen
+  // through this seam — needs the action module itself to fail, which is a
+  // file-wide `mock.module` this file cannot take (its top-level actions mock is
+  // what makes every `includeActions` test above work). It lives in
+  // `lib/__tests__/agent-query-degraded-tools.test.ts` alongside the call-site
+  // assertion that the warning reaches the model.
 });

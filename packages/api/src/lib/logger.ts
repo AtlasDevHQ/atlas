@@ -12,6 +12,7 @@ import { AsyncLocalStorage } from "async_hooks";
 import { createHash } from "node:crypto";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { diagnosticValue } from "@atlas/api/lib/audit/diagnostic-scrub";
 
 // --- Request context ---
 
@@ -228,12 +229,92 @@ export const redactPaths = [
 const CREDENTIAL_URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s@/]*@/i;
 
 /**
+ * Driver diagnostic fields carried through the `Error` branch of
+ * {@link scrubErrSerializer} (#4941).
+ *
+ * The serializer rebuilds an `Error` as `{ type, message, stack }` from `name`
+ * / `message` / `stack`, then adds only the fields named here, read as own
+ * non-accessor values. `cause` and every other driver field — `detail`,
+ * `where`, `internalQuery`, `table` — are dropped. `code` and `constraint`
+ * are what separate
+ * "the write failed" from "WHICH invariant rejected the write" — `23505` a
+ * unique violation, `23503` a foreign key, `42P01` a missing relation, `53300`
+ * pool exhaustion — and without them a pg error in the log is materially less
+ * actionable than the raw driver error was. `code` is also carried by Node
+ * system errors (`ENOENT`) and most SDKs, so this is not pg-only.
+ *
+ * NOT extended to pg's other diagnostic fields, and that is the disclosure
+ * line: `detail` echoes ROW VALUES (`Key (email)=(a@b.com) already exists`),
+ * and `where`/`internalQuery` echo statement text. Those are user data. `code`
+ * is a fixed SQLSTATE; `constraint` is a schema identifier — from this repo's
+ * migrations, a plugin's, or the customer's own analytics schema, since this is
+ * the GLOBAL `err` serializer and datasource errors pass through it too. None
+ * of those is derived from a request, a credential, or a row value.
+ *
+ * Spread BEFORE `type` / `message` / `stack` at the call site, so a future
+ * addition here can never clobber a scrubbed core field — and could only do so
+ * for short values, which is the kind of intermittent corruption nobody spots.
+ */
+const ERROR_DIAGNOSTIC_FIELDS = ["code", "constraint"] as const;
+
+type ErrorDiagnosticField = (typeof ERROR_DIAGNOSTIC_FIELDS)[number];
+
+/**
+ * Lift the whitelisted diagnostic fields off an error.
+ *
+ * Value normalization — number coercion, the length bound, the oversized
+ * sentinel, the scrub — is `diagnosticValue` in `lib/audit/diagnostic-scrub.ts`,
+ * shared with `brain/correction.ts`'s parallel top-level lift so one policy
+ * governs both doors onto the same log line. What is local to here is the READ:
+ *
+ * Values are read as OWN, non-accessor properties (`getOwnPropertyDescriptor`,
+ * never a plain index) and the whole loop has its own `catch`. Without both, a
+ * hostile or half-initialized getter on `code` — or a Proxy trapping the
+ * descriptor lookup — would land in `scrubErrSerializer`'s outer catch and
+ * collapse the entire serialized error to `"[log scrub failed]"`, costing the
+ * operator the type, message and stack it used to get for free. Each defense
+ * has its own test because either alone leaves the other's mutation alive.
+ *
+ * On that trap path the fields are simply ABSENT — no sentinel, unlike the
+ * over-length case. Deliberate: a sentinel would have to be a key outside
+ * {@link ERROR_DIAGNOSTIC_FIELDS}, and the exact-key assertion in
+ * `logger.test.ts` ("only these ever appear on a serialized error") is a
+ * stronger property to keep than a marker for a case no real driver produces.
+ * The prototype-accessor `code` some SDK classes expose is dropped the same
+ * way, and for the same reason.
+ */
+function errorDiagnostics(err: Error): Partial<Record<ErrorDiagnosticField, string>> {
+  const out: Partial<Record<ErrorDiagnosticField, string>> = {};
+  try {
+    for (const field of ERROR_DIAGNOSTIC_FIELDS) {
+      const value = diagnosticValue(Object.getOwnPropertyDescriptor(err, field)?.value as unknown);
+      if (value !== undefined) out[field] = value;
+    }
+  } catch (err_) {
+    // intentionally ignored: a thrower whose diagnostic property is a trap must
+    // not cost the caller the error's type/message/stack. `err_` is unusable
+    // here — logging it would re-enter this serializer.
+    void err_;
+  }
+  return out;
+}
+
+/**
  * Pino `serializers.err` handler. Funnels every error-shaped value through
  * `errorMessage()` so a driver-echoed connection string (`postgres://u:p@h/db`)
  * gets its userinfo stripped before the line reaches Loki / Railway / Datadog.
  *
  * Accepts:
- *   - Error instance → `{ type, message, stack }` with scrubbed message + stack
+ *   - Error instance → `{ type, message, stack }` with scrubbed message +
+ *     stack, plus any {@link ERROR_DIAGNOSTIC_FIELDS} the error carries as a
+ *     non-empty own value (coerced from a number; replaced by a sentinel when
+ *     over-length — see {@link errorDiagnostics}). Note the whitelist guards
+ *     this branch only: a PRE-SERIALIZED error-shape object (below) is passed
+ *     through field-for-field. No live producer does that — pg's
+ *     `DatabaseError` extends `Error`, so a real pg rejection always takes THIS
+ *     branch — but a future one logging a raw pg object would carry `detail`
+ *     straight through, which is the limit `logger.test.ts`'s
+ *     pre-serialized-object test pins
  *   - pre-serialized error-shape object (`{ message, ... }`) → same object
  *     with scrubbed `message`
  *   - string → scrubbed string (this is the hot path — most call sites
@@ -249,6 +330,10 @@ export function scrubErrSerializer(value: unknown): unknown {
     if (value instanceof Error) {
       const scrubbedStack = value.stack ? errorMessage(value.stack) : undefined;
       return {
+        // Diagnostics FIRST — see ERROR_DIAGNOSTIC_FIELDS. A future whitelist
+        // entry named `message`/`stack`/`type` must lose to the scrubbed core
+        // fields, not overwrite them.
+        ...errorDiagnostics(value),
         type: value.name,
         message: errorMessage(value),
         ...(scrubbedStack !== undefined && { stack: scrubbedStack }),

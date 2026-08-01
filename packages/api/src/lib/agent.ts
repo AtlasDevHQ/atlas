@@ -1097,7 +1097,9 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  *   surface gate `registry.ts` applies from the inside (#4915). Defaulting to
  *   the lesser-privileged registry makes forgetting fail CLOSED. A surface that
  *   owns `/dashboards/[id]` opts in by passing `defaultRegistry`; a headless one
- *   passes `buildHeadlessRegistry()`.
+ *   passes the `registry` half of `await buildHeadlessRegistry()` — and, per
+ *   #4941, threads that call's `warnings` into {@link warnings} rather than
+ *   dropping them.
  *
  *   `nonDashboardRegistry` is lesser-privileged, not side-effect-free: `sendEmail`
  *   / `createLinearIssue` / `querySalesforce` are core tools, gated at execute

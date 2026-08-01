@@ -147,6 +147,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { diagnosticValue } from "@atlas/api/lib/audit/diagnostic-scrub";
 import { ADMIN_ACTIONS, logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
 import {
   aclVisibilityClause,
@@ -1061,10 +1062,10 @@ async function emitCorrectionAudit(args: {
         writeAttempted,
         ...pgErrorFields(err),
         // The Error OBJECT, matching `auth/middleware.ts`, so pino's
-        // `scrubErrSerializer` captures the stack. It rebuilds the error into
-        // `{ type, message, stack }` and DROPS everything else, which is why the
-        // pg fields are lifted out separately above rather than left to ride on
-        // the error.
+        // `scrubErrSerializer` captures the stack. It rebuilds the error from a
+        // whitelist and drops every own property outside it; `code` and
+        // `constraint` are on that whitelist as of #4941, so they now ride on
+        // the error too — see `pgErrorFields` for why the lift stays anyway.
         err: err instanceof Error ? err : new Error(String(err)),
       },
       // Two structurally different failures share this catch, and they need
@@ -1090,22 +1091,51 @@ async function emitCorrectionAudit(args: {
 }
 
 /**
- * A pg rejection's diagnostic triple, lifted onto the log payload as its own
- * fields.
+ * A pg rejection's `code` / `constraint`, lifted onto the log payload as its
+ * own fields — the difference between "which failure mode was this" being an
+ * answer and a guess (`42P01` a missing relation, `53300` pool exhaustion).
  *
- * Necessary because `scrubErrSerializer` reduces the `err` object to
- * `{ type, message, stack }`, so `code` / `constraint` — the difference between
- * "which failure mode was this" being an answer and a guess (`42P01` a missing
- * relation, `53300` pool exhaustion) — do not survive on the error itself.
- * `detail` is deliberately left off: pg echoes row values into it.
+ * #4941 added both to `scrubErrSerializer`'s whitelist, so they now survive on
+ * the serialized `err` too. This lift is therefore no longer the only copy, and
+ * it stays for a reason that copy cannot cover: the `err:` field above is
+ * normalized with `err instanceof Error ? err : new Error(String(err))`, which
+ * discards a NON-`Error` thrower's own properties before the serializer ever
+ * sees them. `pgErrorFields` reads the raw rejection, so on that path it is
+ * still the only copy. It also names the fields at the top level under the
+ * stable keys this module's test pins.
+ *
+ * Value policy is `diagnosticValue` — the SAME function the serializer's
+ * whitelist uses, not a parallel bound: two doors onto one log line must not
+ * enforce two different disclosure rules, and a duplicated constant is how they
+ * would drift. `detail` is left off on both: pg echoes row values into it.
+ *
+ * The read is guarded because `emitCorrectionAudit` is contracted NEVER to
+ * throw and this runs inside it, on an already-committed correction. A plain
+ * destructure would invoke an accessor; if that accessor threw, the throw would
+ * escape `correctFact` — the audit call sits after its try/catch — and reach a
+ * caller whose error copy says "nothing was changed, retry", inviting a
+ * duplicate brain mutation authored by a logging helper. Hence own non-accessor
+ * reads (an accessor descriptor has no `value`, so the getter is never called)
+ * plus a `catch` for a Proxy that traps the descriptor lookup itself — the two
+ * defenses `errorDiagnostics` uses, for the same reasons.
  */
 function pgErrorFields(err: unknown): { pgCode?: string; pgConstraint?: string } {
   if (typeof err !== "object" || err === null) return {};
-  const { code, constraint } = err as { code?: unknown; constraint?: unknown };
-  return {
-    ...(typeof code === "string" ? { pgCode: code } : {}),
-    ...(typeof constraint === "string" ? { pgConstraint: constraint } : {}),
-  };
+  try {
+    const pgCode = diagnosticValue(Object.getOwnPropertyDescriptor(err, "code")?.value);
+    const pgConstraint = diagnosticValue(
+      Object.getOwnPropertyDescriptor(err, "constraint")?.value,
+    );
+    return {
+      ...(pgCode !== undefined && { pgCode }),
+      ...(pgConstraint !== undefined && { pgConstraint }),
+    };
+  } catch (err_) {
+    // intentionally ignored: a trapping diagnostic property must not turn a
+    // best-effort audit log line into a throw out of a never-throw contract.
+    void err_;
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------

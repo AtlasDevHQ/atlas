@@ -123,6 +123,56 @@ describe("resumeChatTurn (#3750)", () => {
     expect(names).toContain("explore");
   });
 
+  it("#4941 — a degraded registry build tells the resumed model, instead of degrading silently", async () => {
+    // The resume is as headless as the turn it continues, so it owes the user
+    // the same explanation. `ATLAS_PYTHON_ENABLED` without `ATLAS_SANDBOX_URL`
+    // is `buildRegistry`'s fatal misconfiguration; `buildHeadlessRegistry`
+    // catches it and degrades to the non-dashboard core set — deliberately, and
+    // pinned elsewhere — but the user used to be told nothing, so the model
+    // reported the lost capability as one it never had.
+    //
+    // Driven through the FALLBACK branch rather than a failed action-module
+    // import because that needs a file-wide `mock.module`; the action-load half
+    // is pinned in `lib/__tests__/agent-query-degraded-tools.test.ts` on the
+    // other headless caller. Both callers read the same field of the same seam.
+    const savedPython = process.env.ATLAS_PYTHON_ENABLED;
+    const savedSandbox = process.env.ATLAS_SANDBOX_URL;
+    process.env.ATLAS_PYTHON_ENABLED = "true";
+    delete process.env.ATLAS_SANDBOX_URL;
+    try {
+      const result = await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+      expect(result).toEqual({ status: "answered", answer: "continued answer" });
+
+      const runArgs = mockRunAgent.mock.calls[0]![0] as {
+        tools?: { getAll(): Record<string, unknown> };
+        warnings?: string[];
+      };
+      expect(
+        runArgs.warnings,
+        "the resumed turn ran on a degraded tool set and told the model nothing about it",
+      ).toBeDefined();
+      expect(runArgs.warnings).toHaveLength(1);
+      expect(runArgs.warnings![0]).toContain("temporarily unavailable");
+      // Degraded, not dead — and still the headless set, not the workspace one.
+      const degradedNames = Object.keys(runArgs.tools!.getAll());
+      expect(degradedNames).toContain("executeSQL");
+      expect(degradedNames).not.toContain("correct_fact");
+    } finally {
+      if (savedPython === undefined) delete process.env.ATLAS_PYTHON_ENABLED;
+      else process.env.ATLAS_PYTHON_ENABLED = savedPython;
+      if (savedSandbox === undefined) delete process.env.ATLAS_SANDBOX_URL;
+      else process.env.ATLAS_SANDBOX_URL = savedSandbox;
+    }
+  });
+
+  it("#4941 — a healthy build passes no warnings (the resumed model is not told to apologise)", async () => {
+    const result = await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+    // Non-vacuous: the resume really ran and really answered.
+    expect(result).toEqual({ status: "answered", answer: "continued answer" });
+    const runArgs = mockRunAgent.mock.calls[0]![0] as { warnings?: string[] };
+    expect(runArgs.warnings).toBeUndefined();
+  });
+
   it("blocks (does not resume) when billing re-resolution refuses", async () => {
     mockBillingGate.mockResolvedValueOnce({
       allowed: false,

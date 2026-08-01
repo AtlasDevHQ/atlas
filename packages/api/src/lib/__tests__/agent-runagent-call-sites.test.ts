@@ -467,8 +467,11 @@ const EXPECTED_REGISTRY: ReadonlyArray<readonly [file: string, expected: RegExp,
   ],
   [
     "packages/api/src/lib/chat-plugin/resume-turn.ts",
-    /tools:\s*await buildHeadlessRegistry\(\)/,
-    "approval resume must rebuild the SAME headless set the parked turn ran under",
+    /tools:\s*toolRegistry\b/,
+    "approval resume must rebuild the SAME headless set the parked turn ran under — the local " +
+      "binds buildHeadlessRegistry()'s registry half (#4941 split the seam's return into " +
+      "{ registry, warnings }, so the inline `await` spelling is gone). Identity backstopped by " +
+      "chat-plugin/__tests__/resume-turn.test.ts, which asserts the resumed tool NAMES",
   ],
   [
     "ee/src/proactive/answer-adapter.ts",
@@ -593,7 +596,11 @@ describe("#4936 — the call-site scanner detects the shapes the bug actually ha
     ["a pre-built options bag hides the posture", `opts`, true],
     ["unconditional — the fixed shape", `{ messages, tools: resolvedToolRegistry }`, false],
     ["unconditional, first key", `{ tools: nonDashboardRegistry, messages }`, false],
-    ["unconditional await", `{ messages: [], tools: await buildHeadlessRegistry() }`, false],
+    [
+      "unconditional await",
+      `{ messages: [], tools: (await buildHeadlessRegistry()).registry }`,
+      false,
+    ],
     ["shorthand property", `{ messages, tools }`, false],
     // Last-write-wins escalation — the only escape shape that fails UPWARD.
     [
@@ -660,7 +667,8 @@ describe("#4936 — every production runAgent call site names the right registry
         "fail-closed (`nonDashboardRegistry`), so this is not an open door — but the " +
         "surface's tool posture must be declared AT the surface, unconditionally. Pass " +
         "`defaultRegistry` if it owns `/dashboards/[id]` and has a human in the loop; " +
-        "`buildHeadlessRegistry()` if it is an SDK / chat-platform / MCP / scheduler " +
+        "the `registry` half of `await buildHeadlessRegistry()` if it is an SDK / " +
+        "chat-platform / MCP / scheduler " +
         "surface; a purpose-built registry otherwise. See #4936 and the gating comment " +
         "in lib/tools/registry.ts.",
     ).toEqual([]);

@@ -277,12 +277,28 @@ export async function executeAgentQuery(
     // instead of re-deriving it (or, as it did, omitting `tools` and inheriting
     // the workspace registry). We still pass `tools` explicitly: `runAgent`'s
     // default now fails closed, but the surface's choice belongs in the surface.
+    //
+    // #4941 — the seam also returns the warnings this surface must relay; the
+    // narrative for why they exist is `buildHeadlessRegistry`'s docstring.
+    // Copied on the way in: `runAgent` treats `warnings` as an in/out param and
+    // pushes its own (semantic-layer, focus-datasource) into whatever array it
+    // is handed, so it must never be given the seam's.
     const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
-    const toolRegistry = await buildHeadlessRegistry();
+    const { registry: toolRegistry, warnings: registryWarnings } = await buildHeadlessRegistry();
+    if (registryWarnings.length > 0) {
+      // The operator half. The model is told below; this is the line that ties
+      // "the Slack bot said X was unavailable" to a requestId (stamped by the
+      // pino mixin from the context bound above).
+      log.warn(
+        { requestId: id, warningCount: registryWarnings.length },
+        "Headless agent turn running on a DEGRADED tool set — see the preceding registry error",
+      );
+    }
 
     const result = await runAgent({
       messages,
       tools: toolRegistry,
+      ...(registryWarnings.length > 0 && { warnings: [...registryWarnings] }),
       ...(options?.conversationId && { conversationId: options.conversationId }),
       ...(options?.answerStyle && { answerStyle: options.answerStyle }),
       ...(options?.abortSignal && { abortSignal: options.abortSignal }),

@@ -259,8 +259,9 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   // but a plugin is compiled separately and arrives here as data, so the
   // check has to exist at runtime too. Failing loudly is the whole point: the
   // alternative is a novel kind flowing into `provenance.source`, where
-  // `isWarehouseDerived` would resolve it to no class at all and tier-1
-  // correction refusal would fail OPEN without a single red test.
+  // `isEpisodeSource` refuses it before any class is resolved, so
+  // `isWarehouseDerived` answers `false` and tier-1 correction refusal fails
+  // OPEN without a single red test.
   if (!isEpisodeSource(connector.source)) {
     throw new Error(
       `Brain source "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to EPISODE_SOURCE_SPECS in lib/brain/sources.ts, declaring its class. If it is warehouse-shaped it MUST declare class: "warehouse", or tier-1 correction refusal will not apply to any fact derived from it`,
@@ -294,15 +295,31 @@ export interface BrainSourceConnectorQuery {
    * M3 webhook fast-path, a silently dropped event rather than a crash.
    *
    * There is deliberately no `null` here, and it is not an oversight. "The
-   * sources with no vendor" is not a third state to query: {@link
-   * EpisodeSourceSpec} makes vendor-ness a property OF the class, so that set
-   * is exactly `sourceClass: "warehouse" | "human"` and is already expressible
-   * on the other axis. Admitting `null` would buy nothing and cost real safety
-   * — this repo does not enable `exactOptionalPropertyTypes`, so a caller
-   * plucking a vendor off an optional field (`{ vendor: maybeVendor }`) type-checks,
-   * and an `undefined` reaching a tri-state filter silently widens it back to
-   * "match everything". That is the OVER-returning direction: the fast-path
-   * would fan an event to connectors that should never have seen it.
+   * sources with no vendor" is not a third state to query: `EpisodeSourceSpec`
+   * (`lib/brain/sources.ts`) makes vendor-ness a property OF the class, so that
+   * set is exactly `sourceClass: "warehouse" | "human"` and is already
+   * expressible on the other axis.
+   *
+   * Be exact about what dropping it bought, because it is NOT the widening.
+   * This repo does not enable `exactOptionalPropertyTypes`, so `{ vendor:
+   * maybeVendor }` still type-checks and an explicit `undefined` still means
+   * "do not constrain" — that behaviour is retained deliberately and pinned in
+   * `episode-sync-archive.test.ts`. What the two-state shape removes is the
+   * ambiguity of INTENT: a caller who meant "the vendorless set" can no longer
+   * express it on this axis at all, so they cannot silently receive "all
+   * sources" instead.
+   *
+   * ⚠️ Composing this with `episodeSourceVendor` — "find this source's
+   * siblings" — therefore needs a BRANCH, not a coalesce. That accessor returns
+   * `EpisodeSourceVendor | null`, which does not fit here, and the repair a
+   * caller reaches for (`?? undefined`) would turn "this source has no vendor"
+   * into "match everything", relocating the over-returning bug from the type to
+   * the call site. Write it as:
+   *
+   *     const v = episodeSourceVendor(source);
+   *     const found = v === null
+   *       ? findBrainSourceConnectors({ sourceClass: episodeSourceClass(source) })
+   *       : findBrainSourceConnectors({ vendor: v });
    */
   readonly vendor?: EpisodeSourceVendor;
 }

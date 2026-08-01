@@ -42,6 +42,7 @@ import {
   isEpisodeSourceClass,
   isWarehouseDerivedSource,
   type EpisodeSource,
+  type EpisodeSourceSpec,
 } from "@atlas/api/lib/brain/sources";
 import { CORRECTION_EPISODE_INSERT_SQL, isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
@@ -167,6 +168,45 @@ describe("the class/vendor axes (#4963)", () => {
       expect([source, Object.isFrozen(EPISODE_SOURCE_SPECS[source])]).toEqual([source, true]);
     }
     expect(Object.isFrozen(EPISODE_SOURCES)).toBe(true);
+    // The class array too: it is the sole input to `isEpisodeSourceClass`, so a
+    // `push` here silently widens what `registerBrainSourceConnector` and the
+    // orphan sweep admit. Off the tier-1 path, but the same argument.
+    expect(Object.isFrozen(EPISODE_SOURCE_CLASSES)).toBe(true);
+  });
+
+  test("the class/vendor pairing is UNREPRESENTABLE when wrong — compile-time", () => {
+    // `@ts-expect-error` is the only instrument that can pin this: reverting
+    // `EpisodeSourceSpec` to the flat `{ class: EpisodeSourceClass; vendor:
+    // string | null }` it replaced leaves every runtime assertion in both
+    // suites green AND cannot fail typecheck, because the flat shape is
+    // strictly more permissive. Each line below fails to compile TODAY, so the
+    // revert turns them into "unused @ts-expect-error" errors — which is how a
+    // type-level guarantee gets a guard at all.
+    // @ts-expect-error a chat member MUST name its vendor — two chat vendors sharing one stored value share a dedupe namespace
+    const chatWithoutVendor: EpisodeSourceSpec = { class: "chat", vendor: null };
+    // @ts-expect-error a connectorless class has no vendor to name
+    const warehouseWithVendor: EpisodeSourceSpec = { class: "warehouse", vendor: "snowflake" };
+    // @ts-expect-error a class outside the closed set
+    const unknownClass: EpisodeSourceSpec = { class: "email", vendor: null };
+    void chatWithoutVendor;
+    void warehouseWithVendor;
+    void unknownClass;
+  });
+
+  test("a spec declares EXACTLY class and vendor — no invented fields", () => {
+    // Belt to the per-entry `satisfies`'s braces. Excess-property checking only
+    // fires on a fresh object literal, and `Object.freeze(...)` is a call
+    // result — so wrapping the entries silently disabled it until each literal
+    // got its own `satisfies`. A type cannot assert this after the fact, and a
+    // typo'd or invented key (`vendorr`, `tier`) on the map the file calls "the
+    // sole input to tier-1 correction refusal" is exactly the shape that
+    // produces false confidence in a field nothing reads.
+    for (const source of EPISODE_SOURCES) {
+      expect([source, Object.keys(EPISODE_SOURCE_SPECS[source]).toSorted()]).toEqual([
+        source,
+        ["class", "vendor"],
+      ]);
+    }
   });
 
   test("the accessors refuse an out-of-vocabulary value LOUDLY, naming it", () => {
@@ -232,6 +272,10 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // make this class-based, silently deleting the file's only value anchor.
     // Stated member by member, it survives that addition instead of blocking
     // it, and the CLASS sweep below is what covers the new member.
+    // The literal on at least one line, or this whole test is an agreement
+    // assertion wearing a value anchor's name: with `WAREHOUSE_SOURCE` on both
+    // sides, renaming the map key AND the constant together passes here.
+    expect(isWarehouseDerived({ source: "warehouse" })).toBe(true);
     expect(isWarehouseDerived({ source: WAREHOUSE_SOURCE })).toBe(true);
     expect(isWarehouseDerived({ source: SLACK_SOURCE })).toBe(false);
     expect(isWarehouseDerived({ source: HUMAN_SOURCE })).toBe(false);
@@ -308,9 +352,20 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     const code = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/(^|[^:])\/\/.*$/gm, "$1");
-    expect(code).toContain("isWarehouseDerivedSource(provenance.source)");
-    expect(code).not.toMatch(/\.source\s*===\s*WAREHOUSE_SOURCE/);
-    expect(code).not.toMatch(/\.source\s*===\s*["']warehouse["']/);
+    // Scoped to the FUNCTION BODY, not the file. A file-wide `toContain` is
+    // vacuous the moment a second call site exists: adding any helper that
+    // mentions `isWarehouseDerivedSource` satisfies it while
+    // `isWarehouseDerived` itself re-derives, and the whole revert goes green
+    // again. (Verified — that is exactly how this pin was first evaded.)
+    const body = /export function isWarehouseDerived\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(code)?.[1];
+    // Not vacuous: a rename or signature change must fail here rather than
+    // silently making every assertion below run against `undefined`.
+    expect(body).toBeDefined();
+    expect(body).toContain("isWarehouseDerivedSource(");
+    // Any `===` in this body is a re-derivation, whatever it compares against
+    // and however it is spelled — including the destructure-then-compare form
+    // that both of the old `\.source ===` regexes missed.
+    expect(body).not.toMatch(/===/);
   });
 
   test("refuses the vendor spellings the same connector might have used", () => {

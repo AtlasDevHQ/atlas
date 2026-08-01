@@ -84,28 +84,29 @@
  * ## ⚠️ The two axes OVERLAP, and the compiler will not catch it
  *
  * `EpisodeSource` is `slack | warehouse | human`; `EpisodeSourceClass` is
- * `chat | warehouse | human`. Two of three members are spelled IDENTICALLY, so
- * the unions are mutually assignable exactly where confusing them costs most —
- * all of these compile clean:
+ * `chat | warehouse | human`. Two of three members are spelled IDENTICALLY.
+ *
+ * The UNIONS are not mutually assignable — `slack` and `chat` see to that, and
+ * each direction is a TS2322. What IS interchangeable is the literal-typed
+ * CONSTANTS, and that is worse, because a constant is what you actually reach
+ * for. All of these compile clean:
  *
  *     const a: EpisodeSource = WAREHOUSE_CLASS;        // a class where a kind is wanted
  *     const b: EpisodeSourceClass = WAREHOUSE_SOURCE;  // and the reverse
  *     storedSource === WAREHOUSE_CLASS                 // the #4938 bug, respelled
+ *     findBrainSourceConnectors({ vendor: SLACK_SOURCE })  // a kind where a VENDOR is wanted
  *
- * Only `CHAT_CLASS` errors against a stored kind, and that is a coincidence
- * that expires the day a `chat` stored value exists. So do NOT read the split
- * as compiler-enforced separation: it is a separation of MEANING, kept honest
- * by routing every cross-axis question through one predicate.
+ * The last one is the axis this refactor added: {@link EpisodeSourceVendor} is
+ * `"slack"`, which is also a stored kind. `CHAT_CLASS` is the only constant
+ * that errors against a stored kind, and that is a coincidence which expires
+ * the day a `chat` stored value exists.
+ *
+ * So do NOT read the split as compiler-enforced separation: it is a separation
+ * of MEANING, kept honest by routing every cross-axis question through one
+ * predicate.
  *
  * The rule: never `===` a stored source against a CLASS constant. Ask
- * {@link isWarehouseDerivedSource}, or {@link episodeSourceClass} first.
- *
- * ## Why the wire schema does not mirror this enum
- *
- * `packages/schemas/src/brain.ts` deliberately keeps `source: z.string()`
- * rather than a Zod enum over this vocabulary. That is not drift: a Zod enum
- * would fail CLOSED on a bundle written by a newer region, which is precisely
- * the case the region import below exists to let through.
+ * {@link isWarehouseDerivedSource}, or {@link episodeSourceClassOf} first.
  *
  * The one producer NOT gated is the region import (`admin-migrate.ts`'s `INSERT
  * INTO brain_episodes`), which restores a bundle's stored `source` verbatim so
@@ -133,7 +134,7 @@
  * all — `warehouse` is the tier-1 class {@link isWarehouseDerivedSource} keys
  * off, `human` is a person's own recorded words.
  */
-export const EPISODE_SOURCE_CLASSES = ["chat", "warehouse", "human"] as const;
+export const EPISODE_SOURCE_CLASSES = Object.freeze(["chat", "warehouse", "human"] as const);
 
 export type EpisodeSourceClass = (typeof EPISODE_SOURCE_CLASSES)[number];
 
@@ -182,23 +183,21 @@ export type EpisodeSourceSpec =
  * `satisfies`, not a `: Record<EpisodeSource, EpisodeSourceSpec>` annotation:
  * the annotation would be circular (the union is derived from these keys) and
  * would widen every `class`/`vendor` back to its declared type, costing callers
- * their literal narrowing. `satisfies` keeps the literals AND still fails
- * compilation on a class outside {@link EPISODE_SOURCE_CLASSES}, or on a
- * class/vendor pairing {@link EpisodeSourceSpec}'s union forbids.
+ * their literal narrowing.
  *
- * ⚠️ What that gate does NOT do — and the header's warehouse rule depends on
- * knowing the difference. The compiler checks that the class you name EXISTS
- * and that its vendor-ness matches. It cannot check that it is the RIGHT class,
- * because nothing in the type system knows what "warehouse-shaped" means:
+ * Precisely what the gate is, since it moved: the check is against
+ * {@link EpisodeSourceSpec}'s union, which after #4963 spells its class
+ * literals directly and no longer references {@link EPISODE_SOURCE_CLASSES}.
+ * The two lists are held together instead by `_CLASS_AXIS_IN_SYNC` below (both
+ * drift directions are a compile error there) plus the orphan sweep in
+ * `__tests__/sources.test.ts`. So `satisfies` rejects an unknown class, a
+ * class/vendor pairing the union forbids, a missing property, and — via the
+ * per-entry checks in the literal — an excess one.
  *
- *     snowflake: { class: "chat", vendor: "snowflake" }   // compiles clean
- *
- * …and that member escapes tier-1 refusal exactly as #4938's `"snowflake"` did.
- * So #4963 did not make the warehouse rule structural; it made the DECISION
- * single-sited and readable, so the predicate can no longer disagree with the
- * producer about which value means warehouse. Choosing correctly is still a
- * judgement, and the pinned key-set in `__tests__/sources.test.ts` is what
- * forces an author to confront it rather than drift past it.
+ * ⚠️ What it does NOT do is check that the class is the RIGHT one; nothing in
+ * the type system knows what "warehouse-shaped" means. The header's "Adding a
+ * member" section carries that argument in full — read it before adding a
+ * warehouse-shaped kind, because the residual rule there is still prose.
  *
  * Frozen, not merely `as const`: `as const` is a TYPE-level assertion and
  * leaves the object mutable at runtime. This map is the sole input to tier-1
@@ -211,10 +210,32 @@ export type EpisodeSourceSpec =
  * primitive comparison had for free.
  */
 export const EPISODE_SOURCE_SPECS = Object.freeze({
-  slack: Object.freeze({ class: "chat", vendor: "slack" } as const),
-  warehouse: Object.freeze({ class: "warehouse", vendor: null } as const),
-  human: Object.freeze({ class: "human", vendor: null } as const),
+  // The per-entry `satisfies` is not redundant with the map-level one below.
+  // `Object.freeze(...)` returns `Readonly<T>` — a CALL RESULT, not a fresh
+  // object literal — and TypeScript only runs excess-property checking against
+  // a fresh literal. Without these, `{ class: "chat", vendor: "slack", tier: 1 }`
+  // compiles clean and an invented field lands in the vocabulary unnoticed.
+  // Checking each literal at the point it is still a literal restores that.
+  slack: Object.freeze({ class: "chat", vendor: "slack" } as const satisfies EpisodeSourceSpec),
+  warehouse: Object.freeze({ class: "warehouse", vendor: null } as const satisfies EpisodeSourceSpec),
+  human: Object.freeze({ class: "human", vendor: null } as const satisfies EpisodeSourceSpec),
 }) satisfies Record<string, EpisodeSourceSpec>;
+
+/**
+ * Compile-time tie between the two spellings of the class axis:
+ * {@link EPISODE_SOURCE_CLASSES} (the closed set) and the `class` discriminants
+ * of {@link EpisodeSourceSpec}. Mutual assignability, so BOTH drift directions
+ * are errors here rather than somewhere downstream.
+ *
+ * Worth three lines because the drift is otherwise reported far from its cause,
+ * or not at all: a union arm added without the array surfaces as a return-type
+ * error inside `episodeSourceClass`, and a class added to the ARRAY with no
+ * member and no arm produces no compile error whatsoever — only the orphan
+ * sweep in `__tests__/sources.test.ts` catches that one.
+ */
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _CLASS_AXIS_IN_SYNC: MutuallyAssignable<EpisodeSourceSpec["class"], EpisodeSourceClass> = true;
+void _CLASS_AXIS_IN_SYNC;
 
 export type EpisodeSource = keyof typeof EPISODE_SOURCE_SPECS;
 
@@ -228,11 +249,11 @@ export type EpisodeSource = keyof typeof EPISODE_SOURCE_SPECS;
 export const EPISODE_SOURCES = Object.freeze(
   // The cast is load-bearing and sound ONLY because the map's keys ARE the
   // union: `Object.keys` is typed `string[]` for an arbitrary object, and
-  // `EpisodeSource` is defined as `keyof typeof EPISODE_SOURCE_SPECS` directly
-  // below. Insertion order is guaranteed because none of the keys is
+  // `EpisodeSource` is `keyof typeof EPISODE_SOURCE_SPECS`, declared
+  // just above. Insertion order is guaranteed because none of the keys is
   // integer-like; `__tests__/sources.test.ts` pins the resulting list anyway.
   Object.keys(EPISODE_SOURCE_SPECS) as EpisodeSource[],
-) as readonly EpisodeSource[];
+);
 
 /**
  * The vendors named by vendor-grained members — `"slack"` today.
@@ -306,7 +327,8 @@ export function isEpisodeSourceClass(value: unknown): value is EpisodeSourceClas
  * system has seen — a stored `provenance.source`, a bundle being imported, a
  * separately-compiled plugin — and `row.source as EpisodeSource` is the obvious
  * next thing someone writes. A bare `EPISODE_SOURCE_SPECS[source]` fails in two
- * unhelpful ways there: an unknown slug throws `undefined is not an object`,
+ * unhelpful ways there: an unknown slug throws `undefined is not an object`
+ * (bun's wording; V8 says "Cannot read properties of undefined"),
  * which names an internal expression rather than the bad value; and an
  * inherited key (`"toString"`, `"valueOf"`) resolves up the PROTOTYPE CHAIN to
  * a function, whose `.class` is `undefined` — so a class-keyed predicate
@@ -325,7 +347,12 @@ function specOf(source: EpisodeSource): (typeof EPISODE_SOURCE_SPECS)[EpisodeSou
   return EPISODE_SOURCE_SPECS[source];
 }
 
-/** The ADR-0036 class a stored source kind belongs to. */
+/**
+ * The ADR-0036 class a stored source kind belongs to.
+ *
+ * @throws if `source` is outside the vocabulary — see {@link specOf}. Reading a
+ * STORED row? Use {@link episodeSourceClassOf}, which returns `null` instead.
+ */
 export function episodeSourceClass(source: EpisodeSource): EpisodeSourceClass {
   return specOf(source).class;
 }
@@ -333,9 +360,32 @@ export function episodeSourceClass(source: EpisodeSource): EpisodeSourceClass {
 /**
  * The vendor within that class, or `null` for a class that has none
  * (`warehouse`, `human` — neither comes from a connector).
+ *
+ * @throws if `source` is outside the vocabulary — see {@link specOf}.
  */
 export function episodeSourceVendor(source: EpisodeSource): EpisodeSourceVendor | null {
   return specOf(source).vendor;
+}
+
+/**
+ * The class of an ARBITRARY stored value, or `null` when it is outside the
+ * vocabulary — the total sibling of {@link episodeSourceClass}.
+ *
+ * This exists because the region import (`admin-migrate.ts`) deliberately
+ * writes out-of-vocabulary values into `brain_episodes.source` so a bundle from
+ * a newer region still restores. So the codebase GUARANTEES the existence of
+ * rows whose `source` would make the throwing accessor throw — and without a
+ * total sibling, the only route for a caller reading such a row is
+ * `row.source as EpisodeSource`, which is exactly the cast that turns a
+ * documented fail-open lane into a 500.
+ *
+ * Use this to read a stored row. Use {@link episodeSourceClass} when the value
+ * is already known to be in the vocabulary and an unknown one would be a
+ * programmer error worth surfacing loudly. #4967's webhook fast-path is the
+ * read-a-stored-row shape and wants this one.
+ */
+export function episodeSourceClassOf(value: unknown): EpisodeSourceClass | null {
+  return isEpisodeSource(value) ? episodeSourceClass(value) : null;
 }
 
 /**

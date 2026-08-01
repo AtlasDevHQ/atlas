@@ -82,6 +82,7 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
   CORRECTION_REFUSAL_REASONS: {
     notAuthorized: "NOT_AUTHORIZED",
     warehouseTarget: "WAREHOUSE_TARGET",
+    unrecognizedSourceKind: "UNRECOGNIZED_SOURCE_KIND",
     targetNotPublished: "TARGET_NOT_PUBLISHED",
     validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
     targetNotCurrent: "TARGET_NOT_CURRENT",

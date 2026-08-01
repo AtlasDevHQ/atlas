@@ -149,6 +149,7 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
 const REFUSAL_REASONS = {
   notAuthorized: "NOT_AUTHORIZED",
   warehouseTarget: "WAREHOUSE_TARGET",
+  unrecognizedSourceKind: "UNRECOGNIZED_SOURCE_KIND",
   targetNotPublished: "TARGET_NOT_PUBLISHED",
   validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
   targetNotCurrent: "TARGET_NOT_CURRENT",
@@ -1007,6 +1008,10 @@ describe("POST /{id}/correct", () => {
       replacementMissing: 400,
       replacementIdentical: 400,
       warehouseTarget: 409,
+      // #4964 — target state, same as its tier-1 neighbour, and recoverable in
+      // the same "fix the target and retry" sense: deploying a vocabulary that
+      // knows the kind makes the identical request succeed.
+      unrecognizedSourceKind: 409,
       targetNotPublished: 409,
       validityAlreadyClosed: 409,
       targetNotCurrent: 409,

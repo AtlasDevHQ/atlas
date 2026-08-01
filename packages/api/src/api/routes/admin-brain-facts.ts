@@ -341,6 +341,11 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
     case CORRECTION_REFUSAL_REASONS.replacementIdentical:
       return 400;
     case CORRECTION_REFUSAL_REASONS.warehouseTarget:
+    // 409 and not 501/503: the target's own state is what refuses, and it is
+    // as recoverable as the rest of this arm — upgrading this region to a
+    // vocabulary that knows the kind makes the identical request succeed
+    // (#4964). "Try again after fixing the target" is exactly the semantics.
+    case CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind:
     case CORRECTION_REFUSAL_REASONS.targetNotPublished:
     case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:
     case CORRECTION_REFUSAL_REASONS.targetNotCurrent:

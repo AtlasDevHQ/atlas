@@ -36,7 +36,7 @@ import {
   isWarehouseDerived,
   type CorrectionRequest,
 } from "@atlas/api/lib/brain/correction";
-import { SLACK_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import { EPISODE_SOURCES, SLACK_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   CORROBORATION_LOOKUP_SQL,
   INSERT_FACT_SQL,
@@ -1295,6 +1295,90 @@ describe("shared gates", () => {
       expect(store.episodes).toHaveLength(0);
       expect(store.edges).toHaveLength(0);
       expect(store.fact("wh").invalidatedAt).toBeNull();
+    }
+  });
+
+  test("an IMPORTED out-of-vocabulary source kind is refused for EVERY verb (#4964)", async () => {
+    // The negative the fail-open lane needed. `admin-migrate.ts` restores a
+    // bundle's `source` verbatim — deliberately, since 0180 puts no CHECK on
+    // the column and refusing would strand the workspace mid-region-migration
+    // — so these three values really can reach a stored fact's provenance.
+    // Each is a shape `sources.ts` names as the silent-drift hazard, and each
+    // is NOT `=== "warehouse"` and NOT warehouse-CLASS, so tier-1 refusal
+    // cannot see it. Without this gate every one of them buys a correction
+    // path ADR-0036 §T4 forbids, and buys it silently.
+    //
+    // Not mocked, and that is the point: this runs against the REAL vocabulary
+    // through `isEpisodeSource`. A fixture that hand-fed its own source list
+    // would let the test and the predicate agree with each other while the
+    // vocabulary drifted away from both — the #4938 failure this whole module
+    // exists to defeat.
+    for (const source of ["warehouse:prod", "snowflake", "bigquery"]) {
+      for (const verb of CORRECTION_VERBS) {
+        const store = new FakeCorrectionStore();
+        store.seedFact({ id: "imported", provenance: { source, producer: "region-import" } });
+        const outcome = await run(store, {
+          factId: "imported",
+          verb,
+          ...(verb === "supersede" ? { replacement: { object: "Bo" } } : {}),
+        });
+        if (outcome.kind !== "refused") {
+          throw new Error(`${source}/${verb}: expected refused, got ${outcome.kind}`);
+        }
+        // Its OWN reason, not `warehouseTarget`. Folding the two together
+        // would assert the fact IS warehouse-derived, which for a newer chat
+        // vendor's message is simply false — and would send an operator
+        // looking for a warehouse table that does not exist.
+        expect([source, verb, outcome.reason]).toEqual([
+          source,
+          verb,
+          CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind,
+        ]);
+        // Refused BEFORE any write, exactly like tier-1: the correction
+        // episode is what a late refusal would have to roll back.
+        expect(store.episodes).toHaveLength(0);
+        expect(store.edges).toHaveLength(0);
+        expect(store.fact("imported").invalidatedAt).toBeNull();
+      }
+    }
+  });
+
+  test("the quarantine is present-but-unknown only, and lifts when the kind is known", async () => {
+    // The two boundaries either side of the refusal above, because both are
+    // ways a plausible "tidy-up" silently changes what shipped.
+    //
+    // BELOW: a provenance carrying no `source` key, or a non-string one, stays
+    // correctable. Nothing structurally guarantees that key — `promotion.ts`'s
+    // refusals check `source_episode_id`, not `provenance.source` — so
+    // widening the predicate to "the class cannot be resolved" would retire
+    // the correction path for facts no import ever touched.
+    for (const provenance of [{}, { producer: "x" }, { source: 42 }, { source: null }]) {
+      const store = new FakeCorrectionStore();
+      store.seedFact({ id: "no-source", provenance });
+      const outcome = await run(store, { factId: "no-source", verb: "retract" });
+      expect([provenance, outcome.kind]).toEqual([provenance, "corrected"]);
+    }
+
+    // ABOVE: every member of the real vocabulary is unaffected. This is what
+    // makes the quarantine SELF-HEALING rather than a permanent tax — adding
+    // the kind to `EPISODE_SOURCE_SPECS` is the one-line PR that moves an
+    // imported fact from this loop's `refused` arm into its `corrected` one,
+    // with no data migration. Driven off `EPISODE_SOURCES` so a new member is
+    // covered the day it lands.
+    for (const source of EPISODE_SOURCES) {
+      const store = new FakeCorrectionStore();
+      store.seedFact({ id: "known", provenance: { source, producer: "extraction:v1" } });
+      const outcome = await run(store, { factId: "known", verb: "retract" });
+      // `warehouse` is refused, but by TIER-1 — never by the quarantine. That
+      // distinction is the assertion: a regression that routed known kinds
+      // through the new gate would still be "refused" and would still be
+      // green under a bare `kind !== "corrected"` check.
+      const expected =
+        source === WAREHOUSE_SOURCE ? CORRECTION_REFUSAL_REASONS.warehouseTarget : null;
+      expect([source, outcome.kind === "refused" ? outcome.reason : null]).toEqual([
+        source,
+        expected,
+      ]);
     }
   });
 

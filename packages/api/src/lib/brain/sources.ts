@@ -117,6 +117,32 @@
  * draws for `invalidated_at` (`__tests__/correction.test.ts`). It is a real
  * fail-open lane, so the import LOGS an out-of-vocabulary value rather than
  * accepting it silently.
+ *
+ * ## Where that lane is closed, and why not here (#4964)
+ *
+ * Logging alone was not enough. An imported `"warehouse:prod"` is outside the
+ * vocabulary, so it is not warehouse-CLASS, so {@link isWarehouseDerivedSource}
+ * answers `false` and tier-1 correction refusal never fires — an ADR-0036 §T4
+ * invariant downgraded at a moment no log covers. The comment above says an
+ * unrecognised value is "the correctable (safe) direction"; that reading holds
+ * for a value that had to pass a producer gate to exist, and is precisely wrong
+ * for the one lane where no gate ran.
+ *
+ * The import still does NOT refuse it. Migration 0180 leaves the column plain
+ * `text` with no CHECK, so Postgres legally stores any string, and `acl.ts`'s
+ * header forbids Atlas code being stricter at import than the database is at
+ * rest — bundle validation is all-or-nothing, so refusing one episode strands
+ * the whole workspace in its current region, discovered at cutover. Restoring
+ * evidence is not arbitration; CORRECTING it is. So the refusal sits at the
+ * correction gate instead: `correction.ts`'s `unrecognizedSourceKind` quarantines
+ * the correction PATH of a fact whose kind this region cannot classify, under
+ * its own refusal reason rather than by pretending the fact is warehouse-derived.
+ * Self-healing — deploying the vocabulary that knows the kind restores the
+ * correct gate with no data migration.
+ *
+ * The consequence for THIS file, since it is what makes the healing work:
+ * adding a member here is still a one-line PR, and that line is now also what
+ * releases every imported fact of that kind from quarantine.
  */
 
 /**

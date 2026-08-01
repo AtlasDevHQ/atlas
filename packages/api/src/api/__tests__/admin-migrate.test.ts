@@ -1164,9 +1164,18 @@ describe("validateBundle — company brain (#4767)", () => {
     expect(insert).toBeDefined();
     expect(insert!.params).toContain("snowflake");
     // The route logs this (`admin-migrate.ts`) precisely because the value then
-    // escapes `isWarehouseDerived`; the log is the operator's only signal, and
-    // `lib/brain/__tests__/sources.test.ts` pins that the predicate really does
-    // decline `"snowflake"`.
+    // escapes `isWarehouseDerived` — `lib/brain/__tests__/sources.test.ts` pins
+    // that the predicate really does decline `"snowflake"`.
+    //
+    // The log is no longer the only signal (#4964): because nothing here can
+    // tell whether the kind is warehouse-shaped, `correction.ts` refuses to
+    // CORRECT any fact carrying it, under `UNRECOGNIZED_SOURCE_KIND`. That
+    // refusal is what makes accepting the value verbatim safe rather than
+    // merely documented, and it is pinned in `lib/brain/__tests__/correction.test.ts`.
+    // This assertion — that the import still ACCEPTS it — is the other half of
+    // that bargain and must not be relaxed into a rejection: `acl.ts`'s header
+    // forbids being stricter here than 0180 is at rest, and 0180 puts no CHECK
+    // on this column at all.
   });
 
   it("REFUSES a pre-widening grant of the wrong shape", () => {

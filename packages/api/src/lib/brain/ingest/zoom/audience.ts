@@ -126,18 +126,38 @@ export const MAX_REVERIFY_AUDIENCES_PER_WORKSPACE = 200;
  *
  * So the primary key is `has_members DESC`: audiences whose suppression would
  * actually cost somebody access are re-verified first, and because a successful
- * reconcile advances their `synced_at`, they rotate to the back — the ordering
- * is TOTAL over that set and genuinely cannot starve. Member-less audiences
+ * reconcile advances their `synced_at` (`TOUCH_AUDIENCE_MEMBERS_SQL` stamps even
+ * the no-op case), they rotate to the back. Member-less audiences
  * (the all-external meeting) then take whatever cap remains; they grant nobody
  * either way, so their staleness costs nothing, and reaching them is what
  * delivers the "a participant joined Atlas later" repair.
  *
- * The residual, stated rather than papered over: with the cap saturated by
- * member-bearing audiences, member-less ones are deferred indefinitely and that
- * repair does not happen. `reverifyWorkspace` logs a saturation warning when the
- * scan returns a full page so an operator can see it, and the honest fix is a
- * per-audience ATTEMPTED-at stamp (a small table, ordered on regardless of
- * outcome) rather than a bigger cap.
+ * ⚠️ TWO residuals, stated rather than papered over. Neither is fixed here and
+ * both have the same root cause: this ordering keys on SUCCESS (`synced_at`),
+ * and only a success rotates an audience to the back.
+ *
+ *   1. A PERMANENTLY FAILING audience never rotates. Zoom's past-meeting
+ *      participant report ages out of retention, so a sufficiently old meeting
+ *      aborts every cycle — either `not_found` (incomplete roster) or
+ *      `200 {participants: []}` (the empty-roster guard below). Its
+ *      `MIN(synced_at)` stays the oldest forever, so it holds a slot at the
+ *      front of the `has_members` group indefinitely. With ≥ the cap of them in
+ *      one workspace, no other member-bearing audience is re-verified and they
+ *      all cross the staleness bound. Note the empty-roster guard makes this
+ *      MORE likely, not less — before it, an empty roster reconciled (wrongly)
+ *      and at least stamped. Choosing safety over rotation is right; the
+ *      consequence is real and is this.
+ *   2. With the cap saturated by member-bearing audiences, member-less ones are
+ *      deferred indefinitely and the "a participant joined Atlas later" repair
+ *      does not happen.
+ *
+ * Both are OBSERVABLE, not silent: `reverifyWorkspace` warns when the scan
+ * returns a full page, and case 1 also drives `failed > 0`, which makes the
+ * cycle report `degraded`. The honest fix for both is a per-audience
+ * ATTEMPTED-at stamp — a small table, written on every attempt including the
+ * aborts, and ordered on regardless of outcome. That needs a migration and is
+ * deliberately not in #4965's scope; a bigger cap is NOT a fix, it only moves
+ * the threshold.
  *
  * Within each group it is `MIN(synced_at)` — an audience is as verified as its
  * LEAST recently verified row, matching `acl.ts`'s own `min(synced_at)` reading.
@@ -423,7 +443,7 @@ async function reverifyWorkspace(
     // and the deferred tail is exactly what ages past the staleness bound.
     log.warn(
       { workspaceId, cap: MAX_REVERIFY_AUDIENCES_PER_WORKSPACE },
-      "brain audience: this workspace has at least as many Zoom meeting audiences as the per-cycle cap — the tail is deferred and member-less audiences may not be reached at all. Audiences that grant somebody are re-verified first",
+      "brain audience: this workspace has at least as many Zoom meeting audiences as the per-cycle cap — the tail is deferred. Audiences that grant somebody are re-verified first, but an audience that FAILS every cycle never rotates out of the front, so a persistent failure here can starve the tail. Check the failed count alongside this line",
     );
   }
 

@@ -481,15 +481,27 @@ export async function fetchTranscriptText(
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
-  // Refuse over-cap BEFORE buffering. The caller's size check runs on an
-  // already-materialised string, so without this the memory bound is Zoom's
-  // rather than ours — in a region process shared by every tenant.
+  // A cheap PRE-FILTER, deliberately not called a bound. It refuses the common
+  // case before buffering, but a chunked response carries no `Content-Length` —
+  // `Number("")` is 0, the check passes, and `res.text()` buffers unbounded. A
+  // signed CDN redirect for a large download is exactly where chunked shows up,
+  // so the memory bound is still Zoom's in the case that matters most. Claiming
+  // otherwise would be worse than the gap. A streaming reader with a running
+  // byte counter is the real fix.
   const declared = Number(res.headers.get("content-length") ?? "");
   if (Number.isFinite(declared) && declared > maxBytes) {
     log.warn(
       { declared, maxBytes },
       "Zoom transcript exceeds the stored-transcript byte cap — refusing the download rather than buffering it",
     );
+    // Release the connection rather than leaving it held until GC — the whole
+    // point of this branch is not spending the resource.
+    await res.body?.cancel().catch((err: unknown) => {
+      log.debug(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Zoom transcript body cancel failed after an over-cap refusal",
+      );
+    });
     return { ok: false, error: "too_large", retryAfterSeconds: null };
   }
   try {

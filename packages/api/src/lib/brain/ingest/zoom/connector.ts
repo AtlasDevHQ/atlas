@@ -159,10 +159,21 @@ export async function resolveZoomToken(
   if (!token.ok) {
     // The token exchange's own failure vocabulary, translated once. A raw Zoom
     // code here would be the operator's first and least useful clue.
+    // Three different repairs, so three different sentences. Routing a
+    // transport fault to "check the app is activated" sends an admin to inspect
+    // a configuration that was never wrong.
+    if (token.error === "invalid_auth") {
+      throw new Error(
+        "Zoom rejected the workspace's Server-to-Server OAuth credential — check the client id, client secret, and account id, then sync again.",
+      );
+    }
+    if (token.error === "transport") {
+      throw new Error(
+        "Zoom returned an unreadable response while issuing an access token — this is usually transient and the next scheduled cycle retries it.",
+      );
+    }
     throw new Error(
-      token.error === "invalid_auth"
-        ? "Zoom rejected the workspace's Server-to-Server OAuth credential — check the client id, client secret, and account id, then sync again."
-        : `Could not obtain a Zoom access token (${token.error}) — check the Server-to-Server OAuth app is activated, then sync again.`,
+      `Could not obtain a Zoom access token (${token.error}) — check the Server-to-Server OAuth app is activated, then sync again.`,
     );
   }
   return token.token;

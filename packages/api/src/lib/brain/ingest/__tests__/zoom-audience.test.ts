@@ -19,6 +19,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   MAX_PARTICIPANT_PAGES,
+  ZOOM_MEETING_AUDIENCES_SQL,
   readMeetingRoster,
   reconcileMeetingAudience,
   reverifyZoomMeetingAudiences,
@@ -149,6 +150,35 @@ describe("reconcileMeetingAudience", () => {
       },
     );
     expect(principalCount).toBe(3);
+  });
+
+  it("gives a REJOINING participant two principal ids — the case the suffix fix is for", async () => {
+    // The neighbouring test passes three email-less participants, which the OLD
+    // code already handled via its `participant-${index}` fallback. Zoom emits
+    // one entry per JOIN, so the real case is a participant who dropped and
+    // rejoined: SAME `user_id`, two entries. Those collapsed in
+    // `resolvePrincipals`' map and `unresolvedCount = length - resolved.size`
+    // counted the duplicate as unresolved, over-reporting "matched no Atlas
+    // user" on every recurring meeting where anyone reconnected.
+    //
+    // MUTATION THIS CATCHES: reverting to
+    // `participant.userId ?? participant.email ?? \`participant-${index}\``.
+    let ids: string[] = [];
+    await reconcileMeetingAudience(
+      {
+        workspaceId: "ws1",
+        audienceId: `meeting:zoom:${UUID}`,
+        participants: [p("a@x.example", "z1"), p("a@x.example", "z1")],
+      },
+      {
+        resolve: async (_ws, principals) => {
+          ids = principals.map((entry) => entry.id);
+          return { resolved: new Map(), unresolvedCount: 0 };
+        },
+        reconcile: async () => ({ added: 0, revoked: 0 }),
+      },
+    );
+    expect(new Set(ids).size).toBe(2);
   });
 
   it("PROPAGATES a resolver fault rather than reconciling to empty", async () => {
@@ -353,6 +383,41 @@ describe("reverifyZoomMeetingAudiences", () => {
     // this module exists to prevent.
     const out = await reverifyZoomMeetingAudiences({ ...deps(), resolveToken: undefined });
     expect(out.failed).toBe(1);
+  });
+});
+
+describe("the scan's ORDER BY — the round-1 starvation fix itself", () => {
+  it("prioritises audiences that HAVE members, then the stalest", () => {
+    // Round 2's finding: this ordering IS the whole starvation fix, and it is a
+    // SQL string no test asserted and no `-pg` test executes — the `query` stub
+    // dictates the returned order, so the clause is unobservable by construction
+    // and reverting it to the naive single key stayed green.
+    //
+    // The failure it prevents: an audience resolving to no Atlas users never
+    // gets a `fact_audience_member` row, so `MIN(synced_at)` is NULL forever and
+    // it pins the front of a NULLS-FIRST scan on every cycle. Past the cap, no
+    // member-BEARING audience is ever re-verified and they all cross the
+    // staleness bound while the cycle reports failed: 0.
+    //
+    // Asserted as text because that is the only instrument available without a
+    // `-pg` case; the ordering's SEMANTICS still want one (see the module doc).
+    const normalised = ZOOM_MEETING_AUDIENCES_SQL.replace(/\s+/g, " ");
+    expect(normalised).toContain(
+      "ORDER BY (count(m.user_id) > 0) DESC, MIN(m.synced_at) ASC NULLS FIRST, t.token ASC",
+    );
+    // …and the column the empty-roster guard reads must actually be selected,
+    // or that guard silently never fires.
+    expect(normalised).toContain("count(m.user_id) > 0 AS has_members");
+  });
+
+  it("scopes the scan to this workspace and this source", () => {
+    // `audience_id` is workspace-scoped but not globally unique, and a
+    // cross-tenant membership row grants inside the reader's OWN tenant — the
+    // one leak `acl.ts`'s workspace containment cannot catch.
+    const normalised = ZOOM_MEETING_AUDIENCES_SQL.replace(/\s+/g, " ");
+    expect(normalised).toContain("e.workspace_id = $1");
+    expect(normalised).toContain("e.source = $2");
+    expect(normalised).toContain("m.workspace_id = $1");
   });
 });
 

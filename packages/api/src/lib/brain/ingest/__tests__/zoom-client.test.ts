@@ -18,6 +18,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { AUDIENCE_PREFIX, ORG_PRINCIPAL, parseGrant } from "@atlas/api/lib/brain/acl";
+import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 import {
   createZoomTranscriptClient,
   parseZoomCursor,
@@ -304,8 +305,16 @@ describe("budget exhaustion — the other way to skip work silently", () => {
     // covered, the cursor advanced to today, and the unread meetings were gone
     // forever with `coverageIncomplete: false` and no warning at all.
     //
-    // MUTATION THIS CATCHES: `break windows` → `break` at the meetings-loop
-    // budget guard.
+    // MUTATION THIS CATCHES: removing the `walkIncomplete = true` at the
+    // meetings-loop budget guard.
+    //
+    // NOT `break windows` → `break`, which an earlier version of this comment
+    // claimed. That mutant SURVIVES, and correctly so: since the cursor advance
+    // is gated on `walkIncomplete`, the `break windows` is now redundant for
+    // correctness and only bounds how much further the pass walks. Verified by
+    // running it rather than assumed. The flag is therefore the single point of
+    // failure for cursor safety on all three arms (block, dropped, budget) —
+    // which is what this assertion actually guards.
     const { client, params } = multiMeetingClient(1);
     const changes = await client.fetchEpisodes(params);
 
@@ -370,5 +379,283 @@ describe("coverage honesty", () => {
     const changes = await client.fetchEpisodes(PARAMS);
     expect(changes.episodes).toHaveLength(1);
     expect(state.downloads).toEqual(["https://zoom.us/rec/x"]);
+  });
+});
+
+describe("the two regressions round 1's fixes INTRODUCED", () => {
+  /** A client whose recordings page and transcript download are controllable. */
+  function client(opts: {
+    cursor?: string | null;
+    backfillDays?: number;
+    download?: () => Promise<{ ok: true; text: string } | { ok: false; error: string; retryAfterSeconds: number | null }>;
+    hosts?: readonly string[];
+    hostId?: string | null;
+  }) {
+    return createZoomTranscriptClient({
+      workspaceId: "ws1",
+      accountId: "acc1",
+      hosts: opts.hosts ?? [],
+      backfillWindowMs: (opts.backfillDays ?? 7) * 86_400_000,
+      resolveToken: async () => "tok",
+      now: () => NOW,
+      audienceDeps: {
+        fetchParticipantsPage: async () => ({
+          ok: true as const,
+          participants: [{ email: "a@x.example", name: "A", userId: "z1" }],
+          nextPageToken: null,
+        }),
+        resolve: async () => ({ resolved: new Map([["z1-0", "user-1"]]), unresolvedCount: 0 }),
+        reconcile: async () => ({ added: 1, revoked: 0 }),
+      },
+      api: {
+        fetchAccountRecordingsPage: async () => ({
+          ...meetingPage(),
+          meetings: [
+            { ...meetingPage().meetings[0], hostId: opts.hostId === undefined ? "host-1" : opts.hostId },
+          ],
+        }),
+        fetchTranscriptText:
+          opts.download ?? (async () => ({ ok: true as const, text: VTT })),
+      },
+    });
+  }
+
+  it("a mark older than the backfill floor must still ADVANCE the cursor", async () => {
+    // THE round-2 CRITICAL, and it was caused by round 1's fix. "History older
+    // than the floor is lost" is report-only — the floor IS the new start — but
+    // it shared one flag with "work inside the walked range was left undone",
+    // which gates the resume point. Gating on the union wedged the connector:
+    // the sync cadence is daily and the floor moves with it, so the mark written
+    // by pass N was always a day older than pass N+1's floor. The stale branch
+    // re-fired forever, the cursor never left the floor, and every pass re-walked
+    // the entire backfill.
+    //
+    // MUTATION THIS CATCHES: folding `historyTruncated` back into the cursor gate.
+    const stale = JSON.stringify({ v: 1, coveredThrough: "2025-01-01" });
+    // The window sequence is recorded, because the final cursor alone does NOT
+    // distinguish the two behaviours — a walk from 2025-01-01 also ends at
+    // today, so that assertion let the "drop the floor clamp" mutant survive.
+    const windows: string[] = [];
+    const c = createZoomTranscriptClient({
+      workspaceId: "ws1",
+      accountId: "acc1",
+      hosts: [],
+      backfillWindowMs: 7 * 86_400_000,
+      resolveToken: async () => "tok",
+      now: () => NOW,
+      audienceDeps: {
+        fetchParticipantsPage: async () => ({
+          ok: true as const,
+          participants: [{ email: "a@x.example", name: "A", userId: "z1" }],
+          nextPageToken: null,
+        }),
+        resolve: async () => ({ resolved: new Map([["z1-0", "user-1"]]), unresolvedCount: 0 }),
+        reconcile: async () => ({ added: 1, revoked: 0 }),
+      },
+      api: {
+        fetchAccountRecordingsPage: async (_t, args) => {
+          windows.push(args.from);
+          return { ok: true as const, meetings: [], nextPageToken: null, dropped: 0 };
+        },
+        fetchTranscriptText: async () => ({ ok: true as const, text: VTT }),
+      },
+    });
+    const changes = await c.fetchEpisodes({ ...PARAMS, cursor: stale });
+
+    // Reported honestly — the lost history is real and named…
+    expect(changes.coverageIncomplete).toBe(true);
+    expect((changes.warnings ?? []).join(" ")).toMatch(/older than the/);
+    // …the walk started at the FLOOR, not at the stale mark. Without the clamp
+    // it would open ~15 monthly windows against a vendor that serves six months.
+    expect(windows).toEqual(["2026-03-03"]);
+    // …and the cursor MOVED FORWARD, so the next pass starts from the frontier
+    // instead of re-walking the floor window forever.
+    expect(parseZoomCursor(changes.cursor ?? null)).toBe("2026-03-10");
+  });
+
+  it("an OVER-CAP transcript is skipped, never thrown — it is a permanent condition", async () => {
+    // The second regression round 1 introduced. The new Content-Length refusal
+    // returned `too_large`, and the client threw on every non-ok download — so a
+    // permanently over-cap file froze the cursor on every pass, and ~30 days
+    // later the frozen cursor fell below the floor and wedged the source. The
+    // pre-existing post-buffer check always skipped correctly; the new
+    // pre-buffer one did the opposite, turning a size guard into an outage.
+    //
+    // MUTATION THIS CATCHES: removing the `too_large` arm so it throws again.
+    const changes = await client({
+      download: async () => ({ ok: false, error: "too_large", retryAfterSeconds: null }),
+    }).fetchEpisodes(PARAMS);
+
+    expect(changes.episodes).toEqual([]);
+    expect((changes.warnings ?? []).join(" ")).toMatch(/skipped rather than truncated/);
+    // A SKIP, so the window is still covered and the pass is not frozen.
+    expect(changes.coverageIncomplete).toBe(false);
+    expect(parseZoomCursor(changes.cursor ?? null)).toBe("2026-03-10");
+  });
+
+  it("a transcript Zoom has not published yet is RETRIED, not dropped", async () => {
+    // Zoom omits `download_url` while a file is still processing. Bucketing that
+    // with permanently-unusable ids let the cursor advance past a transcript
+    // that would have been downloadable minutes later.
+    const c = createZoomTranscriptClient({
+      workspaceId: "ws1",
+      accountId: "acc1",
+      hosts: [],
+      backfillWindowMs: 7 * 86_400_000,
+      resolveToken: async () => "tok",
+      now: () => NOW,
+      audienceDeps: {
+        fetchParticipantsPage: async () => ({
+          ok: true as const,
+          participants: [{ email: "a@x.example", name: "A", userId: "z1" }],
+          nextPageToken: null,
+        }),
+        resolve: async () => ({ resolved: new Map(), unresolvedCount: 1 }),
+        reconcile: async () => ({ added: 0, revoked: 0 }),
+      },
+      api: {
+        fetchAccountRecordingsPage: async () => ({
+          ...meetingPage(),
+          meetings: [
+            {
+              ...meetingPage().meetings[0],
+              files: [{ id: FILE_ID, fileType: "TRANSCRIPT", downloadUrl: null, fileSize: null }],
+            },
+          ],
+        }),
+        fetchTranscriptText: async () => ({ ok: true as const, text: VTT }),
+      },
+    });
+    const changes = await c.fetchEpisodes(PARAMS);
+    expect(changes.episodes).toEqual([]);
+    expect(changes.coverageIncomplete).toBe(true);
+    const resume = parseZoomCursor(changes.cursor ?? null);
+    expect(resume === null || resume <= "2026-03-09").toBe(true);
+  });
+});
+
+describe("rate limiting — the engine owns the retry, not this client", () => {
+  function throttledClient(bankFirst: boolean) {
+    let call = 0;
+    return createZoomTranscriptClient({
+      workspaceId: "ws1",
+      accountId: "acc1",
+      hosts: [],
+      backfillWindowMs: 7 * 86_400_000,
+      resolveToken: async () => "tok",
+      now: () => NOW,
+      audienceDeps: {
+        fetchParticipantsPage: async () => ({
+          ok: true as const,
+          participants: [{ email: "a@x.example", name: "A", userId: "z1" }],
+          nextPageToken: null,
+        }),
+        resolve: async () => ({ resolved: new Map([["z1-0", "user-1"]]), unresolvedCount: 0 }),
+        reconcile: async () => ({ added: 1, revoked: 0 }),
+      },
+      api: {
+        fetchAccountRecordingsPage: async () => ({
+          ok: true as const,
+          meetings: ["AAAAAAAAAAAAAAAAAAAAAA==", "BBBBBBBBBBBBBBBBBBBBBB=="].map((uuid) => ({
+            uuid,
+            topic: "t",
+            hostId: "host-1",
+            startTime: "2026-03-09T15:00:00Z",
+            files: [
+              { id: FILE_ID, fileType: "TRANSCRIPT", downloadUrl: "https://zoom.us/rec/x", fileSize: 512 },
+            ],
+          })),
+          nextPageToken: null,
+          dropped: 0,
+        }),
+        fetchTranscriptText: async () => {
+          call++;
+          // With `bankFirst`, the first meeting succeeds so the pass has
+          // something to bank before the throttle lands.
+          if (bankFirst && call === 1) return { ok: true as const, text: VTT };
+          return { ok: false as const, error: "ratelimited", retryAfterSeconds: 30 };
+        },
+      },
+    });
+  }
+
+  it("RETHROWS ConnectorRateLimitError when nothing was banked", async () => {
+    // ADR-0030's whole point: the shared bounded backoff owns the retry. If this
+    // client swallowed the throttle, Atlas would keep polling a vendor that said
+    // stop and the engine's backoff would never engage.
+    await expect(throttledClient(false).fetchEpisodes(PARAMS)).rejects.toBeInstanceOf(
+      ConnectorRateLimitError,
+    );
+  });
+
+  it("BANKS what it has and returns when the throttle lands mid-pass", async () => {
+    // Throwing here would discard the episodes already earned, and because a
+    // throttled multi-meeting crawl is the steady state rather than an
+    // exception, the same prefix would be re-walked and re-lost every cycle.
+    const changes = await throttledClient(true).fetchEpisodes(PARAMS);
+    expect(changes.episodes).toHaveLength(1);
+    expect(changes.coverageIncomplete).toBe(true);
+    expect((changes.warnings ?? []).join(" ")).toMatch(/rate limiting/);
+    // And the banked prefix must not carry the cursor past the unread meeting.
+    const resume = parseZoomCursor(changes.cursor ?? null);
+    expect(resume === null || resume <= "2026-03-09").toBe(true);
+  });
+});
+
+describe("host scoping", () => {
+  it("ingests ONLY the configured hosts — the inverse is a scope-widening leak", async () => {
+    // Inverting this filter silently ingests every meeting in the account, each
+    // with its own audience, on an install the admin deliberately narrowed.
+    const scoped = createZoomTranscriptClient({
+      workspaceId: "ws1",
+      accountId: "acc1",
+      hosts: ["host-2"],
+      backfillWindowMs: 7 * 86_400_000,
+      resolveToken: async () => "tok",
+      now: () => NOW,
+      audienceDeps: {
+        fetchParticipantsPage: async () => ({
+          ok: true as const,
+          participants: [{ email: "a@x.example", name: "A", userId: "z1" }],
+          nextPageToken: null,
+        }),
+        resolve: async () => ({ resolved: new Map([["z1-0", "user-1"]]), unresolvedCount: 0 }),
+        reconcile: async () => ({ added: 1, revoked: 0 }),
+      },
+      api: {
+        // The fixture meeting is hosted by `host-1`, which is NOT configured.
+        fetchAccountRecordingsPage: async () => meetingPage(),
+        fetchTranscriptText: async () => ({ ok: true as const, text: VTT }),
+      },
+    });
+    const changes = await scoped.fetchEpisodes(PARAMS);
+    expect(changes.episodes).toEqual([]);
+    // Out of scope is not undone work — the admin asked for exactly these hosts.
+    expect(changes.coverageIncomplete).toBe(false);
+  });
+});
+
+describe("parseZoomCursor degrades, never throws", () => {
+  it("returns null for every unreadable shape", () => {
+    // Throwing would wedge the source permanently on one bad row with no
+    // operator-reachable repair; re-crawling from the floor is a deduped no-op.
+    for (const raw of [
+      null,
+      "",
+      "{",
+      "[]",
+      "null",
+      '"a string"',
+      '{"v":2,"coveredThrough":"2026-03-01"}',
+      '{"v":1}',
+      '{"v":1,"coveredThrough":"2026-3-9"}',
+      '{"v":1,"coveredThrough":42}',
+    ]) {
+      expect([String(raw), parseZoomCursor(raw)]).toEqual([String(raw), null]);
+    }
+  });
+
+  it("round-trips a valid cursor", () => {
+    expect(parseZoomCursor('{"v":1,"coveredThrough":"2026-03-09"}')).toBe("2026-03-09");
   });
 });

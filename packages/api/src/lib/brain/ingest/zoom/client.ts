@@ -208,6 +208,13 @@ export function toZoomClientError(context: string, failure: ZoomReadError): Erro
       return new Error(
         `Zoom no longer recognises ${context} — the recording may have been deleted or moved to trash.`,
       );
+    case "too_large":
+      // Reachable only if a caller throws on this instead of skipping it (the
+      // connector does not). The `default` arm's "Zoom rejected the request"
+      // would be a lie — Atlas refused — and would name no cap and no repair.
+      return new Error(
+        `${context} is larger than the ${MAX_TRANSCRIPT_BYTES / 1_048_576}MB limit Atlas stores — it was not ingested. Nothing partial is stored.`,
+      );
     default:
       return new Error(`Zoom rejected the request for ${context}: ${failure.error}`);
   }
@@ -287,12 +294,14 @@ export function createZoomTranscriptClient(
     readonly blocked: boolean;
     /** The episode budget ran out mid-meeting — its later segments are unread. */
     readonly truncated: boolean;
+    /** A transcript file was not downloadable YET — the window must be re-read. */
+    readonly notReady: boolean;
   }> {
     if (grantedHosts !== null && (meeting.hostId === null || !grantedHosts.has(meeting.hostId))) {
       // Outside the configured scope. Not a skip to report — the admin asked
       // for exactly these hosts — so it is not counted in `skips`, and the
       // window IS covered: there was nothing here to ingest.
-      return { episodes: [], blocked: false, truncated: false };
+      return { episodes: [], blocked: false, truncated: false, notReady: false };
     }
     const transcripts = meeting.files.filter(isTranscriptFile);
     // No transcript file YET is not a block. Zoom publishes the VTT minutes
@@ -300,7 +309,7 @@ export function createZoomTranscriptClient(
     // meeting — and #4967's `recording.transcript_completed` webhook is what
     // picks it up promptly. The mark may pass; the next poll re-reads the
     // frontier day anyway.
-    if (transcripts.length === 0) return { episodes: [], blocked: false, truncated: false };
+    if (transcripts.length === 0) return { episodes: [], blocked: false, truncated: false, notReady: false };
 
     // ── The BLOCK arm ─────────────────────────────────────────────────────
     // The roster is narrowed FIRST, before the grant is derived, so that
@@ -332,7 +341,7 @@ export function createZoomTranscriptClient(
         { workspaceId: options.workspaceId, meetingUuid: meeting.uuid, reason },
         "Zoom meeting blocked — no access grant could be derived, so nothing was ingested from it",
       );
-      return { episodes: [], blocked: true, truncated: false };
+      return { episodes: [], blocked: true, truncated: false, notReady: false };
     }
 
     // Membership BEFORE episodes — see `audience.ts` for why the two failure
@@ -347,6 +356,8 @@ export function createZoomTranscriptClient(
 
     const episodes: BrainEpisodeRecord[] = [];
     let truncated = false;
+    /** A transcript Zoom has not finished publishing — retry, do not skip. */
+    let notReady = false;
     for (const file of transcripts) {
       if (episodes.length >= budget.episodes) {
         // A stop/restart recording legitimately has several transcript files.
@@ -356,7 +367,11 @@ export function createZoomTranscriptClient(
         break;
       }
       if (file.downloadUrl === null) {
-        skips.unidentifiable++;
+        // Zoom omits `download_url` while a recording file is still
+        // PROCESSING, so this is transient. Bucketing it with permanently
+        // unusable ids let the cursor advance past a transcript that would have
+        // been downloadable minutes later, and it was never re-read.
+        notReady = true;
         continue;
       }
       let sourceId: string;
@@ -380,7 +395,23 @@ export function createZoomTranscriptClient(
       }
 
       const downloaded = await api.fetchTranscriptText(token, file.downloadUrl, MAX_TRANSCRIPT_BYTES);
-      if (!downloaded.ok) throw toZoomClientError(`the transcript for meeting ${meeting.uuid}`, downloaded);
+      if (!downloaded.ok) {
+        if (downloaded.error === "too_large") {
+          // A SKIP, never a throw. Throwing routed a PERMANENT condition (the
+          // file is over cap tomorrow too) through the per-meeting catch, which
+          // froze the cursor every pass — and ~30 days later the frozen cursor
+          // fell below the backfill floor and wedged the source outright. The
+          // post-buffer check below always did the right thing; the pre-buffer
+          // one added in round 1 did the opposite, which is how a size guard
+          // became an outage.
+          skips.oversize++;
+          warnings.push(
+            `Meeting ${meeting.uuid} has a transcript over the ${MAX_TRANSCRIPT_BYTES / 1_048_576}MB limit — it was skipped rather than truncated, so no partial transcript is stored as if it were whole.`,
+          );
+          continue;
+        }
+        throw toZoomClientError(`the transcript for meeting ${meeting.uuid}`, downloaded);
+      }
       if (Buffer.byteLength(downloaded.text, "utf8") > MAX_TRANSCRIPT_BYTES) {
         // Zoom's `file_size` is advisory and occasionally absent; this is the
         // check that actually bounds what is stored.
@@ -428,7 +459,7 @@ export function createZoomTranscriptClient(
         "Zoom meeting audience reconciled — some participants matched no Atlas user and were not granted",
       );
     }
-    return { episodes, blocked: false, truncated };
+    return { episodes, blocked: false, truncated, notReady };
   }
 
   return {
@@ -451,14 +482,37 @@ export function createZoomTranscriptClient(
         emptyBody: 0,
         unidentifiable: 0,
       };
-      let coverageIncomplete = false;
+      // TWO flags, not one, and conflating them was a regression the round-2
+      // review caught by execution.
+      //
+      //   `walkIncomplete`   — work INSIDE the walked range was left undone.
+      //                        This is the only thing that may freeze the
+      //                        resume point.
+      //   `historyTruncated` — history OLDER than the backfill floor is
+      //                        unreachable. A statement about the past, and
+      //                        report-only: the floor IS the new start, so
+      //                        there is nothing for a frozen cursor to retry.
+      //
+      // Gating the cursor on the union wedged the connector permanently. The
+      // sync cadence is daily and the floor advances a day with it, so the mark
+      // written by pass N is always a day older than the floor computed by pass
+      // N+1: the stale branch re-fired forever, the cursor never left the floor,
+      // and every pass re-walked the whole backfill. Once that backlog exceeded
+      // `maxEpisodes` the walk broke before reaching today and recent meetings
+      // stopped being ingested at all. Both flags still surface as
+      // `coverageIncomplete` to the engine — that half was right.
+      let walkIncomplete = false;
+      let historyTruncated = false;
       let remainingPages = MAX_RECORDINGS_PAGES_PER_PASS;
       let remainingEpisodes = params.maxEpisodes;
       /** The last day covered end to end — what the mark may advance to. */
       let coveredThrough = start;
 
       if (covered !== null && covered < floor) {
-        coverageIncomplete = true;
+        // Report-only. NOT `walkIncomplete`: the walk starts at the floor and
+        // covers everything from there, so freezing the resume point would
+        // re-walk that same range next pass and every pass after it.
+        historyTruncated = true;
         warnings.push(
           `The stored sync mark (${covered}) was older than the ${Math.round(options.backfillWindowMs / 86_400_000)}-day backfill window, so this source restarts at ${floor}. Anything older is not ingested.`,
         );
@@ -470,7 +524,7 @@ export function createZoomTranscriptClient(
 
         for (;;) {
           if (remainingPages <= 0 || remainingEpisodes <= 0) {
-            coverageIncomplete = true;
+            walkIncomplete = true;
             warnings.push(
               remainingEpisodes <= 0
                 ? `The per-sync record budget (${params.maxEpisodes}) was reached at ${from} — the rest of the backlog continues next cycle.`
@@ -493,7 +547,7 @@ export function createZoomTranscriptClient(
             // about to mark covered, so advancing past them would be a silent
             // skip. Truncating re-reads them next cycle — a visible stall, never
             // a silent loss.
-            coverageIncomplete = true;
+            walkIncomplete = true;
             warnings.push(
               `Zoom returned ${page.dropped} recording entr${page.dropped === 1 ? "y" : "ies"} with no usable identity between ${from} and ${to} — that window was not marked covered and is re-read next cycle.`,
             );
@@ -508,7 +562,7 @@ export function createZoomTranscriptClient(
               // gone forever with `coverageIncomplete: false` and no warning.
               // The top-of-page check above only fires when there IS a
               // subsequent page or window.
-              coverageIncomplete = true;
+              walkIncomplete = true;
               warnings.push(
                 `The per-sync record budget (${params.maxEpisodes}) was reached inside the window starting ${from} — the unread meetings in it resume next cycle.`,
               );
@@ -530,7 +584,14 @@ export function createZoomTranscriptClient(
               // would advance past the meeting, and no later cycle would ever
               // look at it again — a permanent silent skip on the SAFETY arm,
               // which is the worst place to have one.
-              if (produced.blocked || produced.truncated) coverageIncomplete = true;
+              if (produced.blocked || produced.truncated || produced.notReady) {
+                walkIncomplete = true;
+              }
+              if (produced.notReady) {
+                warnings.push(
+                  `Meeting ${meeting.uuid} has a transcript Zoom has not finished publishing — that window is re-read next cycle.`,
+                );
+              }
             } catch (err) {
               // Per-meeting isolation, matching the engine's per-collection
               // posture. A rate limit is the one failure that also stops the
@@ -542,7 +603,7 @@ export function createZoomTranscriptClient(
               // backoff still owns the retry.
               const throttled = err instanceof ConnectorRateLimitError;
               if (throttled && episodes.length === 0) throw err;
-              coverageIncomplete = true;
+              walkIncomplete = true;
               const message = err instanceof Error ? err.message : String(err);
               warnings.push(
                 throttled
@@ -566,7 +627,7 @@ export function createZoomTranscriptClient(
         // so far left work undone.
         //
         // This gate is the whole correctness of the block arm, and it was
-        // missing: `coverageIncomplete` nulled the high-water mark, but this
+        // missing: the flag nulled the high-water mark, but this
         // connector never READS the high-water mark — `params.since` is unused
         // and `params.cursor` is the sole resume point. So a blocked meeting
         // set the flag, the mark went null (costing nothing), and the CURSOR
@@ -581,7 +642,7 @@ export function createZoomTranscriptClient(
         // window that leaves anything undone freezes the resume point for the
         // whole pass. A per-window flag would let a later clean window carry
         // the cursor over an earlier dirty one.
-        if (!coverageIncomplete) coveredThrough = to;
+        if (!walkIncomplete) coveredThrough = to;
       }
 
       if (skips.blockedAudience > 0) {
@@ -606,9 +667,9 @@ export function createZoomTranscriptClient(
         // coverage was incomplete, because a high-water mark must cover only the
         // CONTIGUOUS part of the window. The state upsert COALESCEs the previous
         // mark forward, so null loses nothing.
-        highWaterMark: coverageIncomplete ? null : `${coveredThrough}T23:59:59.999Z`,
+        highWaterMark: walkIncomplete || historyTruncated ? null : `${coveredThrough}T23:59:59.999Z`,
         cursor: serialiseZoomCursor(coveredThrough),
-        coverageIncomplete,
+        coverageIncomplete: walkIncomplete || historyTruncated,
         warnings,
       };
     },

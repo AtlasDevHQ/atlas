@@ -12,15 +12,25 @@
  * to this file so no other suite can observe it.
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   encodeMeetingUuidForPath,
   fetchAccountRecordingsPage,
   fetchMeetingParticipantsPage,
+  fetchTranscriptText,
   fetchZoomAccessToken,
 } from "@atlas/api/lib/brain/ingest/zoom/api";
 
 const REAL_FETCH = globalThis.fetch;
+
+beforeEach(() => {
+  // A test that forgets to `stub()` would otherwise make a REAL outbound
+  // request to api.zoom.us from CI. Failing loudly by name is strictly better
+  // than a flaky network call nobody attributes.
+  globalThis.fetch = (() => {
+    throw new Error("unstubbed fetch — call stub() first");
+  }) as unknown as typeof fetch;
+});
 afterEach(() => {
   globalThis.fetch = REAL_FETCH;
 });
@@ -207,5 +217,57 @@ describe("fetchAccountRecordingsPage — shape-drift accounting", () => {
     expect(calls[0].searchParams.get("from")).toBe("2026-03-01");
     expect(calls[0].searchParams.get("to")).toBe("2026-03-30");
     expect(calls[0].searchParams.get("next_page_token")).toBe("tk");
+  });
+});
+
+describe("fetchTranscriptText — the SSRF host pin", () => {
+  // `download_url` is VENDOR-SUPPLIED DATA that Atlas then fetches WITH THE
+  // WORKSPACE BEARER TOKEN ATTACHED. The module header calls the host pin "the
+  // stronger half" of the guard, and round 2 found it had no test at all —
+  // replacing the condition with `if (false)` survived the whole suite.
+  //
+  // The pin returns BEFORE any fetch, so the `beforeEach` throwing stub is what
+  // proves it: if a refusal ever started fetching, these tests fail by name.
+
+  it("REFUSES a non-Zoom download_url WITHOUT issuing the request", async () => {
+    // Asserting only `ok === false` is not enough and this test proved it: with
+    // the `beforeEach` throwing stub in place, disabling the pin still yields
+    // `ok:false` — via the transport catch — so the mutant SURVIVED. The claim
+    // that matters is that no request leaves the box carrying the workspace
+    // bearer token, so the stub must SUCCEED and the call count must be zero.
+    for (const url of [
+      "https://evil.example/x",
+      // The classic suffix-confusion payload: `.zoom.us` appears, but as a
+      // LABEL inside an attacker-controlled domain.
+      "https://zoom.us.attacker.example/x",
+      "https://notzoom.us/x",
+      "http://zoom.us/x",
+      "not a url",
+    ]) {
+      const calls = stub("WEBVTT\n");
+      const result = await fetchTranscriptText("tok", url);
+      expect([url, result.ok, calls.length]).toEqual([url, false, 0]);
+    }
+  });
+
+  it("allows a genuine Zoom host, and DOES issue the request", async () => {
+    // The other half — a pin that refused everything would pass the test above.
+    const calls = stub("WEBVTT\n");
+    const result = await fetchTranscriptText("tok", "https://cdn.zoom.us/rec/x");
+    expect([result.ok, calls.length]).toEqual([true, 1]);
+  });
+
+  it("refuses an over-cap transcript by Content-Length, BEFORE buffering it", async () => {
+    // Round 1 added this and round 2 found it untested. The bound exists so a
+    // shared region process is not at the mercy of a vendor's response size.
+    stub("x", { headers: { "content-length": "99999999" } });
+    const result = await fetchTranscriptText("tok", "https://zoom.us/rec/x", 1024);
+    expect(result.ok ? "ok" : result.error).toBe("too_large");
+  });
+
+  it("does not refuse a transcript inside the cap", async () => {
+    stub("WEBVTT\n", { headers: { "content-length": "12" } });
+    const result = await fetchTranscriptText("tok", "https://zoom.us/rec/x", 1024);
+    expect(result.ok).toBe(true);
   });
 });

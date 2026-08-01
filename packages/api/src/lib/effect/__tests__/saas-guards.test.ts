@@ -97,6 +97,7 @@ import type {
   RateLimitRequiredError as TRateLimitRequiredError,
   TurnstileSecretRequiredError as TTurnstileSecretRequiredError,
   SandboxCredentialsMissingError as TSandboxCredentialsMissingError,
+  PythonSandboxUrlMissingError as TPythonSandboxUrlMissingError,
   ProviderKeyMissingError as TProviderKeyMissingError,
   ProviderUnsupportedError as TProviderUnsupportedError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
@@ -165,6 +166,8 @@ const {
   TurnstileSecretRequiredError,
   SandboxCredsGuardLive,
   SandboxCredentialsMissingError,
+  PythonSandboxGuardLive,
+  PythonSandboxUrlMissingError,
   ProviderKeyGuardLive,
   ProactiveProviderKeyGuardLive,
   ProviderKeyMissingError,
@@ -1222,6 +1225,142 @@ describe("SandboxCredsGuardLive", () => {
     // on every deploy.
     expect(observed.some((o) => o.plannerFailsClosedOnVercel)).toBe(true);
     expect(observed.some((o) => !o.plannerFailsClosedOnVercel)).toBe(true);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  PythonSandboxGuardLive (#4940)
+// ══════════════════════════════════════════════════════════════════════
+//
+// `ATLAS_PYTHON_ENABLED` + `ATLAS_SANDBOX_URL` are both SAAS_ENV_KEYS, so
+// `withCleanEnv` clears them between cases — load-bearing here, because the
+// repo-root `.env` ships `ATLAS_SANDBOX_URL=http://localhost:8080` and bun
+// auto-loads it. Without the clear, every "fails boot" case below would pass for
+// the wrong reason (or rather, fail to fail).
+
+describe("PythonSandboxGuardLive", () => {
+  function runGuard(deployMode: string) {
+    return Effect.runPromiseExit(
+      Effect.void.pipe(
+        Effect.provide(
+          PythonSandboxGuardLive.pipe(Layer.provide(makeTestConfigLayer({ deployMode }))),
+        ),
+      ),
+    );
+  }
+
+  function expectPythonSandboxFailure(exit: Exit.Exit<void, unknown>): TPythonSandboxUrlMissingError {
+    expect(Exit.isFailure(exit)).toBe(true);
+    const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+    expect(failure).toBeInstanceOf(PythonSandboxUrlMissingError);
+    return failure as TPythonSandboxUrlMissingError;
+  }
+
+  // The whole point of the issue: this used to boot green and serve traffic
+  // forever with `executePython` absent, because all five `buildRegistry`
+  // callers catch the builder's throw.
+  test("fails boot when ATLAS_PYTHON_ENABLED=true and ATLAS_SANDBOX_URL is unset", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      const failure = expectPythonSandboxFailure(await runGuard("saas"));
+      expect(failure._tag).toBe("PythonSandboxUrlMissingError");
+      expect(failure.message).toContain("#4940");
+    });
+  });
+
+  // The acceptance criterion, stated as its own case rather than folded into the
+  // one above: an operator who reads only the boot failure must learn the
+  // variable to set. Asserted on the structured field too, so a message rewrite
+  // that drops the name is caught even if some other string happens to match.
+  test("names ATLAS_SANDBOX_URL as the remediation", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      const failure = expectPythonSandboxFailure(await runGuard("saas"));
+      expect(failure.message).toContain("ATLAS_SANDBOX_URL");
+      expect(failure.remediationEnvVar).toBe("ATLAS_SANDBOX_URL");
+    });
+  });
+
+  // Deploy-mode-AGNOSTIC, unlike every other guard in this file. `ATLAS_PYTHON_ENABLED`
+  // is a self-hosted-facing knob, so a `deployMode !== "saas"` early-return would
+  // leave the population that actually sets it unguarded — the guard would be
+  // inert exactly where the bug lives. This is the case that would go green if
+  // someone "restored consistency" by adding that early-return.
+  test("fails boot on self-hosted too — the misconfiguration is not SaaS-specific", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      const failure = expectPythonSandboxFailure(await runGuard("self-hosted"));
+      expect(failure.remediationEnvVar).toBe("ATLAS_SANDBOX_URL");
+    });
+  });
+
+  test("empty-string ATLAS_SANDBOX_URL is absent, not configured", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      process.env.ATLAS_SANDBOX_URL = "";
+      expectPythonSandboxFailure(await runGuard("self-hosted"));
+    });
+  });
+
+  // The negatives. A guard that fails on every boot is not a guard, and the
+  // overwhelmingly common shape (Python never requested) must be inert in both
+  // modes — including on a box that has a sandbox sidecar for `explore` but has
+  // not opted into the Python tool.
+  test("no-ops when the Python tool was never requested", async () => {
+    await withCleanEnv(async () => {
+      expect(Exit.isSuccess(await runGuard("saas"))).toBe(true);
+      expect(Exit.isSuccess(await runGuard("self-hosted"))).toBe(true);
+    });
+  });
+
+  test("no-ops when both are set — the configuration the operator meant", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      process.env.ATLAS_SANDBOX_URL = "http://sandbox-sidecar:8080";
+      expect(Exit.isSuccess(await runGuard("saas"))).toBe(true);
+      expect(Exit.isSuccess(await runGuard("self-hosted"))).toBe(true);
+    });
+  });
+
+  // `ATLAS_PYTHON_ENABLED` is compared to the exact literal `"true"` everywhere
+  // in the codebase; `buildRegistry` would not register the tool for any of
+  // these, so the guard must not fail boot over them either. The two seams
+  // agreeing here is the reason both call the same predicate.
+  test("does not fire on truthy-looking values that never enable the tool", async () => {
+    await withCleanEnv(async () => {
+      for (const value of ["1", "yes", "TRUE", "True"]) {
+        process.env.ATLAS_PYTHON_ENABLED = value;
+        expect(Exit.isSuccess(await runGuard("self-hosted"))).toBe(true);
+      }
+    });
+  });
+
+  // The anti-drift check, in the spirit of the #4838 divergence detector one
+  // section up: the guard must not hand-roll its own copy of "misconfigured".
+  // It computes the expectation from the SAME predicate `buildRegistry` calls,
+  // across the full 2×2 of the two env vars, and asserts the guard agrees.
+  test("agrees with buildRegistry's predicate on every env shape (#4940 anti-drift)", async () => {
+    const { isPythonSandboxMisconfigured } = await import(
+      "@atlas/api/lib/tools/python-sandbox-requirement"
+    );
+    await withCleanEnv(async () => {
+      for (const enabled of [undefined, "true"]) {
+        for (const url of [undefined, "http://sandbox-sidecar:8080"]) {
+          if (enabled === undefined) delete process.env.ATLAS_PYTHON_ENABLED;
+          else process.env.ATLAS_PYTHON_ENABLED = enabled;
+          if (url === undefined) delete process.env.ATLAS_SANDBOX_URL;
+          else process.env.ATLAS_SANDBOX_URL = url;
+
+          const expected = isPythonSandboxMisconfigured(process.env);
+          const exit = await runGuard("self-hosted");
+          expect({ enabled, url, failsBoot: Exit.isFailure(exit) }).toEqual({
+            enabled,
+            url,
+            failsBoot: expected,
+          });
+        }
+      }
+    });
   });
 });
 
@@ -2534,6 +2673,55 @@ describe("relaxSaasGuardForDev (ATLAS_DEPLOY_ENV=development)", () => {
       );
       expect(Exit.isSuccess(exit)).toBe(true);
     });
+  });
+
+  // #4940 — the guard that is NOT SaaS-gated, so its relaxation is checked in
+  // BOTH modes. This is the local-dev regression the decision on the issue
+  // called out: `.env` ships `ATLAS_DEPLOY_ENV=development` and CLAUDE.md
+  // documents that the fail-closed boot guards relax to a no-op there, so a dev
+  // box with a half-configured sandbox must keep booting. The ENFORCE half is
+  // the `PythonSandboxGuardLive` block above, which runs at the `production`
+  // default `withCleanEnv` pins.
+  test("PythonSandboxGuard: relaxes in development with ATLAS_PYTHON_ENABLED=true and no sandbox URL", async () => {
+    for (const deployMode of ["saas", "self-hosted"]) {
+      await withCleanEnv(async () => {
+        process.env.ATLAS_DEPLOY_ENV = "development";
+        process.env.ATLAS_PYTHON_ENABLED = "true"; // the #4940 fail-boot shape
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              PythonSandboxGuardLive.pipe(Layer.provide(makeTestConfigLayer({ deployMode }))),
+            ),
+          ),
+        );
+        expect(Exit.isSuccess(exit)).toBe(true);
+      });
+    }
+  });
+
+  // The relaxation is `development` ONLY, and `staging` is the case worth naming:
+  // it is where a SaaS change lands first, and `resolveDeployEnv` maps anything it
+  // does not recognise to `production` — so a future "relax on any non-production
+  // env" widening would silently disarm this guard on the soak environment. Pinned
+  // here rather than in the block above because it is a property of the
+  // relaxation, not of the guard.
+  test("PythonSandboxGuard: does NOT relax on staging — only development", async () => {
+    for (const deployEnv of ["staging", "production"]) {
+      await withCleanEnv(async () => {
+        process.env.ATLAS_DEPLOY_ENV = deployEnv;
+        process.env.ATLAS_PYTHON_ENABLED = "true";
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              PythonSandboxGuardLive.pipe(
+                Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              ),
+            ),
+          ),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+      });
+    }
   });
 
   // The remaining five guards that opt into `relaxSaasGuardForDev` — each fed the

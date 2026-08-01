@@ -1527,6 +1527,11 @@ chat.openapi(chatRoute, async (c) => {
               // the `defaultRegistry` fallback still carried the core
               // `sendEmail` / `createLinearIssue`, so the model was primed to
               // disown a tool it could see.
+              //
+              // #4940 — degrading here stays correct, and is no longer the whole
+              // story: the Python-without-sandbox misconfiguration this used to
+              // absorb now fails the boot Layer (`PythonSandboxGuardLive`), so a
+              // guarded deploy never serves a request in that state.
               const { registryBuildFailedWarning } = await import(
                 "@atlas/api/lib/tools/registry"
               );
@@ -2171,6 +2176,9 @@ chat.openapi(chatResumeRoute, async (c) => {
               toolRegistry = result.registry;
               resumeWarnings.push(...result.warnings);
             } catch (err) {
+              // #4940 — same posture as the initial-turn site above: the
+              // misconfiguration class is refused at boot now, so this catch
+              // covers residual failures and the dev-relaxed boot only.
               log.error({ err: err instanceof Error ? err : new Error(String(err)), conversationId, runId: handle.runId }, "Failed to build tool registry on resume — falling back to default tools");
               const { registryBuildFailedWarning } = await import(
                 "@atlas/api/lib/tools/registry"

@@ -1198,6 +1198,54 @@ describe("buildAppLayer", () => {
     }
   });
 
+  // #4940 — same canary shape as the guards above, run on SELF-HOSTED on
+  // purpose. `PythonSandboxGuardLive` is the family's one deploy-mode-agnostic
+  // member, so booting self-hosted proves two things at once: the layer is in
+  // `Layer.mergeAll(...)`, and it is not quietly SaaS-gated. Every sibling guard
+  // short-circuits on `deployMode !== "saas"`, so the cause is unambiguous
+  // without having to satisfy any of them.
+  test("buildAppLayer wires PythonSandboxGuardLive — Python without a sandbox URL fails the layer on SELF-HOSTED", async () => {
+    const savedEnabled = process.env.ATLAS_PYTHON_ENABLED;
+    const savedUrl = process.env.ATLAS_SANDBOX_URL;
+    const savedDeployEnv = process.env.ATLAS_DEPLOY_ENV;
+    process.env.ATLAS_PYTHON_ENABLED = "true";
+    delete process.env.ATLAS_SANDBOX_URL;
+    // The repo-root `.env` ships `ATLAS_DEPLOY_ENV=development` and bun
+    // auto-loads it; left in place the guard would RELAX and this canary would
+    // pass green while asserting nothing.
+    delete process.env.ATLAS_DEPLOY_ENV;
+
+    try {
+      const config = { deployMode: "self-hosted" } as Parameters<typeof buildAppLayer>[0];
+      const layer = buildAppLayer(config);
+
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(layer)),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      const text = String(Exit.isFailure(exit) ? exit.cause : "");
+      expect(text).toContain("PythonSandboxUrlMissingError");
+      expect(text).toContain("ATLAS_SANDBOX_URL");
+
+      // The symmetric half, and not decoration: without it this canary cannot
+      // tell "the guard fired" from "this layer was going to fail anyway", so a
+      // guard that failed unconditionally would still look wired.
+      process.env.ATLAS_SANDBOX_URL = "http://sandbox-sidecar:8080";
+      const okExit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(buildAppLayer(config))),
+      );
+      expect(Exit.isSuccess(okExit)).toBe(true);
+    } finally {
+      if (savedEnabled !== undefined) process.env.ATLAS_PYTHON_ENABLED = savedEnabled;
+      else delete process.env.ATLAS_PYTHON_ENABLED;
+      if (savedUrl !== undefined) process.env.ATLAS_SANDBOX_URL = savedUrl;
+      else delete process.env.ATLAS_SANDBOX_URL;
+      if (savedDeployEnv !== undefined) process.env.ATLAS_DEPLOY_ENV = savedDeployEnv;
+      else delete process.env.ATLAS_DEPLOY_ENV;
+    }
+  });
+
   // #3178 — same canary shape as the two guards above. Without this end-to-end
   // assertion a future merge that drops `providerKeyGuardLayer` from
   // `Layer.mergeAll(...)` would still pass the unit tests in saas-guards.test.ts

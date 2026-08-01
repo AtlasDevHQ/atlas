@@ -21,6 +21,11 @@ import {
 import { searchBrain, SEARCH_BRAIN_DESCRIPTION } from "./search-brain";
 import { correctFactTool, CORRECT_FACT_DESCRIPTION } from "./correct-fact";
 import { withToolSpans } from "./tool-spans";
+import {
+  isPythonSandboxMisconfigured,
+  isPythonToolRequested,
+  PYTHON_SANDBOX_MISCONFIGURED_MESSAGE,
+} from "./python-sandbox-requirement";
 
 export type { AtlasAction, DashboardUrlResolver };
 export { isAction, WORKSPACE_DASHBOARD_URL_RESOLVER };
@@ -521,7 +526,7 @@ export function registryBuildFailedWarning(): string {
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
     lost.push("the operator action tools (createJiraTicket, sendEmailReport)");
   }
-  if (process.env.ATLAS_PYTHON_ENABLED === "true") {
+  if (isPythonToolRequested()) {
     lost.push("Python execution (executePython)");
   }
   return (
@@ -540,7 +545,19 @@ export function registryBuildFailedWarning(): string {
  * Action tools are included when `includeActions` is true.
  *
  * Returns both the registry and any warnings about tools that failed to load.
- * Fatal misconfigurations (e.g. Python enabled without sandbox URL) still throw.
+ * A degraded action-tool load is a warning; the two Python failure modes throw.
+ *
+ * #4940 — that throw is the BACKSTOP, not the contract. Every caller in the repo
+ * catches it (startup's credential check, both chat-route sites, the Effect
+ * tool-shadow check, `buildHeadlessRegistry`), which is correct at each seam —
+ * the fallbacks preserve the isolation invariant by not carrying `executePython`
+ * — but it used to mean nothing failed boot, so a misconfigured box ran
+ * indefinitely with the tool silently absent. What makes the misconfiguration
+ * genuinely fatal is `PythonSandboxGuardLive` (`lib/effect/saas-guards.ts`),
+ * which fails the boot Layer on the same predicate before `api/server.ts` starts
+ * listening. Both seams read it from `./python-sandbox-requirement` so they
+ * cannot disagree. That guard covers the api server process, not every entry
+ * point — `buildHeadlessRegistry` below enumerates what still reaches the throw.
  */
 export async function buildRegistry(options?: {
   includeActions?: boolean;
@@ -569,19 +586,15 @@ export async function buildRegistry(options?: {
       : options.dashboardUrlResolver;
   registerCoreTools(registry, dashboardUrlResolver);
 
-  if (process.env.ATLAS_PYTHON_ENABLED === "true") {
-    if (!process.env.ATLAS_SANDBOX_URL) {
+  if (isPythonToolRequested()) {
+    if (isPythonSandboxMisconfigured()) {
+      // Reachable when the boot guard was relaxed (`ATLAS_DEPLOY_ENV=development`)
+      // or never ran — the guard lives in the app Layer, which not every process
+      // builds. See the enumeration on `buildHeadlessRegistry` below.
       const { createLogger } = await import("@atlas/api/lib/logger");
       const pyLog = createLogger("registry");
-      pyLog.error(
-        "ATLAS_PYTHON_ENABLED=true but ATLAS_SANDBOX_URL is not set. " +
-          "Python execution requires a sandbox sidecar for isolation.",
-      );
-      throw new Error(
-        "ATLAS_PYTHON_ENABLED=true requires ATLAS_SANDBOX_URL to be set. " +
-          "The Python tool runs in the sandbox sidecar for security isolation. " +
-          "See deployment docs for sidecar setup.",
-      );
+      pyLog.error(PYTHON_SANDBOX_MISCONFIGURED_MESSAGE);
+      throw new Error(PYTHON_SANDBOX_MISCONFIGURED_MESSAGE);
     }
 
     try {
@@ -656,10 +669,23 @@ export async function buildRegistry(options?: {
  * the web surface. The fallback path below authors its own warning for the same
  * reason.
  *
- * One known limit remains, deliberately out of scope and tracked separately:
- * this catch also swallows `buildRegistry`'s DELIBERATE fatal throws (#4940 —
- * every caller in the repo already does, and the fallback preserves the
- * isolation invariant by not carrying `executePython`).
+ * This catch also covers `buildRegistry`'s DELIBERATE throws, and that is no
+ * longer a swallowed contract (#4940). The Python-without-sandbox
+ * misconfiguration fails the boot Layer in `PythonSandboxGuardLive`
+ * (`lib/effect/saas-guards.ts`), so in the API SERVER it never reaches this seam.
+ * Three classes still do reach it, and the degrade is deliberate for all three:
+ *
+ *   1. the dev-relaxed boot (`ATLAS_DEPLOY_ENV=development`);
+ *   2. throw classes a boot-time env check cannot predict — a `./python` import
+ *      that fails at build time, say;
+ *   3. processes that never build the app Layer at all, so no guard runs in
+ *      front of them. `buildAppLayer` has exactly one non-test caller
+ *      (`api/server.ts`); `packages/mcp`'s `atlas-mcp` binary calls only
+ *      `initializeConfig()` and reaches here via `executeAgentQuery`. That is
+ *      the honest limit of the guard's reach, and it is why this fallback stays.
+ *
+ * For all three, degrading to the lesser-privileged registry — with a warning the
+ * model can relay — is the right answer for a surface with no human in the loop.
  */
 export async function buildHeadlessRegistry(): Promise<BuildRegistryResult> {
   try {

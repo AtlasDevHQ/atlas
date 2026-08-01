@@ -882,6 +882,13 @@ export function makeWiredPluginRegistryLive(
                   const { registry } = await buildRegistry({ includeActions: true });
                   shadowBase = registry;
                 } catch (err) {
+                  // #4940 — narrowing the shadow BASE is the right degrade for a
+                  // diagnostic: the check reports fewer collisions, it never
+                  // reports a wrong one. The misconfiguration that used to reach
+                  // here (Python enabled with no sandbox URL) now fails the boot
+                  // Layer via `PythonSandboxGuardLive` — a peer in the same
+                  // `mergeAll`, so this branch may still be taken on the way
+                  // down, but the process will not go on to serve traffic.
                   pluginLog.warn(
                     { err: err instanceof Error ? err.message : String(err) },
                     "Tool-shadow check: buildRegistry failed — checking against core tools only",

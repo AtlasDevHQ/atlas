@@ -112,6 +112,16 @@ const KEY_META: Record<SaasEnvKey, KeyMeta> = {
     purpose:
       "Vercel Sandbox API token (per-service secret; Railway shared vars don't auto-inherit). `SandboxCredsGuardLive` refuses to boot a SaaS region whose `sandbox.priority` pins vercel-sandbox without it — otherwise every explore/executePython call hard-fails at first use. Team + project IDs are non-secret `sandbox.vercel` config in atlas.config.ts.",
   },
+  ATLAS_PYTHON_ENABLED: {
+    category: "Sandbox",
+    purpose:
+      "Set `true` to enable the `executePython` agent tool. `PythonSandboxGuardLive` (#4940) refuses to boot — in EITHER deploy mode — when this is `true` with no `ATLAS_SANDBOX_URL`, because every tool-registry caller catches the builder's throw and the box would otherwise run indefinitely with the tool silently absent. Relaxed under `ATLAS_DEPLOY_ENV=development`.",
+  },
+  ATLAS_SANDBOX_URL: {
+    category: "Sandbox",
+    purpose:
+      "Base URL of the sandbox sidecar `executePython` is registered against. Required whenever `ATLAS_PYTHON_ENABLED=true`: registration is gated on this env var alone, so a vercel-sandbox or nsjail backend does not substitute, and neither does the workspace setting of the same name. The pair is a boot contract rather than a preference.",
+  },
   ATLAS_SMTP_URL: {
     category: "Platform email (DPA)",
     purpose:

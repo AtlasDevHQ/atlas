@@ -511,10 +511,18 @@ describe("buildHeadlessRegistry (#4936)", () => {
 
   it("falls back to nonDashboardRegistry — NOT defaultRegistry — when buildRegistry throws", async () => {
     // The security-relevant branch, and the one the pre-refactor inline version
-    // in agent-query.ts never had a test for. `ATLAS_PYTHON_ENABLED` without
-    // `ATLAS_SANDBOX_URL` is the fatal misconfiguration buildRegistry throws on
-    // (pinned above). Both omissions must hold on the error path too, or a
-    // misconfigured box quietly hands every headless surface the write verbs.
+    // in agent-query.ts never had a test for. Both omissions must hold on the
+    // error path too, or a misconfigured box quietly hands every headless
+    // surface the write verbs.
+    //
+    // #4940 amended what this case MEANS without touching what it asserts. The
+    // direction (lesser-privileged, not default) is a property of the FALLBACK,
+    // so it must hold for every throw class `buildRegistry` can produce —
+    // including the ones a boot-time env check cannot predict, like a `./python`
+    // import that fails at build time. The trigger below is the fatal
+    // misconfiguration only because it is the one class reachable from env
+    // alone; it is no longer evidence that swallowing it is the end state (see
+    // the case immediately after).
     await withEnv(
       { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined },
       async () => {
@@ -526,6 +534,39 @@ describe("buildHeadlessRegistry (#4936)", () => {
         expect(names).not.toContain("createDashboard");
         expect(names).not.toContain("correct_fact");
         expect(names).toContain("executeSQL");
+      },
+    );
+  });
+
+  it("#4940 — the shared predicate is the join between this seam and the boot guard", async () => {
+    // What the issue was actually about. Before the boot guard, the env above
+    // was a state a deployment could sit in indefinitely: all five
+    // `buildRegistry` callers catch, so nothing failed boot and the operator's
+    // `ATLAS_PYTHON_ENABLED=true` was silently dropped while `/health` stayed
+    // green. `PythonSandboxGuardLive` now fails the boot Layer on exactly this
+    // predicate (`saas-guards.test.ts` owns the guard's own cases).
+    //
+    // Asserted through the SHARED predicate rather than by restating the rule:
+    // that is the join between the two seams, and a change to either that does
+    // not go through `python-sandbox-requirement.ts` breaks here.
+    const { isPythonSandboxMisconfigured } = await import(
+      "@atlas/api/lib/tools/python-sandbox-requirement"
+    );
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined },
+      async () => {
+        expect(isPythonSandboxMisconfigured(process.env)).toBe(true);
+        await expect(buildRegistry()).rejects.toThrow("ATLAS_SANDBOX_URL");
+      },
+    );
+    // The negative half: the shape a working deploy has must NOT be something
+    // the boot guard refuses, or enabling Python correctly would wedge boot.
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: "http://sandbox-sidecar:8080" },
+      async () => {
+        expect(isPythonSandboxMisconfigured(process.env)).toBe(false);
+        const { registry } = await buildRegistry();
+        expect(Object.keys(registry.getAll())).toContain("executePython");
       },
     );
   });

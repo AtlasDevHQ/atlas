@@ -1386,8 +1386,8 @@ async function applyVouch(
 
 /**
  * Tier-1 detection, off the stored payload: `reconcile.ts` writes
- * `provenance.source` structurally from the episode's connector class, so a
- * warehouse-derived fact carries `WAREHOUSE_SOURCE` there. Tier-1 proper is
+ * `provenance.source` structurally from the episode's stored source KIND, so
+ * a warehouse-derived fact carries `WAREHOUSE_SOURCE` there. Tier-1 proper is
  * never stored in `brain_facts` at all — this guards the DERIVED class the ADR
  * likewise exempts from correction.
  *

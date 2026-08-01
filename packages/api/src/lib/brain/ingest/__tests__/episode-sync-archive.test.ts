@@ -19,7 +19,7 @@
  * shouldn't.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 import { INSERT_EPISODES_SQL } from "@atlas/api/lib/brain/ingest/episodes";
@@ -203,12 +203,17 @@ describe("the brain source registry", () => {
 });
 
 describe("resolving connectors by class + vendor (#4963)", () => {
+  // `afterEach`, not a trailing statement per test: these mutate the registry
+  // module singleton, and a throwing assertion would skip an inline reset and
+  // cascade a `already registered` failure into the next test.
+  afterEach(_resetBrainSourceConnectors);
+
   /**
-   * Three connectors spanning both grains: a vendor-grained chat one, and two
+   * FOUR connectors spanning both grains: TWO vendor-grained chat ones and two
    * class-grained ones with no vendor at all. `catalog:chat-b` deliberately
-   * shares `slack`'s class AND vendor — nothing bounds a class+vendor pair to
-   * one catalog row, and the lookup must not quietly behave as if something
-   * did.
+   * shares `catalog:chat-a`'s class AND vendor — nothing bounds a class+vendor
+   * pair to one catalog row, and the lookup must not quietly behave as if
+   * something did. That pair is what the `toHaveLength(2)` test below rests on.
    */
   function seedRegistry(): void {
     _resetBrainSourceConnectors();
@@ -256,24 +261,27 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     _resetBrainSourceConnectors();
   });
 
-  it("treats `vendor: null` as a REAL query, not as an omitted field", () => {
-    // The trap this guard exists for. `null` asks for the class-grained
-    // sources — the ones that come from no vendor at all — and a truthiness or
-    // `!= null` test would collapse it into "do not constrain" and hand back
-    // the Slack connectors too. Distinct answers here are the whole proof.
+  it("an empty query does not constrain, and is the same as no argument", () => {
+    // The vendorless sources are reachable via the CLASS axis rather than a
+    // `vendor: null` state — see `BrainSourceConnectorQuery.vendor` for why
+    // that third state was refused (this repo has `exactOptionalPropertyTypes`
+    // off, so a caller's `{ vendor: maybeUndefined }` would silently widen a
+    // tri-state filter back to "match everything").
     seedRegistry();
-    expect(ids(findBrainSourceConnectors({ vendor: null }))).toEqual([
-      "catalog:human",
-      "catalog:wh",
-    ]);
     expect(ids(findBrainSourceConnectors({}))).toEqual([
       "catalog:chat-a",
       "catalog:chat-b",
       "catalog:human",
       "catalog:wh",
     ]);
-    // …and an omitted argument behaves as the omitted field, not as a filter.
     expect(ids(findBrainSourceConnectors())).toEqual(ids(findBrainSourceConnectors({})));
+    // And an EXPLICIT undefined behaves as absence, not as a filter — the
+    // shape a caller plucking an optional field actually produces.
+    expect(ids(findBrainSourceConnectors({ vendor: undefined, sourceClass: undefined }))).toEqual(
+      ids(findBrainSourceConnectors()),
+    );
+    // The vendorless set, asked the way the type permits.
+    expect(ids(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS }))).toEqual(["catalog:wh"]);
     _resetBrainSourceConnectors();
   });
 
@@ -284,8 +292,7 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     // either axis alone would route warehouse work to the Slack connector.
     seedRegistry();
     expect(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS, vendor: "slack" })).toEqual([]);
-    expect(findBrainSourceConnectors({ sourceClass: CHAT_CLASS, vendor: null })).toEqual([]);
-    expect(findBrainSourceConnectors({ vendor: "teams" })).toEqual([]);
+    expect(findBrainSourceConnectors({ sourceClass: "human", vendor: "slack" })).toEqual([]);
     _resetBrainSourceConnectors();
   });
 

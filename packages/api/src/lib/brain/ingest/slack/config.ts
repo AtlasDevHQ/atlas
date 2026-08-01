@@ -78,7 +78,7 @@ export const SLACK_HISTORY_CATALOG_ID = "catalog:slack-history";
  * chat class the stored value is the VENDOR, because the source-id contract
  * above is vendor-specific and two vendors sharing one stored value would share
  * one dedupe namespace. So `teams`/`discord` become their OWN members whenever
- * they arrive — not reuses of this one. (ADR-0036's M3 scopes CLASS expansion —
+ * they arrive, each declaring `class: "chat"` — not reuses of this one. (ADR-0036's M3 scopes CLASS expansion —
  * transcripts, email, docs — and commits to no second chat vendor, so this is a
  * shape rather than a scheduled change.)
  *

@@ -15,10 +15,11 @@
  * That mixed grain is a fact about STORAGE and it has not changed. What changed
  * (#4963) is that the grain is now DECLARED rather than described: every member
  * of the vocabulary is an entry in {@link EPISODE_SOURCE_SPECS} naming its
- * CLASS and its VENDOR (`null` for the classes that have none), and the stored
- * value, the source list, and the `EpisodeSource` union are all DERIVED from
- * that one map. So the two axes are separable in code — you can ask what class
- * a stored value belongs to — without collapsing them in the column.
+ * CLASS and its VENDOR (`null` for the classes that have none), and the source
+ * list and the `EpisodeSource` union are both DERIVED from that one map — whose
+ * KEYS are the stored values. So the two axes are separable in code — you can
+ * ask what class a stored value belongs to — without collapsing them in the
+ * column.
  *
  * A second chat vendor (Teams, Discord) is still a NEW MEMBER here, not a reuse
  * of `slack`; it just now has to name `class: "chat"` as it arrives. That is
@@ -60,12 +61,18 @@
  *
  * That rule used to read "it must BE `WAREHOUSE_SOURCE`" — the stored value
  * itself — because the predicate compared the stored value directly and there
- * was nowhere else to say it. It was a prose rule guarding an ADR invariant,
- * which is the weakest kind: a warehouse connector that stamped `"snowflake"`
- * broke tier-1 refusal and nothing went red. Now the predicate reads the CLASS,
- * so the rule is enforced by the map instead of by this paragraph: a member
- * that declares the warehouse class inherits the refusal whatever its stored
- * value is, and a member that declares some other class does not.
+ * was nowhere else to say it. Now the predicate reads the CLASS: a member that
+ * declares the warehouse class inherits the refusal whatever its stored value
+ * is, and a member that declares some other class does not.
+ *
+ * Be precise about what that bought, because it is less than it looks. This is
+ * STILL a prose rule — `{ class: "chat", vendor: "snowflake" }` compiles clean
+ * and escapes tier-1 refusal exactly as #4938's `"snowflake"` did. What changed
+ * is that the decision is now single-sited and readable: the producer and the
+ * predicate can no longer disagree about which value means warehouse, because
+ * there is one place that says so. Choosing the right class remains a judgement
+ * the compiler cannot make, and the pinned key-set in `__tests__/sources.test.ts`
+ * is what forces an author to confront it.
  *
  * Prefer `WAREHOUSE_SOURCE` itself regardless — a warehouse connector's vendor
  * identity belongs in the catalog id and in `provenance.producer`, and one
@@ -73,6 +80,32 @@
  * separate stored value is only warranted if that vendor's source-ids would
  * otherwise collide, which is the same test `slack` passes and the reason the
  * chat class is vendor-grained at all.
+ *
+ * ## ⚠️ The two axes OVERLAP, and the compiler will not catch it
+ *
+ * `EpisodeSource` is `slack | warehouse | human`; `EpisodeSourceClass` is
+ * `chat | warehouse | human`. Two of three members are spelled IDENTICALLY, so
+ * the unions are mutually assignable exactly where confusing them costs most —
+ * all of these compile clean:
+ *
+ *     const a: EpisodeSource = WAREHOUSE_CLASS;        // a class where a kind is wanted
+ *     const b: EpisodeSourceClass = WAREHOUSE_SOURCE;  // and the reverse
+ *     storedSource === WAREHOUSE_CLASS                 // the #4938 bug, respelled
+ *
+ * Only `CHAT_CLASS` errors against a stored kind, and that is a coincidence
+ * that expires the day a `chat` stored value exists. So do NOT read the split
+ * as compiler-enforced separation: it is a separation of MEANING, kept honest
+ * by routing every cross-axis question through one predicate.
+ *
+ * The rule: never `===` a stored source against a CLASS constant. Ask
+ * {@link isWarehouseDerivedSource}, or {@link episodeSourceClass} first.
+ *
+ * ## Why the wire schema does not mirror this enum
+ *
+ * `packages/schemas/src/brain.ts` deliberately keeps `source: z.string()`
+ * rather than a Zod enum over this vocabulary. That is not drift: a Zod enum
+ * would fail CLOSED on a bundle written by a newer region, which is precisely
+ * the case the region import below exists to let through.
  *
  * The one producer NOT gated is the region import (`admin-migrate.ts`'s `INSERT
  * INTO brain_episodes`), which restores a bundle's stored `source` verbatim so
@@ -84,7 +117,10 @@
  */
 
 /**
- * The closed set of connector CLASSES — ADR-0036 §T6's class-major axis.
+ * The closed set of source CLASSES — ADR-0036 §T6's class-major axis.
+ *
+ * Not "connector classes": `warehouse` and `human` come from no connector at
+ * all, and only `chat` names a connector class today.
  *
  * Only classes with a member in {@link EPISODE_SOURCE_SPECS} are listed. The
  * ADR's remaining classes (transcripts, email, docs/wiki/code/drive) are
@@ -101,19 +137,38 @@ export const EPISODE_SOURCE_CLASSES = ["chat", "warehouse", "human"] as const;
 
 export type EpisodeSourceClass = (typeof EPISODE_SOURCE_CLASSES)[number];
 
-/** What one member of the vocabulary declares about itself. */
-export interface EpisodeSourceSpec {
-  /** The ADR-0036 connector class this kind belongs to. */
-  readonly class: EpisodeSourceClass;
-  /**
-   * The vendor within that class, or `null` for a class that has none.
-   *
-   * Non-null only where the class is vendor-grained — i.e. where two vendors'
-   * source-ids would otherwise share a dedupe namespace. `warehouse` and
-   * `human` come from no connector and so have no vendor to name.
-   */
-  readonly vendor: string | null;
-}
+/**
+ * What one member of the vocabulary declares about itself.
+ *
+ * A DISCRIMINATED UNION on `class`, not a flat `{ class; vendor: string | null }`,
+ * because vendor-ness is a property OF the class and not a free choice per
+ * member. A flat shape admitted both of these:
+ *
+ *     teams:     { class: "chat",      vendor: null }        // vendor-grained, unnamed
+ *     snowflake: { class: "warehouse", vendor: "snowflake" } // connectorless, yet vendored
+ *
+ * …and the first is the damaging one: `chat` is vendor-grained precisely
+ * because two chat vendors' source-ids would otherwise share a dedupe
+ * namespace, so a chat member that named no vendor would reintroduce the
+ * collision the grain exists to prevent, silently. Splitting the union makes
+ * both unrepresentable.
+ *
+ * Adding a class edits this union as well as {@link EPISODE_SOURCE_CLASSES} —
+ * which is the right cost: a class arrives with its first connector as a
+ * deliberate PR (ADR-0036 §T6), and deciding whether it is vendor-grained is
+ * exactly the decision that PR exists to make.
+ */
+export type EpisodeSourceSpec =
+  | {
+      /** Vendor-grained: two vendors' source-ids would collide in one namespace. */
+      readonly class: "chat";
+      readonly vendor: string;
+    }
+  | {
+      /** Class-grained: comes from no connector, so there is no vendor to name. */
+      readonly class: "warehouse" | "human";
+      readonly vendor: null;
+    };
 
 /**
  * Every source kind that may reach `brain_episodes.source`, and what each one
@@ -128,15 +183,38 @@ export interface EpisodeSourceSpec {
  * the annotation would be circular (the union is derived from these keys) and
  * would widen every `class`/`vendor` back to its declared type, costing callers
  * their literal narrowing. `satisfies` keeps the literals AND still fails
- * compilation on a class outside {@link EPISODE_SOURCE_CLASSES} — which is the
- * gate that makes the warehouse rule in the header structural rather than
- * advisory.
+ * compilation on a class outside {@link EPISODE_SOURCE_CLASSES}, or on a
+ * class/vendor pairing {@link EpisodeSourceSpec}'s union forbids.
+ *
+ * ⚠️ What that gate does NOT do — and the header's warehouse rule depends on
+ * knowing the difference. The compiler checks that the class you name EXISTS
+ * and that its vendor-ness matches. It cannot check that it is the RIGHT class,
+ * because nothing in the type system knows what "warehouse-shaped" means:
+ *
+ *     snowflake: { class: "chat", vendor: "snowflake" }   // compiles clean
+ *
+ * …and that member escapes tier-1 refusal exactly as #4938's `"snowflake"` did.
+ * So #4963 did not make the warehouse rule structural; it made the DECISION
+ * single-sited and readable, so the predicate can no longer disagree with the
+ * producer about which value means warehouse. Choosing correctly is still a
+ * judgement, and the pinned key-set in `__tests__/sources.test.ts` is what
+ * forces an author to confront it rather than drift past it.
+ *
+ * Frozen, not merely `as const`: `as const` is a TYPE-level assertion and
+ * leaves the object mutable at runtime. This map is the sole input to tier-1
+ * correction refusal, and the code it replaced compared against a string
+ * primitive — unforgeable by construction. A single property write here would
+ * silently disable that refusal for every warehouse-derived fact with no log,
+ * no throw, and no red test (every test reads the same mutated map, so they
+ * stay green AND agreed while both are wrong — the exact self-referential
+ * failure this vocabulary exists to defeat). Freezing restores the property the
+ * primitive comparison had for free.
  */
-export const EPISODE_SOURCE_SPECS = {
-  slack: { class: "chat", vendor: "slack" },
-  warehouse: { class: "warehouse", vendor: null },
-  human: { class: "human", vendor: null },
-} as const satisfies Record<string, EpisodeSourceSpec>;
+export const EPISODE_SOURCE_SPECS = Object.freeze({
+  slack: Object.freeze({ class: "chat", vendor: "slack" } as const),
+  warehouse: Object.freeze({ class: "warehouse", vendor: null } as const),
+  human: Object.freeze({ class: "human", vendor: null } as const),
+}) satisfies Record<string, EpisodeSourceSpec>;
 
 export type EpisodeSource = keyof typeof EPISODE_SOURCE_SPECS;
 
@@ -147,7 +225,26 @@ export type EpisodeSource = keyof typeof EPISODE_SOURCE_SPECS;
  * cannot exist without declaring its class — the property that lets
  * {@link isWarehouseDerivedSource} read the class and trust the answer.
  */
-export const EPISODE_SOURCES = Object.keys(EPISODE_SOURCE_SPECS) as readonly EpisodeSource[];
+export const EPISODE_SOURCES = Object.freeze(
+  // The cast is load-bearing and sound ONLY because the map's keys ARE the
+  // union: `Object.keys` is typed `string[]` for an arbitrary object, and
+  // `EpisodeSource` is defined as `keyof typeof EPISODE_SOURCE_SPECS` directly
+  // below. Insertion order is guaranteed because none of the keys is
+  // integer-like; `__tests__/sources.test.ts` pins the resulting list anyway.
+  Object.keys(EPISODE_SOURCE_SPECS) as EpisodeSource[],
+) as readonly EpisodeSource[];
+
+/**
+ * The vendors named by vendor-grained members — `"slack"` today.
+ *
+ * Derived rather than declared so a query cannot ask for a vendor that no
+ * member has: `findBrainSourceConnectors({ vendor: "slakc" })` returning an
+ * empty array is indistinguishable from "that connector is not installed",
+ * which for the M3 webhook fast-path is a dropped event rather than a crash.
+ */
+export type EpisodeSourceVendor = NonNullable<
+  (typeof EPISODE_SOURCE_SPECS)[EpisodeSource]["vendor"]
+>;
 
 /**
  * The chat class's first vendor — what `SLACK_HISTORY_SOURCE` resolves to.
@@ -201,17 +298,44 @@ export function isEpisodeSourceClass(value: unknown): value is EpisodeSourceClas
   );
 }
 
-/** The ADR-0036 connector class a stored source kind belongs to. */
+/**
+ * The spec for a source kind, or a loud error naming the offending value.
+ *
+ * The parameter is typed `EpisodeSource`, so why check at all? Because this
+ * module's whole premise is that the value arrives from somewhere no type
+ * system has seen — a stored `provenance.source`, a bundle being imported, a
+ * separately-compiled plugin — and `row.source as EpisodeSource` is the obvious
+ * next thing someone writes. A bare `EPISODE_SOURCE_SPECS[source]` fails in two
+ * unhelpful ways there: an unknown slug throws `undefined is not an object`,
+ * which names an internal expression rather than the bad value; and an
+ * inherited key (`"toString"`, `"valueOf"`) resolves up the PROTOTYPE CHAIN to
+ * a function, whose `.class` is `undefined` — so a class-keyed predicate
+ * silently answers "not warehouse" and tier-1 refusal fails OPEN with nothing
+ * logged. `Object.hasOwn` refuses both, and throwing names the value.
+ *
+ * Callers that expect untrusted input must still narrow with
+ * {@link isEpisodeSource} first — this is the backstop, not the gate.
+ */
+function specOf(source: EpisodeSource): (typeof EPISODE_SOURCE_SPECS)[EpisodeSource] {
+  if (!Object.hasOwn(EPISODE_SOURCE_SPECS, source)) {
+    throw new Error(
+      `Episode source "${String(source)}" is not in the vocabulary (${EPISODE_SOURCES.join(", ")}) — narrow it with isEpisodeSource() before asking for its class or vendor`,
+    );
+  }
+  return EPISODE_SOURCE_SPECS[source];
+}
+
+/** The ADR-0036 class a stored source kind belongs to. */
 export function episodeSourceClass(source: EpisodeSource): EpisodeSourceClass {
-  return EPISODE_SOURCE_SPECS[source].class;
+  return specOf(source).class;
 }
 
 /**
  * The vendor within that class, or `null` for a class that has none
  * (`warehouse`, `human` — neither comes from a connector).
  */
-export function episodeSourceVendor(source: EpisodeSource): string | null {
-  return EPISODE_SOURCE_SPECS[source].vendor;
+export function episodeSourceVendor(source: EpisodeSource): EpisodeSourceVendor | null {
+  return specOf(source).vendor;
 }
 
 /**

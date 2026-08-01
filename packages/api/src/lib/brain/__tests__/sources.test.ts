@@ -25,6 +25,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   CHAT_CLASS,
   EPISODE_SOURCE_CLASSES,
@@ -39,16 +41,19 @@ import {
   isEpisodeSource,
   isEpisodeSourceClass,
   isWarehouseDerivedSource,
+  type EpisodeSource,
 } from "@atlas/api/lib/brain/sources";
 import { CORRECTION_EPISODE_INSERT_SQL, isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 
 describe("the episode-source vocabulary", () => {
   test("is a CLOSED key set — widening it has to fail this test first", () => {
-    // The point of failing here is the header on `sources.ts`: if the class
-    // being added is warehouse-shaped it must BE `WAREHOUSE_SOURCE`, because
-    // vendor identity belongs in the catalog id and in `provenance.producer`.
-    // A test that merely checked membership would wave `"snowflake"` through.
+    // The point of failing here is the header on `sources.ts`: if the KIND
+    // being added is warehouse-shaped its spec must declare
+    // `class: WAREHOUSE_CLASS`, because that class is what tier-1 refusal
+    // reads. A test that merely checked membership would wave `"snowflake"`
+    // through. (Preferring the stored value `WAREHOUSE_SOURCE` too is a
+    // separate, weaker recommendation — see that header.)
     expect([...EPISODE_SOURCES]).toEqual(["slack", "warehouse", "human"]);
     // Each named export is pinned to its VALUE, not merely to membership. This
     // file exists to defeat self-referential agreement, so it must not commit
@@ -76,6 +81,11 @@ describe("the episode-source vocabulary", () => {
     for (const vendor of ["snowflake", "bigquery", "warehouse-prod", "warehouse:prod"]) {
       expect([vendor, isEpisodeSource(vendor)]).toEqual([vendor, false]);
     }
+    // The mirror of `isEpisodeSourceClass("slack") === false` below: `chat` is
+    // a real CLASS name and is NOT a stored source. Asserted directly rather
+    // than left to fall out of `isWarehouseDerivedSource("chat")`, where a
+    // `false` could come from either arm of that predicate.
+    expect(isEpisodeSource("chat")).toBe(false);
     for (const nonString of [null, undefined, 42, { source: "warehouse" }, ["warehouse"]]) {
       expect(isEpisodeSource(nonString)).toBe(false);
     }
@@ -117,17 +127,62 @@ describe("the class/vendor axes (#4963)", () => {
     });
   });
 
-  test("the source list is DERIVED from the spec map, not spelled a second time", () => {
-    // What makes `episodeSourceClass` total: a member cannot exist without a
-    // spec, so the accessor has no undefined arm to fall through. Were the
-    // list an independent tuple again, a member added to it and not to the map
-    // would read back `undefined` as its class and silently escape every
-    // class-keyed predicate — tier-1 refusal first among them.
-    expect([...EPISODE_SOURCES]).toEqual(Object.keys(EPISODE_SOURCE_SPECS));
+  test("every member resolves to a TOTAL spec — no undefined arm to fall through", () => {
+    // NOT `expect([...EPISODE_SOURCES]).toEqual(Object.keys(EPISODE_SOURCE_SPECS))`:
+    // `EPISODE_SOURCES` IS `Object.keys(EPISODE_SOURCE_SPECS)`, so that
+    // compares a value to its own derivation and cannot fail. (It also did not
+    // compile — `Object.keys` is `string[]` — which is how it was caught.)
+    // The falsifiable claim is TOTALITY: a member with no spec would read back
+    // `undefined` as its class and silently escape every class-keyed
+    // predicate, tier-1 refusal first among them.
+    for (const source of EPISODE_SOURCES) {
+      expect([source, EPISODE_SOURCE_SPECS[source]]).not.toEqual([source, undefined]);
+      expect([source, typeof episodeSourceClass(source)]).toEqual([source, "string"]);
+    }
     // …and every class a member names is really in the closed class set, so
-    // the two constants above cannot drift apart.
+    // the two constants cannot drift apart.
     for (const source of EPISODE_SOURCES) {
       expect([source, isEpisodeSourceClass(episodeSourceClass(source))]).toEqual([source, true]);
+    }
+    // The reverse direction — no ORPHAN class, one that no member produces.
+    // The pinned key-set above would catch it incidentally, but only because
+    // an author adding a class edits that line anyway; this states the rule.
+    for (const cls of EPISODE_SOURCE_CLASSES) {
+      expect([cls, EPISODE_SOURCES.some((s) => episodeSourceClass(s) === cls)]).toEqual([
+        cls,
+        true,
+      ]);
+    }
+  });
+
+  test("the vocabulary is FROZEN — the tier-1 discriminator cannot be rewritten at runtime", () => {
+    // `as const` is a type-level assertion and leaves the object mutable. This
+    // map is the sole input to tier-1 correction refusal, and the code it
+    // replaced compared against a string primitive — unforgeable by
+    // construction. One property write would disable the refusal for every
+    // warehouse-derived fact with nothing red: every test reads the SAME
+    // mutated map, so they stay green and agreed while both are wrong.
+    expect(Object.isFrozen(EPISODE_SOURCE_SPECS)).toBe(true);
+    for (const source of EPISODE_SOURCES) {
+      expect([source, Object.isFrozen(EPISODE_SOURCE_SPECS[source])]).toEqual([source, true]);
+    }
+    expect(Object.isFrozen(EPISODE_SOURCES)).toBe(true);
+  });
+
+  test("the accessors refuse an out-of-vocabulary value LOUDLY, naming it", () => {
+    // The parameter is typed `EpisodeSource`, so these need a cast — which is
+    // exactly what `row.source as EpisodeSource` off a stored payload is. Two
+    // distinct failures the raw index lookup had: an unknown slug threw
+    // `undefined is not an object` (naming an internal expression, not the bad
+    // value), and an INHERITED key resolved up the prototype chain to a
+    // function whose `.class` is `undefined` — so a class-keyed predicate
+    // answered "not warehouse" and tier-1 refusal failed OPEN, silently.
+    for (const bad of ["snowflake", "toString", "valueOf", "constructor", ""]) {
+      expect(() => episodeSourceClass(bad as EpisodeSource)).toThrow(/not in the vocabulary/);
+      expect(() => episodeSourceVendor(bad as EpisodeSource)).toThrow(/not in the vocabulary/);
+      // The message must name the offending value, or an operator reading a
+      // 500 cannot tell which source string caused it.
+      expect(() => episodeSourceClass(bad as EpisodeSource)).toThrow(new RegExp(`"${bad}"`));
     }
   });
 
@@ -138,6 +193,8 @@ describe("the class/vendor axes (#4963)", () => {
     // `slack` is the sharp one: it is a legal stored source AND a legal vendor,
     // and it is NOT a class. A predicate that conflated the two axes would let
     // a caller ask for "the slack class" and get a plausible-looking answer.
+    // (`warehouse` and `human` are spelled identically on BOTH axes, so they
+    // cannot discriminate here — which is why `slack` carries this test.)
     // `transcript`/`email`/`docs` are ADR-0036 classes that have not shipped —
     // naming one must stay false until its connector lands.
     for (const notClass of ["slack", "transcript", "email", "docs", "Chat", ""]) {
@@ -162,17 +219,22 @@ describe("the class/vendor axes (#4963)", () => {
 });
 
 describe("tier-1 refusal reads the same fact the producers write", () => {
-  test("isWarehouseDerived matches EXACTLY the warehouse class, driven by the constant", () => {
-    // Written as a sweep over the vocabulary rather than three literals, so it
-    // stays honest when a class is added: a new member defaults to "not
-    // warehouse", and a new member that IS warehouse-shaped fails here rather
-    // than silently escaping the refusal.
-    for (const source of EPISODE_SOURCES) {
-      expect([source, isWarehouseDerived({ source })]).toEqual([
-        source,
-        source === WAREHOUSE_SOURCE,
-      ]);
-    }
+  test("isWarehouseDerived is anchored to the warehouse VALUE, member by member", () => {
+    // The VALUE anchor — the one place tier-1 refusal is tied to a stored
+    // string rather than resolved through the class map, so a coordinated
+    // rename of both cannot pass unnoticed.
+    //
+    // Deliberately NOT the universal sweep this used to be
+    // (`isWarehouseDerived({source}) === (source === WAREHOUSE_SOURCE)` over
+    // every member). That form asserted the PRE-#4963 semantics as a law, so
+    // adding a second warehouse-class member — the exact future the split
+    // exists to enable — would fail here, and the natural repair would be to
+    // make this class-based, silently deleting the file's only value anchor.
+    // Stated member by member, it survives that addition instead of blocking
+    // it, and the CLASS sweep below is what covers the new member.
+    expect(isWarehouseDerived({ source: WAREHOUSE_SOURCE })).toBe(true);
+    expect(isWarehouseDerived({ source: SLACK_SOURCE })).toBe(false);
+    expect(isWarehouseDerived({ source: HUMAN_SOURCE })).toBe(false);
   });
 
   test("isWarehouseDerivedSource selects by CLASS — the property a future member inherits", () => {
@@ -213,17 +275,42 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     }
   });
 
-  test("correction.ts does not re-derive the answer — it asks the vocabulary", () => {
-    // The agreement that matters after the split: `isWarehouseDerived` unwraps
-    // the provenance envelope and delegates. If it ever re-implemented the
-    // comparison, the two would drift on exactly the future member the split
-    // exists to protect, and every other test here would stay green.
+  test("correction.ts agrees with the vocabulary on every value", () => {
+    // Behavioural half of the delegation claim. Necessary but NOT sufficient —
+    // see the source-text pin below for why this one cannot catch a
+    // re-derivation.
     for (const source of [...EPISODE_SOURCES, "snowflake", "chat", "warehouse:prod", "human"]) {
       expect([source, isWarehouseDerived({ source })]).toEqual([
         source,
         isWarehouseDerivedSource(source),
       ]);
     }
+  });
+
+  test("correction.ts DELEGATES rather than re-deriving — pinned in source text", () => {
+    // The one guard in this file that is not about values, because it CANNOT
+    // be. Reverting `isWarehouseDerived` to the pre-#4963 comparison —
+    //
+    //     isJsonObject(provenance) && provenance.source === WAREHOUSE_SOURCE
+    //
+    // — is behaviourally IDENTICAL today: `warehouse` is the warehouse class's
+    // only member, so every assertion above returns the same answer and the
+    // whole `correction.ts` half of #4963 reverts with the suite fully green.
+    // (Verified by mutation: it does.) The two only diverge on the future
+    // warehouse-class member the split exists to protect — which is exactly
+    // the "agreement is a coincidence" trap this file's header describes, one
+    // level up. A behavioural test cannot see it, so pin the code.
+    //
+    // Comments are stripped first, the same instrument and the same reason as
+    // `episode-sync-archive.test.ts`'s `codeOf`: the prose above `isWarehouseDerived`
+    // discusses `=== WAREHOUSE_SOURCE` at length, and a guard that tripped on
+    // the explanation would force the explanation to be deleted to stay green.
+    const code = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    expect(code).toContain("isWarehouseDerivedSource(provenance.source)");
+    expect(code).not.toMatch(/\.source\s*===\s*WAREHOUSE_SOURCE/);
+    expect(code).not.toMatch(/\.source\s*===\s*["']warehouse["']/);
   });
 
   test("refuses the vendor spellings the same connector might have used", () => {

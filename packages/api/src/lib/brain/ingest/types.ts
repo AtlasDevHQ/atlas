@@ -57,6 +57,7 @@ import {
   isEpisodeSource,
   type EpisodeSource,
   type EpisodeSourceClass,
+  type EpisodeSourceVendor,
 } from "@atlas/api/lib/brain/sources";
 
 /**
@@ -204,9 +205,13 @@ export interface BrainSourceConnector {
   /** The catalog row this connector serves — the cycle-walk dispatch key. */
   readonly catalogId: string;
   /**
-   * The connector class stamped into `brain_episodes.source` — ADR-0036 is
+   * The source KIND stamped into `brain_episodes.source` — ADR-0036 is
    * class-major, vendor-minor, and the closed vocabulary lives in
    * `lib/brain/sources.ts`.
+   *
+   * A KIND, not a class: Slack stamps `"slack"`, which is a VENDOR within the
+   * chat class. `warehouse` and `human` happen to be spelled the same on both
+   * axes, which is exactly why the distinction is worth naming here.
    *
    * A CLOSED type rather than a slug pattern, because downstream predicates
    * read this value as a discriminator: `isWarehouseDerived` refuses tier-1
@@ -237,10 +242,10 @@ const registry = new Map<string, BrainSourceConnector>();
 
 /**
  * Register a brain source for its catalog row. Called once per source at
- * wiring time. Duplicate catalog ids, malformed source slugs, and classes
+ * wiring time. Duplicate catalog ids, malformed source slugs, and kinds
  * outside the vocabulary all fail loudly — a silent overwrite would let one
  * source shadow another's installs, a malformed slug would land unqueryable
- * garbage in `brain_episodes.source`, and an unknown class would land a value
+ * garbage in `brain_episodes.source`, and an unknown kind would land a value
  * that every downstream discriminator silently declines to recognise.
  */
 export function registerBrainSourceConnector(connector: BrainSourceConnector): void {
@@ -253,12 +258,12 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   // `EpisodeSource`, which covers every in-repo connector at compile time —
   // but a plugin is compiled separately and arrives here as data, so the
   // check has to exist at runtime too. Failing loudly is the whole point: the
-  // alternative is a novel class flowing into `provenance.source`, where
-  // `isWarehouseDerived` would simply stop matching and tier-1 correction
-  // refusal would fail OPEN without a single red test.
+  // alternative is a novel kind flowing into `provenance.source`, where
+  // `isWarehouseDerived` would resolve it to no class at all and tier-1
+  // correction refusal would fail OPEN without a single red test.
   if (!isEpisodeSource(connector.source)) {
     throw new Error(
-      `Brain source class "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to lib/brain/sources.ts, and if it is warehouse-shaped it must BE "warehouse" or tier-1 correction refusal stops applying to it`,
+      `Brain source "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to EPISODE_SOURCE_SPECS in lib/brain/sources.ts, declaring its class. If it is warehouse-shaped it MUST declare class: "warehouse", or tier-1 correction refusal will not apply to any fact derived from it`,
     );
   }
   if (registry.has(connector.catalogId)) {
@@ -283,12 +288,23 @@ export interface BrainSourceConnectorQuery {
   /** ADR-0036's class-major axis — `chat`, `warehouse`, … */
   readonly sourceClass?: EpisodeSourceClass;
   /**
-   * The vendor-minor axis. Pass `null` to select only the classes that HAVE no
-   * vendor (`warehouse`, `human`); omit the field to not constrain on vendor at
-   * all. The two are different questions and `undefined` must not stand in for
-   * `null`, or "the vendorless sources" would silently mean "all sources".
+   * The vendor-minor axis, typed to the vendors that MEMBERS ACTUALLY NAME
+   * rather than to `string`. A typo would otherwise compile and return `[]`,
+   * which is indistinguishable from "that connector is not installed" — for the
+   * M3 webhook fast-path, a silently dropped event rather than a crash.
+   *
+   * There is deliberately no `null` here, and it is not an oversight. "The
+   * sources with no vendor" is not a third state to query: {@link
+   * EpisodeSourceSpec} makes vendor-ness a property OF the class, so that set
+   * is exactly `sourceClass: "warehouse" | "human"` and is already expressible
+   * on the other axis. Admitting `null` would buy nothing and cost real safety
+   * — this repo does not enable `exactOptionalPropertyTypes`, so a caller
+   * plucking a vendor off an optional field (`{ vendor: maybeVendor }`) type-checks,
+   * and an `undefined` reaching a tri-state filter silently widens it back to
+   * "match everything". That is the OVER-returning direction: the fast-path
+   * would fan an event to connectors that should never have seen it.
    */
-  readonly vendor?: string | null;
+  readonly vendor?: EpisodeSourceVendor;
 }
 
 /**
@@ -310,6 +326,13 @@ export interface BrainSourceConnectorQuery {
  * later Slack-canvases source) is a shape the ADR permits. A caller that needs
  * exactly one must say so itself rather than inherit a uniqueness this registry
  * never enforced.
+ *
+ * The two axes are AND-ed. An unsatisfiable pair (the slack vendor within the
+ * warehouse class) resolves to nothing, which is the only honest answer — a
+ * fallback to either axis alone would route warehouse work to a chat connector.
+ *
+ * No production caller today; #4967's webhook fast-path is the one this exists
+ * for, and #4965/#4966 are the connectors that make the class axis non-trivial.
  */
 export function findBrainSourceConnectors(
   query: BrainSourceConnectorQuery = {},
@@ -319,10 +342,6 @@ export function findBrainSourceConnectors(
     if (sourceClass !== undefined && episodeSourceClass(connector.source) !== sourceClass) {
       return false;
     }
-    // `!== undefined`, and NOT a truthiness or `!= null` check: `vendor: null`
-    // is a REAL query — "the sources that have no vendor" — and only an
-    // `undefined` test keeps it distinct from an omitted field. `null` clears
-    // this guard and is then compared as itself, which is exactly right.
     if (vendor !== undefined && episodeSourceVendor(connector.source) !== vendor) {
       return false;
     }

@@ -258,10 +258,16 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   // `EpisodeSource`, which covers every in-repo connector at compile time —
   // but a plugin is compiled separately and arrives here as data, so the
   // check has to exist at runtime too. Failing loudly is the whole point: the
-  // alternative is a novel kind flowing into `provenance.source`, where
-  // `isEpisodeSource` refuses it before any class is resolved, so
-  // `isWarehouseDerived` answers `false` and tier-1 correction refusal fails
-  // OPEN without a single red test.
+  // alternative is a novel kind flowing into `provenance.source`, which no
+  // region can resolve to a class. Since #4964 that fails CLOSED rather than
+  // open — every fact derived from it is correction-quarantined under
+  // UNRECOGNIZED_SOURCE_KIND — so the hazard is no longer a silent tier-1
+  // downgrade. It is a loud one that persists until the vocabulary admits the
+  // kind: until then the connector's own facts are uncorrectable everywhere,
+  // which is still a class the registry must never admit. (The neighbouring
+  // hazard `BrainSourceConnector.source`'s own docstring names above — a member
+  // declaring the WRONG class — is unaffected and still fails open; nothing in
+  // the type system knows what "warehouse-shaped" means.)
   if (!isEpisodeSource(connector.source)) {
     throw new Error(
       `Brain source "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to EPISODE_SOURCE_SPECS in lib/brain/sources.ts, declaring its class. If it is warehouse-shaped it MUST declare class: "warehouse", or tier-1 correction refusal will not apply to any fact derived from it`,

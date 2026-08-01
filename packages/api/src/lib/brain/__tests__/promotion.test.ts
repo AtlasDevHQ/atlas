@@ -43,6 +43,28 @@ describe("classifyFactForPromotion — promotable", () => {
     expect(classifyFactForPromotion(validRow())).toBeNull();
   });
 
+  it("does NOT read provenance.source — the #4964 quarantine stops at correction", () => {
+    // A deliberate asymmetry, characterized here so it cannot drift silently
+    // in either direction. `correction.ts` refuses every correction verb on a
+    // fact whose `provenance.source` this deployment cannot classify; this
+    // function is the review queue's gate and reads no source vocabulary at
+    // all, so such a draft stays PROMOTABLE while being un-rejectable.
+    //
+    // That is not the ADR-0036 §T4 invariant leaking. Tier-1 facts are computed
+    // live and have no table (`lib/brain/acl.ts`), so anything in `brain_facts`
+    // is tier-2/3 and publishing it is an ordinary review decision rather than
+    // an arbitration over the warehouse. Tightening this to match the
+    // correction gate would strand every imported draft in a queue no reviewer
+    // could clear — so if a later change makes these red, that is the decision
+    // being revisited, not a bug being fixed.
+    for (const source of ["snowflake", "warehouse:prod", "", null, 42]) {
+      expect([source, classifyFactForPromotion(validRow({ provenance: { source } }))]).toEqual([
+        source,
+        null,
+      ]);
+    }
+  });
+
   it.each([
     ["org", ["org"]],
     ["role", ["role:admin"]],

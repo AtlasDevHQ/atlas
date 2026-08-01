@@ -148,8 +148,10 @@ export interface IngestEpisodesParams {
    * Typed to the closed vocabulary (`lib/brain/sources.ts`) because THIS is the
    * write path: `registerBrainSourceConnector`'s check runs once at wiring
    * time, so a caller reaching `ingestEpisodes` directly — a backfill script, a
-   * future producer — would otherwise bypass it entirely and land a value that
-   * `isWarehouseDerived` silently declines to recognise.
+   * future producer — would otherwise bypass it entirely and land a value no
+   * region can resolve to a class: `isWarehouseDerived` declines to recognise
+   * it, and since #4964 every fact derived from it is correction-quarantined
+   * as a result (`correction.ts`'s `unrecognizedSourceKind`).
    */
   readonly source: EpisodeSource;
   readonly episodes: readonly BrainEpisodeRecord[];

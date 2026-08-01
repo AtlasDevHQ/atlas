@@ -1153,7 +1153,18 @@ describe("validateBundle — company brain (#4767)", () => {
     // were warehouse-shaped, hand tier-1 facts a correction path ADR-0036
     // forbids. Verbatim is the only answer that is neither.
     const bundle = brainBundle();
-    (bundle.brainEpisodes![0] as unknown as Record<string, unknown>).source = "snowflake";
+    const episode = bundle.brainEpisodes![0] as unknown as Record<string, unknown>;
+    episode.source = "snowflake";
+    // The FACT's own provenance too, and that is the load-bearing half: the
+    // #4964 quarantine reads `brain_facts.provenance.source`, NOT this episode
+    // row, and nothing cross-checks the two (`admin-migrate.ts` says so at the
+    // insert). If a future normalisation or key-allowlist stripped this value
+    // on the way in, the quarantine would become silently unreachable while
+    // every fake-store unit test stayed green.
+    (episode.facts as Array<Record<string, unknown>>)[0]!.provenance = {
+      source: "snowflake",
+      producer: "region-import",
+    };
     // Validation does not gate it — the carve-out starts here, not at the INSERT.
     expect(validateBundle(bundle).ok).toBe(true);
 
@@ -1163,10 +1174,27 @@ describe("validateBundle — company brain (#4767)", () => {
     const insert = calls.find((c) => c.sql.includes("INSERT INTO brain_episodes"));
     expect(insert).toBeDefined();
     expect(insert!.params).toContain("snowflake");
+
+    // The fact's provenance survives byte-for-byte, `source` included.
+    const factInsert = calls.find((c) => c.sql.includes("INSERT INTO brain_facts"));
+    expect(factInsert).toBeDefined();
+    expect(factInsert!.params).toContain(
+      JSON.stringify({ source: "snowflake", producer: "region-import" }),
+    );
     // The route logs this (`admin-migrate.ts`) precisely because the value then
-    // escapes `isWarehouseDerived`; the log is the operator's only signal, and
-    // `lib/brain/__tests__/sources.test.ts` pins that the predicate really does
-    // decline `"snowflake"`.
+    // escapes `isWarehouseDerived` — `lib/brain/__tests__/sources.test.ts` pins
+    // that the predicate really does decline `"snowflake"`.
+    //
+    // The log is no longer the only signal (#4964): because nothing here can
+    // tell whether the kind is warehouse-shaped, `correction.ts` refuses to
+    // CORRECT any fact carrying it, under `UNRECOGNIZED_SOURCE_KIND`. That
+    // refusal is what makes accepting the value verbatim safe rather than
+    // merely documented, and it is pinned in `lib/brain/__tests__/correction.test.ts`.
+    // This assertion — that the import still ACCEPTS it — is the other half of
+    // that bargain and must not be relaxed into a rejection: the rule
+    // `acl.ts`'s header states for GRANTS — never stricter at import than the
+    // database is at rest — holds here for the same reason, and this column
+    // carries no CHECK at all, so the bar is lower still.
   });
 
   it("REFUSES a pre-widening grant of the wrong shape", () => {

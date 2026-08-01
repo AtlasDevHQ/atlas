@@ -283,7 +283,7 @@ const retractRoute = createRoute({
     },
     409: {
       description:
-        "The fact cannot be retracted — it is warehouse-derived (tier-1), which has no correction path; fix the data or the semantic layer instead",
+        "The fact cannot be retracted — either it is warehouse-derived (tier-1), which has no correction path, so fix the data or the semantic layer instead; or its source kind is one this deployment does not recognise, so its tier cannot be determined and corrections are refused until the deployment knows the kind. The message says which",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -299,7 +299,8 @@ const correctRoute = createRoute({
     "`retract` stamps `invalidated_at` (the only tombstone path and the GDPR-erasure verb) and flags `derives-from` dependents for re-review — never a cascade. " +
     "`supersede` publishes the human's replacement claim (same subject and predicate, the corrected `replacement.object`) through the ordinary reconcile seam and stamps the target's `valid_to` plus the `supersedes` edge via the publish gate's own machinery (#4912). " +
     "`re-authority` and `pin` attach the correction episode as fresh human evidence, resetting the staleness clock and recording who vouched. " +
-    "Tier-1 warehouse-derived facts are refused for every verb: fix the data or the semantic layer, not the brain.",
+    "Tier-1 warehouse-derived facts are refused for every verb: fix the data or the semantic layer, not the brain. " +
+    "A fact whose source kind this deployment does not recognise — imported verbatim from a region running a newer vocabulary, or left behind by a rollback — is likewise refused for every verb, because its tier cannot be determined here.",
   request: {
     params: z.object({
       id: z.string().openapi({ description: "Fact id" }),
@@ -322,7 +323,7 @@ const correctRoute = createRoute({
     },
     409: {
       description:
-        "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
+        "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a fact whose source kind this deployment does not recognise or whose recorded source is malformed (so its tier cannot be determined), a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -340,6 +341,17 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
     case CORRECTION_REFUSAL_REASONS.replacementMissing:
     case CORRECTION_REFUSAL_REASONS.replacementIdentical:
       return 400;
+    // 409 and not 501/503: the client-observable contract is this arm's — "the
+    // verb cannot apply to this target". For `unrecognizedSourceKind` it is not
+    // permanent; once this deployment runs a vocabulary that knows the kind the
+    // correct gate takes over (tier-1 refusal if the kind is warehouse-class,
+    // an ordinary correction otherwise). The retry condition is a DEPLOY rather
+    // than anything the client or the target can change, which is unusual
+    // though not unique here — `warehouseTarget` is not client-fixable either,
+    // and is permanent besides. `malformedSourceKind` is a stored-data defect:
+    // still a target-state 409, but no deploy resolves it (#4964).
+    case CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind:
+    case CORRECTION_REFUSAL_REASONS.malformedSourceKind:
     case CORRECTION_REFUSAL_REASONS.warehouseTarget:
     case CORRECTION_REFUSAL_REASONS.targetNotPublished:
     case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:
@@ -506,7 +518,9 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
         return c.json(correctionNotFoundBody(requestId), 404);
       }
       if (outcome.kind === "refused") {
-        // Reachable for a warehouse-derived target (409) and for an actor
+        // Reachable for a warehouse-derived target (409), for a target whose
+        // source kind this deployment cannot classify (409, #4964 — the one a
+        // reader would least expect on a retract route), and for an actor
         // without an org owner/admin role (403) — e.g. a bare platform_admin,
         // whose platform role resolves to NO org role in the reader context
         // and so does not carry the correction verb. That bar is #4915's, new

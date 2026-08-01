@@ -149,6 +149,8 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
 const REFUSAL_REASONS = {
   notAuthorized: "NOT_AUTHORIZED",
   warehouseTarget: "WAREHOUSE_TARGET",
+  unrecognizedSourceKind: "UNRECOGNIZED_SOURCE_KIND",
+  malformedSourceKind: "MALFORMED_SOURCE_KIND",
   targetNotPublished: "TARGET_NOT_PUBLISHED",
   validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
   targetNotCurrent: "TARGET_NOT_CURRENT",
@@ -189,6 +191,7 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
   REPLACEMENT_ROW_SQL: "SELECT",
   correctionTargetSql: () => "SELECT",
   isWarehouseDerived: () => false,
+  unrecognizedSourceKind: () => null,
   correctFact: async (request: Record<string, unknown>) => {
     correctCalls.push(request);
     return correctionOutcome;
@@ -1007,6 +1010,12 @@ describe("POST /{id}/correct", () => {
       replacementMissing: 400,
       replacementIdentical: 400,
       warehouseTarget: 409,
+      // #4964 — rationale lives at `refusalStatus` in `admin-brain-facts.ts`,
+      // so the argument has one home rather than two that can drift.
+      unrecognizedSourceKind: 409,
+      // Also 409 — a target-state refusal — but the one refusal in the table
+      // that no deploy and no client action resolves; it needs a data repair.
+      malformedSourceKind: 409,
       targetNotPublished: 409,
       validityAlreadyClosed: 409,
       targetNotCurrent: 409,

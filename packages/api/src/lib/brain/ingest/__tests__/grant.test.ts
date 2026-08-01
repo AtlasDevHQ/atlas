@@ -390,13 +390,19 @@ describe("deriveEmailRecipientGrant (#4966)", () => {
     // function, indistinguishable inputs.
     // Both copies are read from the SAME mailbox, deliberately: the mailbox is
     // part of the token by design, so a cross-mailbox comparison would differ for
-    // a reason that has nothing to do with BCC. What varies here is only whether
-    // the blind-copied recipient was visible to the reader.
+    // a reason that has nothing to do with BCC.
+    //
+    // ⚠️ The two inputs must DIFFER in something that should not matter, or the
+    // assertion is `f(x) === f(x)` and holds for any pure function. The round-1
+    // repair of this test made exactly that mistake — replacing a vacuous
+    // ordering assertion with a vacuous equality one — and round 2 caught it. So
+    // the copies differ in header ORDER and in address CASE, both of which a
+    // mail system varies freely between copies and neither of which may change
+    // the audience.
     const senderCopy = deriveEmailRecipientGrant(participation({ participants: PARTICIPANTS }));
-    // The recipient's copy: identical To/Cc, and the BCC'd person simply absent.
-    // If BCC were honoured anywhere, THIS is the pair that would diverge — and
-    // the stored episode carries whichever copy was read first.
-    const recipientCopy = deriveEmailRecipientGrant(participation({ participants: PARTICIPANTS }));
+    const recipientCopy = deriveEmailRecipientGrant(
+      participation({ participants: [...PARTICIPANTS].reverse().map((a) => a.toUpperCase()) }),
+    );
     expect(senderCopy).toEqual(recipientCopy);
     // And the under-grant is real, not merely tolerated: a set that DOES include
     // the blind-copied recipient is a different audience entirely, so honouring

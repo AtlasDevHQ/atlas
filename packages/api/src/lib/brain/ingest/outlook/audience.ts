@@ -109,6 +109,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { AUDIENCE_PREFIX } from "@atlas/api/lib/brain/acl";
 import {
+  EMAIL_MESSAGE_AUDIENCE_NAMESPACE,
   emailParticipantsDigest,
   parseEmailMessageAudienceId,
 } from "@atlas/api/lib/brain/ingest/grant";
@@ -131,6 +132,29 @@ import {
 } from "./config";
 
 const log = createLogger("brain.ingest.outlook.audience");
+
+/**
+ * An audience id with its participant digest blanked, for logging.
+ *
+ * The digest is an unsalted hash of a sorted address set, so it is an
+ * offline-CONFIRMABLE fingerprint: for a two-party mail inside a known
+ * directory, "did these two correspond on this message" is a few thousand
+ * hashes. Weaker than disclosing an address, and still a disclosure — and it
+ * would land in the log sink, which is exactly where this module goes out of its
+ * way to keep addresses OUT of ({@link EmailParticipant} synthesises positional
+ * labels for that reason, and would be pointless if the digest went instead).
+ *
+ * The mailbox and message id are KEPT, because they are what makes a log line
+ * joinable to `resolvePrincipals`'s unresolved sample. Redacting rather than
+ * salting is deliberate: a rotating salt would change every audience id, and an
+ * audience whose token no longer matches its own members fails re-verification
+ * forever — the exact permanent-failure class this file's #4971 note is about.
+ */
+export function redactAudienceDigest(audienceId: string): string {
+  const parts = parseEmailMessageAudienceId(audienceId);
+  if (parts === null) return audienceId;
+  return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${parts.source}:${parts.mailboxId}:[digest]:${parts.messageId}`;
+}
 
 /**
  * Message audiences re-verified per workspace per cycle.
@@ -518,19 +542,19 @@ async function reverifyWorkspace(
       continue;
     }
     try {
-      const found = await fetchMessage(token, parts.mailboxId, parts.messageId);
-      if (!found.ok) {
+      const lookup = await fetchMessage(token, parts.mailboxId, parts.messageId);
+      if (!lookup.ok) {
         // Complete-or-abort. Aborting touches nothing, so the previous
         // membership stands and the next cycle retries — the only direction
         // that neither grants nor revokes on a fault.
         log.warn(
-          { workspaceId, mailboxId: parts.mailboxId, error: found.error },
+          { workspaceId, audienceId: redactAudienceDigest(audienceId), error: lookup.error },
           "brain audience: Outlook message read failed — membership unchanged for this message",
         );
         total = { ...total, failed: total.failed + 1 };
         continue;
       }
-      if (found.message === null) {
+      if (lookup.messages.length === 0) {
         // Graph answered cleanly and the mailbox does not contain the message —
         // it was deleted, or moved to a mailbox this app can no longer read.
         // That is an UNREADABLE header set, NOT a message with no recipients:
@@ -540,27 +564,39 @@ async function reverifyWorkspace(
         // would revoke everyone, and from `/admin` that is indistinguishable
         // from correct fail-closed behaviour.
         log.warn(
-          { workspaceId, mailboxId: parts.mailboxId },
+          { workspaceId, audienceId: redactAudienceDigest(audienceId) },
           "brain audience: Outlook no longer returns this message — treating it as unreadable rather than as an empty audience. Membership unchanged; the message may have been deleted or the mailbox's access revoked",
         );
         total = { ...total, failed: total.failed + 1 };
         continue;
       }
-      if (!found.message.headersComplete) {
-        // The participant fields did not all come back. Same abort: a partial
-        // header set reaching the reconcile revokes whoever it dropped.
-        log.warn(
-          { workspaceId, mailboxId: parts.mailboxId },
-          "brain audience: Outlook returned a message with incomplete participant headers — membership unchanged",
-        );
-        total = { ...total, failed: total.failed + 1 };
-        continue;
-      }
-      const participants = messageParticipants(found.message);
-      if (
-        participants.length > 0 &&
-        emailParticipantsDigest(participants.map((p) => p.address)) !== parts.participantsDigest
-      ) {
+      // ⭐ PICK BY DIGEST, do not refuse ambiguity.
+      //
+      // A mailbox holding several messages with one Message-ID is ORDINARY, not
+      // hostile: `/users/{id}/messages` spans every folder, so a self-CC leaves
+      // one copy in Sent Items and one in the Inbox. An earlier cut refused any
+      // multi-match outright and thereby turned a routine habit into an audience
+      // that fails EVERY cycle — which #4971's starvation then spreads across the
+      // whole workspace. That traded an integrity hole for an availability hole,
+      // which is not a fix.
+      //
+      // The audience id NAMES the participant set it was minted from, so the
+      // right question is not "how many matched" but "which of them is THIS
+      // audience's message". Benign duplicates answer identically (same
+      // From/To/Cc, so the same digest); a forged copy is simply not selected,
+      // so it can neither rewrite membership nor deny service to the real one.
+      //
+      // A candidate must also have COMPLETE headers, folded into the same
+      // filter: a partial header set cannot produce a matching digest anyway,
+      // and treating it as a non-match rather than as its own abort keeps the
+      // benign-duplicate case working when one copy is unreadable.
+      const candidates = lookup.messages.filter(
+        (candidate) =>
+          candidate.headersComplete &&
+          emailParticipantsDigest(messageParticipants(candidate).map((p) => p.address)) ===
+            parts.participantsDigest,
+      );
+      if (candidates.length === 0) {
         // ⭐ The token says which participant set this audience was minted from,
         // and the message we just re-read describes a different one. For an
         // email that is not a legitimate transition — headers are immutable — so
@@ -574,12 +610,17 @@ async function reverifyWorkspace(
         // the exact line between "membership repaired" and "membership
         // rewritten by whoever chose the Message-ID".
         log.error(
-          { workspaceId, mailboxId: parts.mailboxId },
-          "brain audience: the re-read message's participants do not match the set this audience was minted from — refusing to reconcile. A Message-ID is chosen by the sending system, so a mismatch can mean a forged duplicate; membership is unchanged",
+          {
+            workspaceId,
+            audienceId: redactAudienceDigest(audienceId),
+            matches: lookup.messages.length,
+          },
+          "brain audience: no message in this mailbox matches the participant set this audience was minted from — refusing to reconcile. A Message-ID is chosen by the sending system, so a mismatch can mean a forged duplicate; membership is unchanged",
         );
         total = { ...total, failed: total.failed + 1 };
         continue;
       }
+      const participants = messageParticipants(candidates[0]);
       if (participants.length === 0) {
         // Headers complete and yet nobody in them. Not a legitimate transition
         // for an audience that exists — it was minted from at least one
@@ -594,9 +635,14 @@ async function reverifyWorkspace(
         // one. An email's headers are IMMUTABLE, so no zero-participant read is
         // ever legal for an audience that was minted from some — which is why
         // this scan selects `has_members` and never reads it.
+        // Unreachable while a digest match implies ≥1 participant: the empty set
+        // has its own fixed digest, which no minted audience can carry. Kept as a
+        // belt-and-braces refusal rather than deleted, because it is the one line
+        // between "membership repaired" and "everyone revoked", and its
+        // reachability argument lives in another function.
         log.error(
-          { workspaceId, mailboxId: parts.mailboxId },
-          "brain audience: Outlook returned a message with NO participants for an audience that was minted from some — treating it as unreadable. Membership unchanged",
+          { workspaceId, audienceId: redactAudienceDigest(audienceId) },
+          "brain audience: the matched message has NO participants for an audience that was minted from some — treating it as unreadable. Membership unchanged",
         );
         total = { ...total, failed: total.failed + 1 };
         continue;
@@ -613,7 +659,7 @@ async function reverifyWorkspace(
       log.warn(
         {
           workspaceId,
-          mailboxId: parts.mailboxId,
+          audienceId: redactAudienceDigest(audienceId),
           err: err instanceof Error ? err.message : String(err),
         },
         "brain audience: Outlook message audience re-verification failed — membership unchanged",

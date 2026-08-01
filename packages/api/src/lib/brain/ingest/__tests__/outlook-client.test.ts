@@ -50,7 +50,6 @@ function message(overrides: Partial<OutlookMessage> = {}): OutlookMessage {
 
 interface Harness {
   readonly reconciled: string[];
-  readonly episodesAtReconcile: number[];
 }
 
 /** Build a client over canned pages, recording every membership write. */
@@ -58,7 +57,7 @@ function client(
   pages: { messages: OutlookMessage[]; nextLink?: string | null; dropped?: number }[],
   options: Partial<OutlookMailClientOptions> & { readonly harness?: Harness } = {},
 ) {
-  const harness: Harness = options.harness ?? { reconciled: [], episodesAtReconcile: [] };
+  const harness: Harness = options.harness ?? { reconciled: [] };
   let pageIndex = 0;
   const readPage = async () => {
     const page = pages[Math.min(pageIndex++, pages.length - 1)];
@@ -147,31 +146,35 @@ describe("the happy path", () => {
 });
 
 describe("the block arm — RETRYABLE, freezes the resume point", () => {
-  it("⭐ blocks incomplete headers and does NOT advance the cursor past them", async () => {
-    // Deriving from a partial header set does not merely under-grant: the same
-    // set is what `reconcileAudienceMembership` deletes against, so it would
-    // REVOKE the people the missing field named.
+  it("⭐ REFUSES incomplete headers, ingests nothing — and still advances", async () => {
+    // Two claims, and round 2 corrected the second one.
     //
-    // MUTATION THIS CATCHES: returning `blocked: false`, which lets the resume
-    // point advance past the message so no later cycle ever looks at it again —
-    // a permanent silent skip on the SAFETY arm.
+    // Nothing is ingested: deriving from a partial header set does not merely
+    // under-grant, because the same set is what `reconcileAudienceMembership`
+    // DELETES against, so it would revoke the people the missing field named.
+    //
+    // But the walk must NOT wait. Graph does not transiently omit a `$select`ed
+    // field on a 200 — an unattributable sender or an unreadable recipient entry
+    // is a property of the STORED message — so this never clears. Routing it to
+    // the retry arm froze the mailbox at the preceding message forever, and
+    // every message after it was never ingested: #4965's size-guard outage in
+    // different clothes.
+    //
+    // MUTATION THIS CATCHES: `blocked: true` on the incomplete-headers branch.
     const { vendor, harness } = client([
       { messages: [message({ headersComplete: false, receivedDateTime: "2026-07-02T10:00:00Z" })] },
     ]);
     const changes = await vendor.fetchEpisodes(PARAMS);
     expect(changes.episodes).toHaveLength(0);
-    expect(changes.coverageIncomplete).toBe(true);
-    // No membership was written either — an audience Atlas could not establish
-    // must not get rows.
+    // No membership either — an audience Atlas could not establish gets no rows.
     expect(harness.reconciled).toHaveLength(0);
-    // The cursor did not move to the pass instant. It holds the pre-message
-    // watermark, so the next cycle re-reads this message.
-    const marks = parseOutlookCursor(changes.cursor ?? null);
-    expect(marks[MAILBOX_ID]).not.toBe(NOW.toISOString());
-    // …and the high-water mark is null, because coverage was incomplete.
-    expect(changes.highWaterMark).toBeNull();
-    // The operator is told, by message, what was refused.
+    // PERMANENT, so the mailbox is not stuck on it.
+    expect(changes.coverageIncomplete).toBeFalsy();
+    expect(parseOutlookCursor(changes.cursor ?? null)[MAILBOX_ID]).toBe(NOW.toISOString());
+    // The operator is told, by message, what was refused and that it will not
+    // come back.
     expect(changes.warnings?.join(" ")).toMatch(/NOT ingested/);
+    expect(changes.warnings?.join(" ")).toMatch(/not retried/);
   });
 
   it("⭐ blocks the episode when the membership WRITE fails", async () => {
@@ -200,6 +203,13 @@ describe("the block arm — RETRYABLE, freezes the resume point", () => {
     // …and the range stays uncovered, so the next cycle retries it.
     expect(changes.coverageIncomplete).toBe(true);
     expect(changes.highWaterMark).toBeNull();
+    // ⭐ THE CURSOR, which this test did not assert until round 2. It is the only
+    // observable that separates a block from a skip: `coverageIncomplete` is set
+    // by a SEPARATE write (`walkIncomplete`), so it survives a mutation that
+    // drops `mailboxIncomplete` in the per-message catch — and with that dropped,
+    // the resume point advances past a message whose audience was never written.
+    // A permanent silent skip on the safety arm, with the pass reporting green.
+    expect(parseOutlookCursor(changes.cursor ?? null)[MAILBOX_ID]).not.toBe(NOW.toISOString());
   });
 
 
@@ -557,8 +567,10 @@ describe("budgets and throttling", () => {
       },
       audienceDeps: {},
     });
-    // Nothing banked, so the throttle rethrows and the ENGINE owns the retry —
-    // which is correct, and is why the carry-forward has to survive a THROW too.
+    // Nothing banked, so the throttle rethrows and the ENGINE owns the retry.
+    // On a throw the carry-forward never runs at all and NO cursor is written —
+    // `connector-sync.ts` COALESCEs the previous one forward, so nothing is lost.
+    // That is why the throw is safe; it is not a case the carry-forward handles.
     await expect(vendor.fetchEpisodes({ ...PARAMS, cursor: stored })).rejects.toBeInstanceOf(
       ConnectorRateLimitError,
     );
@@ -660,8 +672,10 @@ describe("budgets and throttling", () => {
     expect(changes.episodes).toHaveLength(1);
     expect(changes.coverageIncomplete).toBe(true);
     expect(changes.warnings?.join(" ")).toMatch(/no longer recognises/);
-    // Nothing was pruned: one mailbox did not resolve, so this pass cannot prove
-    // any stored key left the config.
+    // The walked mailbox reached the end, so it resumes at the pass instant.
+    // (This says nothing about pruning — the pass ran with no stored cursor, so
+    // there was nothing to prune. The prune guard is covered by the cursor
+    // round-trip test above.)
     expect(parseOutlookCursor(changes.cursor ?? null)["mb-b"]).toBe(NOW.toISOString());
   });
 

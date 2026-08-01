@@ -198,14 +198,21 @@ export function parseOutlookCursor(raw: string | null): Record<string, string> {
 }
 
 /**
- * Serialise the cursor, keeping ONLY the mailboxes this pass was configured for.
+ * Serialise the cursor VERBATIM — this function keeps whatever it is handed.
  *
- * Pruning matters: a mailbox removed from the install config would otherwise
- * keep its watermark forever, and re-adding it months later would resume from a
- * stale mark and silently skip everything in between — the gap being invisible
- * because an append-only store cannot tell an absence from a not-yet-fetched.
- * Dropping the entry makes a re-add restart at the backfill floor, which
- * over-reads and never under-reads.
+ * Pruning lives at the CALL SITE and is conditional; see the carry-forward block
+ * at the end of `fetchEpisodes`. It is stated there rather than here because the
+ * condition ("only when every configured mailbox resolved") is about what the
+ * pass learned, which this function cannot see.
+ *
+ * ⚠️ This docstring previously claimed the pruning AND justified it by saying a
+ * stale mark would "silently skip everything in between". That justification was
+ * wrong on the merits and is corrected rather than moved: resuming from an OLDER
+ * mark over-reads, and cannot skip. If the mark is below the backfill floor, the
+ * `historyTruncated` branch warns and restarts at the floor. Carrying a dead
+ * entry costs one map key; DROPPING a live one is what costs history — which is
+ * the conclusion the carry-forward block reaches, and two contradictory accounts
+ * of the same risk is how the next fix goes the wrong way.
  */
 export function serialiseOutlookCursor(marks: Readonly<Record<string, string>>): string {
   return JSON.stringify({ v: 1, mailboxes: marks } satisfies OutlookMailCursor);
@@ -394,19 +401,34 @@ export function createOutlookMailClient(
     }
 
     if (!message.headersComplete) {
-      // RETRYABLE: the participant fields did not all come back. Deriving from a
-      // partial header set does not merely under-grant — the same set is what
-      // `reconcileAudienceMembership` deletes against, so it would REVOKE the
-      // people the missing field named.
-      skips.blockedAudience++;
+      // PERMANENT, and it took two review rounds to classify correctly.
+      //
+      // Deriving from a partial header set does not merely under-grant — the set
+      // is what `reconcileAudienceMembership` deletes against, so it would REVOKE
+      // the people the missing field named. So nothing is ingested. The question
+      // the block-vs-skip split asks is the OTHER one: does the walk wait?
+      //
+      // It must not. Graph does not transiently omit a `$select`ed field on a
+      // 200 — an unattributable sender or an unreadable recipient entry is a
+      // property of the STORED message, so this condition never clears. Routing
+      // it to the retry arm froze the mailbox at the message before it: `since`
+      // is inclusive, so every later cycle re-read the same message, blocked
+      // again, and broke again, and every message received after it was never
+      // ingested. That is #4965's size-guard outage wearing different clothes,
+      // in the file whose header is about not doing exactly this.
+      //
+      // (A genuinely malformed OBJECT is a different path: `parseOutlookMessage`
+      // returns null, the page reports it as `dropped`, and THAT truncates the
+      // walk retryably.)
+      skips.unattributable++;
       warnings.push(
-        `Message ${messageId} was NOT ingested — Microsoft Graph did not return its full participant headers, so its audience could not be established. Nothing from it is stored; it is retried next cycle.`,
+        `Message ${messageId} was NOT ingested — Microsoft Graph did not return its full participant headers, so its audience could not be established. It is not retried; the headers of a stored message do not change.`,
       );
       log.warn(
         { workspaceId: options.workspaceId, mailboxId },
-        "Outlook message blocked — incomplete participant headers, so no access grant could be derived",
+        "Outlook message refused — incomplete participant headers, so no access grant could be derived. Permanent: the walk advances past it",
       );
-      return { episode: null, blocked: true };
+      return { episode: null, blocked: false };
     }
 
     const participants = messageParticipants(message);
@@ -800,6 +822,31 @@ export function createOutlookMailClient(
 
         if (mailboxIncomplete) {
           walkIncomplete = true;
+          // ⚠️ STALL DETECTOR. The block arm is retryable BY DESIGN, which means
+          // a block that never clears re-reads the same message every cycle and
+          // silently stops the mailbox dead — every later message never
+          // ingested, while the pass reports the same `blockedAudience > 0` a
+          // single transient failure would. Nothing distinguishes "blocked once"
+          // from "blocked on the same message for 400 consecutive cycles", and
+          // that is the shape an operator has no way to see.
+          //
+          // Every PERMANENT condition is now a skip, so a stall here means a
+          // genuinely retryable block is not clearing — a membership write that
+          // fails deterministically for one message, say. Loud, distinct, and
+          // naming the instant it is stuck at, because the repair is not the
+          // same as for a one-off block.
+          if (
+            skips.blockedAudience > 0 &&
+            (coveredThrough === null || coveredThrough === storedMark)
+          ) {
+            log.error(
+              { workspaceId: options.workspaceId, mailbox: configured, stalledAt: since },
+              "Outlook mailbox made NO forward progress and blocked at least one message — it is stuck at this instant and every later message in it is not being ingested. A block is retried by design, so a repeat of this line across cycles is a block that is not clearing, not a transient failure",
+            );
+            warnings.push(
+              `Mailbox ${configured} made no forward progress this cycle and is stuck at ${since}. Messages after that point are not being ingested.`,
+            );
+          }
           // Resume at the last message processed contiguously. Inclusive, so it
           // is re-read and deduped rather than skipped — bulk mail shares
           // timestamps to the second, and an exclusive resume would drop every

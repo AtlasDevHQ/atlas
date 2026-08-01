@@ -21,8 +21,6 @@
  */
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 let SETTING: string | undefined;
 // Mock-all-exports (CLAUDE.md): every VALUE export of `lib/settings.ts`. The
@@ -52,6 +50,51 @@ void mock.module("@atlas/api/lib/settings", () => ({
   SECURITY_SENSITIVE_KEYS: new Set<string>(),
 }));
 
+/**
+ * Every `log.*` call this module makes, captured.
+ *
+ * Mock-all-exports over `lib/logger.ts`'s value exports. Reaching into the
+ * logger rather than pinning source text, because the property under test is
+ * "the secret does not reach the sink" and a source-text pin cannot express
+ * that: the first version of this guard asserted the catch bound no `err` and
+ * the payload object was `{}` — and was evaded, in review, by renaming the
+ * parameter and interpolating it into the MESSAGE string instead. A capture sees
+ * every argument of every call, so neither dodge works.
+ */
+const LOG_CALLS: unknown[][] = [];
+void mock.module("@atlas/api/lib/logger", () => ({
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  getLogger: () => createCapturingLogger(),
+  createLogger: () => createCapturingLogger(),
+  hashShareToken: (token: string) => token,
+  setLogLevel: () => true,
+}));
+
+function createCapturingLogger(): Record<string, (...args: unknown[]) => void> {
+  const record =
+    (level: string) =>
+    (...args: unknown[]): void => {
+      LOG_CALLS.push([level, ...args]);
+    };
+  return {
+    trace: record("trace"),
+    debug: record("debug"),
+    info: record("info"),
+    warn: record("warn"),
+    error: record("error"),
+    fatal: record("fatal"),
+  };
+}
+
+// ⚠️ Both `mock.module` calls MUST precede the dynamic imports below.
+// `connector.ts` binds its logger at MODULE SCOPE (`const log = createLogger(...)`),
+// so a mock registered after the import captures nothing and the assertions
+// silently pass against an empty capture.
 const {
   DEFAULT_EMAIL_BACKFILL_DAYS,
   MAX_EMAIL_BACKFILL_DAYS,
@@ -76,6 +119,7 @@ const DAY_MS = 86_400_000;
 
 afterEach(() => {
   SETTING = undefined;
+  LOG_CALLS.length = 0;
   _resetBrainSourceConnectors();
   // ⚠️ BOTH registries. `registerOutlookMailConnector`'s idempotence gate reads
   // only the connector registry, so resetting that alone lets the gate pass on a
@@ -152,40 +196,39 @@ describe("parseOutlookAppCredential", () => {
     }
   });
 
-  it("⭐ never carries the parse error into the log — its MESSAGE echoes the secret", () => {
+  it("⭐ never lets the credential reach the log — the parse error ECHOES it", () => {
     // `JSON.parse("s3cr3t-client-secret")` throws `Unexpected identifier
     // "s3cr3t"`. `raw` here is the DECRYPTED credential blob, so logging
-    // `err.message` — the reflex, and what this code did until review caught it
-    // — ships a fragment of the client secret to the log sink for any blob that
-    // is not JSON: a hand-repaired row, a legacy plaintext secret, a partial
-    // decrypt. CLAUDE.md forbids exactly that.
+    // `err.message` — the reflex, and what this code did until round 1 — ships a
+    // fragment of the client secret to the log sink for any blob that is not
+    // JSON: a hand-repaired row, a legacy plaintext secret, a partial decrypt.
     //
-    // Pinned in SOURCE TEXT because the property is about what the call does NOT
-    // carry, and a behavioural test would have to reach into the logger to see
-    // an absence. Same instrument, and same reason, as `sources.test.ts`'s
-    // delegation pins. Comments are stripped first so the prose above the catch
-    // (which discusses `err.message` at length) cannot satisfy or trip it.
+    // Asserted by CAPTURING the logger rather than by reading the source. Round
+    // 2 evaded the source-text version by renaming the parameter and
+    // interpolating it into the message string, which satisfied every textual
+    // assertion while shipping the secret. A capture cannot be dodged that way:
+    // it inspects every argument of every call.
     //
-    // MUTATION THIS CATCHES: `log.warn({ err: ... })` or `log.warn({ raw })`.
-    const code = readFileSync(
-      join(import.meta.dir, "..", "outlook", "connector.ts"),
-      "utf8",
-    )
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/.*$/gm, "$1");
-    const body = /export function parseOutlookAppCredential\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(
-      code,
-    )?.[1];
-    // Not vacuous: a rename or reshape must fail HERE rather than silently
-    // running the assertions below against `undefined`.
-    expect(body).toBeDefined();
-    const shieldedCatch = /catch\s*(\([^)]*\))?\s*\{([\s\S]*?)\n  \}/.exec(body ?? "")?.[0];
-    expect(shieldedCatch).toBeDefined();
-    // The catch binds NOTHING — no `err` to be tempted into a payload.
-    expect(shieldedCatch).toMatch(/catch\s*\{/);
-    // …and its log call carries an empty context object, not the blob.
-    expect(shieldedCatch).toContain("log.warn({}");
-    expect(shieldedCatch).not.toContain("raw");
+    // MUTATION THIS CATCHES: `log.warn({ err: ... })`, `log.warn({ raw })`, and
+    // `log.warn({}, \`...: ${raw}\`)` — the last of which the first version missed.
+    const secret = "SUPER-SECRET-CLIENT-VALUE";
+    expect(parseOutlookAppCredential(secret)).toBeNull();
+    expect(LOG_CALLS.length).toBeGreaterThan(0);
+    const written = JSON.stringify(LOG_CALLS);
+    expect(written).not.toContain(secret);
+    // Not merely absent as a whole — no FRAGMENT either, which is what
+    // `JSON.parse`'s message actually leaks ("Unexpected identifier \"SUPER\"").
+    expect(written).not.toContain("SUPER");
+    // …and the operator still gets something actionable out of it.
+    expect(written).toContain("re-install");
+  });
+
+  it("does not log the blob on the SHAPE-failure path either", () => {
+    // A well-formed JSON object missing a field never reaches the catch, so the
+    // guard above says nothing about it. It is the same blob.
+    const secret = "ANOTHER-SECRET-VALUE";
+    expect(parseOutlookAppCredential(JSON.stringify({ clientId: "cid", other: secret }))).toBeNull();
+    expect(JSON.stringify(LOG_CALLS)).not.toContain(secret);
   });
 
   it("trims, so a pasted credential with stray whitespace still works", () => {

@@ -24,6 +24,7 @@ import {
   fetchMailboxMessagesPage,
   fetchMessageByInternetMessageId,
   isGraphUrl,
+  MESSAGE_LOOKUP_MATCH_LIMIT,
   parseOutlookMessage,
   toReadError,
 } from "@atlas/api/lib/brain/ingest/outlook/api";
@@ -160,6 +161,30 @@ describe("parseOutlookMessage — the mass-revocation guard", () => {
     // MUTATION THIS CATCHES: `contentType !== null && ... !== "text"`.
     const untyped = parseOutlookMessage({ ...complete, body: { content: "<p>hi</p>" } });
     expect([untyped?.bodyText, untyped?.bodyUnreadable]).toEqual([null, true]);
+  });
+
+  it("⭐ REFUSES a recipient entry that names no address — the shape Graph really emits", () => {
+    // `{ emailAddress: { name: "Undisclosed recipients" } }` is an object, so an
+    // earlier cut let it through with `address: null`. It then survived
+    // `toAddressList`, kept `headersComplete: true`, and was silently DROPPED by
+    // `messageParticipants` — a roster under-reported on the one path the vendor
+    // plausibly produces, while `toAddressList`'s docstring asserts there is no
+    // safe way to under-report one. The "not-an-object" case the other test pins
+    // is a shape Graph does not emit.
+    //
+    // MUTATION THIS CATCHES: dropping the `address === null` refusal in
+    // `toAddress`.
+    const undisclosed = parseOutlookMessage({
+      ...complete,
+      ccRecipients: [{ emailAddress: { name: "Undisclosed recipients" } }],
+    });
+    expect(undisclosed?.headersComplete).toBe(false);
+    // A `from` with a name and no address is the same situation.
+    const anonymousSender = parseOutlookMessage({
+      ...complete,
+      from: { emailAddress: { name: "Mailer Daemon" } },
+    });
+    expect(anonymousSender?.headersComplete).toBe(false);
   });
 
   it("returns null for a non-object entry rather than a half-built message", () => {
@@ -302,8 +327,15 @@ describe("fetchMessageByInternetMessageId — the re-verifier's read", () => {
   it("queries the BRACKETED form first — Graph stores the raw header", async () => {
     const calls = stub([found]);
     const result = await fetchMessageByInternetMessageId("tok", "mb", "a@contoso.com");
-    expect(result.ok && result.message?.internetMessageId).toBe("<a@contoso.com>");
+    expect(result.ok && result.messages[0]?.internetMessageId).toBe("<a@contoso.com>");
     expect(calls[0].searchParams.get("$filter")).toBe("internetMessageId eq '<a@contoso.com>'");
+    // ⭐ The match limit is PINNED. Nothing else holds it, and dropping it to 1
+    // would make the duplicate-resolution logic in `audience.ts` dead code with
+    // a fully green suite — Graph would simply never return a second row, so the
+    // benign Sent-Items copy and the forged copy would both become invisible.
+    // The test that exercises that logic stubs its own multi-row response, so it
+    // proves the branch WORKS and says nothing about whether it is REACHABLE.
+    expect(calls[0].searchParams.get("$top")).toBe(String(MESSAGE_LOOKUP_MATCH_LIMIT));
   });
 
   it("falls back to the BARE form, which is not belt-and-braces", async () => {
@@ -317,7 +349,7 @@ describe("fetchMessageByInternetMessageId — the re-verifier's read", () => {
     // MUTATION THIS CATCHES: dropping the second loop iteration.
     const calls = stub([{ value: [] }, found]);
     const result = await fetchMessageByInternetMessageId("tok", "mb", "a@contoso.com");
-    expect(result.ok && result.message).not.toBeNull();
+    expect(result.ok && result.messages).toHaveLength(1);
     expect(calls).toHaveLength(2);
     expect(calls[1].searchParams.get("$filter")).toBe("internetMessageId eq 'a@contoso.com'");
   });
@@ -335,22 +367,33 @@ describe("fetchMessageByInternetMessageId — the re-verifier's read", () => {
     });
   });
 
-  it("⭐ ABORTS when one mailbox holds TWO messages with the same Message-ID", async () => {
-    // `$top: 2` exists to detect this. Graph's ordering for an unordered
-    // `$filter` is unspecified, so taking `rawValue[0]` would reconcile against
-    // an arbitrary one of the two and flap the audience between two participant
-    // sets on alternate cycles — revoking and re-granting with nothing in the
-    // logs to explain it.
+  it("⭐ RETURNS every match rather than refusing ambiguity", async () => {
+    // An earlier cut refused any multi-match as a forged header. It is that —
+    // and it is also ORDINARY MAIL: this is the mailbox-wide collection spanning
+    // every folder, so a self-CC leaves one copy in Sent Items and one in the
+    // Inbox with the same id. Refusing turned a routine habit into an audience
+    // failing every cycle forever, and #4971's starvation spreads one such
+    // failure across the whole workspace. The caller discriminates by digest
+    // instead — see `outlook-audience.test.ts`.
     //
-    // It is also the shape of a FORGED header: a Message-ID is chosen by the
-    // sending system, so anyone who has seen a thread's `References:` can mail
-    // the same mailbox claiming it.
-    //
-    // MUTATION THIS CATCHES: dropping the `rawValue.length > 1` guard.
+    // MUTATION THIS CATCHES: returning only `messages[0]`, or reinstating the
+    // `length > 1` refusal.
     stub([{ value: [found.value[0], { ...found.value[0], id: "OTHER" }] }]);
-    const ambiguous = await fetchMessageByInternetMessageId("tok", "mb", "a@contoso.com");
-    expect(ambiguous.ok).toBe(false);
-    expect(ambiguous.ok === false && ambiguous.error).toBe("transport");
+    const multi = await fetchMessageByInternetMessageId("tok", "mb", "a@contoso.com");
+    expect(multi.ok).toBe(true);
+    expect(multi.ok && multi.messages).toHaveLength(2);
+  });
+
+  it("refuses the WHOLE lookup when a row is unparseable, under its own code", async () => {
+    // A row it could not read is a match it can neither rule in nor out, so
+    // narrowing the set silently would hand the caller a digest comparison over
+    // an incomplete candidate list. Its own error code, not `transport`: an
+    // operator reading "transport" on a permanently-failing audience is told a
+    // network story about a data-shape event.
+    stub([{ value: [found.value[0], "not-an-object"] }]);
+    const bad = await fetchMessageByInternetMessageId("tok", "mb", "a@contoso.com");
+    expect(bad.ok).toBe(false);
+    expect(bad.ok === false && bad.error).toBe("unreadable_message");
   });
 
   it("reports a genuine miss as ok-with-null, distinct from a read failure", async () => {
@@ -359,7 +402,7 @@ describe("fetchMessageByInternetMessageId — the re-verifier's read", () => {
     // means the message is gone.
     stub([{ value: [] }]);
     const miss = await fetchMessageByInternetMessageId("tok", "mb", "gone@contoso.com");
-    expect(miss).toEqual({ ok: true, message: null });
+    expect(miss).toEqual({ ok: true, messages: [] });
 
     stub([{ error: {} }], { status: 429, headers: { "retry-after": "30" } });
     const failure = await fetchMessageByInternetMessageId("tok", "mb", "x@contoso.com");

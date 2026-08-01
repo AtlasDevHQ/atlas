@@ -13,6 +13,7 @@ import {
   OUTLOOK_MESSAGE_AUDIENCES_SQL,
   messageParticipants,
   reconcileEmailAudience,
+  redactAudienceDigest,
   reverifyOutlookMessageAudiences,
   type OutlookAudienceDeps,
 } from "@atlas/api/lib/brain/ingest/outlook/audience";
@@ -80,7 +81,7 @@ function deps(overrides: Partial<OutlookAudienceDeps> = {}) {
     query: async () => [],
     isEnabled: () => true,
     resolveToken: async () => "tok",
-    fetchMessage: async () => ({ ok: true, message: message() }),
+    fetchMessage: async () => ({ ok: true, messages: [message()] }),
     resolve: async (_workspaceId, principals) => ({
       resolved: new Map(principals.map((p) => [p.id, `user-${p.id}`])),
       unresolvedCount: 0,
@@ -131,10 +132,13 @@ describe("messageParticipants", () => {
     // `resolvePrincipals` logs a sample of unresolved principal ids and its
     // docstring commits to those never being emails. Slack and Zoom get that for
     // free from opaque vendor user ids; email has no non-address identifier, so
-    // one is synthesised. Positional rather than hashed because it stays
-    // actionable: the log line carries the audience id, which names the mailbox
-    // and the Message-ID, so an operator can open the message and see who `cc:0`
-    // is.
+    // one is synthesised.
+    //
+    // The property under test is the PRIVACY one, which holds unconditionally:
+    // no address reaches the log. (An earlier version of this comment also
+    // claimed the labels were actionable via a correlating log line — they are
+    // only partially, and `audience.ts`'s own header now says so. Do not restore
+    // that claim here.)
     const participants = messageParticipants(message());
     expect(participants.map((p) => p.id)).toEqual(["from", "to:0", "cc:0"]);
     for (const participant of participants) {
@@ -147,6 +151,34 @@ describe("messageParticipants", () => {
       message({ from: address(null), toRecipients: [address(""), address("  ")] }),
     );
     expect(participants.map((p) => p.address)).toEqual(["cc@contoso.com"]);
+  });
+});
+
+describe("redactAudienceDigest", () => {
+  it("⭐ blanks the participant digest, keeping the mailbox and message id", () => {
+    // The digest is an unsalted hash of a sorted address set, so it is an
+    // offline-CONFIRMABLE fingerprint: for a two-party mail inside a known
+    // directory, "did these two correspond on this message" is a few thousand
+    // hashes. This module synthesises positional participant labels precisely to
+    // keep addresses out of the log sink, and shipping the digest there instead
+    // would make that pointless.
+    //
+    // MUTATION THIS CATCHES: returning the audience id unchanged.
+    const redacted = redactAudienceDigest(AUDIENCE_ID);
+    expect(redacted).not.toContain(DIGEST);
+    expect(redacted).toBe(`email-message:outlook:${MAILBOX}:[digest]:${MESSAGE}`);
+    // The mailbox and message id SURVIVE — they are what makes a log line
+    // joinable to `resolvePrincipals`'s unresolved sample.
+    expect(redacted).toContain(MAILBOX);
+    expect(redacted).toContain(MESSAGE);
+  });
+
+  it("passes through anything that is not a parseable audience id", () => {
+    // A token this module did not mint is logged verbatim rather than mangled:
+    // the whole point of logging it is to identify the thing that went wrong.
+    for (const opaque of ["", "not-an-audience", "meeting:zoom:abc"]) {
+      expect([opaque, redactAudienceDigest(opaque)]).toEqual([opaque, opaque]);
+    }
   });
 });
 
@@ -252,7 +284,7 @@ describe("the re-verify scan", () => {
     // recipients and falling through to the reconcile.
     const { deps: d, reconciled } = deps({
       query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
-      fetchMessage: async () => ({ ok: true, message: null }),
+      fetchMessage: async () => ({ ok: true, messages: [] }),
     });
     const result = await reverifyOutlookMessageAudiences(d);
     expect(reconciled).toHaveLength(0);
@@ -268,7 +300,7 @@ describe("the re-verify scan", () => {
     ]) {
       const { deps: d, reconciled } = deps({
         query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
-        fetchMessage: async () => ({ ok: true, message: bad }),
+        fetchMessage: async () => ({ ok: true, messages: [bad] }),
       });
       const result = await reverifyOutlookMessageAudiences(d);
       expect(reconciled).toHaveLength(0);
@@ -290,16 +322,61 @@ describe("the re-verify scan", () => {
       query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
       fetchMessage: async () => ({
         ok: true,
-        message: message({
+        messages: [message({
           from: address("attacker@evil.test"),
           toRecipients: [address("victim@contoso.com")],
           ccRecipients: [],
-        }),
+        })],
       }),
     });
     const result = await reverifyOutlookMessageAudiences(d);
     expect(reconciled).toHaveLength(0);
     expect(result.failed).toBe(1);
+  });
+
+  it("⭐ RESOLVES a benign same-mailbox duplicate rather than refusing it", async () => {
+    // `/users/{id}/messages` is the MAILBOX-WIDE collection, spanning every
+    // folder — so a user who CCs themselves, or a shared mailbox that mails a
+    // distribution list it belongs to, has one copy in Sent Items and one in the
+    // Inbox with the SAME Message-ID. That is ordinary mail, not an attack.
+    //
+    // An earlier cut refused every multi-match outright, which turned that
+    // routine habit into an audience failing EVERY cycle — and #4971's
+    // starvation then spreads one such failure across the whole workspace. The
+    // discriminator is the digest: both copies carry identical From/To/Cc, so
+    // both match, and the reconcile proceeds.
+    //
+    // MUTATION THIS CATCHES: refusing when `lookup.messages.length > 1`.
+    const { deps: d, reconciled } = deps({
+      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      fetchMessage: async () => ({ ok: true, messages: [message(), message()] }),
+    });
+    const result = await reverifyOutlookMessageAudiences(d);
+    expect(reconciled).toHaveLength(1);
+    expect(result.reconciled).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  it("⭐ picks the MATCHING copy when a forged one sits beside the real message", async () => {
+    // The forgery and the benign duplicate arrive in the same shape, so the
+    // guard has to tell them apart rather than refuse both. The real copy is
+    // selected by digest; the forged one is simply not a candidate, so it can
+    // neither rewrite membership nor deny service to the real message.
+    const forged = message({
+      from: address("attacker@evil.test"),
+      toRecipients: [address("victim@contoso.com")],
+      ccRecipients: [],
+    });
+    const { deps: d, reconciled } = deps({
+      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      fetchMessage: async () => ({ ok: true, messages: [forged, message()] }),
+    });
+    const result = await reverifyOutlookMessageAudiences(d);
+    expect(result.reconciled).toBe(1);
+    // Reconciled against the REAL participant set — three principals, not the
+    // forged pair. Asserting the count is what distinguishes "picked one" from
+    // "picked the right one".
+    expect(reconciled[0].userIds).toHaveLength(3);
   });
 
   it("ABORTS on a vendor read failure, leaving the previous membership standing", async () => {

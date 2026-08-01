@@ -109,6 +109,16 @@ const REQUEST_TIMEOUT_MS = 30_000;
 export const MAX_PAGE_BYTES = 32 * 1024 * 1024;
 
 /**
+ * Rows a single Message-ID lookup will consider.
+ *
+ * Above one because same-mailbox duplicates are ORDINARY — `/users/{id}/messages`
+ * spans every folder, so a self-CC puts one copy in Sent Items and one in the
+ * Inbox with the same id. Bounded because the caller discriminates by digest and
+ * a mailbox holding many rows for one Message-ID is anomalous regardless.
+ */
+export const MESSAGE_LOOKUP_MATCH_LIMIT = 5;
+
+/**
  * The failure codes this module maps, beyond the open string set.
  *
  * Named because the client's error table branches on them and an admin-facing
@@ -125,6 +135,8 @@ export type OutlookReadErrorCode =
   | "mailbox_unavailable"
   | "not_found"
   | "too_large"
+  /** A message row Graph returned could not be parsed into a message at all. */
+  | "unreadable_message"
   | "transport";
 
 export interface OutlookReadError {
@@ -592,6 +604,17 @@ function toAddress(raw: unknown): OutlookAddress | null {
       ? (inner as Record<string, unknown>)
       : wrapper;
   const address = str(row.address);
+  // An entry that is an object but names no address — Graph's "Undisclosed
+  // recipients" shape — is REFUSED, not returned with a null address. Returned,
+  // it survives `toAddressList`, keeps `headersComplete: true`, and is then
+  // silently dropped by `messageParticipants`: a roster under-reported on the
+  // one path the vendor plausibly produces, which is exactly what
+  // `toAddressList`'s "no safe way to under-report a roster" is about.
+  //
+  // Safe to refuse only because `headersComplete: false` is a permanent SKIP
+  // rather than a retryable block (`client.ts`). Making this strict while that
+  // was still a block converted a data-quality case into a stalled mailbox.
+  if (address === null) return null;
   return {
     // Lower-cased at the boundary, once. The address is a JOIN KEY against
     // `user.email` in `resolvePrincipals`, and mail systems are case-insensitive
@@ -799,17 +822,34 @@ async function readMessagesPage(
  * to every other audience in the workspace. The Message-ID is immutable, so the
  * filter finds the message wherever it now lives.
  *
- * Returns `ok: true` with `message: null` ONLY when Graph answered cleanly and
- * the mailbox genuinely does not contain it. The caller must treat that as
- * UNREADABLE and abort, never as "this message has no recipients" — see
- * `outlook/audience.ts`, where reconciling an absent message would revoke its
- * whole audience.
+ * Returns EVERY match, not one, and that is the correction to a fix that was
+ * itself wrong. An earlier cut refused any lookup returning more than one row,
+ * reasoning that two messages sharing a Message-ID is the shape of a forged
+ * header. It is — but it is also the shape of ORDINARY MAIL: this is the
+ * MAILBOX-WIDE collection, spanning every folder, so a user who CCs themselves
+ * (or a shared mailbox that mails a distribution list it belongs to) has one
+ * copy in Sent Items and one in the Inbox, same id, same mailbox. Refusing that
+ * turned a routine habit into an audience that fails EVERY cycle forever — and
+ * `#4971`'s starvation then spreads that one failure across the whole workspace.
+ * Trading an integrity hole for an availability hole is not a fix.
+ *
+ * So ambiguity is resolved rather than refused, and the discriminator already
+ * exists: `outlook/audience.ts` keeps the matches whose participant digest is
+ * the one the audience was MINTED from. The benign duplicate collapses (both
+ * copies carry identical From/To/Cc, so identical digests); a forged copy is
+ * simply not among the matches, so it can neither rewrite membership nor deny
+ * service to the real message.
+ *
+ * An empty array means Graph answered cleanly and the mailbox does not contain
+ * the message. The caller must treat that as UNREADABLE and abort, never as
+ * "this message has no recipients" — reconciling an absent message would revoke
+ * its whole audience.
  */
 export async function fetchMessageByInternetMessageId(
   token: string,
   mailboxId: string,
   internetMessageId: string,
-): Promise<{ ok: true; message: OutlookMessage | null } | OutlookReadError> {
+): Promise<{ ok: true; messages: readonly OutlookMessage[] } | OutlookReadError> {
   // TWO spellings, tried in order, and the second is not belt-and-braces.
   //
   // Graph stores `internetMessageId` as the raw RFC 5322 header, which is
@@ -834,10 +874,10 @@ export async function fetchMessageByInternetMessageId(
       // produces a malformed filter — Graph answers 400, the audience fails
       // every cycle, and the cause is one character in a value nobody prints.
       $filter: `internetMessageId eq '${filterValue}'`,
-      // TWO, and the second one IS read — see the ambiguity check below. Asking
-      // for one would make a duplicate Message-ID invisible rather than
-      // detectable.
-      $top: "2",
+      // Enough to carry the benign same-mailbox duplicates (Sent Items + Inbox)
+      // plus a forged copy or two, without paging. The caller discriminates by
+      // digest, so extra rows are cheap and a missing row is not.
+      $top: String(MESSAGE_LOOKUP_MATCH_LIMIT),
     });
     const result = await graphGet(token, url);
     if (!result.ok) return result;
@@ -848,31 +888,24 @@ export async function fetchMessageByInternetMessageId(
       return { ok: false, error: "transport", retryAfterSeconds: null };
     }
     if (rawValue.length === 0) continue;
-    if (rawValue.length > 1) {
-      // Two messages in ONE mailbox claiming the same Message-ID. Graph's
-      // ordering for an unordered `$filter` is unspecified, so picking
-      // `rawValue[0]` would reconcile against an ARBITRARY one of the two and
-      // could flap the audience between two participant sets on alternate
-      // cycles — revoking and re-granting members with nothing in the logs to
-      // explain it.
-      //
-      // It is also the shape of a FORGED header: a Message-ID is chosen by the
-      // sending system, so anyone who has seen a thread's `References:` can mail
-      // the same mailbox claiming that id. Treating the ambiguity as unreadable
-      // is the complete-or-abort posture this module applies everywhere else —
-      // membership is left exactly as it was.
-      log.error(
-        { mailboxId, matches: rawValue.length },
-        "Microsoft Graph returned more than one message for this Message-ID — the audience cannot be attributed to one header set, so membership is left unchanged",
-      );
-      return { ok: false, error: "transport", retryAfterSeconds: null };
+    const messages: OutlookMessage[] = [];
+    for (const raw of rawValue) {
+      const message = parseOutlookMessage(raw);
+      if (message === null) {
+        // An unparseable row is refused rather than dropped: the caller picks a
+        // match by digest, and a row it could not read is a match it cannot
+        // rule in OR out. Its own code, not `transport` — an operator reading
+        // "transport" on a permanently-failing audience is told a network story
+        // about a data-shape event.
+        log.warn(
+          { mailboxId },
+          "Microsoft Graph message lookup returned an unreadable message object — refusing the whole lookup rather than silently narrowing the matches",
+        );
+        return { ok: false, error: "unreadable_message", retryAfterSeconds: null };
+      }
+      messages.push(message);
     }
-    const message = parseOutlookMessage(rawValue[0]);
-    if (message === null) {
-      log.warn({}, "Microsoft Graph message lookup returned an unreadable message object");
-      return { ok: false, error: "transport", retryAfterSeconds: null };
-    }
-    return { ok: true, message };
+    return { ok: true, messages };
   }
-  return { ok: true, message: null };
+  return { ok: true, messages: [] };
 }

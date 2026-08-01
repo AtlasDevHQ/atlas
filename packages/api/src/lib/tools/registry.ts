@@ -19,7 +19,13 @@ import {
   isSalesforceOAuthConfigured,
 } from "@atlas/api/lib/integrations/salesforce-tool";
 import { searchBrain, SEARCH_BRAIN_DESCRIPTION } from "./search-brain";
+import { correctFactTool, CORRECT_FACT_DESCRIPTION } from "./correct-fact";
 import { withToolSpans } from "./tool-spans";
+import {
+  isPythonSandboxMisconfigured,
+  isPythonToolRequested,
+  PYTHON_SANDBOX_MISCONFIGURED_MESSAGE,
+} from "./python-sandbox-requirement";
 
 export type { AtlasAction, DashboardUrlResolver };
 export { isAction, WORKSPACE_DASHBOARD_URL_RESOLVER };
@@ -290,6 +296,39 @@ function registerCoreTools(
     tool: searchBrain,
   });
 
+  // #4915 — the four correction verbs (ADR-0036 T4), core, under the ADR's
+  // own spelling (`correct_fact`). Workspace, identity, and the owner/admin
+  // authority gate all run at execute time inside the verb machinery — but
+  // unlike `searchBrain` it is NOT registered globally, because it WRITES:
+  // `nonDashboardRegistry` is the policy `POST /api/v1/query` reaches (via
+  // `buildHeadlessRegistry()`; this singleton is that path's fallback), and
+  // that operation is admitted to READ-SAFE Agent-Auth keys on a read-only-
+  // engine guarantee (#4707, pinned by `agent-auth-read-safe-engine.test.ts`'s
+  // tool-surface tripwire). A brain-mutating tool on that surface would break
+  // the admission however well execute-time gating held. The dashboard-URL
+  // resolver is the existing headless-vs-interactive signal (`null` = SDK /
+  // Slack / MCP / scheduler via `executeAgentQuery`; non-null = a workspace
+  // surface with a human in the loop), and today those classes coincide
+  // exactly with where a correction verb belongs — if they ever diverge,
+  // split the signal rather than re-globalizing this tool.
+  //
+  // #4936 — this gate only decides what each REGISTRY contains; the surface a
+  // given turn actually gets is decided by which registry its `runAgent` call
+  // site passes. That used to be a silent decision (`runAgent` defaulted to
+  // the write-carrying `defaultRegistry`, so an omitted `tools` re-opened this
+  // gate from the outside). The default now fails CLOSED to
+  // `nonDashboardRegistry`, and `agent-runagent-call-sites.test.ts` pins the
+  // registry each production call site must resolve to. This is the canonical
+  // account of the GATE; each call site narrates only its own surface-specific
+  // exposure rather than restating this.
+  if (dashboardUrlResolver) {
+    registry.register({
+      name: "correct_fact",
+      description: CORRECT_FACT_DESCRIPTION,
+      tool: correctFactTool,
+    });
+  }
+
   // First per-Workspace lazy-plugin tool (#2698). Registered globally
   // because the workspace + install check happens at execute time inside
   // the tool — keeping the tool discoverable across all Workspaces while
@@ -343,11 +382,12 @@ registerCoreTools(defaultRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER);
 defaultRegistry.freeze();
 
 // --- Non-dashboard registry (#4566) ---
-// Core tools MINUS createDashboard, for surfaces that own no dashboards route
+// Core tools MINUS createDashboard AND correct_fact (both gate on the same
+// `dashboardUrlResolver` signal), for surfaces that own no dashboards route
 // (SDK / Slack / MCP / scheduler via `executeAgentQuery`). Also the
-// guaranteed-safe fallback when `buildRegistry` throws — so the createDashboard
-// omission holds even on the error path instead of falling through to the
-// dashboards-owning `defaultRegistry`.
+// guaranteed-safe fallback when `buildRegistry` throws — so BOTH omissions hold
+// even on the error path instead of falling through to the dashboards-owning
+// `defaultRegistry`.
 const nonDashboardRegistry = new ToolRegistry();
 registerCoreTools(nonDashboardRegistry, null);
 nonDashboardRegistry.freeze();
@@ -409,9 +449,93 @@ export const TOOL_SHADOW_REMEDIATIONS: Readonly<Record<string, string>> = {
     "Unset SALESFORCE_CLIENT_ID/SALESFORCE_CLIENT_SECRET to use the static-url Salesforce tool, or remove the static salesforce:// datasource to use the OAuth per-workspace tool.",
 };
 
-interface BuildRegistryResult {
-  registry: ToolRegistry;
-  warnings: string[];
+/**
+ * What every registry builder resolves to: the registry, plus the warnings the
+ * MODEL is meant to relay. A warning here is user-facing copy, not an operator
+ * log line — it is threaded into `runAgent({ warnings })`, which renders it
+ * under `## Warnings` in the system prompt so the agent says "temporarily
+ * unavailable, retry" instead of "I can't do that" (#4941).
+ *
+ * `buildHeadlessRegistry` returns the same shape, so both builders share one
+ * type rather than growing a parallel headless-only one that can drift.
+ * Exported because it is the return type of two exported functions — a consumer
+ * that wants to name the result can otherwise only spell it as an
+ * `Awaited<ReturnType<…>>` incantation that breaks on any signature change.
+ *
+ * `warnings` is `readonly` for a reason that is not stylistic: `runAgent`
+ * treats its own `warnings` option as an in/out param and PUSHES into whatever
+ * array it is handed (`agent.ts` adds semantic-layer and focus-datasource
+ * warnings). A call site that wrote `warnings: registryWarnings` would hand it
+ * this array; if a builder ever memoized its result, those pushes would
+ * accumulate across turns and poison every later system prompt. `readonly`
+ * makes the spread-copy at each call site the only thing that compiles, which
+ * turns a comment into a compiler error.
+ */
+export interface BuildRegistryResult {
+  readonly registry: ToolRegistry;
+  readonly warnings: readonly string[];
+}
+
+/**
+ * The one rule every degraded-tools warning has to end with, and the reason
+ * these strings live here instead of at each surface.
+ *
+ * A registry that failed to build is still LESSER-PRIVILEGED, not stripped:
+ * `registerCoreTools` gives `nonDashboardRegistry` and `defaultRegistry` alike
+ * `sendEmail`, `createLinearIssue` and (when the OAuth env is wired)
+ * `querySalesforce`, whatever else went wrong. So copy naming a whole category
+ * — "action tools (JIRA, email) are unavailable" — hands the model a live
+ * `sendEmail` while instructing it to tell the user email is down: the exact
+ * wrong-explanation bug #4941 exists to fix, one capability over. Naming only
+ * what was actually lost is necessary but not sufficient, because the model
+ * generalizes; this says the quiet part outright.
+ */
+const NEVER_DISOWN_A_VISIBLE_TOOL =
+  "Every tool you can see in your tool list works — do NOT tell the user that one of them is " +
+  "unavailable. If the user asks for a capability you do not have, say it is temporarily " +
+  "unavailable and suggest they retry or contact their Atlas administrator.";
+
+/**
+ * The warning for "the operator action tools did not load", authored by
+ * {@link buildRegistry} and relayed by every surface that requested them.
+ *
+ * Names the two tools by their registry names rather than "JIRA and email":
+ * `sendEmailReport` is gone, the core `sendEmail` is not, and the model has to
+ * be able to tell them apart.
+ */
+export const ACTION_TOOLS_UNAVAILABLE_WARNING =
+  "The operator action tools (createJiraTicket, sendEmailReport) failed to load and are " +
+  "unavailable for this session. " +
+  NEVER_DISOWN_A_VISIBLE_TOOL;
+
+/**
+ * The warning for "the registry build failed outright and the surface fell back
+ * to a known-good set" — `nonDashboardRegistry` for the headless seam,
+ * `defaultRegistry` for the two web chat paths. One function for all three so
+ * three hand-maintained strings cannot drift into three policies, which is how
+ * the first draft of this fix re-created the bug it was fixing.
+ *
+ * Relative to a build that SUCCEEDED, a fallback loses only what the env asked
+ * for on top of the core set: the `tools/actions` operator pair under
+ * `ATLAS_ACTIONS_ENABLED`, and `executePython` under `ATLAS_PYTHON_ENABLED`.
+ * The copy is derived from exactly that, so a deployment that never enabled
+ * either is never told it lost them.
+ */
+export function registryBuildFailedWarning(): string {
+  const lost: string[] = [];
+  if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
+    lost.push("the operator action tools (createJiraTicket, sendEmailReport)");
+  }
+  if (isPythonToolRequested()) {
+    lost.push("Python execution (executePython)");
+  }
+  return (
+    "A server configuration problem stopped the tool registry from building, so this session fell " +
+    "back to a known-good tool set" +
+    (lost.length > 0 ? `; ${lost.join(" and ")} did not load.` : ".") +
+    " " +
+    NEVER_DISOWN_A_VISIBLE_TOOL
+  );
 }
 
 /**
@@ -421,7 +545,19 @@ interface BuildRegistryResult {
  * Action tools are included when `includeActions` is true.
  *
  * Returns both the registry and any warnings about tools that failed to load.
- * Fatal misconfigurations (e.g. Python enabled without sandbox URL) still throw.
+ * A degraded action-tool load is a warning; the two Python failure modes throw.
+ *
+ * #4940 — that throw is the BACKSTOP, not the contract. Every caller in the repo
+ * catches it (startup's credential check, both chat-route sites, the Effect
+ * tool-shadow check, `buildHeadlessRegistry`), which is correct at each seam —
+ * the fallbacks preserve the isolation invariant by not carrying `executePython`
+ * — but it used to mean nothing failed boot, so a misconfigured box ran
+ * indefinitely with the tool silently absent. What makes the misconfiguration
+ * genuinely fatal is `PythonSandboxGuardLive` (`lib/effect/saas-guards.ts`),
+ * which fails the boot Layer on the same predicate before `api/server.ts` starts
+ * listening. Both seams read it from `./python-sandbox-requirement` so they
+ * cannot disagree. That guard covers the api server process, not every entry
+ * point — `buildHeadlessRegistry` below enumerates what still reaches the throw.
  */
 export async function buildRegistry(options?: {
   includeActions?: boolean;
@@ -450,19 +586,15 @@ export async function buildRegistry(options?: {
       : options.dashboardUrlResolver;
   registerCoreTools(registry, dashboardUrlResolver);
 
-  if (process.env.ATLAS_PYTHON_ENABLED === "true") {
-    if (!process.env.ATLAS_SANDBOX_URL) {
+  if (isPythonToolRequested()) {
+    if (isPythonSandboxMisconfigured()) {
+      // Reachable when the boot guard was relaxed (`ATLAS_DEPLOY_ENV=development`)
+      // or never ran — the guard lives in the app Layer, which not every process
+      // builds. See the enumeration on `buildHeadlessRegistry` below.
       const { createLogger } = await import("@atlas/api/lib/logger");
       const pyLog = createLogger("registry");
-      pyLog.error(
-        "ATLAS_PYTHON_ENABLED=true but ATLAS_SANDBOX_URL is not set. " +
-          "Python execution requires a sandbox sidecar for isolation.",
-      );
-      throw new Error(
-        "ATLAS_PYTHON_ENABLED=true requires ATLAS_SANDBOX_URL to be set. " +
-          "The Python tool runs in the sandbox sidecar for security isolation. " +
-          "See deployment docs for sidecar setup.",
-      );
+      pyLog.error(PYTHON_SANDBOX_MISCONFIGURED_MESSAGE);
+      throw new Error(PYTHON_SANDBOX_MISCONFIGURED_MESSAGE);
     }
 
     try {
@@ -495,14 +627,80 @@ export async function buildRegistry(options?: {
         { err: err instanceof Error ? err : new Error(String(err)) },
         "Failed to load action tools — JIRA and email actions will be unavailable",
       );
-      warnings.push(
-        "Action tools (JIRA, email) failed to load and are unavailable for this session. Inform the user and suggest they check server logs or retry later.",
-      );
+      warnings.push(ACTION_TOOLS_UNAVAILABLE_WARNING);
     }
   }
 
   registry.freeze();
   return { registry, warnings };
+}
+
+/**
+ * The registry for a HEADLESS agent surface — one that owns no dashboards
+ * route and has no human in the loop (#4936).
+ *
+ * This is `executeAgentQuery`'s registry construction, lifted to a named seam
+ * so the surfaces that re-enter the SAME turn rebuild from the SAME POLICY
+ * (not necessarily the same SET — the env this seam and `buildRegistry` read
+ * are re-read: `ATLAS_ACTIONS_ENABLED`, `ATLAS_PYTHON_ENABLED`, and the
+ * Salesforce OAuth pair that gates `querySalesforce`). Chat
+ * resume (`lib/chat-plugin/resume-turn.ts`) was the case that forced it: the
+ * original Slack turn ran through `executeAgentQuery`, but the approval-resume
+ * of that turn called `runAgent` with no `tools` at all — so the tool surface
+ * silently widened across the resume boundary. Rebuilding it here keeps resume
+ * faithful (an approved action tool is still executable) without either caller
+ * re-deriving the policy.
+ *
+ * `dashboardUrlResolver: null` is the whole policy: it drops `createDashboard`
+ * (a `/dashboards/[id]` handoff is unreachable from Slack or a scheduled
+ * digest, #4566) and `correct_fact` (a brain-mutating write has no place on an
+ * autonomous surface with no confirmation UI, #4915). Action tools stay opt-in
+ * via `ATLAS_ACTIONS_ENABLED`.
+ *
+ * A build failure falls back to `nonDashboardRegistry`, NOT the dashboards-
+ * owning `defaultRegistry`, so both omissions hold on the error path too.
+ *
+ * Returns {@link BuildRegistryResult}, not a bare registry (#4941). The bare
+ * shape had nowhere for `warnings` to go, so a degraded action-tool load was
+ * silently dropped on every headless surface and the model reported the
+ * capability as ABSENT rather than temporarily unavailable — a wrong
+ * explanation, not a missing one. Both callers thread the warnings into
+ * `runAgent({ warnings })`, matching what `api/routes/chat.ts` already does for
+ * the web surface. The fallback path below authors its own warning for the same
+ * reason.
+ *
+ * This catch also covers `buildRegistry`'s DELIBERATE throws, and that is no
+ * longer a swallowed contract (#4940). The Python-without-sandbox
+ * misconfiguration fails the boot Layer in `PythonSandboxGuardLive`
+ * (`lib/effect/saas-guards.ts`), so in the API SERVER it never reaches this seam.
+ * Three classes still do reach it, and the degrade is deliberate for all three:
+ *
+ *   1. the dev-relaxed boot (`ATLAS_DEPLOY_ENV=development`);
+ *   2. throw classes a boot-time env check cannot predict — a `./python` import
+ *      that fails at build time, say;
+ *   3. processes that never build the app Layer at all, so no guard runs in
+ *      front of them. `buildAppLayer` has exactly one non-test caller
+ *      (`api/server.ts`); `packages/mcp`'s `atlas-mcp` binary calls only
+ *      `initializeConfig()` and reaches here via `executeAgentQuery`. That is
+ *      the honest limit of the guard's reach, and it is why this fallback stays.
+ *
+ * For all three, degrading to the lesser-privileged registry — with a warning the
+ * model can relay — is the right answer for a surface with no human in the loop.
+ */
+export async function buildHeadlessRegistry(): Promise<BuildRegistryResult> {
+  try {
+    return await buildRegistry({
+      includeActions: process.env.ATLAS_ACTIONS_ENABLED === "true",
+      dashboardUrlResolver: null,
+    });
+  } catch (err) {
+    const { createLogger } = await import("@atlas/api/lib/logger");
+    createLogger("registry").error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to build headless tool registry — falling back to the non-dashboard core registry",
+    );
+    return { registry: nonDashboardRegistry, warnings: [registryBuildFailedWarning()] };
+  }
 }
 
 export { defaultRegistry, nonDashboardRegistry };

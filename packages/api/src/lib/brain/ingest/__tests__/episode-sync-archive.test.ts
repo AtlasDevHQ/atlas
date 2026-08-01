@@ -30,6 +30,7 @@ import {
   registerBrainSourceConnector,
   type BrainSourceConnector,
 } from "@atlas/api/lib/brain/ingest/types";
+import { SLACK_SOURCE, WAREHOUSE_SOURCE, type EpisodeSource } from "@atlas/api/lib/brain/sources";
 
 const INGEST_DIR = join(import.meta.dir, "..");
 
@@ -127,10 +128,15 @@ describe("the episode path cannot reach the engine's archive/upsert half", () =>
 });
 
 describe("the brain source registry", () => {
+  // The fixture's SOURCE KIND is a real vocabulary member
+  // (`lib/brain/sources.ts`) while its CATALOG ID stays fixture-shaped — the
+  // two are independent, which is the point: one kind can back many catalog
+  // rows. A made-up kind here would no longer register (see the vocabulary
+  // test below).
   function connector(overrides: Partial<BrainSourceConnector> = {}): BrainSourceConnector {
     return {
       catalogId: "catalog:fixture",
-      source: "fixture",
+      source: SLACK_SOURCE,
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
       ...overrides,
     };
@@ -139,7 +145,7 @@ describe("the brain source registry", () => {
   it("registers, resolves, and lists a source", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector(connector());
-    expect(getBrainSourceConnector("catalog:fixture")?.source).toBe("fixture");
+    expect(getBrainSourceConnector("catalog:fixture")?.source).toBe(SLACK_SOURCE);
     expect(listBrainSourceCatalogIds()).toEqual(["catalog:fixture"]);
     _resetBrainSourceConnectors();
   });
@@ -151,12 +157,39 @@ describe("the brain source registry", () => {
     _resetBrainSourceConnectors();
   });
 
+  // `source` is typed `EpisodeSource`, so these values cannot be written
+  // without a cast — which is exactly the compile-time half of the gate. The
+  // casts below stand in for the producer the type CANNOT reach: a plugin,
+  // compiled separately, whose connector arrives here as data.
+  const asClass = (value: string) => value as EpisodeSource;
+
   it("refuses a malformed source slug — it is stored verbatim in the table", () => {
     _resetBrainSourceConnectors();
-    expect(() => registerBrainSourceConnector(connector({ source: "Slack History" }))).toThrow(
+    expect(() =>
+      registerBrainSourceConnector(connector({ source: asClass("Slack History") })),
+    ).toThrow(/invalid/);
+    expect(() => registerBrainSourceConnector(connector({ source: asClass("") }))).toThrow(
       /invalid/,
     );
-    expect(() => registerBrainSourceConnector(connector({ source: "" }))).toThrow(/invalid/);
+    _resetBrainSourceConnectors();
+  });
+
+  it("refuses a well-formed slug that is not in the episode-source vocabulary", () => {
+    // The regression this exists for: a future warehouse producer naming its
+    // kind after the VENDOR. `snowflake` is a perfectly legal slug, so
+    // the pattern check above waves it through — and `isWarehouseDerived`
+    // would then never match it, so tier-1 correction refusal would fail OPEN
+    // with every existing test still green. Registration is where that has to
+    // stop, because nothing downstream can tell a novel class from a typo.
+    _resetBrainSourceConnectors();
+    for (const vendor of ["snowflake", "bigquery", "warehouse-prod", "fixture"]) {
+      expect(() => registerBrainSourceConnector(connector({ source: asClass(vendor) }))).toThrow(
+        /not in the episode-source vocabulary/,
+      );
+    }
+    // …and a real member still registers, so the rule is a vocabulary check
+    // and not a blanket refusal.
+    expect(() => registerBrainSourceConnector(connector({ source: WAREHOUSE_SOURCE }))).not.toThrow();
     _resetBrainSourceConnectors();
   });
 });

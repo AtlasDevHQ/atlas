@@ -9,7 +9,7 @@ Atlas can execute Python code in a sandboxed environment for data analysis, stat
 
 <Callout title="Prerequisites">
 - Atlas server running (`bun run dev`)
-- A sandbox backend configured: `ATLAS_SANDBOX_URL` (sidecar), nsjail, or Vercel sandbox
+- `ATLAS_SANDBOX_URL` set (the sidecar) — Atlas registers the tool only against the sidecar, so this is required even if you also run nsjail or Vercel sandbox
 - Python will not work without an isolated sandbox — there is no `just-bash` fallback
 </Callout>
 
@@ -20,7 +20,11 @@ ATLAS_PYTHON_ENABLED=true
 ```
 
 <Callout type="error">
-Python execution requires a sandbox backend. Set `ATLAS_SANDBOX_URL` (sidecar) or use nsjail/Vercel sandbox. Unlike the explore tool, there is no `just-bash` fallback — Python will not work without a sandbox.
+`ATLAS_PYTHON_ENABLED=true` requires the `ATLAS_SANDBOX_URL` **environment variable**. Setting the flag without it **stops the server from booting**, with the missing variable named in the error — Atlas will not quietly start without a capability you asked for. The one exception is local development (`ATLAS_DEPLOY_ENV=development`), where the boot check relaxes to a warning and the tool is simply absent.
+
+Two things that do **not** satisfy this: a Vercel-sandbox or nsjail backend (the tool is registered against the sidecar specifically, even though the runtime could use those backends), and the workspace `ATLAS_SANDBOX_URL` setting stored in the database — only the env var counts at boot.
+
+Unlike the explore tool, there is no `just-bash` fallback — Python will never run unsandboxed.
 </Callout>
 
 ---
@@ -35,6 +39,8 @@ Python runs through the same sandbox infrastructure as the `explore` tool, with 
 | 2 | Vercel sandbox | Set `ATLAS_RUNTIME=vercel` (Python 3.13) |
 | 3 | nsjail (explicit) | Set `ATLAS_SANDBOX=nsjail` |
 | 4 | nsjail (auto-detect) | nsjail binary on `PATH` or `ATLAS_NSJAIL_PATH` |
+
+This is the order the **runtime** tries once `executePython` is registered. Registration itself is gated on `ATLAS_SANDBOX_URL` alone, so backends 2–4 serve calls but cannot enable the tool on their own — you still need the sidecar URL set for it to appear at all.
 
 Unlike the `explore` tool, there is no `just-bash` fallback for Python. If no isolated backend is available, Python execution is rejected with an error.
 
@@ -94,7 +100,7 @@ Python execution is isolated at multiple layers:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PYTHON_ENABLED` | — | Set to `true` to enable Python execution |
+| `ATLAS_PYTHON_ENABLED` | — | Set to `true` to enable Python execution. Atlas fails to boot if set without `ATLAS_SANDBOX_URL` |
 | `ATLAS_PYTHON_TIMEOUT` | `30000` | Per-execution timeout in milliseconds (default: 30 seconds) |
 
 The sandbox itself is configured via the standard sandbox variables. See [Environment Variables](/reference/environment-variables) and [Sandbox Architecture](/architecture/sandbox).

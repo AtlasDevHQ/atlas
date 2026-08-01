@@ -644,9 +644,20 @@ demo.openapi(demoChatRoute, async (c) => {
         // non-gateway deploy so runAgent resolves the platform default.
         // Passing `aiModel` makes the demo model authoritative, so
         // `token_usage.model`/`provider` reflect it.
-        // Demo uses default tools only — no actions, no plugin tools
+        // Demo uses the core tools only — no actions, no plugin tools.
+        // #4936 — named explicitly, and named `nonDashboardRegistry`: the
+        // zero-signup demo is anonymous and owns no `/dashboards/[id]` route,
+        // so `createDashboard` proposes a draft the visitor can't open and
+        // `correct_fact` advertises an admin write verb the demo actor can
+        // never satisfy (the demo's `createAtlasUser` call passes no
+        // `activeOrganizationId`, so the verb refuses with `no_workspace` —
+        // or `no_internal_db`, checked first, on a deploy without one). Both
+        // were reaching the demo
+        // purely because `runAgent` used to default to the workspace registry.
+        const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
         const agentResult = await runAgent({
           messages,
+          tools: nonDashboardRegistry,
           conversationId,
           maxSteps: getDemoMaxSteps(),
           ...demoRunAgentModelParams(),

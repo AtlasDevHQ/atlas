@@ -9,6 +9,7 @@ import {
   Trash2,
   AlertCircle,
   AlertTriangle,
+  History,
   Lock,
   type LucideIcon,
 } from "lucide-react";
@@ -126,6 +127,16 @@ interface PublishPreviewData {
    * has no degraded path to describe.
    */
   readonly brainFactsScopeUnavailable?: boolean;
+  /**
+   * Already-published facts this publish will SUPERSEDE (#4912): a promoted
+   * `single`-cardinality draft that collides with a live published fact stamps
+   * the old fact's `valid_to`, and as-of-now reads then hide it. A
+   * workspace-wide count, not a list — the per-pair disclosure lives on
+   * `/admin/brain-facts`. Optional and defaulted to 0 for a deploy-overlap
+   * window; an older API omitting it degrades to the previous silence rather
+   * than to a wrong count.
+   */
+  readonly brainFactsWillSupersede?: number;
 }
 
 /**
@@ -218,6 +229,10 @@ export function PublishModal({
   // not learn it from the response, and "Publish all (26)" that promotes 32 is
   // the same defect one layer up.
   const withheldFacts = data?.brainFactsWithheld ?? 0;
+  // Facts this publish will supersede (#4912). NOT folded into `total`: the
+  // superseded rows are not drafts being promoted, so counting them would put
+  // a bigger number on the button than the publish promotes.
+  const willSupersede = data?.brainFactsWillSupersede ?? 0;
   const total = data ? totalRows(data) : 0;
   const sections = data ? buildSections(data) : [];
 
@@ -255,7 +270,7 @@ export function PublishModal({
                 </Button>
               </div>
             </div>
-          ) : sections.length === 0 && withheldFacts === 0 ? (
+          ) : sections.length === 0 && withheldFacts === 0 && willSupersede === 0 ? (
             <div className="py-10 text-center text-sm text-muted-foreground">
               No pending changes to publish.
             </div>
@@ -273,6 +288,7 @@ export function PublishModal({
                   onRetry={() => void refetch()}
                 />
               )}
+              {willSupersede > 0 && <WillSupersedeNotice count={willSupersede} />}
               {sections.map((section) => (
                 <PreviewSection key={section.key} section={section} />
               ))}
@@ -403,6 +419,39 @@ function WithheldFactsNotice({
               because otherwise {one ? "it" : "they"} could never be published by anyone.
             </>
           )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * States, before the click, that this publish will SUPERSEDE published facts
+ * (#4912) — the confirm surface's half of "no silent supersession".
+ *
+ * Like {@link WithheldFactsNotice} it is a statement of scope, not a warning:
+ * the behaviour is correct and deliberate — a new value for a single-valued
+ * predicate replaces the old one, atomically with the promotion. A COUNT and
+ * never a list: the preview endpoint carries no reader-scoped supersession
+ * pairs — the per-pair "X replaces Y" disclosure lives on
+ * `/admin/brain-facts`, which the copy points at.
+ */
+function WillSupersedeNotice({ count }: { count: number }) {
+  const one = count === 1;
+  return (
+    <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-sm">
+      <History className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <div className="min-w-0 space-y-1">
+        <p className="font-medium">
+          {one
+            ? "Publishing will supersede 1 published fact"
+            : `Publishing will supersede ${count.toLocaleString()} published facts`}
+        </p>
+        <p className="text-muted-foreground">
+          A draft holds a new value for a single-valued predicate, so the currently published{" "}
+          {one ? "fact" : "facts"} will stop being served as current belief. Nothing is deleted —
+          the old {one ? "value stays" : "values stay"} readable to as-of questions. Review the
+          exact replacements under Brain facts in the admin sidebar before confirming.
         </p>
       </div>
     </div>

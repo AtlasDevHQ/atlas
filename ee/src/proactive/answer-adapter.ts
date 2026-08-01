@@ -16,8 +16,12 @@
  * Identity binding:
  *   - **Linked asker** (`context.atlasUserId` non-null) — resolve the
  *     user's active org via the `member` table, build a real
- *     {@link AtlasUser} via {@link loadActorUser}, run the agent with
- *     the full workspace toolset (default {@link ToolRegistry}).
+ *     {@link AtlasUser} via {@link loadActorUser}, run the agent on the
+ *     headless core toolset ({@link nonDashboardRegistry}) — full data
+ *     access under the user's real identity, but no `createDashboard`
+ *     (no dashboards route to hand off to) and no `correct_fact` (#4936:
+ *     a brain-mutating write does not belong on an autonomous surface
+ *     with no confirmation UI, whatever the asker's org role).
  *   - **Unlinked asker** (`context.atlasUserId === null`) — synthesize
  *     an anonymous chat-bot actor with no `activeOrganizationId`, and
  *     restrict the agent at the tool boundary via
@@ -71,6 +75,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import type { ToolRegistry } from "@atlas/api/lib/tools/registry";
+import { nonDashboardRegistry } from "@atlas/api/lib/tools/registry";
 import { createPublicDatasetToolRegistry } from "./public-dataset-tools";
 import type { PublicDatasetEntry } from "./public-dataset";
 
@@ -177,9 +182,28 @@ export function createProactiveAnswerAdapter(
     const { threadId, asker, atlasUserId, workspaceId } = context;
     const askerId = describeAskerId(asker);
 
-    // 1. Resolve identity + (unlinked) restricted tool registry ----------
+    // 1. Resolve identity + this turn's tool registry --------------------
+    // #4936 — BOTH branches assign a registry. `toolRegistry` used to be left
+    // `undefined` on the linked-asker branch and spread away at the call site
+    // (`...(toolRegistry ? { tools: toolRegistry } : {})`), so a linked asker
+    // fell through to whatever `runAgent` defaulted to — then the dashboards-
+    // owning `defaultRegistry`, which carries the brain-mutating `correct_fact`.
+    // `resolveLinkedActor` returns a REAL user, with a real
+    // `activeOrganizationId` whenever they have a member row, and
+    // `resolveBrainReaderContext` re-resolves their real `member.role` — so for
+    // an org owner/admin a proactive Slack answer could retract or supersede
+    // brain facts, autonomously, with no confirmation UI, guarded only by prose
+    // in `CORRECT_FACT_DESCRIPTION`.
+    //
+    // LATENT rather than live on the SaaS wiring today: the wired resolver
+    // (`createSlackProactiveUserResolver`) returns `unlinked` for every asker
+    // until a Slack-user link table exists, so this branch is unreachable there.
+    // A self-hosted host may still supply its own `userResolver`. That is
+    // exactly why it must be closed BEFORE the branch goes live — the type now
+    // makes the `undefined` state unrepresentable, so there is no path left to
+    // fall through.
     let actor: AtlasUser;
-    let toolRegistry: ToolRegistry | undefined;
+    let toolRegistry: ToolRegistry;
     try {
       if (atlasUserId) {
         actor = await resolveLinkedActor(
@@ -187,6 +211,24 @@ export function createProactiveAnswerAdapter(
           resolveOrgForUser,
           resolveActor,
         );
+        // Linked asker — full identity, but still a HEADLESS surface: a
+        // proactive Slack answer owns no dashboards route and has no
+        // confirmation UI, like the `executeAgentQuery` turns the chat plugin
+        // drives.
+        //
+        // Deliberately the STATIC core set, not `buildHeadlessRegistry()`.
+        // They are not the same registry: the dynamic builder adds the operator
+        // action tools (`sendEmailReport`, `createJiraTicket`) under
+        // `ATLAS_ACTIONS_ENABLED`, and `executePython` under
+        // `ATLAS_PYTHON_ENABLED`. Adding OPERATOR-configured write verbs to the
+        // most autonomous, least supervised surface in the product, under a real
+        // linked user's identity, is the widening this issue is about — so do
+        // NOT "dedupe" these two into one call.
+        //
+        // This set is lesser-privileged, not side-effect-free: `sendEmail` and
+        // `createLinearIssue` are core tools here too, gated at execute time on
+        // the workspace install.
+        toolRegistry = nonDashboardRegistry;
       } else {
         // Unlinked asker — MUST resolve the workspace's public dataset
         // and bind the adapter-side tool gate before invoking the
@@ -303,7 +345,8 @@ export function createProactiveAnswerAdapter(
               },
             ],
             aiModel,
-            ...(toolRegistry ? { tools: toolRegistry } : {}),
+            // #4936 — unconditional; see the branch comment above.
+            tools: toolRegistry,
             // #2705/#4299 — the proactive seam still speaks the legacy
             // presentation-mode signal; resolve it through the answer-style
             // registry so the system prompt carries that style's addendum.

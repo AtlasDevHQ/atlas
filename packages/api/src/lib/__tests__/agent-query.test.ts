@@ -159,6 +159,12 @@ describe("executeAgentQuery actor binding", () => {
     expect(observedToolNames).toHaveLength(1);
     const names = observedToolNames[0];
     expect(names).not.toContain("createDashboard");
+    // #4936 — `correct_fact` is the other half of the same policy: both are
+    // gated on the SAME `dashboardUrlResolver` signal in `registerCoreTools`,
+    // so a change that re-globalizes one re-globalizes both. Pinned here
+    // because `buildHeadlessRegistry()` is now the shared seam these surfaces
+    // and the chat-plugin approval resume all route through.
+    expect(names).not.toContain("correct_fact");
     // The core query capability is untouched — the surface stays useful.
     expect(names).toContain("executeSQL");
     expect(names).toContain("explore");

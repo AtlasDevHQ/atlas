@@ -87,6 +87,16 @@ const mockRunAgent = mock(() =>
 );
 void mock.module("@atlas/api/lib/agent", () => ({ runAgent: mockRunAgent }));
 
+// #4941 — the action barrel does not load. A throwing factory makes the
+// `await import("./actions")` inside `buildRegistry` reject, which is the branch
+// that authors a warning while the BUILD ITSELF SUCCEEDS — the failure mode the
+// issue is actually about, and the one a `buildRegistry`-throws test cannot
+// reach. Inert for every other test in this file: `buildRegistry` only imports
+// the barrel when `ATLAS_ACTIONS_ENABLED === "true"`, which nothing else sets.
+void mock.module("@atlas/api/lib/tools/actions", () => {
+  throw new Error("simulated action-module load failure (#4941)");
+});
+
 void mock.module("@atlas/api/lib/tools/python-stream", () => ({
   setStreamWriter: () => {},
   clearStreamWriter: () => {},
@@ -153,8 +163,11 @@ void mock.module("@atlas/api/lib/conversations", () => ({
   updateConversationScope: mock(() => Promise.resolve({ ok: true as const })),
 }));
 
+// Hoisted (#4941) so a test can drive the plugin-merge failure branch, which
+// the resume path used to swallow entirely.
+const mockGetPluginTools: Mock<() => unknown> = mock(() => undefined);
 void mock.module("@atlas/api/lib/plugins/tools", () => ({
-  getPluginTools: mock(() => undefined),
+  getPluginTools: mockGetPluginTools,
   setPluginTools: () => {},
   getContextFragments: () => [],
   setContextFragments: () => {},
@@ -222,6 +235,8 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
       handle: { runId: "run-abc", transcript: [{ role: "user", content: "hi" }], priorStepIndex: 2, leaseOwner: "lease-1" },
     });
     mockFinishResume.mockReset();
+    mockGetPluginTools.mockReset();
+    mockGetPluginTools.mockReturnValue(undefined);
     mockCheckAgentBillingGate.mockReset();
     mockCheckAgentBillingGate.mockResolvedValue({ allowed: true as const });
     mockRunAgent.mockReset();
@@ -256,6 +271,104 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     const arg = calls[0]![0];
     expect(arg.resume?.runId).toBe("run-abc");
     expect(arg.resume?.priorStepIndex).toBe(2);
+  });
+
+  it("#4936 — resumes on the WORKSPACE registry, keeping both write verbs", async () => {
+    // The web resume is the dashboards-owning twin of the chat-PLATFORM resume
+    // (`lib/chat-plugin/resume-turn.ts`, which resolves `buildHeadlessRegistry()`).
+    // `runAgent` now defaults to the least-privileged registry, so this route
+    // must name `defaultRegistry` — and over-correcting it to
+    // `nonDashboardRegistry` would silently strip dashboards and fact
+    // correction from a resumed web turn. The structural guard pins the
+    // variable NAME at this call site, not the registry it resolves to, so only
+    // this assertion catches that.
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(200);
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+
+    const arg = (mockRunAgent.mock.calls as unknown as Array<
+      [{ tools?: { getAll(): Record<string, unknown> } }]
+    >)[0]![0];
+    expect(arg.tools, "the web resume must pass `tools` explicitly").toBeDefined();
+
+    const names = Object.keys(arg.tools!.getAll());
+    expect(names).toContain("createDashboard");
+    expect(names).toContain("correct_fact");
+    expect(names).toContain("executeSQL");
+  });
+
+  // #4941 — the WEB half of the same defect the headless surfaces had: this
+  // route kept `result.registry` and dropped `result.warnings`, so a resumed web
+  // turn whose action tools failed to load reported the capability as ABSENT
+  // rather than temporarily unavailable. The INITIAL web turn (`chat.ts`, pinned
+  // by chat.test.ts) always threaded them; only the resume did not.
+  describe("#4941 — a degraded registry build reaches the resumed model", () => {
+    it("threads the build-failure warning into the resumed runAgent", async () => {
+      process.env.ATLAS_ACTIONS_ENABLED = "true";
+      // The fatal misconfiguration `buildRegistry` throws on, and the same
+      // lever chat.test.ts uses for the initial turn.
+      process.env.ATLAS_PYTHON_ENABLED = "true";
+      delete process.env.ATLAS_SANDBOX_URL;
+      try {
+        const res = await app.fetch(resumeRequest());
+        expect(res.status).toBe(200);
+        expect(mockRunAgent).toHaveBeenCalledTimes(1);
+
+        const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+        expect(
+          arg.warnings,
+          "the resumed web turn ran on a degraded tool set and told the model nothing",
+        ).toBeDefined();
+        expect(arg.warnings).toHaveLength(1);
+        expect(arg.warnings![0]).toContain("stopped the tool registry from building");
+      } finally {
+        delete process.env.ATLAS_ACTIONS_ENABLED;
+        delete process.env.ATLAS_PYTHON_ENABLED;
+      }
+    });
+
+    it("threads a failed ACTION-TOOL load — the build succeeds and still carries a warning", async () => {
+      // Distinct branch from the one above, and the one #4941 is really about:
+      // `buildRegistry` RESOLVES, with a warning in its result. The catch-path
+      // test cannot reach `resumeWarnings.push(...result.warnings)` at all.
+      process.env.ATLAS_ACTIONS_ENABLED = "true";
+      try {
+        const res = await app.fetch(resumeRequest());
+        expect(res.status).toBe(200);
+
+        const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+        expect(arg.warnings).toHaveLength(1);
+        expect(arg.warnings![0]).toContain("createJiraTicket");
+        expect(arg.warnings![0]).toContain("do NOT tell the user");
+      } finally {
+        delete process.env.ATLAS_ACTIONS_ENABLED;
+      }
+    });
+
+    it("relays a plugin-merge failure, matching the initial turn", async () => {
+      // The initial web turn warns the model when the plugin merge throws
+      // (pinned in chat.test.ts); the resume path logged and said nothing. It
+      // matters MORE here: the parked call the user just approved may itself be
+      // the plugin tool that failed to load.
+      mockGetPluginTools.mockImplementationOnce(() => {
+        throw new Error("plugin tool has empty name");
+      });
+
+      const res = await app.fetch(resumeRequest());
+      expect(res.status).toBe(200);
+
+      const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+      expect(arg.warnings).toHaveLength(1);
+      expect(arg.warnings![0]).toContain("Plugin tools failed to load");
+      expect(arg.warnings![0]).toContain("plugin tool has empty name");
+    });
+
+    it("passes no warnings when actions are not requested — the signal is not always-on", async () => {
+      const res = await app.fetch(resumeRequest());
+      expect(res.status).toBe(200);
+      const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+      expect(arg.warnings).toBeUndefined();
+    });
   });
 
   // #4302 — a resumed turn rebuilds its system prompt live (the checkpoint

@@ -1,0 +1,1546 @@
+/**
+ * `correct_fact` — the four correction verbs and the correction-episode
+ * materialization behind them (#4915, ADR-0036 §Temporal, conflict &
+ * provenance).
+ *
+ * T4's SECOND human-authoritative entry point, beside the review gate:
+ * a correction is a first-class human-authored EPISODE — immutable,
+ * actor-attributed, highest-trust — whose effect lands authoritative
+ * immediately rather than queueing as a draft. The reviewer gate exists to put
+ * a human between machine extraction and trust; a correction already HAS its
+ * human, so making it wait for a second one would review the reviewer.
+ *
+ * ## The four verbs, and what each may touch
+ *
+ *   - **retract** — the ONLY tombstone path, and the verb a GDPR erasure
+ *     ROUTES THROUGH (the ADR's epithet; actual content deletion of the row
+ *     and its episodes is a separate operation this verb does not perform).
+ *     The row stays stored, and every FACT-SERVING read hides it, `asOf`
+ *     included — #4916 keeps `invalidated_at IS NULL` in BOTH temporal
+ *     branches, because hiding history is what this verb is for. The one
+ *     exception is the tension cluster: `tensions.ts`'s counterpart SELECT
+ *     deliberately does not filter `invalidated_at`, so a retracted claim is
+ *     still listed — labelled by `invalidatedAt`, with its payload — as a
+ *     withdrawn rival of any live claim it contested. That carve-out is why
+ *     erasure of CONTENT has to be a separate operation and cannot be read
+ *     off this verb. Stamps
+ *     `invalidated_at` (never `status` — ADR-0036: withdrawal is a tombstone,
+ *     not a demotion) and FLAGS every `derives-from` dependent for re-review.
+ *     Flagging is a provenance marker (`reReview`), never a cascade: a
+ *     dependent's own `invalidated_at`, `valid_to`, and `status` are untouched,
+ *     because a conclusion may survive losing one of its premises and only a
+ *     human can say so. The admin review route's `POST /:id/retract` runs THIS
+ *     code path — one retract semantics, not two (#4772's negative verb
+ *     unified here).
+ *   - **supersede** — stamps the target's `valid_to` and records the
+ *     `supersedes` edge by executing the SAME statements the publish gate runs
+ *     (`SUPERSEDE_STAMP_SQL` / `INSERT_SUPERSEDES_EDGES_SQL`, #4912) —
+ *     imported, not restated, so the two human arbitration paths cannot drift.
+ *     The replacement claim enters through `reconcileFacts` as the second
+ *     IMPLEMENTED producer (`correction`) on the seam ADR-0036 designs for
+ *     three (connector · warehouse-derived · correction) — and is then
+ *     promoted to `published` in the same transaction (see the allowlist note
+ *     below). The stamp runs BEFORE the reconcile, deliberately: the belief
+ *     being retired must already have a closed window when the replacement's
+ *     tension pass runs, or reconcile would mint an `in-tension-with` edge
+ *     against the very fact this verb is resolving — permanent conflict noise
+ *     recording a question the human answered in the same transaction.
+ *   - **re-authority** — re-anchors the claim's authority on the correcting
+ *     human: the correction episode becomes EVIDENCE (a `provenance` edge, the
+ *     same idempotent statement reconcile uses), and a `reAuthority` marker
+ *     records who vouched and when. Because `LAST_OBSERVED_AT_SELECT` reads
+ *     provenance-edge episodes, the human observation also resets the #4914
+ *     decay clock — "a person checked" is the freshest observation there is.
+ *   - **pin** — the same evidence edge plus a `pinned` marker. Advisory at
+ *     rest, exactly like the decay signal it counteracts: nothing may auto-act
+ *     on it, and (see the marker note below) nothing reads it yet either.
+ *
+ * Both vouching verbs REFUSE a target whose `valid_to` has already passed
+ * (#4939): the reset they promise is delivered through the decay anchor, and
+ * no as-of-now read consults the anchor of a fact it does not serve, so the
+ * verb would report an effect nobody can observe. A future-dated `valid_to`
+ * is a live claim with a scheduled end and is admitted — the same clock
+ * reading `brainFactCurrentClause` does.
+ *
+ * ## Tier-1 has no correction path
+ *
+ * A warehouse-derived fact (`provenance.source = WAREHOUSE_SOURCE`) is refused
+ * with an actionable error for EVERY verb: tier-1 is authoritative by
+ * construction, so you fix the data or the semantic layer, not the brain. The
+ * refusal is evaluated on the stored provenance because tier-1 proper is never
+ * stored at all — an id that names no brain row is an ordinary not-found.
+ *
+ * The class comes from `lib/brain/sources.ts`, and that indirection is load
+ * bearing rather than tidiness: ADR-0036 commits to warehouse-derived facts as
+ * tier-1, but no milestone in the M1–M6 cut has scoped the producer yet — so
+ * while both sides spelled their own literal, this refusal was one future
+ * naming decision away from silently never firing (#4938).
+ *
+ * ## Why this file is on `check-brain-fact-promotion.sh`'s ALLOWLIST
+ *
+ * `PROMOTE_CORRECTION_FACT_SQL` writes `status = 'published'` — the exact
+ * shape the guard exists to refuse. This is the "second gate-time writer" the
+ * guard's own remediation text forecast for `correct_fact` (#4912): the write
+ * is a human trust decision (the correction's author IS the reviewer),
+ * actor-attributed, episode-recorded, and still screened through
+ * `classifyFactForPromotion` so no-provenance-no-promotion and
+ * no-grant-no-promotion hold on this path too. The `valid_to` stamp is not a
+ * second spelling at all — it executes the publish adapter's own statement.
+ *
+ * ## Grant seed — the narrowest defensible set (the T9 pattern)
+ *
+ * The correction episode's grant is the TARGET FACT's own grant, verbatim:
+ * everyone entitled to the claim is entitled to know it was corrected, and
+ * nobody else learns a claim existed. The actor is inside that set by
+ * construction — the ACL-gated target read is what found the fact. A freshly
+ * created supersede replacement then inherits this grant through reconcile's
+ * ordinary derive-at-ingest path, so it is served to exactly the audience the
+ * superseded belief was; a CORROBORATED pre-existing rival keeps its own
+ * grant, which reconcile never rewrites (the correction episode still lands
+ * as evidence, so the next publish may widen it — #4823's ordinary path).
+ *
+ * ## Atomicity
+ *
+ * Every verb runs in ONE transaction (`withBrainTransaction`), opened after
+ * all pure validation: the episode, its edges, the tombstone/stamp/marker, and
+ * the flagged dependents commit together or not at all. A refusal discovered
+ * mid-transaction throws {@link CorrectionRefusedError}, which rolls the
+ * episode back — a correction that half-happened must not leave an authored
+ * episode asserting it did.
+ *
+ * ## THIS layer owns the admin-actions audit row — not the entry points
+ *
+ * A correction has two entry points onto this one write: the admin HTTP routes
+ * (`api/routes/admin-brain-facts.ts`) and the `correct_fact` agent tool
+ * (`lib/tools/correct-fact.ts`). #4915 built both and wired the
+ * `admin_action_log` vocabulary to only the first, so the same verb through
+ * chat produced the in-brain episode and no forensic row (#4934). The row is
+ * emitted HERE, once, for the `corrected` outcome only.
+ *
+ * The principle is one write, one audit row, emitted where the write is — so a
+ * THIRD entry point inherits the audit trail instead of having to remember it,
+ * and two entry points cannot drift into two metadata shapes (they already had:
+ * `/retract` logged `flaggedForReReview` unconditionally, `/correct` only when
+ * non-empty). `lib/` writing this table is thoroughly established —
+ * `auth/middleware.ts`, `auth/invitations.ts`, `rate-limit/middleware.ts`,
+ * `lib/brain/extract.ts` and two schedulers all do it — though the schedulers'
+ * case is unattended loops labelling themselves with `systemActor`, which is a
+ * different argument from this one.
+ * `resolveEntry` reads actor, org and requestId off the AsyncLocalStorage
+ * request context, which both entry points run inside, so attribution needs no
+ * plumbing from either — and {@link emitCorrectionAudit} warns loudly if a
+ * future caller arrives without one.
+ *
+ * REFUSALS AND NOT-FOUNDS STAY UNAUDITED — a scope call, not a semantic one
+ * (#4934 non-goal). The table is NOT success-only: `AdminActionEntry.status`
+ * takes `"failure"` and dozens of call sites pass it, including a refusal on
+ * the closest precedent to this change (`sso.enforcement_block` in
+ * `auth/middleware.ts`). So auditing refused corrections is legitimate and can
+ * be added later; it just needs its own decision about volume, and about
+ * whether a not-found — which is deliberately indistinguishable from "not
+ * visible to you" — is an event at all.
+ *
+ * The write is AWAITED with a deadline rather than fire-and-forget — see
+ * {@link emitCorrectionAudit} for why that is not a contradiction of "a failed
+ * audit never affects a committed correction".
+ */
+
+import { randomUUID } from "node:crypto";
+import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { diagnosticValue } from "@atlas/api/lib/audit/diagnostic-scrub";
+import { ADMIN_ACTIONS, logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
+import {
+  aclVisibilityClause,
+  isUnknownArray,
+  type BrainPrincipalContext,
+} from "@atlas/api/lib/brain/acl";
+import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
+import {
+  INSERT_PROVENANCE_EDGE_SQL,
+  reconcileFacts,
+  withBrainTransaction,
+  type ReconcileExecutor,
+  type ReconcileTransactionRunner,
+} from "@atlas/api/lib/brain/reconcile";
+import {
+  brainFactCurrentClause,
+  INSERT_SUPERSEDES_EDGES_SQL,
+  SUPERSEDE_STAMP_SQL,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import { classifyFactForPromotion, isJsonObject, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { HUMAN_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import { BRAIN_CORRECTION_VERBS } from "@useatlas/schemas";
+import type { BrainCorrectionVerb, BrainFactCorrectionResponse } from "@useatlas/types";
+
+const log = createLogger("brain-correction");
+
+/** Surface tag carried on this module's `BrainReaderUnresolvedError` throws. */
+const CORRECTION_SURFACE = "correction";
+
+/**
+ * The verb vocabulary — re-exported from `@useatlas/schemas`, which holds the
+ * one runtime tuple (with its exhaustiveness pin against the wire union), the
+ * same way every other brain tuple is consumed API-side. A second spelling
+ * here would be a membership-drift risk two compile pins would have to hold
+ * shut.
+ */
+export const CORRECTION_VERBS = BRAIN_CORRECTION_VERBS;
+
+export type CorrectionVerb = BrainCorrectionVerb;
+
+/**
+ * Why a correction was refused. Every refusal carries actionable prose beside
+ * the code; the code is what a tool or route branches on, the prose is what a
+ * human acts on.
+ */
+export const CORRECTION_REFUSAL_REASONS = {
+  /** The actor's role does not carry the correction verb. */
+  notAuthorized: "NOT_AUTHORIZED",
+  /** Tier-1: warehouse-derived facts have no correction path. */
+  warehouseTarget: "WAREHOUSE_TARGET",
+  /** Supersession retires a published belief; the target is not one. */
+  targetNotPublished: "TARGET_NOT_PUBLISHED",
+  /** The target's validity window is already closed (or already decided). */
+  validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
+  /**
+   * `re-authority` / `pin`: the target's validity window has ALREADY SHUT, so
+   * no as-of-now read serves it and the vouch would have no observable effect
+   * (#4939).
+   *
+   * Named for what is CHECKED, not for the usual cause: the predicate is
+   * "`valid_to <= now()`", which a supersession produces but so does a
+   * scheduled end that simply elapsed. A `TARGET_SUPERSEDED` spelling would
+   * assert a replacement exists, and a caller branching on it would send the
+   * user looking for one that may not.
+   *
+   * Distinct from {@link validityAlreadyClosed}, whose threshold is different:
+   * `supersede` refuses ANY decided end date, a future one included, because a
+   * second arbitration of the same claim is the thing it must not permit.
+   */
+  targetNotCurrent: "TARGET_NOT_CURRENT",
+  /** `supersede` needs a replacement claim and none was given. */
+  replacementMissing: "REPLACEMENT_MISSING",
+  /** The replacement restates the target's own object — nothing to supersede. */
+  replacementIdentical: "REPLACEMENT_IDENTICAL",
+  /** The replacement could not become a published fact (structural refusal). */
+  replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
+} as const;
+
+export type CorrectionRefusalReason =
+  (typeof CORRECTION_REFUSAL_REASONS)[keyof typeof CORRECTION_REFUSAL_REASONS];
+
+/**
+ * A refusal raised INSIDE the transaction, so the throw is what rolls the
+ * correction episode back. Caught by {@link correctFact} and returned as an
+ * ordinary outcome — a refused correction is a result, not an incident.
+ */
+export class CorrectionRefusedError extends Error {
+  constructor(
+    readonly reason: CorrectionRefusalReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = "CorrectionRefusedError";
+  }
+}
+
+export interface CorrectionReplacement {
+  /** The corrected object; subject and predicate are inherited from the target. */
+  readonly object: string;
+  /** When the corrected value began to hold. Defaults to the correction time. */
+  readonly validFrom?: Date | null;
+}
+
+export interface CorrectionRequest {
+  readonly ctx: BrainPrincipalContext;
+  readonly factId: string;
+  readonly verb: CorrectionVerb;
+  /** Free-text rationale, recorded verbatim in the correction episode body. */
+  readonly reason?: string;
+  /** Required for `supersede`, meaningless elsewhere. */
+  readonly replacement?: CorrectionReplacement;
+  readonly requestId?: string;
+}
+
+export interface CorrectionDeps {
+  /** Defaults to a transaction on the internal pool. */
+  readonly withTransaction?: ReconcileTransactionRunner;
+  /** Test clock. */
+  readonly now?: () => Date;
+  /** Test seam for the episode's unique `source_id` suffix. */
+  readonly newCorrectionId?: () => string;
+  /**
+   * Test seam for {@link AUDIT_WRITE_TIMEOUT_MS}. Exists so the deadline on the
+   * post-commit audit write is provable in milliseconds instead of seconds —
+   * without it the only way to pin "a hung internal DB cannot hold a chat turn
+   * open" is a 5-second test, which sits exactly on bun's default per-test
+   * timeout.
+   *
+   * A positive, finite number of milliseconds no greater than 2_147_483_647.
+   * Anything else falls back to the real bound — see `resolveAuditDeadline`,
+   * which is where that is enforced, because the type cannot say it.
+   */
+  readonly auditWriteTimeoutMs?: number;
+}
+
+/** What became of one correction request. */
+export type CorrectionOutcome =
+  | { readonly kind: "corrected"; readonly result: BrainFactCorrectionResponse }
+  | {
+      readonly kind: "refused";
+      readonly reason: CorrectionRefusalReason;
+      readonly message: string;
+    }
+  /**
+   * No such fact, already retracted, or not visible to this actor — the three
+   * are deliberately indistinguishable, for `retractFactCandidate`'s original
+   * reason: a distinct answer would confirm the existence of a fact the actor
+   * may not see.
+   */
+  | { readonly kind: "not-found" };
+
+// ---------------------------------------------------------------------------
+// SQL
+// ---------------------------------------------------------------------------
+//
+// Exported for two test seams: `candidates-pg.test.ts` §7 executes these
+// strings against the live schema (via `correctFact`, on that file's existing
+// bootstrap), and `correction.test.ts` dispatches on their identity so a
+// paraphrased second spelling of any statement fails loudly.
+//
+// NOTE for the next editor: this file is on `check-brain-fact-promotion.sh`'s
+// ALLOWLIST — see the module header for the recorded rationale. That is a
+// carve-out for the ONE `status` write below and the imported #4912 stamp,
+// not license: any new statement here that touches `status`, `visible_to`, or
+// `valid_to` needs the same argument the existing ones carry.
+
+/**
+ * The ACL-gated target read. `FOR UPDATE` serializes two corrections (or a
+ * correction and a publish) racing on one fact, so every later statement in
+ * the transaction acts on the row version this SELECT saw.
+ *
+ * `invalidated_at IS NULL`: a tombstoned fact is already withdrawn — every
+ * verb on it answers not-found, indistinguishable from absence (see
+ * {@link CorrectionOutcome}).
+ *
+ * `window_closed` is COMPUTED IN POSTGRES, and that is not a convenience
+ * (#4939). Deciding it in TypeScript would compare a Postgres timestamp
+ * against the Node process clock — skew-limited rather than exact at precisely
+ * the boundary the refusal turns on — and would additionally have to parse a
+ * column nothing else parses. Evaluated here, it reads the same CLOCK the
+ * reads read. (Not the same instant: reads run in their own transactions, so
+ * `now()` differs per transaction. What this buys is the elimination of the
+ * clock-SOURCE skew, which is the part that can be eliminated.)
+ *
+ * It is `NOT brainFactCurrentClause(…)`, IMPORTED rather than restated, for
+ * the reason `SUPERSEDE_STAMP_SQL` is imported one screen up: the whole
+ * justification for computing this in Postgres is that the vouch refusal and
+ * the reads it reasons about cannot disagree about which facts are current,
+ * and a second hand-written spelling of `valid_to > now()` is exactly how they
+ * would come to. A grace window or a `>=` added to that clause now reaches
+ * this refusal by construction instead of silently desynchronizing from it —
+ * which no boundary test would catch, since a moved boundary moves both the
+ * fixture and the predicate.
+ *
+ * The raw `valid_to` still travels for `supersede`'s own gate (which refuses
+ * ANY decided end date, future included) and for the refusal message's date.
+ *
+ * `aclSql` must alias the fact table `f` and is interpolated — same contract
+ * as `brainFactPreviewSql` and every other clause-taking builder in the slice.
+ */
+export function correctionTargetSql(aclSql: string, idParam: number): string {
+  return `SELECT f.id::text AS id,
+                f.subject,
+                f.predicate,
+                f.object,
+                f.status,
+                f.predicate_cardinality,
+                f.provenance,
+                f.visible_to,
+                f.valid_to,
+                NOT ${brainFactCurrentClause("f")} AS window_closed,
+                f.source_episode_id::text AS source_episode_id
+           FROM brain_facts f
+          WHERE ${aclSql}
+            AND f.id = $${idParam}::uuid
+            AND f.invalidated_at IS NULL
+            FOR UPDATE`;
+}
+
+/**
+ * The correction episode — the immutable human-authored record of the verb.
+ *
+ * `source = 'human'` (the connector-class vocabulary already reserves it), a
+ * fresh `correction:`-prefixed `source_id` per correction (two corrections of
+ * one fact are two episodes; nothing dedupes them away), the acting principal
+ * as `source_actor`, and the verb payload as the body.
+ *
+ * `extracted_at` is stamped AT INSERT — deliberately opposite to the connector
+ * ingest path, whose header calls a stamped-at-ingest value a silent drop.
+ * Here the correction path IS the episode's processing: the fact-side effect
+ * commits in the same transaction, so leaving the row on the extraction queue
+ * would hand a human's exact words to the LLM extraction fiber to be
+ * re-derived as a second, machine-produced claim.
+ */
+export const CORRECTION_EPISODE_INSERT_SQL = `INSERT INTO brain_episodes
+         (workspace_id, source, source_id, source_actor, body, locator, occurred_at, visible_to, extracted_at)
+       VALUES ($1, 'human', $2, $3, $4, NULL, $5::timestamptz,
+               ARRAY(SELECT jsonb_array_elements_text($6::jsonb)), $5::timestamptz)
+       RETURNING id::text AS id`;
+
+/**
+ * The tombstone — the only tombstone DECISION path, now that the review
+ * surface's retract routes through this module (#4915 unification of #4772's
+ * negative verb). The one other statement writing the column is the region
+ * import's INSERT (`admin-migrate.ts`), which restores an existing
+ * `invalidated_at` verbatim — a restore, not a new arbitration, the same
+ * distinction the promotion guard's allowlist draws. It never names `status`:
+ * withdrawal is a tombstone, not a demotion — and the tombstone hides the row
+ * from every fact-serving read, `asOf` included (#4916); only the tension
+ * surfaces still list it, labelled, as a withdrawn rival. The ACL already ran
+ * at {@link correctionTargetSql}, which also holds the row lock; the residual
+ * predicates make the statement correct standalone.
+ */
+export const RETRACT_FACT_SQL = `UPDATE brain_facts
+        SET invalidated_at = now(), updated_at = now()
+      WHERE workspace_id = $1
+        AND id = $2::uuid
+        AND invalidated_at IS NULL
+    RETURNING id::text AS id, invalidated_at`;
+
+/**
+ * The correction's lineage pointer, fact → correction episode. `derives-from`
+ * rather than `provenance`, and the distinction is load-bearing: a
+ * `provenance` edge says the episode is EVIDENCE FOR the claim — it feeds the
+ * corroboration count and the decay anchor — which is exactly wrong for a
+ * retraction or a supersession, where the episode refutes or retires the
+ * claim. `re-authority` and `pin` use the provenance statement instead,
+ * because there the human really is vouching for the claim. Idempotence guard
+ * mirrors `INSERT_PROVENANCE_EDGE_SQL`'s.
+ */
+export const DERIVES_FROM_EDGE_SQL = `INSERT INTO brain_edges
+         (workspace_id, edge_type, from_fact_id, to_episode_id)
+       SELECT $1, 'derives-from', $2::uuid, $3::uuid
+        WHERE NOT EXISTS (
+          SELECT 1 FROM brain_edges
+           WHERE workspace_id = $1
+             AND edge_type = 'derives-from'
+             AND from_fact_id = $2::uuid
+             AND to_episode_id = $3::uuid)
+       RETURNING id`;
+
+/**
+ * Live facts that derive from the target — the set a retraction flags.
+ *
+ * Deliberately NOT gated by the actor's ACL: the flag is a quality marker on
+ * rows the retraction just undermined, and skipping the ones the actor cannot
+ * see would leave exactly those unflagged forever (nobody else knows the
+ * premise fell). Nothing about the dependents is DISCLOSED — the response
+ * carries opaque ids only, the same class of handle the withheld-tension arm
+ * already ships.
+ */
+export const DEPENDENT_FACTS_SQL = `SELECT ed.from_fact_id::text AS id
+     FROM brain_edges ed
+     JOIN brain_facts f
+       ON f.workspace_id = ed.workspace_id
+      AND f.id = ed.from_fact_id
+    WHERE ed.workspace_id = $1
+      AND ed.edge_type = 'derives-from'
+      AND ed.to_fact_id = $2::uuid
+      AND f.invalidated_at IS NULL
+    ORDER BY f.ingested_at, f.id`;
+
+/**
+ * Merge a correction marker under a fact's provenance payload.
+ *
+ * `provenance || $3::jsonb` appends top-level keys and can only ever ADD or
+ * replace the marker key itself — the structural keys reconcile wrote are
+ * untouched because no marker spells them. Three markers ride this statement:
+ * `reReview` (retract flags a dependent), `reAuthority`, and `pinned`. It
+ * names none of the gated columns, which is what makes flagging a NON-cascade
+ * by construction: this is the only statement a dependent is ever touched by.
+ *
+ * ## None of the three has a READER yet — say so, don't imply one (#4939)
+ *
+ * `projectProvenance` whitelists the keys it emits and drops all three, and no
+ * other surface reads them. They are WRITE-DURABLE, not surfaced: the record a
+ * future review surface will read.
+ *
+ * The same holds for what they mark. No IN-REGION path mints a `derives-from`
+ * fact→fact edge — this module writes fact→EPISODE — so {@link
+ * DEPENDENT_FACTS_SQL} returns `[]` on a self-contained deployment, and the
+ * M5 write-back producer is what would change that. Not an absolute, though:
+ * `admin-migrate.ts` restores `derives-from` edges verbatim, so an imported
+ * workspace can arrive carrying them today.
+ *
+ * That is a bounded, deliberate state, and the rule it carries is: every
+ * user-facing string about these markers must describe what is RECORDED, never
+ * promise a place to go look. Where a human is told a number today, it is
+ * because a RESPONSE carried it at the moment of the correction — `/retract`
+ * and `/correct` return the flagged ids, the agent tool returns the count —
+ * not because a surface renders the marker.
+ *
+ * The DURABLE, re-readable record is the `admin_action_log` row this module
+ * writes below, and since #4934 it is written for EVERY entry point — the two
+ * admin routes and the agent tool alike, which is what that issue fixed. So
+ * the ids survive an agent-initiated retraction too; what the agent does not
+ * get is sight of them.
+ *
+ * Spell that table precisely: `audit_log` is a DIFFERENT real table — SQL
+ * query history — so naming it here would send an operator chasing a lost flag
+ * to a query that returns zero rows and the conclusion that the write never
+ * happened.
+ *
+ * Give one of the three a reader and the prose in `brain-corrections.mdx` and
+ * this module's `pin` header bullet becomes an understatement that should be
+ * corrected in the same change; `candidates.test.ts` fails on exactly that
+ * transition, so the pairing is enforced rather than remembered.
+ */
+export const MERGE_PROVENANCE_MARKER_SQL = `UPDATE brain_facts
+        SET provenance = provenance || $3::jsonb, updated_at = now()
+      WHERE workspace_id = $1
+        AND id = ANY($2::uuid[])
+        AND invalidated_at IS NULL
+    RETURNING id::text AS id`;
+
+/**
+ * Promote the correction-authored replacement — the allowlisted `status`
+ * write this module exists to carry (see the header). Only ever pointed at
+ * the fact `reconcileFacts` just created or corroborated IN THIS TRANSACTION,
+ * after {@link classifyFactForPromotion} admitted it; the `status = 'draft'`
+ * predicate keeps the statement correct standalone, exactly like
+ * `PROMOTE_FACTS_SQL`'s.
+ */
+export const PROMOTE_CORRECTION_FACT_SQL = `UPDATE brain_facts
+        SET status = 'published', updated_at = now()
+      WHERE workspace_id = $1
+        AND id = $2::uuid
+        AND status = 'draft'
+        AND invalidated_at IS NULL
+    RETURNING id::text AS id`;
+
+/** The replacement row, read back for the promotion classifier. */
+export const REPLACEMENT_ROW_SQL = `SELECT f.id::text AS id,
+                f.subject,
+                f.predicate,
+                f.object,
+                f.status,
+                f.source_episode_id::text AS source_episode_id,
+                f.provenance,
+                f.visible_to
+           FROM brain_facts f
+          WHERE f.workspace_id = $1
+            AND f.id = $2::uuid
+            FOR UPDATE`;
+
+// ---------------------------------------------------------------------------
+// The verb dispatcher
+// ---------------------------------------------------------------------------
+
+interface TargetRow {
+  readonly id: string;
+  readonly subject: string;
+  readonly predicate: string;
+  readonly object: string;
+  readonly status: string;
+  readonly cardinality: "single" | "multi";
+  readonly provenance: unknown;
+  readonly grantTokens: readonly string[];
+  /**
+   * `Date | string | null`, not `unknown`: `readTargetRow` refuses anything
+   * else as drift, so passing a different column in here is a compile error
+   * and the two temporal gates below cannot silently read an unparseable
+   * value as "no end date".
+   */
+  readonly validTo: Date | string | null;
+  /**
+   * Postgres' own answer to "is this claim's validity window already shut?",
+   * against the same `now()` every read uses. See {@link correctionTargetSql}.
+   */
+  readonly windowClosed: boolean;
+}
+
+/**
+ * Apply one correction verb.
+ *
+ * Returns an outcome, never throws for a DOMAIN refusal — a refused or
+ * not-found correction is an ordinary result. Throws only for infrastructure
+ * failure (the caller's 500 path) and {@link BrainReaderUnresolvedError} when
+ * the actor's identity resolves to no usable principals.
+ */
+export async function correctFact(
+  request: CorrectionRequest,
+  deps: CorrectionDeps = {},
+): Promise<CorrectionOutcome> {
+  const { ctx, factId, verb, requestId } = request;
+  const now = deps.now ?? (() => new Date());
+  const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  const newCorrectionId = deps.newCorrectionId ?? randomUUID;
+
+  // ── Authority ─────────────────────────────────────────────────────────
+  // A correction is a trust decision with immediate authoritative effect, so
+  // it carries the review gate's own bar: org owner/admin. The
+  // `unauthenticated-local` arm passes — that deployment has DECLARED the
+  // local operator is the only identity there is, and the admin surface
+  // already treats them as such.
+  if (ctx.origin === "authenticated" && ctx.role !== "owner" && ctx.role !== "admin") {
+    return {
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.notAuthorized,
+      message:
+        "Corrections are an admin verb: they land authoritative immediately, without the review queue. " +
+        "Ask a workspace owner or admin to apply this correction, or flag the fact in review instead.",
+    };
+  }
+
+  const acl = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: "f",
+    paramIndex: 1,
+    requestId,
+  });
+  if (acl.decision === "deny-all") {
+    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, CORRECTION_SURFACE);
+  }
+
+  // ── Pure request validation, before any connection is checked out ────
+  const replacement = normalizeReplacement(request.replacement);
+  if (verb === "supersede") {
+    if (replacement === null) {
+      return {
+        kind: "refused",
+        reason: CORRECTION_REFUSAL_REASONS.replacementMissing,
+        message:
+          "Superseding needs the corrected value: pass a non-blank `replacement.object` (the subject and " +
+          "predicate are inherited from the fact being superseded). To withdraw the claim without replacing " +
+          "it, use `retract`.",
+      };
+    }
+  }
+
+  const actor = ctx.userId ?? "local-operator";
+  // Grammar-valid principal for the replacement fact's provenance `actor`.
+  // The `unauthenticated-local` arm records the class rather than an id —
+  // that deployment declared it has no ids to record.
+  const sourcePrincipal = ctx.userId !== null ? `user:${ctx.userId}` : "human:local-operator";
+
+  // Bound OUTSIDE the try, and the try holds nothing but the transaction. The
+  // audit write below is post-commit work, and a post-commit throw reaching
+  // this catch would be classified as a refusal or rethrown to a caller whose
+  // own error copy says "nothing was changed — retry" (`lib/tools/correct-fact.ts`).
+  // Placement, not a comment, is what keeps that impossible.
+  let result: BrainFactCorrectionResponse | null;
+  try {
+    result = await withTransaction(async (tx) => {
+      // ── The target, ACL-gated and row-locked ──────────────────────────
+      const params: unknown[] = [...acl.params, factId];
+      const targetResult = await tx.query(correctionTargetSql(acl.sql, params.length), params);
+      const target = readTargetRow(targetResult.rows[0], ctx.workspaceId);
+      if (target === null) return null;
+
+      // Tier-1: refused for EVERY verb, before anything is written.
+      if (isWarehouseDerived(target.provenance)) {
+        throw new CorrectionRefusedError(
+          CORRECTION_REFUSAL_REASONS.warehouseTarget,
+          "This fact is warehouse-derived (tier-1), and tier-1 has no correction path: the warehouse is " +
+            "authoritative by construction. Fix the underlying data, or fix the semantic layer that derives it — " +
+            "the brain never overrides the warehouse.",
+        );
+      }
+
+      // Supersede-only target-state checks, BEFORE the episode is written so
+      // the common refusals never open a write at all.
+      if (verb === "supersede") {
+        if (target.status !== "published") {
+          throw new CorrectionRefusedError(
+            CORRECTION_REFUSAL_REASONS.targetNotPublished,
+            "Supersession retires a published belief, and this fact is not published. " +
+              "If it is a draft you no longer trust, `retract` it from the review queue instead — " +
+              "there is nothing current to replace yet.",
+          );
+        }
+        if (target.validTo !== null) {
+          throw new CorrectionRefusedError(
+            CORRECTION_REFUSAL_REASONS.validityAlreadyClosed,
+            "This fact's validity window is already closed or already has a decided end date, so there is " +
+              "no current belief to supersede. Correct the CURRENT fact for this subject and predicate instead.",
+          );
+        }
+        if (replacement !== null && replacement.object === target.object) {
+          throw new CorrectionRefusedError(
+            CORRECTION_REFUSAL_REASONS.replacementIdentical,
+            `The replacement restates what the fact already says ("${target.object}"), so there is nothing ` +
+              "to supersede. To re-assert the claim as human-verified, use `re-authority` or `pin` instead.",
+          );
+        }
+      }
+
+      // Vouch-only target-state check (#4939), same placement and reason as
+      // supersede's above. Both vouching verbs claim an OBSERVABLE effect —
+      // "resetting its staleness clock" — and both deliver it by writing a
+      // provenance edge that `LAST_OBSERVED_AT_SELECT` aggregates. Nothing
+      // consults that aggregate for a fact whose validity window has shut:
+      // `brainFactCurrentClause` excludes it from `searchBrain` AND from the
+      // review queue, and the one surface that still lists it — the tension
+      // cluster — carries no decay signal at all. So the verb would report a
+      // reset that cannot be seen anywhere; refusing is the honest arm.
+      // Reachable rather than theoretical, too: an `asOf` read hands the agent
+      // superseded ids, and `correct_fact` documents `factId` as coming
+      // "exactly as returned by searchBrain".
+      //
+      // `windowClosed` — Postgres', not ours — rather than supersede's
+      // `IS NOT NULL`: a FUTURE-dated `valid_to` is a live claim whose end is
+      // merely scheduled and is still served, so refusing it would block a
+      // vouch on a current belief. It is `brainFactCurrentClause` negated and
+      // imported, evaluated on the database's own clock, which is what keeps
+      // this refusal and the reads it reasons about from drifting apart.
+      if ((verb === "re-authority" || verb === "pin") && target.windowClosed) {
+        // The window is shut; WHY is not established here. A replacement is
+        // the common cause and the only one with a correction-verb remedy, so
+        // the message offers it as a possibility rather than a fact — the
+        // reason this code is named for what it CHECKS.
+        //
+        // It deliberately does NOT suggest `supersede` on this fact as the
+        // fallback: that verb refuses ANY non-null `valid_to`
+        // ({@link validityAlreadyClosed}), so advising it here would send the
+        // caller straight into a second refusal. An elapsed window with no
+        // successor has no correction path at all — the claim has to be
+        // re-observed through ingest — and saying so is better than a remedy
+        // that cannot work.
+        const closedAt = iso(target.validTo);
+        throw new CorrectionRefusedError(
+          CORRECTION_REFUSAL_REASONS.targetNotCurrent,
+          `This claim's validity window closed${closedAt === null ? "" : ` on ${closedAt}`}, so no current ` +
+            "read serves it and confirming it would change nothing you could observe. If another claim " +
+            "replaced it, vouch for that one instead — search the same subject and predicate for the current " +
+            "belief. If nothing replaced it, the window simply elapsed and there is no correction to apply: " +
+            "the claim has to be observed again through ingest before it can be vouched for.",
+        );
+      }
+
+      // ── The correction episode — the immutable human record ───────────
+      const at = now();
+      const correctionSourceId = `correction:${verb}:${newCorrectionId()}`;
+      const body = JSON.stringify({
+        kind: "correction",
+        verb,
+        factId: target.id,
+        claim: { subject: target.subject, predicate: target.predicate, object: target.object },
+        ...(verb === "supersede" && replacement !== null
+          ? { replacement: { object: replacement.object } }
+          : {}),
+        ...(request.reason?.trim() ? { reason: request.reason.trim() } : {}),
+        actor,
+        at: at.toISOString(),
+      });
+      const episodeInsert = await tx.query(CORRECTION_EPISODE_INSERT_SQL, [
+        ctx.workspaceId,
+        correctionSourceId,
+        actor,
+        body,
+        at.toISOString(),
+        JSON.stringify(target.grantTokens),
+      ]);
+      const episodeId = firstId(episodeInsert.rows);
+      if (episodeId === null) {
+        throw new Error(
+          `brain correction: episode insert returned no id (workspace ${ctx.workspaceId}, fact ${target.id})`,
+        );
+      }
+
+      // ── Verb effects ──────────────────────────────────────────────────
+      const base: BrainFactCorrectionResponse = {
+        verb,
+        factId: target.id,
+        correctionEpisodeId: episodeId,
+        invalidatedAt: null,
+        flaggedForReReview: [],
+        supersededBy: null,
+        validTo: null,
+      };
+      switch (verb) {
+        case "retract":
+          return applyRetract(tx, ctx.workspaceId, target, episodeId, at, base);
+        case "supersede":
+          // `replacement` is non-null past the pure-validation gate above; the
+          // assertion-free re-check keeps that reasoning local.
+          if (replacement === null) {
+            throw new Error("brain correction: supersede reached dispatch without a replacement");
+          }
+          return applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
+            replacement,
+            sourcePrincipal,
+            actor,
+            correctionSourceId,
+            grantTokens: target.grantTokens,
+          });
+        case "re-authority":
+          return applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "reAuthority", actor);
+        case "pin":
+          return applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "pinned", actor);
+        default: {
+          const unexpected: never = verb;
+          throw new Error(`Unhandled correction verb: ${JSON.stringify(unexpected)}`);
+        }
+      }
+    });
+  } catch (err) {
+    if (err instanceof CorrectionRefusedError) {
+      // The throw already rolled the transaction (and any episode row) back.
+      log.info(
+        { workspaceId: ctx.workspaceId, factId, verb, reason: err.reason, requestId },
+        "brain correction: verb refused",
+      );
+      return { kind: "refused", reason: err.reason, message: err.message };
+    }
+    throw err;
+  }
+
+  if (result === null) {
+    log.info(
+      { workspaceId: ctx.workspaceId, factId, verb, userId: ctx.userId, requestId },
+      "brain correction: verb matched no row — absent, already retracted, or not visible to this actor",
+    );
+    return { kind: "not-found" };
+  }
+
+  log.info(
+    {
+      workspaceId: ctx.workspaceId,
+      factId,
+      verb,
+      userId: ctx.userId,
+      correctionEpisodeId: result.correctionEpisodeId,
+      supersededBy: result.supersededBy,
+      flaggedForReReview: result.flaggedForReReview.length,
+      requestId,
+    },
+    "brain correction: verb applied — human-authoritative, recorded as an immutable correction episode",
+  );
+  // Emitted from here, not from either entry point — see the module header.
+  await emitCorrectionAudit({
+    ctx,
+    result,
+    requestId,
+    timeoutMs: resolveAuditDeadline(deps.auditWriteTimeoutMs),
+  });
+  return { kind: "corrected", result };
+}
+
+/**
+ * How long an awaited audit write may hold a committed correction's response
+ * open. Same bound and same reason as `auth/middleware.ts` and
+ * `admin-knowledge.ts`: `logAdminActionAwait` goes through `internalQuery`,
+ * which deliberately bypasses the internal-DB circuit breaker, and the internal
+ * pool sets no statement timeout — so without a deadline a DEGRADED internal DB
+ * (reachable, not answering) would hang this call indefinitely. An UNREACHABLE
+ * one is already bounded by the pool's `connectionTimeoutMillis`.
+ *
+ * Not yet shared with those two hand-rolled copies on purpose: consolidating
+ * would mean editing `auth/middleware.ts`'s fail-closed 500 path, which is a
+ * security-surface change that does not belong in a brain-audit fix. One thing
+ * for whoever does consolidate: as of #4934 this copy CLEARS its deadline in a
+ * `finally` and neither precedent does, so they leave a timer armed for the full
+ * bound on every fast path. This is the side to keep.
+ */
+const AUDIT_WRITE_TIMEOUT_MS = 5_000;
+
+/**
+ * `setTimeout`'s 32-bit ceiling. Above it the delay is CLAMPED TO 1ms, with
+ * nothing but a `TimeoutOverflowWarning` on stderr — so `Infinity`, the natural
+ * spelling of "no deadline for this test", would silently make every audit
+ * write time out instantly. That is the same failure the lower bound guards,
+ * entered from the other end.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * The deadline actually used, normalized here rather than at the read site so
+ * the invariant lives beside the constant that expresses it: a POSITIVE, FINITE
+ * number of milliseconds that a timer can represent. `??` alone would not do —
+ * it only catches nullish, so `0`, a negative, `NaN` and anything past
+ * {@link MAX_TIMER_MS} would all pass through and mean "time out immediately".
+ */
+function resolveAuditDeadline(ms: number | undefined): number {
+  if (ms === undefined) return AUDIT_WRITE_TIMEOUT_MS;
+  if (!Number.isFinite(ms) || ms <= 0 || ms > MAX_TIMER_MS) {
+    // Named, not silently substituted. A mis-specified seam that quietly became
+    // 5s is exactly the kind of silent fallback that turns a wrong test into a
+    // five-second mystery.
+    log.warn(
+      { requested: ms, using: AUDIT_WRITE_TIMEOUT_MS, max: MAX_TIMER_MS },
+      "brain correction: auditWriteTimeoutMs is out of range (must be finite, positive, and within the " +
+        "32-bit timer ceiling) — falling back to the default audit deadline",
+    );
+    return AUDIT_WRITE_TIMEOUT_MS;
+  }
+  return ms;
+}
+
+/**
+ * The forensic `admin_action_log` row for a correction that already committed.
+ *
+ * AWAITED, not fire-and-forget, and that is not a contradiction of #4934's
+ * "a failed audit write never affects a committed correction" — the two claims
+ * are about different things. The correction is never rolled back and this
+ * function never throws; what awaiting buys is that a DROPPED row is LOUD.
+ * `logAdminAction` posts the insert into the circuit breaker and returns, so
+ * an open breaker discards the row with nothing but an internal counter — the
+ * shape #4937's fix (#4944) adopted on the adjacent publish path after finding
+ * it there, and a silent gap here reproduces the very bug this call site exists
+ * to fix. CLAUDE.md: never silently swallow errors; prefer errors over silent
+ * fallbacks.
+ *
+ * Failure is logged at ERROR and the correction still returns `corrected`,
+ * because it HAS been corrected: the episode, the tombstone/stamp/marker and
+ * the edges are committed, and reporting failure would invite a retry that
+ * mints a SECOND correction episode for one human decision.
+ *
+ * The message names what actually survives, so the line is a usable recovery
+ * instruction rather than an alarm — and it names DIFFERENT things depending on
+ * how far the emitter got, which is what `writeAttempted` is for. Once
+ * `logAdminActionAwait` has been called the actor-attributed `admin_action`
+ * pino line exists (it emits BEFORE the insert), so only the queryable row is
+ * at risk; a throw while BUILDING the entry never reached the writer, so no
+ * pino line exists either and the correction episode in `brain_episodes` is the
+ * sole surviving record.
+ *
+ * NEVER THROWS: the entry construction is inside the `try` rather than just the
+ * `await`, so a synchronous throw there is contained instead of landing on an
+ * already-committed correction and reaching a caller whose error copy says
+ * "nothing was changed — retry". Two residuals, both deliberate: the `lost`
+ * payload is assembled before the `try` because the `catch` reads it (it only
+ * copies fields that are non-optional on `BrainFactCorrectionResponse`), and the
+ * `catch`'s own `log.error` is outside the guarantee — a logger broken badly
+ * enough to throw is not a failure mode this module can absorb.
+ */
+async function emitCorrectionAudit(args: {
+  readonly ctx: BrainPrincipalContext;
+  readonly result: BrainFactCorrectionResponse;
+  readonly requestId: string | undefined;
+  readonly timeoutMs: number;
+}): Promise<void> {
+  const { ctx, result, requestId, timeoutMs } = args;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  /** Distinguishes the write's own rejection from a post-deadline one. */
+  let timedOut = false;
+  /**
+   * Whether `logAdminActionAwait` was ever CALLED. It emits the actor-attributed
+   * `admin_action` pino line before its insert, so this is exactly the predicate
+   * for "does that line exist" — and the recovery instruction below is a
+   * different instruction depending on the answer.
+   */
+  let writeAttempted = false;
+  // Everything an operator needs to reconstruct the row BY HAND, shared by all
+  // three lines that can report it lost. The row IS the actor-attributed
+  // record, so a line saying it is gone without the actor is not a recovery
+  // instruction.
+  const lost = {
+    workspaceId: ctx.workspaceId,
+    actorId: ctx.userId,
+    factId: result.factId,
+    verb: result.verb,
+    correctionEpisodeId: result.correctionEpisodeId,
+    requestId,
+  } as const;
+  try {
+    // Retract keeps its dedicated action type so existing audit consumers see
+    // one vocabulary for one semantics; the other three verbs share `correct`
+    // with the verb in `metadata.verb`. `satisfies` rather than a bare
+    // annotation so the literal types survive; `as const` alone would leave a
+    // misspelled optional key (`staus`, `ipaddress`) compiling to a silent
+    // no-op, because excess-property checking does not apply to a variable.
+    //
+    // `result.factId` rather than the caller's `factId`: the response carries
+    // `f.id::text` as Postgres canonicalized it, while the agent tool accepts
+    // the id as a bare `z.string()`, so an LLM echoing a differently-cased uuid
+    // would otherwise produce a `target_id` that does not string-join to
+    // `brain_facts.id`.
+    const entry = {
+      actionType:
+        result.verb === "retract"
+          ? ADMIN_ACTIONS.brainFact.retract
+          : ADMIN_ACTIONS.brainFact.correct,
+      targetType: "brainFact",
+      targetId: result.factId,
+      // Key ORDER is load-bearing here, unusually (#4939). The action-log
+      // table previews `Object.entries(metadata).slice(0, 3)` in a truncating
+      // cell, so a key that lands fourth is invisible on the surface an
+      // operator actually opens. `flaggedForReReview` is the one entry NOTHING
+      // else renders — no queue lists the flagged facts, and this row is their
+      // only durable record — so it rides directly behind `verb`, which is
+      // what makes a row readable at all. Everything after is recoverable
+      // elsewhere: from the response, the fact row, or the request context.
+      metadata: {
+        verb: result.verb,
+        ...(result.flaggedForReReview.length > 0
+          ? { flaggedForReReview: result.flaggedForReReview }
+          : {}),
+        workspaceId: ctx.workspaceId,
+        correctionEpisodeId: result.correctionEpisodeId,
+        ...(result.invalidatedAt !== null ? { invalidatedAt: result.invalidatedAt } : {}),
+        ...(result.supersededBy !== null ? { supersededBy: result.supersededBy } : {}),
+        ...(result.validTo !== null ? { validTo: result.validTo } : {}),
+      },
+    } as const satisfies AdminActionEntry;
+
+    // The module header claims a future entry point INHERITS the audit trail.
+    // It inherits the row; it does not inherit the attribution — `resolveEntry`
+    // reads the actor off the AsyncLocalStorage context and falls back to the
+    // literal `"unknown"` with no complaint. The test is the ACTOR, not the
+    // context: `withRequestContext({ requestId })` with no `user` is the
+    // canonical scheduler/background shape, and it resolves to `"unknown"` just
+    // as a missing context does. Both entry points today supply a user, so this
+    // never fires; a future one that does not would produce a row that exists
+    // and lies, which is a worse artifact than the missing row #4934 fixed.
+    // The `unauthenticated-local` arm is exempt: that deployment has DECLARED
+    // it has no ids to record (see the authority gate at the top of
+    // `correctFact`), so `actor 'unknown'` is the correct row there, not a
+    // finding. Warning on it would fire on every correction in a
+    // correctly-configured deployment, which is how a guard gets deleted.
+    if (ctx.origin !== "unauthenticated-local" && getRequestContext()?.user?.id === undefined) {
+      log.warn(
+        { ...lost },
+        "brain correction: no actor in the request context at audit time — the admin_action_log row will " +
+          "record actor 'unknown'. A correction entry point must run inside withRequestContext with a user",
+      );
+    }
+
+    writeAttempted = true;
+    const write = logAdminActionAwait(entry);
+    // A deadline does not CANCEL the insert, and `Promise.race` discards the
+    // losing branch's outcome. Without this continuation the pg error that
+    // explains a slow write — `relation ... does not exist`, pool exhaustion —
+    // is dropped and the only line an operator ever sees is "timed out".
+    void write
+      .then(
+        () => {
+          if (timedOut) {
+            log.warn(
+              { ...lost },
+              "brain correction: admin_action_log write COMPLETED after its deadline — the earlier timeout " +
+                "line for this requestId reports the same event; a row is present unless this deployment " +
+                "has no internal DB",
+            );
+          }
+        },
+        (err: unknown) => {
+          if (timedOut) {
+            log.error(
+              { ...lost, ...pgErrorFields(err), err: err instanceof Error ? err : new Error(String(err)) },
+              "brain correction: admin_action_log write FAILED after its deadline — this is the underlying " +
+                "cause behind the earlier timeout line for this requestId",
+            );
+          }
+        },
+      )
+      // This chain is DETACHED — it settles after the response has gone out, so
+      // no `try` on the correction path can reach it, and an unhandled rejection
+      // is process-fatal by default. A committed correction's bookkeeping must
+      // not be able to take down the worker.
+      .catch(() => {
+        // intentionally ignored: best-effort observability on a detached
+        // promise; the only way here is the logger itself throwing.
+      });
+
+    await Promise.race([
+      write,
+      // Cleared in the `finally` — an uncleared 5s timer would hold the event
+      // loop open on every correction, which on the agent-tool path is a
+      // per-chat-turn cost.
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`audit write timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (err: unknown) {
+    log.error(
+      {
+        ...lost,
+        writeAttempted,
+        ...pgErrorFields(err),
+        // The Error OBJECT, matching `auth/middleware.ts`, so pino's
+        // `scrubErrSerializer` captures the stack. It rebuilds the error from a
+        // whitelist and drops every own property outside it; `code` and
+        // `constraint` are on that whitelist as of #4941, so they now ride on
+        // the error too — see `pgErrorFields` for why the lift stays anyway.
+        err: err instanceof Error ? err : new Error(String(err)),
+      },
+      // Two structurally different failures share this catch, and they need
+      // different instructions. A WRITE failure is a database problem and the
+      // `admin_action` pino line already exists (`logAdminActionAwait` emits it
+      // BEFORE its insert); it also may still commit, because a deadline does
+      // not cancel an insert — so "may not have been committed", since telling
+      // an operator the row is gone invites a hand-inserted duplicate. A
+      // BUILD failure never called the writer at all, so no pino line exists
+      // and no amount of checking the database will help.
+      writeAttempted
+        ? "brain correction: admin_action_log row may not have been committed — the correction itself IS " +
+            "committed. Check admin_action_log for this requestId before re-creating anything; the " +
+            "surviving records are the correction episode in brain_episodes and the actor-attributed " +
+            "`admin_action` pino line for this requestId"
+        : "brain correction: the admin_action_log entry could not even be BUILT — neither a row nor an " +
+            "`admin_action` pino line exists for this correction. This is a code or wiring defect, not a " +
+            "database one; the only surviving record is the correction episode in brain_episodes",
+    );
+  } finally {
+    if (deadline !== undefined) clearTimeout(deadline);
+  }
+}
+
+/**
+ * A pg rejection's `code` / `constraint`, lifted onto the log payload as its
+ * own fields — the difference between "which failure mode was this" being an
+ * answer and a guess (`42P01` a missing relation, `53300` pool exhaustion).
+ *
+ * #4941 added both to `scrubErrSerializer`'s whitelist, so they now survive on
+ * the serialized `err` too. This lift is therefore no longer the only copy, and
+ * it stays for a reason that copy cannot cover: the `err:` field above is
+ * normalized with `err instanceof Error ? err : new Error(String(err))`, which
+ * discards a NON-`Error` thrower's own properties before the serializer ever
+ * sees them. `pgErrorFields` reads the raw rejection, so on that path it is
+ * still the only copy. It also names the fields at the top level under the
+ * stable keys this module's test pins.
+ *
+ * Value policy is `diagnosticValue` — the SAME function the serializer's
+ * whitelist uses, not a parallel bound: two doors onto one log line must not
+ * enforce two different disclosure rules, and a duplicated constant is how they
+ * would drift. `detail` is left off on both: pg echoes row values into it.
+ *
+ * The read is guarded because `emitCorrectionAudit` is contracted NEVER to
+ * throw and this runs inside it, on an already-committed correction. A plain
+ * destructure would invoke an accessor; if that accessor threw, the throw would
+ * escape `correctFact` — the audit call sits after its try/catch — and reach a
+ * caller whose error copy says "nothing was changed, retry", inviting a
+ * duplicate brain mutation authored by a logging helper. Hence own non-accessor
+ * reads (an accessor descriptor has no `value`, so the getter is never called)
+ * plus a `catch` for a Proxy that traps the descriptor lookup itself — the two
+ * defenses `errorDiagnostics` uses, for the same reasons.
+ */
+function pgErrorFields(err: unknown): { pgCode?: string; pgConstraint?: string } {
+  if (typeof err !== "object" || err === null) return {};
+  try {
+    const pgCode = diagnosticValue(Object.getOwnPropertyDescriptor(err, "code")?.value);
+    const pgConstraint = diagnosticValue(
+      Object.getOwnPropertyDescriptor(err, "constraint")?.value,
+    );
+    return {
+      ...(pgCode !== undefined && { pgCode }),
+      ...(pgConstraint !== undefined && { pgConstraint }),
+    };
+  } catch (err_) {
+    // intentionally ignored: a trapping diagnostic property must not turn a
+    // best-effort audit log line into a throw out of a never-throw contract.
+    void err_;
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-verb effects
+// ---------------------------------------------------------------------------
+
+async function applyRetract(
+  tx: ReconcileExecutor,
+  workspaceId: string,
+  target: TargetRow,
+  episodeId: string,
+  at: Date,
+  base: BrainFactCorrectionResponse,
+): Promise<BrainFactCorrectionResponse> {
+  const stamped = await tx.query(RETRACT_FACT_SQL, [workspaceId, target.id]);
+  const row = stamped.rows[0];
+  const invalidatedAt = isJsonObject(row) ? iso(row.invalidated_at) : null;
+  if (invalidatedAt === null) {
+    // The target was read FOR UPDATE with `invalidated_at IS NULL` in the same
+    // transaction, so a non-matching UPDATE is statement drift, not a race —
+    // and reporting a retraction that did not stamp would be the silent
+    // partial this module must not produce.
+    throw new Error(
+      `brain correction: retract stamped no row for fact ${target.id} — RETRACT_FACT_SQL drifted from the target read`,
+    );
+  }
+
+  await tx.query(DERIVES_FROM_EDGE_SQL, [workspaceId, target.id, episodeId]);
+
+  // Flag, never cascade — see the module header.
+  const dependents = await tx.query(DEPENDENT_FACTS_SQL, [workspaceId, target.id]);
+  const dependentIds = idList(dependents.rows);
+  let flagged: readonly string[] = [];
+  if (dependentIds.length > 0) {
+    const marker = JSON.stringify({
+      reReview: {
+        reason: "derives-from-retracted",
+        retractedFactId: target.id,
+        correctionEpisodeId: episodeId,
+        flaggedAt: at.toISOString(),
+      },
+    });
+    const flaggedResult = await tx.query(MERGE_PROVENANCE_MARKER_SQL, [
+      workspaceId,
+      dependentIds,
+      marker,
+    ]);
+    flagged = idList(flaggedResult.rows);
+    if (flagged.length < dependentIds.length) {
+      // Reachable (a dependent retracted between the SELECT and the marker
+      // UPDATE — those need no flag) and also the only trace if the marker
+      // statement ever drifts, which would leave dependents permanently
+      // unflagged with the retraction reporting success.
+      log.warn(
+        {
+          workspaceId,
+          factId: target.id,
+          expected: dependentIds.length,
+          flagged: flagged.length,
+          missing: dependentIds.filter((id) => !flagged.includes(id)),
+        },
+        "brain correction: some derives-from dependents were not flagged — retracted concurrently, or MERGE_PROVENANCE_MARKER_SQL drifted",
+      );
+    }
+    log.info(
+      { workspaceId, factId: target.id, flagged: flagged.length },
+      "brain correction: retraction flagged derives-from dependents for re-review — nothing cascaded",
+    );
+  }
+
+  return { ...base, invalidatedAt, flaggedForReReview: flagged };
+}
+
+interface SupersedeInputs {
+  readonly replacement: { readonly object: string; readonly validFrom: Date | null };
+  readonly sourcePrincipal: string;
+  readonly actor: string;
+  readonly correctionSourceId: string;
+  readonly grantTokens: readonly string[];
+}
+
+async function applySupersede(
+  tx: ReconcileExecutor,
+  workspaceId: string,
+  target: TargetRow,
+  episodeId: string,
+  at: Date,
+  base: BrainFactCorrectionResponse,
+  inputs: SupersedeInputs,
+): Promise<BrainFactCorrectionResponse> {
+  // #4912's stamp FIRST, via the publish gate's own statement — before the
+  // replacement reconciles. The ordering is load-bearing: reconcile's tension
+  // pass flags every LIVE same-subject/predicate rival of a new single-
+  // cardinality claim, and the target is exactly such a rival until its
+  // window closes. Stamping first means the belief being retired is already
+  // settled history when the pass runs (`TENSION_CANDIDATES_SQL` filters
+  // `valid_to IS NULL`), so this verb cannot mint a permanent
+  // `in-tension-with` edge recording a conflict the same transaction
+  // resolves. Any OTHER live rival still earns its advisory edge, which is
+  // correct — the human arbitrated this pair, not the whole field. A failure
+  // later in the verb rolls the stamp back with everything else.
+  const stampResult = await tx.query(SUPERSEDE_STAMP_SQL, [workspaceId, [target.id]]);
+  const stampedId = firstId(stampResult.rows);
+  if (stampedId === null) {
+    // The target is row-locked and was pre-checked published/current in this
+    // transaction, so an empty RETURNING is drift — and committing would
+    // record a supersession that never stamped.
+    throw new Error(
+      `brain correction: supersede stamped no row for fact ${target.id} — the target checks and SUPERSEDE_STAMP_SQL disagree`,
+    );
+  }
+
+  // The replacement claim enters through the SAME seam every producer does —
+  // reconcile is what attaches the provenance edge, the grant, and (if a live
+  // rival already asserts the value) the corroboration instead of a duplicate.
+  const report = await reconcileFacts(
+    {
+      episode: {
+        id: episodeId,
+        workspaceId,
+        source: HUMAN_SOURCE,
+        sourceId: inputs.correctionSourceId,
+        sourceActor: inputs.actor,
+        occurredAt: at,
+        visibleTo: inputs.grantTokens,
+      },
+      candidates: [
+        {
+          subject: target.subject,
+          predicate: target.predicate,
+          object: inputs.replacement.object,
+          validFrom: inputs.replacement.validFrom ?? at,
+          predicateCardinality: target.cardinality,
+        },
+      ],
+      producer: "correction",
+      // An authored claim is not extracted from anything.
+      extractedAt: null,
+      sourcePrincipal: inputs.sourcePrincipal,
+    },
+    // Reuse THIS transaction — the default runner would nest a second pool
+    // checkout under the held connection, which is the bounded-pool starvation
+    // deadlock `withBrainTransaction` documents.
+    { withTransaction: (fn) => fn(tx), now: () => at },
+  );
+  const outcome = report.outcomes[0];
+  if (!outcome || outcome.kind === "blocked") {
+    // Unreachable by construction — the episode was just written with the
+    // target's own usable grant and an explicit principal — so a block here
+    // means the seam's contract changed underneath this caller.
+    throw new Error(
+      `brain correction: reconcile blocked the replacement claim (${outcome ? outcome.reason : "no outcome"}) — ` +
+        "the correction episode should satisfy every episode-level gate by construction",
+    );
+  }
+
+  // Authoritative immediately: a still-draft replacement is promoted inside
+  // this same transaction, screened through the SAME classifier the publish
+  // gate runs. A refusal is unreachable for a row this transaction built, and
+  // is treated as a hard refusal (rolling everything back) if it happens.
+  const rowResult = await tx.query(REPLACEMENT_ROW_SQL, [workspaceId, outcome.factId]);
+  const row = rowResult.rows[0];
+  if (!isJsonObject(row) || typeof row.id !== "string" || typeof row.status !== "string") {
+    throw new Error(
+      `brain correction: replacement fact ${outcome.factId} could not be read back — REPLACEMENT_ROW_SQL drifted`,
+    );
+  }
+  if (row.status === "draft") {
+    const draftRow: DraftFactRow = {
+      id: row.id,
+      subject: typeof row.subject === "string" ? row.subject : "?",
+      predicate: typeof row.predicate === "string" ? row.predicate : "?",
+      object: typeof row.object === "string" ? row.object : "?",
+      source_episode_id: typeof row.source_episode_id === "string" ? row.source_episode_id : null,
+      provenance: row.provenance,
+      visible_to: row.visible_to,
+    };
+    const refusal = classifyFactForPromotion(draftRow);
+    if (refusal) {
+      throw new CorrectionRefusedError(
+        CORRECTION_REFUSAL_REASONS.replacementUnpublishable,
+        `The replacement could not be published: ${refusal.detail}`,
+      );
+    }
+    const promoted = await tx.query(PROMOTE_CORRECTION_FACT_SQL, [workspaceId, row.id]);
+    if (firstId(promoted.rows) === null) {
+      throw new Error(
+        `brain correction: replacement fact ${row.id} was classified promotable but the promote matched no row`,
+      );
+    }
+  } else if (row.status !== "published") {
+    // `archived`, or an out-of-vocabulary status: there is no path from here
+    // to a current published successor, and silently superseding with a
+    // non-served fact would retire the target in favour of nothing.
+    throw new CorrectionRefusedError(
+      CORRECTION_REFUSAL_REASONS.replacementUnpublishable,
+      `A fact already asserts "${target.subject} ${target.predicate} ${inputs.replacement.object}" but is ` +
+        `'${row.status}', so it cannot serve as the current belief. Resolve that fact first, then supersede.`,
+    );
+  }
+
+  // The arbitration record (new → old), via the publish gate's own statement.
+  // The stamp already ran — first in the verb, see the top of this function.
+  await tx.query(INSERT_SUPERSEDES_EDGES_SQL, [
+    workspaceId,
+    JSON.stringify([{ newId: outcome.factId, oldId: target.id }]),
+  ]);
+  await tx.query(DERIVES_FROM_EDGE_SQL, [workspaceId, target.id, episodeId]);
+
+  return {
+    ...base,
+    supersededBy: outcome.factId,
+    validTo: at.toISOString(),
+  };
+}
+
+/**
+ * `re-authority` and `pin` — the two vouching verbs. Identical mechanics
+ * (evidence edge + marker), different marker key; the SEMANTICS live in the
+ * marker and in the tool/route prose, not in divergent machinery.
+ */
+async function applyVouch(
+  tx: ReconcileExecutor,
+  workspaceId: string,
+  target: TargetRow,
+  episodeId: string,
+  at: Date,
+  base: BrainFactCorrectionResponse,
+  markerKey: "reAuthority" | "pinned",
+  actor: string,
+): Promise<BrainFactCorrectionResponse> {
+  await tx.query(INSERT_PROVENANCE_EDGE_SQL, [workspaceId, target.id, episodeId]);
+  const marker = JSON.stringify({
+    [markerKey]: { actor, at: at.toISOString(), correctionEpisodeId: episodeId },
+  });
+  const marked = await tx.query(MERGE_PROVENANCE_MARKER_SQL, [workspaceId, [target.id], marker]);
+  if (firstId(marked.rows) === null) {
+    throw new Error(
+      `brain correction: ${markerKey} marker matched no row for fact ${target.id} — the target read and the marker UPDATE disagree`,
+    );
+  }
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// Narrowing helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Tier-1 detection, off the stored payload: `reconcile.ts` writes
+ * `provenance.source` structurally from the episode's connector class, so a
+ * warehouse-derived fact carries `WAREHOUSE_SOURCE` there. Tier-1 proper is
+ * never stored in `brain_facts` at all — this guards the DERIVED class the ADR
+ * likewise exempts from correction.
+ *
+ * The constant, not the literal `"warehouse"`, and that is the whole strength
+ * of this predicate: the kind comes from a producer ADR-0036 commits to but no
+ * milestone has scoped, and while both sides spelled their own string their
+ * agreement was a coincidence — a producer naming itself `"snowflake"` would
+ * have silently stopped every tier-1 refusal without failing a test. See
+ * `lib/brain/sources.ts`.
+ */
+export function isWarehouseDerived(provenance: unknown): boolean {
+  return isJsonObject(provenance) && provenance.source === WAREHOUSE_SOURCE;
+}
+
+function normalizeReplacement(
+  replacement: CorrectionReplacement | undefined,
+): { readonly object: string; readonly validFrom: Date | null } | null {
+  if (!replacement) return null;
+  const object = replacement.object.trim();
+  if (object === "") return null;
+  const validFrom = replacement.validFrom ?? null;
+  if (validFrom !== null && Number.isNaN(validFrom.getTime())) {
+    // Both entry seams validate `validFrom` as ISO-8601 (`.datetime()`), so
+    // this backstop is for a future caller constructing the Date directly.
+    // Degrading is safe — the nullable slot already means "no stated start",
+    // and the verb then records the correction time — but degrading a HUMAN's
+    // stated temporal boundary silently is not; the warn is the trace.
+    log.warn(
+      { object },
+      "brain correction: replacement.validFrom is an invalid Date — recording the correction time as the validity start instead",
+    );
+    return { object, validFrom: null };
+  }
+  return { object, validFrom };
+}
+
+/**
+ * Narrow the locked target row, or say precisely why it cannot be narrowed.
+ *
+ * Returns `null` ONLY when there was no row at all — the genuine
+ * absent/retracted/invisible trio the caller reports as not-found. A row that
+ * EXISTS but fails narrowing is query drift in `correctionTargetSql`, and it
+ * THROWS (→ a 500 with a requestId) rather than masquerading as not-found:
+ * every column here is `NOT NULL text` at rest, and the drifted triple would
+ * otherwise flow into a `supersede` replacement's own subject and predicate —
+ * a published fact asserting `? ?`, the silent partial the module forswears.
+ * Same posture, same reason, as the grant-token throw below.
+ */
+function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
+  if (row === undefined || row === null) return null;
+  const drift = (what: string): never => {
+    throw new Error(
+      `brain correction: the target read returned a row this module cannot narrow (${what}) — correctionTargetSql drifted (workspace ${workspaceId})`,
+    );
+  };
+  if (!isJsonObject(row)) return drift("not an object");
+  if (typeof row.id !== "string" || row.id === "") return drift("no usable id");
+  if (
+    typeof row.subject !== "string" ||
+    typeof row.predicate !== "string" ||
+    typeof row.object !== "string" ||
+    typeof row.status !== "string"
+  ) {
+    return drift(`non-text SPO/status for fact ${row.id}`);
+  }
+  const cardinality =
+    row.predicate_cardinality === "single" || row.predicate_cardinality === "multi"
+      ? row.predicate_cardinality
+      : "multi";
+  if (cardinality !== row.predicate_cardinality) {
+    log.warn(
+      { rowId: row.id, workspaceId, cardinality: row.predicate_cardinality },
+      "brain correction: target carries a predicate cardinality outside the vocabulary — treating it as `multi`",
+    );
+  }
+  const grantTokens = isUnknownArray(row.visible_to)
+    ? row.visible_to.filter((t): t is string => typeof t === "string")
+    : [];
+  if (grantTokens.length === 0) {
+    // Unreachable for a row the ACL-gated read served (the actor matched a
+    // token), so this is query drift — and seeding an episode with an empty
+    // grant would trip the 0180 CHECK mid-transaction with a worse message.
+    throw new Error(
+      `brain correction: target fact ${row.id} produced no usable grant tokens — the visible_to projection drifted`,
+    );
+  }
+  // The two temporal gates read DIFFERENT columns, and each needs its own
+  // drift arm — but they fail in OPPOSITE directions, which is why neither can
+  // be left to a default. `windowClosed` absent would arrive as "not closed"
+  // and silently re-ADMIT the vouch this refusal exists to refuse; `validTo`
+  // absent would arrive as `undefined`, which is `!== null`, and silently
+  // REFUSE a legitimate supersession. Either way the module would be answering
+  // off a value it cannot read, which is the thing to refuse.
+  //
+  // `undefined` is the load-bearing case for both: `pg` produces it only when
+  // the column was absent from the SELECT, which is drift, not a fact about
+  // the row (the same distinction `attribution.ts` draws for
+  // `pre_widening_visible_to`).
+  if (row.valid_to === undefined) {
+    return drift(`valid_to absent from the target projection for fact ${row.id}`);
+  }
+  if (
+    row.valid_to !== null &&
+    !(row.valid_to instanceof Date) &&
+    typeof row.valid_to !== "string"
+  ) {
+    return drift(`unreadable valid_to (${typeof row.valid_to}) for fact ${row.id}`);
+  }
+  const validTo: Date | string | null = row.valid_to;
+  if (typeof row.window_closed !== "boolean") {
+    // Postgres decides this (see `correctionTargetSql`); an absent or
+    // non-boolean value means the projection drifted, and defaulting it either
+    // way would silently disable or silently universalize the vouch refusal.
+    return drift(`no boolean window_closed for fact ${row.id}`);
+  }
+
+  return {
+    id: row.id,
+    subject: row.subject,
+    predicate: row.predicate,
+    object: row.object,
+    status: row.status,
+    cardinality,
+    provenance: row.provenance,
+    grantTokens,
+    validTo,
+    windowClosed: row.window_closed,
+  };
+}
+
+function rowId(row: unknown): string | null {
+  if (!isJsonObject(row)) return null;
+  return typeof row.id === "string" && row.id !== "" ? row.id : null;
+}
+
+function firstId(rows: readonly unknown[]): string | null {
+  return rows.length === 0 ? null : rowId(rows[0]);
+}
+
+function idList(rows: readonly unknown[]): string[] {
+  const ids: string[] = [];
+  for (const row of rows) {
+    const id = rowId(row);
+    if (id !== null) ids.push(id);
+  }
+  return ids;
+}
+
+function iso(value: unknown): string | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  if (typeof value === "string" && value !== "") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  return null;
+}

@@ -86,6 +86,26 @@ export interface SaasEnv {
   // pattern as the provider/adapter keys).
   readonly VERCEL_TOKEN: string | undefined;
 
+  // Python sandbox sidecar (PythonSandboxGuardLive, #4940). `ATLAS_PYTHON_ENABLED`
+  // requests the `executePython` tool; `ATLAS_SANDBOX_URL` is the sidecar the tool
+  // is REGISTERED against (`buildRegistry` refuses without it, even on a deploy
+  // whose Vercel/nsjail backend would run Python fine — see the narrowness note in
+  // `lib/tools/python-sandbox-requirement.ts`). Enabling the first without the
+  // second used to boot green forever with the tool silently absent, because every
+  // `buildRegistry` caller catches the throw — so the guard fails boot instead.
+  //
+  // Listed here for two reasons: the boot-smoke fixture populates them (both unset,
+  // the inert shape), and `saas-guards.test.ts :: withCleanEnv` consumes
+  // `SAAS_ENV_KEYS` to clear the env between cases — without that, a leaked
+  // `ATLAS_PYTHON_ENABLED` would flip this guard's assertions.
+  //
+  // Note this guard is deploy-mode-AGNOSTIC (like `PluginConfigGuardLive`; see its
+  // own docstring): the knob is self-hosted-facing, so gating it on SaaS would
+  // leave the population that actually sets it unguarded. It is still a SaaS boot
+  // input — SaaS reads the same two vars through the same predicate.
+  readonly ATLAS_PYTHON_ENABLED: string | undefined;
+  readonly ATLAS_SANDBOX_URL: string | undefined;
+
   // Platform email DPA (DpaGuardLive → assertSaasPlatformEmailIsResend)
   readonly ATLAS_SMTP_URL: string | undefined;
   readonly RESEND_API_KEY: string | undefined;
@@ -165,6 +185,8 @@ export const SAAS_ENV_KEYS = [
   "ATLAS_REGION_APAC_DB_URL",
   "ATLAS_STRICT_PLUGIN_SECRETS",
   "VERCEL_TOKEN",
+  "ATLAS_PYTHON_ENABLED",
+  "ATLAS_SANDBOX_URL",
   "ATLAS_SMTP_URL",
   "RESEND_API_KEY",
   "TURNSTILE_SECRET_KEY",
@@ -204,6 +226,8 @@ export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
     ATLAS_REGION_APAC_DB_URL: env.ATLAS_REGION_APAC_DB_URL,
     ATLAS_STRICT_PLUGIN_SECRETS: env.ATLAS_STRICT_PLUGIN_SECRETS,
     VERCEL_TOKEN: env.VERCEL_TOKEN,
+    ATLAS_PYTHON_ENABLED: env.ATLAS_PYTHON_ENABLED,
+    ATLAS_SANDBOX_URL: env.ATLAS_SANDBOX_URL,
     ATLAS_SMTP_URL: env.ATLAS_SMTP_URL,
     RESEND_API_KEY: env.RESEND_API_KEY,
     TURNSTILE_SECRET_KEY: env.TURNSTILE_SECRET_KEY,
@@ -289,6 +313,14 @@ export function makeBootSmokeFixture(
     // the only env input. Not a secret — identical every CI run, like the other
     // fixture placeholders.
     VERCEL_TOKEN: "ci-fixture-vercel-token-not-a-secret",
+    // PythonSandboxGuardLive (#4940) is inert unless ATLAS_PYTHON_ENABLED is
+    // literally "true", so both stay unset: boot-smoke exercises the shape every
+    // real deploy has (the Python tool not requested). A run that wants the
+    // guard's fail path sets ATLAS_PYTHON_ENABLED via `overrides` and leaves
+    // ATLAS_SANDBOX_URL unset — setting BOTH is the passing shape. Nothing here
+    // can turn the guard on by accident, since neither has a default.
+    ATLAS_PYTHON_ENABLED: undefined,
+    ATLAS_SANDBOX_URL: undefined,
     ATLAS_SMTP_URL: undefined,
     RESEND_API_KEY: "ci-fixture-resend-key-not-a-secret",
     // TurnstileGuardLive (#3795) asserts presence only (non-empty) in SaaS —

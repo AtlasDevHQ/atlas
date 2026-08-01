@@ -1,0 +1,78 @@
+---
+title: Company Brain — Conflicts
+description: How Atlas surfaces two reviewed facts that disagree — both claims with their provenance, never a ranking — and why refusing to auto-arbitrate is a design decision rather than a missing feature.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Two people say different things about the same subject. A stale document contradicts a fresh Slack thread. Sooner or later the brain holds two claims that cannot both be current.
+
+Atlas's answer is to **show you both, with their evidence, and refuse to pick**. This page explains what that looks like, and why it is the design rather than a gap in it.
+
+---
+
+## When a conflict is recorded
+
+Conflicts are recorded per **predicate cardinality** — a property of the claim's shape:
+
+| Cardinality | Meaning | On a new claim |
+|-------------|---------|----------------|
+| `single` | The subject has exactly one value (a person has one manager) | The new claim is recorded as being **in tension with** the incumbent |
+| `multi` | Values coexist and corroborate (a person knows many languages) | The claims simply coexist |
+
+`multi` is the schema default, deliberately. Coexisting wrongly is recoverable at the review gate; superseding wrongly destroys a belief.
+
+When a `single`-cardinality claim arrives that disagrees with an existing one, Atlas writes an `in-tension-with` edge between them. That edge is a **record of disagreement**, not a verdict.
+
+## What a conflict cluster shows
+
+A fact's cluster is its one-hop `in-tension-with` neighbourhood, in **both directions**. Edges are written from the newer claim to the incumbent, so an incumbent that has since been contradicted only ever appears on the receiving side — walking one direction only would hide from you exactly the older claim whose trust is now in question.
+
+Each visible counterpart arrives as a full claim in its own right: subject, predicate, object, review status, validity dates, corroboration count, and **its own provenance**. Not a summary, not a score — the same material you would use to judge the claim it contests.
+
+Counterparts are sorted by fact id. That is deterministic and deliberately meaningless: not by time, not by status, not by source authority, not by corroboration count. Any of those orderings would imply a winner.
+
+<Callout type="info" title="Retired rivals stay listed, and stay labelled">
+  A claim that has since been withdrawn or replaced is still why a live claim was contested, so the cluster lists both: it is the one read that does not hide a tombstoned rival, and the one *current-belief* read that does not hide a superseded one. Every counterpart carries the stamps for **both** [temporal axes](/guides/brain-temporal-model#supersession-is-not-retraction) — `invalidatedAt` if it was retracted, `validTo` for the end of its validity window, either or both possible — because neither verb writes `status`. Without them you could not tell a live conflict from one somebody already resolved.
+
+  `validTo` arrives without anyone acting on the rival: the publish gate stamps it on the claim it retires, and nothing deletes the `in-tension-with` edge written when the two claims first disagreed. So a promoted claim keeps its predecessor as a counterpart permanently — correctly labelled as settled, not as an open contradiction.
+
+  Read `validTo` against the clock, not against null. A stamp **in the past** closes the window; a future-dated one is a live rival whose end is merely scheduled, and labelling it settled would hide a conflict that is still open. Both fields are as of now — an `asOf` read does not rewind them.
+
+  Both are **labels, not rankings**. They say what already happened to the rival; the cluster still names no winner.
+</Callout>
+
+## Counterparts you cannot see
+
+Conflict clusters cross access boundaries, and this is where the design is least obvious.
+
+Each counterpart is access-checked **independently**, against its own grant — never inherited from whatever entitled you to the fact that owns the cluster. Otherwise being entitled to one claim would hand you a rival claim, and its provenance, purely because the two disagree.
+
+A counterpart you may not see is **reported, not dropped**: you get an opaque handle saying a conflicting claim exists, with no payload. The review surface shows it as a withheld rival; the agent's context window gets an aggregated count.
+
+This matters more than it might seem. "There is a rival you cannot see" is precisely the signal that should stop a reviewer approving a claim or an agent asserting one. An omitted row reads as *nothing contradicts this* — a confident, wrong answer.
+
+---
+
+## Why Atlas refuses to arbitrate
+
+Nothing in a conflict cluster ranks, scores, or orders by anything implying a winner. That is the point, not a limitation.
+
+An automatic arbitration rule — newest wins, most-corroborated wins, highest-authority-source wins — would have to be right without knowing what the claims mean. Each of those heuristics fails in ordinary cases:
+
+- **Newest wins** loses to a stale correction of a fresh mistake.
+- **Most corroborated wins** rewards a rumour repeated in five channels over one authoritative statement.
+- **Highest-authority source wins** requires an authority ordering over people that no organisation actually agrees on.
+
+A wrong arbitration is worse than a visible conflict, because it is invisible. The losing claim disappears, and the agent asserts the survivor with full confidence and no signal that anything was ever contested.
+
+So arbitration stays a **human verb**. Resolving a conflict means [superseding](/guides/brain-corrections#supersede--replace-a-belief) the claim that lost — which closes its validity window, records the `supersedes` edge, and keeps the retired belief readable inside its own window — or [retracting](/guides/brain-corrections#retract--the-only-tombstone) a claim that should never have been served.
+
+<Callout type="info" title="What the agent does with a conflict">
+  Conflicting facts reach the agent labelled as such, both sides present. The agent surfaces the disagreement rather than silently choosing — an answer built on a contested claim should say so.
+</Callout>
+
+## Related
+
+- [Company Brain — Corrections](/guides/brain-corrections) — the verbs that resolve a conflict
+- [Company Brain — Temporal Model](/guides/brain-temporal-model) — why a superseded claim stays readable

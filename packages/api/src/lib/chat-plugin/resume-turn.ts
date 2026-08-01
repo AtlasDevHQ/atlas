@@ -147,8 +147,53 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         // Re-enter the loop from the checkpoint. `messages: []` is inert — the
         // rewritten transcript (carrying the "approved, re-run now" result) is
         // the model input. The tools re-resolve connection/whitelist/RLS live.
+        //
+        // #4936 — the registry is named explicitly, and it is rebuilt from the
+        // SAME POLICY the parked turn ran under: the original chat-platform turn
+        // went through `executeAgentQuery` → `buildHeadlessRegistry()`. Policy,
+        // not set — `ATLAS_ACTIONS_ENABLED` / `ATLAS_PYTHON_ENABLED` are re-read
+        // here, so a turn parked across an operator flag flip resumes on a
+        // different set. Omitting `tools`
+        // here used to hand the resume the workspace registry instead, so the
+        // tool surface silently WIDENED across the approval boundary — adding
+        // `correct_fact` to an autonomous Slack turn with no confirmation UI.
+        // Execute time did NOT uniformly refuse. In authenticated modes it did:
+        // the role is re-resolved from the `member` table and the session role
+        // is discarded by design (`reader-context.ts`), the bot has no member
+        // row, so `ctx.role` is null and `correction.ts`'s owner/admin gate said
+        // no. Note the bot's synthetic `role: "member"` is NOT what refuses —
+        // raising it would change nothing. But under
+        // `ATLAS_AUTH_MODE=none` the principal resolves to
+        // `origin: "unauthenticated-local"`, which that gate deliberately lets
+        // through ("the local operator is the only identity there is"), so on a
+        // self-hosted no-auth deploy running the Slack plugin the widened
+        // resume could actually have mutated the brain. Even where the gate did
+        // hold, the posture is that a brain-mutating tool must not be on this
+        // surface at all.
+        //
+        // #4941 — the seam also hands back the warnings the model must relay
+        // (degraded action tools, or a fallback to the core set). A resumed
+        // turn is as headless as the parked one, so it needs the same telling.
+        const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
+        const { registry: toolRegistry, warnings: registryWarnings } =
+          await buildHeadlessRegistry();
+        if (registryWarnings.length > 0) {
+          // The operator half. The registry's own error line already carries a
+          // requestId (the pino mixin reads the context bound above) but
+          // nothing domain-level; conversationId / orgId / runId are the
+          // identifiers whoever fields "why did Slack say X was unavailable"
+          // actually has.
+          log.warn(
+            { conversationId, orgId, runId: handle.runId, warningCount: registryWarnings.length },
+            "Chat resume running on a DEGRADED tool set — the approved turn may lack the tool it parked on",
+          );
+        }
         const agentResult = await runAgent({
           messages: [],
+          tools: toolRegistry,
+          // Copied: `runAgent` pushes its own warnings into the array it is
+          // handed, and that array belongs to the registry seam.
+          ...(registryWarnings.length > 0 && { warnings: [...registryWarnings] }),
           conversationId,
           resume: {
             runId: handle.runId,

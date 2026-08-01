@@ -40,8 +40,22 @@ void mock.module("@atlas/api/lib/durable-resume", () => ({
 void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockBillingGate,
 }));
+// Mocked at its FULL named-export surface, not just the names `resume-turn`
+// itself uses. `buildHeadlessRegistry()` (#4936) pulls the tool-registry module
+// graph in here, and a partial `mock.module` fails the whole import with
+// "Export named 'X' not found" — which `resume-turn`'s catch then reports as an
+// opaque `agent_run_error`. Mocking only the name that breaks today guarantees
+// the next unrelated PR re-hits this.
 void mock.module("@atlas/api/lib/logger", () => ({
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"],
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  getLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  getRequestContext: () => undefined,
+  hashShareToken: (t: string) => t,
+  redactPaths: [],
+  scrubErrSerializer: (v: unknown) => v,
+  scrubLogFormatter: (o: unknown) => o,
+  setLogLevel: () => true,
   withRequestContext: async (ctx: Record<string, unknown>, fn: () => Promise<unknown>) => {
     capturedContext = ctx;
     return fn();
@@ -87,6 +101,76 @@ describe("resumeChatTurn (#3750)", () => {
     expect(runArgs.resume?.runId).toBe("run_1");
     // Lease released.
     expect(mockFinishResume).toHaveBeenCalledTimes(1);
+  });
+
+  it("#4936 — resumes on the headless tool set, not the workspace one", async () => {
+    // The parked turn ran through `executeAgentQuery` → `buildHeadlessRegistry()`.
+    // Resume used to omit `tools` entirely and inherit `runAgent`'s default, so
+    // the surface WIDENED across the approval boundary — picking up the
+    // brain-mutating `correct_fact` on an autonomous Slack turn with no
+    // confirmation UI. The registry must now be named here, and rebuilt from the
+    // same policy.
+    await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+
+    const runArgs = mockRunAgent.mock.calls[0]![0] as { tools?: { getAll(): Record<string, unknown> } };
+    expect(runArgs.tools, "resume must pass `tools` explicitly").toBeDefined();
+
+    const names = Object.keys(runArgs.tools!.getAll());
+    expect(names).not.toContain("correct_fact");
+    expect(names).not.toContain("createDashboard");
+    // Not vacuous — the read surface the parked turn had is intact.
+    expect(names).toContain("executeSQL");
+    expect(names).toContain("explore");
+  });
+
+  it("#4941 — a degraded registry build tells the resumed model, instead of degrading silently", async () => {
+    // The resume is as headless as the turn it continues, so it owes the user
+    // the same explanation. `ATLAS_PYTHON_ENABLED` without `ATLAS_SANDBOX_URL`
+    // is `buildRegistry`'s fatal misconfiguration; `buildHeadlessRegistry`
+    // catches it and degrades to the non-dashboard core set — deliberately, and
+    // pinned elsewhere — but the user used to be told nothing, so the model
+    // reported the lost capability as one it never had.
+    //
+    // Driven through the FALLBACK branch rather than a failed action-module
+    // import because that needs a file-wide `mock.module`; the action-load half
+    // is pinned in `lib/__tests__/agent-query-degraded-tools.test.ts` on the
+    // other headless caller. Both callers read the same field of the same seam.
+    const savedPython = process.env.ATLAS_PYTHON_ENABLED;
+    const savedSandbox = process.env.ATLAS_SANDBOX_URL;
+    process.env.ATLAS_PYTHON_ENABLED = "true";
+    delete process.env.ATLAS_SANDBOX_URL;
+    try {
+      const result = await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+      expect(result).toEqual({ status: "answered", answer: "continued answer" });
+
+      const runArgs = mockRunAgent.mock.calls[0]![0] as {
+        tools?: { getAll(): Record<string, unknown> };
+        warnings?: string[];
+      };
+      expect(
+        runArgs.warnings,
+        "the resumed turn ran on a degraded tool set and told the model nothing about it",
+      ).toBeDefined();
+      expect(runArgs.warnings).toHaveLength(1);
+      expect(runArgs.warnings![0]).toContain("temporarily unavailable");
+      // Degraded, not dead — and still the headless set, not the workspace one.
+      const degradedNames = Object.keys(runArgs.tools!.getAll());
+      expect(degradedNames).toContain("executeSQL");
+      expect(degradedNames).not.toContain("correct_fact");
+    } finally {
+      if (savedPython === undefined) delete process.env.ATLAS_PYTHON_ENABLED;
+      else process.env.ATLAS_PYTHON_ENABLED = savedPython;
+      if (savedSandbox === undefined) delete process.env.ATLAS_SANDBOX_URL;
+      else process.env.ATLAS_SANDBOX_URL = savedSandbox;
+    }
+  });
+
+  it("#4941 — a healthy build passes no warnings (the resumed model is not told to apologise)", async () => {
+    const result = await resumeChatTurn({ ...BASE, externalUserId: "U999" });
+    // Non-vacuous: the resume really ran and really answered.
+    expect(result).toEqual({ status: "answered", answer: "continued answer" });
+    const runArgs = mockRunAgent.mock.calls[0]![0] as { warnings?: string[] };
+    expect(runArgs.warnings).toBeUndefined();
   });
 
   it("blocks (does not resume) when billing re-resolution refuses", async () => {

@@ -267,35 +267,39 @@ export async function executeAgentQuery(
     // Build the tool registry for this surface. `executeAgentQuery` serves the
     // non-web programmatic surfaces — the SDK query route, chat-platform
     // adapters (Slack), the MCP query tool, and the scheduler. None of them own
-    // a dashboards route, so we pass `dashboardUrlResolver: null` to omit
-    // `createDashboard` entirely (#4566, PRD #4553 L2): a handoff link to
-    // `/dashboards/[id]` is unreachable from Slack or a scheduled digest, so the
-    // agent must never be offered the tool here. Action tools stay opt-in via
-    // ATLAS_ACTIONS_ENABLED. On a build failure we fall back to
-    // `nonDashboardRegistry` (NOT the dashboards-owning `defaultRegistry`) so the
-    // createDashboard omission holds on the error path too — and we always pass
-    // `tools` so `runAgent` never defaults to `defaultRegistry`.
-    const { buildRegistry, nonDashboardRegistry } = await import(
-      "@atlas/api/lib/tools/registry"
-    );
-    let toolRegistry = nonDashboardRegistry;
-    const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
-    try {
-      const result = await buildRegistry({
-        includeActions,
-        dashboardUrlResolver: null,
-      });
-      toolRegistry = result.registry;
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Failed to build tool registry — falling back to the non-dashboard core registry",
+    // a dashboards route and none has a confirmation UI in the surface itself
+    // (the approval park/resume flow is out-of-band), so this is the canonical
+    // HEADLESS surface. What that registry contains and why is
+    // `buildHeadlessRegistry`'s docstring — not restated here.
+    //
+    // #4936 — that construction moved into `registry.ts` so the chat-plugin
+    // approval RESUME of a turn started here rebuilds from the identical POLICY
+    // instead of re-deriving it (or, as it did, omitting `tools` and inheriting
+    // the workspace registry). Passing `tools` is no longer discipline —
+    // #4943 made it a required parameter, so the compiler enforces what this
+    // comment used to ask for.
+    //
+    // #4941 — the seam also returns the warnings this surface must relay; the
+    // narrative for why they exist is `buildHeadlessRegistry`'s docstring.
+    // Copied on the way in: `runAgent` treats `warnings` as an in/out param and
+    // pushes its own (semantic-layer, focus-datasource) into whatever array it
+    // is handed, so it must never be given the seam's.
+    const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
+    const { registry: toolRegistry, warnings: registryWarnings } = await buildHeadlessRegistry();
+    if (registryWarnings.length > 0) {
+      // The operator half. The model is told below; this is the line that ties
+      // "the Slack bot said X was unavailable" to a requestId (stamped by the
+      // pino mixin from the context bound above).
+      log.warn(
+        { requestId: id, warningCount: registryWarnings.length },
+        "Headless agent turn running on a DEGRADED tool set — see the preceding registry error",
       );
     }
 
     const result = await runAgent({
       messages,
       tools: toolRegistry,
+      ...(registryWarnings.length > 0 && { warnings: [...registryWarnings] }),
       ...(options?.conversationId && { conversationId: options.conversationId }),
       ...(options?.answerStyle && { answerStyle: options.answerStyle }),
       ...(options?.abortSignal && { abortSignal: options.abortSignal }),

@@ -1,10 +1,18 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { z } from "zod/v4";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { getRequestContext } from "@atlas/api/lib/logger";
 import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
+// The single input-schema definition (#4954). Deliberately imported from its
+// own module and NOT from `@atlas/api/lib/tools/search-brain`, which this file
+// `mock.module`s wholesale below — a stubbed schema would make the served-vs-
+// source comparison compare two stubs. For the same reason, do NOT add a
+// `mock.module` for `search-brain-schema` itself: both sides of that
+// comparison read this import, so stubbing it turns the pins green on a stub.
+import { SEARCH_BRAIN_INPUT_SHAPE } from "@atlas/api/lib/tools/search-brain-schema";
 import { registerTools } from "../tools.js";
 import { executeSqlOutputSchema } from "../structured-output.js";
 
@@ -182,9 +190,14 @@ describe("MCP tools", () => {
       tools.map((t) => [t.name, t.annotations]),
     );
 
-    // All six native tools are read-only: explore + the semantic-layer
-    // tools read YAML, executeSQL / runMetric are SELECT-only (validated).
-    // A client must NOT prompt for confirmation on any of them.
+    // Every native tool is read-only: explore + the semantic-layer tools read
+    // YAML, executeSQL / runMetric are SELECT-only (validated), searchBrain
+    // reads the internal DB. A client must NOT prompt for confirmation on any
+    // of them.
+    //
+    // `searchBrain` was added to this loop in #4954. It has declared both
+    // annotations since #4773 and neither was asserted — the comment still
+    // said "all six" while the sibling test above listed seven tools.
     for (const name of [
       "explore",
       "executeSQL",
@@ -192,17 +205,20 @@ describe("MCP tools", () => {
       "describeEntity",
       "searchGlossary",
       "runMetric",
+      "searchBrain",
     ]) {
       expect(annotationsByName.get(name)?.readOnlyHint).toBe(true);
     }
 
-    // Semantic-layer tools operate on a closed, local domain (the semantic
-    // directory) → openWorldHint false.
+    // Tools over a closed, local domain → openWorldHint false: the
+    // semantic-layer reads (the semantic directory) and searchBrain (the
+    // internal DB — no reach outside this deployment).
     for (const name of [
       "explore",
       "listEntities",
       "describeEntity",
       "searchGlossary",
+      "searchBrain",
     ]) {
       expect(annotationsByName.get(name)?.openWorldHint).toBe(false);
     }
@@ -1011,6 +1027,208 @@ describe("MCP tools", () => {
   // --- searchBrain dispatch (#4773) ---
 
   describe("searchBrain", () => {
+    it("advertises the tool prose the api package owns, not a local copy (#4933)", async () => {
+      // The link that makes #4933's api-side fix reach an MCP client at all:
+      // `registerTools` must keep deriving this description from
+      // `searchBrain.description` (wrapped by `withErrorContract`) rather than
+      // growing a hand-written literal here. The retraction labels are pinned
+      // on the constant in the api package
+      // (`lib/tools/__tests__/search-brain-tool.test.ts`); nothing there would
+      // notice this file re-declaring the prose, and since #4954 the retraction
+      // rules live ONLY in that file, which cannot see this one.
+      //
+      // The stub text comes from the module mock at the top of this file, so
+      // this asserts the WIRING, not the prose — which is the only half that
+      // can be checked here without duplicating a 148-word string.
+      //
+      // Exact-match on the pre-contract paragraph, not `toContain`: the stub
+      // ("Search the company brain") is a PREFIX of the real constant, so a
+      // hand-written literal copied from `descriptions.ts` would satisfy a
+      // substring check and `withErrorContract` would still append its section
+      // — i.e. both assertions would go green on the exact decoupling this
+      // test exists to catch.
+      const { client } = await createTestClient();
+      const { tools } = await client.listTools();
+      const description = tools.find((t) => t.name === "searchBrain")?.description;
+      expect(description?.split("\n\n")[0]).toBe("Search the company brain");
+      expect(description).toContain("Error contract:");
+    });
+
+    // Until #4954 `src/tools.ts` re-declared this whole schema with its own
+    // hand-authored `.describe()` prose, and this suite carried a
+    // hand-mirrored copy of each api-side rule to keep the two honest. That
+    // arrangement is exactly how the MCP `asOf` shipped with #4933's
+    // unqualified "retracted never" and without #4939's `include`
+    // precondition: both were fixed on the api string first, and neither fix
+    // could structurally reach this surface.
+    //
+    // So this suite no longer restates the RULES — `search-brain-tool.test.ts`
+    // owns them, once, against the shared module. The consequence is worth
+    // stating plainly, because nothing here will: **this package's suite is
+    // now blind to a prose regression.** Re-add #4933's absolute to the shared
+    // `asOf` string and every test in this file stays green. That is the
+    // intended trade — one owner per rule beats two copies that drift — but it
+    // means the guarantees an external MCP client depends on now rest on a
+    // test in a DIFFERENT package continuing to exist. Weakening
+    // `search-brain-tool.test.ts`'s `asOf` block leaves this surface
+    // unguarded, silently.
+    //
+    // What this file owns instead is the link that makes owning them once
+    // sufficient, and it takes BOTH tests below, because either alone has a
+    // hole:
+    //
+    //   - identity alone would not notice the registration being handed the
+    //     right object and the SDK serving something else;
+    //   - value alone goes GREEN on a verbatim local re-declaration — two
+    //     copies, in agreement today, drifting later, which is the precise
+    //     state #4954 exists to eliminate.
+    it("hands the MCP registration the api package's shape object itself (#4954)", async () => {
+      // Identity at the registration boundary. Captured at the call rather
+      // than read back off the wire, because the wire only ever carries a
+      // converted JSON Schema — by then a `{ ...SHAPE }` spread and the shape
+      // itself are indistinguishable.
+      //
+      // A wrapper rather than `spyOn`: `registerTool` is a single generic
+      // method with two type params, so bun types `spy.mock.calls` as `never[]`
+      // and reading an argument off it needs a cast that says MORE than this
+      // wrapper's does. The two casts here are narrow — an arrow cannot be
+      // assignable to a generic method without the outer one, and the bound
+      // original cannot be called with widened args without the inner one —
+      // and neither papers over a type gap.
+      //
+      // Residual risk, contained deliberately: the outer cast decouples the
+      // arrow's parameter list from the real signature, so an SDK that
+      // reordered those three would still compile and fill `seen` with
+      // garbage. That is why the `seen.has` assertion below carries its own
+      // message instead of leaning on the identity check to fail sensibly.
+      const server = new McpServer({ name: "test", version: "0.0.1" });
+      const seen = new Map<string, unknown>();
+      const original = server.registerTool.bind(server);
+      server.registerTool = ((name: string, config: { inputSchema?: unknown }, cb: unknown) => {
+        // The SDK throws on a duplicate tool name anyway; this fires first
+        // and says why the CAPTURE MAP, not just the registry, cares — `set`
+        // would quietly keep the last one and the identity check below would
+        // then be asserting about a registration nobody meant to inspect.
+        expect(seen.has(name), `${name} was registered twice`).toBe(false);
+        seen.set(name, config.inputSchema);
+        return (original as (...a: unknown[]) => unknown)(name, config, cb);
+      }) as typeof server.registerTool;
+
+      registerTools(server, { actor: TEST_ACTOR });
+
+      expect(
+        seen.has("searchBrain"),
+        "searchBrain was never registered — the identity check below would pass vacuously",
+      ).toBe(true);
+      expect(
+        seen.get("searchBrain"),
+        "src/tools.ts no longer passes SEARCH_BRAIN_INPUT_SHAPE itself. A spread or a re-declared literal is deep-equal on the day it is written and drifts on the next api-side prose fix — which is the entire failure #4954 removed.",
+      ).toBe(SEARCH_BRAIN_INPUT_SHAPE);
+    });
+
+    it("serves that shape's JSON Schema to a client, argument prose included (#4954)", async () => {
+      // Value at the wire. Read through `listTools()` on purpose: the
+      // registered JSON Schema is what an external client's model actually
+      // reads, and the identity pin above says nothing about what the SDK
+      // does with the object afterwards.
+      const { client } = await createTestClient();
+      const { tools } = await client.listTools();
+      const served = tools.find((t) => t.name === "searchBrain");
+      expect(served, "searchBrain is not registered — the comparison below would pass vacuously").toBeDefined();
+
+      // `properties` AND `required`, not `properties` alone: in JSON Schema an
+      // argument's optionality lives in the sibling `required` array, so a
+      // served schema that marked `collection` REQUIRED would be
+      // `.properties`-equal to this one while breaking every call.
+      //
+      // `$schema` and `additionalProperties` are deliberately NOT compared —
+      // they are the serializer's envelope, not the api package's definition.
+      // `$schema` genuinely diverges today (the SDK targets draft-07; zod
+      // emits 2020-12). `additionalProperties` currently AGREES — both omit
+      // it — but only because of the `io: "input"` below; it comes back as
+      // `false` in output mode. So it is excluded as envelope, not because it
+      // differs right now: don't "simplify" by folding it back in on the
+      // strength of a green run. Pinning either would fail on an SDK upgrade
+      // while saying "the prose drifted", and the question of WHICH OBJECT was
+      // registered is already settled by the identity pin above.
+      //
+      // Both sides widened to `unknown` rather than either one cast to the
+      // other's shape: the MCP SDK types `properties` as
+      // `Record<string, object>` and zod's `_JSONSchema` admits `boolean`, so
+      // a cast would be an assertion about the payload rather than a
+      // comparison of it — which is the blind widening the api-side twin was
+      // rewritten to avoid. `toEqual` is a runtime deep-equal, so widening
+      // costs no detection power.
+      //
+      // `io: "input"` is load-bearing, not decoration. `z.toJSONSchema`
+      // defaults to `io: "output"`, where a `.default()` makes a field
+      // REQUIRED (the output always has it) while the MCP SDK — correctly
+      // serving an INPUT contract — leaves it optional. Give `limit` the
+      // default that today lives in `normalizeSearchInput` and the two
+      // disagree, and this test fails blaming a "local re-declaration" or an
+      // SDK change, neither of which happened. The served schema is an input
+      // contract; say so.
+      const contractOf = (
+        schema: { properties?: unknown; required?: unknown } | undefined,
+      ): { properties: unknown; required: unknown } => ({
+        properties: schema?.properties,
+        required: schema?.required,
+      });
+      const expectedSchema = z.toJSONSchema(z.object(SEARCH_BRAIN_INPUT_SHAPE), { io: "input" });
+      const expected = contractOf(expectedSchema);
+
+      // Sanity on the fixture itself: an empty or description-free expectation
+      // would make the deep-equal below satisfiable by an equally empty served
+      // schema. `asOf` is named because it is the correctness-bearing argument.
+      expect(Object.keys(expectedSchema.properties ?? {}).length).toBeGreaterThan(0);
+      expect(expectedSchema.properties?.asOf).toHaveProperty("description");
+      // And the `required` half is VACUOUS today — every searchBrain argument
+      // is optional, so both serializers omit the key and that half of the
+      // deep-equal compares `undefined` to `undefined`. Stated as its own
+      // tripwire so the comparison above is not read as actively pinning
+      // something it is only guarding against: the day an argument becomes
+      // required, this line is the one that says so out loud.
+      expect(
+        expectedSchema.required,
+        "a searchBrain argument became required — intended? The served/expected comparison below now genuinely pins requiredness; update this tripwire deliberately.",
+      ).toBeUndefined();
+
+      expect(
+        contractOf(served?.inputSchema),
+        "the searchBrain schema served over MCP is not the one @atlas/api/lib/tools/search-brain-schema builds. Either src/tools.ts has re-grown a local declaration — in which case every argument-prose fix authored on the api side now stops at the package boundary — or the MCP SDK changed how it converts a shape to JSON Schema, in which case re-point this expectation at whatever it now emits rather than relaxing it.",
+      ).toEqual(expected);
+    });
+
+    it("a schema-rejected argument is refused BEFORE dispatch, without the error envelope (#4954)", async () => {
+      // `search-brain-schema.ts` spends a paragraph on this, and until now it
+      // was prose: the MCP SDK validates `inputSchema` before the handler
+      // runs, so ANY schema violation — `limit` and `include`'s value
+      // constraints, which are the only ones beyond type, or a wrong type on
+      // any of the nine arguments — is the one searchBrain failure class that
+      // reaches a client with no `code` and no `request_id`. Every runtime
+      // refusal (`invalid_as_of`, `reader_unresolved`, `no_internal_db`,
+      // `search_failed`) gets both. (`no_workspace` is absent on purpose: it
+      // rides `unavailable` on a shaped 200, never an error.) A claim about
+      // the wire, on the surface whose model Atlas does not control, should
+      // not rest on a comment. `limit: 0` is the cheapest way in.
+      //
+      // It is a RESOLVED `isError` result, not a transport-level throw —
+      // `callTool` does not reject — which is the part most likely to be
+      // mis-remembered when someone adds a constraint to a sibling argument.
+      const { client } = await createTestClient();
+      const result = await client.callTool({ name: "searchBrain", arguments: { limit: 0 } });
+
+      expect(result.isError).toBe(true);
+      expect(
+        parseAtlasMcpToolError(getContentText(result.content)),
+        "a schema-rejected argument now returns the typed envelope — if the SDK started routing validation through the dispatch path, the schema module's note about `limit`/`include` being the envelope-less failure class is stale and should be deleted, not left to rot",
+      ).toBeNull();
+      expect(
+        mockSearchBrainExecute,
+        "the tool body ran despite schema-invalid input — validation is no longer pre-dispatch",
+      ).not.toHaveBeenCalled();
+    });
+
     it("returns the fused payload as JSON on success", async () => {
       const { client } = await createTestClient();
       const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
@@ -1038,6 +1256,59 @@ describe("MCP tools", () => {
       // Correlatable: the refusal is documented as an upstream defect, and the
       // request id is the only handle an operator has on the matching log line.
       expect(envelope?.request_id).toBeTruthy();
+    });
+
+    it("maps a rejected asOf to `validation_failed` — fix the argument, don't retry (#4916)", async () => {
+      // The caller's own timestamp refused. `internal_error` here would tell
+      // the agent to retry the identical call; `validation_failed` tells it
+      // the argument is the problem, which the message then names.
+      mockSearchBrainExecute.mockResolvedValueOnce({
+        error: 'asOf "yesterday-ish" is not an ISO-8601 instant.',
+        reason: REAL_BRAIN_TOOL_REASONS.invalidAsOf,
+      });
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "searchBrain",
+        arguments: { query: "x", asOf: "yesterday-ish" },
+      });
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope?.code).toBe("validation_failed");
+      // The MCP input schema is a strip-unknown z.object: if the `asOf` entry
+      // were dropped from the registration, the argument would be silently
+      // stripped and the tool would answer as-of-now — the exact fall-through
+      // #4916 forbids, invisible to every other assertion in this block.
+      expect(mockSearchBrainExecute).toHaveBeenCalledWith(
+        expect.objectContaining({ asOf: "yesterday-ish" }),
+        expect.anything(),
+      );
+    });
+
+    it("forwards asOf and passes the historical page's echo through untouched (#4916)", async () => {
+      mockSearchBrainExecute.mockResolvedValueOnce({
+        results: [],
+        neighbors: [],
+        stores: {
+          fact: { queried: true, matched: 0, truncated: false },
+          "raw-episode": { queried: false },
+          document: { queried: false },
+        },
+        tensionsTruncated: false,
+        asOf: "2026-07-01T00:00:00.000Z",
+      });
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "searchBrain",
+        arguments: { query: "x", asOf: "2026-07-01T00:00:00Z" },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(mockSearchBrainExecute).toHaveBeenCalledWith(
+        expect.objectContaining({ asOf: "2026-07-01T00:00:00Z" }),
+        expect.anything(),
+      );
+      // The echo is the page's only "this is historical" marker; the MCP edge
+      // must not strip it on the way to the agent.
+      expect(JSON.parse(getContentText(result.content)).asOf).toBe("2026-07-01T00:00:00.000Z");
     });
 
     it("maps every other degraded reason to `internal_error`", async () => {

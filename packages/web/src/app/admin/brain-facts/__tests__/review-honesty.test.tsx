@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import { render, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -112,6 +112,8 @@ function candidate(overrides: Record<string, unknown> = {}) {
     },
     tensions: [],
     promotionBlock: null,
+    // Read-time decay (#4914) — fresh by default so the queue renders quiet.
+    decay: { level: "fresh", ageDays: 5, lastObservedAt: ISO },
     validFrom: null,
     validTo: null,
     extractedAt: ISO,
@@ -135,6 +137,20 @@ const ALLOWED = [
 let requested: Array<{ url: string; method: string }> = [];
 /** Status the retract POST answers with. */
 let retractStatus = 200;
+/**
+ * The 200 body the retract POST answers with (#4939).
+ *
+ * Retracting is the `retract` CORRECTION verb, and it FLAGS every claim
+ * derived from the one withdrawn. Those flags reached `logAdminAction` and
+ * nothing else, so the console reviewer — the only person who knows a
+ * retraction just happened — was the one party told nothing.
+ */
+let retractBody: Record<string, unknown> = {
+  id: "fact-1",
+  invalidatedAt: ISO,
+  correctionEpisodeId: "ep-corr-1",
+  flaggedForReReview: [],
+};
 
 /**
  * The oversight payload (#4825). Defaults to "nothing hidden", so the
@@ -160,6 +176,8 @@ let oversight: Record<string, unknown> = {
 let withheldFacts = 0;
 /** Whether that count is an Atlas fault rather than an audience boundary. */
 let scopeUnavailable = false;
+/** How many published facts the publish preview says a publish will supersede (#4912). */
+let willSupersedeCount = 0;
 
 function mockApi(
   candidates: Array<Record<string, unknown>>,
@@ -171,7 +189,7 @@ function mockApi(
     if (/\/retract$/.test(url)) {
       return Promise.resolve(
         retractStatus === 200
-          ? jsonResponse({ id: "fact-1", invalidatedAt: ISO })
+          ? jsonResponse(retractBody)
           : jsonResponse(
               { error: "internal_error", message: "Database exploded.", requestId: "req-xyz" },
               retractStatus,
@@ -210,6 +228,7 @@ function mockApi(
           brainFacts: [],
           brainFactsWithheld: withheldFacts,
           brainFactsScopeUnavailable: scopeUnavailable,
+          brainFactsWillSupersede: willSupersedeCount,
         }),
       );
     }
@@ -223,8 +242,15 @@ function mockApi(
 beforeEach(() => {
   requested = [];
   retractStatus = 200;
+  retractBody = {
+    id: "fact-1",
+    invalidatedAt: ISO,
+    correctionEpisodeId: "ep-corr-1",
+    flaggedForReReview: [],
+  };
   withheldFacts = 0;
   scopeUnavailable = false;
+  willSupersedeCount = 0;
   oversight = {
     buckets: [],
     workspaceTotals: {
@@ -373,6 +399,201 @@ describe("rejecting a claim", () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]!.url).toMatch(/\/api\/v1\/admin\/brain-facts\/fact-1\/retract$/);
   });
+
+  // #4939. The three tests below are one property split by arm: the reviewer
+  // learns that a retraction had consequences beyond the row they clicked, and
+  // learns it in the only place they will ever be told.
+  test("reports the claims a retraction flagged for re-review", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1", "dep-2"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    // The dialog closes on success, so a notice rendered inside it would be
+    // destroyed at the moment it had something to say. This has to OUTLIVE it.
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    await waitFor(() => expect(document.body.textContent).toContain("2 other claims"));
+
+    // Scoped to the notice, not to the document. The queue re-renders the same
+    // claim in its own row, so a body-wide `toContain` for the claim text
+    // passes off the TABLE — the notice could name nothing and still go green.
+    const notice = Array.from(document.querySelectorAll('[role="alert"]')).find((el) =>
+      /other claims/.test(el.textContent ?? ""),
+    );
+    // `throw`, not `expect(...).toBeTruthy()` + `!` — TypeScript cannot narrow
+    // through an assertion, and the non-null assertions it would otherwise
+    // need are what CLAUDE.md asks to minimize.
+    if (!notice) throw new Error("the flagged-dependent notice did not render as an alert");
+    // Named, so the reviewer knows which rejection caused it, and honest about
+    // the cascade that did NOT happen.
+    expect(notice.textContent).toContain("Acme uses Postgres");
+    expect(notice.textContent).toMatch(/nothing was withdrawn automatically/i);
+  });
+
+  test("stays silent when a retraction flagged nothing — silence is the baseline", async () => {
+    // An always-on "0 other claims" line trains a reviewer to skip the banner,
+    // which is precisely how the non-zero case gets missed.
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+  });
+
+  test("claims nothing when the response body does not carry the flags", async () => {
+    // An older API — or a drifted one — answers the pre-#4939 shape. Rendering
+    // "0 other claims" off a missing field would be a fabricated all-clear on
+    // the one surface whose job is not to reassure falsely.
+    retractBody = { id: "fact-1", invalidatedAt: ISO };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+  });
+
+  // The arm that actually discriminates PARSE from CAST. A missing field
+  // degrades the same way under both (`?.length ?? 0` is also silent), so the
+  // test above does not defend the parse. A field of the WRONG TYPE does: a
+  // cast reads `.length` off a string and renders a count nobody flagged.
+  test("renders no count when `flaggedForReReview` arrives with the wrong type", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      // A string has a `.length`. A hand-cast would render "7 other claims"
+      // for a retraction that flagged nothing.
+      flaggedForReReview: "dep-1,2",
+    };
+    // Silence is the right RENDER, but silence must not also be the whole
+    // response to the failure: without this, deleting the `console.warn`
+    // leaves every test green and restores the exact defect — an unreadable
+    // answer and an all-clear are indistinguishable to reviewer AND operator.
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const view = await renderPage([candidate()]);
+      clickButton(view, /Reject/i);
+      await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+      await confirmReject();
+
+      await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+      expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+
+      expect(
+        warn.mock.calls.some((call) => String(call[0]).includes("flaggedForReReview")),
+        "an unreadable retract body was dropped without a log line — the operator has no way to see wire skew",
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The arm the `.pick()` exists for. Both drift tests above break the whole
+  // body, so a full-schema `safeParse` would pass them — this is the case
+  // where the field the notice RENDERS arrived intact and a neighbouring field
+  // skewed. Suppressing the disclosure there would drop a real flag over a
+  // field the notice never reads.
+  test("still reports the count when a NEIGHBOURING field skewed", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: 7, // skewed — and not a field this notice renders
+      flaggedForReReview: ["dep-1"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).toContain("1 other claim"));
+  });
+
+  // The rule `MERGE_PROVENANCE_MARKER_SQL`'s header states for every string
+  // about these markers: describe what is RECORDED, never imply a queue.
+  // Reverting this copy to "flagged for re-review" full stop passes every
+  // other assertion in this file.
+  test("says there is no queue, because there is not one", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+    await waitFor(() => expect(document.body.textContent).toContain("1 other claim"));
+
+    const notice = Array.from(document.querySelectorAll('[role="alert"]')).find((el) =>
+      /other claim/.test(el.textContent ?? ""),
+    );
+    if (!notice) throw new Error("the flagged-dependent notice did not render as an alert");
+    expect(
+      notice.textContent,
+      "the notice must say no queue lists these and where the ids ARE recoverable — an unqualified 'flagged for re-review' implies a queue that does not exist",
+    ).toMatch(/no queue/i);
+    expect(notice.textContent).toMatch(/audit|actions/i);
+  });
+
+  // The notice names the claim that caused it, so it must not outlive that
+  // rejection: a stale banner over a different row is a misattribution the
+  // count alone cannot correct.
+  test("does not leave a previous rejection's notice standing over the next one", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1", "dep-2"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+    await waitFor(() => expect(document.body.textContent).toContain("2 other claims"));
+
+    // A second rejection that flagged nothing must clear it, not leave the
+    // first one's count hanging over the queue.
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-2",
+      flaggedForReReview: [],
+    };
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+
+    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+  });
+
+  test("the notice can be dismissed", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+    await waitFor(() => expect(document.body.textContent).toContain("1 other claim"));
+
+    clickButton(view, /Dismiss/i);
+    await waitFor(() => expect(document.body.textContent).not.toMatch(/other claims?\b/i));
+  });
 });
 
 describe("withheld evidence is named, never blank", () => {
@@ -515,6 +736,7 @@ describe("contradictions are surfaced, not arbitrated", () => {
             object: "MySQL",
             status: "published",
             validFrom: null,
+            validTo: null,
             ingestedAt: ISO,
             invalidatedAt: null,
             corroborationCount: 5,
@@ -529,9 +751,16 @@ describe("contradictions are surfaced, not arbitrated", () => {
     const text = document.body.textContent ?? "";
     expect(text).toContain("MySQL");
     expect(text).toContain("is not choosing between them");
-    // No language that ranks one side. M2 owns arbitration; this surface must
-    // not pre-empt it with a "preferred"/"superseded" label.
-    expect(text).not.toMatch(/superseded|preferred|winner|more reliable/i);
+    // No language that RANKS one side — that ban is permanent and outlives
+    // M2. What is no longer banned is the word "superseded": #4935 made it a
+    // lifecycle LABEL on a rival's own closed window, the exact peer of the
+    // "Withdrawn" badge, and labelling what already happened to a claim is not
+    // pre-empting arbitration. The label must still stay off a LIVE rival,
+    // which this fixture is — so both lifecycle badges are asserted absent
+    // here, and each is asserted PRESENT on its own fixture below.
+    expect(text).not.toMatch(/preferred|winner|more reliable/i);
+    expect(text).not.toContain("Superseded");
+    expect(text).not.toContain("Withdrawn");
   });
 
   test("reports a rival the reviewer cannot see rather than hiding the conflict", async () => {
@@ -721,6 +950,7 @@ describe("truncation is admitted", () => {
             object: "MySQL",
             status: "draft",
             validFrom: null,
+            validTo: null,
             ingestedAt: ISO,
             invalidatedAt: ISO,
             corroborationCount: 1,
@@ -732,6 +962,133 @@ describe("truncation is admitted", () => {
     fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
     await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
     expect(document.body.textContent).toContain("Withdrawn");
+    // The axes are distinct verbs and must not share a badge.
+    expect(document.body.textContent).not.toContain("Superseded");
+    // The strike-through, which predates #4935 but whose condition #4935
+    // widened to `withdrawn || superseded`. Unasserted, the retraction arm can
+    // be dropped while the supersession fixture keeps every test green.
+    expect(document.querySelector(".line-through")?.textContent).toContain("MySQL");
+  });
+
+  test("labels a SUPERSEDED rival, which its status alone cannot show either (#4935)", async () => {
+    // Reached with no human action on the counterpart at all: the publish gate
+    // stamps `validTo` on the claim it retires, leaves that row's `status`
+    // alone, and nothing deletes the `in-tension-with` edge — so this
+    // counterpart otherwise renders exactly like a live rival ("Published", no
+    // tombstone) and the reviewer is shown a conflict they themselves already
+    // arbitrated as still open.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          {
+            visible: true,
+            factId: "fact-2",
+            edgeDirection: "to",
+            subject: "Acme",
+            predicate: "uses",
+            object: "MySQL",
+            status: "published",
+            validFrom: null,
+            validTo: ISO,
+            ingestedAt: ISO,
+            invalidatedAt: null,
+            corroborationCount: 1,
+            provenance: PROVENANCE,
+          },
+        ],
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Superseded");
+    expect(text).not.toContain("Withdrawn");
+    // The claim is struck through, the treatment retraction already had. The
+    // badge carries WHICH verb; the strike carries "not the current claim" —
+    // and it is the half no text assertion can see.
+    expect(document.querySelector(".line-through")?.textContent).toContain("MySQL");
+    // Labelled, not ranked: the surviving candidate gains no "preferred"
+    // marker and the cluster still names no winner.
+    expect(text).not.toMatch(/preferred|winner|more reliable/i);
+    expect(text).toContain("is not choosing between them");
+  });
+
+  test("does NOT call a rival superseded while its window is still open (#4935)", async () => {
+    // The inverse failure, and the one a `validTo !== null` label walks
+    // straight into. `brainFactCurrentClause` is `valid_to IS NULL OR valid_to
+    // > now()`, so a FUTURE-dated stamp — a region import can carry one — is a
+    // fact the search surface still serves as current. Badging it settled
+    // would hide an open conflict from the reviewer, which is worse than the
+    // bug this issue fixes: an unlabelled live rival is merely unhelpful, a
+    // mislabelled one is a lie the reviewer acts on.
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          {
+            visible: true,
+            factId: "fact-2",
+            edgeDirection: "to",
+            subject: "Acme",
+            predicate: "uses",
+            object: "MySQL",
+            status: "published",
+            validFrom: null,
+            validTo: future,
+            ingestedAt: ISO,
+            invalidatedAt: null,
+            corroborationCount: 1,
+            provenance: PROVENANCE,
+          },
+        ],
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+    expect(document.body.textContent).not.toContain("Superseded");
+    expect(document.body.textContent).not.toContain("Withdrawn");
+    // Not struck through either — a live rival must read as a live rival on
+    // every channel this card uses, not just the badge row.
+    expect(document.querySelector(".line-through")).toBeNull();
+  });
+
+  test("labels a rival retired on BOTH axes with both badges (#4935)", async () => {
+    // Reachable, and asserted because the badges are independent `&&` arms
+    // that an `else if` refactor would silently collapse: `supersede` refuses
+    // a target whose window is already closed, but `retract` does not refuse a
+    // superseded one, so supersede-then-retract reaches this state. Every
+    // other fixture in this file pins exactly-one badge, which is precisely
+    // the shape that lets a dropped label pass.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          {
+            visible: true,
+            factId: "fact-2",
+            edgeDirection: "to",
+            subject: "Acme",
+            predicate: "uses",
+            object: "MySQL",
+            status: "published",
+            validFrom: null,
+            validTo: ISO,
+            ingestedAt: ISO,
+            invalidatedAt: ISO,
+            corroborationCount: 1,
+            provenance: PROVENANCE,
+          },
+        ],
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Withdrawn");
+    expect(text).toContain("Superseded");
+    // Two labels are still not a ranking.
+    expect(text).not.toMatch(/preferred|winner|more reliable/i);
   });
 });
 
@@ -1108,5 +1465,167 @@ describe("hidden-backlog disclosure (#4825)", () => {
       expect(document.body.textContent).toContain("couldn't work out which of these"),
     );
     expect(document.body.textContent).not.toContain("audience you're not part of");
+  });
+});
+
+describe("will-supersede disclosure (#4912)", () => {
+  test("stays silent when the next publish supersedes nothing — including on an older API", async () => {
+    // The default oversight fixture carries NO `willSupersede` at all, which is
+    // exactly what an older API sends during a deploy window. The panel must
+    // render the pre-#4912 page, not crash the whole oversight surface.
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("Workspace breakdown"),
+    );
+    expect(view.container.textContent ?? "").not.toContain("supersede");
+  });
+
+  test("renders each replacement as a pair — new claim, old claim — before the publish", async () => {
+    oversight = {
+      ...oversight,
+      willSupersede: {
+        total: 2,
+        pairs: [
+          {
+            draftId: "d1",
+            draftLabel: "alice manager carol",
+            supersededId: "o1",
+            supersededLabel: "alice manager bob",
+          },
+        ],
+        withheld: 1,
+        truncated: false,
+      },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "Publishing will supersede 2 published facts",
+      ),
+    );
+    const text = view.container.textContent ?? "";
+    // Both halves of the pair — the disclosure IS the replacement, not a count.
+    expect(text).toContain("alice manager carol");
+    expect(text).toContain("alice manager bob");
+    // The ACL-hidden remainder is a sentence with a number, never a row.
+    expect(text).toContain("1 of these replacements involves facts");
+    // And nothing claims deletion: the copy must say the history survives.
+    expect(text).toContain("Nothing is deleted");
+  });
+
+  test("admits truncation without dressing it as an ACL boundary", async () => {
+    oversight = {
+      ...oversight,
+      willSupersede: {
+        total: 130,
+        pairs: [
+          {
+            draftId: "d1",
+            draftLabel: "alice manager carol",
+            supersededId: "o1",
+            supersededLabel: "alice manager bob",
+          },
+        ],
+        withheld: 0,
+        truncated: true,
+      },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("did not fit in one response"),
+    );
+    // Nothing was ACL-withheld, so the audience sentence must NOT render —
+    // truncation relabelled as an audience boundary would send the admin
+    // hunting for private channels that do not exist.
+    expect(view.container.textContent ?? "").not.toContain("audiences you are not part of");
+  });
+
+  test("the publish modal states the workspace-wide count before the confirm button", async () => {
+    // The modal is the confirm surface; an admin who never visits the review
+    // page must still learn a publish will retire published beliefs. The
+    // withheld count is set too — a supersession implies a live single draft,
+    // and for THIS reader the preview reports it as withheld.
+    willSupersedeCount = 3;
+    withheldFacts = 1;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Publishing will supersede 3 published facts"),
+    );
+    // Scope statement, not a scare: it points at the per-pair disclosure.
+    expect(document.body.textContent).toContain("Brain facts");
+  });
+});
+
+describe("staleness decay is surfaced, never alarming (#4914)", () => {
+  test("flags a stale claim in the queue", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "stale", ageDays: 400, lastObservedAt: ISO } }),
+    ]);
+    expect(view.container.textContent).toContain("Stale");
+  });
+
+  test("stays quiet for a fresh claim — fresh is the queue's default state", async () => {
+    const view = await renderPage([candidate()]);
+    expect(view.container.textContent).not.toContain("Stale");
+    expect(view.container.textContent).not.toContain("Aging");
+  });
+
+  test("flags an aging claim too — the chip is not stale-only", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "aging", ageDays: 60, lastObservedAt: ISO } }),
+    ]);
+    expect(view.container.textContent).toContain("Aging");
+  });
+
+  test("labels a fallback-anchored age honestly, and never as withheld", async () => {
+    // ageDays without an observation = the anchor fell back to the claim's
+    // validity start or ingest. This arm is distinguished from the withheld
+    // arm only by `ageDays` nullity, so a reordered ternary would show a
+    // fully-entitled reviewer "withheld with attribution" — a false ACL claim.
+    const view = await renderPage([
+      candidate({ decay: { level: "aging", ageDays: 50, lastObservedAt: null } }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("About 50 days old");
+    expect(text).toContain("validity start");
+    expect(text).not.toContain("withheld");
+  });
+
+  test("says when the claim was last observed in the detail sheet", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "stale", ageDays: 400, lastObservedAt: ISO } }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    expect(document.body.textContent).toContain("Last observed");
+  });
+
+  test("explains a withheld age instead of rendering a blank", async () => {
+    // A widened-in reader gets the coarse level only (#4836): a day-precision
+    // age restates the withheld "when". The UI must say WHY the numbers are
+    // missing — an em-dash would read as "no age exists".
+    const view = await renderPage([
+      candidate({
+        provenance: WITHHELD_ATTRIBUTION,
+        decay: { level: "stale", ageDays: null, lastObservedAt: null },
+      }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Stale");
+    expect(text).toContain("Exact age withheld with attribution");
+  });
+
+  test("admits an unknown age rather than fabricating one", async () => {
+    const view = await renderPage([
+      candidate({ decay: { level: "unknown", ageDays: null, lastObservedAt: null } }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
+    expect(document.body.textContent).toContain("Age unknown");
   });
 });

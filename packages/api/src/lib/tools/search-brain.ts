@@ -61,18 +61,24 @@
  */
 
 import { tool } from "ai";
-import { z } from "zod";
+import type { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { rootCauseMessage } from "@atlas/api/lib/error-cause";
-import { searchBrainCore, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
+import {
+  searchBrainCore,
+  BrainAsOfInvalidError,
+  DEFAULT_SEARCH_LIMIT,
+  MAX_SEARCH_LIMIT,
+} from "@atlas/api/lib/brain/search";
 import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
 import { SEARCH_BRAIN_TOOL_DESCRIPTION } from "@atlas/api/lib/tools/descriptions";
-import { BRAIN_RESULT_TIERS, isBrainResultTier } from "@useatlas/schemas";
+import { searchBrainInputSchema } from "@atlas/api/lib/tools/search-brain-schema";
+import { isBrainResultTier } from "@useatlas/schemas";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type {
   BrainResultTier,
@@ -94,6 +100,13 @@ export const BRAIN_TOOL_REASONS = {
   noWorkspace: "no_workspace",
   readerUnresolved: "reader_unresolved",
   searchFailed: "search_failed",
+  /**
+   * The caller's `asOf` could not be honored (#4916) — malformed or in the
+   * future. Its own reason rather than `search_failed` because the recovery is
+   * different: fix the argument, don't retry — and the MCP edge maps it to
+   * `validation_failed`, not `internal_error`.
+   */
+  invalidAsOf: "invalid_as_of",
 } as const;
 
 export type BrainToolReason = (typeof BRAIN_TOOL_REASONS)[keyof typeof BRAIN_TOOL_REASONS];
@@ -152,7 +165,9 @@ Use the searchBrain tool for decisions, rationale, ownership, policy, and histor
 - Every result is labelled: \`tier: "fact"\` (reviewed claim), \`"raw-episode"\` (the source record), \`"document"\` (hosted knowledge). Cite the tier and the provenance when you use one — a raw episode is what someone SAID, not what is true
 - An episode tagged \`extraction: "pending"\` has not been distilled into facts yet; quote it as raw evidence
 - A fact whose \`provenance.attribution\` is \`{ "visible": false }\` is one you may read but whose author, source id, and original timestamp are withheld from this reader. Use the claim; say attribution is restricted if asked who said it. Do NOT report it as anonymous, undated, or unsourced — and never infer the author from anything else in the response
-- \`tensions\` lists conflicting claims in both directions and is deliberately unranked — surface both sides, never pick a winner
+- Every fact carries its age: \`validFrom\`, \`corroborationCount\`, \`provenance.attribution.occurredAt\` (when visible), and a read-time \`decay\` signal (\`fresh\`/\`aging\`/\`stale\`/\`unknown\`). Staleness is advisory — a \`stale\` fact is still the reviewed record. Present its age ("as of March…") instead of asserting it as current, and never discard or overrule a fact because of age
+- \`tensions\` is the fact's conflict cluster, listed in both directions and deliberately unranked — each visible counterpart carries its own claim and provenance. Where both sides are still live, surface both with their evidence and never pick a winner; recency and corroboration are context for the reader, not a verdict. Two fields tell you a rival is NOT live and that a human already resolved the conflict — report those as settled, and say which: a non-null \`invalidatedAt\` is a rival since RETRACTED (withdrawn as something that should never have been served); a \`validTo\` ALREADY IN THE PAST is a rival since SUPERSEDED (it held until that time, then was replaced). A \`validTo\` still in the future is a LIVE rival whose window is merely scheduled to close — treat it as contested. Both labels are as of NOW, never relative to \`asOf\`. A retired rival is listed only because it is why the claim was once contested — never present one as a live contradiction, and do not let it make the surviving claim sound disputed. A \`{ "visible": false, "withheldCount": N }\` entry means N conflicting claims exist that you cannot see — treat the claim as contested, never as settled
+- To answer "what did we believe at <time>", pass \`asOf\` (ISO-8601, in the past): facts are then the versions valid AT that instant, including ones since superseded. A response carrying \`asOf\` is HISTORICAL — frame every fact in it as "as of <time>", never as current; a response without \`asOf\` is current belief. A retracted fact is never returned as a RESULT, under \`asOf\` or otherwise — the one place it still appears is a \`tensions\` counterpart, labelled by \`invalidatedAt\` as above
 - If the response carries \`unavailable\`, the brain could NOT be searched (e.g. no workspace is bound). Say so — do NOT report it as "nothing is known"
 - Read-only, and never the SQL whitelist, metrics, or glossary. For quantitative current state use \`executeSQL\`; for the on-disk semantic layer use \`explore\``;
 
@@ -167,6 +182,14 @@ function withRequestId(message: string, requestId: string | undefined): string {
   return requestId ? `${message} (request ${requestId})` : message;
 }
 
+/**
+ * The normalizer's input contract — deliberately LOOSER than the schema.
+ *
+ * `include?: string[]` rather than `BrainResultTier[]` is the point: the
+ * drop-unrecognized-and-log path below has to stay reachable for a caller that
+ * did not go through zod, because an unrecognized tier silently meaning "search
+ * nothing" is indistinguishable from an empty brain.
+ */
 export interface SearchBrainInput {
   query?: string;
   include?: string[];
@@ -174,9 +197,56 @@ export interface SearchBrainInput {
   tags?: string[];
   collection?: string;
   since?: string;
+  asOf?: string;
   limit?: number;
   expand?: boolean;
 }
+
+/**
+ * Compile error if the shared schema and this contract stop naming the same
+ * arguments — in EITHER direction.
+ *
+ * `SearchBrainInput` is an all-optional weak type, and TypeScript's weak-type
+ * check only fires when two types share NO properties. So a partial drift —
+ * the schema renaming `asOf`, say — compiles silently: `execute` still
+ * typechecks, `normalizeSearchInput` reads `undefined`, and every historical
+ * read degrades to an as-of-now read, which is the exact silent fall-through
+ * #4916 exists to forbid. `exactOptionalPropertyTypes` is off repo-wide, so
+ * nothing else catches it.
+ *
+ * It earned its keep at #4954: the schema is no longer in the same file as the
+ * function that consumes it, it is in another module, edited by people fixing
+ * the MCP surface. Both directions matter — a schema key missing here is an
+ * argument the normalizer drops on the floor; a key here missing from the
+ * schema is a field no model can ever send — so they are two consts rather
+ * than one, and each one's failing type is the LEFTOVER KEY. tsc then names
+ * the direction and the argument (`Type 'true' is not assignable to type
+ * '"as_of"'`) instead of an anonymous `never`. Same `_`-const idiom as
+ * {@link _UnavailableIsReason} above.
+ *
+ * The `[X] extends [never]` tupling is deliberate: a bare `X extends never`
+ * distributes over a union and collapses on `never` itself, so both arms would
+ * silently answer the wrong question.
+ *
+ * KEY SETS only. The other two halves live elsewhere on purpose. An argument's
+ * TYPE is checked where `normalizeSearchInput(input)` is called below — a
+ * `z.string()` limit fails there, not here, and only while `execute` keeps
+ * passing `input` straight through. Its OPTIONALITY is pinned in
+ * `__tests__/search-brain-tool.test.ts`, because dropping `.optional()`
+ * changes neither the key set nor assignability to this all-optional weak type.
+ */
+type _SchemaKeys = keyof z.infer<typeof searchBrainInputSchema>;
+type _SchemaKeyNotInInput = Exclude<_SchemaKeys, keyof SearchBrainInput>;
+type _InputKeyNotInSchema = Exclude<keyof SearchBrainInput, _SchemaKeys>;
+
+const _noSchemaKeyMissingFromInput: [_SchemaKeyNotInInput] extends [never]
+  ? true
+  : _SchemaKeyNotInInput = true;
+const _noInputKeyMissingFromSchema: [_InputKeyNotInSchema] extends [never]
+  ? true
+  : _InputKeyNotInSchema = true;
+void _noSchemaKeyMissingFromInput;
+void _noInputKeyMissingFromSchema;
 
 /**
  * Clamp + normalize raw tool input. Exported for tests.
@@ -193,6 +263,7 @@ export function normalizeSearchInput(input: SearchBrainInput): {
   tags?: readonly string[];
   collection?: string;
   since?: string;
+  asOf?: string;
   limit: number;
   expand: boolean;
 } {
@@ -213,6 +284,11 @@ export function normalizeSearchInput(input: SearchBrainInput): {
     tags: tags && tags.length > 0 ? tags : undefined,
     collection: input.collection?.trim() || undefined,
     since: input.since?.trim() || undefined,
+    // Passed through VERBATIM, deliberately unlike `since` above: `'   '.trim()
+    // || undefined` would silently turn an explicit-but-blank asOf into the
+    // as-of-now read — exactly the fall-through #4916 forbids. The core's
+    // parseBrainAsOf owns the judgment and REJECTS a blank instead.
+    asOf: input.asOf,
     limit,
     expand: input.expand ?? true,
   };
@@ -221,44 +297,11 @@ export function normalizeSearchInput(input: SearchBrainInput): {
 export const searchBrain = tool({
   description: SEARCH_BRAIN_TOOL_DESCRIPTION,
 
-  inputSchema: z.object({
-    query: z
-      .string()
-      .optional()
-      .describe(
-        "Free-text search across claims, source records, and document bodies. Omit to browse the most recent entries in each store.",
-      ),
-    include: z
-      .array(z.enum(BRAIN_RESULT_TIERS))
-      .optional()
-      .describe(
-        `Restrict to specific result classes (${BRAIN_RESULT_TIERS.join(", ")}). Omit to search all three.`,
-      ),
-    type: z.string().optional().describe("Documents only: filter to one OKF document type, e.g. 'Runbook'."),
-    tags: z
-      .array(z.string())
-      .optional()
-      .describe("Documents only: filter to documents carrying ALL of these OKF tags."),
-    collection: z
-      .string()
-      .optional()
-      .describe("Documents only: restrict to a single knowledge collection (install slug)."),
-    since: z
-      .string()
-      .optional()
-      .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(MAX_SEARCH_LIMIT)
-      .optional()
-      .describe(`Max fused results to return (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT}).`),
-    expand: z
-      .boolean()
-      .optional()
-      .describe("Include 1-hop linked neighbors of the matched documents (default true)."),
-  }),
+  // The ONE definition, shared with the MCP tool (#4954). It lives in its own
+  // module rather than here because the MCP suite `mock.module`s THIS file —
+  // argument prose exported from here would reach `listTools()` as a stub and
+  // every pin that reads the served schema would pass vacuously.
+  inputSchema: searchBrainInputSchema,
 
   execute: async (input) => {
     const reqCtx = getRequestContext();
@@ -306,6 +349,20 @@ export const searchBrain = tool({
       });
     } catch (err) {
       const requestId = reqCtx?.requestId;
+      // The caller's own argument, refused (#4916) — warn, not error: nothing
+      // is wrong server-side, and the message already tells the agent the fix.
+      // The core's prose IS the user-facing message; it names the offending
+      // value and the recovery, per the no-generic-errors rule.
+      if (err instanceof BrainAsOfInvalidError) {
+        log.warn(
+          { err: err.message, workspaceId, requestId },
+          "searchBrain rejected an unusable asOf — refusing rather than answering as-of-now",
+        );
+        return {
+          error: withRequestId(err.message, requestId),
+          reason: BRAIN_TOOL_REASONS.invalidAsOf,
+        };
+      }
       // Identity failures are reported as a REFUSAL, distinctly from a generic
       // search failure — see the module header on why an empty result set would
       // be the dangerous answer here. ONE `instanceof` against the shared base,

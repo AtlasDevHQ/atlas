@@ -153,6 +153,55 @@ export interface GrantWidening {
   readonly added: readonly [string, ...string[]];
 }
 
+/**
+ * A promoted row that SUPERSEDED already-published rows on its way in (#4912,
+ * ADR-0036 §Temporal). Only `brain_facts` produces these: promoting a
+ * `single`-cardinality draft whose (subject, predicate) collides with a live
+ * published fact holding a different object stamps the old fact's `valid_to`
+ * and writes a `supersedes` edge, atomically with the promotion.
+ *
+ * Supersession is NOT deletion and not retraction — the superseded rows stay
+ * `published`, keep `invalidated_at IS NULL`, and remain readable to as-of
+ * reads. What changed is which fact answers an as-of-NOW read, which is why the
+ * event is reported rather than only logged: a durable record of what a human
+ * arbitration stamped is the other half of "no autonomous supersession".
+ *
+ * The publish gate is one of exactly TWO allowlisted `valid_to` STAMPERS, not
+ * the only one — `correct_fact`'s supersede verb (#4915,
+ * `lib/brain/correction.ts`) is the other, and it imports the adapter's own
+ * `SUPERSEDE_STAMP_SQL` so the two arbitration paths cannot drift. (A third
+ * file, `admin-migrate.ts`, writes the column by INSERT: a region import
+ * restoring an already-closed window verbatim, a restore rather than a new
+ * arbitration — see `adapters/brain-facts.ts`'s allowlist note.) Both stampers
+ * are human-attributed — the publish gate behind an authenticated admin action
+ * (a confirm modal on the console route; none on the MCP seam or on "upload &
+ * publish"), `correct_fact` behind owner/admin authority on a human-in-the-loop
+ * surface — so nothing unattended stamps the column.
+ * `check-brain-fact-promotion.sh` refuses UPDATE-shape writes outside its
+ * allowlist, but it is a grep with stated blind spots, not a completeness
+ * proof; the structural half is the adapter test pinning the registry entry as
+ * `exotic`.
+ *
+ * This type covers only the PUBLISH path's events — a `PromotionReport` is
+ * emitted by a publish phase, so `collectSupersessions` structurally cannot see
+ * a correction's supersession, which records itself through the correction
+ * response and the `admin_action_log` row `lib/brain/correction.ts` emits for
+ * EVERY correction entry point — the agent tool included since #4934 —
+ * carrying `supersededBy` / `validTo` in its metadata. Neither record is a
+ * superset of the other; a reader
+ * asking "everything that retired this fact" must consult the `supersedes`
+ * edges, which both paths write.
+ *
+ * `superseded` is a non-empty tuple for {@link GrantWidening.added}'s reason: a
+ * supersession that superseded nothing is not an event.
+ */
+export interface FactSupersession {
+  /** The newly-promoted fact — the `supersedes` edge's `from` end. */
+  readonly rowId: string;
+  /** The published facts whose `valid_to` this promotion stamped. */
+  readonly superseded: readonly [string, ...string[]];
+}
+
 /** Result of promoting drafts for a single table. */
 export interface PromotionReport {
   readonly table: string;
@@ -171,6 +220,12 @@ export interface PromotionReport {
    * {@link PromotionReport.refused}.
    */
   readonly widened?: readonly GrantWidening[];
+  /**
+   * Promoted rows that superseded already-published rows (#4912). Absent for
+   * every adapter with no supersession concept, on the same distinguishability
+   * grounds as {@link PromotionReport.refused}.
+   */
+  readonly superseded?: readonly FactSupersession[];
 }
 
 /**

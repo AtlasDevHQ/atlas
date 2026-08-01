@@ -26,10 +26,19 @@ const log = createLogger("content-mode-promoted");
  * the only adapter that can refuse today; a second one is reported here with no
  * edit, and `surface` keeps it attributable.
  *
- * Lives here — not in a route — because BOTH publish surfaces need it:
+ * Lives here — not in a route — because more than one publish surface needs it:
  * `admin-publish.ts` (REST) and `publishWorkspaceDrafts` (the MCP lib seam).
  * The first cut computed it inline in the route, which left MCP silently
  * reporting `published: true` over refused drafts.
+ *
+ * NOT swept by every publish surface: `knowledge/ingest-bundle.ts`'s "upload &
+ * publish" runs the same phases and sweeps only the supersessions (#4937 wired
+ * that one alone, the deliberate scope — a dropped refusal under-reports a
+ * draft that is still pending and still re-offered, whereas a dropped
+ * supersession retires a belief with nothing recording what replaced it). So
+ * an upload & publish that refuses a draft leaves only the adapter's own
+ * `log.warn` — uncapped, so nothing is lost, but no durable record and nothing
+ * in the HTTP response.
  */
 /**
  * The result of sweeping every adapter's refusals.
@@ -98,14 +107,23 @@ export interface WidenedGrantRecord {
 /**
  * Every grant any adapter widened this publish (#4823), attributed by surface.
  *
- * Lives beside {@link collectRefusals} and for the same stated reason: BOTH
- * publish surfaces run the identical `runPublishPhases`, so a per-route inline
+ * Lives beside {@link collectRefusals} and for the same stated reason: every
+ * publish surface runs the identical `runPublishPhases`, so a per-route inline
  * sweep is the exact layout that let MCP report `published: true` over refused
  * drafts. A widening is the more consequential of the two events — it
  * permanently changed who can read a claim, and unlike a refusal nothing
  * re-offers it — so it is the last thing that should be collected twice.
  *
- * Uncapped. Both callers put it in a durable-ish record rather than an HTTP
+ * Swept by the same two surfaces as {@link collectRefusals}, and with a sharper
+ * version of the same gap: `knowledge/ingest-bundle.ts` runs the phases without
+ * sweeping this, so on that path a widening survives only as the adapter's INFO
+ * line — which is SAMPLED at `LOGGED_ID_SAMPLE_CAP` (20) ids, because the
+ * complete list is exactly what rides `PromotionReport.widened`, and that is
+ * what this path discards. A publish widening more than 20 grants loses ids for
+ * good there. Unlike the refusal case, this one TRUNCATES rather than merely
+ * failing to persist.
+ *
+ * Uncapped. Its callers put it in a durable-ish record rather than an HTTP
  * response, so the payload-size argument behind `MAX_REPORTED_REFUSALS` does
  * not apply, and "which rows" is the entire point.
  */
@@ -117,6 +135,48 @@ export function collectWidenings(
       surface: report.table,
       id: w.rowId,
       added: w.added,
+    })),
+  );
+}
+
+/** One promoted row that superseded published rows, attributed to its table. */
+export interface SupersessionRecord {
+  readonly surface: string;
+  /** The newly-promoted row. */
+  readonly id: string;
+  /** The published rows whose `valid_to` this promotion stamped. */
+  readonly superseded: readonly [string, ...string[]];
+}
+
+/**
+ * Every supersession any adapter performed this publish (#4912), attributed by
+ * surface.
+ *
+ * Lives beside {@link collectWidenings} and for the same stated reason: EVERY
+ * caller of `runPublishPhases` runs the identical phases, and a supersession
+ * recorded by one seam and dropped by another is a difference nothing would
+ * keep in sync. Like a widening it is permanent from the promoted side —
+ * nothing re-offers it — and it is MORE consequential for readers: the
+ * superseded fact stops answering as-of-now reads the moment the transaction
+ * commits, so "why did the agent stop saying X?" is answered by this record.
+ *
+ * The caller list is deliberately NOT enumerated here — a count in this comment
+ * is what went stale when `knowledge/ingest-bundle.ts` became the third publish
+ * surface and silently dropped its reports (#4937). `content-mode/__tests__/
+ * publish-caller-supersession-wiring.test.ts` DISCOVERS the callers and pins
+ * that each one sweeps through this helper; read it for the live list.
+ *
+ * Uncapped, for {@link collectWidenings}' reason: callers put it in a
+ * durable-ish record rather than an HTTP response.
+ */
+export function collectSupersessions(
+  reports: ReadonlyArray<PromotionReport>,
+): readonly SupersessionRecord[] {
+  return reports.flatMap((report) =>
+    (report.superseded ?? []).map((s) => ({
+      surface: report.table,
+      id: s.rowId,
+      superseded: s.superseded,
     })),
   );
 }

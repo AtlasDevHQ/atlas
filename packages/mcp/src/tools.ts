@@ -27,15 +27,19 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { explore } from "@atlas/api/lib/tools/explore";
 import { executeSQL } from "@atlas/api/lib/tools/sql";
-import { BRAIN_TOOL_REASONS, searchBrain } from "@atlas/api/lib/tools/search-brain";
-import { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
+import {
+  BRAIN_TOOL_REASONS,
+  searchBrain,
+  type BrainToolReason,
+} from "@atlas/api/lib/tools/search-brain";
+import { SEARCH_BRAIN_INPUT_SHAPE } from "@atlas/api/lib/tools/search-brain-schema";
+import type { AtlasMcpToolErrorCode } from "@useatlas/types/mcp";
 import {
   EXECUTE_SQL_ERROR_CODES,
   EXPLORE_ERROR_CODES,
   SEARCH_BRAIN_ERROR_CODES,
   withErrorContract,
 } from "@atlas/api/lib/tools/descriptions";
-import { BRAIN_RESULT_TIERS } from "@useatlas/schemas";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { getConfig } from "@atlas/api/lib/config";
 import { writeScopeDenied } from "@atlas/api/lib/mcp/dispatch-gate-contract";
@@ -351,44 +355,19 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
     {
       title: "Search the Company Brain",
       description: withErrorContract(searchBrain.description ?? "", SEARCH_BRAIN_ERROR_CODES),
-      inputSchema: {
-        query: z
-          .string()
-          .optional()
-          .describe(
-            "Free-text search across reviewed claims, raw source records, and knowledge documents. Omit to browse the most recent entries.",
-          ),
-        include: z
-          .array(z.enum(BRAIN_RESULT_TIERS))
-          .optional()
-          .describe(
-            `Restrict to specific result classes (${BRAIN_RESULT_TIERS.join(", ")}). Omit to search all three.`,
-          ),
-        type: z.string().optional().describe("Documents only: one OKF document type, e.g. 'Runbook'."),
-        tags: z
-          .array(z.string())
-          .optional()
-          .describe("Documents only: documents carrying ALL of these OKF tags."),
-        collection: z
-          .string()
-          .optional()
-          .describe("Documents only: a single knowledge collection (install slug)."),
-        since: z
-          .string()
-          .optional()
-          .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_SEARCH_LIMIT)
-          .optional()
-          .describe(`Max fused results (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT}).`),
-        expand: z
-          .boolean()
-          .optional()
-          .describe("Include 1-hop linked neighbors of matched documents (default true)."),
-      },
+      // #4954 — IMPORTED, not re-declared. Until then this schema was a second
+      // hand-authored copy of the api-side one, kept in agreement only by a
+      // test on each side plus a hand-mirrored copy of each rule. `query` had
+      // drifted harmlessly and `asOf` had drifted twice in correctness-bearing
+      // ways (#4933's unqualified "retracted never", #4939's dropped `include`
+      // precondition) — each then fixed by hand HERE as well as on the api
+      // side, which is the second edit this dedupe removes. The prose and the
+      // reasons behind each clause now live once, in
+      // `lib/tools/search-brain-schema.ts`. This package's
+      // `__tests__/tools.test.ts` pins both halves: that this registration
+      // passes that module's object by identity, and that the JSON Schema
+      // `listTools()` serves is the one it builds.
+      inputSchema: SEARCH_BRAIN_INPUT_SHAPE,
       // Reads the INTERNAL database only — no writes anywhere, and no reach
       // outside this deployment, so the world is closed. Same posture as
       // `explore`, and deliberately narrower than `executeSQL`, which does
@@ -433,14 +412,37 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
           // refusal to `internal_error` with nothing catching it.
           const obj = result as Record<string, unknown>;
           if (typeof obj.error === "string") {
-            // `reader_unresolved` is the ACL boundary; everything else is an
-            // Atlas-side fault. `request_id` rides on BOTH — the refusal is
-            // documented as an upstream defect deserving log correlation, and
-            // dropping the id there would leave an operator with nothing to
-            // grep for the one failure this surface most wants reported.
-            const refused = obj.reason === BRAIN_TOOL_REASONS.readerUnresolved;
+            // `reader_unresolved` is the ACL boundary; `invalid_as_of` (#4916)
+            // is the caller's own argument refused — `validation_failed`, so an
+            // agent fixes the timestamp instead of retrying an "internal"
+            // fault. Everything else is an Atlas-side fault. `request_id`
+            // rides on ALL of them — the `reader_unresolved` refusal in
+            // particular is documented as an upstream defect deserving log
+            // correlation, and dropping the id there would leave an operator
+            // with nothing to grep for the one failure this surface most
+            // wants reported.
+            //
+            // A `satisfies`-checked map, not an if-chain: the next reason
+            // added to `BRAIN_TOOL_REASONS` is a COMPILE error here until
+            // somebody decides its envelope code — the silent-`internal_error`
+            // default is exactly the misclassification #4916 fixed for
+            // `invalid_as_of`. (`no_workspace` never accompanies `error` — it
+            // rides `unavailable` on a shaped response — but it still needs a
+            // row so the exhaustiveness check covers the whole vocabulary.)
+            const codeByReason = {
+              [BRAIN_TOOL_REASONS.readerUnresolved]: "forbidden",
+              [BRAIN_TOOL_REASONS.invalidAsOf]: "validation_failed",
+              [BRAIN_TOOL_REASONS.noInternalDb]: "internal_error",
+              [BRAIN_TOOL_REASONS.noWorkspace]: "internal_error",
+              [BRAIN_TOOL_REASONS.searchFailed]: "internal_error",
+            } as const satisfies Record<BrainToolReason, AtlasMcpToolErrorCode>;
+            const reason = obj.reason;
+            const code: AtlasMcpToolErrorCode =
+              typeof reason === "string" && reason in codeByReason
+                ? codeByReason[reason as BrainToolReason]
+                : "internal_error";
             return toEnvelopeResult(
-              envelope(refused ? "forbidden" : "internal_error", obj.error, {
+              envelope(code, obj.error, {
                 request_id: requestId,
               }),
             );

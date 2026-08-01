@@ -19,8 +19,14 @@
  * is the same pure classifier the publish transaction runs, so the queue shows
  * the verdict the endpoint will reach without importing the publish machinery.
  *
- * Rejection is {@link retractFactCandidate} — a tombstone on `invalidated_at`,
- * not a status write. See its own comment for why that is the archive verb.
+ * Rejection is the `retract` correction verb (`correctFact` in
+ * `lib/brain/correction.ts`, #4915) — a tombstone on `invalidated_at`, not a
+ * status write. See the note at the tail of this file.
+ *
+ * The same posture holds for #4914's decay signal: computed at read time in
+ * `staleness.ts`, surfaced on every queue row, allowed to float stale claims
+ * to the top of the queue — and structurally incapable of demoting one,
+ * because nothing derived from it ever appears in a WHERE or an UPDATE.
  *
  * ## How the four gates (ADR-0036) land here
  *
@@ -34,11 +40,16 @@
  *   - **Org/group reach (ADR-0022)** — not composed. A brain fact is
  *     workspace-scoped and carries no connection-group binding, so there is no
  *     reach dimension to gate on. If M2 gives a fact a group, this is the seam
- *     that has to grow a fourth clause.
+ *     that has to grow a fifth clause (the supersession predicate took the
+ *     fourth WHERE-clause slot, #4912 — distinct from the four ADR gates this
+ *     list is counting).
  *
  * `invalidated_at IS NULL` is AND-ed on top and is NOT one of the four — it is
  * the tombstone axis, which `brainFactStatusClause` explicitly does not cover,
- * so every current-belief read has to add it itself.
+ * so every current-belief read has to add it itself. So is
+ * `brainFactCurrentClause` (#4912), the supersession axis: a superseded fact is
+ * still `published` and still not retracted, and it leaves this surface the
+ * same way a tombstoned one does.
  *
  * ## The episode is gated in its own right — the likeliest leak in the slice
  *
@@ -64,6 +75,13 @@ import {
   type BrainAttributionDecision,
 } from "@atlas/api/lib/brain/attribution";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { brainFactCurrentClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
+import {
+  computeDecaySignal,
+  LAST_OBSERVED_AT_SELECT,
+  STALE_SURFACING_HINT_SQL,
+} from "@atlas/api/lib/brain/staleness";
 import { BRAIN_FACT_REVIEW_STATUSES, type BrainFactStatusFilter } from "@useatlas/schemas";
 import type {
   BrainEntityRole,
@@ -74,7 +92,6 @@ import type {
   BrainFactEpisodeView,
   BrainFactPromotionBlock,
   BrainFactProvenanceView,
-  BrainFactRetractResponse,
   BrainFactReviewStatus,
   BrainFactTensionView,
 } from "@useatlas/types";
@@ -136,6 +153,10 @@ export const EPISODE_BODY_MAX_CHARS = 4_000;
  * than spreading evenly, and a candidate can lose every hint it originated
  * while keeping the ones pointed at it. Either way an incomplete list is
  * indistinguishable from a complete one, which is what the flag is for.
+ *
+ * Deliberately larger than the search surface's cap (200) — this budget serves
+ * a 200-row admin table, that one an LLM context window. Both feed the shared
+ * `loadTensionClusters` (`lib/brain/tensions.ts`).
  */
 export const TENSION_FANOUT_CAP = 500;
 
@@ -230,8 +251,9 @@ function isParsableTimestamp(value: unknown): boolean {
  * REQUIRED, with no default, and that is the safety property. A defaulted
  * parameter would make every future call site disclose by omission — including
  * one added to a surface nobody thought of — so the compiler is what forces a
- * new read path to answer the question. Three call sites today: the review
- * queue, its tension counterparts, and `searchBrain`.
+ * new read path to answer the question. Four call sites today: the review
+ * queue and `searchBrain`, each for its own rows and for its tension
+ * counterparts (#4913).
  *
  * Withholding never touches `payloadComplete`, which is computed over the
  * stored payload and reports data integrity, not entitlement. Both appear on
@@ -449,6 +471,12 @@ interface FactRow {
   readonly ingested_at: unknown;
   readonly updated_at: unknown;
   readonly corroboration_count: unknown;
+  /**
+   * Newest corroborating observation ({@link LAST_OBSERVED_AT_SELECT}).
+   * Optional because the tension-counterpart query reuses this row shape
+   * without selecting it — counterparts carry no decay view.
+   */
+  readonly last_observed_at?: unknown;
   readonly total_count?: unknown;
 }
 
@@ -618,7 +646,15 @@ function candidateWhere(
   aclParams: readonly unknown[],
 ): { where: string[]; params: unknown[] } {
   const params: unknown[] = [...aclParams];
-  const where: string[] = [aclSql, "f.invalidated_at IS NULL"];
+  const where: string[] = [
+    aclSql,
+    "f.invalidated_at IS NULL",
+    // The supersession axis (#4912): a fact whose `valid_to` has passed was
+    // replaced at the publish gate and leaves the review surface exactly as a
+    // tombstoned one does — there is no trust call left to make on it, and the
+    // as-of reads M2 adds are where it stays readable.
+    brainFactCurrentClause("f"),
+  ];
 
   const status = options.status ?? "draft";
   if (status !== "all") {
@@ -647,8 +683,9 @@ function candidateWhere(
 /**
  * One page of reviewable candidates, fully formed.
  *
- * Runs four statements on a populated page regardless of page size — the facts,
- * their episodes, the tension edges, the tension counterparts — and at most two
+ * Runs at most four statements on a populated page regardless of page size —
+ * the facts, their episodes, the tension edges, the tension counterparts
+ * (skipped when no edges matched) — and at most two
  * on an empty one (the facts, plus a total re-count only when the page could be
  * past the end). Nothing is fetched per row: ADR-0036 names review-gate
  * throughput a first-class concern, and a per-row round trip is what makes a
@@ -682,12 +719,30 @@ export async function loadFactCandidates(
   // `COUNT(*) OVER ()` yields the grand total in the same pass as the page —
   // one statement instead of a second COUNT that could disagree with it under
   // concurrent ingest.
+  //
+  // ORDER BY: the stale-first term is #4914's SURFACING HINT — a boolean, so
+  // genuinely stale claims float to the top while everything else keeps the
+  // newest-ingest-first order reviewers already know. It is deliberately a
+  // two-bucket hint and not a decay SORT: ordering the whole queue by age
+  // would be a ranking, and the hint's only job is to keep an aged claim from
+  // being buried under fresh ingest. It filters nothing and writes nothing.
+  // The per-row subquery runs
+  // over every row matching WHERE (ORDER BY sits under the LIMIT) — an
+  // accepted cost, kept honest by the fan-out already spent on
+  // `CORROBORATION_SELECT`. The hint and the label share their threshold
+  // constant, so the WHAT of "stale" cannot drift — but the WHEN runs on two
+  // clocks (Postgres `now()` here, `new Date()` in the projection), so a row
+  // sitting exactly at the boundary can float while labelling "Aging", or
+  // label "Stale" without floating, by at most the skew plus the label's
+  // floor-rounding. Advisory on both sides and self-healing on the next
+  // read; noted so nobody reads "shared constant" as "bit-identical verdict".
   const sql = `SELECT ${CANDIDATE_COLUMNS},
          ${CORROBORATION_SELECT} AS corroboration_count,
+         ${LAST_OBSERVED_AT_SELECT} AS last_observed_at,
          COUNT(*) OVER ()::int AS total_count
     FROM brain_facts f
    WHERE ${where.join("\n     AND ")}
-   ORDER BY f.ingested_at DESC, f.id DESC
+   ORDER BY ${STALE_SURFACING_HINT_SQL} DESC, f.ingested_at DESC, f.id DESC
    LIMIT $${limitParam} OFFSET $${limitParam + 1}`;
 
   const result = await db.query(sql, params);
@@ -752,6 +807,24 @@ export async function loadFactCandidates(
 
   const candidates = rows.map((row): BrainFactCandidate => {
     const grant = grants.get(row.id);
+    // `FactRow` structurally satisfies `AttributionRow`, so the column is
+    // INTERPRETED once, in the module that owns the decision — then handed to
+    // BOTH consumers of it, so provenance and decay cannot disagree about the
+    // reader's entitlement. Each surface still names the column in its own
+    // SELECT, which is what the `undefined` arm of `attributionDecision`
+    // exists to catch.
+    const attribution = attributionDecision(row, ctx, requestId);
+    if (row.last_observed_at === undefined) {
+      // `pg` never yields `undefined` for a selected column, so the page
+      // query stopped selecting the decay anchor — query drift, and the
+      // classifier will report "age unknown" rather than fabricating a label
+      // from ingest recency. Logged HERE because the pure module has no row
+      // id; same posture as `attributionDecision`'s missing-column arm.
+      log.warn(
+        { rowId: row.id, workspaceId: ctx.workspaceId, requestId },
+        "brain review: `last_observed_at` absent from the row — the queue query no longer selects the decay anchor; reporting age unknown",
+      );
+    }
     return {
       id: row.id,
       subject: row.subject,
@@ -763,14 +836,17 @@ export async function loadFactCandidates(
       malformedGrantIndices: grant?.malformed ?? [],
       grantReadable: grant?.readable ?? false,
       corroborationCount: count(row.corroboration_count),
-      provenance: projectProvenance(
-        row.provenance,
-        row.source_episode_id,
-        // `FactRow` structurally satisfies `AttributionRow`, so the column is
-        // INTERPRETED once, in the module that owns the decision. Each surface
-        // still names it in its own SELECT — which is what the `undefined` arm
-        // of `attributionDecision` exists to catch.
-        attributionDecision(row, ctx, requestId),
+      provenance: projectProvenance(row.provenance, row.source_episode_id, attribution),
+      // Read-time and advisory — the signal exists on the wire and nowhere
+      // else. Same attribution decision as the provenance above, because for a
+      // singly-corroborated fact the observation IS the withheld `occurredAt`.
+      decay: computeDecaySignal(
+        {
+          lastObservedAt: row.last_observed_at,
+          validFrom: row.valid_from,
+          ingestedAt: row.ingested_at,
+        },
+        attribution,
       ),
       // `source_episode_id uuid NOT NULL` + the composite FK make the `null`
       // arm unreachable from the database, so it is defense in depth. The FK's
@@ -875,20 +951,17 @@ async function loadEpisodes(
   return out;
 }
 
-interface TensionEdgeRow {
-  readonly from_id: string | null;
-  readonly to_id: string | null;
-}
-
 /**
  * Advisory contradiction hints for a page of candidates.
  *
- * Two statements: the edges (ungated — `brain_edges` carries no grant of its
- * own), then the counterpart FACTS through the fact predicate, applied
- * independently. A counterpart the reader may not see is reported as
- * `visible: false` rather than dropped: "this claim has a rival you cannot see"
- * is precisely the signal that should stop a reviewer approving it, and
- * omitting the row would read as "no conflicts".
+ * The walk itself — edges, then counterpart facts through a FRESH fact
+ * predicate, never a join onto the owner row — is `loadTensionClusters`
+ * (`lib/brain/tensions.ts`, shared with `searchBrain` since #4913). What stays
+ * here is the REVIEW projection: a human resolves conflicts rival by rival, so
+ * a counterpart the reader may not see is reported as a per-rival
+ * `visible: false` handle rather than the search surface's aggregated count.
+ * Omitting it would read as "no conflicts" — precisely the signal that should
+ * stop a reviewer approving.
  *
  * Never ranked, never ordered by recency or status — see `BrainFactTensionView`.
  */
@@ -898,139 +971,48 @@ async function loadTensions(
   ctx: BrainPrincipalContext,
   requestId: string | undefined,
 ): Promise<{ views: Map<string, BrainFactTensionView[]>; truncated: boolean }> {
-  const out = new Map<string, BrainFactTensionView[]>();
-  const pageIds = rows.map((r) => r.id);
-  if (pageIds.length === 0) return { views: out, truncated: false };
-  if (!ctx.workspaceId) {
-    // Unreachable — a workspace-less context denies at the caller. Loud rather
-    // than a bare `return`, because this guard's failure mode is a page that
-    // silently reports no conflicts at all.
-    log.warn(
-      { requestId, origin: ctx.origin },
-      "brain review: contradiction lookup reached with no workspace — reporting no conflicts, which is wrong; this is an Atlas bug",
-    );
-    return { views: out, truncated: false };
-  }
-
-  // `DISTINCT` because migration 0180 puts no unique index on
-  // `(workspace_id, edge_type, from_fact_id, to_fact_id)` — `reconcile.ts`
-  // dedupes with `WHERE NOT EXISTS`, which two concurrent passes can race. A
-  // duplicate edge would otherwise render as two identical conflict cards and
-  // an inflated "In tension (2)".
-  const edgeResult = await db.query(
-    `SELECT DISTINCT from_fact_id::text AS from_id, to_fact_id::text AS to_id
-       FROM brain_edges
-      WHERE workspace_id = $1
-        AND edge_type = 'in-tension-with'
-        AND (from_fact_id = ANY($2::uuid[]) OR to_fact_id = ANY($2::uuid[]))
-      ORDER BY from_id, to_id
-      LIMIT $3`,
-    [ctx.workspaceId, pageIds, TENSION_FANOUT_CAP + 1],
+  const { clusters, truncated } = await loadTensionClusters(
+    db,
+    rows.map((r) => r.id),
+    { ctx, cap: TENSION_FANOUT_CAP, surface: REVIEW_SURFACE, log, requestId },
   );
-  const edges = edgeResult.rows as TensionEdgeRow[];
-  if (edges.length === 0) return { views: out, truncated: false };
 
-  // Never a silent cap. `tensionsTruncated` reaches the reviewer as well as the
-  // log — see TENSION_FANOUT_CAP.
-  const truncated = edges.length > TENSION_FANOUT_CAP;
-  const usable = truncated ? edges.slice(0, TENSION_FANOUT_CAP) : edges;
-  if (truncated) {
-    log.warn(
-      { workspaceId: ctx.workspaceId, requestId, cap: TENSION_FANOUT_CAP, pageSize: pageIds.length },
-      "brain review: in-tension-with fan-out exceeded the per-page cap — some contradiction hints are not shown on this page",
-    );
+  const out = new Map<string, BrainFactTensionView[]>();
+  for (const [owner, cluster] of clusters) {
+    const views: BrainFactTensionView[] = cluster.counterparts.map(({ row, direction }) => ({
+      visible: true,
+      factId: row.id,
+      edgeDirection: direction,
+      subject: row.subject,
+      predicate: row.predicate,
+      object: row.object,
+      status: reviewStatus(row.status, row.id, ctx.workspaceId),
+      validFrom: iso(row.valid_from),
+      ingestedAt: iso(row.ingested_at),
+      invalidatedAt: iso(row.invalidated_at),
+      validTo: iso(row.valid_to),
+      corroborationCount: count(row.corroboration_count),
+      // Decided per COUNTERPART, off its own row. A tension counterpart is
+      // a fact in its own right and was fetched through its own ACL
+      // predicate, so inheriting the owner's decision would be a guess
+      // about a different row's grant.
+      provenance: projectProvenance(
+        row.provenance,
+        row.source_episode_id,
+        attributionDecision(row, ctx, requestId),
+      ),
+    }));
+    for (const w of cluster.withheld) {
+      views.push({ visible: false, factId: w.factId, edgeDirection: w.direction });
+    }
+    // Deterministic, and deliberately NOT by time, status, or corroboration —
+    // any of those would be a ranking, and refusing to arbitrate is the point.
+    // (The cluster's two lists arrive individually sorted; re-sorting the
+    // merged list keeps visible and withheld rivals interleaved by id, as the
+    // review surface has always rendered them.)
+    views.sort((a, b) => a.factId.localeCompare(b.factId));
+    out.set(owner, views);
   }
-
-  const onPage = new Set(pageIds);
-  /** candidate id → [counterpart id, which end of the edge the counterpart sat on] */
-  const pairs: Array<{
-    readonly owner: string;
-    readonly other: string;
-    readonly direction: "from" | "to";
-  }> = [];
-  for (const edge of usable) {
-    const { from_id: from, to_id: to } = edge;
-    if (!from || !to) continue;
-    // An edge whose BOTH ends are on this page yields two entries — each
-    // candidate names the other. That is symmetric on purpose: neither end is
-    // the authority over the other.
-    if (onPage.has(from)) pairs.push({ owner: from, other: to, direction: "to" });
-    if (onPage.has(to)) pairs.push({ owner: to, other: from, direction: "from" });
-  }
-  if (pairs.length === 0) return { views: out, truncated };
-
-  const counterpartIds = [...new Set(pairs.map((p) => p.other))];
-  const acl = aclVisibilityClause(ctx, {
-    table: "brain_facts",
-    alias: "f",
-    paramIndex: 1,
-    requestId,
-  });
-
-  if (acl.decision === "deny-all") {
-    // Unreachable for the same reason as `loadEpisodes` — the caller already
-    // threw on this decision, against the same table with the same context.
-    // Throwing rather than skipping the query, because skipping leaves every
-    // counterpart unresolved and therefore rendered as "a conflicting claim
-    // you are not allowed to see" — fabricated ACL withholding, and the one
-    // arm a reviewer cannot tell apart from the real thing.
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
-  }
-
-  const visible = new Map<string, FactRow>();
-  {
-    const params: unknown[] = [...acl.params, counterpartIds];
-    // `invalidated_at` is NOT filtered here, unlike the queue itself: a rival
-    // that was retracted is still why this claim was contested, and hiding it
-    // would make a contradiction vanish the moment somebody rejected one side.
-    // It IS selected and carried to the wire as `invalidatedAt`, because
-    // retraction never writes `status` — so without it a withdrawn rival would
-    // render as an indistinguishable live `draft`.
-    const result = await db.query(
-      `SELECT ${CANDIDATE_COLUMNS},
-              ${CORROBORATION_SELECT} AS corroboration_count
-         FROM brain_facts f
-        WHERE ${acl.sql}
-          AND f.id = ANY($${params.length}::uuid[])`,
-      params,
-    );
-    for (const raw of result.rows as FactRow[]) visible.set(raw.id, raw);
-  }
-
-  for (const pair of pairs) {
-    const row = visible.get(pair.other);
-    const view: BrainFactTensionView = row
-      ? {
-          visible: true,
-          factId: row.id,
-          edgeDirection: pair.direction,
-          subject: row.subject,
-          predicate: row.predicate,
-          object: row.object,
-          status: reviewStatus(row.status, row.id, ctx.workspaceId),
-          validFrom: iso(row.valid_from),
-          ingestedAt: iso(row.ingested_at),
-          invalidatedAt: iso(row.invalidated_at),
-          corroborationCount: count(row.corroboration_count),
-          // Decided per COUNTERPART, off its own row. A tension counterpart is
-          // a fact in its own right and was fetched through its own ACL
-          // predicate, so inheriting the owner's decision would be a guess
-          // about a different row's grant.
-          provenance: projectProvenance(
-            row.provenance,
-            row.source_episode_id,
-            attributionDecision(row, ctx, requestId),
-          ),
-        }
-      : { visible: false, factId: pair.other, edgeDirection: pair.direction };
-    const list = out.get(pair.owner);
-    if (list) list.push(view);
-    else out.set(pair.owner, [view]);
-  }
-
-  // Deterministic, and deliberately NOT by time, status, or corroboration —
-  // any of those would be a ranking, and refusing to arbitrate is the point.
-  for (const list of out.values()) list.sort((a, b) => a.factId.localeCompare(b.factId));
 
   return { views: out, truncated };
 }
@@ -1073,7 +1055,8 @@ export async function loadFactCandidateSummary(
             COUNT(*) FILTER (WHERE f.status = 'published')::int AS published_total
        FROM brain_facts f
       WHERE ${acl.sql}
-        AND f.invalidated_at IS NULL`,
+        AND f.invalidated_at IS NULL
+        AND ${brainFactCurrentClause("f")}`,
     [...acl.params],
   );
 
@@ -1097,88 +1080,11 @@ export async function loadFactCandidateSummary(
 // ---------------------------------------------------------------------------
 // Rejection
 // ---------------------------------------------------------------------------
-
-/**
- * Reject a candidate by RETRACTING it — the review gate's negative verb.
- *
- * ## Why this stamps `invalidated_at` and not `status`
- *
- * `brain_facts.status` has exactly one writer, the atomic publish endpoint, and
- * `scripts/check-brain-fact-promotion.sh` refuses every other status-writing
- * shape — including one that merely FILTERS on the column inside an UPDATE. A
- * "reject" that wrote `status = 'archived'` would be a second gate writer, and
- * the guard's own remediation text names the alternative: a fact is never
- * deleted and never demoted by status, so withdrawal is a tombstone
- * (ADR-0036 — supersession is not deletion).
- *
- * The tombstone does the queue work for free. `DRAFT_FACTS_SQL`,
- * `brainFactsCountSql`, the publish preview, and this module's own list all
- * exclude `invalidated_at IS NOT NULL`, so a retracted claim leaves the queue,
- * stops being counted in `draftCounts`, and is never re-offered for promotion —
- * while staying readable to an as-of query, which is exactly what ADR-0036 asks
- * of a withdrawn belief.
- *
- * ## Not restricted to drafts
- *
- * A published claim can also be wrong, and retracting one is the same
- * operation. Constraining this to drafts would need `status` in the statement,
- * which the guard refuses — and would be the wrong behaviour anyway.
- *
- * Returns `null` when nothing was updated: no such fact, already retracted, or
- * not visible to this reader. The three are deliberately indistinguishable —
- * telling a reader that a fact they cannot see exists is the leak the
- * predicate is there to prevent.
- *
- * @throws {BrainReaderUnresolvedError} when the reader has no usable principals.
- */
-export async function retractFactCandidate(
-  db: BrainCandidateReader,
-  options: {
-    readonly ctx: BrainPrincipalContext;
-    readonly factId: string;
-    readonly requestId?: string;
-  },
-): Promise<BrainFactRetractResponse | null> {
-  const { ctx, factId, requestId } = options;
-
-  const acl = aclVisibilityClause(ctx, {
-    table: "brain_facts",
-    alias: "f",
-    paramIndex: 1,
-    requestId,
-  });
-  if (acl.decision === "deny-all") {
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
-  }
-
-  const params: unknown[] = [...acl.params, factId];
-  const result = await db.query(
-    `UPDATE brain_facts AS f
-        SET invalidated_at = now(), updated_at = now()
-      WHERE ${acl.sql}
-        AND f.id = $${params.length}::uuid
-        AND f.invalidated_at IS NULL
-    RETURNING f.id::text AS id, f.invalidated_at`,
-    params,
-  );
-
-  const row = result.rows[0] as Record<string, unknown> | undefined;
-  if (!row) return null;
-
-  const invalidatedAt = iso(row.invalidated_at);
-  if (typeof row.id !== "string" || !invalidatedAt) {
-    // `RETURNING` on an UPDATE that matched a row cannot produce this. If it
-    // ever does, the write HAPPENED and reporting failure would send an admin
-    // to retract again; throwing surfaces a 500 with a requestId instead.
-    throw new Error(
-      `retractFactCandidate: RETURNING gave an unusable row for fact ${factId} — the retraction committed but cannot be reported`,
-    );
-  }
-
-  log.info(
-    { workspaceId: ctx.workspaceId, factId, userId: ctx.userId, requestId },
-    "brain review: fact candidate retracted — it leaves the review queue and is never offered for promotion",
-  );
-
-  return { id: row.id, invalidatedAt };
-}
+//
+// Rejection is the `retract` CORRECTION verb, and it moved (#4915): the
+// tombstone stamp, the correction-episode materialization, and the
+// derives-from re-review flags all live in `lib/brain/correction.ts`
+// (`correctFact({ verb: "retract" })`), which the admin route's
+// `POST /:id/retract` now runs. This module deliberately keeps no retract
+// spelling of its own — a second `invalidated_at` writer here would be exactly
+// the two-retract-semantics split the unification removed.

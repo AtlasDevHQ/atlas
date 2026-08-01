@@ -5,12 +5,14 @@
  * every one of them is a NEGATIVE — this surface is defined by what it must not
  * do:
  *
- *   - **no content reaches the wire.** Not "the happy path returns numbers" —
- *     that proves nothing. The pin sweeps the serialized payload twice: for the
- *     projection KEY NAMES a producer might have wired through, and for VALUES
- *     smuggled under an innocuous key. The claim-text sweep against real seeded
- *     rows is `oversight-pg.test.ts`'s job — that is the layer where the text
- *     actually exists.
+ *   - **no content reaches the wire from the UNSCOPED aggregates.** Not "the
+ *     happy path returns numbers" — that proves nothing. The pin sweeps the
+ *     serialized payload twice: for the projection KEY NAMES a producer might
+ *     have wired through, and for VALUES smuggled under an innocuous key. The
+ *     claim-text sweep against real seeded rows is `oversight-pg.test.ts`'s
+ *     job — that is the layer where the text actually exists. (The ONE
+ *     sanctioned content channel is `loadSupersessionPreview`'s reader-scoped
+ *     pairs, #4912 — covered by its own suite at the bottom of this file.)
  *   - **the counts are NOT reader-scoped.** A view that silently agreed with
  *     `/summary` would restore the exact false all-clear the issue recorded, and
  *     would pass any test that only checked the shape. Asserted by inspecting
@@ -30,10 +32,14 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  OVERSIGHT_BUCKETS_SQL,
   OVERSIGHT_BUCKET_MAX,
+  OVERSIGHT_TOTALS_SQL,
+  WILL_SUPERSEDE_PAIR_MAX,
   classifyToken,
   loadConfiguredChannels,
   loadFactOversight,
+  loadSupersessionPreview,
   type ConfiguredChannels,
 } from "@atlas/api/lib/brain/oversight";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
@@ -98,6 +104,10 @@ interface ReaderOptions {
   configParams?: unknown[][];
   configThrows?: boolean;
   bucketsThrow?: boolean;
+  /** The unscoped will-supersede count (#4912). `unknown` for the drift tests. */
+  willSupersedeTotal?: unknown;
+  /** Reader-scoped will-supersede pair rows (#4912). */
+  willSupersedePairs?: readonly unknown[];
 }
 
 function reader(options: ReaderOptions): BrainCandidateReader {
@@ -111,6 +121,19 @@ function reader(options: ReaderOptions): BrainCandidateReader {
         options.configParams?.push(params ?? []);
         if (options.configThrows) throw new Error("install config read failed");
         return { rows: (options.configs ?? []).map((config) => ({ config })) };
+      }
+      if (sql.includes("will_supersede_total")) {
+        return {
+          rows: [
+            {
+              will_supersede_total:
+                "willSupersedeTotal" in options ? options.willSupersedeTotal : 0,
+            },
+          ],
+        };
+      }
+      if (sql.includes("scoped_total")) {
+        return { rows: [...(options.willSupersedePairs ?? [])] };
       }
       if (sql.includes("COUNT(DISTINCT g.token)")) {
         // `in` rather than `??`: the drift tests pass `null`, and `?? 0` would
@@ -514,25 +537,29 @@ describe("loadFactOversight", () => {
     // sweep catches content smuggled under an innocuous key. The bucket fixtures
     // below are the tokens of facts whose claim text is seeded in the -pg suite;
     // here the check is that no such text could arrive at all.
-    const result = await loadFactOversight(
-      reader({
-        configs: [slackConfig(PRIVATE_CHANNEL)],
-        buckets: [
-          { token: "org", awaiting_review: 26, published: 40 },
-          {
-            token: `audience:${chatChannelAudienceId(SLACK_HISTORY_SOURCE, UNCONFIGURED_CHANNEL)}`,
-            awaiting_review: 6,
-          },
-        ],
-        totals: { awaiting_review: 32, published: 40 },
-        reviewable: 26,
-      }),
-      ctx(),
-    );
+    const db = reader({
+      configs: [slackConfig(PRIVATE_CHANNEL)],
+      buckets: [
+        { token: "org", awaiting_review: 26, published: 40 },
+        {
+          token: `audience:${chatChannelAudienceId(SLACK_HISTORY_SOURCE, UNCONFIGURED_CHANNEL)}`,
+          awaiting_review: 6,
+        },
+      ],
+      totals: { awaiting_review: 32, published: 40 },
+      reviewable: 26,
+    });
+    const result = await loadFactOversight(db, ctx());
+    // Merged exactly as the route merges it — the strict schema REQUIRES the
+    // will-supersede section (#4912), so parsing the counts alone would fail
+    // for the wrong reason. Its pair labels are the ONE sanctioned content
+    // channel and are reader-scoped; here the fixture carries none, so the
+    // no-content sweep below still covers the whole payload.
+    const willSupersede = await loadSupersessionPreview(db, ctx());
 
     // Parses against the strict wire schema, so an extra key is a failure here
     // and not a silent strip.
-    const parsed = BrainFactOversightSchema.parse(result);
+    const parsed = BrainFactOversightSchema.parse({ ...result, willSupersede });
     const COUNTERS = ["awaitingReview", "published", "retracted", "provisional", "inTension"];
     for (const bucket of parsed.buckets) {
       // Exhaustive, per arm — a new key on either is a failure rather than
@@ -759,5 +786,190 @@ describe("loadFactOversight", () => {
         audienceIds: [],
       }),
     ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Will-supersede disclosure (#4912)
+// ═══════════════════════════════════════════════════════════════════════
+
+/** One `willSupersedePairsSql` row, with the window the producer reads. */
+function pairRow(n: number, scopedTotal: number, over: Record<string, unknown> = {}) {
+  return {
+    draft_id: `draft-${n}`,
+    draft_label: `alice manager bob-${n}`,
+    superseded_id: `old-${n}`,
+    superseded_label: `alice manager carol-${n}`,
+    scoped_total: scopedTotal,
+    ...over,
+  };
+}
+
+describe("loadSupersessionPreview", () => {
+  it("lists the reader-visible pairs and counts the rest — never the other way round", async () => {
+    const result = await loadSupersessionPreview(
+      reader({ willSupersedeTotal: 3, willSupersedePairs: [pairRow(1, 2), pairRow(2, 2)] }),
+      ctx(),
+    );
+    expect(result).toEqual({
+      total: 3,
+      pairs: [
+        {
+          draftId: "draft-1",
+          draftLabel: "alice manager bob-1",
+          supersededId: "old-1",
+          supersededLabel: "alice manager carol-1",
+        },
+        {
+          draftId: "draft-2",
+          draftLabel: "alice manager bob-2",
+          supersededId: "old-2",
+          supersededLabel: "alice manager carol-2",
+        },
+      ],
+      withheld: 1,
+      truncated: false,
+    });
+  });
+
+  it("gates the pair statement on BOTH aliases' ACL and scopes the total to the workspace", async () => {
+    const seen: string[] = [];
+    await loadSupersessionPreview(
+      reader({ seen, willSupersedeTotal: 0, willSupersedePairs: [] }),
+      ctx(),
+    );
+    const pairsSql = seen.find((sql) => sql.includes("scoped_total")) ?? "";
+    const totalSql = seen.find((sql) => sql.includes("will_supersede_total")) ?? "";
+    // Both aliases carry the workspace boundary through their own predicate —
+    // a pair statement gated on `d` alone would hand the reader the OLD claim
+    // of a pair whose published side their grant excludes.
+    expect(pairsSql).toContain("d.workspace_id = $");
+    expect(pairsSql).toContain("p.workspace_id = ");
+    expect(totalSql).toContain("d.workspace_id = $1");
+    // And the join itself is the adapter's — current, published, both single.
+    for (const sql of [pairsSql, totalSql]) {
+      expect(sql).toContain("p.valid_to IS NULL");
+      expect(sql).toContain("p.status = 'published'");
+      expect(sql).toContain("d.predicate_cardinality = 'single'");
+    }
+  });
+
+  it("reports truncation without laundering it into `withheld`", async () => {
+    const scoped = WILL_SUPERSEDE_PAIR_MAX + 40;
+    const rows = Array.from({ length: WILL_SUPERSEDE_PAIR_MAX + 1 }, (_, i) =>
+      pairRow(i, scoped),
+    );
+    const result = await loadSupersessionPreview(
+      reader({ willSupersedeTotal: scoped + 5, willSupersedePairs: rows }),
+      ctx(),
+    );
+    expect(result.pairs).toHaveLength(WILL_SUPERSEDE_PAIR_MAX);
+    expect(result.truncated).toBe(true);
+    // Withheld counts ONLY the ACL-hidden remainder (5), not the 40 clipped
+    // rows — a truncation dressed as an ACL boundary would send the admin
+    // hunting for private channels that do not exist.
+    expect(result.withheld).toBe(5);
+    expect(result.total).toBe(scoped + 5);
+  });
+
+  it("clamps a scoped-exceeds-total race to zero withheld rather than a negative", async () => {
+    const result = await loadSupersessionPreview(
+      reader({ willSupersedeTotal: 1, willSupersedePairs: [pairRow(1, 2), pairRow(2, 2)] }),
+      ctx(),
+    );
+    expect(result.withheld).toBe(0);
+  });
+
+  it("drops a drifted pair row rather than rendering a half-readable disclosure", async () => {
+    const result = await loadSupersessionPreview(
+      reader({
+        willSupersedeTotal: 2,
+        willSupersedePairs: [pairRow(1, 2), pairRow(2, 2, { superseded_label: null })],
+      }),
+      ctx(),
+    );
+    expect(result.pairs).toHaveLength(1);
+    // The dropped row stays in the scoped window count, so it does NOT
+    // reappear as a phantom "hidden from you by ACL" entry…
+    expect(result.withheld).toBe(0);
+    // …but it DOES report as truncation: to the reader, "a row was dropped"
+    // and "a row did not fit" are the same statement — you were entitled to
+    // more than is listed.
+    expect(result.truncated).toBe(true);
+  });
+
+  it("floors the scoped count at the pairs shown when every window column drifts", async () => {
+    // `scoped_total: null` on every row. Without the pairs-length floor,
+    // `withheld` becomes `total - 0 = total` — the disclosure would claim ALL
+    // pairs are ACL-hidden while simultaneously listing them.
+    const result = await loadSupersessionPreview(
+      reader({
+        willSupersedeTotal: 2,
+        willSupersedePairs: [
+          pairRow(1, 2, { scoped_total: null }),
+          pairRow(2, 2, { scoped_total: null }),
+        ],
+      }),
+      ctx(),
+    );
+    expect(result.pairs).toHaveLength(2);
+    expect(result.withheld).toBe(0);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("keeps a clipped remainder out of `withheld` even when the window column drifts", async () => {
+    // Clipped page + drifted windows — the branch the clip floor exists for.
+    // Without it, the clipped row would fold into `withheld`: truncation
+    // dressed as an ACL boundary, on a drifted column, silently.
+    const total = WILL_SUPERSEDE_PAIR_MAX + 40;
+    const rows = Array.from({ length: WILL_SUPERSEDE_PAIR_MAX + 1 }, (_, i) =>
+      pairRow(i, 0, { scoped_total: null }),
+    );
+    const result = await loadSupersessionPreview(
+      reader({ willSupersedeTotal: total, willSupersedePairs: rows }),
+      ctx(),
+    );
+    expect(result.pairs).toHaveLength(WILL_SUPERSEDE_PAIR_MAX);
+    expect(result.truncated).toBe(true);
+    // Withheld = total minus the rows we SAW (cap + 1), never minus the rows
+    // we kept (cap) — the one-row difference is the clipped row that must not
+    // masquerade as ACL withholding.
+    expect(result.withheld).toBe(total - (WILL_SUPERSEDE_PAIR_MAX + 1));
+  });
+
+  it("refuses to disclose a scope it cannot establish — a drifted total THROWS", async () => {
+    // 0 is the failure-silencing answer: it renders as "this publish
+    // supersedes nothing" precisely when the count query is misbehaving.
+    await expect(
+      loadSupersessionPreview(reader({ willSupersedeTotal: null }), ctx()),
+    ).rejects.toThrow(/will-supersede total/);
+  });
+
+  it("refuses a reader whose identity did not resolve — same posture as the counts", async () => {
+    await expect(
+      loadSupersessionPreview(reader({}), {
+        origin: "unresolved",
+        workspaceId: WS,
+        userId: null,
+        role: null,
+        audienceIds: [],
+      }),
+    ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
+  });
+
+  it("keeps the workspace counters on the review-state axis, and the reviewable count on the queue's (#4912)", async () => {
+    // The deliberate divergence, pinned from both sides: a superseded fact
+    // stays in the workspace `published` arm (accounting by review state —
+    // shrinking a counter is not how supersession is disclosed; `willSupersede`
+    // is), while the reader-scoped reviewable count carries the queue's
+    // current-validity term so it stays the SAME quantity as `/summary`'s
+    // `draftTotal`.
+    expect(OVERSIGHT_BUCKETS_SQL).not.toContain("valid_to");
+    expect(OVERSIGHT_TOTALS_SQL).not.toContain("valid_to");
+
+    const seen: string[] = [];
+    await loadFactOversight(reader({ seen }), ctx());
+    const reviewable = seen.find((sql) => sql.includes("COUNT(*)::int AS n")) ?? "";
+    expect(reviewable).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
   });
 });

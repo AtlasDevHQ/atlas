@@ -14,9 +14,24 @@
  *
  * Kept in its own file (mock.module is file-global under the isolated runner) so
  * the mock-free query-builder tests stay clean.
+ *
+ * ## As of #4954 this file is also the SOLE owner of the argument-schema rules
+ *
+ * `searchBrain`'s input schema used to be declared twice, and the MCP package
+ * carried a hand-mirrored copy of each rule below. There is now one schema
+ * (`lib/tools/search-brain-schema.ts`), and `packages/mcp`'s suite asserts
+ * only that the schema it SERVES is that module's — it derives its expectation
+ * from the same source, so it cannot see a prose regression at all.
+ *
+ * Concretely: the `asOf` retraction carve-out (#4933) and `include`
+ * precondition (#4939) blocks below are the only thing guarding those rules
+ * for EXTERNAL MCP clients as well as the in-process agent. Weakening one here
+ * leaves that surface unguarded with nothing red in that package to say so.
+ * Trim with that in mind.
  */
 
 import { describe, expect, it, beforeEach, mock } from "bun:test";
+import { z } from "zod";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import type { AuthMode } from "@useatlas/types";
 
@@ -63,11 +78,14 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 }));
 
 let loggedError: unknown;
+let loggedWarn: unknown;
 // Mock all value exports of the logger module (mock.module is file-global; a
 // partial stub would hand `undefined` to any importer reaching an unmocked one).
 const noopLogger = {
   info: () => {},
-  warn: () => {},
+  warn: (obj: unknown) => {
+    loggedWarn = obj;
+  },
   debug: () => {},
   error: (obj: unknown) => {
     loggedError = obj;
@@ -88,6 +106,14 @@ void mock.module("@atlas/api/lib/logger", () => ({
 
 const { searchBrain, SEARCH_BRAIN_DESCRIPTION } = await import("@atlas/api/lib/tools/search-brain");
 const { SEARCH_BRAIN_TOOL_DESCRIPTION } = await import("@atlas/api/lib/tools/descriptions");
+const { searchBrainInputSchema, SEARCH_BRAIN_INPUT_SHAPE } = await import(
+  "@atlas/api/lib/tools/search-brain-schema"
+);
+// The constants the schema's value constraints must keep deriving from — read
+// from their own sources, so a pin against them cannot be satisfied by the
+// schema agreeing with itself.
+const { BRAIN_RESULT_TIERS } = await import("@useatlas/schemas");
+const { MAX_SEARCH_LIMIT } = await import("@atlas/api/lib/brain/search");
 
 function run(input: Record<string, unknown> = {}) {
   // AI SDK tool.execute(args, ToolCallOptions). Cast through unknown: the tool's
@@ -98,9 +124,21 @@ function run(input: Record<string, unknown> = {}) {
   ) as unknown as Promise<Record<string, unknown>>;
 }
 
-/** SQL the tool issued against one table, in call order. */
+/**
+ * SQL the tool issued whose FROM targets one table, in call order.
+ *
+ * Matches `FROM <table>` rather than a bare substring: the fact statement
+ * names `brain_episodes` inside its decay-anchor subquery (#4914) and
+ * `brain_edges` inside corroboration, so a substring match would count the
+ * fact read as an episode-store read and fail the include-filter negatives
+ * vacuously. The subqueries spell `FROM brain_edges ed` / `JOIN brain_episodes
+ * ep`, so anchoring on the store statements' own `FROM <table> <alias>` shape
+ * keeps the discrimination honest.
+ */
 function sqlFor(table: string): string[] {
-  return queryCalls.map((c) => c.sql).filter((s) => s.includes(table));
+  return queryCalls
+    .map((c) => c.sql)
+    .filter((s) => new RegExp(`FROM ${table} (?:f|e|d|kd)\\b`).test(s) || s.includes(`FROM ${table}\n`));
 }
 
 beforeEach(() => {
@@ -114,6 +152,7 @@ beforeEach(() => {
   queryCalls.length = 0;
   queryImpl = async () => [];
   loggedError = undefined;
+  loggedWarn = undefined;
 });
 
 describe("searchBrain tool.execute", () => {
@@ -222,6 +261,38 @@ describe("searchBrain tool.execute", () => {
     expect(loggedError).toBeDefined();
   });
 
+  it("threads a valid asOf into the fact read and echoes it — the historical page says so (#4916)", async () => {
+    const res = await run({ query: "x", include: ["fact"], asOf: "2026-07-01T00:00:00Z", expand: false });
+    const factCall = queryCalls.find((c) => c.sql.includes("brain_facts"))!;
+    expect(factCall.sql).toContain("f.valid_from IS NULL OR f.valid_from <=");
+    expect(factCall.params).toContain("2026-07-01T00:00:00.000Z");
+    expect(res.asOf).toBe("2026-07-01T00:00:00.000Z");
+    expect(res.error).toBeUndefined();
+  });
+
+  it("rejects a malformed asOf with its own machine-readable reason — never answers as-of-now (#4916)", async () => {
+    const res = await run({ query: "x", asOf: "yesterday-ish" });
+    expect(res.error).toContain("yesterday-ish");
+    expect(res.error).toContain("ISO-8601");
+    expect(res.reason).toBe("invalid_as_of");
+    expect(res.results).toBeUndefined();
+    // Fail closed: nothing was searched — a page of CURRENT beliefs under a
+    // rejected historical ask would be attributed to the asked-about instant.
+    expect(queryCalls).toHaveLength(0);
+    // Logged at warn (a caller mistake, not a server fault), with correlation.
+    expect(loggedWarn).toMatchObject({ workspaceId: "ws-1", requestId: "req-1" });
+    expect(loggedError).toBeUndefined();
+  });
+
+  it("rejects a BLANK asOf rather than normalizing it away like the document filters", async () => {
+    // `since: '  '` becomes absent; `asOf: '  '` must NOT — an explicit
+    // point-read argument that silently degrades to as-of-now is the exact
+    // fall-through #4916 forbids.
+    const res = await run({ query: "x", asOf: "   " });
+    expect(res.reason).toBe("invalid_as_of");
+    expect(queryCalls).toHaveLength(0);
+  });
+
   it("logs and returns a generic, secret-free error when the query throws", async () => {
     queryImpl = async () => {
       throw new Error("connection to postgres://user:pw@host failed");
@@ -310,18 +381,22 @@ describe("searchBrain tool.execute", () => {
  *     guidance injected into the in-process agent's SYSTEM PROMPT via
  *     `registry.ts`'s `describe()`.
  *   - `SEARCH_BRAIN_TOOL_DESCRIPTION` (`lib/tools/descriptions.ts`) — the
- *     LLM-facing tool description `packages/mcp/src/tools.ts` registers, i.e.
- *     what an external MCP client's model reads.
+ *     LLM-facing TOOL description, served both to the in-process agent (as
+ *     `searchBrain.description`) and, via `withErrorContract`, to every
+ *     external MCP client.
  *
  * They are NOT the same string and neither is derived from the other, so
- * guidance added to one reaches only half the agents. The MCP half is the one
- * Atlas does not control the model of, which makes it the half where an
- * unguided `{ "visible": false }` is most likely to be narrated as "nobody
+ * guidance added to the system prompt alone never reaches an external MCP
+ * client — the one reader whose model Atlas does not control, and so the one
+ * most likely to narrate an unguided `{ "visible": false }` as "nobody
  * recorded who said this".
  */
 describe.each([
   ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
-  ["SEARCH_BRAIN_TOOL_DESCRIPTION (MCP tool description)", SEARCH_BRAIN_TOOL_DESCRIPTION],
+  [
+    "SEARCH_BRAIN_TOOL_DESCRIPTION (tool description — in-process agent and MCP)",
+    SEARCH_BRAIN_TOOL_DESCRIPTION,
+  ],
 ])("%s — withheld attribution is explained to the model", (_label, description) => {
   it("names the wire shape the model will actually see", () => {
     // A rule keyed on prose the response does not contain is unactionable.
@@ -344,5 +419,444 @@ describe.each([
     // fact is legitimately visible. A model that refused to use it would turn
     // an attribution boundary into a knowledge gap.
     expect(description).toMatch(/use the claim/i);
+  });
+});
+
+/**
+ * Same two-surface pin, for #4914's staleness guidance — and for the same
+ * reason the attribution block states: a description is a string nobody would
+ * notice deleting, the two surfaces are not derived from each other, and
+ * guidance added to the system prompt alone never reaches an MCP client.
+ */
+describe.each([
+  ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
+  [
+    "SEARCH_BRAIN_TOOL_DESCRIPTION (tool description — in-process agent and MCP)",
+    SEARCH_BRAIN_TOOL_DESCRIPTION,
+  ],
+])("%s — staleness is presented, never arbitrated (#4914)", (_label, description) => {
+  it("names the temporal wire fields the model will actually see", () => {
+    for (const field of ["decay", "validFrom", "corroborationCount"]) {
+      expect(description).toContain(field);
+    }
+    expect(description).toMatch(/stale/i);
+  });
+
+  it("tells the model to PRESENT a stale fact's age", () => {
+    expect(description).toMatch(/present .*(age|as of)/i);
+  });
+
+  it("forbids the two wrong moves: asserting as current, and dropping for age", () => {
+    // The failure mode of unguided staleness metadata is a model treating
+    // `stale` as a demotion — silently discarding the reviewed record — or
+    // ignoring it and asserting a year-old claim as today's truth. Both
+    // never-arms must survive a prompt-tightening pass.
+    expect(description).toMatch(/never (assert|discard|overrule|drop)/i);
+    expect(description).toMatch(/(as current|current[.,])/i);
+  });
+});
+
+/**
+ * The one rule every agent-facing string about retraction has to obey (#4933):
+ * a sentence may state that a retracted fact NEVER comes back only if that same
+ * sentence names the exception. `invalidatedAt` alone does not count — naming
+ * the label without naming where it is read is what the pre-#4933 prose already
+ * did on the surfaces that had it.
+ *
+ * Two predicates rather than one, because only the absolute claim is policed.
+ * The label-defining sentences ("a non-null `invalidatedAt` is a rival since
+ * RETRACTED") mention retraction without promising anything about reachability,
+ * and a rule that demanded a carve-out from those would push the whole clause
+ * out of the 150-word rubric for no truth gained.
+ *
+ * `ABSOLUTE` is deliberately broader than the two wordings that actually
+ * shipped, and `CARVE_OUT` deliberately requires an exception marker next to
+ * `tensions` rather than the bare word: a rewrite that merely mentions
+ * `tensions` earlier in the sentence ("`tensions` unranked; superseded
+ * included, retracted never returned") restates the exact defect and must not
+ * buy immunity with a token.
+ */
+const RETRACTION_ABSOLUTE =
+  /retract\w*\s+(?:facts?\s+)?(?:is |are )?never|never\s+(?:returned|surfaces?|appears?|as a RESULT)|retract\w*[^.]{0,40}\b(?:excluded|omitted)\b/i;
+const RETRACTION_CARVE_OUT = /(only|except|still appears?|the one place)[^.]{0,80}tensions/i;
+
+/** Sentences that promise retracted facts are unreachable without naming the exception. */
+function unqualifiedRetractionSentences(description: string): readonly string[] {
+  return (
+    description
+      // Two delimiters, and the bullet arm is the load-bearing one. Splitting
+      // on `. ` alone under-splits the system prompt, whose markdown bullets
+      // have no terminal period: bullet N's tail glues to bullet N+1's head,
+      // and an offender could then borrow a NEIGHBOUR's carve-out — the same
+      // "buy immunity with a token" hole this predicate exists to close, one
+      // level up. Over-splitting (an "e.g." mid-sentence) is the safe
+      // direction: it can only ever hand a smaller chunk to the same filters.
+      .split(/(?<=\.)\s+|\n(?=[-*] )/)
+      .filter((s) => /retract/i.test(s))
+      .filter((s) => RETRACTION_ABSOLUTE.test(s))
+      .filter((s) => !RETRACTION_CARVE_OUT.test(s))
+  );
+}
+
+/**
+ * Does a string state the `include` precondition `asOf` is hard-refused
+ * without (#4939)?
+ *
+ * A bare `toContain("include")` would pass VACUOUSLY on both descriptions:
+ * each already says "superseded versions **included**", and `include` is a
+ * substring of it. So the predicate is word-bounded AND requires the word to
+ * sit in a sentence that reads as a REQUIREMENT — which is the thing the
+ * dropped sentence actually carried. A description that merely mentions the
+ * argument in passing ("also accepts `include`") does not satisfy it.
+ */
+function statesIncludePrecondition(description: string): boolean {
+  return description
+    .split(/(?<=\.)\s+|\n(?=[-*] )/)
+    .some((s) => /\binclude\b/.test(s) && /\b(requires?|needs?|must|only with)\b/i.test(s));
+}
+
+/**
+ * The tension-counterpart lifecycle labels (#4935), pinned for the reason the
+ * base commit exists: this block's `asOf` sentence claimed "Retracted facts
+ * never appear, at any time" until #4913 made it false, and NOTHING failed.
+ * Guidance prose is the one part of a wire contract with no compiler behind
+ * it, so the never-arms have to be assertions or the next prompt-tightening
+ * pass collapses them back to a blunt "surface both sides, never pick a
+ * winner" — which is precisely the instruction that turns an arbitrated
+ * conflict into a live one.
+ *
+ * BOTH surfaces, as of #4933. The block shipped with #4935 covering only
+ * `SEARCH_BRAIN_DESCRIPTION` and said so, because `SEARCH_BRAIN_TOOL_DESCRIPTION`
+ * — the description served to the in-process agent AND, via
+ * `searchBrain.description` wrapped in `withErrorContract`, to every external
+ * MCP client — had to trade words against the 80–150 rubric
+ * (`description-rubric.test.ts`) before it could carry any of this. #4933 paid
+ * that price, so the parameterisation is now the assertion.
+ *
+ * Note #4933's acceptance criteria PREDATE `validTo` and name only
+ * `invalidatedAt`. Closing it that literally would have left the MCP model
+ * able to spot a retracted rival and still unable to tell a superseded one
+ * from a live one — half a fix on the surface Atlas does not control the model
+ * of. Both axes are pinned on both strings for that reason.
+ */
+describe.each([
+  ["SEARCH_BRAIN_DESCRIPTION (in-process agent system prompt)", SEARCH_BRAIN_DESCRIPTION],
+  [
+    "SEARCH_BRAIN_TOOL_DESCRIPTION (tool description — in-process agent and MCP)",
+    SEARCH_BRAIN_TOOL_DESCRIPTION,
+  ],
+])("%s — a retired tension counterpart is labelled, not re-litigated (#4935, #4933)", (_label, description) => {
+  it("names BOTH wire fields, so neither axis can be dropped in a rewrite", () => {
+    expect(description).toContain("invalidatedAt");
+    expect(description).toContain("validTo");
+  });
+
+  it("distinguishes the two verbs rather than merging them into one label", () => {
+    // Retracted means "should never have been served"; superseded means "was
+    // true, then stopped being". A prompt that says only "retired" loses the
+    // ability to tell a reader which happened.
+    expect(description).toMatch(/RETRACTED/);
+    expect(description).toMatch(/SUPERSEDED/);
+  });
+
+  it("tells the model a retired rival is SETTLED, which is the actionable half", () => {
+    // Naming the fields without saying what to do with them leaves the model
+    // on its "never pick winners" default and changes nothing.
+    //
+    // Anchored to the INSTRUCTION, not to the word: a bare /settled/i passes
+    // on the pre-#4935 string, which already says "never as settled" about
+    // withheld rivals. Deleting this whole clause would have left it green.
+    expect(description).toMatch(/report (those|them) as settled/i);
+  });
+
+  it("qualifies `validTo` by the clock, so a future window is not called settled", () => {
+    // Non-null is not retired: `valid_to IS NULL OR valid_to > now()` is the
+    // database's own liveness test, so a future-dated stamp is a LIVE rival.
+    // Without this qualifier the prompt instructs the model to suppress an
+    // open conflict — the exact inverse of the bug #4935 fixes.
+    //
+    // Both arms are anchored past the words themselves. `/in the past/i` alone
+    // is matched by the pre-existing `asOf` bullet ("ISO-8601, in the past"),
+    // and `/future/` alone would accept a prompt that called a future window
+    // settled too — so the future arm has to carry its VERDICT.
+    expect(description).toMatch(/ALREADY IN THE PAST/);
+    expect(description).toMatch(/still in the future[^.]*\b(LIVE|contested)/);
+  });
+
+  it("keeps the never-arm that a labelling clause could plausibly displace", () => {
+    // Labelling lifecycle state is not ranking. The moment this ban goes, the
+    // model is free to read the labels as a verdict and pick a side on the
+    // pair that is still genuinely live.
+    expect(description).toMatch(/never pick a winner/i);
+  });
+
+  it("never states the absolute the wire does not keep (#4933)", () => {
+    // The defect both #4932 and #4933 fixed was not a missing clause, it was a
+    // PRESENT one: "retracted never", unqualified, in a sentence about what
+    // `asOf` returns. True of results, false of the response — and a model
+    // cannot tell which from the prose, so it reports a settled retraction as
+    // a live contradiction.
+    //
+    // Rule-shaped rather than a blocklist of the two wordings that shipped: a
+    // blocklist goes green the moment someone rephrases the absolute.
+    expect(
+      unqualifiedRetractionSentences(description),
+      "a sentence promising retracted facts never come back must name the `tensions` carve-out in that same sentence",
+    ).toEqual([]);
+  });
+});
+
+/**
+ * The dedupe itself (#4954) — the wiring that makes every prose pin below
+ * cover BOTH agent surfaces instead of just this one.
+ *
+ * `packages/mcp/src/tools.ts` used to re-declare this schema argument for
+ * argument, so a fix authored here structurally could not reach an MCP client:
+ * that is how the MCP `asOf` shipped with #4933's unqualified absolute and
+ * without #4939's `include` precondition, each fixed twice. There is now one
+ * definition in `lib/tools/search-brain-schema.ts`.
+ *
+ * Only the FIRST pin below stops it becoming two again, and only on this side
+ * — nothing in this file observes `packages/mcp/src/tools.ts`. That half is
+ * held by `packages/mcp/src/__tests__/tools.test.ts`, which pins the MCP
+ * registration by identity and its served JSON Schema by value.
+ */
+describe("searchBrain input schema — one definition, two surfaces (#4954)", () => {
+  it("the AI SDK tool serves the shared schema, not a local re-declaration", () => {
+    // Identity, not deep equality: a hand-copied literal here would be
+    // deep-equal on the day it was written and is exactly what this guards.
+    expect(
+      searchBrain.inputSchema,
+      "searchBrain.inputSchema is no longer the object exported by lib/tools/search-brain-schema.ts — the api surface has re-grown its own copy",
+    ).toBe(searchBrainInputSchema);
+  });
+
+  it("the assembled object and the exported raw shape are the same definition", () => {
+    // Both spellings are exported because the two SDKs want different ones —
+    // the MCP SDK's `registerTool` takes a `ZodRawShape`, the AI SDK's `tool`
+    // takes a `ZodObject`. That is only safe while the object is BUILT from
+    // the shape; declared side by side they would drift like the two packages
+    // did. Compared through `toJSONSchema` because that is the artifact both
+    // surfaces actually serve a model.
+    //
+    // Read honestly, this is a CANARY, not coverage of anything shipping: it
+    // can only fail once `searchBrainInputSchema` stops being literally
+    // `z.object(SEARCH_BRAIN_INPUT_SHAPE)`. That is exactly the refactor it
+    // guards, so keep it — but do not read a green here as evidence the two
+    // exports agree about anything a caller can observe.
+    //
+    // The WHOLE schema, not just `.properties`: in zod v4 JSON Schema an
+    // argument's optionality lives in the sibling `required` array, so a copy
+    // that marked `collection` required would be `.properties`-equal to this
+    // one and differ in the half a caller trips over first.
+    expect(z.toJSONSchema(searchBrainInputSchema)).toEqual(
+      z.toJSONSchema(z.object(SEARCH_BRAIN_INPUT_SHAPE)),
+    );
+  });
+
+  it("every argument carries prose, and the argument set is the one both surfaces advertise", () => {
+    // The prose pins below read ONE argument each. This is the arm that
+    // notices a NEW argument arriving undescribed — it reaches a
+    // model as a bare `string` with no guidance, on both surfaces at once, and
+    // no existing assertion would say a word.
+    const properties = z.toJSONSchema(searchBrainInputSchema).properties ?? {};
+    expect(Object.keys(properties).sort()).toEqual([
+      "asOf",
+      "collection",
+      "expand",
+      "include",
+      "limit",
+      "query",
+      "since",
+      "tags",
+      "type",
+    ]);
+    const undescribed = Object.entries(properties)
+      .filter(
+        ([, schema]) =>
+          typeof schema !== "object" ||
+          !("description" in schema) ||
+          typeof schema.description !== "string" ||
+          schema.description.trim() === "",
+      )
+      .map(([name]) => name);
+    expect(
+      undescribed,
+      "these searchBrain arguments have no `.describe()` — a model sees the type and nothing else, on the agent surface and over MCP",
+    ).toEqual([]);
+  });
+
+  it("the two argument VALUE constraints still AGREE with their source constants", () => {
+    // Keys, prose and optionality are all pinned above; the constraints were
+    // not, and they are the ones the SDK enforces before the tool body runs.
+    //
+    // Agreement, not derivation — say what it does: a hardcoded copy that
+    // happens to match today passes. This fires on the day a source constant
+    // moves and the copy does not, which is the drift that matters.
+    //
+    // `include`'s enum is the sharp one. Hardcode it and drop a tier and every
+    // pin in this PR stays green — key set unchanged, prose unchanged,
+    // optionality unchanged, and the MCP value pin derives its expectation
+    // from this same module so both sides move together.
+    //
+    // What breaks is SELECTION, not the store: `searchBrainCore` defaults to
+    // the runtime `BRAIN_RESULT_TIERS`, so an unfiltered search keeps
+    // returning that tier's rows — which is exactly what makes the drift
+    // quiet. But a client that NAMES the tier has its whole call refused
+    // before dispatch, and the tier becomes unselectable, while the same
+    // argument's description (which interpolates the real constant) goes on
+    // advertising it.
+    const properties = z.toJSONSchema(searchBrainInputSchema, { io: "input" }).properties ?? {};
+    const include = properties.include;
+    const items =
+      typeof include === "object" && "items" in include ? include.items : undefined;
+    expect(
+      typeof items === "object" && items !== null && "enum" in items ? items.enum : undefined,
+      "`include`'s enum no longer agrees with BRAIN_RESULT_TIERS — a call naming the dropped tier is refused whole, before dispatch, and the tier becomes unselectable, while the same argument's description still advertises it",
+    ).toEqual([...BRAIN_RESULT_TIERS]);
+
+    // Same class, lower stakes: a hardcoded or drifted cap silently disagrees
+    // with `MAX_SEARCH_LIMIT`, which the description also interpolates.
+    const limit = properties.limit;
+    expect(
+      typeof limit === "object" ? { min: limit.minimum, max: limit.maximum } : undefined,
+      "`limit`'s bounds no longer derive from MAX_SEARCH_LIMIT — the cap the description advertises and the cap the SDK enforces have drifted apart",
+    ).toEqual({ min: 1, max: MAX_SEARCH_LIMIT });
+  });
+
+  it("the shape object is frozen — the 'ONE definition' claim, asserted rather than assumed", () => {
+    // Aliased by reference into two registrars in one process, and mutating a
+    // shape key after `z.object(shape)` does propagate — so a re-pointed key
+    // rewrites both surfaces at once and they stay deep-equal to each other.
+    // The pins above read the shape's post-mutation content, so they would
+    // catch a re-point that dropped prose or narrowed the enum; what none of
+    // them can see is a CONFORMING re-point — same prose, same enum, same
+    // optionality. Shallow by nature (the zod nodes behind the keys are not
+    // sealed), which is why the served-value pin still exists.
+    expect(Object.isFrozen(SEARCH_BRAIN_INPUT_SHAPE)).toBe(true);
+  });
+
+  it("every argument is still OPTIONAL — the one drift the schema/normalizer key pin cannot see", () => {
+    // The key-set pins in `search-brain.ts` compare KEY SETS, so dropping
+    // `.optional()` from `asOf` compiles clean: the key is still there, and
+    // `asOf: string` is assignable to `SearchBrainInput`'s `asOf?: string`.
+    // The MCP suite's served-vs-source comparison cannot see it either — both
+    // sides read this same source, so they move together; only its own
+    // `required` tripwire fires, and this is the pin that names the argument.
+    //
+    // The consequence is not cosmetic. Every argument here is optional by
+    // design (`query` omitted browses recent entries; `include` omitted
+    // searches all three stores), so a stray required flag makes previously
+    // valid calls fail SDK validation before dispatch — returned as a bare
+    // `isError` result carrying the SDK's validation text, with no
+    // `request_id` and no envelope `code`, unlike every runtime refusal.
+    //
+    // `io: "input"` matters here for the same reason it does in the MCP
+    // suite: the default `io: "output"` reports a `.default()` field as
+    // required, which would make this fire on a change that does not affect
+    // what a caller must send.
+    const schema = z.toJSONSchema(searchBrainInputSchema, { io: "input" });
+    expect(
+      schema.required,
+      "a searchBrain argument is no longer optional. Every one of them is optional by design, and a required flag refuses previously valid calls at the SDK boundary — before dispatch, so without a request_id. If this is deliberate, update the argument's `.describe()` to say it is required and change this pin.",
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The third and LAST of the strings that CARRY THE RETRACTION PROMISE, and the
+ * one neither block above reaches: the `asOf` ARGUMENT description on this
+ * tool's input schema (#4933). The three are the system prompt
+ * (`SEARCH_BRAIN_DESCRIPTION`), the tool prose (`SEARCH_BRAIN_TOOL_DESCRIPTION`,
+ * both blocks above), and this argument. (searchBrain has a dozen-odd other
+ * `.describe()` strings; none of them say anything about retraction, which is
+ * why the count here is three and not twenty.) A model deciding whether to
+ * PASS `asOf` reads the argument, not the tool prose, and this one shipped
+ * promising "retracted facts never" — the same absolute, on a surface with its
+ * own reader.
+ *
+ * It was FOUR strings until #4954: `packages/mcp/src/tools.ts` re-declared the
+ * whole input schema rather than importing it, so its `asOf` twin was pinned
+ * separately in that package with a hand-mirrored copy of the rule below.
+ * There is now ONE schema (`lib/tools/search-brain-schema.ts`), which this
+ * tool's `inputSchema` is built from and which the MCP tool registers
+ * directly, so the rule is asserted once — here — and the MCP suite asserts
+ * only that the schema it SERVES is that module's.
+ */
+describe("searchBrain `asOf` argument description — the carve-out travels with the promise (#4933)", () => {
+  const asOfDescription = ((): string => {
+    // Read what the model is SERVED, not what the builder was handed: the AI
+    // SDK hands the LLM a JSON Schema, and zod resolves `.describe()` into it
+    // wherever in the chain it was called. Reading `.shape.asOf.description`
+    // instead would go red on a harmless `.describe()`/`.optional()` reorder
+    // while the model still saw the right prose.
+    //
+    // BOTH shape failures throw rather than falling back, so an AI SDK or zod
+    // reshape reports itself instead of collapsing to `""` and reading as a
+    // prose regression in the assertions below. Only a dropped `.describe()`
+    // returns `""`, which is the one case where an empty string IS the honest
+    // signal — that genuinely is a prose regression.
+    const schema = searchBrain.inputSchema;
+    if (!(schema instanceof z.ZodObject)) {
+      throw new Error(
+        "searchBrain.inputSchema is no longer a ZodObject — re-point this read at whatever now carries the argument prose, or the retraction pins below pass vacuously",
+      );
+    }
+    const properties = z.toJSONSchema(schema).properties;
+    const asOf = properties?.asOf;
+    if (typeof asOf !== "object") {
+      throw new Error(
+        `searchBrain's input schema no longer exposes an \`asOf\` object property (saw: ${Object.keys(properties ?? {}).join(", ") || "none"}) — re-point this read, or the retraction pins below pass vacuously`,
+      );
+    }
+    return asOf.description ?? "";
+  })();
+
+  it("is readable at all — a reshape must fail here, not silently pass", () => {
+    // Deliberately not keyed on a phrase: a reworded-but-intact description
+    // ("point-in-time read") is not a failure of THIS pin, and the shape
+    // failures it used to stand in for now throw above.
+    expect(
+      asOfDescription,
+      "the `asOf` argument lost its `.describe()` — the retraction pins below would pass vacuously",
+    ).toBeTruthy();
+  });
+
+  it("names where a retracted fact still surfaces, and the field that labels it", () => {
+    expect(asOfDescription).toContain("tensions");
+    expect(asOfDescription).toContain("invalidatedAt");
+  });
+
+  it("keeps the never-arm: retracted is still never a RESULT", () => {
+    // The carve-out is what makes the sentence true; this is what makes it
+    // useful. Drop it and the model has no reason to trust an `asOf` read.
+    expect(asOfDescription).toMatch(/never as a RESULT/);
+  });
+
+  it("obeys the same absolute rule as the two descriptions above", () => {
+    // The positive pins above all survive a rewrite that keeps the three
+    // tokens and re-adds an unqualified absolute in a neighbouring sentence.
+    // This is the arm that does not.
+    expect(
+      unqualifiedRetractionSentences(asOfDescription),
+      "a sentence promising retracted facts never come back must name the `tensions` carve-out in that same sentence",
+    ).toEqual([]);
+  });
+
+  // #4939. `searchBrain` HARD-REFUSES an `asOf` read whose `include` omits
+  // facts (`lib/brain/search.ts`) — it is the caller's input problem and is
+  // reported as such rather than degraded. A model deciding whether to combine
+  // the two arguments reads THIS string, so the precondition living only in
+  // the refusal makes the refusal reachable by a well-behaved caller. Until
+  // #4954 the MCP surface re-declared this argument and had dropped the
+  // sentence, so the rule needed a second copy in that package; it now serves
+  // this same schema, so this one pin covers both readers — and is the ONLY
+  // thing covering the MCP one. Weaken it and an external client's model is
+  // unguarded with nothing in `packages/mcp` to say so.
+  it("states the `include` precondition the read hard-refuses without", () => {
+    expect(
+      statesIncludePrecondition(asOfDescription),
+      "the `asOf` argument description states no `include` precondition — the read throws BrainAsOfInvalidError when `include` excludes facts, so an unstated precondition is a refusal a well-behaved model cannot avoid",
+    ).toBe(true);
   });
 });

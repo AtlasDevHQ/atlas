@@ -59,6 +59,7 @@ import {
   RateLimitGuardLive,
   TurnstileGuardLive,
   SandboxCredsGuardLive,
+  PythonSandboxGuardLive,
   ProviderKeyGuardLive,
   ProactiveProviderKeyGuardLive,
   RegionGuardLive,
@@ -4128,6 +4129,14 @@ export function buildAppLayer(
   // peer of the other env-checking guards; inert unless the priority pins
   // vercel-sandbox (self-hosted / differently-configured deploys pass).
   const sandboxCredsGuardLayer = SandboxCredsGuardLive.pipe(Layer.provide(configLayer));
+  // #4940 — fails boot when ATLAS_PYTHON_ENABLED=true has no ATLAS_SANDBOX_URL.
+  // The family's one deploy-mode-AGNOSTIC guard (the env var is self-hosted-
+  // facing, so a SaaS gate would leave the affected population unguarded); still
+  // dev-relaxable, so `ATLAS_DEPLOY_ENV=development` boots either mode. Every
+  // `buildRegistry` caller catches the builder's throw, so without this the box
+  // boots green and runs indefinitely with executePython absent. `Config`-only
+  // and reads env directly, so it fails fast as a peer of the other env guards.
+  const pythonSandboxGuardLayer = PythonSandboxGuardLive.pipe(Layer.provide(configLayer));
   // #3178/#3200 — fails boot when the env-only MAIN-CHAT provider's required
   // config is incomplete in SaaS (boot-green-then-503 otherwise). Validates
   // required env as a SET (`getMissingProviderConfig`). `Config`-only and reads
@@ -4229,6 +4238,7 @@ export function buildAppLayer(
     rateLimitGuardLayer,
     turnstileGuardLayer,
     sandboxCredsGuardLayer,
+    pythonSandboxGuardLayer,
     providerKeyGuardLayer,
     proactiveProviderKeyGuardLayer,
     regionGuardLayer,

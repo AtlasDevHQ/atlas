@@ -1,16 +1,18 @@
 /**
  * The Atlas agent.
  *
- * Runs a single-agent loop driven by a ToolRegistry (default: explore,
- * executeSQL). The loop runs until the step limit is reached (configurable
- * via `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing
- * tool calls.
+ * Runs a single-agent loop driven by a ToolRegistry, which every caller names
+ * explicitly — see the `@param tools` note on {@link runAgent} for what the
+ * fall-back registry actually carries (it is lesser-privileged, not minimal).
+ * The loop runs until the step limit is reached (configurable via
+ * `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing tool calls.
  *
  * Effect migration (P10c):
- * The agent function optionally reads its dependencies (model, tools,
- * user context) from Effect Context when available, falling back to
- * global singletons otherwise. This makes the agent testable via
- * Layer.provide with mock services.
+ * The agent function optionally reads its dependencies (model, user context)
+ * from Effect Context when available, falling back to global singletons
+ * otherwise. This makes the agent testable via Layer.provide with mock
+ * services. The tool registry is NOT among them — it is a required parameter
+ * (#4943), not a context lookup.
  */
 
 import {
@@ -27,7 +29,7 @@ import { Effect, Duration } from "effect";
 import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, getSummaryModel, isGatewayAnthropicModel, type ProviderType } from "./providers";
-import { defaultRegistry, ToolRegistry } from "./tools/registry";
+import { nonDashboardRegistry, ToolRegistry } from "./tools/registry";
 import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow } from "./openapi/workspace-datasource";
 import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
@@ -667,7 +669,15 @@ When a question spans more than one source in the catalog above — several SQL 
 - **Never silently fall back to an unrelated source.** If the source that actually holds the answer is empty or errors, say so plainly and state the gap — do not answer from a different source and imply it is equivalent.`;
 
 export interface BuildSystemParamOptions {
-  /** Tool registry the prompt's tool-guidance sections are built from. Defaults to `defaultRegistry`. */
+  /**
+   * Tool registry the prompt's tool-guidance sections are built from.
+   * Defaults to `nonDashboardRegistry` — the lesser-privileged of the two core
+   * registries (#4936).
+   * `runAgent` always passes its resolved `activeRegistry`, so the default only
+   * serves callers that build a prompt outside a turn; it fails closed so such
+   * a caller can't advertise `createDashboard`/`correct_fact` guidance to a
+   * surface whose tool set doesn't carry them.
+   */
   readonly registry?: ToolRegistry;
   /** Startup/context warnings surfaced to the agent under a `## Warnings` section. */
   readonly warnings?: readonly string[];
@@ -785,7 +795,7 @@ export function buildSystemParam(
   options: BuildSystemParamOptions = {},
 ): string | SystemModelMessage {
   const {
-    registry = defaultRegistry,
+    registry = nonDashboardRegistry,
     warnings,
     persona,
     briefing,
@@ -1072,16 +1082,61 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  * Run the Atlas agent loop.
  *
  * @param messages - The conversation history from the chat UI.
- * @param tools - Optional custom {@link ToolRegistry}. Defaults to
- *   {@link defaultRegistry} (explore + executeSQL). The loop terminates
- *   when the step limit is reached (configurable via `ATLAS_AGENT_MAX_STEPS`,
- *   default 25) or the model stops issuing tool calls.
+ * @param tools - The surface's {@link ToolRegistry}. REQUIRED (#4943): every
+ *   call site — production and test — names its registry, and the COMPILER is
+ *   what enforces that. A required property rejects all five shapes the bug
+ *   class used, including the two conditional spreads that were its actual
+ *   source (`...(reg ? { tools: reg } : {})`, `...(reg && { tools: reg })`):
+ *   TypeScript merges the spread of `{ tools: T } | {}` into ONE object type
+ *   with `tools` OPTIONAL, which then fails the required target with "Type
+ *   'undefined' is not assignable to type 'ToolRegistry'". Each shape is pinned
+ *   by a `@ts-expect-error` fixture in `agent-runagent-call-sites.test.ts`, so
+ *   re-widening this property to `tools?:` fails `bun run type`.
+ *
+ *   Corollary for helpers: a wrapper that forwards to `runAgent` types its
+ *   options as the FULL `Parameters<typeof runAgent>[0]`, never `Partial<…>` —
+ *   a `Partial` wrapper fills `tools` in on its callers' behalf and erases the
+ *   requirement for every surface behind it.
+ *
+ *   `agent-runagent-call-sites.test.ts` is the BACKSTOP, not the gate, and it
+ *   is not redundant — it catches four things no type can: WHICH registry each
+ *   production surface must resolve to; `runAgent(opts)`, where a pre-built bag
+ *   typechecks clean while laundering the posture out of sight; a LATER spread
+ *   re-assigning `tools` (last-write-wins, the one escape that fails UPWARD by
+ *   re-adding `correct_fact`) which compiles clean under a required property;
+ *   and trees the root tsconfig excludes (`scripts/`, `deploy/`, `examples/*`,
+ *   `plugins/obsidian`), which its repo-wide `git grep` drift check covers. It
+ *   scans the roots listed in its `SCAN_ROOTS` (`packages/api|mcp|sdk/src` +
+ *   `ee/src`) — add a root there when a new package can reach `runAgent`.
+ *
+ *   The first line of the function body coalesces to a fall-back registry as
+ *   defense in depth for callers the type system never sees (an `any`-typed
+ *   bag, a separately compiled plugin). Note it fires on `undefined` ONLY — a
+ *   `null` from such a caller is not covered and will fail later in the turn.
+ *   That fall-back is now {@link nonDashboardRegistry}, not the
+ *   dashboards-owning `defaultRegistry` (#4936). The old default was
+ *   write-carrying: any caller that omitted `tools` silently received
+ *   `createDashboard` AND `correct_fact` — re-opening, from the outside, the
+ *   surface gate `registry.ts` applies from the inside (#4915). Defaulting to
+ *   the lesser-privileged registry makes forgetting fail CLOSED. A surface that
+ *   owns `/dashboards/[id]` opts in by passing `defaultRegistry`; a headless one
+ *   passes the `registry` half of `await buildHeadlessRegistry()` — and, per
+ *   #4941, threads that call's `warnings` into {@link warnings} rather than
+ *   dropping them.
+ *
+ *   `nonDashboardRegistry` is lesser-privileged, not side-effect-free: `sendEmail`
+ *   / `createLinearIssue` / `querySalesforce` are core tools, gated at execute
+ *   time on the workspace install. Rationale: the `correct_fact` gate comment in
+ *   `lib/tools/registry.ts`.
+ *
+ *   The loop terminates when the step limit is reached (configurable via
+ *   `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing tool calls.
  * @param conversationId - Optional conversation ID for token usage tracking.
  *   When provided, the recorded token usage row links to this conversation.
  */
 export async function runAgent({
   messages,
-  tools: toolRegistry = defaultRegistry,
+  tools: declaredToolRegistry,
   conversationId,
   warnings,
   persona,
@@ -1098,7 +1153,8 @@ export async function runAgent({
   abortSignal,
 }: {
   messages: UIMessage[];
-  tools?: ToolRegistry;
+  /** Required — see the `@param tools` note above (#4943). */
+  tools: ToolRegistry;
   conversationId?: string;
   warnings?: string[];
   /**
@@ -1234,6 +1290,16 @@ export async function runAgent({
    */
   abortSignal?: AbortSignal;
 }) {
+  // #4943 — the fail-closed backstop, moved off the destructuring default (a
+  // default on a REQUIRED property is dead code to the compiler, and
+  // `typescript/no-useless-default-assignment` says so as an error). It is not
+  // dead to callers the type system never sees: an `any`-typed options bag, a
+  // separately compiled plugin. Forgetting a registry has to land on the
+  // LESSER-privileged one — the pre-#4936 default carried `createDashboard`
+  // AND `correct_fact`, which re-opened the #4915 surface gate from outside.
+  // Coalesces on `undefined` only; a `null` from such a caller is not covered
+  // and fails later in the turn.
+  const toolRegistry = declaredToolRegistry ?? nonDashboardRegistry;
   // #3931 — per-turn latency clock. Captured at runAgent entry so the
   // token_usage INSERT in onFinish can persist the agent-turn wall-clock
   // (entry → finish) on the same row as the turn's tokens + cache split.

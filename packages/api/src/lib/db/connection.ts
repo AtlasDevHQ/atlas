@@ -1599,8 +1599,10 @@ export class ConnectionRegistry {
       // so the `HealthCheckResult.message` surfaced to admin UI / API
       // consumers can't leak credentials. The log line passes the original
       // `err` through so the pino err serializer preserves
-      // `{type, message, stack}` — the stack is useful for triage; scrubbing
-      // there is handled centrally by `scrubErrSerializer` in `lib/logger.ts`.
+      // `{type, message, stack}` — plus the driver's `code`/`constraint`, which
+      // is exactly the case `ERROR_DIAGNOSTIC_FIELDS` (#4941) was added for.
+      // The stack is useful for triage; scrubbing there is handled centrally by
+      // `scrubErrSerializer` in `lib/logger.ts`.
       const scrubbedMessage = errorMessage(err);
       log.warn({ err, connectionId: id, latencyMs }, "Health check failed");
       entry.consecutiveFailures++;

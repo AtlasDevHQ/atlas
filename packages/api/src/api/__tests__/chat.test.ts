@@ -122,25 +122,33 @@ void mock.module("@atlas/api/lib/workspace-capability", () => ({
 
 // Mock action tools so buildRegistry({ includeActions: true }) works
 // without needing JIRA/email credentials or external services.
+//
+// Hoisted to module-level MUTABLE objects (#4941) so one test can break an
+// entry and drive `buildRegistry`'s action-tool failure branch — the case where
+// the build SUCCEEDS and returns a warning, which is what the issue is about
+// and which a "buildRegistry throws" test cannot reach. `mock.module`'s factory
+// is file-wide, so a per-test lever has to be data, not a different factory.
+const mockJiraAction = {
+  name: "createJiraTicket",
+  description: "### Create JIRA Ticket\nMock",
+  tool: { type: "function" },
+  actionType: "jira:create",
+  reversible: true,
+  defaultApproval: "manual",
+  requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+};
+const mockEmailAction = {
+  name: "sendEmailReport",
+  description: "### Send Email Report\nMock",
+  tool: { type: "function" },
+  actionType: "email:send",
+  reversible: false,
+  defaultApproval: "admin-only",
+  requiredCredentials: ["RESEND_API_KEY"],
+};
 void mock.module("@atlas/api/lib/tools/actions", () => ({
-  createJiraTicket: {
-    name: "createJiraTicket",
-    description: "### Create JIRA Ticket\nMock",
-    tool: { type: "function" },
-    actionType: "jira:create",
-    reversible: true,
-    defaultApproval: "manual",
-    requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
-  },
-  sendEmailReport: {
-    name: "sendEmailReport",
-    description: "### Send Email Report\nMock",
-    tool: { type: "function" },
-    actionType: "email:send",
-    reversible: false,
-    defaultApproval: "admin-only",
-    requiredCredentials: ["RESEND_API_KEY"],
-  },
+  createJiraTicket: mockJiraAction,
+  sendEmailReport: mockEmailAction,
 }));
 
 const mockCreateConversation = mock((): Promise<{ id: string } | null> =>
@@ -1642,14 +1650,34 @@ describe("POST /api/v1/chat", () => {
     expect(response.status).toBe(422);
   });
 
+  // #4936 — these three used to read `call.tools === undefined` as the proxy for
+  // "no action tools", which only worked because the chat route omitted `tools`
+  // and let `runAgent` default. The route now names its registry explicitly (it
+  // is the one surface that OWNS `/dashboards/[id]`, so it opts in to the
+  // workspace set), and `undefined` is no longer reachable. Assert on the tool
+  // NAMES instead — that is what the tests were always trying to say, and it
+  // survives any future change to how the route resolves its registry.
+  function toolNamesFromRunAgentCall(): string[] {
+    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+    const call = calls[0]![0] as { tools?: { getAll(): Record<string, unknown> } };
+    expect(call.tools, "the chat route must pass `tools` explicitly (#4936)").toBeDefined();
+    return Object.keys(call.tools!.getAll());
+  }
+
+  /**
+   * An operator-env ACTION tool (`lib/tools/actions/`) — registered only when
+   * `buildRegistry({ includeActions: true })` runs. Not to be confused with the
+   * integration tools `sendEmail` / `createLinearIssue`, which are core (always
+   * registered, gated at execute time on the workspace install).
+   */
+  const ACTION_TOOL = "sendEmailReport";
+
   it("passes action tools to runAgent when ATLAS_ACTIONS_ENABLED=true", async () => {
     process.env.ATLAS_ACTIONS_ENABLED = "true";
     const response = await app.fetch(makeRequest());
     expect(response.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
-    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
-    const call = calls[0]![0] as { tools?: unknown };
-    expect(call.tools).toBeDefined();
+    expect(toolNamesFromRunAgentCall()).toContain(ACTION_TOOL);
   });
 
   it("does not pass action tools when ATLAS_ACTIONS_ENABLED is unset", async () => {
@@ -1657,9 +1685,17 @@ describe("POST /api/v1/chat", () => {
     const response = await app.fetch(makeRequest());
     expect(response.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
-    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
-    const call = calls[0]![0] as { tools?: unknown };
-    expect(call.tools).toBeUndefined();
+    const names = toolNamesFromRunAgentCall();
+    expect(names).not.toContain(ACTION_TOOL);
+    // Not vacuous — the core surface is intact, only the actions are absent.
+    expect(names).toContain("executeSQL");
+    // #4936 — and the web surface must KEEP the workspace write verbs. It owns
+    // `/dashboards/[id]` and has a human in the loop, so it is the one place
+    // they belong. Without this, over-correcting the route's fallback to
+    // `nonDashboardRegistry` would silently strip dashboards and fact
+    // correction from web chat and every test in the fix would stay green.
+    expect(names).toContain("createDashboard");
+    expect(names).toContain("correct_fact");
   });
 
   it("does not pass action tools when ATLAS_ACTIONS_ENABLED=false", async () => {
@@ -1667,9 +1703,9 @@ describe("POST /api/v1/chat", () => {
     const response = await app.fetch(makeRequest());
     expect(response.status).toBe(200);
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
-    const calls = mockRunAgent.mock.calls as unknown as unknown[][];
-    const call = calls[0]![0] as { tools?: unknown };
-    expect(call.tools).toBeUndefined();
+    const names = toolNamesFromRunAgentCall();
+    expect(names).not.toContain(ACTION_TOOL);
+    expect(names).toContain("executeSQL");
   });
 
   it("passes warnings to runAgent when buildRegistry throws", async () => {
@@ -1687,9 +1723,35 @@ describe("POST /api/v1/chat", () => {
       const call = calls[0]![0] as { warnings?: string[] };
       expect(call.warnings).toBeDefined();
       expect(call.warnings!.length).toBe(1);
-      expect(call.warnings![0]).toContain("tool registry failed to build");
+      expect(call.warnings![0]).toContain("stopped the tool registry from building");
     } finally {
       delete process.env.ATLAS_PYTHON_ENABLED;
+    }
+  });
+
+  it("#4941 — relays a failed ACTION-TOOL load, where the build SUCCEEDS with a warning", async () => {
+    // The branch the sibling test above cannot reach: `buildRegistry` resolves,
+    // and its `warnings` ride out on `result.warnings`. This is the reference
+    // implementation the headless seam's docstring points at, so it needs its
+    // own pin — deleting `warnings.push(...result.warnings)` left the whole
+    // suite green before this test existed.
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    const realDescription = mockJiraAction.description;
+    // An entry the registry refuses ("Tool description must not be empty"),
+    // which is what `buildRegistry`'s action catch is there for.
+    mockJiraAction.description = "";
+    try {
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+      const call = calls[0]![0] as { warnings?: string[] };
+      expect(call.warnings).toHaveLength(1);
+      expect(call.warnings![0]).toContain("createJiraTicket");
+      // The core `sendEmail` is still in the registry, so the copy must not
+      // generalize the loss into "email is unavailable".
+      expect(call.warnings![0]).toContain("do NOT tell the user");
+    } finally {
+      mockJiraAction.description = realDescription;
     }
   });
 
@@ -1750,7 +1812,7 @@ describe("POST /api/v1/chat", () => {
       const call = calls[0]![0] as { warnings?: string[] };
       expect(call.warnings).toBeDefined();
       expect(call.warnings!.length).toBe(2);
-      expect(call.warnings![0]).toContain("tool registry failed to build");
+      expect(call.warnings![0]).toContain("stopped the tool registry from building");
       expect(call.warnings![1]).toContain("Plugin tools failed to load");
     } finally {
       delete process.env.ATLAS_PYTHON_ENABLED;

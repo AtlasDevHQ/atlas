@@ -1,8 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, ChevronDown, EyeOff, Info, Lock, ShieldAlert } from "lucide-react";
-import type { BrainFactOversight, BrainFactOversightBucket } from "@/ui/lib/types";
+import {
+  AlertTriangle,
+  ArrowRight,
+  ChevronDown,
+  EyeOff,
+  History,
+  Info,
+  Lock,
+  ShieldAlert,
+} from "lucide-react";
+import type {
+  BrainFactOversight,
+  BrainFactOversightBucket,
+  BrainFactWillSupersede,
+} from "@/ui/lib/types";
 import { BrainFactOversightClientSchema } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/lib/fetch-error";
@@ -133,6 +146,15 @@ export function OversightPanel() {
         )
       )}
 
+      {/* `pairs.length > 0` is ORed in: under the two-statement race the API
+          documents, `total` can read 0 while pairs exist — and pairs in hand
+          are proof of supersessions regardless of what the count said. Gating
+          on `total` alone would render NO disclosure in exactly that window. */}
+      {data.willSupersede &&
+        (data.willSupersede.total > 0 || data.willSupersede.pairs.length > 0) && (
+          <WillSupersedeNotice willSupersede={data.willSupersede} />
+        )}
+
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
           <Button variant="ghost" size="sm" className="text-muted-foreground">
@@ -226,6 +248,83 @@ export function OversightPanel() {
         </CollapsibleContent>
       </Collapsible>
     </div>
+  );
+}
+
+/**
+ * What the next publish will SUPERSEDE (#4912) — the temporal half of the
+ * pre-publish disclosure, beside #4825's hidden-backlog half above it.
+ *
+ * `role="alert"` for the hidden-drafts alert's reason: this IS a finding, not
+ * decoration — a publish that replaces a current belief must be read before
+ * the button, because afterwards the superseded side is hidden from every
+ * default read and nobody can notice a fact they can no longer see.
+ *
+ * The pairs render both claims verbatim — they are reader-ACL-gated by the
+ * API on BOTH sides, so everything here is a claim this reader's own ACL
+ * already entitles them to read. Supersessions the reader may not see arrive only as
+ * `withheld`, a count; there is nothing in the payload to leak, same as the
+ * withheld buckets.
+ */
+function WillSupersedeNotice({ willSupersede }: { willSupersede: BrainFactWillSupersede }) {
+  // `total` leads, never `pairs.length + withheld` — the pairs are capped, and
+  // the headline must not understate the moment truncation bites. The
+  // `Math.max` floor covers the opposite, racier corner: pairs in hand with a
+  // stale 0 total (the API's two-statement race) must still headline as at
+  // least what is visibly listed below.
+  const { pairs, withheld, truncated } = willSupersede;
+  const total = Math.max(willSupersede.total, pairs.length + withheld);
+  return (
+    <Alert role="alert">
+      <History className="size-4" aria-hidden />
+      <AlertDescription className="min-w-0 space-y-2">
+        <p>
+          <span className="font-medium">
+            Publishing will supersede{" "}
+            {total === 1 ? "1 published fact." : `${total.toLocaleString()} published facts.`}
+          </span>{" "}
+          A new value for a single-valued predicate replaces the old one: the old fact keeps its
+          history and stays readable to as-of questions, but stops being served as current belief.
+          Nothing is deleted. Retract the draft instead if the old value is still right.
+        </p>
+        {pairs.length > 0 && (
+          <ul className="space-y-1">
+            {pairs.map((pair) => (
+              <li
+                key={`${pair.draftId}:${pair.supersededId}`}
+                className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs"
+              >
+                <span className="truncate font-mono" title={pair.draftLabel}>
+                  {pair.draftLabel}
+                </span>
+                <ArrowRight className="size-3 shrink-0 text-muted-foreground" aria-label="replaces" />
+                <span
+                  className="truncate font-mono text-muted-foreground line-through"
+                  title={pair.supersededLabel}
+                >
+                  {pair.supersededLabel}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {withheld > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {withheld === 1
+              ? "1 of these replacements involves facts"
+              : `${withheld.toLocaleString()} of these replacements involve facts`}{" "}
+            from audiences you are not part of, so the claims are not shown. Publishing performs{" "}
+            {withheld === 1 ? "it" : "them"} anyway — publish is workspace-wide.
+          </p>
+        )}
+        {truncated && (
+          <p className="text-xs text-muted-foreground">
+            Showing the first {pairs.length.toLocaleString()} replacements you can review; the
+            rest are yours to see too but did not fit in one response.
+          </p>
+        )}
+      </AlertDescription>
+    </Alert>
   );
 }
 

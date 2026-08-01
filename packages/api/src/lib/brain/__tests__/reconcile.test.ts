@@ -33,6 +33,8 @@ import {
   type ReconcileExecutor,
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
+import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 
 // ---------------------------------------------------------------------------
 // A store that answers exactly the six statements the stage issues
@@ -285,12 +287,23 @@ describe("block: unattributable claim", () => {
     // arm, every non-chat entry point would be permanently blocked.
     const store = new FakeBrainStore();
     const report = await run(store, {
-      episode: episode({ sourceActor: null, source: "warehouse" }),
+      episode: episode({ sourceActor: null, source: WAREHOUSE_SOURCE }),
       sourcePrincipal: "system:warehouse",
     });
 
     expect(report.created).toBe(1);
     expect(store.facts[0]?.provenance.actor).toBe("system:warehouse");
+    // The PRODUCER half of tier-1 refusal (#4938). This module copies
+    // `episode.source` verbatim into `provenance.source`, and `correction.ts`
+    // reads that payload back to decide a warehouse-derived fact has no
+    // correction path at all. Asserting the predicate HERE — against the value
+    // this module actually wrote, not a literal the correction suite
+    // hand-seeds — is what makes the two sides one fact rather than a
+    // coincidence between two strings. Without it, a warehouse connector
+    // naming its class after the vendor would fail the ADR invariant open with
+    // every test still green.
+    expect(store.facts[0]?.provenance.source).toBe(WAREHOUSE_SOURCE);
+    expect(isWarehouseDerived(store.facts[0]?.provenance)).toBe(true);
   });
 
   test("the episode's actor is namespaced by source", async () => {
@@ -644,5 +657,48 @@ describe("the draft candidate", () => {
 
     expect(report).toMatchObject({ created: 0, corroborated: 0, provisional: 0 });
     expect(store.transactions).toBe(0);
+  });
+});
+
+describe("no autonomous supersession (#4912)", () => {
+  const EVERY_RECONCILE_SQL = {
+    RECONCILE_LOCK_SQL,
+    CORROBORATION_LOOKUP_SQL,
+    INSERT_FACT_SQL,
+    INSERT_PROVENANCE_EDGE_SQL,
+    TENSION_CANDIDATES_SQL,
+    INSERT_TENSION_EDGE_SQL,
+  };
+
+  test("this stage issues no UPDATE at all — it cannot stamp valid_to by construction", () => {
+    // "A human promotion stamps `valid_to`; there is no autonomous
+    // supersession" (ADR-0036 §Temporal). The strongest available pin: the
+    // unattended ingest stage has no UPDATE statement to smuggle a stamp into,
+    // so acquiring one is a deliberate decision that has to argue with this
+    // test — and with `check-brain-fact-promotion.sh`, which now refuses
+    // UPDATE-shape writes to the column outside its allowlisted
+    // publish/import files.
+    for (const [name, sql] of Object.entries(EVERY_RECONCILE_SQL)) {
+      expect(`${name}: ${sql}`).not.toMatch(/\bUPDATE\b/i);
+    }
+  });
+
+  test("the fact INSERT names valid_from and never valid_to", () => {
+    // A producer may know when a claim BEGAN; only the publish gate (and later
+    // `correct_fact`) may close a window.
+    expect(INSERT_FACT_SQL).toContain("valid_from");
+    expect(INSERT_FACT_SQL).not.toContain("valid_to");
+  });
+
+  test("corroboration targets only CURRENT facts — a superseded row never absorbs a re-observation", () => {
+    // Without `valid_to IS NULL`, re-asserting a superseded claim would
+    // strengthen a row every as-of-now read hides: the world's flip back to
+    // the old value would be swallowed invisibly instead of minting a fresh
+    // draft the publish gate can arbitrate.
+    expect(CORROBORATION_LOOKUP_SQL).toContain("valid_to IS NULL");
+  });
+
+  test("tension edges target only CURRENT rivals — settled history is not a contradiction", () => {
+    expect(TENSION_CANDIDATES_SQL).toContain("valid_to IS NULL");
   });
 });

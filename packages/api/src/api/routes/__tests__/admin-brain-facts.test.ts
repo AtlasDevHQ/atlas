@@ -3,8 +3,9 @@
  *
  * The read model's behaviour is pinned in `lib/brain/__tests__/candidates.test.ts`;
  * here the assertions are about THIS router — the filter guard, the deliberately
- * ambiguous retract 404, the audit row, and the two seams that would be silent
- * if they broke:
+ * ambiguous retract 404, the ABSENCE of a router-level audit row (#4934 moved it
+ * into `correctFact` so both entry points get one), and the two seams that would
+ * be silent if they broke:
  *
  *   - the reviewer's principal context is built from `resolveEffectiveRole`,
  *     never a back-filled auth-mode default (which mints `role:admin` for every
@@ -17,6 +18,13 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect, Layer } from "effect";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+// Type-only: erased at compile time, so it does not evaluate the module this
+// file `mock.module`s below.
+import type {
+  CorrectionOutcome,
+  CorrectionRefusalReason,
+} from "@atlas/api/lib/brain/correction";
 
 const CURRENT_ORG = "org-1";
 
@@ -35,10 +43,25 @@ void mock.module("@atlas/api/lib/logger", () => {
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test-req" }) };
 });
 
+// BOTH audit helpers land in one array, so the "this router emits nothing"
+// guard below is true for whichever one a re-added call reaches for — a partial
+// factory would fail it with `undefined is not a function` instead, which reads
+// as a broken test rather than a double-log. Mock-all-exports besides: since
+// #4934 `lib/brain/correction.ts` imports `logAdminActionAwait`, so a partial
+// factory here link-fails the moment that module is un-stubbed.
 const auditRows: Array<Record<string, unknown>> = [];
 void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => auditRows.push(entry),
-  ADMIN_ACTIONS: { brainFact: { retract: "brain_fact.retract" } },
+  logAdminActionAwait: async (entry: Record<string, unknown>) => {
+    auditRows.push(entry);
+  },
+  // The REAL catalog rather than a hand-copy, for `correction-audit.test.ts`'s
+  // reason: a copy drifts silently through a rename. `lib/audit/actions.ts` is
+  // a zero-import constant module, so reaching past the mocked barrel into it
+  // pulls nothing back in and the factory stays synchronous.
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
 
 // Records the role lookup so a test can prove the ROLE SOURCE, which is
@@ -81,10 +104,6 @@ void mock.module("@atlas/api/lib/auth/effective-role", () => ({
 let listCalls: Array<Record<string, unknown>> = [];
 /** Mutable so a test can make the read model emit a schema-violating payload. */
 let listResponse: Record<string, unknown> = { candidates: [], total: 0, tensionsTruncated: false };
-let retractResult: { id: string; invalidatedAt: string } | null = {
-  id: "fact-1",
-  invalidatedAt: "2026-07-01T00:00:00.000Z",
-};
 void mock.module("@atlas/api/lib/brain/candidates", () => ({
   CANDIDATE_PAGE_MAX: 200,
   EPISODE_BODY_MAX_CHARS: 4000,
@@ -94,6 +113,9 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
   // anything in the graph imports a name this object omits.
   PROVISIONAL_PREDICATE: "(TRUE)",
   TENSION_EXISTS_SELECT: "(TRUE)",
+  // The module's re-export — listed so a future importer of it through
+  // `candidates` doesn't hit the partial-mock landmine.
+  BrainReaderUnresolvedError: class BrainReaderUnresolvedError extends Error {},
   projectProvenance: () => ({}),
   loadFactCandidates: async (_db: unknown, options: Record<string, unknown>) => {
     listCalls.push(options);
@@ -105,7 +127,72 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
     inTensionTotal: 0,
     publishedTotal: 7,
   }),
-  retractFactCandidate: async () => retractResult,
+}));
+
+/**
+ * The verb machinery (#4915), stubbed on the same terms as the read model: the
+ * route's own obligations — the UUID guard, outcome→HTTP mapping, the wire
+ * parse — are what these tests exercise. The verbs' semantics are pinned in
+ * `lib/brain/__tests__/correction.test.ts` against a fake store and in
+ * `candidates-pg.test.ts` §7 against the live schema; the audit row they emit
+ * is pinned in `lib/brain/__tests__/correction-audit.test.ts` (#4934).
+ */
+/**
+ * `satisfies` the real vocabulary (#4939). A type-only import is erased before
+ * `mock.module` runs, so this borrows the shape without un-stubbing anything —
+ * and a reason added to the machinery is now a COMPILE error here rather than
+ * a stub that quietly disagrees with the module it stands in for. Without it,
+ * `REFUSAL_REASONS.targetNotCurrent` would evaluate to `undefined` under the
+ * mock, `refusalStatus` would fall through to its `default:` throw, and this
+ * harness would report a 500 where production returns 409.
+ */
+const REFUSAL_REASONS = {
+  notAuthorized: "NOT_AUTHORIZED",
+  warehouseTarget: "WAREHOUSE_TARGET",
+  targetNotPublished: "TARGET_NOT_PUBLISHED",
+  validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
+  targetNotCurrent: "TARGET_NOT_CURRENT",
+  replacementMissing: "REPLACEMENT_MISSING",
+  replacementIdentical: "REPLACEMENT_IDENTICAL",
+  replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
+} as const satisfies typeof import("@atlas/api/lib/brain/correction").CORRECTION_REFUSAL_REASONS;
+let correctCalls: Array<Record<string, unknown>> = [];
+/**
+ * Typed as the real union rather than `Record<string, unknown>`, so a reshape of
+ * the machinery's contract breaks every fixture in this file at compile time
+ * instead of leaving hand-written literals asserting against a shape that moved.
+ * The one exception below (`invalidatedAt: 42`) is a DELIBERATE violation and
+ * says so at its site.
+ */
+let correctionOutcome: CorrectionOutcome = {
+  kind: "corrected",
+  result: {
+    verb: "retract",
+    factId: "fact-1",
+    correctionEpisodeId: "ep-corr-1",
+    invalidatedAt: "2026-07-01T00:00:00.000Z",
+    flaggedForReReview: [],
+    supersededBy: null,
+    validTo: null,
+  },
+};
+void mock.module("@atlas/api/lib/brain/correction", () => ({
+  CORRECTION_VERBS: ["retract", "supersede", "re-authority", "pin"],
+  CORRECTION_REFUSAL_REASONS: REFUSAL_REASONS,
+  CorrectionRefusedError: class CorrectionRefusedError extends Error {},
+  CORRECTION_EPISODE_INSERT_SQL: "INSERT",
+  RETRACT_FACT_SQL: "UPDATE",
+  DERIVES_FROM_EDGE_SQL: "INSERT",
+  DEPENDENT_FACTS_SQL: "SELECT",
+  MERGE_PROVENANCE_MARKER_SQL: "UPDATE",
+  PROMOTE_CORRECTION_FACT_SQL: "UPDATE",
+  REPLACEMENT_ROW_SQL: "SELECT",
+  correctionTargetSql: () => "SELECT",
+  isWarehouseDerived: () => false,
+  correctFact: async (request: Record<string, unknown>) => {
+    correctCalls.push(request);
+    return correctionOutcome;
+  },
 }));
 
 /**
@@ -134,6 +221,15 @@ let oversightResponse: Record<string, unknown> = {
 let oversightCalls = 0;
 /** The principal context the route handed the aggregate — see the test below. */
 let oversightCtx: unknown;
+/** The will-supersede half (#4912), stubbed on the same terms as the counts. */
+let supersessionPreviewResponse: Record<string, unknown> = {
+  total: 0,
+  pairs: [],
+  withheld: 0,
+  truncated: false,
+};
+let supersessionPreviewCalls = 0;
+let supersessionPreviewCtx: unknown;
 // EVERY named export, not just the two this route reaches: `mock.module` is
 // file-global, so a partial factory link-fails the moment anything else in the
 // graph imports one of the omitted names.
@@ -143,12 +239,20 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
   OVERSIGHT_BUCKETS_SQL: "SELECT token FROM brain_facts",
   OVERSIGHT_TOTALS_SQL: "SELECT 1 FROM brain_facts",
   OVERSIGHT_DISTINCT_TOKENS_SQL: "SELECT 1 FROM brain_facts",
+  WILL_SUPERSEDE_PAIR_MAX: 100,
+  WILL_SUPERSEDE_TOTAL_SQL: "SELECT 1 FROM brain_facts",
+  willSupersedePairsSql: () => "SELECT 1 FROM brain_facts",
   loadConfiguredChannels: async () => new Map(),
   classifyToken: () => ({ kind: "org", labelPolicy: "intrinsic" }),
   loadFactOversight: async (_db: unknown, ctx: unknown) => {
     oversightCalls++;
     oversightCtx = ctx;
     return oversightResponse;
+  },
+  loadSupersessionPreview: async (_db: unknown, ctx: unknown) => {
+    supersessionPreviewCalls++;
+    supersessionPreviewCtx = ctx;
+    return supersessionPreviewResponse;
   },
 }));
 
@@ -207,11 +311,26 @@ beforeEach(() => {
   memberLookupFails = false;
   listCalls = [];
   listResponse = { candidates: [], total: 0, tensionsTruncated: false };
-  retractResult = { id: "fact-1", invalidatedAt: "2026-07-01T00:00:00.000Z" };
+  correctCalls = [];
+  correctionOutcome = {
+    kind: "corrected",
+    result: {
+      verb: "retract",
+      factId: "fact-1",
+      correctionEpisodeId: "ep-corr-1",
+      invalidatedAt: "2026-07-01T00:00:00.000Z",
+      flaggedForReReview: [],
+      supersededBy: null,
+      validTo: null,
+    },
+  };
   AUTH_USER = { id: "user-1", role: "member" };
   ORG_ID = CURRENT_ORG;
   oversightCalls = 0;
   oversightCtx = undefined;
+  supersessionPreviewCalls = 0;
+  supersessionPreviewCtx = undefined;
+  supersessionPreviewResponse = { total: 0, pairs: [], withheld: 0, truncated: false };
   oversightResponse = {
     buckets: [],
     workspaceTotals: {
@@ -445,6 +564,39 @@ describe("GET /oversight", () => {
     expect((body.workspaceTotals as { awaitingReview: number }).awaitingReview).toBe(32);
   });
 
+  it("merges the will-supersede disclosure into the same response (#4912)", async () => {
+    // The strict schema REQUIRES the section, so a route that stopped merging
+    // it would 500 rather than quietly retire the disclosure — but the happy
+    // path is pinned too: the pairs must actually ship.
+    supersessionPreviewResponse = {
+      total: 2,
+      pairs: [
+        {
+          draftId: "d1",
+          draftLabel: "alice manager bob",
+          supersededId: "o1",
+          supersededLabel: "alice manager carol",
+        },
+      ],
+      withheld: 1,
+      truncated: false,
+    };
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { willSupersede: unknown };
+    expect(body.willSupersede).toEqual(supersessionPreviewResponse);
+    expect(supersessionPreviewCalls).toBe(1);
+  });
+
+  it("hands the will-supersede loader the SAME reviewer context as the counts", async () => {
+    // The pair labels are content, and the reader context is what scopes them.
+    // A route that resolved a second, wider context for this half would hand
+    // the disclosure claims the queue itself refuses to show.
+    await adminBrainFacts.request("/oversight");
+    expect(supersessionPreviewCtx).toEqual(oversightCtx);
+    expect(JSON.stringify(supersessionPreviewCtx)).not.toContain("override");
+  });
+
   it("hands the aggregate the reviewer's OWN member-table context", async () => {
     // `reviewableAwaitingReview` is the denominator of the entire disclosure. A
     // route that passed a fabricated or over-broad context — the session role
@@ -576,21 +728,46 @@ describe("GET /oversight", () => {
 });
 
 describe("POST /{id}/retract", () => {
-  it("retracts and records the decision in the admin action log", async () => {
-    retractResult = { id: FACT_ID, invalidatedAt: "2026-07-01T00:00:00.000Z" };
+  it("runs the retract CORRECTION verb and emits NO audit row of its own", async () => {
+    correctionOutcome = {
+      kind: "corrected",
+      result: {
+        verb: "retract",
+        factId: FACT_ID,
+        correctionEpisodeId: "ep-corr-9",
+        invalidatedAt: "2026-07-01T00:00:00.000Z",
+        flaggedForReReview: ["dep-1"],
+        supersededBy: null,
+        validTo: null,
+      },
+    };
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: FACT_ID, invalidatedAt: "2026-07-01T00:00:00.000Z" });
-
-    expect(auditRows).toHaveLength(1);
-    expect(auditRows[0]).toMatchObject({
-      actionType: "brain_fact.retract",
-      targetType: "brainFact",
-      targetId: FACT_ID,
-      // The tombstone pointer. A retraction is never a delete, so the row this
-      // names is still there to be read as-of.
-      metadata: { invalidatedAt: "2026-07-01T00:00:00.000Z", workspaceId: CURRENT_ORG },
+    // `toEqual`, not `toMatchObject`: the point of #4939 is that the two
+    // correction disclosures reach the CALLER and not only `logAdminAction`,
+    // and a partial match would go green against the pre-#4939 body that had
+    // them in the audit row alone. `correctionEpisodeId` and
+    // `flaggedForReReview` here are the same values asserted on the audit row
+    // below — asserting both is what pins that they cannot diverge.
+    expect(await res.json()).toEqual({
+      id: FACT_ID,
+      invalidatedAt: "2026-07-01T00:00:00.000Z",
+      correctionEpisodeId: "ep-corr-9",
+      flaggedForReReview: ["dep-1"],
     });
+
+    // One code path, not two: the route called the verb machinery.
+    expect(correctCalls).toHaveLength(1);
+    expect(correctCalls[0]).toMatchObject({ factId: FACT_ID, verb: "retract" });
+
+    // #4934 moved the `admin_action_log` row DOWN into `correctFact`, so the
+    // agent tool's corrections are audited on the same terms as these routes.
+    // `correctFact` is stubbed here, so zero rows is the correct expectation —
+    // and a non-zero count means a route-level call came back and every
+    // correction is now double-logged. The row's own shape and the
+    // both-entry-points claim are pinned in
+    // `lib/brain/__tests__/correction-audit.test.ts`.
+    expect(auditRows).toHaveLength(0);
   });
 
   it("400s a malformed id instead of letting Postgres 500 on the uuid cast", async () => {
@@ -598,11 +775,12 @@ describe("POST /{id}/retract", () => {
     // exhaustion, and the reviewer is told "Failed to process request".
     const res = await adminBrainFacts.request("/not-a-uuid/retract", { method: "POST" });
     expect(res.status).toBe(400);
+    expect(correctCalls).toHaveLength(0);
     expect(auditRows).toHaveLength(0);
   });
 
   it("answers one 404 for absent, already-retracted, and not-visible alike", async () => {
-    retractResult = null;
+    correctionOutcome = { kind: "not-found" };
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(404);
 
@@ -614,5 +792,279 @@ describe("POST /{id}/retract", () => {
     expect(body.message).toContain("not be visible to you");
     // …and nothing was audited, because nothing happened.
     expect(auditRows).toHaveLength(0);
+  });
+
+  it("409s a warehouse-derived target with the machinery's actionable prose", async () => {
+    correctionOutcome = {
+      kind: "refused",
+      reason: REFUSAL_REASONS.warehouseTarget,
+      message: "This fact is warehouse-derived — fix the data or the semantic layer.",
+    };
+    const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toContain("semantic layer");
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("refuses to ship a retract payload that violates its own wire schema", async () => {
+    // #4939 widened this response, so it now runs the same `checked()` posture
+    // `/correct` has always had: a machinery result the schema refuses is a
+    // 500 with a requestId, never a body the browser has to guess at. Without
+    // this, a `correctFact` that stopped returning `correctionEpisodeId` would
+    // reach the console as a partial object and the flagged-dependent notice
+    // would silently never render.
+    correctionOutcome = {
+      kind: "corrected",
+      result: {
+        verb: "retract",
+        factId: FACT_ID,
+        // The field the widening added, present but the wrong TYPE — the
+        // shape a drifted machinery actually produces. A distinctive value,
+        // not `7`: the payload-must-not-leak assertion below needs a needle
+        // that cannot collide with a request id or a status code.
+        // The SECOND deliberately ill-typed fixture in this file, cast at this
+        // site only for the same reason the `invalidatedAt: 42` one below is:
+        // the point is a producer that broke the contract, and every other
+        // fixture stays compile-checked against the real union (#4934).
+        correctionEpisodeId: 424242424242,
+        invalidatedAt: "2026-07-01T00:00:00.000Z",
+        flaggedForReReview: [],
+        supersededBy: null,
+        validTo: null,
+      },
+    } as unknown as CorrectionOutcome;
+    const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    // Same assertion shape as `/correct`'s twin below: the refused payload
+    // must not leak through the error path either.
+    expect(text).not.toContain("424242424242");
+    // Deliberately NOT asserting the requestId envelope here: this suite
+    // mounts the route alone, so an unhandled failure surfaces as Hono's bare
+    // "Internal Server Error" rather than the app-level 500 body. Asserting it
+    // would pin the harness, not the product. Same reason `/correct`'s twin
+    // below checks only that the refused payload does not leak.
+    expect(text).not.toContain("ep-corr");
+
+    // …and this ROUTE emits nothing even on the failure path — #4934 moved the
+    // forensic trail inside `correctFact`, which is stubbed here, so zero is
+    // the correct count and this doubles as the router-emits-nothing guard.
+    // The property that matters — the row survives a response that failed to
+    // serialize, because the retraction already committed — now belongs to the
+    // machinery and is pinned in `correction-audit.test.ts`.
+    expect(auditRows).toHaveLength(0);
+  });
+});
+
+describe("POST /{id}/correct", () => {
+  const correct = (body: Record<string, unknown>) =>
+    adminBrainFacts.request(`/${FACT_ID}/correct`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("applies a verb and ships the correction payload through the wire schema", async () => {
+    correctionOutcome = {
+      kind: "corrected",
+      result: {
+        verb: "supersede",
+        factId: FACT_ID,
+        correctionEpisodeId: "ep-corr-2",
+        invalidatedAt: null,
+        flaggedForReReview: [],
+        supersededBy: "fact-new-1",
+        validTo: "2026-07-30T12:00:00.000Z",
+      },
+    };
+    const res = await correct({
+      verb: "supersede",
+      reason: "Ana left",
+      replacement: { object: "Bo" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      verb: "supersede",
+      factId: FACT_ID,
+      correctionEpisodeId: "ep-corr-2",
+      invalidatedAt: null,
+      flaggedForReReview: [],
+      supersededBy: "fact-new-1",
+      validTo: "2026-07-30T12:00:00.000Z",
+    });
+
+    expect(correctCalls[0]).toMatchObject({
+      factId: FACT_ID,
+      verb: "supersede",
+      reason: "Ana left",
+      replacement: { object: "Bo" },
+    });
+
+    // The audit row is `correctFact`'s (#4934), and `correctFact` is stubbed.
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("emits NO audit row on ANY path of EITHER route — the machinery owns it (#4934)", async () => {
+    // The double-logging guard, swept rather than enumerated: whatever this
+    // router does, it must not write an `admin_action_log` row, because
+    // `correctFact` already writes exactly one for every entry point. Re-adding
+    // either audit helper to either handler turns one human decision into two
+    // forensic rows, and this fails — both are captured into `auditRows`.
+    //
+    // Deliberately reaches `/retract` as well as `/correct` despite living in
+    // the `/correct` block: the two handlers are the pair that has to stay in
+    // step, and splitting the sweep across two describes is how one of them
+    // stops being swept.
+    //
+    // Typed as the real `CorrectionOutcome` union, so a reshape of the
+    // machinery's contract breaks these fixtures at compile time rather than
+    // leaving four hand-written literals asserting against a shape that moved.
+    const outcomes: CorrectionOutcome[] = [
+      {
+        kind: "corrected",
+        result: {
+          verb: "retract",
+          factId: FACT_ID,
+          correctionEpisodeId: "ep-corr-a",
+          invalidatedAt: "2026-07-01T00:00:00.000Z",
+          flaggedForReReview: ["dep-1"],
+          supersededBy: null,
+          validTo: null,
+        },
+      },
+      {
+        kind: "corrected",
+        result: {
+          verb: "pin",
+          factId: FACT_ID,
+          correctionEpisodeId: "ep-corr-b",
+          invalidatedAt: null,
+          flaggedForReReview: [],
+          supersededBy: null,
+          validTo: null,
+        },
+      },
+      { kind: "not-found" },
+      {
+        kind: "refused",
+        reason: REFUSAL_REASONS.warehouseTarget,
+        message: "tier-1 has no correction path",
+      },
+    ];
+    // Statuses asserted per iteration, not just the final row count. Without
+    // them a request that 500s BEFORE reaching the line where the deleted
+    // `logAdminAction` used to sit leaves this green while proving nothing — and
+    // one fixture does exactly that: `/retract` rejects a `corrected` outcome
+    // whose `invalidatedAt` is null (the `pin` shape), so it never traverses the
+    // handler's tail. Pinning the expected status is what makes each iteration a
+    // statement about a path that was actually walked.
+    const expected: Array<{ retract: number; correct: number }> = [
+      { retract: 200, correct: 200 },
+      // `pin` through `/retract`: no tombstone in the outcome ⇒ the route's own
+      // shape guard 500s. Deliberately kept — it is the one path that stops
+      // early, and naming it here is cheaper than a fixture that avoids it.
+      { retract: 500, correct: 200 },
+      { retract: 404, correct: 404 },
+      { retract: 409, correct: 409 },
+    ];
+    for (const [i, outcome] of outcomes.entries()) {
+      correctionOutcome = outcome;
+      const retractRes = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+      expect(retractRes.status, `outcome ${i} via /retract`).toBe(expected[i]?.retract);
+      const correctRes = await correct({ verb: "pin" });
+      expect(correctRes.status, `outcome ${i} via /correct`).toBe(expected[i]?.correct);
+    }
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("400s an unknown verb at the schema, before the machinery runs", async () => {
+    const res = await correct({ verb: "obliterate" });
+    expect(res.status).toBe(400);
+    expect(correctCalls).toHaveLength(0);
+  });
+
+  it("400s a malformed id instead of letting Postgres 500 on the uuid cast", async () => {
+    const res = await adminBrainFacts.request("/not-a-uuid/correct", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ verb: "pin" }),
+    });
+    expect(res.status).toBe(400);
+    expect(correctCalls).toHaveLength(0);
+  });
+
+  it("maps refusals onto their HTTP classes: 403 authority, 400 request shape, 409 target state", async () => {
+    // A `Record` over the vocabulary, not a hand-written list (#4939). The
+    // `default:` arm's `never` check in `refusalStatus` catches an UNHANDLED
+    // reason; nothing caught a MIS-GROUPED one, and nothing caught a new
+    // reason simply never reaching this table — which is what happened when
+    // `targetNotCurrent` was added. Typed this way, a new reason fails to
+    // compile until it is assigned an expected status here, so the decision
+    // is forced rather than remembered.
+    const expectedStatus: Record<keyof typeof REFUSAL_REASONS, number> = {
+      notAuthorized: 403,
+      replacementMissing: 400,
+      replacementIdentical: 400,
+      warehouseTarget: 409,
+      targetNotPublished: 409,
+      validityAlreadyClosed: 409,
+      targetNotCurrent: 409,
+      replacementUnpublishable: 409,
+    };
+    // `reason` stays typed as `CorrectionRefusalReason` (#4934) rather than
+    // widening to `string` through `Object.entries` — the stub's values are
+    // `satisfies`-pinned to the real vocabulary, so this annotation is what
+    // carries that guarantee into the loop below.
+    const cases: Array<{ reason: CorrectionRefusalReason; status: number }> = Object.entries(
+      expectedStatus,
+    ).map(([key, status]) => ({
+      reason: REFUSAL_REASONS[key as keyof typeof REFUSAL_REASONS],
+      status,
+    }));
+    // Non-vacuity: the loop must actually cover the whole vocabulary.
+    expect(cases).toHaveLength(Object.keys(REFUSAL_REASONS).length);
+
+    for (const { reason, status } of cases) {
+      auditRows.length = 0;
+      correctionOutcome = { kind: "refused", reason, message: "why, and what to do instead" };
+      const res = await correct({ verb: "supersede", replacement: { object: "Bo" } });
+      expect(res.status).toBe(status);
+      // A refusal is not a correction; nothing may be audited as one.
+      expect(auditRows).toHaveLength(0);
+    }
+  });
+
+  it("answers the same indistinguishable 404 as /retract", async () => {
+    correctionOutcome = { kind: "not-found" };
+    const res = await correct({ verb: "pin" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toContain("may not exist");
+  });
+
+  it("refuses to ship a correction payload that violates its own wire schema", async () => {
+    // Same `checked()` posture as the list route: a machinery result the
+    // schema refuses must become a 500, never reach the browser.
+    //
+    // The one fixture in this file that is deliberately ILL-TYPED — `42` where
+    // the contract says `string | null` — because the whole point is a producer
+    // that broke the contract. Cast at this site only, so every other fixture
+    // stays compile-checked against the real union.
+    correctionOutcome = {
+      kind: "corrected",
+      result: {
+        verb: "pin",
+        factId: FACT_ID,
+        correctionEpisodeId: "ep-corr-3",
+        invalidatedAt: 42, // not a string|null — the violation
+        flaggedForReReview: [],
+        supersededBy: null,
+        validTo: null,
+      },
+    } as unknown as CorrectionOutcome;
+    const res = await correct({ verb: "pin" });
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain("ep-corr-3");
   });
 });

@@ -17,6 +17,16 @@ on:
 # post-merge integration signal, which is what catches a semantic conflict
 # between two stacked PRs that were each green in isolation.
 #
+# Precedent, Brain M2 (2026-07-31): M2 was reverted from `main` (`0bb5d9130`) and
+# its re-landing arc was cut as `chore/brain-m2-to-main` — outside this filter.
+# PRs #4942/#4944/#4945/#4946/#4947 each merged onto it with `fork-pr-gate` as
+# their ONLY check, and three of four authors independently fired a
+# `workflow_dispatch` to compensate. Nothing was bypassed (branch protection is
+# `main`-only, so there was no gate to override), but the arc's safety rested
+# entirely on local `/ci` runs. The arc was moved back onto `milestone/brain-m2`
+# rather than adding the branch name here. Do that, not this — an integration
+# branch in this namespace is gated with no config change at all.
+#
 # Caveat, by design: `Analyze (javascript-typescript)` (CodeQL default setup) is
 # `main`-only and cannot be branch-filtered here, so milestone-branch PRs are
 # gated by everything EXCEPT CodeQL. It runs on the milestone branch's own PR

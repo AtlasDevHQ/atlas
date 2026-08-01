@@ -1017,6 +1017,30 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       );
       expect(edges[0]?.n).toBe("2");
 
+      // The TEMPORAL half of the same event, and the one arm of M2's
+      // supersession axis that only a real corroboration can produce (#4938).
+      // Re-observing a claim is evidence, never arbitration: it must add a
+      // provenance edge and touch NO validity column. The counter-argument is
+      // strong — `reconcile.ts` contains no `UPDATE` at all, `reconcile.test.ts`
+      // pins that structurally, and `check-brain-fact-promotion.sh` refuses
+      // `UPDATE … valid_to` repo-wide — but all three are statements about the
+      // SOURCE. None of them observes the row after a corroboration actually
+      // ran, and `temporal-loop-pg` deliberately asserts `factsCorroborated: 0`
+      // on every arm that extracts anything, so the flagship e2e never reaches
+      // this state at all.
+      // A corroborated fact that came back with a PAST-dated `valid_to` would
+      // read to every default query as no longer believed — the claim silently
+      // disappearing at the moment it was reinforced. The precision matters:
+      // liveness is `valid_to IS NULL OR valid_to > now()`, so a FUTURE-dated
+      // stamp is still a live fact (#4942). What this asserts is the stronger
+      // claim that re-observation NEVER stamps the column at all — so it holds
+      // whichever direction a stamp would have gone.
+      const { rows: validity } = await pool.query<{
+        valid_to: Date | null;
+        invalidated_at: Date | null;
+      }>(`SELECT valid_to, invalidated_at FROM brain_facts WHERE id = $1`, [deployFact.id]);
+      expect(validity[0]).toEqual({ valid_to: null, invalidated_at: null });
+
       // …and it reaches the reader as a count. Together with the main loop's
       // `corroborationCount: 1`, this is the only place the provenance edge is
       // pinned through the READER: without them `INSERT_PROVENANCE_EDGE_SQL`

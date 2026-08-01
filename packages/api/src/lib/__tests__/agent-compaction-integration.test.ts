@@ -192,6 +192,9 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
 // ---------------------------------------------------------------------------
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 const { invalidateExploreBackend } = await import("@atlas/api/lib/tools/explore");
 const { COMPACTION_SUMMARY_PREFIX, COMPACTION_STREAM_PART_TYPE } = await import("@atlas/api/lib/agent-compaction");
 const { _resetSettingsCache } = await import("@atlas/api/lib/settings");
@@ -346,7 +349,7 @@ describe("agent compaction — runAgent seam (#3759)", () => {
   it("enabled + past threshold → compaction fires and the turn completes", async () => {
     enableCompaction();
 
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     const steps = await result.steps;
 
     // Turn ran to natural completion (4 SQL steps + 1 text step), not an error.
@@ -370,7 +373,7 @@ describe("agent compaction — runAgent seam (#3759)", () => {
   it("pins the system prompt + most-recent N steps and drops older steps verbatim", async () => {
     enableCompaction();
 
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     await result.steps;
 
     // The final turn-loop model call is the text step. By then the loop has 4
@@ -393,7 +396,7 @@ describe("agent compaction — runAgent seam (#3759)", () => {
   it("rolls the summary forward incrementally rather than re-reading the whole older slice each step", async () => {
     enableCompaction();
 
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     await result.steps;
 
     // The threshold trips on multiple steps, so the summarizer runs more than
@@ -408,7 +411,7 @@ describe("agent compaction — runAgent seam (#3759)", () => {
 
   it("flag off (default) → no compaction regardless of context size", async () => {
     // Default off: do not set ATLAS_COMPACTION_ENABLED.
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     const steps = await result.steps;
 
     expect(steps.length).toBe(5); // identical loop behaviour
@@ -477,7 +480,7 @@ describe("agent compaction — per-model context window at the runAgent seam (#3
 
     // Small window — trips the threshold, summarizer runs.
     mockModel = buildModel("gpt-4o");
-    const small = await runAgent({ messages: userMessages(BIG_QUESTION) });
+    const small = await runAgent({ tools: nonDashboardRegistry, messages: userMessages(BIG_QUESTION) });
     await small.steps;
     const smallSummarizerCalls = summarizerCalls;
 
@@ -491,7 +494,7 @@ describe("agent compaction — per-model context window at the runAgent seam (#3
 
     // Large window — same fraction + same context, but 60k threshold not crossed.
     mockModel = buildModel("claude-opus-4-8");
-    const large = await runAgent({ messages: userMessages(BIG_QUESTION) });
+    const large = await runAgent({ tools: nonDashboardRegistry, messages: userMessages(BIG_QUESTION) });
     await large.steps;
     const largeSummarizerCalls = summarizerCalls;
 
@@ -506,7 +509,7 @@ describe("agent compaction — per-model context window at the runAgent seam (#3
 
     // Unknown model id ⇒ catalog miss ⇒ safe 200k default (same as claude here).
     mockModel = buildModel("some-bespoke-local-model");
-    const result = await runAgent({ messages: userMessages(BIG_QUESTION) });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages(BIG_QUESTION) });
     const steps = await result.steps;
 
     // Turn completed (did not error) on the default window; 0.3×200k = 60k not
@@ -522,7 +525,7 @@ describe("agent compaction — per-model context window at the runAgent seam (#3
     _resetSettingsCache();
 
     mockModel = buildModel("claude-opus-4-8");
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     await result.steps;
 
     // With the catalog's 200k window, 0.3 would NOT trip on a tiny context; the
@@ -561,7 +564,7 @@ describe("agent compaction — per-model context window at the runAgent seam (#3
       enablePerModelCompaction();
       // Gateway-shaped id, so the air-gap gate lets the lookup through.
       mockModel = buildModel("anthropic/claude-opus-4.8");
-      const result = await runAgent({ messages: userMessages(BIG_QUESTION) });
+      const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages(BIG_QUESTION) });
       const steps = await result.steps;
 
       expect(steps.length).toBe(5);
@@ -625,7 +628,7 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
     _resetSettingsCache();
     summaryMockModel = buildSummaryModel("summary-model-id");
 
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     await result.steps;
 
     // The summarization call resolved to the SEPARATE summary model…
@@ -641,7 +644,7 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
   it("summarizes on the turn model when the knob is unset (Compaction 1 default)", async () => {
     enable();
     // No ATLAS_COMPACTION_SUMMARY_MODEL set.
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     await result.steps;
 
     // The turn model did the summarizing; the separate model was never invoked.
@@ -657,7 +660,7 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
     // Even with a separate mock available, an equal id must not resolve it.
     summaryMockModel = buildSummaryModel("should-not-be-used");
 
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     await result.steps;
 
     expect(summarizerCalls).toBeGreaterThanOrEqual(1);
@@ -680,6 +683,7 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
     summaryMockModel = buildSummaryModel("summary-model-id");
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages(`Analyze companies. ${"x".repeat(200_000)}`),
     });
     await result.steps;
@@ -697,7 +701,7 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
     summaryModelResolutionThrows = true;
     summaryMockModel = buildSummaryModel("never-built");
 
-    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
     const steps = await result.steps;
 
     // The turn completed normally (4 SQL steps + 1 text step), not an error.
@@ -765,7 +769,7 @@ describe("agent compaction — client stream marker (#3761)", () => {
     } as unknown as Parameters<typeof setStreamWriter>[1];
     await withRequestContext({ requestId: REQ_ID }, async () => {
       setStreamWriter(REQ_ID, fakeWriter);
-      const result = await runAgent({ messages: userMessages(content) });
+      const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages(content) });
       await result.steps;
     });
     return parts;
@@ -823,7 +827,7 @@ describe("agent compaction — client stream marker (#3761)", () => {
 
     const steps = await withRequestContext({ requestId: REQ_ID }, async () => {
       setStreamWriter(REQ_ID, throwingWriter);
-      const result = await runAgent({ messages: userMessages("Analyze companies") });
+      const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Analyze companies") });
       return result.steps;
     });
 

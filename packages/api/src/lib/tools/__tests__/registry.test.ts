@@ -41,6 +41,9 @@ const {
   defaultRegistry,
   nonDashboardRegistry,
   buildRegistry,
+  buildHeadlessRegistry,
+  registryBuildFailedWarning,
+  ACTION_TOOLS_UNAVAILABLE_WARNING,
   WORKSPACE_DASHBOARD_URL_RESOLVER,
   INTENTIONAL_TOOL_SHADOWS,
   TOOL_SHADOW_REMEDIATIONS,
@@ -227,11 +230,14 @@ describe("defaultRegistry", () => {
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
     expect(defaultRegistry.get("createDashboard")).toBeDefined();
     expect(defaultRegistry.get("searchBrain")).toBeDefined();
+    // #4915 — the four correction verbs, under the ADR's own spelling.
+    expect(defaultRegistry.get("correct_fact")).toBeDefined();
   });
 
   it("getAll returns exactly the core tools", () => {
     const all = defaultRegistry.getAll();
     expect(Object.keys(all).sort()).toEqual([
+      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -247,6 +253,7 @@ describe("defaultRegistry", () => {
     expect(text).toContain("### 3. Write and Execute SQL");
     expect(text).toContain("### Create a Dashboard");
     expect(text).toContain("### Search the Company Brain");
+    expect(text).toContain("### Correct a Company-Brain Fact");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -285,6 +292,7 @@ describe("buildRegistry", () => {
       const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
       expect(names).toEqual([
+        "correct_fact",
         "createDashboard",
         "createLinearIssue",
         "executePython",
@@ -306,6 +314,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
+      "correct_fact",
       "createDashboard",
       "createLinearIssue",
       "executeSQL",
@@ -319,6 +328,7 @@ describe("buildRegistry", () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
+      "correct_fact",
       "createDashboard",
       "createJiraTicket",
       "createLinearIssue",
@@ -367,10 +377,14 @@ describe("buildRegistry", () => {
       const { registry } = await buildRegistry({ dashboardUrlResolver: null });
       expect(registry.get("createDashboard")).toBeUndefined();
       const names = Object.keys(registry.getAll());
-      // Only createDashboard is dropped — the rest of the core set is intact.
+      // Two tools are dropped on a headless surface — createDashboard (#4566,
+      // unreachable handoff) and correct_fact (#4915, a brain WRITE that must
+      // not be reachable through the read-safe POST /api/v1/query admission,
+      // #4707) — the rest of the core set is intact.
       // (Assert the delta, not an exact list: querySalesforce / executePython
       // are env-gated and would break an exact-equality check on a dev box.)
       expect(names).not.toContain("createDashboard");
+      expect(names).not.toContain("correct_fact");
       for (const core of ["explore", "executeSQL", "searchBrain", "sendEmail", "createLinearIssue"]) {
         expect(names).toContain(core);
       }
@@ -383,8 +397,13 @@ describe("buildRegistry", () => {
     // The exported fallback the non-web surfaces (and the buildRegistry error
     // path in agent-query) land on — it must never carry createDashboard, so a
     // build failure can't silently reintroduce the tool.
-    it("nonDashboardRegistry omits createDashboard but keeps the core query tools", () => {
+    it("nonDashboardRegistry omits createDashboard AND correct_fact but keeps the core query tools", () => {
       expect(nonDashboardRegistry.get("createDashboard")).toBeUndefined();
+      // #4915/#4707 — this registry is what POST /api/v1/query reaches, and
+      // that operation is admitted to READ-SAFE Agent-Auth keys; a brain-
+      // mutating tool here would break the read-only-engine guarantee (the
+      // agent-auth tripwire test pins the same surface from the other side).
+      expect(nonDashboardRegistry.get("correct_fact")).toBeUndefined();
       expect(nonDashboardRegistry.get("executeSQL")).toBeDefined();
       expect(nonDashboardRegistry.get("explore")).toBeDefined();
       expect(nonDashboardRegistry.get("searchBrain")).toBeDefined();
@@ -429,4 +448,219 @@ describe("tool-shadow policy (#3326)", () => {
     expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("SALESFORCE_CLIENT_ID");
     expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("salesforce://");
   });
+});
+
+// ---------------------------------------------------------------------------
+// #4936 — buildHeadlessRegistry
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with the given env keys set/cleared, restoring them afterwards. */
+async function withEnv(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const saved = new Map(Object.keys(overrides).map((k) => [k, process.env[k]]));
+  try {
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await fn();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+describe("buildHeadlessRegistry (#4936)", () => {
+  // The named seam two call sites now share — `executeAgentQuery` (serving the
+  // SDK / Slack / MCP / scheduler surfaces) and the chat-plugin approval RESUME
+  // of a turn started there. It exists so resume rebuilds from the same policy
+  // the parked turn ran under instead of re-deriving it, which is how the
+  // surface silently widened across the approval boundary before this fix.
+  it("omits both write verbs but keeps the core query tools", async () => {
+    const names = Object.keys((await buildHeadlessRegistry()).registry.getAll());
+
+    expect(names).not.toContain("createDashboard");
+    expect(names).not.toContain("correct_fact");
+    // Not vacuous — a headless surface is still a full read surface.
+    for (const core of ["explore", "executeSQL", "searchBrain"]) {
+      expect(names).toContain(core);
+    }
+  });
+
+  it("keeps operator action tools opt-in behind ATLAS_ACTIONS_ENABLED", async () => {
+    await withEnv({ ATLAS_ACTIONS_ENABLED: undefined }, async () => {
+      expect(Object.keys((await buildHeadlessRegistry()).registry.getAll())).not.toContain("sendEmailReport");
+    });
+    await withEnv({ ATLAS_ACTIONS_ENABLED: "true" }, async () => {
+      expect(Object.keys((await buildHeadlessRegistry()).registry.getAll())).toContain("sendEmailReport");
+    });
+  });
+
+  it("#4941 — a clean build carries no warnings (the degraded signal is not always-on)", async () => {
+    // The negative half of the pair below. Without it "warnings is non-empty on
+    // failure" is satisfiable by a seam that always warns, which would train
+    // every headless agent to open with an apology.
+    await withEnv({ ATLAS_ACTIONS_ENABLED: "true" }, async () => {
+      expect((await buildHeadlessRegistry()).warnings).toEqual([]);
+    });
+  });
+
+  it("falls back to nonDashboardRegistry — NOT defaultRegistry — when buildRegistry throws", async () => {
+    // The security-relevant branch, and the one the pre-refactor inline version
+    // in agent-query.ts never had a test for. Both omissions must hold on the
+    // error path too, or a misconfigured box quietly hands every headless
+    // surface the write verbs.
+    //
+    // #4940 amended what this case MEANS without touching what it asserts. The
+    // direction (lesser-privileged, not default) is a property of the FALLBACK,
+    // so it must hold for every throw class `buildRegistry` can produce —
+    // including the ones a boot-time env check cannot predict, like a `./python`
+    // import that fails at build time. The trigger below is the fatal
+    // misconfiguration only because it is the one class reachable from env
+    // alone; it is no longer evidence that swallowing it is the end state (see
+    // the case immediately after).
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined },
+      async () => {
+        await expect(buildRegistry()).rejects.toThrow("ATLAS_SANDBOX_URL");
+
+        const { registry } = await buildHeadlessRegistry();
+        expect(registry).toBe(nonDashboardRegistry);
+        const names = Object.keys(registry.getAll());
+        expect(names).not.toContain("createDashboard");
+        expect(names).not.toContain("correct_fact");
+        expect(names).toContain("executeSQL");
+      },
+    );
+  });
+
+  it("#4940 — the shared predicate is the join between this seam and the boot guard", async () => {
+    // What the issue was actually about. Before the boot guard, the env above
+    // was a state a deployment could sit in indefinitely: all five
+    // `buildRegistry` callers catch, so nothing failed boot and the operator's
+    // `ATLAS_PYTHON_ENABLED=true` was silently dropped while `/health` stayed
+    // green. `PythonSandboxGuardLive` now fails the boot Layer on exactly this
+    // predicate (`saas-guards.test.ts` owns the guard's own cases).
+    //
+    // Asserted through the SHARED predicate rather than by restating the rule:
+    // that is the join between the two seams, and a change to either that does
+    // not go through `python-sandbox-requirement.ts` breaks here.
+    const { isPythonSandboxMisconfigured } = await import(
+      "@atlas/api/lib/tools/python-sandbox-requirement"
+    );
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined },
+      async () => {
+        expect(isPythonSandboxMisconfigured(process.env)).toBe(true);
+        await expect(buildRegistry()).rejects.toThrow("ATLAS_SANDBOX_URL");
+      },
+    );
+    // The negative half: the shape a working deploy has must NOT be something
+    // the boot guard refuses, or enabling Python correctly would wedge boot.
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: "http://sandbox-sidecar:8080" },
+      async () => {
+        expect(isPythonSandboxMisconfigured(process.env)).toBe(false);
+        const { registry } = await buildRegistry();
+        expect(Object.keys(registry.getAll())).toContain("executePython");
+      },
+    );
+  });
+
+  it("#4941 — the fallback path authors its own warning instead of degrading silently", async () => {
+    // The degrade above is deliberate and stays; what was missing is that the
+    // user was never told, so a turn that lands here lost capability the
+    // operator believes is configured and the model called it absent.
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined, ATLAS_ACTIONS_ENABLED: "true" },
+      async () => {
+        const { registry, warnings } = await buildHeadlessRegistry();
+        expect(registry).toBe(nonDashboardRegistry);
+        expect(warnings).toEqual([registryBuildFailedWarning()]);
+        // Copy addressed to the MODEL, not to an operator reading logs — it has
+        // to be relayable as-is, which is the whole point of #4941.
+        expect(warnings[0]).toContain("temporarily unavailable");
+      },
+    );
+  });
+
+  // The copy is DERIVED from the env, not fixed, and this block pins why. A
+  // degraded registry is lesser-privileged, not stripped: `sendEmail` and
+  // `createLinearIssue` are CORE tools and survive both the action-load failure
+  // and the whole-build failure. A fixed string claiming "action tools (JIRA,
+  // email) are unavailable" hands the model a live `sendEmail` while telling it
+  // email is down — the same wrong-explanation bug #4941 fixes, one capability
+  // over. Both strings are swept, against both registries a surface can fall
+  // back to, because the over-claim was found in the second one after the first
+  // was fixed.
+  describe("#4941 — no degraded-tools warning ever over-claims", () => {
+    it("names only what the env asked for and the fallback could not carry", async () => {
+      await withEnv({ ATLAS_ACTIONS_ENABLED: "true", ATLAS_PYTHON_ENABLED: "true" }, async () => {
+        const warning = registryBuildFailedWarning();
+        expect(warning).toContain("createJiraTicket");
+        expect(warning).toContain("executePython");
+      });
+    });
+
+    it("claims nothing lost when nothing was configured", async () => {
+      await withEnv({ ATLAS_ACTIONS_ENABLED: undefined, ATLAS_PYTHON_ENABLED: undefined }, async () => {
+        const warning = registryBuildFailedWarning();
+        expect(warning).not.toContain("createJiraTicket");
+        expect(warning).not.toContain("executePython");
+      });
+    });
+
+    it("every warning ends with the never-disown-a-visible-tool instruction", async () => {
+      // Naming only what was lost is necessary but not sufficient: the model
+      // generalizes from "the action tools are gone" to "email is gone".
+      await withEnv({ ATLAS_ACTIONS_ENABLED: "true", ATLAS_PYTHON_ENABLED: undefined }, async () => {
+        for (const warning of [ACTION_TOOLS_UNAVAILABLE_WARNING, registryBuildFailedWarning()]) {
+          expect(warning).toContain("do NOT tell the user that one of them is unavailable");
+          expect(warning).toContain("temporarily unavailable");
+          // Addressed to the reader of the answer, who on Slack / SDK / MCP has
+          // no server logs. The operator half is the pino line.
+          expect(warning).not.toContain("server logs");
+        }
+      });
+    });
+
+    it("no warning ever disowns a tool the surface still carries", async () => {
+      // Swept against BOTH fallback registries: `nonDashboardRegistry` (the
+      // headless seam) and `defaultRegistry` (both web chat paths).
+      for (const env of [{ ATLAS_ACTIONS_ENABLED: "true" }, { ATLAS_ACTIONS_ENABLED: undefined }]) {
+        await withEnv({ ...env, ATLAS_PYTHON_ENABLED: undefined }, async () => {
+          const warnings = [ACTION_TOOLS_UNAVAILABLE_WARNING, registryBuildFailedWarning()];
+          const survivors = [
+            ...Object.keys(nonDashboardRegistry.getAll()),
+            ...Object.keys(defaultRegistry.getAll()),
+          ];
+          // Non-vacuous, and these two are the ones that made the drafts wrong.
+          expect(survivors).toContain("sendEmail");
+          expect(survivors).toContain("createLinearIssue");
+
+          for (const warning of warnings) {
+            for (const survivor of survivors) {
+              // Word-bounded on purpose: the action tool `sendEmailReport` is
+              // legitimately named, and it CONTAINS the surviving `sendEmail`.
+              expect(
+                new RegExp(`\\b${survivor}\\b`).test(warning),
+                `"${warning.slice(0, 60)}…" disowns ${survivor}, which the surface still carries`,
+              ).toBe(false);
+            }
+          }
+        });
+      }
+    });
+  });
+
+  // The OTHER warning source — `buildRegistry`'s action-tool load failure, seen
+  // through this seam — needs the action module itself to fail, which is a
+  // file-wide `mock.module` this file cannot take (its top-level actions mock is
+  // what makes every `includeActions` test above work). It lives in
+  // `lib/__tests__/agent-query-degraded-tools.test.ts` alongside the call-site
+  // assertion that the warning reaches the model.
 });

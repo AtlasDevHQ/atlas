@@ -62,11 +62,54 @@ Use this whenever a metric exists for what the user asked — never re-derive me
 
 Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
 
-export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain — a trust-labeled read over three stores. \`tier: "fact"\` is human-reviewed; \`tier: "raw-episode"\` is its source record; \`tier: "document"\` is hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. When a fact's \`provenance.attribution\` is \`{ "visible": false }\` its author, source id and timestamp are withheld: use the claim, say attribution is restricted, never call it anonymous, undated or unsourced, never infer the author. Retracted claims are excluded, drafts outside developer mode — see \`status\`. Unextracted episodes are tagged \`extraction: "pending"\`. Conflicting facts surface unranked \`tensions\`: report every side, never pick a winner. \`unavailable\` means the search failed — never report that as "nothing known". Example: \`{ "query": "who owns billing" }\`.
+// The `tensions` clause is load-bearing for correctness rather than routing
+// (#4933) — like the attribution and age never-arms beside it. `invalidatedAt`
+// and `validTo` are carried on every VISIBLE counterpart precisely so a
+// withdrawn or replaced rival is distinguishable from a live one; the withheld
+// arm is a bare `withheldCount` and stays contested by construction, which is
+// why the labels are stated as a carve-out and not as a verdict on the cluster.
+// Without them a model reads the whole cluster as unresolved and re-opens a
+// conflict a human already settled.
+//
+// This string is the tool description for BOTH readers — it reaches the
+// in-process agent as `searchBrain.description` (the AI SDK tool object that
+// `defaultRegistry` registers; `registry.ts`'s own `description:` field is the
+// SYSTEM-PROMPT constant, a different string) and every external MCP client via
+// `withErrorContract`. A gap here is not an MCP-only gap.
+//
+// The lifecycle labels are trades, not additions: the string sat at 149 of the
+// rubric's 150 words (`__tests__/description-rubric.test.ts`), and the budget
+// came out of the opening sentence, the attribution and age clauses, the
+// folded-in `extraction: "pending"` sentence, the JSON example, and both
+// routing paragraphs. The `asOf` clause was restructured, not squeezed — it
+// still costs what it did, so it is not the place to look for slack.
+//
+// The string is 148 words, of which 5 are the interpolated
+// `KNOWLEDGE_TRUST_FRAMING`. Those are NOT charged here as of #4954: the
+// rubric measures each tool's own prose and the shared constant carries a
+// separate, explicitly-named budget. The reason is that while it was charged
+// twice, this description had two words of headroom and `explore`'s (149/150)
+// had one — so three words added to a constant NEITHER of them owns failed
+// both gates at once, naming the two tools rather than the constant. This
+// description's own prose is 144 of 150, so there is real headroom now, but it
+// is headroom for THIS description's clauses only, and the COMPOSED string
+// (own prose + the framing, still before `withErrorContract` appends the error
+// section) is separately capped by `description-rubric.test.ts`. Growing
+// the shared framing still costs every interpolating tool; it now fails one
+// named test that says so instead of two that blame the wrong prose.
+//
+// The system-prompt twin in `lib/tools/search-brain.ts` is longer and uncapped,
+// not a copy and not a strict superset (it carries the as-of-NOW clarifier and
+// the withheld-arm rule, which do not fit here; it does not carry
+// `KNOWLEDGE_TRUST_FRAMING`, which the prompt gets from the collection ToC).
+// Parity is on the labels only, and is pinned in
+// `__tests__/search-brain-tool.test.ts` — the never-arms are assertions, not
+// decoration, so trim anything here and re-run that suite.
+export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain. Trust-labeled results: \`tier: "fact"\` human-reviewed, \`"raw-episode"\` its source (maybe \`extraction: "pending"\`), \`"document"\` hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. \`provenance.attribution\` \`{ "visible": false }\`: use the claim, say attribution restricted; never anonymous, undated, unsourced, nor infer the author. Age (\`validFrom\`, \`corroborationCount\`, \`decay\`): present a stale fact's age, never assert as current or drop. \`tensions\` lists rival claims+provenance (\`withheldCount\` = unseen), unranked: never pick a winner. Report those as settled once retired: \`invalidatedAt\` non-null = RETRACTED, \`validTo\` ALREADY IN THE PAST = SUPERSEDED; \`validTo\` still in the future = LIVE. \`unavailable\` = search failed, not "nothing known". \`asOf\` (past ISO-8601) reads facts valid then, framed "as of <time>": superseded included, retracted only in \`tensions\`. Example: \`{ "query": "billing owner", "asOf": "2026-07-01" }\`.
 
-Use this when asking about decisions, rationale, ownership, or policy — what people wrote down, not what a warehouse counts.
+Use this when asked about decisions, rationale, ownership, or policy.
 
-Don't use this for quantitative current state (\`executeSQL\`) or the semantic layer (\`explore\`).`;
+Don't use this for quantitative state (\`executeSQL\`) or the semantic layer (\`explore\`).`;
 
 export const QUERY_TOOL_DESCRIPTION = `Ask Atlas's server-side analyst agent a natural-language question; it explores the semantic layer, writes and runs the SELECTs itself, and returns a prose \`answer\` plus every SQL statement it ran and the result rows. This is the recommended path for question-answering — the agent knows the catalog, glossary, canonical metrics, joins, and RLS, so it composes better SQL than a generic client writing raw SQL blind. It runs a second server-side LLM and spends Atlas plan tokens; prefer it when answer quality matters. Example call: \`{ "question": "top 5 products by revenue last quarter" }\`. Example response: \`{ "answer": "...", "sql": ["SELECT ..."], "data": [...] }\`.
 
@@ -139,8 +182,12 @@ export const RUN_METRIC_ERROR_CODES = [
 // the fail-closed ACL deny, which is an upstream defect and must NOT read to
 // the agent as "the brain knows nothing" — and, independently, from the
 // dispatch gate's own `minRole` denial, which never reaches the tool body.
+// `validation_failed` for a malformed/future `asOf` (#4916) — the caller's own
+// argument, refused rather than silently answered as-of-now, and distinct from
+// `internal_error` because the recovery is "fix the argument", not "retry".
 // Plus the per-client rate limit and the catch-all.
 export const SEARCH_BRAIN_ERROR_CODES = [
+  "validation_failed",
   "forbidden",
   "rate_limited",
   "internal_error",

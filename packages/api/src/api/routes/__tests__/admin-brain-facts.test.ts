@@ -137,15 +137,25 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
  * `candidates-pg.test.ts` §7 against the live schema; the audit row they emit
  * is pinned in `lib/brain/__tests__/correction-audit.test.ts` (#4934).
  */
+/**
+ * `satisfies` the real vocabulary (#4939). A type-only import is erased before
+ * `mock.module` runs, so this borrows the shape without un-stubbing anything —
+ * and a reason added to the machinery is now a COMPILE error here rather than
+ * a stub that quietly disagrees with the module it stands in for. Without it,
+ * `REFUSAL_REASONS.targetNotCurrent` would evaluate to `undefined` under the
+ * mock, `refusalStatus` would fall through to its `default:` throw, and this
+ * harness would report a 500 where production returns 409.
+ */
 const REFUSAL_REASONS = {
   notAuthorized: "NOT_AUTHORIZED",
   warehouseTarget: "WAREHOUSE_TARGET",
   targetNotPublished: "TARGET_NOT_PUBLISHED",
   validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
+  targetNotCurrent: "TARGET_NOT_CURRENT",
   replacementMissing: "REPLACEMENT_MISSING",
   replacementIdentical: "REPLACEMENT_IDENTICAL",
   replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
-} as const;
+} as const satisfies typeof import("@atlas/api/lib/brain/correction").CORRECTION_REFUSAL_REASONS;
 let correctCalls: Array<Record<string, unknown>> = [];
 /**
  * Typed as the real union rather than `Record<string, unknown>`, so a reshape of
@@ -733,9 +743,18 @@ describe("POST /{id}/retract", () => {
     };
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(200);
-    // The wire shape is unchanged by the #4915 unification — the richer
-    // correction payload is `/correct`'s; this route keeps its contract.
-    expect(await res.json()).toEqual({ id: FACT_ID, invalidatedAt: "2026-07-01T00:00:00.000Z" });
+    // `toEqual`, not `toMatchObject`: the point of #4939 is that the two
+    // correction disclosures reach the CALLER and not only `logAdminAction`,
+    // and a partial match would go green against the pre-#4939 body that had
+    // them in the audit row alone. `correctionEpisodeId` and
+    // `flaggedForReReview` here are the same values asserted on the audit row
+    // below — asserting both is what pins that they cannot diverge.
+    expect(await res.json()).toEqual({
+      id: FACT_ID,
+      invalidatedAt: "2026-07-01T00:00:00.000Z",
+      correctionEpisodeId: "ep-corr-9",
+      flaggedForReReview: ["dep-1"],
+    });
 
     // One code path, not two: the route called the verb machinery.
     expect(correctCalls).toHaveLength(1);
@@ -785,6 +804,55 @@ describe("POST /{id}/retract", () => {
     expect(res.status).toBe(409);
     const body = (await res.json()) as { message: string };
     expect(body.message).toContain("semantic layer");
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("refuses to ship a retract payload that violates its own wire schema", async () => {
+    // #4939 widened this response, so it now runs the same `checked()` posture
+    // `/correct` has always had: a machinery result the schema refuses is a
+    // 500 with a requestId, never a body the browser has to guess at. Without
+    // this, a `correctFact` that stopped returning `correctionEpisodeId` would
+    // reach the console as a partial object and the flagged-dependent notice
+    // would silently never render.
+    correctionOutcome = {
+      kind: "corrected",
+      result: {
+        verb: "retract",
+        factId: FACT_ID,
+        // The field the widening added, present but the wrong TYPE — the
+        // shape a drifted machinery actually produces. A distinctive value,
+        // not `7`: the payload-must-not-leak assertion below needs a needle
+        // that cannot collide with a request id or a status code.
+        // The SECOND deliberately ill-typed fixture in this file, cast at this
+        // site only for the same reason the `invalidatedAt: 42` one below is:
+        // the point is a producer that broke the contract, and every other
+        // fixture stays compile-checked against the real union (#4934).
+        correctionEpisodeId: 424242424242,
+        invalidatedAt: "2026-07-01T00:00:00.000Z",
+        flaggedForReReview: [],
+        supersededBy: null,
+        validTo: null,
+      },
+    } as unknown as CorrectionOutcome;
+    const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    // Same assertion shape as `/correct`'s twin below: the refused payload
+    // must not leak through the error path either.
+    expect(text).not.toContain("424242424242");
+    // Deliberately NOT asserting the requestId envelope here: this suite
+    // mounts the route alone, so an unhandled failure surfaces as Hono's bare
+    // "Internal Server Error" rather than the app-level 500 body. Asserting it
+    // would pin the harness, not the product. Same reason `/correct`'s twin
+    // below checks only that the refused payload does not leak.
+    expect(text).not.toContain("ep-corr");
+
+    // …and this ROUTE emits nothing even on the failure path — #4934 moved the
+    // forensic trail inside `correctFact`, which is stubbed here, so zero is
+    // the correct count and this doubles as the router-emits-nothing guard.
+    // The property that matters — the row survives a response that failed to
+    // serialize, because the retraction already committed — now belongs to the
+    // machinery and is pinned in `correction-audit.test.ts`.
     expect(auditRows).toHaveLength(0);
   });
 });
@@ -927,15 +995,36 @@ describe("POST /{id}/correct", () => {
   });
 
   it("maps refusals onto their HTTP classes: 403 authority, 400 request shape, 409 target state", async () => {
-    const cases: Array<{ reason: CorrectionRefusalReason; status: number }> = [
-      { reason: REFUSAL_REASONS.notAuthorized, status: 403 },
-      { reason: REFUSAL_REASONS.replacementMissing, status: 400 },
-      { reason: REFUSAL_REASONS.replacementIdentical, status: 400 },
-      { reason: REFUSAL_REASONS.warehouseTarget, status: 409 },
-      { reason: REFUSAL_REASONS.targetNotPublished, status: 409 },
-      { reason: REFUSAL_REASONS.validityAlreadyClosed, status: 409 },
-      { reason: REFUSAL_REASONS.replacementUnpublishable, status: 409 },
-    ];
+    // A `Record` over the vocabulary, not a hand-written list (#4939). The
+    // `default:` arm's `never` check in `refusalStatus` catches an UNHANDLED
+    // reason; nothing caught a MIS-GROUPED one, and nothing caught a new
+    // reason simply never reaching this table — which is what happened when
+    // `targetNotCurrent` was added. Typed this way, a new reason fails to
+    // compile until it is assigned an expected status here, so the decision
+    // is forced rather than remembered.
+    const expectedStatus: Record<keyof typeof REFUSAL_REASONS, number> = {
+      notAuthorized: 403,
+      replacementMissing: 400,
+      replacementIdentical: 400,
+      warehouseTarget: 409,
+      targetNotPublished: 409,
+      validityAlreadyClosed: 409,
+      targetNotCurrent: 409,
+      replacementUnpublishable: 409,
+    };
+    // `reason` stays typed as `CorrectionRefusalReason` (#4934) rather than
+    // widening to `string` through `Object.entries` — the stub's values are
+    // `satisfies`-pinned to the real vocabulary, so this annotation is what
+    // carries that guarantee into the loop below.
+    const cases: Array<{ reason: CorrectionRefusalReason; status: number }> = Object.entries(
+      expectedStatus,
+    ).map(([key, status]) => ({
+      reason: REFUSAL_REASONS[key as keyof typeof REFUSAL_REASONS],
+      status,
+    }));
+    // Non-vacuity: the loop must actually cover the whole vocabulary.
+    expect(cases).toHaveLength(Object.keys(REFUSAL_REASONS).length);
+
     for (const { reason, status } of cases) {
       auditRows.length = 0;
       correctionOutcome = { kind: "refused", reason, message: "why, and what to do instead" };

@@ -388,11 +388,21 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         // the MCP model the opposite. The wording names which field carries
         // the label, so the guidance is actionable rather than a promise the
         // wire does not keep.
+        //
+        // "Requires the fact store in `include`" is the second precondition
+        // this schema had dropped (#4939). It is not advisory: `searchBrain`
+        // HARD-REFUSES an `asOf` read whose `include` omits facts
+        // (`lib/brain/search.ts`), and the AI SDK twin has always said so —
+        // so the MCP model was the only caller told to combine two arguments
+        // it would be refused for combining. The rule is pinned in two suites,
+        // one per spelling: `search-brain-tool.test.ts` for the api argument,
+        // and this package's `__tests__/tools.test.ts`, which reads THIS one
+        // back out of the SERVED JSON Schema via `listTools()`.
         asOf: z
           .string()
           .optional()
           .describe(
-            "Facts only: historical point read — the reviewed facts valid at that moment (superseded versions included; a retracted fact never as a RESULT, only as a `tensions` counterpart labelled by `invalidatedAt`). ISO-8601 date (2026-07-27) or timestamp with an explicit zone (2026-07-27T09:00:00Z); zone-less times and future instants are rejected. Omit for current beliefs.",
+            "Facts only: historical point read — the reviewed facts valid at that moment (superseded versions included; a retracted fact never as a RESULT, only as a `tensions` counterpart labelled by `invalidatedAt`). ISO-8601 date (2026-07-27) or timestamp with an explicit zone (2026-07-27T09:00:00Z); zone-less times and future instants are rejected. Requires the fact store in `include`. Omit for current beliefs.",
           ),
         limit: z
           .number()

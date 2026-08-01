@@ -376,9 +376,18 @@ export const BrainFactCandidateSummarySchema = z.object({
   publishedTotal: z.number().int().nonnegative(),
 }) satisfies z.ZodType<BrainFactCandidateSummary, unknown>;
 
+/**
+ * `/retract` runs the `retract` correction VERB, so it discloses what that
+ * verb produces (#4939): the correction episode and the flagged dependents.
+ * Both were reaching `logAdminAction` metadata only, which left the console
+ * reviewer — the one who pressed the button — told nothing, while the docs
+ * said the flags "come back in `flaggedForReReview`".
+ */
 export const BrainFactRetractResponseSchema = z.object({
   id: z.string(),
   invalidatedAt: z.string(),
+  correctionEpisodeId: z.string(),
+  flaggedForReReview: z.array(z.string()),
 }) satisfies z.ZodType<BrainFactRetractResponse, unknown>;
 
 // ---------------------------------------------------------------------------

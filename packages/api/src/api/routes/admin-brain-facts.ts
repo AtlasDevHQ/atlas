@@ -268,7 +268,8 @@ const retractRoute = createRoute({
   },
   responses: {
     200: {
-      description: "The candidate was retracted",
+      description:
+        "The candidate was retracted. The body carries the correction episode the verb materialized and the ids of any `derives-from` dependents it flagged for re-review — the same two disclosures `/correct` returns, so the console reviewer is told what the audit row records",
       content: { "application/json": { schema: BrainFactRetractResponseSchema } },
     },
     // Spread FIRST so the specific 404 copy below overrides the shared
@@ -342,6 +343,7 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
     case CORRECTION_REFUSAL_REASONS.warehouseTarget:
     case CORRECTION_REFUSAL_REASONS.targetNotPublished:
     case CORRECTION_REFUSAL_REASONS.validityAlreadyClosed:
+    case CORRECTION_REFUSAL_REASONS.targetNotCurrent:
     case CORRECTION_REFUSAL_REASONS.replacementUnpublishable:
       return 409;
     default: {
@@ -536,6 +538,14 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
         checked(BrainFactRetractResponseSchema, {
           id: result.factId,
           invalidatedAt: result.invalidatedAt,
+          // The verb's own two disclosures, echoed to the CALLER rather than
+          // living only in the machinery's audit row (#4939). Ids here, a count
+          // on the agent path — the asymmetry and its precise justification are
+          // on `BrainFactRetractResponse`; in short, the ids are already in
+          // this actor's own audit row and they are the human who has to act on
+          // the flag, neither of which is true of an LLM.
+          correctionEpisodeId: result.correctionEpisodeId,
+          flaggedForReReview: [...result.flaggedForReReview],
         }),
         200,
       );

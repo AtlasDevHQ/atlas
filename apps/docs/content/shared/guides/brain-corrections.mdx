@@ -26,7 +26,15 @@ Retraction is the sole path that withdraws a claim. It stamps `invalidatedAt` an
 
 The row is **not deleted**. Every fact-serving read hides it, including [`asOf` reads](/guides/brain-temporal-model#reading-the-brain-as-of-a-past-instant), because hiding history is precisely what this verb is for. The one deliberate exception is the [conflict cluster](/guides/brain-conflicts): a retracted claim is still listed there, labelled with its `invalidatedAt`, as a withdrawn rival of any live claim it contested — a reviewer needs to see that a conflict was resolved by withdrawing the other side.
 
-Retraction **flags** dependent claims rather than cascading to them. Facts holding a `derives-from` edge onto the retracted one come back in `flaggedForReReview` as opaque ids; their own `invalidatedAt`, `validTo`, and `status` are untouched. A conclusion may well survive losing one of its premises, and only a human can say whether this one did.
+Retraction **flags** dependent claims rather than cascading to them. Facts holding a `derives-from` edge onto the retracted one come back in `flaggedForReReview`; their own `invalidatedAt`, `validTo`, and `status` are untouched. A conclusion may well survive losing one of its premises, and only a human can say whether this one did.
+
+What comes back depends on which surface you called, and the difference is an access boundary rather than an inconsistency. The dependent query is deliberately **not** access-checked — flagging only the dependents you happen to be entitled to would leave the rest unflagged forever, because nobody else knows the premise fell. So the admin routes (`/retract` and `/correct`) return the opaque ids in `flaggedForReReview`; the `correct_fact` tool returns `flaggedForReReviewCount` instead, for the same reason the conflict cluster hands an agent a count of rivals it cannot see rather than their handles.
+
+Note what justifies the ids on the admin side, because it is narrower than "an admin can see everything": a workspace role does **not** confer blanket read on brain facts — access is matched per grant — so an admin whose grants miss a dependent does receive that dependent's id. What makes that acceptable is that the id is an opaque workspace-scoped identifier carrying no claim text, it is already written to that admin's own action-log entry, and they are the human who has to act on the flag. None of those hold for an agent, which is why the tool gets a number.
+
+The flag itself is written onto each dependent's stored provenance, and the ids are recorded in the admin action log — on **every** entry point, the agent tool included. So the record survives an agent-initiated correction even though the agent only ever saw a number.
+
+**No read surface renders the flag yet.** Treat the response as a notification at the moment of the retraction rather than a queue you can come back to; the admin action log is where the ids remain recoverable.
 
 <Callout type="warn" title="Retract is the GDPR-erasure route, not the erasure itself">
   An erasure request routes *through* `retract` — it is the verb that makes a claim stop being served. It is not, on its own, deletion of content: the fact row and its episodes remain stored, and a retracted claim still appears as a labelled counterpart inside conflict clusters. Actual content deletion is a separate operation, and that carve-out is exactly why it cannot be read off this verb.
@@ -46,7 +54,11 @@ The correction episode becomes evidence: a `provenance` edge from the fact to th
 
 ### `pin` — advisory emphasis
 
-The same evidence edge plus a `pinned` marker. Advisory at rest, exactly like the [decay signal](/guides/brain-temporal-model#staleness-is-advisory) it counteracts: surfaces may read the marker, but nothing auto-acts on it.
+The same evidence edge plus a `pinned` marker. Advisory at rest, exactly like the [decay signal](/guides/brain-temporal-model#staleness-is-advisory) it counteracts: nothing auto-acts on it — and today nothing reads it either. The marker is recorded on the fact's provenance for a future review surface; the effect you can observe now is the evidence edge, which is what resets the decay clock.
+
+<Callout type="info" title="Both vouching verbs refuse a claim that is no longer current">
+  `re-authority` and `pin` are refused when the target's validity window has **already closed** — no current read serves such a claim, so re-anchoring its staleness clock would change nothing anybody can see. A supersession is the usual cause, and then you vouch for the claim that replaced it. If nothing replaced it — a scheduled end that simply elapsed — there is no correction to apply at all: `supersede` refuses a closed window too, so the claim has to be observed again through ingest before it can be vouched for. A *future-dated* `validTo` is a live claim whose end is merely scheduled, and is accepted.
+</Callout>
 
 ---
 
@@ -62,7 +74,9 @@ The `correct_fact` tool is available to the agent only on **interactive surfaces
 
 ## Atomicity
 
-Every verb runs in one transaction, opened after all validation completes. The correction episode, its edges, the tombstone or stamp or marker, and any flagged dependents commit together or not at all. A refusal discovered mid-transaction rolls the episode back — a correction that half-happened must not leave an authored episode asserting that it succeeded.
+Every verb runs in one transaction, opened after the checks that need **no row read** — the caller's authority, their resolved principals, and argument-shape problems such as `supersede` arriving without a replacement. Everything that has to read the target is evaluated *inside* the transaction, under the row lock, and that is deliberate: whether the fact is warehouse-derived, published, still current, or already asserts the replacement value are all facts about a row another writer could be changing concurrently, so checking them before opening the transaction would be checking a version that no longer applies by the time the write lands.
+
+The correction episode, its edges, the tombstone or stamp or marker, and any flagged dependents commit together or not at all. A refusal discovered mid-transaction rolls the episode back — a correction that half-happened must not leave an authored episode asserting that it succeeded.
 
 Every refusal carries both a machine-readable reason and actionable prose: a tool or route branches on the code, a human acts on the text.
 

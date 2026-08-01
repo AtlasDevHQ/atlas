@@ -142,6 +142,43 @@ describe("projectProvenance", () => {
     expect(projectProvenance({ provisional: false }, null, "disclose").provisional).toBe(false);
   });
 
+  // #4939 — an INVERSE guard. The three correction markers
+  // (`MERGE_PROVENANCE_MARKER_SQL`) are written and read by nothing. Plenty of
+  // code reads the `provenance` PAYLOAD — `isWarehouseDerived`,
+  // `classifyFactForPromotion`, the `jsonb_exists(…, 'provisional')` filter —
+  // but this is the only thing that PROJECTS it onto a read surface, and it
+  // whitelists its output keys, so all three markers are dropped here.
+  //
+  // That is a bounded, deliberate state, and the prose that used to imply
+  // otherwise — `brain-corrections.mdx`'s `pin` section ("surfaces may read
+  // the marker") and `lib/brain/correction.ts`'s matching header bullet — now
+  // says so outright. This test fails the day one of the three gains a reader,
+  // which is exactly when that prose becomes an understatement and should be
+  // corrected in the same change.
+  it("emits none of the three correction markers — nothing reads them yet, and the docs say so", () => {
+    const marked = projectProvenance(
+      {
+        ...(factRow().provenance as object),
+        reReview: { reason: "derives-from-retracted", retractedFactId: "f-1" },
+        reAuthority: { actor: "admin-1", at: ISO },
+        pinned: { actor: "admin-1", at: ISO },
+      },
+      null,
+      "disclose",
+    );
+    for (const marker of ["reReview", "reAuthority", "pinned"]) {
+      expect(
+        marker in marked,
+        `\`${marker}\` now reaches a read surface. That is a real improvement — and it makes the "nothing reads it yet" ` +
+          "sentences in apps/docs/content/shared/guides/brain-corrections.mdx and lib/brain/correction.ts (the `pin` header " +
+          "bullet and MERGE_PROVENANCE_MARKER_SQL's header) understatements. Correct them in this change, then update this guard.",
+      ).toBe(false);
+    }
+    // The whitelist still did its ordinary job on the same payload, so this is
+    // a statement about the markers rather than about a rejected payload.
+    expect(marked.payloadComplete).toBe(true);
+  });
+
   it("reports an incomplete payload rather than rendering blanks", () => {
     const complete = projectProvenance(factRow().provenance, null, "disclose");
     expect(complete.payloadComplete).toBe(true);

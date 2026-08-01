@@ -984,10 +984,49 @@ export interface BrainSearchResponse {
  * and `brain_facts.status` has exactly one writer — the atomic publish
  * endpoint. Retracted rows drop out of the review queue, the publish preview,
  * and `draftCounts` because all three exclude `invalidated_at IS NOT NULL`.
+ *
+ * The route runs the `retract` CORRECTION verb (#4915), so it produces the
+ * same two disclosures {@link BrainFactCorrectionResponse} carries — the
+ * correction episode and the flagged dependents. Both are echoed here (#4939):
+ * while they reached only `logAdminAction` metadata, the console reviewer who
+ * triggered the retraction was the one party told nothing, and
+ * `brain-corrections.mdx` documented the opposite. `id` rather than `factId`
+ * is the pre-existing spelling of the same value, kept so the addition stays
+ * purely additive for an existing client.
  */
 export interface BrainFactRetractResponse {
   readonly id: string;
   readonly invalidatedAt: string;
+  /** The immutable human-authored correction episode recording the retraction. */
+  readonly correctionEpisodeId: string;
+  /**
+   * Live facts holding a `derives-from` edge onto the retracted one, flagged
+   * for human re-review. Opaque ids — never claims — and never a cascade.
+   *
+   * Ids here and a COUNT on the agent path, and the reason is narrower than
+   * "the reviewer is entitled to these": org role does not confer blanket read
+   * on brain facts (`lib/brain/acl.ts` matches per grant, and the owner/admin
+   * bypass is an opt-in audit override that is not in play here), so an admin
+   * whose grants miss a dependent does receive that dependent's id. What
+   * justifies it is that the id is an opaque workspace-scoped UUID carrying no
+   * claim text, and the recipient is the human who has to act on the flag —
+   * an LLM is neither, which is why `lib/tools/correct-fact.ts` reports the
+   * count. The split is about what the MODEL may see; it is not about where
+   * the record lives, since #4934 the `admin_action_log` row carries the ids
+   * on every entry point including the tool's.
+   *
+   * No surface links these yet — the console renders the count. See
+   * `MERGE_PROVENANCE_MARKER_SQL`'s header for why that is bounded.
+   *
+   * Deliberately UNCAPPED, unlike the analogous `refusedDrafts[]` (which stops
+   * at 100 beside an uncapped `refusedDraftTotal`). The producer is bounded by
+   * construction today — no in-region path mints the fact→fact `derives-from`
+   * edge this reads — so a cap would be a wire change with no producer to
+   * protect against. The M5 write-back producer is the moment to adopt the
+   * cap-plus-total pattern, and it should be decided then rather than
+   * discovered.
+   */
+  readonly flaggedForReReview: readonly string[];
 }
 
 /**

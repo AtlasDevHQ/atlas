@@ -19,14 +19,26 @@
 # argument applies — with a worse failure direction. A rogue `status` write
 # over-trusts a claim; a rogue `visible_to` write DISCLOSES one.
 #
-# THE TWO COLUMNS ARE GATED ASYMMETRICALLY, and the asymmetry is load-bearing:
+# `brain_facts.valid_to` is the temporal axis (#4912). ADR-0036 §Temporal: a
+# human promotion stamps it, and there is no autonomous supersession. Its
+# failure direction is worse again — a rogue stamp retires a belief no human
+# arbitrated, and every as-of-now read then HIDES the row it touched, so the
+# damage is invisible in both directions.
+#
+# THE GATED COLUMNS ARE ASYMMETRIC, and the asymmetry is load-bearing:
 #   - `status` — refused on UPDATE **and** INSERT. A writer must omit it so
 #     0180's `draft` default applies the review gate by construction.
-#   - `visible_to` — refused on UPDATE **only** (including an upsert's
-#     `DO UPDATE` half). A grant is DERIVED AT INGEST: `reconcile.ts`'s
-#     `INSERT_FACT_SQL` names the column and must, so an INSERT arm here would
-#     refuse the write the whole ACL design rests on. Fixtures pin BOTH
-#     directions, so "tidying" this into symmetry has to fail a test first.
+#   - `visible_to`, and `pre_widening_visible_to` on the same terms (#4836) —
+#     refused on UPDATE **only** (including an upsert's `DO UPDATE` half). A
+#     grant is DERIVED AT INGEST: `reconcile.ts`'s `INSERT_FACT_SQL` names the
+#     column and must, so an INSERT arm here would refuse the write the whole
+#     ACL design rests on.
+#   - `valid_to` — UPDATE **only**, for the grant's reason inverted: a producer
+#     may open a validity window (`valid_from` on an INSERT) but never close
+#     one, and an import carrying an already-closed window is a restore rather
+#     than an arbitration.
+# Fixtures pin BOTH directions on every column, so "tidying" this into symmetry
+# has to fail a test first.
 #
 # WHAT IS REFUSED (each has a fixture in the adversarial suite)
 #   - `UPDATE [schema.]brain_facts … SET … status …`
@@ -225,7 +237,7 @@ STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$#
 QUALIFIED='("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?'
 ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 
-# The gated columns, and why the two arms are asymmetric.
+# The gated columns, and why the arms are asymmetric.
 #
 # `status` is refused on UPDATE **and** INSERT: a writer must omit it entirely
 # so 0180's `draft` default applies the review gate by construction.
@@ -239,11 +251,13 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # DISCLOSURE rather than fail-closed over-restriction.
 #
 # `pre_widening_visible_to` (#4836) joins it on the same terms, and the `\b`
-# subtlety is why it needs naming rather than inheriting: `_` and `v` are both
+# subtlety is why it needs NAMING rather than inheriting: `_` and `v` are both
 # word characters, so `\bvisible_to\b` does NOT match inside
-# `pre_widening_visible_to`. The widening UPDATE trips the guard today only
-# because it also sets `visible_to` — a future statement touching ONLY the
-# pre-widening column would be invisible to this gate, and corrupting that
+# `pre_widening_visible_to`. That is what the optional `(pre_widening_)?` group
+# below buys — WITHOUT it, a statement touching only the pre-widening column
+# would be invisible here, since the widening UPDATE trips the gate on
+# `visible_to` alone. The group is pinned by its own fixtures as of #4939;
+# before that the arm was written but unheld. Corrupting that
 # column is silent in both directions: set it to the widened grant (or NULL)
 # and #4836's disclosure returns in full; set it to `[]` and attribution is
 # withheld corpus-wide. A "backfill the pre-widening grant from evidence edges"
@@ -265,7 +279,7 @@ UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to)'
 ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo)'
 
 # Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
-# ECHOES which one — the two have completely different remedies, and a message
+# ECHOES which one — they have completely different remedies, and a message
 # that named the wrong column would send the reader to fix code they did not
 # write. When a statement trips on both, `status` is reported: it is the arm
 # with the shorter fix.
@@ -325,7 +339,7 @@ statement_writes_gated_column() {
     fi
   fi
 
-  # Raw SQL — a column-less positional INSERT. Neither column can appear by
+  # Raw SQL — a column-less positional INSERT. No gated column can appear by
   # name, so this is refused on shape: a positional insert into an 18-column
   # table is unreviewable regardless of what it happens to set.
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then

@@ -211,6 +211,13 @@ function fakeTransaction(
                   provenance: { source },
                   visible_to: ["org"],
                   valid_to: null,
+                  // Postgres computes this in `correctionTargetSql` as
+                  // `NOT brainFactCurrentClause("f")` (#4939), and
+                  // `readTargetRow` refuses a row without it rather than
+                  // defaulting — a missing value would otherwise silently
+                  // disable the vouch refusal. `false` matches the
+                  // `valid_to: null` above: no end date means still current.
+                  window_closed: false,
                   source_episode_id: "ep-src",
                 },
               ],
@@ -307,12 +314,26 @@ describe("the correction audit row", () => {
       targetId: FACT,
       metadata: {
         verb: "retract",
+        flaggedForReReview: ["dep-1"],
         workspaceId: WS,
         correctionEpisodeId: EPISODE,
         invalidatedAt: NOW.toISOString(),
-        flaggedForReReview: ["dep-1"],
       },
     });
+
+    // Key ORDER, which `toEqual` above does not check (#4939). The admin
+    // action-log table renders `Object.entries(metadata).slice(0, 3)` in a
+    // truncating cell, so a key that lands fourth is invisible on the surface
+    // an operator opens — and this row is the flagged facts' ONLY durable
+    // record, since no queue lists them. Nothing else in the metadata has that
+    // property: every other key is recoverable from the response, the fact
+    // row, or the request context.
+    const keys = Object.keys(committed[0]?.metadata ?? {});
+    expect(
+      keys.indexOf("flaggedForReReview"),
+      `\`flaggedForReReview\` is at index ${keys.indexOf("flaggedForReReview")} of ${JSON.stringify(keys)} — the action-log preview shows only the first three, so it would not be visible where an operator looks for it`,
+    ).toBeLessThan(3);
+
     // The FIRE-AND-FORGET variant is the one that silently drops rows when the
     // internal-DB breaker is open. Nothing on this path may reach for it.
     expect(fireAndForgetCalls).toBe(0);

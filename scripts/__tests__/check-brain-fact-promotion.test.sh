@@ -337,6 +337,17 @@ run_fixture "Drizzle .update().set({validTo}) fails" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.update(brainFacts).set({ validTo: new Date() }).where(eq(brainFacts.id, id));'
 
+# The must-PASS arm for `valid_to` ITSELF, not just its `valid_from` sibling.
+# Without it the "both directions on every column" claim was false for the one
+# column the guard calls invisible-when-violated: adding `valid_to` to the
+# blanket INSERT rule would have broken no fixture. An INSERT carrying a closed
+# window is a RESTORE (the region import writes it verbatim), not a new
+# arbitration — the same line the allowlist draws.
+run_fixture "INSERT naming valid_to passes — a closed window is a restore, not an arbitration" pass \
+  "packages/api/src/lib/brain/import-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, valid_from, valid_to, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,$8::uuid, ARRAY(SELECT jsonb_array_elements_text($9::jsonb)))`);'
+
 run_fixture "INSERT naming valid_from passes — a producer may open a window, never close one" pass \
   "packages/api/src/lib/brain/reconcile-shape.ts" \
 'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, valid_from, provenance, source_episode_id, visible_to)
@@ -368,6 +379,34 @@ run_fixture "ON CONFLICT … DO UPDATE SET valid_to fails" fail \
 run_fixture "Drizzle .insert().onConflictDoUpdate({set:{validTo}}) fails" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { validTo: new Date() } });'
+
+# ── pre_widening_visible_to (#4836): the grant arm's second column ────────
+#
+# It rides the SAME alternation as `visible_to` — `(pre_widening_)?visible_to`
+# — and had no fixture of its own until #4939, which is a gap rather than a
+# style choice: `\b` sits at a `_`/`v` boundary that is NOT a word boundary, so
+# `\bvisible_to\b` does not match inside `pre_widening_visible_to`. The
+# optional-prefix group is load-bearing, and nothing held it. Corrupting this
+# column is silent in both directions (#4836's disclosure returns in full, or
+# attribution is withheld corpus-wide), and the header of migration 0183
+# explicitly forecloses the backfill script that would be the likeliest rogue
+# writer — so the arm has to be pinned, not assumed.
+run_fixture "UPDATE … SET pre_widening_visible_to fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET pre_widening_visible_to = ARRAY['"'"'org'"'"'] WHERE workspace_id = $1`);'
+
+run_fixture "Drizzle .update().set({preWideningVisibleTo}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ preWideningVisibleTo: tokens }).where(eq(brainFacts.id, id));'
+
+# Same asymmetry as the grant it shadows: an INSERT naming it is a restore, not
+# a widening decision — the region import writes the column verbatim. Names the
+# pre-widening column ALONE, deliberately: an INSERT carrying `visible_to` too
+# would pass on that column's arm regardless, and prove nothing about this one.
+run_fixture "INSERT naming pre_widening_visible_to passes (restore, not a widening)" pass \
+  "packages/api/src/lib/brain/import-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, pre_widening_visible_to, provenance, source_episode_id)
+  VALUES ($1,$2,$3,$4, ARRAY(SELECT jsonb_array_elements_text($5::jsonb)), $6::jsonb, $7::uuid)`);'
 
 echo ""
 

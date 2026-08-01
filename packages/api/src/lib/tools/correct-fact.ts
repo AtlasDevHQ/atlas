@@ -15,6 +15,16 @@
  * prose. A refused correction additionally carries the machinery's own
  * refusal code (e.g. `WAREHOUSE_TARGET`) so a caller can branch without
  * pattern-matching English.
+ *
+ * ## The success result is PROJECTED, not spread (#4939)
+ *
+ * `BrainFactCorrectionResponse` is the ADMIN shape. The one field that must
+ * not cross to the agent verbatim is `flaggedForReReview`: those ids come from
+ * a deliberately un-ACL-gated query, so a subset of them names facts the actor
+ * cannot read. This surface reports the COUNT — the same call `searchBrain`
+ * makes for withheld tension rivals, on the same surface, for the same reason.
+ * The projection is an explicit destructure so a future field has to be named
+ * here to reach the model.
  */
 
 import { tool } from "ai";
@@ -31,6 +41,7 @@ import {
   BRAIN_CORRECTION_OBJECT_MAX_CHARS,
   BRAIN_CORRECTION_REASON_MAX_CHARS,
 } from "@useatlas/schemas";
+import type { BrainCorrectionVerb } from "@useatlas/types";
 import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
@@ -61,9 +72,39 @@ export const CORRECT_FACT_DESCRIPTION = `### Correct a Company-Brain Fact
 Use the correct_fact tool ONLY when a user with authority states that a reviewed fact (\`tier: "fact"\` from searchBrain) is wrong — it is a human-authoritative correction that takes effect immediately, with the user recorded as its author:
 - \`retract\` withdraws a false or to-be-erased claim (the only deletion-like verb; dependents are flagged for human re-review, never auto-removed)
 - \`supersede\` replaces an outdated value: pass \`replacement.object\` with the corrected value; the old fact stays readable as history
-- \`re-authority\` / \`pin\` confirm a claim is still true on the user's authority, resetting its staleness clock
+- \`re-authority\` / \`pin\` confirm a claim is still true on the user's authority, resetting its staleness clock — refused once a claim's validity window has closed, since nothing serves it any more; if a newer claim replaced it, vouch for that one instead
 - Trust tiers: tier-1 warehouse numbers have NO correction path — the warehouse is authoritative, so route those to fixing the data or semantic layer, never this tool. Tier-3 raw episodes are records of what was said and are never corrected, only the facts drawn from them
 - Requires workspace owner/admin authority; a refusal explains what to do instead. Confirm the user actually wants the brain changed before calling — this is a write, not a lookup`;
+
+/**
+ * What a SUCCESSFUL correction hands the model — declared, so the projection
+ * below is checked rather than merely intended (#4939).
+ *
+ * The comment on that projection used to be the whole enforcement, and a
+ * comment does not fail a build. With `satisfies` on the literal, re-adding
+ * `flaggedForReReview` is `TS2561: 'flaggedForReReview' does not exist in type
+ * 'CorrectFactSuccess'. Did you mean to write 'flaggedForReReviewCount'?` —
+ * which is the mistake, named, at the moment it is made.
+ *
+ * It does NOT replace `correct-fact-tool.test.ts`'s scan of the serialized
+ * result: that catches the same ids arriving under a DIFFERENT name, which no
+ * excess-property check can see. Two mechanisms for two failure modes.
+ */
+interface CorrectFactSuccess {
+  readonly corrected: true;
+  readonly verb: BrainCorrectionVerb;
+  readonly factId: string;
+  readonly correctionEpisodeId: string;
+  readonly invalidatedAt: string | null;
+  readonly supersededBy: string | null;
+  readonly validTo: string | null;
+  /**
+   * A COUNT, never the ids. `DEPENDENT_FACTS_SQL` is deliberately
+   * un-ACL-gated, so a subset of those ids names facts this actor cannot read.
+   */
+  readonly flaggedForReReviewCount: number;
+  readonly summary: string;
+}
 
 /** Append the request id so the user has something to quote. */
 function withRequestId(message: string, requestId: string | undefined): string {
@@ -80,7 +121,7 @@ export const correctFactTool = tool({
     "Apply a human-authoritative correction to a reviewed company-brain fact (tier-2), on the calling user's authority — it takes effect immediately, without the review queue. " +
     'Verbs: "retract" (withdraw the claim — the only deletion-like verb; facts derived from it are flagged for human re-review, never removed), ' +
     '"supersede" (replace an outdated value: same subject and predicate, corrected `replacement.object`; the old fact stays readable as history), ' +
-    '"re-authority" and "pin" (confirm the claim is still true, resetting its staleness clock). ' +
+    '"re-authority" and "pin" (confirm the claim is still true, resetting its staleness clock — refused on a claim whose validity window has already closed, because no current read serves it; vouch for whatever replaced it). ' +
     "Tier-1 warehouse-derived numbers have no correction path (fix the data or the semantic layer instead), and tier-3 raw episodes are never corrected. " +
     "Requires workspace owner/admin authority. " +
     'Example: { "factId": "6f2c…", "verb": "supersede", "replacement": { "object": "Bo" }, "reason": "Ana left the team" }.',
@@ -92,7 +133,7 @@ export const correctFactTool = tool({
     verb: z
       .enum(CORRECTION_VERBS)
       .describe(
-        "retract = withdraw · supersede = replace with a corrected value · re-authority / pin = confirm still true.",
+        "retract = withdraw · supersede = replace with a corrected value · re-authority / pin = confirm still true (only for a claim still current).",
       ),
     reason: z
       .string()
@@ -204,12 +245,37 @@ export const correctFactTool = tool({
     }
 
     switch (outcome.kind) {
-      case "corrected":
+      case "corrected": {
+        // Projected field by field rather than spread (#4939). The spread put
+        // `flaggedForReReview`'s RAW IDS into the LLM's result, and
+        // `DEPENDENT_FACTS_SQL` is deliberately un-ACL-gated — it flags every
+        // dependent, including ones this actor cannot read, because skipping
+        // those would leave exactly them unflagged forever. Sound for the
+        // WRITE; wrong as a disclosure. `searchBrain` made the same call on
+        // the same surface and collapses withheld rivals to a bare count
+        // (`lib/brain/search.ts`, #4913), so this does too. The admin routes
+        // keep the ids — see the note on `BrainFactRetractResponse`.
+        //
+        // Explicit destructure, not `delete` or a rest-spread of the id
+        // field: a new field on `BrainFactCorrectionResponse` then has to be
+        // named HERE to reach the agent, so the next one carrying rows the
+        // actor cannot see cannot arrive by inheritance. `satisfies` is what
+        // makes re-adding the OLD one a compile error rather than a review
+        // catch — see {@link CorrectFactSuccess}.
+        const { verb, factId, correctionEpisodeId, invalidatedAt, supersededBy, validTo } =
+          outcome.result;
         return {
           corrected: true as const,
-          ...outcome.result,
+          verb,
+          factId,
+          correctionEpisodeId,
+          invalidatedAt,
+          supersededBy,
+          validTo,
+          flaggedForReReviewCount: outcome.result.flaggedForReReview.length,
           summary: summarize(outcome),
-        };
+        } satisfies CorrectFactSuccess;
+      }
       case "refused":
         // The machinery's prose is already actionable and secret-free; the
         // structured `refusal` code lets a caller branch without parsing it.
@@ -238,8 +304,12 @@ function summarize(outcome: Extract<CorrectionOutcome, { kind: "corrected" }>): 
   const { result } = outcome;
   switch (result.verb) {
     case "retract":
+      // "were flagged" without "and here is where" reads as a queue somebody
+      // can go work through; there isn't one (see
+      // `MERGE_PROVENANCE_MARKER_SQL`'s header). The count IS the report, and
+      // saying so is what keeps this string inside the rule that block states.
       return result.flaggedForReReview.length > 0
-        ? `The fact was retracted, and ${result.flaggedForReReview.length} derived fact(s) were flagged for human re-review (nothing was removed automatically).`
+        ? `The fact was retracted, and ${result.flaggedForReReview.length} derived fact(s) were marked as needing human re-review — nothing was removed automatically, and this count is the whole report: no queue lists them. Relay it to the user so a person can decide about those claims.`
         : "The fact was retracted. It leaves current answers immediately but stays readable as history.";
     case "supersede":
       return "The corrected fact is now the current belief; the old value stays readable as history with a recorded end date.";

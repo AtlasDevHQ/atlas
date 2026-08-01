@@ -62,12 +62,20 @@ A retracted draft (`invalidated_at IS NOT NULL`) is excluded from promotion, fro
 
 **Not registered, deliberately:** `brain_episodes` has no `status` column at all — episodes are append-only *evidence*, and evidence is not review-gated; only the claims drawn from it are. `brain_edges` is derived structure whose visibility follows its endpoints, content-mode-exempt for the same reason `knowledge_links` is.
 
-**Grep-provable single promotion path — both columns, asymmetrically.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
+**Grep-provable single promotion path — four gated columns, two asymmetries, three INSERT justifications.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
 
 - `status` on **UPDATE and INSERT** — a writer must omit it so 0180's `draft` default applies the gate by construction;
-- `visible_to` on **UPDATE only**, including an upsert's `ON CONFLICT … DO UPDATE` half. An INSERT naming `visible_to` is correct and required: the grant is *derived at ingest*, so an INSERT arm would refuse the write the whole ACL design rests on.
+- `visible_to` — and, on the same terms, `pre_widening_visible_to` (#4836) — on **UPDATE only**, including an upsert's `ON CONFLICT … DO UPDATE` half. An INSERT naming `visible_to` is correct and required: the grant is *derived at ingest*, so an INSERT arm would refuse the write the whole ACL design rests on;
+- `valid_to` (#4912) on **UPDATE only**, for the temporal axis: *a human promotion stamps `valid_to`; there is no autonomous supersession* (ADR-0036 §Temporal). INSERT is deliberately ungated — importing a fact with an already-closed window is a restore, not an arbitration. Unlike a stray `status` write, a stray supersession is **invisible**: every as-of-now read hides the row it just retired.
 
-`scripts/__tests__/check-brain-fact-promotion.test.sh` pins both directions on both columns — including the must-PASS derive-at-ingest inserts, so a future tidy-up into symmetry has to fail a test first. The failure message branches per column, because "omit the column" is the fix for `status` and actively wrong for a grant. An ingest writer simply omits `status` — 0180 defaults it to `draft`, so the gate applies itself. The one carve-out is the region import (`admin-migrate.ts`), which preserves the *source* workspace's review status verbatim: that is restoring a prior gate decision, not making a new one, and demoting reviewed facts back to draft at every cutover would re-queue a human's completed review work.
+`scripts/__tests__/check-brain-fact-promotion.test.sh` pins both directions on each column — including the must-PASS derive-at-ingest inserts, so a future tidy-up into symmetry has to fail a test first. The failure message branches per column, because "omit the column" is the fix for `status` and actively wrong for a grant. An ingest writer simply omits `status` — 0180 defaults it to `draft`, so the gate applies itself.
+
+**Two carve-outs, both recorded here because the rule requires it.** Beyond the promotion adapter itself (`lib/content-mode/adapters/brain-facts.ts`, which *is* `promoteBrainFacts`), the allowlist names exactly two writers, and each has to argue that it is not making a new gate decision:
+
+- **the region import** (`api/routes/admin-migrate.ts`) preserves the *source* workspace's review status verbatim — restoring a prior gate decision, not making one. Demoting reviewed facts back to draft at every cutover would re-queue a human's completed review work;
+- **the correction verbs** (`lib/brain/correction.ts`, #4915) — see [the correction carve-out](#a-correction-is-the-second-gate-time-writer-correct_fact-4915) below.
+
+Each entry is listed twice, once under `packages/api/` and once under `create-atlas/templates/*/src/`, because the scan covers the templates on purpose and the allowlist matches full paths rather than a `src/…` suffix any package could adopt.
 
 ## Carve-outs must be explicit and justified
 
@@ -88,6 +96,19 @@ Three fixes were weighed:
 - **(c) — chosen**: seed the demo entities as `published`. The demo layer *is* the customer's queryable layer for the demo datasource; it's read-only (`use-demo-readonly`) with no review step, so there is no draft to "promote later". This fixes the gate and the agent with **zero** change to any other workspace's draft/published semantics, and it removes the phantom "drafts pending publish" backlog the old behavior left in every demo org's `draftCounts`.
 
 The carve-out is bounded: only the `/use-demo` route passes `status: "published"`; `bulkUpsertEntities` / `importFromDisk` still default to `draft`, so the admin-import, wizard, profiler, and auth-migrate paths keep their review-then-publish workflow. The published upsert's `ON CONFLICT … WHERE status='published'` keeps re-seeding idempotent. Regression coverage: `lib/semantic/__tests__/demo-publish-visibility-pg.test.ts` (live-PG, pins published-visible / draft-invisible) plus the unit chain in `bulk-upsert-atomicity`, `semantic-sync`, and `onboarding` tests.
+
+### A correction is the second gate-time writer (`correct_fact`, #4915)
+
+`lib/brain/correction.ts` is on `check-brain-fact-promotion.sh`'s allowlist, and it is the carve-out the guard's own remediation text forecast. It writes two of them:
+
+- `status = 'published'` (`PROMOTE_CORRECTION_FACT_SQL`) — the replacement claim a `supersede` authors, promoted inside the same transaction rather than queued as a draft;
+- `valid_to` — **not** a second spelling: the verb *executes the publish adapter's own* `SUPERSEDE_STAMP_SQL`, imported rather than restated, so the two human-arbitration paths cannot drift.
+
+**Why this is a gate decision and not a bypass of one.** ADR-0036 §T4 makes a correction the second human-authoritative entry point beside the review gate: the correction's author *is* the reviewer, so making the write wait for a second one would review the reviewer. The write is actor-attributed, recorded as an immutable human-authored correction episode, and still screened through the **same** `classifyFactForPromotion` the publish gate runs — so *no-provenance-no-promotion* and *no-grant-no-promotion* hold on this path too. Tier-1 (warehouse-derived) targets are refused for every verb.
+
+**The carve-out is the file, not a shape.** It covers the statements above and the imported #4912 stamp. Any *new* statement in that module touching `status`, `visible_to`, or `valid_to` needs the same argument the existing ones carry — a banner at the top of that module's SQL section says so, which is where the next editor is standing.
+
+The rationale is recorded in two other places a reader might reach first: `correction.ts`'s module header and the guard's own `ALLOWLIST` comment. (The guard's failure text states the *rule* — an allowlist entry needs a recorded rationale — not the rationale itself.) It is recorded **here** because [`.claude/rules/content-mode.md`](../../.claude/rules/content-mode.md) names this document as the register a carve-out must appear in — and it was missing from #4915 until #4939 added it. That rule's `paths:` now also cover `lib/brain/**`, so the next editor of the module that *holds* a carve-out sees the register clause, rather than only the editors of the routes and adapters around it.
 
 ### Amendment approval dual-applies to a draft of the same entity (semantic-improve, #4517)
 

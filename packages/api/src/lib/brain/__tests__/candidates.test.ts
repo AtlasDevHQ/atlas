@@ -143,9 +143,11 @@ describe("projectProvenance", () => {
   });
 
   // #4939 — an INVERSE guard. The three correction markers
-  // (`MERGE_PROVENANCE_MARKER_SQL`) are written and read by nothing: this
-  // projection is the only reader of the `provenance` payload on any surface,
-  // and it whitelists its output keys, so all three are dropped here.
+  // (`MERGE_PROVENANCE_MARKER_SQL`) are written and read by nothing. Plenty of
+  // code reads the `provenance` PAYLOAD — `isWarehouseDerived`,
+  // `classifyFactForPromotion`, the `jsonb_exists(…, 'provisional')` filter —
+  // but this is the only thing that PROJECTS it onto a read surface, and it
+  // whitelists its output keys, so all three markers are dropped here.
   //
   // That is a bounded, deliberate state, and the prose that used to imply
   // otherwise — `brain-corrections.mdx`'s `pin` section ("surfaces may read

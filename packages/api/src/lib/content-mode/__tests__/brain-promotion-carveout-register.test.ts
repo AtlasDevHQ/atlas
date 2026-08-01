@@ -216,7 +216,19 @@ describe("the brain-fact promotion carve-out register (#4939)", () => {
   // guard's column assertion and the doc it checks describe a gate that no
   // longer exists, quietly. Discovered while mutation-testing the arm above:
   // deleting `(pre_widening_)?` from the DECLARATION changed nothing at all.
-  it("declares the same gated columns it actually enforces", () => {
+  it("enforces every gated column it declares", () => {
+    // One direction only — `declared ⊆ enforced` — and the name says so. A
+    // column enforced by an arm but absent from the declaration passes here;
+    // that direction is the harmless one (the gate is stricter than its
+    // documentation), and the adversarial fixture suite covers behaviour
+    // either way. What this catches is the dangerous direction: a declaration,
+    // and the doc built from it, describing a gate that no longer applies.
+    //
+    // The scan is from the function's start to EOF rather than to its closing
+    // brace, so it also sees the helpers below it. That is deliberately loose
+    // in the safe direction: it can only ever find MORE enforcement, never
+    // less, so a column it reports as enforced really is matched somewhere the
+    // gate runs.
     const body = guardSource.slice(guardSource.indexOf("statement_writes_gated_column()"));
     expect(
       body.length,
@@ -238,9 +250,10 @@ describe("the brain-fact promotion carve-out register (#4939)", () => {
     for (const column of gatedColumns()) {
       expect(
         enforced.has(column),
-        `check-brain-fact-promotion.sh declares \`${column}\` in UPDATE_GATED_COLUMNS but no arm of ` +
-          "statement_writes_gated_column() matches it. The declaration is documentation; the arms are the gate. " +
-          "A column that is declared and not enforced is a gate everyone believes in and nothing applies.",
+        `check-brain-fact-promotion.sh declares \`${column}\` in UPDATE_GATED_COLUMNS but nothing from ` +
+          "statement_writes_gated_column() onward matches it. The declaration is documentation; the inline " +
+          "patterns are the gate. A column that is declared and not enforced is a gate everyone believes in " +
+          "and nothing applies.",
       ).toBe(true);
     }
   });

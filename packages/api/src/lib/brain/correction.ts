@@ -162,6 +162,7 @@ import {
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
 import {
+  brainFactCurrentClause,
   INSERT_SUPERSEDES_EDGES_SQL,
   SUPERSEDE_STAMP_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
@@ -322,16 +323,26 @@ export type CorrectionOutcome =
  * {@link CorrectionOutcome}).
  *
  * `window_closed` is COMPUTED IN POSTGRES, and that is not a convenience
- * (#4939). It is the exact negation of `brainFactCurrentClause`'s
- * `valid_to IS NULL OR valid_to > now()`, evaluated against the SAME `now()`
- * the reads evaluate — so the vouch refusal below and the reads it reasons
- * about cannot disagree about which facts are current. Deciding it in
- * TypeScript would compare a Postgres timestamp against the Node process
- * clock, which is skew-limited rather than exact at precisely the boundary the
- * refusal turns on, and would additionally have to parse a column nothing
- * else parses. The raw `valid_to` still travels for `supersede`'s own gate
- * (which refuses ANY decided end date, future included) and for the refusal
- * message's date.
+ * (#4939). Deciding it in TypeScript would compare a Postgres timestamp
+ * against the Node process clock — skew-limited rather than exact at precisely
+ * the boundary the refusal turns on — and would additionally have to parse a
+ * column nothing else parses. Evaluated here, it reads the same CLOCK the
+ * reads read. (Not the same instant: reads run in their own transactions, so
+ * `now()` differs per transaction. What this buys is the elimination of the
+ * clock-SOURCE skew, which is the part that can be eliminated.)
+ *
+ * It is `NOT brainFactCurrentClause(…)`, IMPORTED rather than restated, for
+ * the reason `SUPERSEDE_STAMP_SQL` is imported one screen up: the whole
+ * justification for computing this in Postgres is that the vouch refusal and
+ * the reads it reasons about cannot disagree about which facts are current,
+ * and a second hand-written spelling of `valid_to > now()` is exactly how they
+ * would come to. A grace window or a `>=` added to that clause now reaches
+ * this refusal by construction instead of silently desynchronizing from it —
+ * which no boundary test would catch, since a moved boundary moves both the
+ * fixture and the predicate.
+ *
+ * The raw `valid_to` still travels for `supersede`'s own gate (which refuses
+ * ANY decided end date, future included) and for the refusal message's date.
  *
  * `aclSql` must alias the fact table `f` and is interpolated — same contract
  * as `brainFactPreviewSql` and every other clause-taking builder in the slice.
@@ -346,7 +357,7 @@ export function correctionTargetSql(aclSql: string, idParam: number): string {
                 f.provenance,
                 f.visible_to,
                 f.valid_to,
-                (f.valid_to IS NOT NULL AND f.valid_to <= now()) AS window_closed,
+                NOT ${brainFactCurrentClause("f")} AS window_closed,
                 f.source_episode_id::text AS source_episode_id
            FROM brain_facts f
           WHERE ${aclSql}
@@ -451,20 +462,30 @@ export const DEPENDENT_FACTS_SQL = `SELECT ed.from_fact_id::text AS id
  * ## None of the three has a READER yet — say so, don't imply one (#4939)
  *
  * `projectProvenance` whitelists the keys it emits and drops all three, and no
- * other surface reads them. They are WRITE-DURABLE, not surfaced: the record
- * a future review surface (and the M5 write-back producer, which is what would
- * make `derives-from` fact→fact edges — and therefore non-empty
- * {@link DEPENDENT_FACTS_SQL} results — reachable in-region at all) will read.
+ * other surface reads them. They are WRITE-DURABLE, not surfaced: the record a
+ * future review surface will read.
+ *
+ * The same holds for what they mark. No IN-REGION path mints a `derives-from`
+ * fact→fact edge — this module writes fact→EPISODE — so {@link
+ * DEPENDENT_FACTS_SQL} returns `[]` on a self-contained deployment, and the
+ * M5 write-back producer is what would change that. Not an absolute, though:
+ * `admin-migrate.ts` restores `derives-from` edges verbatim, so an imported
+ * workspace can arrive carrying them today.
  *
  * That is a bounded, deliberate state, and the rule it carries is: every
  * user-facing string about these markers must describe what is RECORDED, never
  * promise a place to go look. Where a human is told a number today, it is
  * because a RESPONSE carried it at the moment of the correction — `/retract`
  * and `/correct` return the flagged ids, the agent tool returns the count —
- * not because a surface renders the marker. The two admin ROUTES additionally
- * write the ids to `audit_log`, which is the only durable, re-readable record;
- * the tool path writes none, so an agent-initiated retraction's flags live in
- * that one response and in the marker nothing reads.
+ * not because a surface renders the marker.
+ *
+ * The two admin ROUTES additionally write the ids to `admin_action_log` (via
+ * `logAdminAction`), which is the only durable, re-readable record. Spell that
+ * table precisely: `audit_log` is a DIFFERENT real table — SQL query history —
+ * so naming it here would send an operator chasing a lost flag to a query that
+ * returns zero rows and the conclusion that the write never happened. The tool
+ * path writes no admin action row at all, so an agent-initiated retraction's
+ * flags live in that one response and in the marker nothing reads.
  *
  * Give one of the three a reader and the prose in `brain-corrections.mdx` and
  * this module's `pin` header bullet becomes an understatement that should be
@@ -666,23 +687,30 @@ export async function correctFact(
       // `windowClosed` — Postgres', not ours — rather than supersede's
       // `IS NOT NULL`: a FUTURE-dated `valid_to` is a live claim whose end is
       // merely scheduled and is still served, so refusing it would block a
-      // vouch on a current belief. Evaluating it in the same statement, on the
-      // same `now()`, is what keeps this refusal and the reads it reasons
-      // about from disagreeing about which facts are current.
+      // vouch on a current belief. It is `brainFactCurrentClause` negated and
+      // imported, evaluated on the database's own clock, which is what keeps
+      // this refusal and the reads it reasons about from drifting apart.
       if ((verb === "re-authority" || verb === "pin") && target.windowClosed) {
         // The window is shut; WHY is not established here. A replacement is
-        // the common cause and the actionable one, but a scheduled end that
-        // simply elapsed leaves no successor to find — so the message states
-        // what was checked and offers the supersession as a possibility rather
-        // than sending the caller after a claim that may not exist.
+        // the common cause and the only one with a correction-verb remedy, so
+        // the message offers it as a possibility rather than a fact — the
+        // reason this code is named for what it CHECKS.
+        //
+        // It deliberately does NOT suggest `supersede` on this fact as the
+        // fallback: that verb refuses ANY non-null `valid_to`
+        // ({@link validityAlreadyClosed}), so advising it here would send the
+        // caller straight into a second refusal. An elapsed window with no
+        // successor has no correction path at all — the claim has to be
+        // re-observed through ingest — and saying so is better than a remedy
+        // that cannot work.
         const closedAt = iso(target.validTo);
         throw new CorrectionRefusedError(
           CORRECTION_REFUSAL_REASONS.targetNotCurrent,
           `This claim's validity window closed${closedAt === null ? "" : ` on ${closedAt}`}, so no current ` +
             "read serves it and confirming it would change nothing you could observe. If another claim " +
-            "replaced it, vouch for that one instead (search the same subject and predicate); if the window " +
-            "simply elapsed and the claim holds again, `supersede` it with the current value rather than " +
-            "vouching for the retired one.",
+            "replaced it, vouch for that one instead — search the same subject and predicate for the current " +
+            "belief. If nothing replaced it, the window simply elapsed and there is no correction to apply: " +
+            "the claim has to be observed again through ingest before it can be vouched for.",
         );
       }
 
@@ -931,14 +959,22 @@ async function emitCorrectionAudit(args: {
           : ADMIN_ACTIONS.brainFact.correct,
       targetType: "brainFact",
       targetId: result.factId,
+      // Key ORDER is load-bearing here, unusually (#4939). The action-log
+      // table previews `Object.entries(metadata).slice(0, 3)` in a truncating
+      // cell, so a key that lands fourth is invisible on the surface an
+      // operator actually opens. `flaggedForReReview` is the one entry NOTHING
+      // else renders — no queue lists the flagged facts, and this row is their
+      // only durable record — so it rides directly behind `verb`, which is
+      // what makes a row readable at all. Everything after is recoverable
+      // elsewhere: from the response, the fact row, or the request context.
       metadata: {
         verb: result.verb,
-        workspaceId: ctx.workspaceId,
-        correctionEpisodeId: result.correctionEpisodeId,
-        ...(result.invalidatedAt !== null ? { invalidatedAt: result.invalidatedAt } : {}),
         ...(result.flaggedForReReview.length > 0
           ? { flaggedForReReview: result.flaggedForReReview }
           : {}),
+        workspaceId: ctx.workspaceId,
+        correctionEpisodeId: result.correctionEpisodeId,
+        ...(result.invalidatedAt !== null ? { invalidatedAt: result.invalidatedAt } : {}),
         ...(result.supersededBy !== null ? { supersededBy: result.supersededBy } : {}),
         ...(result.validTo !== null ? { validTo: result.validTo } : {}),
       },
@@ -1405,11 +1441,12 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
       `brain correction: target fact ${row.id} produced no usable grant tokens — the visible_to projection drifted`,
     );
   }
-  // Narrowed like every other column, deliberately, because the two temporal
-  // gates read it and BOTH fail OPEN on a value this module cannot read: an
-  // omitted or re-typed `valid_to` reaches `supersede`'s `!== null` check and
-  // the vouch refusal as "no end date", silently re-admitting the writes both
-  // exist to refuse. `undefined` is the load-bearing case — `pg` produces it
+  // The two temporal gates read DIFFERENT columns, and each needs its own
+  // drift arm. `supersede` reads `validTo` (`!== null`); the vouch verbs read
+  // `windowClosed`, which Postgres computed. Both fail OPEN on a value this
+  // module cannot read — an omitted or re-typed column arrives as "no end
+  // date" / "not closed" and silently re-admits the write that gate exists to
+  // refuse. `undefined` is the load-bearing case for both: `pg` produces it
   // only when the column was absent from the SELECT, which is drift, not a
   // fact about the row (the same distinction `attribution.ts` draws for
   // `pre_widening_visible_to`).

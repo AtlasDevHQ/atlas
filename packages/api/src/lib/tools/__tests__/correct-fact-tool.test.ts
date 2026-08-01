@@ -219,6 +219,15 @@ describe("outcome mapping", () => {
     // states the number rather than enumerating.
     expect(String(out.summary)).toContain("2 derived fact(s)");
     expect(String(out.summary)).not.toContain("dep-1");
+    // …and obeys the rule `MERGE_PROVENANCE_MARKER_SQL`'s header states for
+    // every string about these markers: say what is RECORDED, never imply a
+    // place to go look. Reverting to the pre-#4939 "were flagged for human
+    // re-review" — the wording that header calls out as implying a queue —
+    // passes every other assertion here.
+    expect(
+      String(out.summary),
+      "the retract summary must say the count IS the report — no queue lists the flagged facts, so an unqualified 'flagged for re-review' sends the user looking for one",
+    ).toMatch(/no queue|whole report/i);
   });
 
   // The count is only a disclosure fix if everything ELSE still arrives: a
@@ -363,6 +372,29 @@ describe("the trust-tier-aware description", () => {
     expect(CORRECT_FACT_DESCRIPTION).toContain("owner/admin");
     for (const verb of ["retract", "supersede", "re-authority", "pin"]) {
       expect(CORRECT_FACT_DESCRIPTION).toContain(verb);
+    }
+  });
+
+  // #4939. The vouch verbs now hard-refuse a claim whose validity window has
+  // closed, and the model reaches that state by the documented route — an
+  // `asOf` read hands it superseded ids, and `factId` is documented as coming
+  // "exactly as returned by searchBrain". An unstated precondition is a
+  // refusal a well-behaved model cannot avoid; this PR asserts exactly that
+  // rule for `searchBrain`'s `asOf` argument, so `correct_fact` gets it too.
+  //
+  // Both strings, because they are read at different moments: the system
+  // prompt shapes whether the agent offers the verb at all, the tool
+  // description shapes the call it then makes.
+  it("states the vouch precondition in every string the model reads", () => {
+    const { description } = correctFactTool as unknown as { description: string };
+    for (const [label, text] of [
+      ["CORRECT_FACT_DESCRIPTION", CORRECT_FACT_DESCRIPTION],
+      ["correctFactTool.description", description],
+    ] as const) {
+      expect(
+        /refused[^.]*validity window|validity window[^.]*(closed|refused)/i.test(text),
+        `${label} promises re-authority/pin reset the staleness clock without saying they are refused once the validity window has closed — the model cannot avoid a refusal it was never told about`,
+      ).toBe(true);
     }
   });
 });

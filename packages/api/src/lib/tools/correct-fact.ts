@@ -72,7 +72,7 @@ export const CORRECT_FACT_DESCRIPTION = `### Correct a Company-Brain Fact
 Use the correct_fact tool ONLY when a user with authority states that a reviewed fact (\`tier: "fact"\` from searchBrain) is wrong — it is a human-authoritative correction that takes effect immediately, with the user recorded as its author:
 - \`retract\` withdraws a false or to-be-erased claim (the only deletion-like verb; dependents are flagged for human re-review, never auto-removed)
 - \`supersede\` replaces an outdated value: pass \`replacement.object\` with the corrected value; the old fact stays readable as history
-- \`re-authority\` / \`pin\` confirm a claim is still true on the user's authority, resetting its staleness clock — refused once a claim's validity window has closed, since nothing serves it any more; vouch for the claim that replaced it instead
+- \`re-authority\` / \`pin\` confirm a claim is still true on the user's authority, resetting its staleness clock — refused once a claim's validity window has closed, since nothing serves it any more; if a newer claim replaced it, vouch for that one instead
 - Trust tiers: tier-1 warehouse numbers have NO correction path — the warehouse is authoritative, so route those to fixing the data or semantic layer, never this tool. Tier-3 raw episodes are records of what was said and are never corrected, only the facts drawn from them
 - Requires workspace owner/admin authority; a refusal explains what to do instead. Confirm the user actually wants the brain changed before calling — this is a write, not a lookup`;
 

@@ -337,6 +337,17 @@ run_fixture "Drizzle .update().set({validTo}) fails" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.update(brainFacts).set({ validTo: new Date() }).where(eq(brainFacts.id, id));'
 
+# The must-PASS arm for `valid_to` ITSELF, not just its `valid_from` sibling.
+# Without it the "both directions on every column" claim was false for the one
+# column the guard calls invisible-when-violated: adding `valid_to` to the
+# blanket INSERT rule would have broken no fixture. An INSERT carrying a closed
+# window is a RESTORE (the region import writes it verbatim), not a new
+# arbitration — the same line the allowlist draws.
+run_fixture "INSERT naming valid_to passes — a closed window is a restore, not an arbitration" pass \
+  "packages/api/src/lib/brain/import-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, valid_from, valid_to, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,$8::uuid, ARRAY(SELECT jsonb_array_elements_text($9::jsonb)))`);'
+
 run_fixture "INSERT naming valid_from passes — a producer may open a window, never close one" pass \
   "packages/api/src/lib/brain/reconcile-shape.ts" \
 'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, valid_from, provenance, source_episode_id, visible_to)
@@ -389,11 +400,13 @@ run_fixture "Drizzle .update().set({preWideningVisibleTo}) fails" fail \
 'await db.update(brainFacts).set({ preWideningVisibleTo: tokens }).where(eq(brainFacts.id, id));'
 
 # Same asymmetry as the grant it shadows: an INSERT naming it is a restore, not
-# a widening decision — the region import writes the column verbatim.
+# a widening decision — the region import writes the column verbatim. Names the
+# pre-widening column ALONE, deliberately: an INSERT carrying `visible_to` too
+# would pass on that column's arm regardless, and prove nothing about this one.
 run_fixture "INSERT naming pre_widening_visible_to passes (restore, not a widening)" pass \
   "packages/api/src/lib/brain/import-shape.ts" \
-'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, visible_to, pre_widening_visible_to, provenance, source_episode_id)
-  VALUES ($1,$2,$3,$4, ARRAY(SELECT jsonb_array_elements_text($5::jsonb)), ARRAY(SELECT jsonb_array_elements_text($6::jsonb)), $7::jsonb, $8::uuid)`);'
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, pre_widening_visible_to, provenance, source_episode_id)
+  VALUES ($1,$2,$3,$4, ARRAY(SELECT jsonb_array_elements_text($5::jsonb)), $6::jsonb, $7::uuid)`);'
 
 echo ""
 

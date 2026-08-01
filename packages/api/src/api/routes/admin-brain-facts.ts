@@ -538,12 +538,12 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
         checked(BrainFactRetractResponseSchema, {
           id: result.factId,
           invalidatedAt: result.invalidatedAt,
-          // The verb's own two disclosures, echoed to the caller rather than
-          // only to the audit row above (#4939). Ids here, a count on the
-          // agent path — the asymmetry and its precise justification are on
-          // `BrainFactRetractResponse`; in short, the ids are already in this
-          // actor's own audit row and they are the human who has to act on the
-          // flag, neither of which is true of an LLM.
+          // The verb's own two disclosures, echoed to the CALLER rather than
+          // living only in the machinery's audit row (#4939). Ids here, a count
+          // on the agent path — the asymmetry and its precise justification are
+          // on `BrainFactRetractResponse`; in short, the ids are already in
+          // this actor's own audit row and they are the human who has to act on
+          // the flag, neither of which is true of an LLM.
           correctionEpisodeId: result.correctionEpisodeId,
           flaggedForReReview: [...result.flaggedForReReview],
         }),

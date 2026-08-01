@@ -820,8 +820,10 @@ describe("POST /{id}/retract", () => {
         verb: "retract",
         factId: FACT_ID,
         // The field the widening added, present but the wrong TYPE — the
-        // shape a drifted machinery actually produces.
-        correctionEpisodeId: 7,
+        // shape a drifted machinery actually produces. A distinctive value,
+        // not `7`: the payload-must-not-leak assertion below needs a needle
+        // that cannot collide with a request id or a status code.
+        correctionEpisodeId: 424242424242,
         invalidatedAt: "2026-07-01T00:00:00.000Z",
         flaggedForReReview: [],
         supersededBy: null,
@@ -830,9 +832,16 @@ describe("POST /{id}/retract", () => {
     };
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(500);
+    const text = await res.text();
     // Same assertion shape as `/correct`'s twin below: the refused payload
     // must not leak through the error path either.
-    expect(await res.text()).not.toContain("7");
+    expect(text).not.toContain("424242424242");
+    // Deliberately NOT asserting the requestId envelope here: this suite
+    // mounts the route alone, so an unhandled failure surfaces as Hono's bare
+    // "Internal Server Error" rather than the app-level 500 body. Asserting it
+    // would pin the harness, not the product. Same reason `/correct`'s twin
+    // below checks only that the refused payload does not leak.
+    expect(text).not.toContain("ep-corr");
 
     // …and the audit row IS written, deliberately. The retraction already
     // committed; only the response serialization failed. A caller who sees a

@@ -32,6 +32,7 @@ import {
   REPLACEMENT_ROW_SQL,
   RETRACT_FACT_SQL,
   correctFact,
+  correctionTargetSql,
   isWarehouseDerived,
   type CorrectionRequest,
 } from "@atlas/api/lib/brain/correction";
@@ -47,6 +48,7 @@ import {
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
 import {
+  brainFactCurrentClause,
   INSERT_SUPERSEDES_EDGES_SQL,
   SUPERSEDE_STAMP_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
@@ -360,8 +362,23 @@ class FakeCorrectionStore {
    */
   dropTargetColumns: string[] = [];
 
+  /**
+   * Columns to REPLACE in the target projection.
+   *
+   * Distinct from dropping, and both are needed: `pg` yields `undefined` for a
+   * column a SELECT never named, but a column whose TYPE drifted (a `::text`
+   * cast, a changed type parser) arrives present and wrong. `readTargetRow`
+   * has a separate arm for each, and only an override can reach the second.
+   *
+   * It is also how this fake reaches the shape production ALWAYS sends:
+   * `timestamptz` decodes as a `Date`, and the seeded facts here carry ISO
+   * strings, so without an override the whole suite runs against a `valid_to`
+   * type Postgres never produces.
+   */
+  overrideTargetColumns: Record<string, unknown> = {};
+
   private targetRow(fact: StoredFact): Record<string, unknown> {
-    const row = this.fullTargetRow(fact);
+    const row = { ...this.fullTargetRow(fact), ...this.overrideTargetColumns };
     for (const column of this.dropTargetColumns) delete row[column];
     return row;
   }
@@ -377,12 +394,13 @@ class FakeCorrectionStore {
       provenance: fact.provenance,
       visible_to: fact.visibleTo,
       valid_to: fact.validTo,
-      // Postgres computes this in `correctionTargetSql`
-      // (`valid_to IS NOT NULL AND valid_to <= now()`), so the fake has to as
-      // well — against the SAME injected clock the verb is run with, which is
-      // the point of moving the decision into the statement. `candidates-pg.
-      // test.ts` §7 executes the real SQL, so the two spellings are checked
-      // against each other rather than only against this file.
+      // Postgres computes this in `correctionTargetSql` as
+      // `NOT brainFactCurrentClause("f")`, so the fake has to as well —
+      // against the SAME injected clock the verb is run with. This is a
+      // RESTATEMENT and can only pin the fake's own arithmetic: the identity
+      // of the production predicate is pinned separately (the "IS
+      // brainFactCurrentClause, negated" test), and `candidates-pg.test.ts`
+      // executes the real SQL in both directions.
       window_closed: fact.validTo !== null && new Date(fact.validTo).getTime() <= NOW.getTime(),
       source_episode_id: fact.sourceEpisodeId,
     };
@@ -1150,6 +1168,24 @@ describe("re-authority and pin", () => {
     );
   });
 
+  // The vouch gate's whole justification is that it and the reads agree about
+  // which facts are current, and that only holds while the predicate is the
+  // reads' OWN clause rather than a second spelling of it. Identity, not
+  // paraphrase — the same treatment `SUPERSEDE_STAMP_SQL` gets in this suite,
+  // and for the same reason: a hand-written `valid_to > now()` here would
+  // desynchronize the day that clause gains a grace window, and no boundary
+  // fixture would notice, because a moved boundary moves the fixture too.
+  test("the closed-window predicate IS brainFactCurrentClause, negated — not a second spelling", () => {
+    const sql = correctionTargetSql("TRUE", 1);
+    expect(sql).toContain(`NOT ${brainFactCurrentClause("f")} AS window_closed`);
+    // And no independent spelling of the same comparison survives alongside it.
+    const withoutTheImport = sql.replace(brainFactCurrentClause("f"), "");
+    expect(
+      /valid_to\s*[<>]=?\s*now\(\)/i.test(withoutTheImport),
+      "correctionTargetSql compares `valid_to` against `now()` somewhere other than the imported clause — that is the drift this import exists to prevent",
+    ).toBe(false);
+  });
+
   // Both temporal gates fail OPEN on a value this module cannot read — an
   // absent column reaches them as "no end date" and silently re-admits the
   // write each exists to refuse, with no log and no refusal. `readTargetRow`
@@ -1172,6 +1208,40 @@ describe("re-authority and pin", () => {
       expect(store.episodes).toHaveLength(0);
     });
   }
+
+  // The OTHER drift arm: a column that is present but the wrong TYPE. Dropping
+  // a column can only ever produce `undefined`, which the arm above catches —
+  // so without this, `readTargetRow`'s type check is unexercised, and deleting
+  // it still compiles (the residual narrowing stays assignable).
+  test("a target projection whose `valid_to` decodes to the wrong type THROWS", async () => {
+    const store = new FakeCorrectionStore();
+    store.overrideTargetColumns = { valid_to: 1735689600000 };
+    store.seedFact({ id: "settled", status: "published", validTo: "2026-01-01T00:00:00.000Z" });
+
+    await expect(run(store, { factId: "settled", verb: "pin" })).rejects.toThrow("unreadable valid_to");
+    expect(store.episodes).toHaveLength(0);
+  });
+
+  // …and the shape production ACTUALLY sends. `timestamptz` decodes as a
+  // `Date`, and every other test in this file seeds an ISO string, so nothing
+  // else here proves a real row survives narrowing at all — deleting the
+  // `instanceof Date` arm compiles clean and would 500 every correction on a
+  // fact that has a `valid_to`.
+  test("a `Date`-valued `valid_to` — what Postgres actually returns — narrows and renders", async () => {
+    const store = new FakeCorrectionStore();
+    store.overrideTargetColumns = { valid_to: new Date("2026-01-01T00:00:00.000Z") };
+    store.seedFact({ id: "settled", status: "published", validTo: "2026-01-01T00:00:00.000Z" });
+
+    const outcome = await run(store, { factId: "settled", verb: "pin" });
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.targetNotCurrent,
+    });
+    if (outcome.kind !== "refused") throw new Error("narrowing");
+    // The date reaches the message from a `Date`, which is the only path
+    // `iso()`'s Date arm is exercised on from this module.
+    expect(outcome.message).toContain("2026-01-01T00:00:00.000Z");
+  });
 
   // Retract has no such gate and must not grow one by sympathy: withdrawing a
   // superseded claim is exactly how a GDPR erasure reaches settled history,

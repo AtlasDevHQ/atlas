@@ -237,7 +237,7 @@ STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$#
 QUALIFIED='("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?'
 ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 
-# The gated columns, and why the two arms are asymmetric.
+# The gated columns, and why the arms are asymmetric.
 #
 # `status` is refused on UPDATE **and** INSERT: a writer must omit it entirely
 # so 0180's `draft` default applies the review gate by construction.
@@ -279,7 +279,7 @@ UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to)'
 ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo)'
 
 # Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
-# ECHOES which one — the two have completely different remedies, and a message
+# ECHOES which one — they have completely different remedies, and a message
 # that named the wrong column would send the reader to fix code they did not
 # write. When a statement trips on both, `status` is reported: it is the arm
 # with the shorter fix.
@@ -339,7 +339,7 @@ statement_writes_gated_column() {
     fi
   fi
 
-  # Raw SQL — a column-less positional INSERT. Neither column can appear by
+  # Raw SQL — a column-less positional INSERT. No gated column can appear by
   # name, so this is refused on shape: a positional insert into an 18-column
   # table is unreviewable regardless of what it happens to set.
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then

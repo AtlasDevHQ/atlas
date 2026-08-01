@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import { render, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -475,13 +475,75 @@ describe("rejecting a claim", () => {
       // for a retraction that flagged nothing.
       flaggedForReReview: "dep-1,2",
     };
+    // Silence is the right RENDER, but silence must not also be the whole
+    // response to the failure: without this, deleting the `console.warn`
+    // leaves every test green and restores the exact defect — an unreadable
+    // answer and an all-clear are indistinguishable to reviewer AND operator.
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const view = await renderPage([candidate()]);
+      clickButton(view, /Reject/i);
+      await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+      await confirmReject();
+
+      await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
+      expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+
+      expect(
+        warn.mock.calls.some((call) => String(call[0]).includes("flaggedForReReview")),
+        "an unreadable retract body was dropped without a log line — the operator has no way to see wire skew",
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The arm the `.pick()` exists for. Both drift tests above break the whole
+  // body, so a full-schema `safeParse` would pass them — this is the case
+  // where the field the notice RENDERS arrived intact and a neighbouring field
+  // skewed. Suppressing the disclosure there would drop a real flag over a
+  // field the notice never reads.
+  test("still reports the count when a NEIGHBOURING field skewed", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: 7, // skewed — and not a field this notice renders
+      flaggedForReReview: ["dep-1"],
+    };
     const view = await renderPage([candidate()]);
     clickButton(view, /Reject/i);
     await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
     await confirmReject();
 
-    await waitFor(() => expect(document.body.textContent).not.toContain("Reject this claim?"));
-    expect(document.body.textContent).not.toMatch(/other claims?\b/i);
+    await waitFor(() => expect(document.body.textContent).toContain("1 other claim"));
+  });
+
+  // The rule `MERGE_PROVENANCE_MARKER_SQL`'s header states for every string
+  // about these markers: describe what is RECORDED, never imply a queue.
+  // Reverting this copy to "flagged for re-review" full stop passes every
+  // other assertion in this file.
+  test("says there is no queue, because there is not one", async () => {
+    retractBody = {
+      id: "fact-1",
+      invalidatedAt: ISO,
+      correctionEpisodeId: "ep-corr-1",
+      flaggedForReReview: ["dep-1"],
+    };
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Reject/i);
+    await waitFor(() => expect(document.body.textContent).toContain("Reject this claim?"));
+    await confirmReject();
+    await waitFor(() => expect(document.body.textContent).toContain("1 other claim"));
+
+    const notice = Array.from(document.querySelectorAll('[role="alert"]')).find((el) =>
+      /other claim/.test(el.textContent ?? ""),
+    );
+    if (!notice) throw new Error("the flagged-dependent notice did not render as an alert");
+    expect(
+      notice.textContent,
+      "the notice must say no queue lists these and where the ids ARE recoverable — an unqualified 'flagged for re-review' implies a queue that does not exist",
+    ).toMatch(/no queue/i);
+    expect(notice.textContent).toMatch(/audit|actions/i);
   });
 
   // The notice names the claim that caused it, so it must not outlive that

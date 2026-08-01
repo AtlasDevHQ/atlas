@@ -62,7 +62,7 @@ A retracted draft (`invalidated_at IS NOT NULL`) is excluded from promotion, fro
 
 **Not registered, deliberately:** `brain_episodes` has no `status` column at all — episodes are append-only *evidence*, and evidence is not review-gated; only the claims drawn from it are. `brain_edges` is derived structure whose visibility follows its endpoints, content-mode-exempt for the same reason `knowledge_links` is.
 
-**Grep-provable single promotion path — three columns, asymmetrically.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
+**Grep-provable single promotion path — four gated columns in three asymmetry classes.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
 
 - `status` on **UPDATE and INSERT** — a writer must omit it so 0180's `draft` default applies the gate by construction;
 - `visible_to` — and, on the same terms, `pre_widening_visible_to` (#4836) — on **UPDATE only**, including an upsert's `ON CONFLICT … DO UPDATE` half. An INSERT naming `visible_to` is correct and required: the grant is *derived at ingest*, so an INSERT arm would refuse the write the whole ACL design rests on;
@@ -99,7 +99,7 @@ The carve-out is bounded: only the `/use-demo` route passes `status: "published"
 
 ### A correction is the second gate-time writer (`correct_fact`, #4915)
 
-`lib/brain/correction.ts` is on `check-brain-fact-promotion.sh`'s allowlist, and it is the carve-out the guard's own remediation text forecast. It writes two of the three gated columns:
+`lib/brain/correction.ts` is on `check-brain-fact-promotion.sh`'s allowlist, and it is the carve-out the guard's own remediation text forecast. It writes two of them:
 
 - `status = 'published'` (`PROMOTE_CORRECTION_FACT_SQL`) — the replacement claim a `supersede` authors, promoted inside the same transaction rather than queued as a draft;
 - `valid_to` — **not** a second spelling: the verb *executes the publish adapter's own* `SUPERSEDE_STAMP_SQL`, imported rather than restated, so the two human-arbitration paths cannot drift.
@@ -108,7 +108,7 @@ The carve-out is bounded: only the `/use-demo` route passes `status: "published"
 
 **The carve-out is the file, not a shape.** It covers the statements above and the imported #4912 stamp. Any *new* statement in that module touching `status`, `visible_to`, or `valid_to` needs the same argument the existing ones carry — a banner at the top of that module's SQL section says so, which is where the next editor is standing.
 
-The rationale is recorded in three other places a reader might reach first: `correction.ts`'s module header, the guard's own `ALLOWLIST` comment, and the guard's failure text. It is recorded **here** because [`.claude/rules/content-mode.md`](../../.claude/rules/content-mode.md) names this document as the register a carve-out must appear in — and it was missing until #4939, because that rule's `paths:` did **not** cover `lib/brain/**` until the same change added it. The rule never loaded for the slice that created the carve-out, so the clause requiring this entry reached nobody.
+The rationale is recorded in three other places a reader might reach first: `correction.ts`'s module header, the guard's own `ALLOWLIST` comment, and the guard's failure text. It is recorded **here** because [`.claude/rules/content-mode.md`](../../.claude/rules/content-mode.md) names this document as the register a carve-out must appear in — and it was missing from #4915 until #4939 added it. That rule's `paths:` now also cover `lib/brain/**`, so the next editor of the module that *holds* a carve-out sees the register clause, rather than only the editors of the routes and adapters around it.
 
 ### Amendment approval dual-applies to a draft of the same entity (semantic-improve, #4517)
 

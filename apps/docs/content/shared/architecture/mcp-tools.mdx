@@ -19,13 +19,15 @@ The rubric is the cheapest defense — every tool description follows the same s
 
 Every typed MCP tool description must:
 
-- **80–150 words** in the long-form body (excluding the appended `Error contract:` section). Keeps every tool in the same length band so the LLM doesn't bias on volume.
+- **80–150 words** of the tool's own prose in the long-form body — excluding the appended `Error contract:` section, and excluding any shared constant the description interpolates. Keeps every tool in the same length band so the LLM doesn't bias on volume. A shared constant carries its own separate budget (`MAX_SHARED_WORDS`, against the registry in `SHARED_INTERPOLATIONS`, both in the rubric test) so that growing it fails one test naming the constant, rather than the word-count gate of every tool that happens to interpolate it. The *composed* string — your prose plus those constants, still before the `Error contract:` section is appended — has its own separate ceiling.
 - Contain a **`Use this when …`** directive. Positive routing anchor — tells the LLM what the tool is for.
 - Contain a **`Don't use this …`** or **`Avoid …`** directive. Negative routing anchor — pushes the LLM away from the most common wrong choices for this tool.
 - Include at least one **inline JSON example** showing call shape (preferred) or response shape. LLMs trained on tool use produce better-shaped calls when the description shows the call shape verbatim.
 - End with the structured **`Error contract:`** section. Appended at the MCP layer by `withErrorContract(BASE, CODES)` — the LLM reads purpose → recovery in one continuous block. Codes must match what the dispatch path actually returns.
 
-The base description bodies live in [`packages/api/src/lib/tools/descriptions.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/descriptions.ts) — the single source of truth that both `explore` / `executeSQL` (legacy AI SDK tool wrappers), `listEntities` / `describeEntity` / `searchGlossary` / `runMetric` (typed semantic tools), and `query` (the NL-agent tool) read from.
+The base description bodies live in [`packages/api/src/lib/tools/descriptions.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/descriptions.ts) — the single source of truth that both `explore` / `executeSQL` (legacy AI SDK tool wrappers), `listEntities` / `describeEntity` / `searchGlossary` / `runMetric` (typed semantic tools), `searchBrain` (the company-brain read), and `query` (the NL-agent tool) read from.
+
+`searchBrain` additionally single-sources its **argument** schema — the per-argument `.describe()` prose the MCP tool advertises — from [`packages/api/src/lib/tools/search-brain-schema.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/search-brain-schema.ts), rather than the MCP package re-declaring it. The rubric above governs tool descriptions; argument prose has no word budget, but the same drift rule applies — author it once.
 
 ### `query` vs `executeSQL` — two shapes of data access
 

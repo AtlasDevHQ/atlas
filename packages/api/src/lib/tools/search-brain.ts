@@ -61,7 +61,7 @@
  */
 
 import { tool } from "ai";
-import { z } from "zod";
+import type { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
@@ -77,7 +77,8 @@ import {
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
 import { SEARCH_BRAIN_TOOL_DESCRIPTION } from "@atlas/api/lib/tools/descriptions";
-import { BRAIN_RESULT_TIERS, isBrainResultTier } from "@useatlas/schemas";
+import { searchBrainInputSchema } from "@atlas/api/lib/tools/search-brain-schema";
+import { isBrainResultTier } from "@useatlas/schemas";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type {
   BrainResultTier,
@@ -181,6 +182,14 @@ function withRequestId(message: string, requestId: string | undefined): string {
   return requestId ? `${message} (request ${requestId})` : message;
 }
 
+/**
+ * The normalizer's input contract — deliberately LOOSER than the schema.
+ *
+ * `include?: string[]` rather than `BrainResultTier[]` is the point: the
+ * drop-unrecognized-and-log path below has to stay reachable for a caller that
+ * did not go through zod, because an unrecognized tier silently meaning "search
+ * nothing" is indistinguishable from an empty brain.
+ */
 export interface SearchBrainInput {
   query?: string;
   include?: string[];
@@ -192,6 +201,52 @@ export interface SearchBrainInput {
   limit?: number;
   expand?: boolean;
 }
+
+/**
+ * Compile error if the shared schema and this contract stop naming the same
+ * arguments — in EITHER direction.
+ *
+ * `SearchBrainInput` is an all-optional weak type, and TypeScript's weak-type
+ * check only fires when two types share NO properties. So a partial drift —
+ * the schema renaming `asOf`, say — compiles silently: `execute` still
+ * typechecks, `normalizeSearchInput` reads `undefined`, and every historical
+ * read degrades to an as-of-now read, which is the exact silent fall-through
+ * #4916 exists to forbid. `exactOptionalPropertyTypes` is off repo-wide, so
+ * nothing else catches it.
+ *
+ * It earned its keep at #4954: the schema is no longer in the same file as the
+ * function that consumes it, it is in another module, edited by people fixing
+ * the MCP surface. Both directions matter — a schema key missing here is an
+ * argument the normalizer drops on the floor; a key here missing from the
+ * schema is a field no model can ever send — so they are two consts rather
+ * than one, and each one's failing type is the LEFTOVER KEY. tsc then names
+ * the direction and the argument (`Type 'true' is not assignable to type
+ * '"as_of"'`) instead of an anonymous `never`. Same `_`-const idiom as
+ * {@link _UnavailableIsReason} above.
+ *
+ * The `[X] extends [never]` tupling is deliberate: a bare `X extends never`
+ * distributes over a union and collapses on `never` itself, so both arms would
+ * silently answer the wrong question.
+ *
+ * KEY SETS only. The other two halves live elsewhere on purpose. An argument's
+ * TYPE is checked where `normalizeSearchInput(input)` is called below — a
+ * `z.string()` limit fails there, not here, and only while `execute` keeps
+ * passing `input` straight through. Its OPTIONALITY is pinned in
+ * `__tests__/search-brain-tool.test.ts`, because dropping `.optional()`
+ * changes neither the key set nor assignability to this all-optional weak type.
+ */
+type _SchemaKeys = keyof z.infer<typeof searchBrainInputSchema>;
+type _SchemaKeyNotInInput = Exclude<_SchemaKeys, keyof SearchBrainInput>;
+type _InputKeyNotInSchema = Exclude<keyof SearchBrainInput, _SchemaKeys>;
+
+const _noSchemaKeyMissingFromInput: [_SchemaKeyNotInInput] extends [never]
+  ? true
+  : _SchemaKeyNotInInput = true;
+const _noInputKeyMissingFromSchema: [_InputKeyNotInSchema] extends [never]
+  ? true
+  : _InputKeyNotInSchema = true;
+void _noSchemaKeyMissingFromInput;
+void _noInputKeyMissingFromSchema;
 
 /**
  * Clamp + normalize raw tool input. Exported for tests.
@@ -242,50 +297,11 @@ export function normalizeSearchInput(input: SearchBrainInput): {
 export const searchBrain = tool({
   description: SEARCH_BRAIN_TOOL_DESCRIPTION,
 
-  inputSchema: z.object({
-    query: z
-      .string()
-      .optional()
-      .describe(
-        "Free-text search across claims, source records, and document bodies. Omit to browse the most recent entries in each store.",
-      ),
-    include: z
-      .array(z.enum(BRAIN_RESULT_TIERS))
-      .optional()
-      .describe(
-        `Restrict to specific result classes (${BRAIN_RESULT_TIERS.join(", ")}). Omit to search all three.`,
-      ),
-    type: z.string().optional().describe("Documents only: filter to one OKF document type, e.g. 'Runbook'."),
-    tags: z
-      .array(z.string())
-      .optional()
-      .describe("Documents only: filter to documents carrying ALL of these OKF tags."),
-    collection: z
-      .string()
-      .optional()
-      .describe("Documents only: restrict to a single knowledge collection (install slug)."),
-    since: z
-      .string()
-      .optional()
-      .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
-    asOf: z
-      .string()
-      .optional()
-      .describe(
-        "Facts only: historical point read — returns the reviewed facts valid at that moment (later-superseded versions included; a retracted fact never as a RESULT, only as a `tensions` counterpart labelled by `invalidatedAt`). An ISO-8601 date (2026-07-27) or a timestamp with an EXPLICIT zone (2026-07-27T09:00:00Z); zone-less times, non-ISO forms, and future instants are rejected. Requires the fact store in `include`. Omit for current beliefs.",
-      ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(MAX_SEARCH_LIMIT)
-      .optional()
-      .describe(`Max fused results to return (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT}).`),
-    expand: z
-      .boolean()
-      .optional()
-      .describe("Include 1-hop linked neighbors of the matched documents (default true)."),
-  }),
+  // The ONE definition, shared with the MCP tool (#4954). It lives in its own
+  // module rather than here because the MCP suite `mock.module`s THIS file —
+  // argument prose exported from here would reach `listTools()` as a stub and
+  // every pin that reads the served schema would pass vacuously.
+  inputSchema: searchBrainInputSchema,
 
   execute: async (input) => {
     const reqCtx = getRequestContext();

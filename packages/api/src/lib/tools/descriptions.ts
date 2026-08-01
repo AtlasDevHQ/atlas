@@ -82,9 +82,21 @@ Don't use this when no metric id matches; fall back to \`executeSQL\` with a que
 // came out of the opening sentence, the attribution and age clauses, the
 // folded-in `extraction: "pending"` sentence, the JSON example, and both
 // routing paragraphs. The `asOf` clause was restructured, not squeezed — it
-// still costs what it did, so it is not the place to look for slack. The
-// string now sits at 148: two words of headroom, and `KNOWLEDGE_TRUST_FRAMING`
-// is interpolated, so growing that shared constant spends this margin too.
+// still costs what it did, so it is not the place to look for slack.
+//
+// The string is 148 words, of which 5 are the interpolated
+// `KNOWLEDGE_TRUST_FRAMING`. Those are NOT charged here as of #4954: the
+// rubric measures each tool's own prose and the shared constant carries a
+// separate, explicitly-named budget. The reason is that while it was charged
+// twice, this description had two words of headroom and `explore`'s (149/150)
+// had one — so three words added to a constant NEITHER of them owns failed
+// both gates at once, naming the two tools rather than the constant. This
+// description's own prose is 144 of 150, so there is real headroom now, but it
+// is headroom for THIS description's clauses only, and the COMPOSED string
+// (own prose + the framing, still before `withErrorContract` appends the error
+// section) is separately capped by `description-rubric.test.ts`. Growing
+// the shared framing still costs every interpolating tool; it now fails one
+// named test that says so instead of two that blame the wrong prose.
 //
 // The system-prompt twin in `lib/tools/search-brain.ts` is longer and uncapped,
 // not a copy and not a strict superset (it carries the as-of-NOW clarifier and

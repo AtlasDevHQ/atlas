@@ -494,6 +494,14 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       const first = idsOf(await scan(1));
       const second = idsOf(await scan(1));
       const third = idsOf(await scan(1));
+      // FOUR cycles, not three, and the fourth is the one that matters. Cycles
+      // 1-2 stamp each audience for the FIRST time, so they exercise only the
+      // upsert's INSERT arm. Rotation past that point depends on `ON CONFLICT
+      // DO UPDATE SET attempted_at = now()`, and with `DO NOTHING` instead every
+      // audience keeps its first timestamp forever: the observed sequence
+      // becomes aaa, bbb, aaa, aaa, aaa… — #4971 restored from cycle 4 onward,
+      // and invisible to a test that stops at three.
+      const fourth = idsOf(await scan(1));
 
       expect(first).toHaveLength(1);
       expect(second).toHaveLength(1);
@@ -501,6 +509,7 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       expect(second).not.toEqual(first);
       // And it comes back round rather than ratcheting one way.
       expect(third).toEqual(first);
+      expect(fourth).toEqual(second);
       expect(new Set([...first, ...second])).toEqual(
         new Set(["meeting:zoom:aaa", "meeting:zoom:bbb"]),
       );
@@ -512,8 +521,9 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       // verification nothing performed and keep a revoked person's access alive
       // past the bound — the one way this fix could have made things worse.
       //
-      // MUTATION THIS CATCHES: adding `synced_at = now()` to the attempt stamp,
-      // or moving the stamp into `fact_audience_member`.
+      // MUTATION THIS CATCHES: issuing a second `UPDATE fact_audience_member SET
+      // synced_at = now()` alongside the attempt stamp, or moving the stamp into
+      // that table outright.
       await audience("audience:meeting:zoom:aaa", ["user-ada"]);
       await pool.query(
         `UPDATE fact_audience_member SET synced_at = now() - interval '30 days'
@@ -529,6 +539,9 @@ describeIfPg("brain audience membership (real Postgres)", () => {
         `SELECT synced_at FROM fact_audience_member WHERE workspace_id = $1`,
         [SCAN_WORKSPACE],
       );
+      // Both lengths asserted, or the comparison passes vacuously on undefined.
+      expect(before.rows).toHaveLength(1);
+      expect(after.rows).toHaveLength(1);
       expect(after.rows[0]?.synced_at).toEqual(before.rows[0]?.synced_at);
       // …and the attempt WAS recorded, so this is a statement about which column
       // moved rather than about the scan having done nothing.
@@ -544,7 +557,9 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       // suppression would cost somebody access they have RIGHT NOW is worth more
       // of a short cycle than one that grants nobody either way.
       //
-      // MUTATION THIS CATCHES: dropping `has_members DESC` from the final sort.
+      // MUTATION THIS CATCHES: dropping the tier-1 predicate from the final
+      // sort. (There is no plain `has_members DESC` key to drop — the priority
+      // is the two tier predicates.)
       await audience("audience:meeting:zoom:empty1");
       await audience("audience:meeting:zoom:empty2");
       await audience("audience:meeting:zoom:full1", ["user-ada"]);
@@ -572,14 +587,20 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       // MUTATION THIS CATCHES: passing 0 as the reserve, or restoring a plain
       // `ORDER BY has_members DESC, …`, either of which returns two member-
       // bearing rows here and never reaches the member-less one.
+      // ⚠️ The member-less token sorts LAST. `token ASC` is the tie-break on a
+      // uniformly-NULL attempt column, so a fixture named `external` would be
+      // pulled into the page by the ALPHABET and the test would pass with the
+      // reserve tier deleted entirely — it would observe "external is in the
+      // page" without observing why. `zzz-` makes the reserve the only thing
+      // that can put it there.
       await audience("audience:meeting:zoom:full1", ["user-ada"]);
       await audience("audience:meeting:zoom:full2", ["user-bob"]);
       await audience("audience:meeting:zoom:full3", ["user-eve"]);
-      await audience("audience:meeting:zoom:external");
+      await audience("audience:meeting:zoom:zzz-external");
 
       const candidates = await scan(2);
       expect(candidates).toHaveLength(2);
-      expect(idsOf(candidates)).toContain("meeting:zoom:external");
+      expect(idsOf(candidates)).toContain("meeting:zoom:zzz-external");
       // Still a MINORITY share: the member-bearing audiences keep the rest.
       expect(candidates.filter((candidate) => candidate.hasMembers)).toHaveLength(1);
     }, PG_TEST_TIMEOUT_MS);
@@ -611,6 +632,35 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       const candidates = await scan(10);
       expect(idsOf(candidates)).toEqual(["meeting:zoom:external"]);
       expect(candidates[0]?.hasMembers).toBe(false);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("matches the prefix LITERALLY — a `_` in it is not a wildcard", async () => {
+      // The `starts_with` over `LIKE` swap, made enforceable rather than argued
+      // in prose. The hazard is a `_` in the PREFIX, not in the token: under
+      // `tok LIKE $3 || '%'` a future namespace `email_thread:` would match
+      // `emailXthread:` too, so the scan hands a re-verifier another source's
+      // audiences — and it would reconcile them against the wrong roster,
+      // holding the wrong credential.
+      //
+      // Neither shipped prefix contains a `_`, which is exactly why this needs a
+      // test rather than a comment: reverting to `LIKE` is invisible until the
+      // namespace that breaks it is added, and by then the damage is a mass
+      // revocation that looks like correct fail-closed behaviour.
+      //
+      // MUTATION THIS CATCHES: `starts_with(tok, $3)` → `tok LIKE $3 || '%'`.
+      await audience("audience:meeting_x:zoom:mine", ["user-ada"]);
+      await audience("audience:meetingZx:zoom:notmine", ["user-bob"]);
+
+      const candidates = await selectReverifyCandidates(
+        {
+          workspaceId: SCAN_WORKSPACE,
+          source: SOURCE,
+          tokenPrefix: "audience:meeting_x:",
+          limit: 10,
+        },
+        { query },
+      );
+      expect(idsOf(candidates)).toEqual(["meeting_x:zoom:mine"]);
     }, PG_TEST_TIMEOUT_MS);
 
     it("counts one audience once, however many episodes name it", async () => {

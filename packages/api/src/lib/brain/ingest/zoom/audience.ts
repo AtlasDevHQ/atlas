@@ -92,10 +92,13 @@ export const MAX_PARTICIPANT_PAGES = 300;
  * Meeting audiences re-verified per workspace per cycle.
  *
  * A bound with teeth: past this many audiences the scan's ORDER decides which
- * ones are ever reached, so the ordering is load-bearing rather than cosmetic.
- * The ordering itself is no longer here — it is
- * {@link selectReverifyCandidates}'s, shared with every other source (#4971) —
- * and the reason it had to move is worth carrying at the cap it bounds.
+ * ones are reached THIS cycle, so the ordering is load-bearing rather than
+ * cosmetic. The tail is reached on LATER cycles — but only because the ordering
+ * rotates on attempt; under the shipped one it was never reached at all.
+ *
+ * That ordering no longer lives here. It is {@link selectReverifyCandidates}'s,
+ * shared with every other source (#4971), and the reason it had to move is worth
+ * carrying at the cap it bounds.
  *
  * A naive stalest-first scan STARVES the audiences that matter, in two ways that
  * both end with `acl.ts` suppressing a grant while the cycle looks healthy:
@@ -122,7 +125,7 @@ export const MAX_REVERIFY_AUDIENCES_PER_WORKSPACE = 200;
  * hits the parse check below, which logs it. Narrowing this would turn that
  * diagnostic into a silent skip.
  */
-const MEETING_AUDIENCE_TOKEN_PREFIX = `${AUDIENCE_PREFIX}meeting:`;
+const MEETING_AUDIENCE_TOKEN_PREFIX = `${AUDIENCE_PREFIX}meeting:` as const;
 
 /** The DB + vendor surface this module needs — injectable so tests need no HTTP. */
 export interface ZoomAudienceDeps {
@@ -317,7 +320,20 @@ export async function reverifyZoomMeetingAudiences(
 
   let total = ZERO_REVERIFY;
   for (const install of installs) {
-    if (!isEnabled(install.workspace_id)) continue;
+    if (!isEnabled(install.workspace_id)) {
+      // NOT a silent skip, matching `outlook/audience.ts`'s twin. Ingest mints
+      // `audience:` grants regardless of this flag, so a workspace with audience
+      // sync switched off keeps accumulating meeting audiences that age past the
+      // staleness bound and stop granting a week later — with this cycle
+      // reporting clean. `sync.ts` counts the same condition as
+      // `workspacesSkippedDisabled` for exactly this reason. No rotation is
+      // consumed either: nothing is scanned, so nothing is stamped.
+      log.warn(
+        { workspaceId: install.workspace_id },
+        "brain audience: audience sync is disabled for this workspace — its Zoom meeting audiences are NOT re-verified and will stop granting once they pass ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",
+      );
+      continue;
+    }
     try {
       total = sum(total, await reverifyWorkspace(install, query, resolveToken, deps));
     } catch (err) {
@@ -360,6 +376,20 @@ async function reverifyWorkspace(
     return { ...ZERO_REVERIFY, failed: 1 };
   }
 
+  // Resolved ONCE per workspace, outside the per-audience loop: a token call per
+  // meeting would multiply the auth endpoint's load by the audience count for no
+  // gain, and the token outlives a whole pass.
+  //
+  // BEFORE the scan, deliberately. The scan STAMPS every candidate it returns,
+  // and that stamp means "this audience's turn was consumed". A workspace whose
+  // credential is revoked consumes nobody's turn — it cannot make a single
+  // vendor call — so scanning first would burn a page of rotation per cycle on
+  // work that never happened and leave `attempted_at` reporting a healthy
+  // rotation across a workspace that verified nothing. The cost of this ordering
+  // is one token resolution per cycle for an enabled install with zero
+  // audiences, which is the window between installing and first ingest.
+  const token = await resolveToken(workspaceId, install.install_id, install.config);
+
   // Scans AND stamps the attempt in one call, so this pass cannot consume a
   // slot without rotating the audience out of the front of the next scan
   // (#4971). Throws if either half fails, and the caller counts the workspace.
@@ -382,11 +412,6 @@ async function reverifyWorkspace(
       "brain audience: this workspace has at least as many Zoom meeting audiences as the per-cycle cap — the tail is deferred to the next cycles, which now reach it because the scan rotates on attempt rather than on success. Check the failed count alongside this line: a tail that keeps growing means audiences are being attempted faster than they can be verified",
     );
   }
-
-  // Resolved ONCE per workspace, outside the per-audience loop: a token call per
-  // meeting would multiply the auth endpoint's load by the audience count for no
-  // gain, and the token outlives a whole pass.
-  const token = await resolveToken(workspaceId, install.install_id, install.config);
 
   let total = ZERO_REVERIFY;
   for (const candidate of candidates) {

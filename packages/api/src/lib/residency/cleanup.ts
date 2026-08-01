@@ -182,13 +182,13 @@ export const CLEANUP_TABLE_RULES = {
   brain_edges: { kind: "column", column: "workspace_id" },
   fact_audience_member: { kind: "column", column: "workspace_id" },
 
-  // Scheduling state for the audience re-verifiers (#4971). Workspace-scoped
-  // and therefore deletable by column, like the membership table it sits beside
-  // — but classified 'stays' rather than exported, so it is residue the source
-  // region drops rather than data the bundle carries.
-  brain_audience_reverify_attempt: { kind: "column", column: "workspace_id" },
-
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
+  // Scheduling state for the audience re-verifiers (#4971) — "this audience has
+  // had its turn", read by nothing but the scan's ORDER BY. Workspace-scoped and
+  // therefore deletable by column, like the membership table it sits beside, but
+  // classified 'stays' rather than exported: the target rebuilds it from a
+  // uniformly-NULL first cycle.
+  brain_audience_reverify_attempt: { kind: "column", column: "workspace_id" },
   // No org column: cache keys have no org dimension, but the Slack
   // installation store rides this table with the org id in the JSONB value
   // (see the bundle-scope rationale) — scope by that expression. Generic

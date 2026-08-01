@@ -107,9 +107,14 @@
  *
  * What rotation does NOT do is create capacity. The ~67,000 figure above is
  * unchanged: it is `cap × cadence × bound`, and none of those three is what
- * #4971 touched. Fair rotation past the ceiling means the whole set ages evenly
- * rather than a lucky prefix staying fresh — better, and still fail-closed for
- * whatever falls outside the bound.
+ * #4971 touched. Fair rotation past the ceiling means the whole set ages under
+ * ONE rotation rather than a lucky prefix staying fresh — better, and still
+ * fail-closed for whatever falls outside the bound. Not EVENLY, though:
+ * `MEMBERLESS_RESERVE_FRACTION` splits each cycle 9:1, so roughly 90% of that
+ * ceiling goes to audiences that currently grant somebody and the rest to the
+ * mail addressed only to customers. For this source that second class is large,
+ * and the split is what keeps its "someone joined Atlas later" repair running
+ * at all.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -227,7 +232,7 @@ export const MAX_MESSAGE_PARTICIPANTS = 500;
  *      email's headers are immutable, so no zero-participant read is ever legal
  *      here and the guard below is unconditional.
  */
-const EMAIL_MESSAGE_AUDIENCE_TOKEN_PREFIX = `${AUDIENCE_PREFIX}email-message:`;
+const EMAIL_MESSAGE_AUDIENCE_TOKEN_PREFIX = `${AUDIENCE_PREFIX}email-message:` as const;
 
 /** The DB + vendor surface this module needs — injectable so tests need no HTTP. */
 export interface OutlookAudienceDeps {
@@ -468,6 +473,15 @@ async function reverifyWorkspace(
     return { ...ZERO_REVERIFY, failed: 1 };
   }
 
+  // BEFORE the scan, deliberately — the scan STAMPS every candidate it returns,
+  // and that stamp means "this audience's turn was consumed". A workspace whose
+  // Graph credential is revoked consumes nobody's turn, so scanning first would
+  // burn a page of rotation per cycle on work that never happened and leave
+  // `attempted_at` reporting a healthy rotation across a workspace that verified
+  // nothing. The cost is one token resolution per cycle for an enabled install
+  // with zero audiences — the window between installing and first ingest.
+  const token = await resolveToken(workspaceId, install.install_id, install.config);
+
   // Scans AND stamps the attempt in one call, so this pass cannot consume a
   // slot without rotating the audience out of the front of the next scan
   // (#4971) — which matters more here than anywhere, because a single revoked
@@ -496,7 +510,6 @@ async function reverifyWorkspace(
     );
   }
 
-  const token = await resolveToken(workspaceId, install.install_id, install.config);
   const fetchMessage = deps.fetchMessage ?? fetchMessageByInternetMessageId;
 
   let total = ZERO_REVERIFY;
@@ -515,7 +528,7 @@ async function reverifyWorkspace(
       // forever and pin the front of every future scan — #4971's starvation,
       // rebuilt out of the one case nothing can ever reconcile.
       log.warn(
-        { workspaceId, audienceId },
+        { workspaceId, audienceId: redactAudienceDigest(audienceId) },
         "brain audience: a message audience token did not parse as this source's — skipping it",
       );
       continue;

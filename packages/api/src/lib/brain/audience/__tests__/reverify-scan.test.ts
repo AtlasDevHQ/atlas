@@ -108,14 +108,11 @@ describe("selectReverifyCandidates — the scan is inseparable from the stamp", 
     // MUTATION THIS CATCHES: moving the stamp out of this function and into the
     // connectors' success branches.
     const calls: Call[] = [];
-    let touched = false;
-    let returnedBeforeTouch: boolean | null = null;
-    const query = recordingQuery(calls, [row("audience:meeting:zoom:aaa")], () => {
-      touched = true;
-    });
+    const query = recordingQuery(calls, [row("audience:meeting:zoom:aaa")]);
     const candidates = await selectReverifyCandidates(SCAN, { query });
-    returnedBeforeTouch = candidates.length > 0 && !touched;
-    expect(returnedBeforeTouch).toBe(false);
+    expect(candidates).toHaveLength(1);
+    // The statement ORDER is the assertion. A boolean sampled after the await
+    // could only ever detect "no stamp at all", which the previous test covers.
     expect(calls.map((call) => call.sql)).toEqual([
       REVERIFY_CANDIDATES_SQL,
       TOUCH_REVERIFY_ATTEMPT_SQL,
@@ -167,9 +164,12 @@ describe("selectReverifyCandidates — what it hands the caller", () => {
     const candidates = await selectReverifyCandidates(SCAN, {
       query: recordingQuery(calls, [row("audience:meeting:zoom:aaa", true)]),
     });
-    expect(candidates).toEqual([
-      { token: "audience:meeting:zoom:aaa", audienceId: "meeting:zoom:aaa", hasMembers: true },
-    ]);
+    expect(candidates).toEqual([{ audienceId: "meeting:zoom:aaa", hasMembers: true }]);
+    // The PREFIXED form is deliberately not carried alongside it — two strings
+    // differing by nine characters is the pair a caller mixes up, and passing
+    // the prefixed one to `reconcileAudienceMembership` writes membership under
+    // a key `acl.ts` never matches.
+    expect(Object.keys(candidates[0] ?? {}).toSorted()).toEqual(["audienceId", "hasMembers"]);
   });
 
   it("passes the caller's own source, prefix and cap into the scan", async () => {
@@ -209,8 +209,35 @@ describe("the member-less reserve", () => {
     // granting if something re-runs their resolution.
     //
     // MUTATION THIS CATCHES: passing 0, which restores absolute priority.
-    expect(await reserveFor(200)).toBe(200 * MEMBERLESS_RESERVE_FRACTION);
-    expect(await reserveFor(200)).toBeGreaterThan(0);
+    // A LITERAL, not `200 * MEMBERLESS_RESERVE_FRACTION` — re-deriving the
+    // constant makes the assertion true for any retune of it, including one to
+    // 0.5 that would invert the priority this reserve is a minority share of.
+    expect(await reserveFor(200)).toBe(20);
+  });
+
+  it("is a MINORITY share — the reserve must never outrank live access", async () => {
+    // The reserve buys the "someone joined Atlas later" repair, which is a
+    // future grant. Member-bearing audiences hold access somebody has RIGHT NOW,
+    // and suppressing one of those is the failure with a person behind it. A
+    // retune past a half inverts that ordering.
+    //
+    // MUTATION THIS CATCHES: raising the fraction to 0.5 or beyond.
+    expect(MEMBERLESS_RESERVE_FRACTION).toBeGreaterThan(0);
+    expect(MEMBERLESS_RESERVE_FRACTION).toBeLessThan(0.5);
+  });
+
+  it("REFUSES a non-positive or fractional cap rather than scanning nothing", async () => {
+    // `LIMIT 0` returns an empty page, which this seam cannot tell from a
+    // healthy idle workspace — so a bad cap would switch a source's
+    // re-verification off in total silence, which is #4971's outcome reached
+    // from a typo. The type stops a bad prefix; only this stops a bad cap.
+    //
+    // MUTATION THIS CATCHES: dropping the guard, or weakening `< 1` to `< 0`.
+    for (const limit of [0, -1, 2.5, Number.NaN]) {
+      await expect(
+        selectReverifyCandidates({ ...SCAN, limit }, { query: recordingQuery([], []) }),
+      ).rejects.toThrow(/must be a positive integer/);
+    }
   });
 
   it("never lets the reserve reach the whole cap, at any cap a connector might pick", async () => {

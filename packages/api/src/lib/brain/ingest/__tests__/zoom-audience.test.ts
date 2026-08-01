@@ -203,21 +203,39 @@ describe("reconcileMeetingAudience", () => {
 describe("reverifyZoomMeetingAudiences", () => {
   const install = { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } };
 
+  /**
+   * A `query` double routed by STATEMENT and typed to the real dependency.
+   *
+   * Not `as never`, which is what this fixture used to be: `query` is GENERIC
+   * (`<T extends Record<string, unknown>>`) so an inline `async (sql: string)`
+   * does not satisfy it, and the cast made the whole fixture invisible to the
+   * type gate. Routing by identity also means an unrecognised statement is a
+   * fixture that has drifted from the code, not something to answer with canned
+   * rows — the old form answered the attempt stamp with candidate rows.
+   */
   function deps(
     overrides: Partial<ZoomAudienceDeps> & { audiences?: string[]; hasMembers?: boolean } = {},
   ): ZoomAudienceDeps {
     const audiences = overrides.audiences ?? [`audience:meeting:zoom:${UUID}`];
+    const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+      T extends Record<string, unknown>,
+    >(
+      sql: string,
+    ): Promise<T[]> => {
+      if (/workspace_plugins/.test(sql)) return [install] as unknown as T[];
+      if (sql === TOUCH_REVERIFY_ATTEMPT_SQL) return [] as T[];
+      if (sql !== REVERIFY_CANDIDATES_SQL) {
+        throw new Error(`unexpected statement in the Zoom re-verify fixture: ${sql}`);
+      }
+      return audiences.map((token) => ({
+        token,
+        has_members: overrides.hasMembers ?? false,
+      })) as unknown as T[];
+    };
     return {
       isEnabled: () => true,
       resolveToken: async () => "tok",
-      query: (async (sql: string) =>
-        /workspace_plugins/.test(sql)
-          ? [install]
-          : audiences.map((token) => ({
-              token,
-              synced_at: null,
-              has_members: overrides.hasMembers ?? false,
-            }))) as never,
+      query,
       fetchParticipantsPage: async () => ({
         ok: true as const,
         participants: [p("a@x.example", "z1")],
@@ -504,6 +522,51 @@ describe("rotation — this source inherits the shared attempt stamp (#4971)", (
     // MUTATION THIS CATCHES: stamping inside the loop, after the parse check.
     const calls = await runAndRecord({ audiences: ["audience:meeting:not-a-zoom-token"] });
     expect(touchedAudienceIds(calls)).toEqual(["meeting:not-a-zoom-token"]);
+  });
+
+  it("counts a FAILED scan or stamp as a workspace failure, doing no vendor work", async () => {
+    // The other half of `selectReverifyCandidates`'s contract: it throws, and
+    // the caller counts. Only the throw was covered — this pins the catch.
+    //
+    // Untested, a `catch { return ZERO_REVERIFY }` around the call restores
+    // #4971's exact signature: a source that re-verifies nothing while the cycle
+    // reports `success`, because "scan failed" and "nothing to do" are the same
+    // empty result. Reachable in production from an unapplied migration, a
+    // statement timeout, or a saturated pool.
+    //
+    // MUTATION THIS CATCHES: swallowing the throw, or dropping the `failed + 1`
+    // in the per-workspace catch.
+    for (const failing of [REVERIFY_CANDIDATES_SQL, TOUCH_REVERIFY_ATTEMPT_SQL]) {
+      let vendorCalls = 0;
+      const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+        T extends Record<string, unknown>,
+      >(
+        sql: string,
+      ): Promise<T[]> => {
+        if (/workspace_plugins/.test(sql)) {
+          return [
+            { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } },
+          ] as unknown as T[];
+        }
+        if (sql === failing) throw new Error("relation does not exist");
+        return [{ token: `audience:meeting:zoom:${UUID}`, has_members: true }] as unknown as T[];
+      };
+      const out = await reverifyZoomMeetingAudiences({
+        isEnabled: () => true,
+        resolveToken: async () => "tok",
+        query,
+        fetchParticipantsPage: async () => {
+          vendorCalls++;
+          return { ok: true as const, participants: [], nextPageToken: null };
+        },
+        resolve: async () => ({ resolved: new Map(), unresolvedCount: 0 }),
+        reconcile: async () => ({ added: 0, revoked: 0 }),
+      });
+      expect([out.failed, out.reconciled]).toEqual([1, 0]);
+      // A page that could not be stamped must not be WORKED — working it without
+      // rotating is the starvation this whole change removes.
+      expect(vendorCalls).toBe(0);
+    }
   });
 
   it("scans with the NAMESPACE prefix, not the vendor-narrowed one", async () => {

@@ -77,5 +77,5 @@ CREATE TABLE IF NOT EXISTS brain_audience_reverify_attempt (
 -- No secondary index, deliberately. The scan reaches this table only through the
 -- PK on the LEFT JOIN, and the ORDER BY runs over the already-materialised
 -- candidate set; a `(workspace_id, attempted_at)` index would serve no query and
--- would be paid for on every stamp, which is one row per audience per cycle —
--- the hottest write this subsystem has.
+-- would be paid for on every stamp, which is one row per audience per cycle, for
+-- no reader at all.

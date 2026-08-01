@@ -88,7 +88,8 @@ export const ZERO_REVERIFY: AudienceReverifyResult = Object.freeze({
  * source kind, a per-cycle cap), but WHICH ARE STALEST never was — both shipped
  * sources wrote the same ordering, and both inherited the same starvation from
  * it. That half now lives in {@link selectReverifyCandidates}, which a
- * re-verifier CALLS with its own three parameters.
+ * re-verifier CALLS with the three things that did stay source-specific: its
+ * source kind, its token prefix, and its cap.
  *
  * So the argument list stays empty because nothing here needs to reach a
  * re-verifier: the cycle still knows only "run it and sum the counts". A
@@ -165,7 +166,8 @@ export function _resetAudienceReverifiers(): void {
 /**
  * What fraction of a cycle's cap is reserved for MEMBER-LESS audiences.
  *
- * The second residual `zoom/audience.ts` recorded: with `has_members DESC` as an
+ * The second residual the pre-fix `zoom/audience.ts` header recorded against
+ * #4971: with `has_members DESC` as an
  * ABSOLUTE priority, a workspace whose member-bearing audiences alone fill the
  * cap defers the member-less ones forever — and those are exactly the audiences
  * the "a participant joined Atlas later" repair exists for. An all-external
@@ -223,8 +225,9 @@ export const MEMBERLESS_RESERVE_FRACTION = 0.1;
  * worth more of a short cycle than one granting nobody — but it is expressed by
  * TIER PREDICATES rather than by the plain `has_members DESC` key the per-source
  * scans used, and it is no longer ABSOLUTE. Absolute priority is the second
- * residual #4971 names: member-less audiences deferred indefinitely, so the
- * "someone joined Atlas later" repair never runs. So:
+ * residual the pre-fix `zoom/audience.ts` header recorded against #4971:
+ * member-less audiences deferred indefinitely, so the "someone joined Atlas
+ * later" repair never runs. So:
  *
  *   1. member-bearing audiences, up to `limit - reserve` of them, stalest first;
  *   2. then the reserved member-less slice, up to `reserve` of them;
@@ -238,11 +241,14 @@ export const MEMBERLESS_RESERVE_FRACTION = 0.1;
  *
  * ⚠️ Tier 3 carries NO `has_members` key, and adding one back would be adding
  * dead code rather than restoring a safeguard. The priority lives entirely in
- * the two tier predicates: they admit `limit - reserve` and `reserve` rows
- * respectively, which is exactly `limit`, so whenever both are full `LIMIT` cuts
- * before tier 3 contributes anything. Tier 3 is reached only when tier 1 took
- * EVERY member-bearing audience there was, which leaves it holding member-less
- * rows alone. A sort key there can never observe a mix and no test can cover it.
+ * the two tier predicates, and tier 3 is HOMOGENEOUS whenever it is reached: a
+ * mix needs both tiers over-subscribed at once, and then they admit
+ * `limit - reserve` and `reserve` rows — exactly `limit` — so `LIMIT` cuts
+ * before tier 3 contributes anything. When tier 3 does contribute, whichever
+ * pool overflowed its slice supplies every one of its rows: member-bearing
+ * leftovers when the member-less pool is smaller than the reserve, member-less
+ * leftovers when tier 1 took every member-bearing audience there was. Either
+ * way a sort key there cannot observe a mix, and no test could cover it.
  *
  * ## The rest of the shape, carried over deliberately
  *
@@ -259,12 +265,16 @@ export const MEMBERLESS_RESERVE_FRACTION = 0.1;
  * hand a re-verifier another source's audiences to reconcile.
  *
  * `MIN(m.synced_at)` is gone from the ORDER BY but the LEFT JOIN stays, because
- * `has_members` is derived from it and `zoom/audience.ts` reads that flag to tell
+ * `has_members` is `count(m.user_id) > 0` and needs that join. `zoom/audience.ts`
+ * reads the flag to tell
  * a legally-empty roster from an unreadable one.
  *
- * Exported so the real-Postgres test executes this exact string —
- * `audience-sync-pg.test.ts` does, which closes the coverage gap both per-source
- * copies declared in their own docstrings.
+ * ⚠️ Exported for TESTS only — the unit suites route their `query` doubles by
+ * statement IDENTITY rather than by call order, which needs the string. A
+ * production caller must go through {@link selectReverifyCandidates}: running
+ * this SQL directly is a scan with no attempt stamp, which is #4971 itself.
+ * `audience-sync-pg.test.ts` executes it against the live schema through that
+ * function, closing the coverage gap both per-source copies declared.
  */
 export const REVERIFY_CANDIDATES_SQL = `
   WITH tokens AS (
@@ -308,13 +318,16 @@ export const REVERIFY_CANDIDATES_SQL = `
  * Stamp "this audience had its turn" for a whole page in one statement.
  *
  * ON SELECTION, not per outcome — the single most load-bearing decision in this
- * fix. The alternative is a stamp inside each of the re-verifiers' abort
- * branches, of which there are six across the two connectors today and more with
- * every source; one forgotten branch silently restores the exact starvation
- * #4971 is about, and it restores it invisibly, because a scan that never
- * rotates looks identical to a scan with nothing to do. Stamping the page the
- * moment it is handed out makes the omission unrepresentable: there is no code
- * path from "selected" to "attempted" that could skip it.
+ * fix. The alternative is a stamp inside every branch that ends without a
+ * reconcile, of which the two connectors have TEN today (Zoom: unparseable
+ * token, incomplete roster, empty-roster refusal, `catch`; Outlook: those first
+ * two shapes plus message-absent, digest mismatch, empty participants, `catch`)
+ * — and more with every source. One forgotten branch silently restores the exact
+ * starvation #4971 is about, and the `catch` arms are the ones that get
+ * forgotten. It restores it invisibly, too, because a scan that never rotates
+ * looks identical to a scan with nothing to do. Stamping the page the moment it
+ * is handed out makes the omission unrepresentable: there is no code path from
+ * "selected" to "returned" that could skip it.
  *
  * Which fixes what the column MEANS, and the name has to be read that way:
  * `attempted_at` records that the audience consumed one of the cycle's slots,
@@ -346,6 +359,25 @@ export interface ReverifyScanDeps {
   ) => Promise<T[]>;
 }
 
+/**
+ * A token prefix that provably carries the grant prefix.
+ *
+ * Not decoration. `selectReverifyCandidates` slices returned tokens at
+ * `AUDIENCE_PREFIX.length` and the scan's two LEFT JOINs key on
+ * `substr(token, length($4) + 1)`, so a prefix-less value — `meeting:` instead
+ * of `audience:meeting:` — would chop nine characters off tokens that never had
+ * them. Every derived `audienceId` becomes garbage: membership is written under
+ * a key `acl.ts` never matches, `has_members` reads false for everything, and
+ * the cycle reports `reconciled` while the facts go invisible. The slice also
+ * stops being injective, so two distinct tokens can collapse to one id and the
+ * stamp's `ON CONFLICT` fails outright.
+ *
+ * A template-literal type costs nothing and makes the whole class unreachable.
+ * ⚠️ Call sites need `as const` on the template string — without it TS widens
+ * the interpolation to `string` and the assignment is rejected.
+ */
+export type AudienceTokenPrefix = `${typeof AUDIENCE_PREFIX}${string}`;
+
 export interface ReverifyCandidateScan {
   readonly workspaceId: string;
   /** The stored `brain_episodes.source` kind — this re-verifier's own. */
@@ -363,16 +395,24 @@ export interface ReverifyCandidateScan {
    * Narrowing this to `audience:meeting:zoom:` would look tidier and would turn
    * that diagnostic into a silent skip.
    */
-  readonly tokenPrefix: string;
-  /** This source's per-workspace per-cycle cap. */
+  readonly tokenPrefix: AudienceTokenPrefix;
+  /** This source's per-workspace per-cycle cap. A positive integer. */
   readonly limit: number;
 }
 
 /** One audience this cycle should attempt. */
 export interface ReverifyCandidate {
-  /** The grant token as stored in `visible_to`, WITH the `audience:` prefix. */
-  readonly token: string;
-  /** The same id WITHOUT the prefix — what `fact_audience_member` is keyed on. */
+  /**
+   * The audience id WITHOUT the `audience:` prefix — what `fact_audience_member`
+   * is keyed on, and what every caller passes to `reconcileAudienceMembership`.
+   *
+   * The prefixed form is deliberately NOT carried alongside it. It had no
+   * consumer, and two near-identical strings differing only by a nine-character
+   * prefix is precisely the pair a caller mixes up: `reconcile({ audienceId:
+   * candidate.token })` would compile, write membership under a key `acl.ts`
+   * never matches, and report `reconciled` while the facts stayed invisible.
+   * `AUDIENCE_PREFIX + audienceId` reconstructs it if anything ever needs it.
+   */
   readonly audienceId: string;
   /**
    * Whether the audience currently grants anybody.
@@ -411,28 +451,46 @@ export async function selectReverifyCandidates(
   deps: ReverifyScanDeps = {},
 ): Promise<readonly ReverifyCandidate[]> {
   const query = deps.query ?? internalQuery;
-  // At least one slot, and never the whole cap: a reserve that swallowed the cap
-  // would invert the priority and starve the member-BEARING audiences instead,
-  // which is the failure with real access behind it. Both ends are clamped
-  // rather than trusted because `limit` is a per-source constant a connector can
-  // change without ever reading this function.
+  // `LIMIT 0` is a page of nothing, which this function cannot tell from a
+  // healthy idle workspace and which would therefore switch a source's
+  // re-verification off in total silence — #4971's outcome, from a typo. The
+  // type stops a bad `tokenPrefix`; nothing but this stops a bad cap.
+  if (!Number.isInteger(input.limit) || input.limit < 1) {
+    throw new Error(
+      `brain audience: re-verify cap for source "${input.source}" must be a positive integer, got ${input.limit}`,
+    );
+  }
+  // Never the whole cap, and at least one slot wherever the cap leaves room for
+  // one. At `limit === 1` the second clamp wins and the reserve is 0, which is
+  // the right way round: inverting the priority starves the member-BEARING
+  // audiences, and those are the ones with somebody's live access behind them.
+  // Clamped rather than trusted because `limit` is a per-source constant whose
+  // owner never reads this function.
   const reserve = Math.min(
     Math.max(1, Math.floor(input.limit * MEMBERLESS_RESERVE_FRACTION)),
-    Math.max(0, input.limit - 1),
+    input.limit - 1,
   );
-  const prefix = input.tokenPrefix;
   const rows = await query<CandidateRow>(REVERIFY_CANDIDATES_SQL, [
     input.workspaceId,
     input.source,
-    prefix,
+    input.tokenPrefix,
     AUDIENCE_PREFIX,
     input.limit,
     reserve,
   ]);
-  if (rows.length === 0) return [];
+  if (rows.length === 0) {
+    // Expected for an idle workspace, and also the exact signature of a source
+    // wired with the wrong `source` kind — the one condition this subsystem
+    // cannot otherwise see, because "I scanned and found nothing" and "this
+    // workspace has nothing" are the same empty array.
+    log.debug(
+      { workspaceId: input.workspaceId, source: input.source, tokenPrefix: input.tokenPrefix },
+      "brain audience: the re-verify scan matched no live audiences",
+    );
+    return [];
+  }
 
   const candidates = rows.map((row) => ({
-    token: row.token,
     audienceId: row.token.slice(AUDIENCE_PREFIX.length),
     hasMembers: row.has_members,
   }));

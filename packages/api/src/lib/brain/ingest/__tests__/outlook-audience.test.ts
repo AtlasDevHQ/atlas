@@ -548,4 +548,48 @@ describe("rotation — this source inherits the shared attempt stamp (#4971)", (
       await stampedIds([{ token: "audience:email-message:malformed", has_members: false }]),
     ).toEqual(["email-message:malformed"]);
   });
+
+  it("counts a FAILED scan or stamp as a workspace failure, doing no vendor work", async () => {
+    // The other half of `selectReverifyCandidates`'s contract: it throws, and
+    // the caller counts. Only the throw was covered — this pins the catch.
+    //
+    // Untested, a `catch { return ZERO_REVERIFY }` around the call restores
+    // #4971's exact signature: a source that re-verifies nothing while the cycle
+    // reports `success`, because "scan failed" and "nothing to do" are the same
+    // empty result.
+    //
+    // MUTATION THIS CATCHES: swallowing the throw, or dropping the `failed + 1`
+    // in the per-workspace catch.
+    for (const failing of [REVERIFY_CANDIDATES_SQL, TOUCH_REVERIFY_ATTEMPT_SQL]) {
+      let vendorCalls = 0;
+      const query: QueryFn = async <T extends Record<string, unknown>>(
+        sql: string,
+      ): Promise<T[]> => {
+        if (sql.includes("workspace_plugins")) {
+          return [
+            {
+              workspace_id: "ws",
+              install_id: "i",
+              config: { tenantId: "t", mailboxes: ["a@b.com"] },
+            },
+          ] as unknown as T[];
+        }
+        if (sql === failing) throw new Error("relation does not exist");
+        return [{ token: TOKEN, has_members: true }] as unknown as T[];
+      };
+      const { deps: d, reconciled } = deps({
+        query,
+        fetchMessage: async () => {
+          vendorCalls++;
+          return { ok: true, messages: [message()] };
+        },
+      });
+      const out = await reverifyOutlookMessageAudiences(d);
+      expect([out.failed, out.reconciled]).toEqual([1, 0]);
+      // A page that could not be stamped must not be WORKED — working it without
+      // rotating is the starvation this whole change removes.
+      expect(vendorCalls).toBe(0);
+      expect(reconciled).toHaveLength(0);
+    }
+  });
 });

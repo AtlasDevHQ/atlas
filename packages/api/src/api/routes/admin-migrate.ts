@@ -1061,9 +1061,16 @@ export async function importBundle(
         // a fact whose kind cannot be classified. The episode imports, reads and
         // searches normally; only the path that would act on an undecided tier
         // is shut, and it reopens when this region learns the kind.
+        //
+        // Note the two columns are not the same one: that quarantine reads each
+        // FACT's `provenance.source`, restored verbatim a few lines below and
+        // never cross-checked against this episode row. They agree because
+        // `reconcile.ts` copies `episode.source` into the payload — a producer
+        // convention, not an invariant this route enforces — so a hand-built
+        // bundle can quarantine facts this log never named, and vice versa.
         log.warn(
           { orgId, episodeId: episode.id, source: episode.source, vocabulary: EPISODE_SOURCES },
-          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design, but tier-1 correction refusal will not recognise facts derived from it",
+          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design; facts derived from it are correction-quarantined (UNRECOGNIZED_SOURCE_KIND) until this deployment's vocabulary includes the kind, so no remediation is needed here",
         );
       }
       await client.query(

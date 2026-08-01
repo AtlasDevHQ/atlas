@@ -3173,9 +3173,13 @@ export const brainEpisodes = pgTable(
     // `lib/brain/sources.ts`. `reconcile.ts` copies this value into
     // `brain_facts.provenance.source`, and `isWarehouseDerived` resolves THAT
     // copy to a CLASS, refusing tier-1 correction on the warehouse one — so a
-    // value outside the vocabulary silently escapes that refusal. Nothing
-    // queries this column for the refusal itself. Plain `text` rather than an enum on
-    // purpose: the region import restores a bundle's value verbatim.
+    // value outside the vocabulary cannot resolve to a class at all. It does
+    // NOT thereby escape the refusal: corrections on facts carrying an
+    // unresolvable kind are refused outright as UNRECOGNIZED_SOURCE_KIND
+    // (`correction.ts`'s `unrecognizedSourceKind`, #4964), which is what lets
+    // the column stay open below. Nothing queries this column for the refusal
+    // itself. Plain `text` rather than an enum on purpose: the region import
+    // restores a bundle's value verbatim, and no CHECK constrains it.
     source: text("source").notNull(),
     // The source's own stable id — the dedupe key. Per-connector obligation:
     // stable across BOTH the webhook fast-path and the polling path.

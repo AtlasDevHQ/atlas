@@ -36,7 +36,13 @@ import {
   isWarehouseDerived,
   type CorrectionRequest,
 } from "@atlas/api/lib/brain/correction";
-import { EPISODE_SOURCES, SLACK_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import {
+  EPISODE_SOURCES,
+  SLACK_SOURCE,
+  WAREHOUSE_CLASS,
+  WAREHOUSE_SOURCE,
+  episodeSourceClassOf,
+} from "@atlas/api/lib/brain/sources";
 import {
   CORROBORATION_LOOKUP_SQL,
   INSERT_FACT_SQL,
@@ -1308,12 +1314,18 @@ describe("shared gates", () => {
     // cannot see it. Without this gate every one of them buys a correction
     // path ADR-0036 §T4 forbids, and buys it silently.
     //
-    // Not mocked, and that is the point: this runs against the REAL vocabulary
-    // through `isEpisodeSource`. A fixture that hand-fed its own source list
-    // would let the test and the predicate agree with each other while the
-    // vocabulary drifted away from both — the #4938 failure this whole module
-    // exists to defeat.
-    for (const source of ["warehouse:prod", "snowflake", "bigquery"]) {
+    // Run against the REAL vocabulary through `isEpisodeSource` — this file
+    // mocks nothing. A fixture that hand-fed its own source list would let the
+    // test and the predicate agree with each other while the vocabulary drifted
+    // away from both, the #4938 failure `sources.ts` exists to defeat.
+    //
+    // The last three are not drift shapes but TYPE shapes, and they are on this
+    // list because the import can produce them: `validateBundle` requires only
+    // that a fact's `provenance` be a non-empty object and never inspects
+    // `.source`, so `{ "source": null }` on a warehouse-derived fact would
+    // otherwise defeat tier-1 refusal AND this quarantine both. `""` is the
+    // one that also pins `unknownKind !== null` against a truthiness check.
+    for (const source of ["warehouse:prod", "snowflake", "bigquery", "", 42, null]) {
       for (const verb of CORRECTION_VERBS) {
         const store = new FakeCorrectionStore();
         store.seedFact({ id: "imported", provenance: { source, producer: "region-import" } });
@@ -1334,6 +1346,12 @@ describe("shared gates", () => {
           verb,
           CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind,
         ]);
+        // The PROSE, not just the code. The reason's whole justification is
+        // that an operator must not be told "warehouse-derived" about what is
+        // probably a newer chat vendor's message — a regression that kept the
+        // code and reused the tier-1 copy would be green on the line above.
+        expect(outcome.message).toContain("does not recognise");
+        expect(outcome.message).not.toContain("semantic layer");
         // Refused BEFORE any write, exactly like tier-1: the correction
         // episode is what a late refusal would have to roll back.
         expect(store.episodes).toHaveLength(0);
@@ -1347,12 +1365,15 @@ describe("shared gates", () => {
     // The two boundaries either side of the refusal above, because both are
     // ways a plausible "tidy-up" silently changes what shipped.
     //
-    // BELOW: a provenance carrying no `source` key, or a non-string one, stays
-    // correctable. Nothing structurally guarantees that key — `promotion.ts`'s
-    // refusals check `source_episode_id`, not `provenance.source` — so
-    // widening the predicate to "the class cannot be resolved" would retire
-    // the correction path for facts no import ever touched.
-    for (const provenance of [{}, { producer: "x" }, { source: 42 }, { source: null }]) {
+    // BELOW: the carve-out is the ABSENT KEY, and only that. Nothing
+    // structurally guarantees `provenance.source` — `promotion.ts`'s refusals
+    // check `source_episode_id` — so quarantining this shape would retire the
+    // correction path for facts no import ever touched. Note the deliberate
+    // asymmetry with the refused loop above, where `{ source: null }` IS
+    // quarantined: an absent key is a legacy shape, a present-but-unusable one
+    // is a bundle defect, and collapsing the two either reopens the hole or
+    // breaks facts that predate the lane.
+    for (const provenance of [{}, { producer: "x" }, { detail: { source: "snowflake" } }]) {
       const store = new FakeCorrectionStore();
       store.seedFact({ id: "no-source", provenance });
       const outcome = await run(store, { factId: "no-source", verb: "retract" });
@@ -1360,25 +1381,35 @@ describe("shared gates", () => {
     }
 
     // ABOVE: every member of the real vocabulary is unaffected. This is what
-    // makes the quarantine SELF-HEALING rather than a permanent tax — adding
-    // the kind to `EPISODE_SOURCE_SPECS` is the one-line PR that moves an
-    // imported fact from this loop's `refused` arm into its `corrected` one,
-    // with no data migration. Driven off `EPISODE_SOURCES` so a new member is
-    // covered the day it lands.
+    // makes the quarantine SELF-HEALING rather than a permanent tax — adding a
+    // kind to `EPISODE_SOURCE_SPECS` is the one-line PR that moves an imported
+    // fact out of the quarantine, with no data migration. Driven off
+    // `EPISODE_SOURCES` so a new member is covered the day it lands.
     for (const source of EPISODE_SOURCES) {
       const store = new FakeCorrectionStore();
       store.seedFact({ id: "known", provenance: { source, producer: "extraction:v1" } });
       const outcome = await run(store, { factId: "known", verb: "retract" });
-      // `warehouse` is refused, but by TIER-1 — never by the quarantine. That
-      // distinction is the assertion: a regression that routed known kinds
-      // through the new gate would still be "refused" and would still be
-      // green under a bare `kind !== "corrected"` check.
-      const expected =
-        source === WAREHOUSE_SOURCE ? CORRECTION_REFUSAL_REASONS.warehouseTarget : null;
-      expect([source, outcome.kind === "refused" ? outcome.reason : null]).toEqual([
+      // Keyed on the CLASS, never on `source === WAREHOUSE_SOURCE`. That
+      // value-vs-class conflation is the one `sources.ts` spends a section
+      // warning about, and here it would cost the one-line-PR property
+      // outright: a new member declaring `class: "warehouse"` inherits tier-1
+      // refusal by design, and a value-keyed expectation would fail a correct
+      // addition — pressuring the next author to special-case the test rather
+      // than trust the vocabulary.
+      const expected: [string, string, string | null] =
+        episodeSourceClassOf(source) === WAREHOUSE_CLASS
+          ? [source, "refused", CORRECTION_REFUSAL_REASONS.warehouseTarget]
+          : [source, "corrected", null];
+      // The full outcome KIND, not just "was it refused". A one-sided check
+      // collapses `corrected`, `not-found` and any future kind into the same
+      // pass, so a regression that made a known-source target unreadable would
+      // be green — while this loop's comment claims it proves the opposite.
+      const actual: [string, string, string | null] = [
         source,
-        expected,
-      ]);
+        outcome.kind,
+        outcome.kind === "refused" ? outcome.reason : null,
+      ];
+      expect(actual).toEqual(expected);
     }
   });
 

@@ -1008,9 +1008,8 @@ describe("POST /{id}/correct", () => {
       replacementMissing: 400,
       replacementIdentical: 400,
       warehouseTarget: 409,
-      // #4964 — target state, same as its tier-1 neighbour, and recoverable in
-      // the same "fix the target and retry" sense: deploying a vocabulary that
-      // knows the kind makes the identical request succeed.
+      // #4964 — rationale lives at `refusalStatus` in `admin-brain-facts.ts`,
+      // so the argument has one home rather than two that can drift.
       unrecognizedSourceKind: 409,
       targetNotPublished: 409,
       validityAlreadyClosed: 409,

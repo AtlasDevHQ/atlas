@@ -46,7 +46,11 @@ import {
   type EpisodeSource,
   type EpisodeSourceSpec,
 } from "@atlas/api/lib/brain/sources";
-import { CORRECTION_EPISODE_INSERT_SQL, isWarehouseDerived } from "@atlas/api/lib/brain/correction";
+import {
+  CORRECTION_EPISODE_INSERT_SQL,
+  isWarehouseDerived,
+  unrecognizedSourceKind,
+} from "@atlas/api/lib/brain/correction";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 import { ZOOM_TRANSCRIPT_SOURCE } from "@atlas/api/lib/brain/ingest/zoom/config";
 
@@ -393,6 +397,70 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // and however it is spelled — including the destructure-then-compare form
     // that both of the old `\.source ===` regexes missed.
     expect(body).not.toMatch(/===/);
+  });
+
+  test("unrecognizedSourceKind returns the offending kind, and only for a PRESENT key", () => {
+    // The quarantine predicate's own contract (#4964), direct rather than
+    // through `correctFact` — the shape the "make it a boolean like its
+    // sibling" tidy-up would silently change.
+    for (const kind of ["snowflake", "bigquery", "warehouse:prod", "Warehouse", ""]) {
+      // Returns the VALUE, not `true`. The refusal logs this, and a boolean
+      // would send the caller back into an `unknown` payload with a cast.
+      expect([kind, unrecognizedSourceKind({ source: kind })]).toEqual([kind, kind]);
+    }
+    // Present but unusable is still quarantined, stringified so the log names
+    // what arrived. The region import can produce these: its fact validator
+    // requires only a non-empty `provenance` object and never reads `.source`.
+    expect(unrecognizedSourceKind({ source: null })).toBe("null");
+    expect(unrecognizedSourceKind({ source: 42 })).toBe("42");
+
+    // Every real member resolves, so none is quarantined — the delegation that
+    // makes adding a member the release valve.
+    for (const source of EPISODE_SOURCES) {
+      expect([source, unrecognizedSourceKind({ source })]).toEqual([source, null]);
+    }
+
+    // The carve-out: ABSENT key only. Not "no usable source" — an inherited
+    // `source` is not this fact's provenance, which is why the predicate uses
+    // `Object.hasOwn` and not `in`.
+    expect(unrecognizedSourceKind({})).toBeNull();
+    expect(unrecognizedSourceKind({ producer: "x" })).toBeNull();
+    expect(unrecognizedSourceKind(Object.create({ source: "snowflake" }))).toBeNull();
+    // Not a JSON object at all — same answer as its sibling.
+    expect(unrecognizedSourceKind(null)).toBeNull();
+    expect(unrecognizedSourceKind("snowflake")).toBeNull();
+    expect(unrecognizedSourceKind([])).toBeNull();
+  });
+
+  test("unrecognizedSourceKind DELEGATES to the vocabulary — pinned in source text", () => {
+    // The same instrument as the `isWarehouseDerived` pin above, for the same
+    // reason and with a different target. Re-deriving this predicate as
+    //
+    //     !["slack", "zoom", "warehouse", "human"].includes(source)
+    //
+    // is behaviourally identical TODAY, so every assertion above stays green.
+    // A behavioural test does eventually catch it — the `EPISODE_SOURCES` loop
+    // in `correction.test.ts` fails the day a member lands — but it fails in
+    // the confusing direction (a KNOWN kind reports quarantined) and only
+    // while someone unrelated is adding a connector. `sources.ts`'s header now
+    // stakes the self-healing claim on this delegation ("adding a member here
+    // is now also what releases every imported fact of that kind from
+    // quarantine"), so pin it where breaking it is the visible act.
+    const code = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const body = /export function unrecognizedSourceKind\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(
+      code,
+    )?.[1];
+    expect(body).toBeDefined();
+    expect(body).toContain("isEpisodeSource(");
+    // Deliberately NOT the sibling pin's blanket `not.toMatch(/===/)`: this
+    // body has no `===` today but a legitimate refactor could, and the actual
+    // hazard is naming a MEMBER. Driven off the vocabulary so the guard grows
+    // with it — any re-derivation must spell at least one of these.
+    for (const member of EPISODE_SOURCES) {
+      expect([member, body]).toEqual([member, expect.not.stringContaining(`"${member}"`)]);
+    }
   });
 
   test("refuses the vendor spellings the same connector might have used", () => {

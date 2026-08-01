@@ -1173,9 +1173,10 @@ describe("validateBundle — company brain (#4767)", () => {
     // refusal is what makes accepting the value verbatim safe rather than
     // merely documented, and it is pinned in `lib/brain/__tests__/correction.test.ts`.
     // This assertion — that the import still ACCEPTS it — is the other half of
-    // that bargain and must not be relaxed into a rejection: `acl.ts`'s header
-    // forbids being stricter here than 0180 is at rest, and 0180 puts no CHECK
-    // on this column at all.
+    // that bargain and must not be relaxed into a rejection: the rule
+    // `acl.ts`'s header states for GRANTS — never stricter at import than the
+    // database is at rest — holds here for the same reason, and this column
+    // carries no CHECK at all, so the bar is lower still.
   });
 
   it("REFUSES a pre-widening grant of the wrong shape", () => {

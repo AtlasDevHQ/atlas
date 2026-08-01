@@ -186,10 +186,13 @@ const admin = {
  * for real.
  */
 function fakeTransaction(
-  options: { dependents?: readonly string[]; warehouseDerived?: boolean } = {},
+  options: { dependents?: readonly string[]; warehouseDerived?: boolean; source?: string } = {},
 ): CorrectionDeps {
   const dependents = options.dependents ?? [];
-  const source = options.warehouseDerived === true ? WAREHOUSE_SOURCE : SLACK_SOURCE;
+  // `source` overrides `warehouseDerived` so the #4964 quarantine can be
+  // driven from here without a second boolean per refusal shape.
+  const source =
+    options.source ?? (options.warehouseDerived === true ? WAREHOUSE_SOURCE : SLACK_SOURCE);
   return {
     now: () => NOW,
     newCorrectionId: () => "corr-1",
@@ -370,13 +373,15 @@ describe("the correction audit row", () => {
     expect(committed[0]?.metadata).toMatchObject({ invalidatedAt: NOW.toISOString() });
   });
 
-  test("BOTH refusal shapes go unaudited — nothing happened to record", async () => {
-    // Two structurally different refusals, and covering only one is how a
+  test("ALL THREE refusal shapes go unaudited — nothing happened to record", async () => {
+    // Structurally different refusals, and covering only one is how a
     // widening slips in: the AUTHORITY refusal returns before the transaction
     // is ever opened, while the tier-1 refusal throws `CorrectionRefusedError`
     // from INSIDE it — a separate return path, through the rollback catch,
     // where an audit call would go unnoticed by a test that only exercises the
-    // early return.
+    // early return. The #4964 quarantine shares tier-1's shape, so its
+    // non-emission follows by equivalence — but this file's whole argument is
+    // that each distinct path is WALKED rather than reasoned about.
     const outcome = await correctFact(
       {
         ctx: { ...admin, userId: "member-1", role: "member" },
@@ -394,8 +399,47 @@ describe("the correction audit row", () => {
     );
     expect(rolledBack.kind).toBe("refused");
 
+    // The #4964 quarantine — same inside-the-transaction throw, and the one
+    // refusal that also emits an operator log.
+    logCalls.length = 0;
+    const quarantined = await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4c" },
+      fakeTransaction({ source: "warehouse:prod" }),
+    );
+    expect(quarantined.kind).toBe("refused");
+
+    // The log is load-bearing, not decoration: `source` and `vocabulary` are
+    // deliberately withheld from the HTTP response, so this line is the only
+    // place an operator can learn WHICH kind was declined. Deleting it, or
+    // dropping either field, would otherwise pass every other test in the repo.
+    const warns = logCalls.filter((c) => c.level === "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.payload).toMatchObject({
+      // `requestId` is what ties this line to the user's 409 in one hop.
+      requestId: "req-4c",
+      factId: FACT,
+      verb: "pin",
+      source: "warehouse:prod",
+    });
+    // Must not name a cause it cannot establish — a rollback below the release
+    // that added a member reaches this arm with no import in its history.
+    expect(warns[0]?.message).not.toContain("another region");
+
     expect(attempted).toHaveLength(0);
     expect(fireAndForgetCalls).toBe(0);
+  });
+
+  test("the quarantine log is not always-on noise — an ordinary correction is silent", async () => {
+    // The negative half. Without it, a predicate that quarantined EVERY fact
+    // would satisfy the assertions above while breaking every correction in
+    // the product.
+    logCalls.length = 0;
+    const outcome = await correctFact(
+      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4d" },
+      fakeTransaction(),
+    );
+    expect(outcome.kind).toBe("corrected");
+    expect(logCalls.filter((c) => c.level === "warn")).toHaveLength(0);
   });
 
   test("a NOT-FOUND correction is not audited", async () => {

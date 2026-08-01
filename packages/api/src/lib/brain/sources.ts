@@ -123,16 +123,22 @@
  * Logging alone was not enough. An imported `"warehouse:prod"` is outside the
  * vocabulary, so it is not warehouse-CLASS, so {@link isWarehouseDerivedSource}
  * answers `false` and tier-1 correction refusal never fires — an ADR-0036 §T4
- * invariant downgraded at a moment no log covers. The comment above says an
- * unrecognised value is "the correctable (safe) direction"; that reading holds
- * for a value that had to pass a producer gate to exist, and is precisely wrong
- * for the one lane where no gate ran.
+ * invariant downgraded at a moment no log covers. {@link isWarehouseDerivedSource}'s
+ * own docstring, at the BOTTOM of this file, used to call that "the correctable
+ * (safe) direction"; that reading holds for a value that had to pass a producer
+ * gate to exist, and is precisely wrong for the one lane where no gate ran. It
+ * has been corrected at the site — both ends of this reconciliation move
+ * together, because a maintainer standing at either one must not read the
+ * fail-open as still shipping.
  *
  * The import still does NOT refuse it. Migration 0180 leaves the column plain
- * `text` with no CHECK, so Postgres legally stores any string, and `acl.ts`'s
- * header forbids Atlas code being stricter at import than the database is at
- * rest — bundle validation is all-or-nothing, so refusing one episode strands
- * the whole workspace in its current region, discovered at cutover. Restoring
+ * `text` with no CHECK, so Postgres legally stores any string, and the rule
+ * `acl.ts`'s header states for GRANTS holds here for the same reason: Atlas code
+ * must not be stricter at import than the database is at rest. (That header
+ * argues it against 0180's grant CHECK specifically; this column carries no
+ * CHECK at all, so the bar is lower still, not higher.) Bundle validation is
+ * all-or-nothing, so refusing one episode strands the whole workspace in its
+ * current region, discovered at cutover. Restoring
  * evidence is not arbitration; CORRECTING it is. So the refusal sits at the
  * correction gate instead: `correction.ts`'s `unrecognizedSourceKind` quarantines
  * the correction PATH of a fact whose kind this region cannot classify, under
@@ -485,9 +491,20 @@ export function episodeSourceClassOf(value: unknown): EpisodeSourceClass | null 
  * Takes `unknown` rather than `EpisodeSource` because every caller reads it off
  * a stored JSON payload (`provenance.source`) that no type system has checked —
  * including the region-import fail-open lane, which restores a bundle's value
- * verbatim. An unrecognised value is NOT warehouse-derived, which is the
- * correctable (safe) direction: it costs a refusal that should have fired
- * rather than blocking a correction that should have been allowed.
+ * verbatim.
+ *
+ * An unrecognised value is NOT warehouse-derived. Read that narrowly: it is
+ * this predicate declining to claim a class it cannot see, and it does NOT mean
+ * such a fact is correctable. It used to. That was called "the correctable
+ * (safe) direction" here, on the reasoning that it costs a refusal that should
+ * have fired rather than blocking a correction that should have been allowed —
+ * sound for a value that had to pass a producer gate to exist, and precisely
+ * wrong for the one lane where no gate runs, which is the lane that produces
+ * unrecognised values in the first place (#4964). The tier-1 invariant is now
+ * held one level up: `correction.ts`'s `unrecognizedSourceKind` quarantines the
+ * correction path of a fact whose kind cannot be classified, so an unknown
+ * value costs no lost refusal. See this file's header, §"Where that lane is
+ * closed", before widening or "simplifying" either predicate.
  */
 export function isWarehouseDerivedSource(value: unknown): boolean {
   return isEpisodeSource(value) && episodeSourceClass(value) === WAREHOUSE_CLASS;

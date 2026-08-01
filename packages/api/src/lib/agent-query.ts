@@ -275,8 +275,9 @@ export async function executeAgentQuery(
     // #4936 — that construction moved into `registry.ts` so the chat-plugin
     // approval RESUME of a turn started here rebuilds from the identical POLICY
     // instead of re-deriving it (or, as it did, omitting `tools` and inheriting
-    // the workspace registry). We still pass `tools` explicitly: `runAgent`'s
-    // default now fails closed, but the surface's choice belongs in the surface.
+    // the workspace registry). Passing `tools` is no longer discipline —
+    // #4943 made it a required parameter, so the compiler enforces what this
+    // comment used to ask for.
     //
     // #4941 — the seam also returns the warnings this surface must relay; the
     // narrative for why they exist is `buildHeadlessRegistry`'s docstring.

@@ -254,7 +254,11 @@ function makeSpyingModel(toolCallArgs: Record<string, unknown>): InstanceType<ty
 const { runAgent } = await import("@atlas/api/lib/agent");
 const { buildSystemParam, buildRestDatasourceScopeNote } = await import("@atlas/api/lib/agent");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
-const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+// #4943 — runAgent's `tools` is now required. `nonDashboardRegistry` (added
+// here) is its own fail-closed default, so those turns are unchanged; see
+// agent.ts's `@param tools`. `defaultRegistry` is unrelated and pre-existing —
+// the #3067 focus-strip turns below need `createDashboard` present.
+const { defaultRegistry, nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 function userMessages(content: string): UIMessage[] {
   return [
@@ -415,7 +419,7 @@ describe("agent integration — scope routing via mocked LLM (slice 2)", () => {
 
     const result = await withRequestContext(
       { requestId: "test-1", connectionId: "us-int", connectionGroupId: "prod" },
-      () => runAgent({ messages: userMessages("compare revenue across regions") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("compare revenue across regions") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL");
@@ -442,7 +446,7 @@ describe("agent integration — scope routing via mocked LLM (slice 2)", () => {
 
     const result = await withRequestContext(
       { requestId: "test-2", connectionId: "us-int", connectionGroupId: "prod" },
-      () => runAgent({ messages: userMessages("EU sales last week") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("EU sales last week") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL");
@@ -461,7 +465,7 @@ describe("agent integration — scope routing via mocked LLM (slice 2)", () => {
 
     const result = await withRequestContext(
       { requestId: "test-3", connectionId: "us-int", connectionGroupId: "prod" },
-      () => runAgent({ messages: userMessages("show me orders") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("show me orders") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL");
@@ -521,7 +525,7 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
         connectionGroupId: "prod",
         user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
       },
-      () => runAgent({ messages: userMessages("hello") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("hello") }),
     );
     expect(capturedRestResolveArgs).toBeDefined();
     expect(capturedRestResolveArgs!.orgId).toBe("org-1");
@@ -538,7 +542,7 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
         connectionId: "us-int",
         user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
       },
-      () => runAgent({ messages: userMessages("hello") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("hello") }),
     );
     expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: "prod" });
   });
@@ -550,7 +554,7 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
         connectionId: "ungrouped-conn",
         user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
       },
-      () => runAgent({ messages: userMessages("hello") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("hello") }),
     );
     expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: null });
     // `undefined` would disable scoping in the resolver (the confirm-replay path)

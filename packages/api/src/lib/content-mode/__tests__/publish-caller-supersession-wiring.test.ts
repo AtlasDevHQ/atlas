@@ -249,8 +249,11 @@ describe("every runPublishPhases caller handles the supersession report (#4937)"
         expect(clean.match(/collectSupersessions\(/g) ?? []).toHaveLength(prefixes.length);
         for (const name of bound) {
           // `$` is a regex anchor and a legal identifier character, so it is
-          // escaped rather than interpolated raw.
-          const ident = name.replace(/\$/g, "\\$");
+          // escaped rather than interpolated raw. The class is deliberately
+          // TOTAL (`\` too) even though `bound` only ever yields
+          // `[A-Za-z0-9_$]` — a partial escape trips CodeQL's
+          // js/incomplete-sanitization (#4958). Do not narrow it back.
+          const ident = name.replace(/[\\$]/g, "\\$&");
           expect({
             name,
             reachesSweep: new RegExp(

@@ -148,6 +148,9 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
 // ---------------------------------------------------------------------------
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
 
 // ---------------------------------------------------------------------------
@@ -270,7 +273,7 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Compare revenue across regions") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare revenue across regions") });
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
 
@@ -335,7 +338,7 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("EU sales last week") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("EU sales last week") });
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
 
@@ -390,7 +393,7 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Compare across regions") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") });
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
 
@@ -443,7 +446,7 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("List ids") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("List ids") });
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
 
@@ -502,7 +505,7 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
 
     const result = await withRequestContext(
       { requestId: "test-all-fail", connectionId: "us-int", connectionGroupId: "prod" },
-      () => runAgent({ messages: userMessages("Compare across regions") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];

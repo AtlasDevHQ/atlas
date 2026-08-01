@@ -88,6 +88,9 @@ void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
 const { runAgent, resolveWorkspaceDefaultAnswerStyle } = await import(
   "@atlas/api/lib/agent"
 );
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
 const { _resetPool } = await import("@atlas/api/lib/db/internal");
 type InternalPool = import("@atlas/api/lib/db/internal").InternalPool;
@@ -271,6 +274,7 @@ async function runTurn(
 ): Promise<string> {
   lastSystemPrompt = undefined;
   const result = await runAgent({
+    tools: nonDashboardRegistry,
     messages: [
       {
         id: "msg-1",

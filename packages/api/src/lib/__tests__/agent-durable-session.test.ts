@@ -80,6 +80,9 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 const STOP_USAGE: LanguageModelV3Usage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
@@ -216,7 +219,7 @@ function interruptAfterFirstStepModel(
 /** Drain the data stream so the streamText onFinish/onError callback runs. */
 async function drive(model: InstanceType<typeof MockLanguageModelV3>): Promise<void> {
   mockModel = model;
-  const result = await runAgent({ messages: userMessages("hi"), conversationId: "conv-1" });
+  const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("hi"), conversationId: "conv-1" });
   try {
     await result.steps;
     await result.consumeStream?.();
@@ -338,7 +341,7 @@ describe("agent_runs checkpoint write path (#3745 terminal, #3746 per-step)", ()
       release = () => r();
     });
     mockModel = interruptAfterFirstStepModel(gate);
-    const result = await runAgent({ messages: userMessages("hi"), conversationId: "conv-1" });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("hi"), conversationId: "conv-1" });
     // Consume in the background; the model blocks on the second step.
     const consumed = Promise.resolve(result.consumeStream?.()).catch(() => {});
 
@@ -365,6 +368,7 @@ describe("agent_runs checkpoint write path (#3745 terminal, #3746 per-step)", ()
     mockModel = interruptAfterFirstStepModel(gate);
     const ac = new AbortController();
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("hi"),
       conversationId: "conv-1",
       runId: "run-4294",

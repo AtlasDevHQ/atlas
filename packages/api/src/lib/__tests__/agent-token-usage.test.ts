@@ -87,6 +87,9 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 /**
  * Raw V3 finish-chunk usage carrying a cache split. The AI SDK normalizes
@@ -149,7 +152,7 @@ async function drive(model: InstanceType<typeof MockLanguageModelV3>): Promise<v
   mockModel = model;
   // userId/orgId derive from the request context (null here), which is fine —
   // the token_usage INSERT still fires on `hasInternalDB() && totalUsage`.
-  const result = await runAgent({ messages: userMessages("hi"), conversationId: "conv-1" });
+  const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("hi"), conversationId: "conv-1" });
   await result.steps;
   await result.consumeStream?.();
 }

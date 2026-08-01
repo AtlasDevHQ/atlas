@@ -116,6 +116,9 @@ void mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 const SPEC = JSON.parse(
@@ -214,7 +217,7 @@ async function runScenario(prompt: string, steps: Step[]) {
         // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- minimal AtlasUser for the request context
       } as any,
     },
-    () => runAgent({ messages: userMessages(prompt) }),
+    () => runAgent({ tools: nonDashboardRegistry, messages: userMessages(prompt) }),
   );
   const agentSteps = await result.steps;
   return {

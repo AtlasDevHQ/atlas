@@ -162,6 +162,9 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 const MOCK_USAGE = {
   inputTokens: { total: 5, noCache: 5, cacheRead: undefined, cacheWrite: undefined },
@@ -199,6 +202,7 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
   it("populates structured warnings when both preflight loaders fail", async () => {
     const contextWarnings: ChatContextWarning[] = [];
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("how many companies?"),
       contextWarnings,
     });
@@ -226,6 +230,7 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
     semanticState.patternsThrows = false;
     const contextWarnings: ChatContextWarning[] = [];
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("how many companies?"),
       contextWarnings,
     });
@@ -240,6 +245,7 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
     semanticState.patternsThrows = true;
     const contextWarnings: ChatContextWarning[] = [];
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("how many companies?"),
       contextWarnings,
     });
@@ -254,6 +260,7 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
     semanticState.patternsThrows = false;
     const contextWarnings: ChatContextWarning[] = [];
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("how many companies?"),
       contextWarnings,
     });
@@ -266,6 +273,7 @@ describe("runAgent contextWarnings out-array (#1988 B5)", () => {
     // Legacy callers (or tests pre-#1988) that don't pass `contextWarnings`
     // get the existing system-prompt-string behavior with no extra cost.
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("how many companies?"),
     });
     await result.steps;
@@ -310,6 +318,7 @@ describe("#4941 — runAgent renders caller `warnings` into the model's system p
 
   it("a caller warning reaches the model under a `## Warnings` heading", async () => {
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("email me the Q3 numbers"),
       warnings: ["SENTINEL-4941: the operator action tools did not load."],
     });
@@ -321,7 +330,7 @@ describe("#4941 — runAgent renders caller `warnings` into the model's system p
   });
 
   it("no `## Warnings` section at all when the caller passes none", async () => {
-    const result = await runAgent({ messages: userMessages("how many companies?") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("how many companies?") });
     await result.steps;
 
     const prompt = JSON.stringify(capturedPrompt);

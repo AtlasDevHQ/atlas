@@ -151,7 +151,7 @@ export const MAX_REVERIFY_AUDIENCES_PER_WORKSPACE = 200;
  *      deferred indefinitely and the "a participant joined Atlas later" repair
  *      does not happen.
  *
- * Both are OBSERVABLE, not silent: `reverifyWorkspace` warns when the scan
+ * Tracked as #4971. Both are OBSERVABLE, not silent: `reverifyWorkspace` warns when the scan
  * returns a full page, and case 1 also drives `failed > 0`, which makes the
  * cycle report `degraded`. The honest fix for both is a per-audience
  * ATTEMPTED-at stamp — a small table, written on every attempt including the

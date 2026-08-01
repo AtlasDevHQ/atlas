@@ -65,6 +65,7 @@ import {
 } from "@atlas/api/lib/brain/audience/sync";
 import {
   registerAudienceReverifier,
+  selectReverifyCandidates,
   ZERO_REVERIFY,
   type AudienceReverifyResult,
 } from "@atlas/api/lib/brain/audience/reverify";
@@ -92,100 +93,36 @@ export const MAX_PARTICIPANT_PAGES = 300;
  *
  * A bound with teeth: past this many audiences the scan's ORDER decides which
  * ones are ever reached, so the ordering is load-bearing rather than cosmetic.
+ * The ordering itself is no longer here — it is
+ * {@link selectReverifyCandidates}'s, shared with every other source (#4971) —
+ * and the reason it had to move is worth carrying at the cap it bounds.
  *
- * ⚠️ Read {@link ZOOM_MEETING_AUDIENCES_SQL}'s two-key ordering before changing
- * this number. A naive stalest-first scan STARVES the audiences that matter:
- * an audience resolving to no Atlas users never gets a `fact_audience_member`
- * row, so its `MIN(synced_at)` is NULL forever and it sorts first on every
- * single cycle. With more than this many such audiences in one workspace, the
- * deterministic scan returns the identical rows every cycle and no
- * member-BEARING audience is ever re-verified again — they all cross the
- * staleness bound and `acl.ts` suppresses them, silently, while the cycle
- * reports `failed: 0`. That is the exact failure this module exists to prevent,
- * reintroduced by the fix for it.
+ * A naive stalest-first scan STARVES the audiences that matter, in two ways that
+ * both end with `acl.ts` suppressing a grant while the cycle looks healthy:
+ *
+ *   1. an audience resolving to no Atlas users never gets a
+ *      `fact_audience_member` row, so a `MIN(synced_at)` ordering sees NULL
+ *      forever and sorts it first on every single cycle;
+ *   2. an audience that ABORTS every cycle never advances `synced_at` either —
+ *      Zoom's past-meeting participant report ages out of its retention window,
+ *      so every sufficiently old meeting is one of these.
+ *
+ * Past this many of either, the deterministic scan returns the identical rows
+ * every cycle and nothing behind them is ever re-verified. Ordering on ATTEMPT
+ * rather than on success is what fixes both; raising this number is not, because
+ * it moves the threshold and leaves the ordering that produced it.
  */
 export const MAX_REVERIFY_AUDIENCES_PER_WORKSPACE = 200;
 
 /**
- * The workspace's Zoom meeting audiences, STALEST FIRST.
+ * The `visible_to` token prefix this source's audiences carry.
  *
- * Sourced from `brain_episodes.visible_to` rather than from
- * `fact_audience_member`, and that direction is deliberate. Membership is the
- * thing being repaired, so an audience with NO members — the meeting whose
- * roster was entirely external at ingest — has no row there at all and would be
- * invisible to a scan of it. It is exactly the audience the "someone joined
- * Atlas later" repair exists for, so the scan has to see it.
- *
- * ## The ordering, which is two keys and not one
- *
- * The obvious `MIN(synced_at) ASC NULLS FIRST` alone is WRONG, and wrong in the
- * direction that silently disables the feature — see
- * {@link MAX_REVERIFY_AUDIENCES_PER_WORKSPACE}. A member-less audience can
- * never acquire a `synced_at` (there is no row to stamp), so it pins the front
- * of a NULLS-FIRST scan permanently.
- *
- * So the primary key is `has_members DESC`: audiences whose suppression would
- * actually cost somebody access are re-verified first, and because a successful
- * reconcile advances their `synced_at` (`TOUCH_AUDIENCE_MEMBERS_SQL` stamps even
- * the no-op case), they rotate to the back. Member-less audiences
- * (the all-external meeting) then take whatever cap remains; they grant nobody
- * either way, so their staleness costs nothing, and reaching them is what
- * delivers the "a participant joined Atlas later" repair.
- *
- * ⚠️ TWO residuals, stated rather than papered over. Neither is fixed here and
- * both have the same root cause: this ordering keys on SUCCESS (`synced_at`),
- * and only a success rotates an audience to the back.
- *
- *   1. A PERMANENTLY FAILING audience never rotates. Zoom's past-meeting
- *      participant report ages out of retention, so a sufficiently old meeting
- *      aborts every cycle — either `not_found` (incomplete roster) or
- *      `200 {participants: []}` (the empty-roster guard below). Its
- *      `MIN(synced_at)` stays the oldest forever, so it holds a slot at the
- *      front of the `has_members` group indefinitely. With ≥ the cap of them in
- *      one workspace, no other member-bearing audience is re-verified and they
- *      all cross the staleness bound. Note the empty-roster guard makes this
- *      MORE likely, not less — before it, an empty roster reconciled (wrongly)
- *      and at least stamped. Choosing safety over rotation is right; the
- *      consequence is real and is this.
- *   2. With the cap saturated by member-bearing audiences, member-less ones are
- *      deferred indefinitely and the "a participant joined Atlas later" repair
- *      does not happen.
- *
- * Tracked as #4971. Both are OBSERVABLE, not silent: `reverifyWorkspace` warns when the scan
- * returns a full page, and case 1 also drives `failed > 0`, which makes the
- * cycle report `degraded`. The honest fix for both is a per-audience
- * ATTEMPTED-at stamp — a small table, written on every attempt including the
- * aborts, and ordered on regardless of outcome. That needs a migration and is
- * deliberately not in #4965's scope; a bigger cap is NOT a fix, it only moves
- * the threshold.
- *
- * Within each group it is `MIN(synced_at)` — an audience is as verified as its
- * LEAST recently verified row, matching `acl.ts`'s own `min(synced_at)` reading.
- *
- * Exported so a caller can execute this exact string rather than a paraphrase.
- * NOTE there is no `-pg` test behind it yet — unlike `AUDIENCE_STALENESS_SQL`,
- * which `audience-sync-pg.test.ts` really does execute. Until one exists, a
- * `visible_to` or `fact_audience_member` shape change breaks this at runtime,
- * not in CI.
+ * NAMESPACE-wide rather than vendor-wide — `meeting:`, not `meeting:zoom:` — so
+ * a token naming another vendor's meeting still comes back from the scan and
+ * hits the parse check below, which logs it. Narrowing this would turn that
+ * diagnostic into a silent skip.
  */
-export const ZOOM_MEETING_AUDIENCES_SQL = `
-  SELECT t.token AS token,
-         MIN(m.synced_at) AS synced_at,
-         count(m.user_id) > 0 AS has_members
-    FROM (
-      SELECT DISTINCT tok AS token
-        FROM brain_episodes e, unnest(e.visible_to) AS tok
-       WHERE e.workspace_id = $1
-         AND e.source = $2
-         AND tok LIKE $3
-    ) t
-    LEFT JOIN fact_audience_member m
-      ON m.workspace_id = $1
-     AND m.audience_id = substr(t.token, length($4) + 1)
-   GROUP BY t.token
-   ORDER BY (count(m.user_id) > 0) DESC, MIN(m.synced_at) ASC NULLS FIRST, t.token ASC
-   LIMIT $5
-` as const;
+const MEETING_AUDIENCE_TOKEN_PREFIX = `${AUDIENCE_PREFIX}meeting:`;
 
 /** The DB + vendor surface this module needs — injectable so tests need no HTTP. */
 export interface ZoomAudienceDeps {
@@ -329,12 +266,6 @@ export async function reconcileMeetingAudience(
   };
 }
 
-interface AudienceRow extends Record<string, unknown> {
-  readonly token: string;
-  readonly synced_at: string | null;
-  readonly has_members: boolean;
-}
-
 interface InstallRow extends Record<string, unknown> {
   readonly workspace_id: string;
   readonly install_id: string;
@@ -429,21 +360,26 @@ async function reverifyWorkspace(
     return { ...ZERO_REVERIFY, failed: 1 };
   }
 
-  const rows = await query<AudienceRow>(ZOOM_MEETING_AUDIENCES_SQL, [
-    workspaceId,
-    ZOOM_TRANSCRIPT_SOURCE,
-    `${AUDIENCE_PREFIX}meeting:%`,
-    AUDIENCE_PREFIX,
-    MAX_REVERIFY_AUDIENCES_PER_WORKSPACE,
-  ]);
-  if (rows.length === 0) return ZERO_REVERIFY;
-  if (rows.length >= MAX_REVERIFY_AUDIENCES_PER_WORKSPACE) {
+  // Scans AND stamps the attempt in one call, so this pass cannot consume a
+  // slot without rotating the audience out of the front of the next scan
+  // (#4971). Throws if either half fails, and the caller counts the workspace.
+  const candidates = await selectReverifyCandidates(
+    {
+      workspaceId,
+      source: ZOOM_TRANSCRIPT_SOURCE,
+      tokenPrefix: MEETING_AUDIENCE_TOKEN_PREFIX,
+      limit: MAX_REVERIFY_AUDIENCES_PER_WORKSPACE,
+    },
+    { query },
+  );
+  if (candidates.length === 0) return ZERO_REVERIFY;
+  if (candidates.length >= MAX_REVERIFY_AUDIENCES_PER_WORKSPACE) {
     // The cap bounded this pass, so some audiences were NOT looked at. Silent
     // truncation here reads as "everything is fresh" when it is the opposite —
     // and the deferred tail is exactly what ages past the staleness bound.
     log.warn(
       { workspaceId, cap: MAX_REVERIFY_AUDIENCES_PER_WORKSPACE },
-      "brain audience: this workspace has at least as many Zoom meeting audiences as the per-cycle cap — the tail is deferred. Audiences that grant somebody are re-verified first, but an audience that FAILS every cycle never rotates out of the front, so a persistent failure here can starve the tail. Check the failed count alongside this line",
+      "brain audience: this workspace has at least as many Zoom meeting audiences as the per-cycle cap — the tail is deferred to the next cycles, which now reach it because the scan rotates on attempt rather than on success. Check the failed count alongside this line: a tail that keeps growing means audiences are being attempted faster than they can be verified",
     );
   }
 
@@ -453,15 +389,20 @@ async function reverifyWorkspace(
   const token = await resolveToken(workspaceId, install.install_id, install.config);
 
   let total = ZERO_REVERIFY;
-  for (const row of rows) {
-    const audienceId = row.token.slice(AUDIENCE_PREFIX.length);
+  for (const candidate of candidates) {
+    const audienceId = candidate.audienceId;
     const parts = parseMeetingAudienceId(audienceId);
     if (parts === null || parts.source !== ZOOM_TRANSCRIPT_SOURCE) {
-      // The scan's `LIKE` is coarser than the parser: a token that starts
+      // The scan's prefix is coarser than the parser: a token that starts
       // `audience:meeting:` but does not parse, or names another vendor's
       // meeting, is not this re-verifier's to touch. Not counted as a failure —
       // nothing failed — but logged, because the only ways to get here are a
       // format change or a stored token no minter would have produced.
+      //
+      // It HAS been attempt-stamped by now, which is correct rather than a leak:
+      // it consumed a slot, and a token that never stamped would sit on NULL
+      // forever and pin the front of every future scan — #4971's starvation,
+      // rebuilt out of the one case nothing can ever reconcile.
       log.warn(
         { workspaceId, audienceId },
         "brain audience: a meeting audience token did not parse as this source's — skipping it",
@@ -491,7 +432,7 @@ async function reverifyWorkspace(
       // Note this guard belongs ONLY here, not at ingest: at ingest an empty
       // roster is the FLAG side working (an all-external meeting grants nobody
       // and repairs itself later), and there is no prior membership to protect.
-      if (roster.participants.length === 0 && row.has_members) {
+      if (roster.participants.length === 0 && candidate.hasMembers) {
         log.error(
           { workspaceId, meetingId: parts.meetingId },
           "brain audience: Zoom returned an EMPTY roster for a meeting whose audience has members — a past meeting's roster cannot shrink, so this is treated as an unreadable report. Membership unchanged; check Zoom's past-meeting report retention for this account",

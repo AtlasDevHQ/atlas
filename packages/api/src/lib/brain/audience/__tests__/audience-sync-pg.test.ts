@@ -32,6 +32,7 @@ import {
   SLACK_HISTORY_SOURCE,
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import { AUDIENCE_STALENESS_SQL, AUDIENCE_SYNC_INSTALLS_SQL } from "../sync";
+import { selectReverifyCandidates } from "../reverify";
 import { reconcileAudienceMembership, type MembershipExecutor } from "../membership";
 import { resolvePrincipals } from "../resolver";
 
@@ -413,6 +414,215 @@ describeIfPg("brain audience membership (real Postgres)", () => {
         { query },
       );
       expect(result.resolved.get("U_EVE")).toBe("user-eve");
+    }, PG_TEST_TIMEOUT_MS);
+  });
+
+  /**
+   * The shared re-verify candidate scan (#4971).
+   *
+   * This is the coverage BOTH per-source scans declared they were missing.
+   * #4965 shipped `ZOOM_MEETING_AUDIENCES_SQL` and #4966 shipped
+   * `OUTLOOK_MESSAGE_AUDIENCES_SQL` with no real-Postgres test and said so in
+   * their own docstrings; the ordering that was supposed to prevent starvation
+   * was therefore asserted only as SOURCE TEXT, which is why reverting it to the
+   * naive single key stayed green. There is one implementation now, and it runs.
+   *
+   * The claims below are all of the form "this SQL does what its comment says",
+   * and every one of them is vacuous against a mock: a stubbed `query` dictates
+   * the row order, so it can only ever confirm the fixture.
+   */
+  describe("the re-verify candidate scan against the live schema", () => {
+    const SCAN_WORKSPACE = "ws-scan";
+    const SOURCE = "zoom";
+    const PREFIX = "audience:meeting:";
+
+    const scan = (limit: number) =>
+      selectReverifyCandidates(
+        { workspaceId: SCAN_WORKSPACE, source: SOURCE, tokenPrefix: PREFIX, limit },
+        { query },
+      );
+
+    /** One episode carrying `token`, plus optional membership rows for it. */
+    async function audience(
+      token: string,
+      members: readonly string[] = [],
+      opts: { workspaceId?: string; source?: string } = {},
+    ): Promise<void> {
+      const workspaceId = opts.workspaceId ?? SCAN_WORKSPACE;
+      await pool.query(
+        `INSERT INTO brain_episodes (workspace_id, source, source_id, body, occurred_at, visible_to)
+         VALUES ($1, $2, $3, 'transcript body', now(), $4)`,
+        [workspaceId, opts.source ?? SOURCE, `ep-${workspaceId}-${token}`, [token]],
+      );
+      for (const userId of members) {
+        await pool.query(
+          `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+           VALUES ($1, $2, $3, $4)`,
+          [workspaceId, token.slice("audience:".length), userId, opts.source ?? SOURCE],
+        );
+      }
+    }
+
+    const idsOf = (candidates: readonly { audienceId: string }[]): string[] =>
+      candidates.map((candidate) => candidate.audienceId);
+
+    afterEach(async () => {
+      await pool.query(`DELETE FROM brain_episodes WHERE workspace_id = ANY($1)`, [
+        [SCAN_WORKSPACE, OTHER_WORKSPACE],
+      ]);
+      await pool.query(`TRUNCATE brain_audience_reverify_attempt`);
+    });
+
+    it("⭐ ROTATES an audience that never succeeds — the whole of #4971", async () => {
+      // The bug, reproduced end to end and then shown fixed. Nothing here ever
+      // reconciles, so `fact_audience_member.synced_at` never advances for any of
+      // these audiences — which is exactly the state a workspace full of
+      // out-of-retention Zoom meetings or one revoked Outlook mailbox is in.
+      //
+      // Under the shipped `MIN(synced_at) ASC NULLS FIRST` ordering the same
+      // audience came back on every single cycle and the other one was NEVER
+      // re-verified: it crossed the staleness bound, `acl.ts` suppressed it, and
+      // every fact behind it went invisible while the cycle reported `degraded`
+      // at worst.
+      //
+      // MUTATION THIS CATCHES: ordering on `MIN(m.synced_at)` instead of on
+      // `attempted_at`, or dropping the attempt stamp — either makes the second
+      // and third passes return the first pass's row again.
+      await audience("audience:meeting:zoom:aaa", ["user-ada"]);
+      await audience("audience:meeting:zoom:bbb", ["user-bob"]);
+
+      const first = idsOf(await scan(1));
+      const second = idsOf(await scan(1));
+      const third = idsOf(await scan(1));
+
+      expect(first).toHaveLength(1);
+      expect(second).toHaveLength(1);
+      // The second cycle reaches the OTHER audience, with no success in between.
+      expect(second).not.toEqual(first);
+      // And it comes back round rather than ratcheting one way.
+      expect(third).toEqual(first);
+      expect(new Set([...first, ...second])).toEqual(
+        new Set(["meeting:zoom:aaa", "meeting:zoom:bbb"]),
+      );
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("does NOT advance synced_at — the attempt stamp stays out of the evidence", async () => {
+      // `acl.ts` reads `synced_at` as a verification claim and suppresses a grant
+      // when it goes stale. A scan that touched it would manufacture a
+      // verification nothing performed and keep a revoked person's access alive
+      // past the bound — the one way this fix could have made things worse.
+      //
+      // MUTATION THIS CATCHES: adding `synced_at = now()` to the attempt stamp,
+      // or moving the stamp into `fact_audience_member`.
+      await audience("audience:meeting:zoom:aaa", ["user-ada"]);
+      await pool.query(
+        `UPDATE fact_audience_member SET synced_at = now() - interval '30 days'
+          WHERE workspace_id = $1`,
+        [SCAN_WORKSPACE],
+      );
+      const before = await pool.query<{ synced_at: Date }>(
+        `SELECT synced_at FROM fact_audience_member WHERE workspace_id = $1`,
+        [SCAN_WORKSPACE],
+      );
+      await scan(10);
+      const after = await pool.query<{ synced_at: Date }>(
+        `SELECT synced_at FROM fact_audience_member WHERE workspace_id = $1`,
+        [SCAN_WORKSPACE],
+      );
+      expect(after.rows[0]?.synced_at).toEqual(before.rows[0]?.synced_at);
+      // …and the attempt WAS recorded, so this is a statement about which column
+      // moved rather than about the scan having done nothing.
+      const attempts = await pool.query<{ audience_id: string; source: string }>(
+        `SELECT audience_id, source FROM brain_audience_reverify_attempt WHERE workspace_id = $1`,
+        [SCAN_WORKSPACE],
+      );
+      expect(attempts.rows).toEqual([{ audience_id: "meeting:zoom:aaa", source: SOURCE }]);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("puts member-BEARING audiences ahead of member-less ones", async () => {
+      // The priority #4965 established and this scan keeps: an audience whose
+      // suppression would cost somebody access they have RIGHT NOW is worth more
+      // of a short cycle than one that grants nobody either way.
+      //
+      // MUTATION THIS CATCHES: dropping `has_members DESC` from the final sort.
+      await audience("audience:meeting:zoom:empty1");
+      await audience("audience:meeting:zoom:empty2");
+      await audience("audience:meeting:zoom:full1", ["user-ada"]);
+      await audience("audience:meeting:zoom:full2", ["user-bob"]);
+
+      const candidates = await scan(10);
+      expect(candidates).toHaveLength(4);
+      expect(candidates[0]?.hasMembers).toBe(true);
+      expect(candidates[1]?.hasMembers).toBe(true);
+      // The flag itself has to be right, or `zoom/audience.ts`'s empty-roster
+      // guard silently never fires.
+      expect(candidates.filter((candidate) => candidate.hasMembers).map((c) => c.audienceId)).toEqual(
+        ["meeting:zoom:full1", "meeting:zoom:full2"],
+      );
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("⭐ RESERVES a slice for member-less audiences when the cap is saturated", async () => {
+      // #4971's second residual. `has_members DESC` as an ABSOLUTE priority means
+      // a workspace whose member-bearing audiences alone fill the cap defers the
+      // member-less ones forever — and those are exactly the audiences the
+      // "someone joined Atlas later" repair exists for. A meeting whose whole
+      // roster was external at ingest can ONLY start granting if something
+      // re-runs its resolution, and under absolute priority nothing ever does.
+      //
+      // MUTATION THIS CATCHES: passing 0 as the reserve, or restoring a plain
+      // `ORDER BY has_members DESC, …`, either of which returns two member-
+      // bearing rows here and never reaches the member-less one.
+      await audience("audience:meeting:zoom:full1", ["user-ada"]);
+      await audience("audience:meeting:zoom:full2", ["user-bob"]);
+      await audience("audience:meeting:zoom:full3", ["user-eve"]);
+      await audience("audience:meeting:zoom:external");
+
+      const candidates = await scan(2);
+      expect(candidates).toHaveLength(2);
+      expect(idsOf(candidates)).toContain("meeting:zoom:external");
+      // Still a MINORITY share: the member-bearing audiences keep the rest.
+      expect(candidates.filter((candidate) => candidate.hasMembers)).toHaveLength(1);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("scopes to this workspace, this source, and this token namespace", async () => {
+      // `audience_id` is workspace-scoped but not globally unique, so a row
+      // leaking in from another tenant would hand this re-verifier a token that
+      // then matches their OWN tenant's facts — the leak `acl.ts`'s workspace
+      // containment cannot catch, because the token is applied inside the right
+      // tenant.
+      await audience("audience:meeting:zoom:mine", ["user-ada"]);
+      await audience("audience:meeting:zoom:theirs", ["user-far"], {
+        workspaceId: OTHER_WORKSPACE,
+      });
+      await audience("audience:meeting:zoom:othersource", ["user-ada"], { source: "outlook" });
+      await audience("audience:chat-channel:slack:C1", ["user-ada"]);
+
+      expect(idsOf(await scan(10))).toEqual(["meeting:zoom:mine"]);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("finds a member-LESS audience at all, which a scan of the membership table cannot", async () => {
+      // Why the scan reads `brain_episodes.visible_to` rather than
+      // `fact_audience_member`. The all-external meeting has no membership row,
+      // so a scan of that table would make the audience invisible to the very
+      // pass meant to repair it.
+      //
+      // MUTATION THIS CATCHES: sourcing the token set from `fact_audience_member`.
+      await audience("audience:meeting:zoom:external");
+      const candidates = await scan(10);
+      expect(idsOf(candidates)).toEqual(["meeting:zoom:external"]);
+      expect(candidates[0]?.hasMembers).toBe(false);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("counts one audience once, however many episodes name it", async () => {
+      // A meeting produces many episodes and every one of them carries the same
+      // `audience:` token. Without the DISTINCT the cap would be spent on
+      // duplicates of a handful of audiences.
+      await pool.query(
+        `INSERT INTO brain_episodes (workspace_id, source, source_id, body, occurred_at, visible_to)
+         VALUES ($1, $2, 'ep-1', 'a', now(), $3), ($1, $2, 'ep-2', 'b', now(), $3)`,
+        [SCAN_WORKSPACE, SOURCE, ["audience:meeting:zoom:aaa"]],
+      );
+      expect(idsOf(await scan(10))).toEqual(["meeting:zoom:aaa"]);
     }, PG_TEST_TIMEOUT_MS);
   });
 });

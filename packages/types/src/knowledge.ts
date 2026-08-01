@@ -78,7 +78,8 @@ export type KnowledgeCollectionSource =
   | "front"
   | "helpscout"
   | "freshdesk"
-  | "slack-history";
+  | "slack-history"
+  | "zoom-transcripts";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

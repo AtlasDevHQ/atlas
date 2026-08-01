@@ -83,8 +83,9 @@
  *
  * ## ⚠️ The two axes OVERLAP, and the compiler will not catch it
  *
- * `EpisodeSource` is `slack | warehouse | human`; `EpisodeSourceClass` is
- * `chat | warehouse | human`. Two of three members are spelled IDENTICALLY.
+ * `EpisodeSource` is `slack | zoom | warehouse | human`; `EpisodeSourceClass`
+ * is `chat | transcript | warehouse | human`. Two members are spelled
+ * IDENTICALLY on both axes.
  *
  * The UNIONS are not mutually assignable — `slack` and `chat` see to that, and
  * each direction is a TS2322. What IS interchangeable is the literal-typed
@@ -97,9 +98,10 @@
  *     findBrainSourceConnectors({ vendor: SLACK_SOURCE })  // a kind where a VENDOR is wanted
  *
  * The last one is the axis this refactor added: {@link EpisodeSourceVendor} is
- * `"slack"`, which is also a stored kind. `CHAT_CLASS` is the only constant
- * that errors against a stored kind, and that is a coincidence which expires
- * the day a `chat` stored value exists.
+ * `"slack" | "zoom"`, and BOTH are also stored kinds. `CHAT_CLASS` and
+ * `TRANSCRIPT_CLASS` are the only constants that error against a stored kind,
+ * and that is a coincidence which expires the day a `chat` or `transcript`
+ * stored value exists.
  *
  * So do NOT read the split as compiler-enforced separation: it is a separation
  * of MEANING, kept honest by routing every cross-axis question through one
@@ -121,20 +123,33 @@
  * The closed set of source CLASSES — ADR-0036 §T6's class-major axis.
  *
  * Not "connector classes": `warehouse` and `human` come from no connector at
- * all, and only `chat` names a connector class today.
+ * all; only `chat` and `transcript` name connector classes today.
  *
  * Only classes with a member in {@link EPISODE_SOURCE_SPECS} are listed. The
- * ADR's remaining classes (transcripts, email, docs/wiki/code/drive) are
- * deliberately absent: a class with no source that can produce it is dead
- * vocabulary, and a downstream `switch` over it would have an arm nothing ever
- * reaches. Each arrives with its first connector, in the same one-line PR that
- * adds the connector's stored value.
+ * ADR's remaining classes (email, docs/wiki/code/drive) are deliberately
+ * absent: a class with no source that can produce it is dead vocabulary, and a
+ * downstream `switch` over it would have an arm nothing ever reaches. Each
+ * arrives with its first connector, in the same one-line PR that adds the
+ * connector's stored value.
  *
- * `chat` first (the shipped class), then the two that come from no connector at
- * all — `warehouse` is the tier-1 class {@link isWarehouseDerivedSource} keys
- * off, `human` is a person's own recorded words.
+ * SINGULAR, all four. The ADR's prose sequences them as "chat → transcripts →
+ * email → docs" and that plural is a list of SUBJECT AREAS; these are the
+ * values a stored row's class resolves TO, read one row at a time
+ * (`episodeSourceClassOf(row.source) === TRANSCRIPT_CLASS`). Mixing the two
+ * conventions in one closed set is how you end up asking whether it is spelled
+ * `docs` or `doc` at each of four call sites.
+ *
+ * The connector classes first, in ADR-0036 §T6's order — `chat` (#4770), then
+ * `transcript` (#4965) — and then the two that come from no connector at all:
+ * `warehouse` is the tier-1 class {@link isWarehouseDerivedSource} keys off,
+ * `human` is a person's own recorded words.
  */
-export const EPISODE_SOURCE_CLASSES = Object.freeze(["chat", "warehouse", "human"] as const);
+export const EPISODE_SOURCE_CLASSES = Object.freeze([
+  "chat",
+  "transcript",
+  "warehouse",
+  "human",
+] as const);
 
 export type EpisodeSourceClass = (typeof EPISODE_SOURCE_CLASSES)[number];
 
@@ -161,8 +176,29 @@ export type EpisodeSourceClass = (typeof EPISODE_SOURCE_CLASSES)[number];
  */
 export type EpisodeSourceSpec =
   | {
-      /** Vendor-grained: two vendors' source-ids would collide in one namespace. */
-      readonly class: "chat";
+      /**
+       * Vendor-grained: two vendors' source-ids would collide in one namespace.
+       *
+       * `transcript` joined this arm with #4965 rather than getting one of its
+       * own, because it passes the SAME test `chat` passes and for the same
+       * reason. Zoom's source-id grammar lives in `ingest/zoom/config.ts` and
+       * is owned THERE, not restated here — it is a live contract with #4967's
+       * webhook writer, and a contract with two published spellings is exactly
+       * the hazard this section is about. (This comment carried a second,
+       * WRONG spelling until the review panel caught it.) Google Meet's would
+       * be a Drive file id and Fireflies' a transcript id. Those are three
+       * unrelated id GRAMMARS, so
+       * one stored `transcript` value would put them in one dedupe namespace —
+       * and a collision there does not error, it silently drops one vendor's
+       * meeting as a duplicate of another's.
+       *
+       * The general rule, since this arm is now the one most members land in:
+       * a class belongs here when its vendors mint source-ids independently.
+       * That is nearly every connector class, which is why the ADR's remaining
+       * classes (email, docs) should be expected to widen this arm too rather
+       * than the one below.
+       */
+      readonly class: "chat" | "transcript";
       readonly vendor: string;
     }
   | {
@@ -176,7 +212,7 @@ export type EpisodeSourceSpec =
  * IS — THE definition this whole module derives from.
  *
  * The key is the value stored in the column, verbatim. `db/schema.ts` names the
- * same three beside the column and points here; migration 0180 leaves the
+ * same set beside the column and points here; migration 0180 leaves the
  * column plain `text` with no CHECK, which is what lets the region import
  * restore a value this map does not yet know.
  *
@@ -217,6 +253,7 @@ export const EPISODE_SOURCE_SPECS = Object.freeze({
   // compiles clean and an invented field lands in the vocabulary unnoticed.
   // Checking each literal at the point it is still a literal restores that.
   slack: Object.freeze({ class: "chat", vendor: "slack" } as const satisfies EpisodeSourceSpec),
+  zoom: Object.freeze({ class: "transcript", vendor: "zoom" } as const satisfies EpisodeSourceSpec),
   warehouse: Object.freeze({ class: "warehouse", vendor: null } as const satisfies EpisodeSourceSpec),
   human: Object.freeze({ class: "human", vendor: null } as const satisfies EpisodeSourceSpec),
 }) satisfies Record<string, EpisodeSourceSpec>;
@@ -256,7 +293,7 @@ export const EPISODE_SOURCES = Object.freeze(
 );
 
 /**
- * The vendors named by vendor-grained members — `"slack"` today.
+ * The vendors named by vendor-grained members — `"slack"` and `"zoom"` today.
  *
  * Derived rather than declared so a query cannot ask for a vendor that no
  * member has: `findBrainSourceConnectors({ vendor: "slakc" })` returning an
@@ -277,6 +314,18 @@ export type EpisodeSourceVendor = NonNullable<
  * vocabulary.
  */
 export const SLACK_SOURCE = "slack" satisfies EpisodeSource;
+
+/**
+ * The transcript class's first vendor — what `ZOOM_TRANSCRIPT_SOURCE` resolves
+ * to (#4965).
+ *
+ * Load-bearing beyond this file in a way `SLACK_SOURCE` was not when it landed:
+ * #4967's webhook fast-path is being built in PARALLEL against the Zoom
+ * connector and writes into the same idempotent episode store, so this value
+ * and the source-id grammar beside it in `ingest/zoom/config.ts` are a contract
+ * between two in-flight branches rather than a private naming choice.
+ */
+export const ZOOM_SOURCE = "zoom" satisfies EpisodeSource;
 
 /**
  * The tier-1 kind: facts derived from the warehouse itself.
@@ -306,6 +355,21 @@ export const WAREHOUSE_CLASS = "warehouse" satisfies EpisodeSourceClass;
 
 /** The shipped connector class — chat, ADR-0036's first and easiest ACL tier. */
 export const CHAT_CLASS = "chat" satisfies EpisodeSourceClass;
+
+/**
+ * ADR-0036 §T6's second connector class — a recorded meeting's transcript
+ * (#4965), the next rung on the ACL-difficulty gradient.
+ *
+ * "Next rung" and not "same rung": a chat channel's audience is a MUTABLE
+ * roster, so #4801 keeps it live through `fact_audience_member`. A meeting's
+ * audience is its participant list, which is FROZEN the moment the meeting ends
+ * — nobody joins a past meeting. What stays mutable is the RESOLUTION of those
+ * participants to Atlas users (people join and leave the org), which is why a
+ * transcript grant is still an `audience:` and still needs re-verification
+ * rather than being frozen into `user:` tokens at ingest. See
+ * `ingest/grant.ts`'s {@link deriveMeetingParticipantGrant}.
+ */
+export const TRANSCRIPT_CLASS = "transcript" satisfies EpisodeSourceClass;
 
 /** Narrow an arbitrary value — a config string, a stored row — to the vocabulary. */
 export function isEpisodeSource(value: unknown): value is EpisodeSource {

@@ -96,6 +96,7 @@ import {
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import { resolveSlackHistoryToken } from "@atlas/api/lib/brain/ingest/slack/connector";
 import { reconcileAudienceMembership } from "./membership";
+import { runRegisteredAudienceReverifiers } from "./reverify";
 import { resolvePrincipals } from "./resolver";
 
 const log = createLogger("brain.audience.sync");
@@ -980,6 +981,30 @@ export async function runAudienceSyncCycle(
       result = { ...result, workspacesFailed: result.workspacesFailed + 1 };
     }
   }
+
+  // Every OTHER source's audiences (#4965). Drained here rather than branched
+  // into the Slack walk above: the scan, the vendor reads, and the roster shape
+  // are all source-specific, and the only thing the cycle genuinely owns is the
+  // clock, the isolation, and this report. See `reverify.ts` for why a source
+  // that mints `audience:` grants MUST have one — an audience nothing
+  // re-verifies stops granting at the staleness bound while every surface stays
+  // green.
+  //
+  // Run UNCONDITIONALLY, for the same reason `sweepStaleness` is: a deployment
+  // with no `slack-history` install at all still has Zoom meeting audiences to
+  // keep fresh, and gating this on `installs.length` would silently retire them.
+  // Its counters fold into the existing audience tallies rather than getting
+  // their own — they are the same units, and `audiencesFailed` is what drives
+  // `degraded` below, which a re-verification failure must also do.
+  const reverified = await runRegisteredAudienceReverifiers();
+  result = {
+    ...result,
+    audiencesReconciled: result.audiencesReconciled + reverified.reconciled,
+    audiencesFailed: result.audiencesFailed + reverified.failed,
+    membersAdded: result.membersAdded + reverified.membersAdded,
+    membersRevoked: result.membersRevoked + reverified.membersRevoked,
+    principalsUnresolved: result.principalsUnresolved + reverified.principalsUnresolved,
+  };
 
   // Swept unconditionally, including when there are no installs left to sync.
   // An install that was disabled or archived stops being reconciled but its

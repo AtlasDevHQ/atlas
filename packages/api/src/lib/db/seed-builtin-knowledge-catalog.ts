@@ -53,6 +53,10 @@ import {
   SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SLUG,
 } from "@atlas/api/lib/brain/ingest/slack/config";
+import {
+  ZOOM_TRANSCRIPTS_CATALOG_ID,
+  ZOOM_TRANSCRIPTS_SLUG,
+} from "@atlas/api/lib/brain/ingest/zoom/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -714,6 +718,74 @@ export const BUILTIN_SLACK_HISTORY_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   ],
 };
 
+/**
+ * The Zoom transcript brain source (#4965) — ADR-0036 §T6's second connector
+ * CLASS, and the first connector built on #4963's generalized seam.
+ *
+ * Like `slack-history` it CONSUMES one of the workspace's plan-capped
+ * knowledge-collection slots, the price of reusing the collection spine
+ * verbatim.
+ *
+ * UNLIKE `slack-history`, it carries a secret: a Zoom Server-to-Server OAuth
+ * app's client id and secret, stored as one encrypted
+ * `knowledge_sync_credentials` row (see `zoom-transcripts-form-handler.ts`).
+ * The `accountId` is non-secret scope and stays in the install config. The
+ * id/slug are the config SSOT (`ZOOM_TRANSCRIPTS_CATALOG_ID` /
+ * `ZOOM_TRANSCRIPTS_SLUG`).
+ */
+export const BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: ZOOM_TRANSCRIPTS_CATALOG_ID,
+  slug: ZOOM_TRANSCRIPTS_SLUG,
+  name: "Company Brain (Zoom transcripts)",
+  description:
+    "Read cloud-recording transcripts from Zoom into the company brain as immutable, deduped episodes. Each meeting is granted only to the people who attended it — a meeting whose participant list cannot be read is skipped rather than ingested. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "accountId",
+      type: "string",
+      label: "Zoom account ID",
+      required: true,
+      description:
+        "The Account ID from your Zoom Server-to-Server OAuth app's credentials page.",
+    },
+    {
+      key: "clientId",
+      type: "string",
+      label: "Client ID",
+      required: true,
+      description: "The Client ID from the same Server-to-Server OAuth app.",
+    },
+    {
+      key: "clientSecret",
+      type: "string",
+      // `secret: true` is what makes the admin form mask it and keeps it out of
+      // the config echo — there is no `"password"` field TYPE in this schema,
+      // and reaching for one would have rendered the secret in clear text.
+      secret: true,
+      label: "Client secret",
+      required: true,
+      description:
+        "The Client Secret from the same app. Stored encrypted and never shown again. The app needs the cloud_recording:read:admin and meeting:read:admin scopes.",
+    },
+    {
+      key: "hosts",
+      type: "string",
+      label: "Hosts",
+      description:
+        "Optional. Comma-separated Zoom host user IDs to narrow ingestion to. Leave blank to ingest every recorded meeting in the account.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this brain source.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -729,6 +801,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_HELPSCOUT_CATALOG_ROW,
   BUILTIN_FRESHDESK_CATALOG_ROW,
   BUILTIN_SLACK_HISTORY_CATALOG_ROW,
+  BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW,
 ];
 
 /**

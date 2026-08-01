@@ -58193,7 +58193,8 @@
                               "front",
                               "helpscout",
                               "freshdesk",
-                              "slack-history"
+                              "slack-history",
+                              "zoom-transcripts"
                             ]
                           },
                           "description": {

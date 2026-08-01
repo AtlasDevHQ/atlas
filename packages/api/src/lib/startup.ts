@@ -749,6 +749,12 @@ async function checkActionFramework(errors: DiagnosticError[], authMode: string)
       }
     }
   } catch (err) {
+    // #4940 — this catch used to be one of five that made `buildRegistry`'s
+    // "fatal misconfiguration" throws non-fatal in practice. The Python-without-
+    // sandbox case no longer reaches it on a guarded boot (`PythonSandboxGuardLive`
+    // fails the boot Layer first), so what lands here is a genuinely unexpected
+    // registry failure — and warning rather than aborting startup is right for a
+    // credential DIAGNOSTIC, which is all this block is.
     log.warn(
       { err: errorMessage(err) },
       "Could not validate action credentials at startup",

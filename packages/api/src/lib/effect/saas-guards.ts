@@ -3,7 +3,10 @@
  *
  * Each guard is a `Layer.effectDiscard` that throws a typed
  * `Data.TaggedError` at boot when a SaaS-mode contract is violated.
- * Self-hosted is unaffected. The shape comes from `DpaGuardLive`
+ * Self-hosted is unaffected — with ONE deliberate exception,
+ * {@link PythonSandboxGuardLive} (#4940), which is deploy-mode-agnostic
+ * because the misconfiguration it catches is a self-hosted-facing knob;
+ * its docstring carries that argument. The shape comes from `DpaGuardLive`
  * (architecture-wins #45) and was extended into a family in #1978;
  * subsequent extensions (#1983, #1988) follow the same shape mechanically.
  *
@@ -94,6 +97,16 @@ import type { SandboxBackendName } from "@atlas/api/lib/config";
 // graph to wall off — and it is mocked nowhere, so a static value import here
 // can't be erased by another test file's partial `mock.module()`.
 import { planSandboxSelection } from "@atlas/api/lib/tools/backends/selection";
+// Static for the same reason as `selection.ts` above: pure policy with no
+// runtime imports at all, and mocked nowhere. It is the SAME predicate
+// `buildRegistry` applies, which is the whole point of importing it rather than
+// restating the rule here (#4940).
+import {
+  isPythonSandboxMisconfigured,
+  PYTHON_ENABLED_ENV,
+  PYTHON_SANDBOX_MISCONFIGURED_MESSAGE,
+  PYTHON_SANDBOX_URL_ENV,
+} from "@atlas/api/lib/tools/python-sandbox-requirement";
 import { Config, Settings } from "./layers";
 import { Migration, PluginRegistry } from "./services";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
@@ -127,14 +140,20 @@ const log = createLogger("effect:saas-guards");
  * real correctness signals (and pass for free in any working dev box: DB up,
  * `BETTER_AUTH_SECRET` set, migrations applied), not missing-prod-infra checks.
  *
- * MUST be called AFTER each guard's `deployMode !== "saas"` early-return — it
- * asserts nothing about the deploy mode itself.
+ * This function asserts nothing about the deploy mode itself — it reads only the
+ * deploy ENV. SaaS-gated callers (all of them but one) MUST therefore call it
+ * AFTER their `deployMode !== "saas"` early-return, or they would log a
+ * relaxation for a self-hosted boot that was never going to be checked.
+ * {@link PythonSandboxGuardLive} (#4940) is the deliberate exception: it is
+ * deploy-mode-agnostic because the env var it guards is self-hosted-facing, and
+ * it calls this first thing so a `development` box keeps booting in EITHER mode.
+ * The wording below is mode-neutral for that reason.
  */
 function relaxSaasGuardForDev(guardName: string): boolean {
   if (resolveDeployEnv() !== "development") return false;
   log.warn(
-    `SaaS boot guard '${guardName}' RELAXED — ATLAS_DEPLOY_ENV=development. ` +
-      `Local-dev escape hatch so the SaaS code path boots without prod-only secrets. ` +
+    `Boot guard '${guardName}' RELAXED — ATLAS_DEPLOY_ENV=development. ` +
+      `Local-dev escape hatch so the api boots without prod-only secrets. ` +
       `NEVER set ATLAS_DEPLOY_ENV=development on a customer-facing deploy.`,
   );
   return true;
@@ -149,6 +168,7 @@ const BILLING_CONFIG_ISSUE_REF = "#3435";
 const MCP_SPINE_ISSUE_REF = "#3687";
 const TURNSTILE_ISSUE_REF = "#3795";
 const SANDBOX_CREDS_ISSUE_REF = "#4461";
+const SANDBOX_PYTHON_ISSUE_REF = "#4940";
 
 /**
  * Sentinel org id for the boot-time `mcp_action_policy` reachability probe. It
@@ -490,6 +510,18 @@ export class SandboxCredentialsMissingError extends Data.TaggedError("SandboxCre
   readonly message: string;
   readonly priority: readonly string[];
   readonly missing: readonly string[];
+}> {}
+
+/**
+ * `ATLAS_PYTHON_ENABLED=true` with no `ATLAS_SANDBOX_URL` (#4940) — the
+ * operator asked for `executePython` and named no sidecar for it to run inside.
+ *
+ * Carries `remediationEnvVar` as structured data as well as prose so a log
+ * consumer can key on the variable without parsing the message.
+ */
+export class PythonSandboxUrlMissingError extends Data.TaggedError("PythonSandboxUrlMissingError")<{
+  readonly message: string;
+  readonly remediationEnvVar: string;
 }> {}
 
 // ══════════════════════════════════════════════════════════════════════
@@ -887,6 +919,69 @@ export const SandboxCredsGuardLive: Layer.Layer<never, SandboxCredentialsMissing
           `sandbox.vercel in atlas.config.ts (non-secret); VERCEL_TOKEN is a per-service env secret ` +
           `that Railway shared vars do NOT auto-inherit — stamp it on every regional api service. ` +
           `See ${SANDBOX_CREDS_ISSUE_REF}.`,
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  PythonSandboxGuardLive (#4940)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fail boot when `ATLAS_PYTHON_ENABLED=true` but `ATLAS_SANDBOX_URL` is unset
+ * (#4940) — the `executePython` misconfiguration that used to boot green.
+ *
+ * `buildRegistry` (`lib/tools/registry.ts`) refuses to register `executePython`
+ * without a sandbox sidecar and throws instead. That throw is correct and stays,
+ * but it was never fatal: all five callers in the repo catch it — startup's
+ * action-credential check, both chat-route build sites, the Effect tool-shadow
+ * check, and `buildHeadlessRegistry` — each falling back to a registry that
+ * (correctly) omits the tool. So the isolation invariant always held while the
+ * operator's REQUEST was silently dropped: a box with the flag set ran
+ * indefinitely without the capability, `/health` green throughout. Turning that
+ * into a boot failure is the CLAUDE.md "prefer errors over silent fallbacks"
+ * rule applied at the boot layer; the cost, accepted deliberately, is that a
+ * config mistake which used to degrade now stops the process on restart.
+ *
+ * THE ONE DEPLOY-MODE-AGNOSTIC MEMBER of this family, and the deviation is the
+ * point: `ATLAS_PYTHON_ENABLED` is a self-hosted-facing knob, so a
+ * `deployMode !== "saas"` early-return would leave the entire population that
+ * actually sets it unguarded — the guard would be inert exactly where the bug
+ * lives. SaaS is covered too, by the same predicate, because SaaS reads the same
+ * two env vars.
+ *
+ * It DOES still take {@link relaxSaasGuardForDev}: a local dev box running
+ * `ATLAS_DEPLOY_ENV=development` with a half-configured sandbox must keep
+ * booting (CLAUDE.md documents that relaxation), and there the registry throw
+ * plus its degraded-tools warning is the appropriate, already-tested behavior.
+ * That is why this reads the relaxation rather than reimplementing a check —
+ * see the note in `relaxSaasGuardForDev` about mode-agnostic callers.
+ *
+ * Depends only on `Config` (reads env via `readSaasEnv()`), so it fails as fast
+ * as the other env-only guards. The predicate is imported from
+ * `lib/tools/python-sandbox-requirement` — the same function `buildRegistry`
+ * calls, so the guard and the builder cannot drift into disagreeing about what
+ * "misconfigured" means (the #4838 drift mode, one subsystem over).
+ */
+export const PythonSandboxGuardLive: Layer.Layer<never, PythonSandboxUrlMissingError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    // `Config` is yielded for ordering parity with the other env-only guards
+    // (and so this guard cannot run before config resolution), not because the
+    // decision reads it — the check is deploy-mode-agnostic by design.
+    yield* Config;
+    if (relaxSaasGuardForDev("PythonSandbox")) return;
+
+    if (!isPythonSandboxMisconfigured(readSaasEnv())) return;
+
+    yield* Effect.fail(
+      new PythonSandboxUrlMissingError({
+        remediationEnvVar: PYTHON_SANDBOX_URL_ENV,
+        message:
+          `Atlas booted with ${PYTHON_ENABLED_ENV}=true but no ${PYTHON_SANDBOX_URL_ENV}. ` +
+          `${PYTHON_SANDBOX_MISCONFIGURED_MESSAGE} Until ${SANDBOX_PYTHON_ISSUE_REF} this ` +
+          `combination booted green and ran indefinitely with executePython absent, because ` +
+          `every tool-registry caller catches the builder's throw. See ${SANDBOX_PYTHON_ISSUE_REF}.`,
       }),
     );
   }),

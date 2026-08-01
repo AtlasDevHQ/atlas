@@ -726,7 +726,7 @@ The first three plus `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` are the self-host fallb
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PYTHON_ENABLED` | — | Set `true` to enable the `executePython` agent tool. Requires `ATLAS_SANDBOX_URL` to be set (Python runs in the sandbox sidecar for isolation) |
+| `ATLAS_PYTHON_ENABLED` | — | Set `true` to enable the `executePython` agent tool. **Requires `ATLAS_SANDBOX_URL`** — Python runs in the sandbox sidecar for isolation, and Atlas **fails to boot** if this is `true` with no sandbox URL rather than starting without the tool |
 | `ATLAS_PYTHON_TIMEOUT` | `30000` | Python execution timeout in milliseconds |
 
 See <AudienceLink saas="/guides/python">Python Tool</AudienceLink> for the full guide.

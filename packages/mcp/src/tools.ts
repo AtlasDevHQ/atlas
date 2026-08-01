@@ -32,15 +32,14 @@ import {
   searchBrain,
   type BrainToolReason,
 } from "@atlas/api/lib/tools/search-brain";
+import { SEARCH_BRAIN_INPUT_SHAPE } from "@atlas/api/lib/tools/search-brain-schema";
 import type { AtlasMcpToolErrorCode } from "@useatlas/types/mcp";
-import { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
 import {
   EXECUTE_SQL_ERROR_CODES,
   EXPLORE_ERROR_CODES,
   SEARCH_BRAIN_ERROR_CODES,
   withErrorContract,
 } from "@atlas/api/lib/tools/descriptions";
-import { BRAIN_RESULT_TIERS } from "@useatlas/schemas";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { getConfig } from "@atlas/api/lib/config";
 import { writeScopeDenied } from "@atlas/api/lib/mcp/dispatch-gate-contract";
@@ -356,66 +355,19 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
     {
       title: "Search the Company Brain",
       description: withErrorContract(searchBrain.description ?? "", SEARCH_BRAIN_ERROR_CODES),
-      inputSchema: {
-        query: z
-          .string()
-          .optional()
-          .describe(
-            "Free-text search across reviewed claims, raw source records, and knowledge documents. Omit to browse the most recent entries.",
-          ),
-        include: z
-          .array(z.enum(BRAIN_RESULT_TIERS))
-          .optional()
-          .describe(
-            `Restrict to specific result classes (${BRAIN_RESULT_TIERS.join(", ")}). Omit to search all three.`,
-          ),
-        type: z.string().optional().describe("Documents only: one OKF document type, e.g. 'Runbook'."),
-        tags: z
-          .array(z.string())
-          .optional()
-          .describe("Documents only: documents carrying ALL of these OKF tags."),
-        collection: z
-          .string()
-          .optional()
-          .describe("Documents only: a single knowledge collection (install slug)."),
-        since: z
-          .string()
-          .optional()
-          .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
-        // "retracted never" was true of RESULTS and false of the response as a
-        // whole (#4933): #4913 kept a retracted rival in `tensions` precisely
-        // so it stays distinguishable, and an unqualified absolute here taught
-        // the MCP model the opposite. The wording names which field carries
-        // the label, so the guidance is actionable rather than a promise the
-        // wire does not keep.
-        //
-        // "Requires the fact store in `include`" is the second precondition
-        // this schema had dropped (#4939). It is not advisory: `searchBrain`
-        // HARD-REFUSES an `asOf` read whose `include` omits facts
-        // (`lib/brain/search.ts`), and the AI SDK twin has always said so —
-        // so the MCP model was the only caller told to combine two arguments
-        // it would be refused for combining. The rule is pinned in two suites,
-        // one per spelling: `search-brain-tool.test.ts` for the api argument,
-        // and this package's `__tests__/tools.test.ts`, which reads THIS one
-        // back out of the SERVED JSON Schema via `listTools()`.
-        asOf: z
-          .string()
-          .optional()
-          .describe(
-            "Facts only: historical point read — the reviewed facts valid at that moment (superseded versions included; a retracted fact never as a RESULT, only as a `tensions` counterpart labelled by `invalidatedAt`). ISO-8601 date (2026-07-27) or timestamp with an explicit zone (2026-07-27T09:00:00Z); zone-less times and future instants are rejected. Requires the fact store in `include`. Omit for current beliefs.",
-          ),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_SEARCH_LIMIT)
-          .optional()
-          .describe(`Max fused results (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT}).`),
-        expand: z
-          .boolean()
-          .optional()
-          .describe("Include 1-hop linked neighbors of matched documents (default true)."),
-      },
+      // #4954 — IMPORTED, not re-declared. Until then this schema was a second
+      // hand-authored copy of the api-side one, kept in agreement only by a
+      // test on each side plus a hand-mirrored copy of each rule. `query` had
+      // drifted harmlessly and `asOf` had drifted twice in correctness-bearing
+      // ways (#4933's unqualified "retracted never", #4939's dropped `include`
+      // precondition) — each then fixed by hand HERE as well as on the api
+      // side, which is the second edit this dedupe removes. The prose and the
+      // reasons behind each clause now live once, in
+      // `lib/tools/search-brain-schema.ts`. This package's
+      // `__tests__/tools.test.ts` pins both halves: that this registration
+      // passes that module's object by identity, and that the JSON Schema
+      // `listTools()` serves is the one it builds.
+      inputSchema: SEARCH_BRAIN_INPUT_SHAPE,
       // Reads the INTERNAL database only — no writes anywhere, and no reach
       // outside this deployment, so the world is closed. Same posture as
       // `explore`, and deliberately narrower than `executeSQL`, which does

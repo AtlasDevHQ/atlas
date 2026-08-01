@@ -14,6 +14,20 @@
  *
  * Kept in its own file (mock.module is file-global under the isolated runner) so
  * the mock-free query-builder tests stay clean.
+ *
+ * ## As of #4954 this file is also the SOLE owner of the argument-schema rules
+ *
+ * `searchBrain`'s input schema used to be declared twice, and the MCP package
+ * carried a hand-mirrored copy of each rule below. There is now one schema
+ * (`lib/tools/search-brain-schema.ts`), and `packages/mcp`'s suite asserts
+ * only that the schema it SERVES is that module's — it derives its expectation
+ * from the same source, so it cannot see a prose regression at all.
+ *
+ * Concretely: the `asOf` retraction carve-out (#4933) and `include`
+ * precondition (#4939) blocks below are the only thing guarding those rules
+ * for EXTERNAL MCP clients as well as the in-process agent. Weakening one here
+ * leaves that surface unguarded with nothing red in that package to say so.
+ * Trim with that in mind.
  */
 
 import { describe, expect, it, beforeEach, mock } from "bun:test";
@@ -92,6 +106,14 @@ void mock.module("@atlas/api/lib/logger", () => ({
 
 const { searchBrain, SEARCH_BRAIN_DESCRIPTION } = await import("@atlas/api/lib/tools/search-brain");
 const { SEARCH_BRAIN_TOOL_DESCRIPTION } = await import("@atlas/api/lib/tools/descriptions");
+const { searchBrainInputSchema, SEARCH_BRAIN_INPUT_SHAPE } = await import(
+  "@atlas/api/lib/tools/search-brain-schema"
+);
+// The constants the schema's value constraints must keep deriving from — read
+// from their own sources, so a pin against them cannot be satisfied by the
+// schema agreeing with itself.
+const { BRAIN_RESULT_TIERS } = await import("@useatlas/schemas");
+const { MAX_SEARCH_LIMIT } = await import("@atlas/api/lib/brain/search");
 
 function run(input: Record<string, unknown> = {}) {
   // AI SDK tool.execute(args, ToolCallOptions). Cast through unknown: the tool's
@@ -585,22 +607,181 @@ describe.each([
 });
 
 /**
- * The third of the four strings that CARRY THE RETRACTION PROMISE, and the one
- * neither block above reaches: the `asOf` ARGUMENT description on this tool's
- * input schema (#4933). The four are the system prompt
- * (`SEARCH_BRAIN_DESCRIPTION`), the tool prose (`SEARCH_BRAIN_TOOL_DESCRIPTION`,
- * both blocks above), this argument, and its re-declared MCP twin. (searchBrain
- * has a dozen-odd other `.describe()` strings; none of them say anything about
- * retraction, which is why the count here is four and not twenty.) A model
- * deciding whether to PASS `asOf` reads the argument, not the tool prose, and
- * this one shipped promising "retracted facts never" — the same absolute, on a
- * surface with its own reader.
+ * The dedupe itself (#4954) — the wiring that makes every prose pin below
+ * cover BOTH agent surfaces instead of just this one.
  *
- * `packages/mcp/src/tools.ts` re-declares the whole input schema rather than
- * importing it — `asOf` is only the argument where that drift is
- * correctness-bearing, and `query` has already drifted harmlessly — so the
- * fourth string is pinned there (`__tests__/tools.test.ts`, through
- * `listTools()`). Two files because there are genuinely two strings.
+ * `packages/mcp/src/tools.ts` used to re-declare this schema argument for
+ * argument, so a fix authored here structurally could not reach an MCP client:
+ * that is how the MCP `asOf` shipped with #4933's unqualified absolute and
+ * without #4939's `include` precondition, each fixed twice. There is now one
+ * definition in `lib/tools/search-brain-schema.ts`.
+ *
+ * Only the FIRST pin below stops it becoming two again, and only on this side
+ * — nothing in this file observes `packages/mcp/src/tools.ts`. That half is
+ * held by `packages/mcp/src/__tests__/tools.test.ts`, which pins the MCP
+ * registration by identity and its served JSON Schema by value.
+ */
+describe("searchBrain input schema — one definition, two surfaces (#4954)", () => {
+  it("the AI SDK tool serves the shared schema, not a local re-declaration", () => {
+    // Identity, not deep equality: a hand-copied literal here would be
+    // deep-equal on the day it was written and is exactly what this guards.
+    expect(
+      searchBrain.inputSchema,
+      "searchBrain.inputSchema is no longer the object exported by lib/tools/search-brain-schema.ts — the api surface has re-grown its own copy",
+    ).toBe(searchBrainInputSchema);
+  });
+
+  it("the assembled object and the exported raw shape are the same definition", () => {
+    // Both spellings are exported because the two SDKs want different ones —
+    // the MCP SDK's `registerTool` takes a `ZodRawShape`, the AI SDK's `tool`
+    // takes a `ZodObject`. That is only safe while the object is BUILT from
+    // the shape; declared side by side they would drift like the two packages
+    // did. Compared through `toJSONSchema` because that is the artifact both
+    // surfaces actually serve a model.
+    //
+    // Read honestly, this is a CANARY, not coverage of anything shipping: it
+    // can only fail once `searchBrainInputSchema` stops being literally
+    // `z.object(SEARCH_BRAIN_INPUT_SHAPE)`. That is exactly the refactor it
+    // guards, so keep it — but do not read a green here as evidence the two
+    // exports agree about anything a caller can observe.
+    //
+    // The WHOLE schema, not just `.properties`: in zod v4 JSON Schema an
+    // argument's optionality lives in the sibling `required` array, so a copy
+    // that marked `collection` required would be `.properties`-equal to this
+    // one and differ in the half a caller trips over first.
+    expect(z.toJSONSchema(searchBrainInputSchema)).toEqual(
+      z.toJSONSchema(z.object(SEARCH_BRAIN_INPUT_SHAPE)),
+    );
+  });
+
+  it("every argument carries prose, and the argument set is the one both surfaces advertise", () => {
+    // The prose pins below read ONE argument each. This is the arm that
+    // notices a NEW argument arriving undescribed — it reaches a
+    // model as a bare `string` with no guidance, on both surfaces at once, and
+    // no existing assertion would say a word.
+    const properties = z.toJSONSchema(searchBrainInputSchema).properties ?? {};
+    expect(Object.keys(properties).sort()).toEqual([
+      "asOf",
+      "collection",
+      "expand",
+      "include",
+      "limit",
+      "query",
+      "since",
+      "tags",
+      "type",
+    ]);
+    const undescribed = Object.entries(properties)
+      .filter(
+        ([, schema]) =>
+          typeof schema !== "object" ||
+          !("description" in schema) ||
+          typeof schema.description !== "string" ||
+          schema.description.trim() === "",
+      )
+      .map(([name]) => name);
+    expect(
+      undescribed,
+      "these searchBrain arguments have no `.describe()` — a model sees the type and nothing else, on the agent surface and over MCP",
+    ).toEqual([]);
+  });
+
+  it("the two argument VALUE constraints still AGREE with their source constants", () => {
+    // Keys, prose and optionality are all pinned above; the constraints were
+    // not, and they are the ones the SDK enforces before the tool body runs.
+    //
+    // Agreement, not derivation — say what it does: a hardcoded copy that
+    // happens to match today passes. This fires on the day a source constant
+    // moves and the copy does not, which is the drift that matters.
+    //
+    // `include`'s enum is the sharp one. Hardcode it and drop a tier and every
+    // pin in this PR stays green — key set unchanged, prose unchanged,
+    // optionality unchanged, and the MCP value pin derives its expectation
+    // from this same module so both sides move together.
+    //
+    // What breaks is SELECTION, not the store: `searchBrainCore` defaults to
+    // the runtime `BRAIN_RESULT_TIERS`, so an unfiltered search keeps
+    // returning that tier's rows — which is exactly what makes the drift
+    // quiet. But a client that NAMES the tier has its whole call refused
+    // before dispatch, and the tier becomes unselectable, while the same
+    // argument's description (which interpolates the real constant) goes on
+    // advertising it.
+    const properties = z.toJSONSchema(searchBrainInputSchema, { io: "input" }).properties ?? {};
+    const include = properties.include;
+    const items =
+      typeof include === "object" && "items" in include ? include.items : undefined;
+    expect(
+      typeof items === "object" && items !== null && "enum" in items ? items.enum : undefined,
+      "`include`'s enum no longer agrees with BRAIN_RESULT_TIERS — a call naming the dropped tier is refused whole, before dispatch, and the tier becomes unselectable, while the same argument's description still advertises it",
+    ).toEqual([...BRAIN_RESULT_TIERS]);
+
+    // Same class, lower stakes: a hardcoded or drifted cap silently disagrees
+    // with `MAX_SEARCH_LIMIT`, which the description also interpolates.
+    const limit = properties.limit;
+    expect(
+      typeof limit === "object" ? { min: limit.minimum, max: limit.maximum } : undefined,
+      "`limit`'s bounds no longer derive from MAX_SEARCH_LIMIT — the cap the description advertises and the cap the SDK enforces have drifted apart",
+    ).toEqual({ min: 1, max: MAX_SEARCH_LIMIT });
+  });
+
+  it("the shape object is frozen — the 'ONE definition' claim, asserted rather than assumed", () => {
+    // Aliased by reference into two registrars in one process, and mutating a
+    // shape key after `z.object(shape)` does propagate — so a re-pointed key
+    // rewrites both surfaces at once and they stay deep-equal to each other.
+    // The pins above read the shape's post-mutation content, so they would
+    // catch a re-point that dropped prose or narrowed the enum; what none of
+    // them can see is a CONFORMING re-point — same prose, same enum, same
+    // optionality. Shallow by nature (the zod nodes behind the keys are not
+    // sealed), which is why the served-value pin still exists.
+    expect(Object.isFrozen(SEARCH_BRAIN_INPUT_SHAPE)).toBe(true);
+  });
+
+  it("every argument is still OPTIONAL — the one drift the schema/normalizer key pin cannot see", () => {
+    // The key-set pins in `search-brain.ts` compare KEY SETS, so dropping
+    // `.optional()` from `asOf` compiles clean: the key is still there, and
+    // `asOf: string` is assignable to `SearchBrainInput`'s `asOf?: string`.
+    // The MCP suite's served-vs-source comparison cannot see it either — both
+    // sides read this same source, so they move together; only its own
+    // `required` tripwire fires, and this is the pin that names the argument.
+    //
+    // The consequence is not cosmetic. Every argument here is optional by
+    // design (`query` omitted browses recent entries; `include` omitted
+    // searches all three stores), so a stray required flag makes previously
+    // valid calls fail SDK validation before dispatch — returned as a bare
+    // `isError` result carrying the SDK's validation text, with no
+    // `request_id` and no envelope `code`, unlike every runtime refusal.
+    //
+    // `io: "input"` matters here for the same reason it does in the MCP
+    // suite: the default `io: "output"` reports a `.default()` field as
+    // required, which would make this fire on a change that does not affect
+    // what a caller must send.
+    const schema = z.toJSONSchema(searchBrainInputSchema, { io: "input" });
+    expect(
+      schema.required,
+      "a searchBrain argument is no longer optional. Every one of them is optional by design, and a required flag refuses previously valid calls at the SDK boundary — before dispatch, so without a request_id. If this is deliberate, update the argument's `.describe()` to say it is required and change this pin.",
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The third and LAST of the strings that CARRY THE RETRACTION PROMISE, and the
+ * one neither block above reaches: the `asOf` ARGUMENT description on this
+ * tool's input schema (#4933). The three are the system prompt
+ * (`SEARCH_BRAIN_DESCRIPTION`), the tool prose (`SEARCH_BRAIN_TOOL_DESCRIPTION`,
+ * both blocks above), and this argument. (searchBrain has a dozen-odd other
+ * `.describe()` strings; none of them say anything about retraction, which is
+ * why the count here is three and not twenty.) A model deciding whether to
+ * PASS `asOf` reads the argument, not the tool prose, and this one shipped
+ * promising "retracted facts never" — the same absolute, on a surface with its
+ * own reader.
+ *
+ * It was FOUR strings until #4954: `packages/mcp/src/tools.ts` re-declared the
+ * whole input schema rather than importing it, so its `asOf` twin was pinned
+ * separately in that package with a hand-mirrored copy of the rule below.
+ * There is now ONE schema (`lib/tools/search-brain-schema.ts`), which this
+ * tool's `inputSchema` is built from and which the MCP tool registers
+ * directly, so the rule is asserted once — here — and the MCP suite asserts
+ * only that the schema it SERVES is that module's.
  */
 describe("searchBrain `asOf` argument description — the carve-out travels with the promise (#4933)", () => {
   const asOfDescription = ((): string => {
@@ -666,9 +847,12 @@ describe("searchBrain `asOf` argument description — the carve-out travels with
   // facts (`lib/brain/search.ts`) — it is the caller's input problem and is
   // reported as such rather than degraded. A model deciding whether to combine
   // the two arguments reads THIS string, so the precondition living only in
-  // the refusal makes the refusal reachable by a well-behaved caller. The
-  // MCP twin re-declares this schema and had dropped the sentence; its own
-  // suite carries the same rule.
+  // the refusal makes the refusal reachable by a well-behaved caller. Until
+  // #4954 the MCP surface re-declared this argument and had dropped the
+  // sentence, so the rule needed a second copy in that package; it now serves
+  // this same schema, so this one pin covers both readers — and is the ONLY
+  // thing covering the MCP one. Weaken it and an external client's model is
+  // unguarded with nothing in `packages/mcp` to say so.
   it("states the `include` precondition the read hard-refuses without", () => {
     expect(
       statesIncludePrecondition(asOfDescription),

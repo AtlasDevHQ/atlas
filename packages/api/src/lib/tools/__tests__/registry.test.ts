@@ -42,6 +42,7 @@ const {
   nonDashboardRegistry,
   buildRegistry,
   buildHeadlessRegistry,
+  HEADLESS_REGISTRY_FALLBACK_WARNING,
   WORKSPACE_DASHBOARD_URL_RESOLVER,
   INTENTIONAL_TOOL_SHADOWS,
   TOOL_SHADOW_REMEDIATIONS,
@@ -479,7 +480,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
   // the parked turn ran under instead of re-deriving it, which is how the
   // surface silently widened across the approval boundary before this fix.
   it("omits both write verbs but keeps the core query tools", async () => {
-    const names = Object.keys((await buildHeadlessRegistry()).getAll());
+    const names = Object.keys((await buildHeadlessRegistry()).registry.getAll());
 
     expect(names).not.toContain("createDashboard");
     expect(names).not.toContain("correct_fact");
@@ -491,10 +492,19 @@ describe("buildHeadlessRegistry (#4936)", () => {
 
   it("keeps operator action tools opt-in behind ATLAS_ACTIONS_ENABLED", async () => {
     await withEnv({ ATLAS_ACTIONS_ENABLED: undefined }, async () => {
-      expect(Object.keys((await buildHeadlessRegistry()).getAll())).not.toContain("sendEmailReport");
+      expect(Object.keys((await buildHeadlessRegistry()).registry.getAll())).not.toContain("sendEmailReport");
     });
     await withEnv({ ATLAS_ACTIONS_ENABLED: "true" }, async () => {
-      expect(Object.keys((await buildHeadlessRegistry()).getAll())).toContain("sendEmailReport");
+      expect(Object.keys((await buildHeadlessRegistry()).registry.getAll())).toContain("sendEmailReport");
+    });
+  });
+
+  it("#4941 — a clean build carries no warnings (the degraded signal is not always-on)", async () => {
+    // The negative half of the pair below. Without it "warnings is non-empty on
+    // failure" is satisfiable by a seam that always warns, which would train
+    // every headless agent to open with an apology.
+    await withEnv({ ATLAS_ACTIONS_ENABLED: "true" }, async () => {
+      expect((await buildHeadlessRegistry()).warnings).toEqual([]);
     });
   });
 
@@ -509,7 +519,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
       async () => {
         await expect(buildRegistry()).rejects.toThrow("ATLAS_SANDBOX_URL");
 
-        const registry = await buildHeadlessRegistry();
+        const { registry } = await buildHeadlessRegistry();
         expect(registry).toBe(nonDashboardRegistry);
         const names = Object.keys(registry.getAll());
         expect(names).not.toContain("createDashboard");
@@ -518,4 +528,29 @@ describe("buildHeadlessRegistry (#4936)", () => {
       },
     );
   });
+
+  it("#4941 — the fallback path authors its own warning instead of degrading silently", async () => {
+    // The degrade above is deliberate and stays; what was missing is that the
+    // user was never told. `nonDashboardRegistry` carries no action tools and no
+    // executePython no matter how the env is set, so a turn that lands here has
+    // lost capability the operator believes is configured.
+    await withEnv(
+      { ATLAS_PYTHON_ENABLED: "true", ATLAS_SANDBOX_URL: undefined, ATLAS_ACTIONS_ENABLED: "true" },
+      async () => {
+        const { registry, warnings } = await buildHeadlessRegistry();
+        expect(registry).toBe(nonDashboardRegistry);
+        expect(warnings).toEqual([HEADLESS_REGISTRY_FALLBACK_WARNING]);
+        // Copy addressed to the MODEL, not to an operator reading logs — it has
+        // to be relayable as-is, which is the whole point of #4941.
+        expect(HEADLESS_REGISTRY_FALLBACK_WARNING).toContain("temporarily unavailable");
+      },
+    );
+  });
+
+  // The OTHER warning source — `buildRegistry`'s action-tool load failure, seen
+  // through this seam — needs the action module itself to fail, which is a
+  // file-wide `mock.module` this file cannot take (its top-level actions mock is
+  // what makes every `includeActions` test above work). It lives in
+  // `lib/__tests__/agent-query-degraded-tools.test.ts` alongside the call-site
+  // assertion that the warning reaches the model.
 });

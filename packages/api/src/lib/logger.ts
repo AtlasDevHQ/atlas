@@ -228,12 +228,63 @@ export const redactPaths = [
 const CREDENTIAL_URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s@/]*@/i;
 
 /**
+ * Driver diagnostic fields carried through the `Error` branch of
+ * {@link scrubErrSerializer} (#4941).
+ *
+ * The serializer rebuilds an `Error` from a whitelist, so every own property
+ * that is not named here is dropped. `code` and `constraint` are what separate
+ * "the write failed" from "WHICH invariant rejected the write" — `23505` a
+ * unique violation, `23503` a foreign key, `42P01` a missing relation, `53300`
+ * pool exhaustion — and without them a pg error in the log is materially less
+ * actionable than the raw driver error was. `code` is also carried by Node
+ * system errors (`ENOENT`) and most SDKs, so this is not pg-only.
+ *
+ * NOT extended to pg's other diagnostic fields, and that is the disclosure
+ * line: `detail` echoes ROW VALUES (`Key (email)=(a@b.com) already exists`),
+ * and `where`/`internalQuery` echo statement text. Those are user data. `code`
+ * is a fixed SQLSTATE and `constraint` is a schema identifier authored in this
+ * repo's migrations — neither is derived from a request, a credential, or a
+ * customer row.
+ */
+const ERROR_DIAGNOSTIC_FIELDS = ["code", "constraint"] as const;
+
+/**
+ * Longest value accepted for an {@link ERROR_DIAGNOSTIC_FIELDS} field.
+ *
+ * A SQLSTATE is 5 characters and a Postgres identifier is capped at 63 bytes
+ * (`NAMEDATALEN - 1`), so anything longer is not the field this whitelist
+ * reasoned about — it is some other library's `code` carrying a payload. Drop
+ * it rather than echo an unbounded value the disclosure argument above never
+ * covered.
+ */
+const ERROR_DIAGNOSTIC_MAX = 64;
+
+/**
+ * Lift the whitelisted diagnostic fields off an error, scrubbed and bounded.
+ * Non-string values are skipped so the serialized shape stays stable (some
+ * SDKs use a numeric `code`; a number is not what an operator greps for and
+ * carrying it would make the field's type depend on the thrower).
+ */
+function errorDiagnostics(err: Error): Record<string, string> {
+  const source = err as unknown as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const field of ERROR_DIAGNOSTIC_FIELDS) {
+    const raw = source[field];
+    if (typeof raw === "string" && raw.length > 0 && raw.length <= ERROR_DIAGNOSTIC_MAX) {
+      out[field] = errorMessage(raw);
+    }
+  }
+  return out;
+}
+
+/**
  * Pino `serializers.err` handler. Funnels every error-shaped value through
  * `errorMessage()` so a driver-echoed connection string (`postgres://u:p@h/db`)
  * gets its userinfo stripped before the line reaches Loki / Railway / Datadog.
  *
  * Accepts:
- *   - Error instance → `{ type, message, stack }` with scrubbed message + stack
+ *   - Error instance → `{ type, message, stack }` with scrubbed message +
+ *     stack, plus any {@link ERROR_DIAGNOSTIC_FIELDS} the error carries
  *   - pre-serialized error-shape object (`{ message, ... }`) → same object
  *     with scrubbed `message`
  *   - string → scrubbed string (this is the hot path — most call sites
@@ -252,6 +303,7 @@ export function scrubErrSerializer(value: unknown): unknown {
         type: value.name,
         message: errorMessage(value),
         ...(scrubbedStack !== undefined && { stack: scrubbedStack }),
+        ...errorDiagnostics(value),
       };
     }
     if (typeof value === "string") return errorMessage(value);

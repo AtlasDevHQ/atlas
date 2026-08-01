@@ -277,12 +277,18 @@ export async function executeAgentQuery(
     // instead of re-deriving it (or, as it did, omitting `tools` and inheriting
     // the workspace registry). We still pass `tools` explicitly: `runAgent`'s
     // default now fails closed, but the surface's choice belongs in the surface.
+    //
+    // #4941 — the seam also returns the warnings the MODEL is meant to relay
+    // (action tools failed to load; the whole build failed and we degraded to
+    // the core set). Dropping them is what made a headless agent say "I can't
+    // do that" where the web surface says "temporarily unavailable, retry".
     const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
-    const toolRegistry = await buildHeadlessRegistry();
+    const { registry: toolRegistry, warnings: registryWarnings } = await buildHeadlessRegistry();
 
     const result = await runAgent({
       messages,
       tools: toolRegistry,
+      ...(registryWarnings.length > 0 && { warnings: registryWarnings }),
       ...(options?.conversationId && { conversationId: options.conversationId }),
       ...(options?.answerStyle && { answerStyle: options.answerStyle }),
       ...(options?.abortSignal && { abortSignal: options.abortSignal }),

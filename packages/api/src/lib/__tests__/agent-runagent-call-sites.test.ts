@@ -467,8 +467,11 @@ const EXPECTED_REGISTRY: ReadonlyArray<readonly [file: string, expected: RegExp,
   ],
   [
     "packages/api/src/lib/chat-plugin/resume-turn.ts",
-    /tools:\s*await buildHeadlessRegistry\(\)/,
-    "approval resume must rebuild the SAME headless set the parked turn ran under",
+    /tools:\s*toolRegistry\b/,
+    "approval resume must rebuild the SAME headless set the parked turn ran under — the local " +
+      "binds buildHeadlessRegistry()'s registry half (#4941 split the seam's return into " +
+      "{ registry, warnings }, so the inline `await` spelling is gone). Identity backstopped by " +
+      "chat-plugin/__tests__/resume-turn.test.ts, which asserts the resumed tool NAMES",
   ],
   [
     "ee/src/proactive/answer-adapter.ts",

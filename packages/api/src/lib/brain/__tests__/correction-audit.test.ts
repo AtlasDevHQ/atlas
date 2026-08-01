@@ -592,9 +592,10 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     const errors = logCalls.filter((c) => c.level === "error");
     expect(errors).toHaveLength(1);
     expect(errors[0]?.message).toContain("may not have been committed");
-    // `scrubErrSerializer` rebuilds the error into `{ type, message, stack }`
-    // and DROPS everything else, so a pg rejection's diagnostics only reach an
-    // operator if they are lifted onto the payload as their own fields.
+    // The top-level lift, under stable keys this assertion pins. #4941 also put
+    // `code`/`constraint` on `scrubErrSerializer`'s whitelist, so they survive
+    // on the serialized `err` too — but that serializer is opt-in per pino
+    // instance, and this payload must carry the diagnostics either way.
     expect(errors[0]?.payload).toMatchObject({
       writeAttempted: true,
       pgCode: "42P01",

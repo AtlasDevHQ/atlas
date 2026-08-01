@@ -1061,10 +1061,10 @@ async function emitCorrectionAudit(args: {
         writeAttempted,
         ...pgErrorFields(err),
         // The Error OBJECT, matching `auth/middleware.ts`, so pino's
-        // `scrubErrSerializer` captures the stack. It rebuilds the error into
-        // `{ type, message, stack }` and DROPS everything else, which is why the
-        // pg fields are lifted out separately above rather than left to ride on
-        // the error.
+        // `scrubErrSerializer` captures the stack. It rebuilds the error from a
+        // whitelist and drops every own property outside it; `code` and
+        // `constraint` are on that whitelist as of #4941, so they now ride on
+        // the error too — see `pgErrorFields` for why the lift stays anyway.
         err: err instanceof Error ? err : new Error(String(err)),
       },
       // Two structurally different failures share this catch, and they need
@@ -1093,11 +1093,18 @@ async function emitCorrectionAudit(args: {
  * A pg rejection's diagnostic triple, lifted onto the log payload as its own
  * fields.
  *
- * Necessary because `scrubErrSerializer` reduces the `err` object to
- * `{ type, message, stack }`, so `code` / `constraint` — the difference between
- * "which failure mode was this" being an answer and a guess (`42P01` a missing
- * relation, `53300` pool exhaustion) — do not survive on the error itself.
- * `detail` is deliberately left off: pg echoes row values into it.
+ * `code` / `constraint` are the difference between "which failure mode was
+ * this" being an answer and a guess (`42P01` a missing relation, `53300` pool
+ * exhaustion). #4941 added both to `scrubErrSerializer`'s whitelist, so they
+ * now survive on the serialized `err` as well — this lift is no longer the only
+ * copy, and it stays for two reasons. It names them at the TOP level under
+ * stable keys the operator runbook and this module's test already key on; and
+ * it does not depend on `scrubErrSerializer` being installed, which is per-pino-
+ * instance and opt-in (a caller that builds its own logger without
+ * `serializers.err` still gets these fields from here).
+ *
+ * `detail` is deliberately left off, on both paths: pg echoes row values into
+ * it.
  */
 function pgErrorFields(err: unknown): { pgCode?: string; pgConstraint?: string } {
   if (typeof err !== "object" || err === null) return {};

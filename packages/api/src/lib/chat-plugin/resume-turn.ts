@@ -170,10 +170,17 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         // resume could actually have mutated the brain. Even where the gate did
         // hold, the posture is that a brain-mutating tool must not be on this
         // surface at all.
+        //
+        // #4941 — the seam also hands back the warnings the model must relay
+        // (degraded action tools, or a fallback to the core set). A resumed
+        // turn is as headless as the parked one, so it needs the same telling.
         const { buildHeadlessRegistry } = await import("@atlas/api/lib/tools/registry");
+        const { registry: toolRegistry, warnings: registryWarnings } =
+          await buildHeadlessRegistry();
         const agentResult = await runAgent({
           messages: [],
-          tools: await buildHeadlessRegistry(),
+          tools: toolRegistry,
+          ...(registryWarnings.length > 0 && { warnings: registryWarnings }),
           conversationId,
           resume: {
             runId: handle.runId,

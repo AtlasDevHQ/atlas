@@ -444,10 +444,36 @@ export const TOOL_SHADOW_REMEDIATIONS: Readonly<Record<string, string>> = {
     "Unset SALESFORCE_CLIENT_ID/SALESFORCE_CLIENT_SECRET to use the static-url Salesforce tool, or remove the static salesforce:// datasource to use the OAuth per-workspace tool.",
 };
 
-interface BuildRegistryResult {
+/**
+ * What every registry builder resolves to: the registry, plus the warnings the
+ * MODEL is meant to relay. A warning here is user-facing copy, not an operator
+ * log line — it is threaded into `runAgent({ warnings })`, which renders it
+ * under `## Warnings` in the system prompt so the agent says "temporarily
+ * unavailable, retry" instead of "I can't do that" (#4941).
+ *
+ * Exported because `buildHeadlessRegistry` returns the same shape and its
+ * callers destructure it; a parallel headless-only type would be one more place
+ * for the two to drift.
+ */
+export interface BuildRegistryResult {
   registry: ToolRegistry;
   warnings: string[];
 }
+
+/**
+ * The warning `buildHeadlessRegistry` authors when it falls back.
+ *
+ * Distinct from `buildRegistry`'s action-tool warning: that one says "the
+ * action tools are gone", this one says "the whole build failed, so everything
+ * beyond the core read tools is gone" — the fallback registry carries no action
+ * tools and no `executePython` regardless of how the env is configured.
+ * Exported so a test can pin the wording it asserts on rather than re-typing a
+ * substring that silently stops matching.
+ */
+export const HEADLESS_REGISTRY_FALLBACK_WARNING =
+  "The tool registry failed to build, so this session is running on the core query tools only — " +
+  "action tools (JIRA, email) and Python execution are unavailable. Inform the user that those " +
+  "capabilities are temporarily unavailable and suggest they check server logs or retry later.";
 
 /**
  * Build a dynamic ToolRegistry with optional action and Python support.
@@ -565,27 +591,33 @@ export async function buildRegistry(options?: {
  * A build failure falls back to `nonDashboardRegistry`, NOT the dashboards-
  * owning `defaultRegistry`, so both omissions hold on the error path too.
  *
- * Two known limits, deliberately out of #4936's scope and tracked separately:
+ * Returns {@link BuildRegistryResult}, not a bare registry (#4941). The bare
+ * shape had nowhere for `warnings` to go, so a degraded action-tool load was
+ * silently dropped on every headless surface and the model reported the
+ * capability as ABSENT rather than temporarily unavailable — a wrong
+ * explanation, not a missing one. Both callers thread the warnings into
+ * `runAgent({ warnings })`, matching what `api/routes/chat.ts` already does for
+ * the web surface. The fallback path below authors its own warning for the same
+ * reason.
+ *
+ * One known limit remains, deliberately out of scope and tracked separately:
  * this catch also swallows `buildRegistry`'s DELIBERATE fatal throws (#4940 —
  * every caller in the repo already does, and the fallback preserves the
- * isolation invariant by not carrying `executePython`), and the return type has
- * nowhere for `BuildRegistryResult.warnings` to go, so a degraded action-tool
- * load is invisible to the user on every headless surface (#4941).
+ * isolation invariant by not carrying `executePython`).
  */
-export async function buildHeadlessRegistry(): Promise<ToolRegistry> {
+export async function buildHeadlessRegistry(): Promise<BuildRegistryResult> {
   try {
-    const { registry } = await buildRegistry({
+    return await buildRegistry({
       includeActions: process.env.ATLAS_ACTIONS_ENABLED === "true",
       dashboardUrlResolver: null,
     });
-    return registry;
   } catch (err) {
     const { createLogger } = await import("@atlas/api/lib/logger");
     createLogger("registry").error(
       { err: err instanceof Error ? err : new Error(String(err)) },
       "Failed to build headless tool registry — falling back to the non-dashboard core registry",
     );
-    return nonDashboardRegistry;
+    return { registry: nonDashboardRegistry, warnings: [HEADLESS_REGISTRY_FALLBACK_WARNING] };
   }
 }
 

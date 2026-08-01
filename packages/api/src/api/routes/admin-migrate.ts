@@ -1042,7 +1042,11 @@ export async function importBundle(
         // region's registry already admitted, not a new class entering the
         // system (`lib/brain/sources.ts`). But the value is read downstream as
         // a discriminator — `isWarehouseDerived` refuses tier-1 correction on
-        // `WAREHOUSE_SOURCE` alone — so IF the unrecognised class is
+        // the warehouse CLASS. An unrecognised value is refused by
+        // `isEpisodeSource` first, so the predicate answers `false` without
+        // ever resolving a class (asking `episodeSourceClass` directly would
+        // THROW; `episodeSourceClassOf` is the total reader for stored rows).
+        // Tracked as #4964 — so IF the unrecognised kind is
         // warehouse-shaped, every fact derived from this episode silently keeps
         // a correction path ADR-0036 forbids. If it is a newer chat vendor,
         // keeping that path is correct. Nothing here can tell which, which is
@@ -1050,7 +1054,7 @@ export async function importBundle(
         // decision, accepting it INVISIBLY is not.
         log.warn(
           { orgId, episodeId: episode.id, source: episode.source, vocabulary: EPISODE_SOURCES },
-          "Imported a brain episode whose source class is outside the vocabulary — restored verbatim by design, but tier-1 correction refusal will not recognise facts derived from it",
+          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design, but tier-1 correction refusal will not recognise facts derived from it",
         );
       }
       await client.query(

@@ -3167,10 +3167,14 @@ export const brainEpisodes = pgTable(
     // Better-Auth organization id — workspace-global, TEXT/no-FK like the
     // other org-scoped Atlas tables.
     workspaceId: text("workspace_id").notNull(),
-    // Connector class/vendor ('slack', 'warehouse', 'human'). The vocabulary
-    // is CLOSED and lives in `lib/brain/sources.ts` — `isWarehouseDerived`
-    // reads this column as a discriminator, so a value outside it silently
-    // escapes tier-1 correction refusal. Plain `text` rather than an enum on
+    // The source KIND — a VENDOR within a class ('slack') or a CLASS with no
+    // vendor ('warehouse', 'human'). The vocabulary is CLOSED, and each kind's
+    // class/vendor is declared in `EPISODE_SOURCE_SPECS` in
+    // `lib/brain/sources.ts`. `reconcile.ts` copies this value into
+    // `brain_facts.provenance.source`, and `isWarehouseDerived` resolves THAT
+    // copy to a CLASS, refusing tier-1 correction on the warehouse one — so a
+    // value outside the vocabulary silently escapes that refusal. Nothing
+    // queries this column for the refusal itself. Plain `text` rather than an enum on
     // purpose: the region import restores a bundle's value verbatim.
     source: text("source").notNull(),
     // The source's own stable id — the dedupe key. Per-connector obligation:

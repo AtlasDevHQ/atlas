@@ -50,7 +50,15 @@ import {
   _resetCatalogIngestClaims,
 } from "@atlas/api/lib/knowledge/catalog-claims";
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
-import { EPISODE_SOURCES, isEpisodeSource, type EpisodeSource } from "@atlas/api/lib/brain/sources";
+import {
+  EPISODE_SOURCES,
+  episodeSourceClass,
+  episodeSourceVendor,
+  isEpisodeSource,
+  type EpisodeSource,
+  type EpisodeSourceClass,
+  type EpisodeSourceVendor,
+} from "@atlas/api/lib/brain/sources";
 
 /**
  * One record a source produced, ready to become a tier-3 episode row.
@@ -197,15 +205,26 @@ export interface BrainSourceConnector {
   /** The catalog row this connector serves — the cycle-walk dispatch key. */
   readonly catalogId: string;
   /**
-   * The connector class stamped into `brain_episodes.source` — ADR-0036 is
+   * The source KIND stamped into `brain_episodes.source` — ADR-0036 is
    * class-major, vendor-minor, and the closed vocabulary lives in
    * `lib/brain/sources.ts`.
    *
+   * A KIND, not a class: Slack stamps `"slack"`, which is a VENDOR within the
+   * chat class. `warehouse` and `human` happen to be spelled the same on both
+   * axes, which is exactly why the distinction is worth naming here.
+   *
    * A CLOSED type rather than a slug pattern, because downstream predicates
    * read this value as a discriminator: `isWarehouseDerived` refuses tier-1
-   * correction on `WAREHOUSE_SOURCE` alone, so a warehouse connector that
-   * named its class `"snowflake"` would fail that ADR-level invariant OPEN and
-   * nothing would go red. `sources.ts`'s header carries the full argument.
+   * correction on the WAREHOUSE CLASS alone, so a warehouse connector whose
+   * kind resolved to some other class would fail that ADR-level invariant OPEN
+   * and nothing would go red. `sources.ts`'s header carries the full argument.
+   *
+   * This is the connector's ONE identity declaration. Its class and vendor are
+   * derived from it (`episodeSourceClass` / `episodeSourceVendor`, and
+   * {@link findBrainSourceConnectors} on top of them) rather than declared
+   * beside it — two separately-stated fields could disagree, and then the
+   * stored column and the registry lookup would answer different questions
+   * about the same connector.
    */
   readonly source: EpisodeSource;
   createClient(
@@ -223,10 +242,10 @@ const registry = new Map<string, BrainSourceConnector>();
 
 /**
  * Register a brain source for its catalog row. Called once per source at
- * wiring time. Duplicate catalog ids, malformed source slugs, and classes
+ * wiring time. Duplicate catalog ids, malformed source slugs, and kinds
  * outside the vocabulary all fail loudly — a silent overwrite would let one
  * source shadow another's installs, a malformed slug would land unqueryable
- * garbage in `brain_episodes.source`, and an unknown class would land a value
+ * garbage in `brain_episodes.source`, and an unknown kind would land a value
  * that every downstream discriminator silently declines to recognise.
  */
 export function registerBrainSourceConnector(connector: BrainSourceConnector): void {
@@ -239,12 +258,13 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   // `EpisodeSource`, which covers every in-repo connector at compile time —
   // but a plugin is compiled separately and arrives here as data, so the
   // check has to exist at runtime too. Failing loudly is the whole point: the
-  // alternative is a novel class flowing into `provenance.source`, where
-  // `isWarehouseDerived` would simply stop matching and tier-1 correction
-  // refusal would fail OPEN without a single red test.
+  // alternative is a novel kind flowing into `provenance.source`, where
+  // `isEpisodeSource` refuses it before any class is resolved, so
+  // `isWarehouseDerived` answers `false` and tier-1 correction refusal fails
+  // OPEN without a single red test.
   if (!isEpisodeSource(connector.source)) {
     throw new Error(
-      `Brain source class "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to lib/brain/sources.ts, and if it is warehouse-shaped it must BE "warehouse" or tier-1 correction refusal stops applying to it`,
+      `Brain source "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to EPISODE_SOURCE_SPECS in lib/brain/sources.ts, declaring its class. If it is warehouse-shaped it MUST declare class: "warehouse", or tier-1 correction refusal will not apply to any fact derived from it`,
     );
   }
   if (registry.has(connector.catalogId)) {
@@ -262,6 +282,88 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
 
 export function getBrainSourceConnector(catalogId: string): BrainSourceConnector | undefined {
   return registry.get(catalogId);
+}
+
+/** Which connectors to resolve. An omitted field does not constrain. */
+export interface BrainSourceConnectorQuery {
+  /** ADR-0036's class-major axis — `chat`, `warehouse`, … */
+  readonly sourceClass?: EpisodeSourceClass;
+  /**
+   * The vendor-minor axis, typed to the vendors that MEMBERS ACTUALLY NAME
+   * rather than to `string`. A typo would otherwise compile and return `[]`,
+   * which is indistinguishable from "that connector is not installed" — for the
+   * M3 webhook fast-path, a silently dropped event rather than a crash.
+   *
+   * There is deliberately no `null` here, and it is not an oversight. "The
+   * sources with no vendor" is not a third state to query: `EpisodeSourceSpec`
+   * (`lib/brain/sources.ts`) makes vendor-ness a property OF the class, so that
+   * set is exactly `sourceClass: "warehouse" | "human"` and is already
+   * expressible on the other axis.
+   *
+   * Be exact about what dropping it bought, because it is NOT the widening.
+   * This repo does not enable `exactOptionalPropertyTypes`, so `{ vendor:
+   * maybeVendor }` still type-checks and an explicit `undefined` still means
+   * "do not constrain" — that behaviour is retained deliberately and pinned in
+   * `episode-sync-archive.test.ts`. What the two-state shape removes is the
+   * ambiguity of INTENT: a caller who meant "the vendorless set" can no longer
+   * express it on this axis at all, so they cannot silently receive "all
+   * sources" instead.
+   *
+   * ⚠️ Composing this with `episodeSourceVendor` — "find this source's
+   * siblings" — therefore needs a BRANCH, not a coalesce. That accessor returns
+   * `EpisodeSourceVendor | null`, which does not fit here, and the repair a
+   * caller reaches for (`?? undefined`) would turn "this source has no vendor"
+   * into "match everything", relocating the over-returning bug from the type to
+   * the call site. Write it as:
+   *
+   *     const v = episodeSourceVendor(source);
+   *     const found = v === null
+   *       ? findBrainSourceConnectors({ sourceClass: episodeSourceClass(source) })
+   *       : findBrainSourceConnectors({ vendor: v });
+   */
+  readonly vendor?: EpisodeSourceVendor;
+}
+
+/**
+ * Resolve registered connectors by ADR-0036's class-major / vendor-minor axes
+ * (#4963) — the class+vendor lookup the catalog-id map cannot serve, since a
+ * catalog id is an INSTALL-routing key and says nothing about what class of
+ * evidence the connector produces.
+ *
+ * Both axes are read off the connector's declared `source` through
+ * `lib/brain/sources.ts`, never off fields the connector states separately. A
+ * connector that could name its own class alongside its stored value could name
+ * them INCONSISTENTLY, and then "the chat connectors" and "the connectors whose
+ * episodes are chat-class" would be two different sets — with the ACL and
+ * extraction paths keying off the stored value and this lookup keying off the
+ * declaration. One declared fact, both axes derived, no way to disagree.
+ *
+ * Returns an array, not a single connector: nothing bounds a class+vendor pair
+ * to one catalog row, and two rows for one vendor (say Slack history and a
+ * later Slack-canvases source) is a shape the ADR permits. A caller that needs
+ * exactly one must say so itself rather than inherit a uniqueness this registry
+ * never enforced.
+ *
+ * The two axes are AND-ed. An unsatisfiable pair (the slack vendor within the
+ * warehouse class) resolves to nothing, which is the only honest answer — a
+ * fallback to either axis alone would route warehouse work to a chat connector.
+ *
+ * No production caller today; #4967's webhook fast-path is the one this exists
+ * for, and #4965/#4966 are the connectors that make the class axis non-trivial.
+ */
+export function findBrainSourceConnectors(
+  query: BrainSourceConnectorQuery = {},
+): readonly BrainSourceConnector[] {
+  const { sourceClass, vendor } = query;
+  return [...registry.values()].filter((connector) => {
+    if (sourceClass !== undefined && episodeSourceClass(connector.source) !== sourceClass) {
+      return false;
+    }
+    if (vendor !== undefined && episodeSourceVendor(connector.source) !== vendor) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /** The catalog ids with a registered brain source — the cycle walk's filter. */

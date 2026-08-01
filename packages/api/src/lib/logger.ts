@@ -312,7 +312,9 @@ function errorDiagnostics(err: Error): Partial<Record<ErrorDiagnosticField, stri
  *     this branch only: a PRE-SERIALIZED error-shape object (below) is passed
  *     through field-for-field. No live producer does that — pg's
  *     `DatabaseError` extends `Error`, so a real pg rejection always takes THIS
- *     branch — but a future one that logged a raw pg object would carry `detail`
+ *     branch — but a future one logging a raw pg object would carry `detail`
+ *     straight through, which is the limit `logger.test.ts`'s
+ *     pre-serialized-object test pins
  *   - pre-serialized error-shape object (`{ message, ... }`) → same object
  *     with scrubbed `message`
  *   - string → scrubbed string (this is the hot path — most call sites

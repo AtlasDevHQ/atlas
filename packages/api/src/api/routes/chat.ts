@@ -2190,11 +2190,12 @@ chat.openapi(chatResumeRoute, async (c) => {
             }
           } catch (err) {
             // #4941 — the initial turn restores the pre-merge registry and warns
-            // the model; this path did neither. A `freeze()` throw left
-            // `toolRegistry` holding the half-merged registry while the log said
-            // "continuing without", and the user heard nothing at all — which
-            // bites harder on RESUME, where the tool call just approved may
-            // itself be the plugin tool that vanished.
+            // the model; this path did neither. The restore is symmetry rather
+            // than a live fix (every statement in the `try` throws BEFORE the
+            // assignment lands, so `toolRegistry` already holds its pre-merge
+            // value) — the real gap is the warning: a resumed turn whose plugin
+            // tools vanished told the user nothing, which bites hardest when the
+            // call the user just APPROVED is itself the plugin tool.
             toolRegistry = prePluginResumeRegistry;
             const errObj = err instanceof Error ? err : new Error(String(err));
             log.error({ err: errObj, conversationId, runId: handle.runId }, "Failed to merge plugin tools on resume — continuing without");

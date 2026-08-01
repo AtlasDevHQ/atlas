@@ -1112,12 +1112,12 @@ async function emitCorrectionAudit(args: {
  * The read is guarded because `emitCorrectionAudit` is contracted NEVER to
  * throw and this runs inside it, on an already-committed correction. A plain
  * destructure would invoke an accessor; if that accessor threw, the throw would
- * escape into `applyCorrection`'s catch and tell the caller to RETRY a
- * correction that already landed — a duplicate brain mutation authored by a
- * logging helper. Own non-accessor reads plus a catch, matching
- * `errorDiagnostics`. The catch also covers `diagnosticValue` being absent under
- * a partial `mock.module` in some other test file: the cost is a missing log
- * field, never a throw.
+ * escape `correctFact` — the audit call sits after its try/catch — and reach a
+ * caller whose error copy says "nothing was changed, retry", inviting a
+ * duplicate brain mutation authored by a logging helper. Hence own non-accessor
+ * reads (an accessor descriptor has no `value`, so the getter is never called)
+ * plus a `catch` for a Proxy that traps the descriptor lookup itself — the two
+ * defenses `errorDiagnostics` uses, for the same reasons.
  */
 function pgErrorFields(err: unknown): { pgCode?: string; pgConstraint?: string } {
   if (typeof err !== "object" || err === null) return {};

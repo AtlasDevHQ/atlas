@@ -1,9 +1,10 @@
 /**
  * #4941 — a degraded tool load on a HEADLESS surface reaches the model.
  *
- * `buildRegistry` authors a warning addressed to the agent ("...are unavailable
- * for this session. Inform the user and suggest they check server logs or retry
- * later"), and `api/routes/chat.ts` threads it into `runAgent({ warnings })` so
+ * `buildRegistry` authors a warning addressed to the agent
+ * (`ACTION_TOOLS_UNAVAILABLE_WARNING` — quoted by name, not inlined, because
+ * this copy has already drifted once), and `api/routes/chat.ts` threads it into
+ * `runAgent({ warnings })` so
  * a web user hears "temporarily unavailable, retry". Every headless surface that
  * BUILDS a registry — the SDK query route, Slack, MCP, the scheduler — goes
  * through `executeAgentQuery` (the chat-platform approval resume calls the seam

@@ -14,14 +14,16 @@
  * ## Why this is not in `error-scrub.ts`
  *
  * It belongs there thematically, and `errorMessage` is imported FROM there. But
- * seven test files partially `mock.module("@atlas/api/lib/audit/error-scrub")`,
- * supplying only `errorMessage` (+ sometimes `causeToError`), and bun fails the
- * whole import with "Export named 'X' not found" when a consumer names a symbol
- * a partial mock omits — a repo-wide landmine that fires in an unrelated file
- * on an unrelated PR. Adding an export to a widely-partially-mocked module is
- * the trigger; adding a NEW module nobody mocks is not. Those seven mocks all
- * supply `errorMessage`, so this module's own import of it is safe under every
- * one of them.
+ * ten test files `mock.module("@atlas/api/lib/audit/error-scrub")` — eight under
+ * `packages/api`, two under `ee/` — and nine of them reproduce its full
+ * two-export surface exactly. That completeness is precisely what makes a THIRD
+ * export a landmine: bun fails the whole import with "Export named 'X' not
+ * found" the moment a consumer names a symbol a mock omits, and the failure
+ * lands in an unrelated file on an unrelated PR. (Adding `diagnosticValue`
+ * there broke `conversations-budget.test.ts`, the one file mocking only
+ * `errorMessage`.) Adding a NEW module nobody mocks has no such blast radius,
+ * and all ten mocks supply `errorMessage`, so this module's own import is safe
+ * under every one of them.
  */
 
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";

@@ -163,8 +163,11 @@ void mock.module("@atlas/api/lib/conversations", () => ({
   updateConversationScope: mock(() => Promise.resolve({ ok: true as const })),
 }));
 
+// Hoisted (#4941) so a test can drive the plugin-merge failure branch, which
+// the resume path used to swallow entirely.
+const mockGetPluginTools: Mock<() => unknown> = mock(() => undefined);
 void mock.module("@atlas/api/lib/plugins/tools", () => ({
-  getPluginTools: mock(() => undefined),
+  getPluginTools: mockGetPluginTools,
   setPluginTools: () => {},
   getContextFragments: () => [],
   setContextFragments: () => {},
@@ -232,6 +235,8 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
       handle: { runId: "run-abc", transcript: [{ role: "user", content: "hi" }], priorStepIndex: 2, leaseOwner: "lease-1" },
     });
     mockFinishResume.mockReset();
+    mockGetPluginTools.mockReset();
+    mockGetPluginTools.mockReturnValue(undefined);
     mockCheckAgentBillingGate.mockReset();
     mockCheckAgentBillingGate.mockResolvedValue({ allowed: true as const });
     mockRunAgent.mockReset();
@@ -338,6 +343,24 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
       } finally {
         delete process.env.ATLAS_ACTIONS_ENABLED;
       }
+    });
+
+    it("relays a plugin-merge failure, matching the initial turn", async () => {
+      // The initial web turn warns the model when the plugin merge throws
+      // (pinned in chat.test.ts); the resume path logged and said nothing. It
+      // matters MORE here: the parked call the user just approved may itself be
+      // the plugin tool that failed to load.
+      mockGetPluginTools.mockImplementationOnce(() => {
+        throw new Error("plugin tool has empty name");
+      });
+
+      const res = await app.fetch(resumeRequest());
+      expect(res.status).toBe(200);
+
+      const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+      expect(arg.warnings).toHaveLength(1);
+      expect(arg.warnings![0]).toContain("Plugin tools failed to load");
+      expect(arg.warnings![0]).toContain("plugin tool has empty name");
     });
 
     it("passes no warnings when actions are not requested — the signal is not always-on", async () => {

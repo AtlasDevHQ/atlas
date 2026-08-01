@@ -401,9 +401,12 @@ describe("logger", () => {
     });
 
     test("a numeric code is coerced, not dropped", () => {
-      // `mysql2` and Node both use numeric codes; dropping real signal to keep
-      // the field's type stable is a worse trade than coercing, which keeps
-      // both. Non-numeric, non-string values are still skipped.
+      // Not pg / mysql2 / Node — all three put a STRING in `code` (`23505`,
+      // `ER_DUP_ENTRY`, `ENOENT`) and the integer in `errno`, which is not a
+      // diagnostic field. The coercion is for some other SDK that puts an
+      // integer in `code`: keeping it costs nothing and keeps the serialized
+      // field's type from varying by thrower, which dropping would not.
+      // Non-numeric, non-string values are still skipped.
       const numeric = Object.assign(new Error("http failure"), { code: 500 });
       expect((scrubErrSerializer(numeric) as Record<string, unknown>).code).toBe("500");
 
@@ -476,10 +479,13 @@ describe("logger", () => {
       expect(out.code).toBeUndefined();
     });
 
-    test("a whitelisted field can never clobber the scrubbed core fields", () => {
-      // The diagnostics spread runs FIRST, so even an own `message`/`stack` on
-      // the thrower loses to the scrubbed value. (`message` is not on today's
-      // whitelist; this pins the ORDER that keeps a future addition harmless.)
+    test("a thrower's own fields never displace the scrubbed core fields", () => {
+      // What this pins is the OUTCOME: `message` is the scrubbed one, and the
+      // diagnostics ride alongside. The ordering that guarantees it (diagnostics
+      // spread first) is belt to the type's braces —
+      // `Partial<Record<ErrorDiagnosticField, string>>` already makes a
+      // colliding key unspellable, so reordering alone is not observable today
+      // and this test does not claim to catch it.
       const shadowing = Object.assign(new Error("real postgres://u:pw@h/db message"), {
         code: "23505",
       });

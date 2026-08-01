@@ -19,7 +19,11 @@ import {
 import {
   chatChannelAudienceId,
   deriveChatChannelGrant,
+  deriveMeetingParticipantGrant,
   isUsableGrant,
+  meetingAudienceId,
+  parseChatChannelAudienceId,
+  parseMeetingAudienceId,
 } from "@atlas/api/lib/brain/ingest/grant";
 
 describe("deriveChatChannelGrant", () => {
@@ -118,5 +122,128 @@ describe("isUsableGrant", () => {
     expect(isUsableGrant(["role:member"])).toBe(true);
     expect(isUsableGrant(["user:u-1"])).toBe(true);
     expect(isUsableGrant([`${AUDIENCE_PREFIX}x`])).toBe(true);
+  });
+});
+
+describe("deriveMeetingParticipantGrant (#4965)", () => {
+  const COMPLETE = { source: "zoom", meetingId: "4kd8sZTiSHagYbwYtLpMRA==", rosterComplete: true };
+
+  it("maps a meeting to a meeting-scoped audience, and the token is USABLE", () => {
+    const grant = deriveMeetingParticipantGrant(COMPLETE);
+    expect(grant).toEqual([`${AUDIENCE_PREFIX}meeting:zoom:4kd8sZTiSHagYbwYtLpMRA==`]);
+    // Asserted through `parseGrant`, not against the literal, for the reason in
+    // this file's header: a grant that passes 0180's CHECK but names no
+    // principal is legal, invisible, and permanently unpublishable.
+    expect(parseGrant(grant ?? []).principals).toEqual([
+      { kind: "audience", audienceId: "meeting:zoom:4kd8sZTiSHagYbwYtLpMRA==" },
+    ]);
+    expect(isUsableGrant(grant ?? [])).toBe(true);
+  });
+
+  it("NEVER mints the org principal — a meeting has no public mode", () => {
+    // The asymmetry with `deriveChatChannelGrant` stated as a law rather than
+    // left implicit. There is no input that should produce `[org]` here, so the
+    // sweep is over every shape a caller could plausibly pass — including the
+    // ones a "generic" deriver would have routed to the public arm.
+    for (const participation of [
+      COMPLETE,
+      { ...COMPLETE, meetingId: "abc123" },
+      { ...COMPLETE, rosterComplete: false },
+      { source: "zoom", meetingId: "", rosterComplete: true },
+      { source: "", meetingId: "abc", rosterComplete: true },
+    ]) {
+      const grant = deriveMeetingParticipantGrant(participation);
+      expect([participation.meetingId, grant?.includes(ORG_PRINCIPAL) ?? false]).toEqual([
+        participation.meetingId,
+        false,
+      ]);
+    }
+  });
+
+  // ── The BLOCK arm ────────────────────────────────────────────────────────
+  // Each of these must return null so the caller abandons the meeting. The
+  // failure they guard against is not "returns the wrong grant" — it is
+  // "returns a grant at all", because any grant here is one Atlas could not
+  // establish the audience for.
+
+  it("BLOCKS on an incomplete roster — the reconcile would revoke what it failed to fetch", () => {
+    // The load-bearing one. A partial roster is not merely an under-grant: it
+    // is what `reconcileAudienceMembership` DELETES against, so it would revoke
+    // every member the vendor read missed, and the damage looks exactly like
+    // correct fail-closed behaviour from every surface.
+    expect(deriveMeetingParticipantGrant({ ...COMPLETE, rosterComplete: false })).toBeNull();
+    // And it blocks REGARDLESS of how well-formed everything else is — the
+    // guard is not reachable only via a malformed id.
+    expect(
+      deriveMeetingParticipantGrant({
+        source: "zoom",
+        meetingId: "4kd8sZTiSHagYbwYtLpMRA==",
+        rosterComplete: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("BLOCKS on a blank or whitespace meeting id or source", () => {
+    for (const participation of [
+      { source: "zoom", meetingId: "", rosterComplete: true },
+      { source: "zoom", meetingId: "   ", rosterComplete: true },
+      { source: "", meetingId: "abc", rosterComplete: true },
+      { source: "  ", meetingId: "abc", rosterComplete: true },
+    ]) {
+      expect(deriveMeetingParticipantGrant(participation)).toBeNull();
+    }
+  });
+
+  it("BLOCKS on a colon-bearing source rather than mis-splitting it", () => {
+    // `zoom:eu` would round-trip to `{ source: "zoom", meetingId: "eu:4kd8…" }`
+    // — an audience id nobody is a member of, minted silently. The chat builder
+    // documents this constraint; the meeting builder enforces it, because the
+    // transcript class ships with a second vendor already on the roadmap.
+    expect(deriveMeetingParticipantGrant({ ...COMPLETE, source: "zoom:eu" })).toBeNull();
+    expect(meetingAudienceId("zoom:eu", "abc")).toBeNull();
+  });
+});
+
+describe("the meeting audience id round-trips", () => {
+  it("parses back to the halves it was built from", () => {
+    const id = meetingAudienceId("zoom", "4kd8sZTiSHagYbwYtLpMRA==");
+    expect(id).not.toBeNull();
+    expect(parseMeetingAudienceId(id ?? "")).toEqual({
+      source: "zoom",
+      meetingId: "4kd8sZTiSHagYbwYtLpMRA==",
+    });
+  });
+
+  it("takes the REMAINDER after the second separator, so a colon-bearing meeting id survives", () => {
+    // Zoom's cannot contain a colon (base64), but the id grammar is per-vendor
+    // and the next vendor's is not this one's. Truncating to a prefix would
+    // match no configured meeting — fail-closed, but for a reason nobody could
+    // find.
+    expect(parseMeetingAudienceId("meeting:acme:a:b:c")).toEqual({
+      source: "acme",
+      meetingId: "a:b:c",
+    });
+  });
+
+  it("refuses ids that do not name a meeting — including the CHAT namespace", () => {
+    // The cross-namespace direction is the point: #4825's oversight view labels
+    // discovered-vs-configured audiences by parsing them, and a parser that
+    // accepted the other namespace would label a chat channel as a meeting.
+    for (const notMeeting of [
+      chatChannelAudienceId("slack", "C01ABCDEF"),
+      "meeting:",
+      "meeting:zoom",
+      "meeting:zoom:",
+      "meeting::abc",
+      "audience:meeting:zoom:abc",
+      "",
+    ]) {
+      expect([notMeeting, parseMeetingAudienceId(notMeeting)]).toEqual([notMeeting, null]);
+    }
+  });
+
+  it("and the chat parser refuses a MEETING id — the namespaces are disjoint both ways", () => {
+    const meeting = meetingAudienceId("zoom", "abc");
+    expect(parseChatChannelAudienceId(meeting ?? "")).toBeNull();
   });
 });

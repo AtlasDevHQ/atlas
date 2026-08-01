@@ -44,16 +44,40 @@ export interface TranscriptTurn {
 }
 
 /**
- * A cue payload's `Speaker: text` split.
+ * A cue payload's `Speaker: text` split — the CANDIDATE match. Whether the
+ * label is really a name is decided by {@link looksLikeSpeakerLabel}.
  *
- * The colon must be followed by a SPACE and the label must be short and free of
- * sentence punctuation. Without those bounds, `We tested this: it worked` parses
- * as a speaker named "We tested this" — and because the label then flows into
- * the merged body as an attribution, the extractor would attribute the claim to
- * a person who does not exist. Erring toward "no speaker" is the safe direction:
- * an unlabelled turn is a quality loss, a mis-attributed one is a false fact.
+ * The colon must be followed by a space or tab, which alone rules out `12:30`
+ * and `https://…`.
  */
 const SPEAKER_LINE = /^([^:\n]{1,60}):[ \t](.*)$/s;
+
+/** Most words a speaker label may have. "External Guest (Acme Corp)" is four. */
+const MAX_SPEAKER_WORDS = 5;
+
+/**
+ * Is this candidate label a NAME rather than the first clause of a sentence?
+ *
+ * The length bound alone is not enough, and that is worth stating because it
+ * was the first thing tried: `So we tested the whole pipeline end to end and:
+ * it worked` has a 46-character prefix, well inside any reasonable character
+ * limit, and it parses as a speaker named after half a sentence. The label then
+ * flows into the merged body as an ATTRIBUTION and the extractor attributes the
+ * claim to a person who does not exist — a false fact with a plausible author,
+ * which is worse than an unattributed one.
+ *
+ * So the test is WORD COUNT plus sentence punctuation. A name is a few words
+ * and carries no `.`/`?`/`!`/`,`.
+ *
+ * It errs toward "no speaker" on purpose, and the cost is real and accepted: a
+ * label like `Smith, Alice` (comma) or a long org-qualified display name falls
+ * back to unlabelled. An unlabelled turn is a QUALITY loss that #4771 can still
+ * extract from; a mis-attributed one is a false fact. The asymmetry decides it.
+ */
+function looksLikeSpeakerLabel(label: string): boolean {
+  if (/[.?!,]/.test(label)) return false;
+  return label.split(/\s+/).filter((word) => word !== "").length <= MAX_SPEAKER_WORDS;
+}
 
 /** Cue payloads Zoom emits that carry no speech. */
 const NON_SPEECH_PAYLOADS = new Set(["", "[silence]", "[inaudible]", "[blank_audio]"]);
@@ -82,12 +106,15 @@ export function parseVtt(raw: string): readonly TranscriptTurn[] {
       const joined = payload.join(" ").trim();
       if (!NON_SPEECH_PAYLOADS.has(joined.toLowerCase())) {
         const match = SPEAKER_LINE.exec(joined);
-        if (match === null) {
+        const label = match === null ? null : match[1].trim();
+        const text = match === null ? "" : match[2].trim();
+        if (match === null || label === null || !looksLikeSpeakerLabel(label) || text === "") {
+          // No label, a label that reads as prose, or a label with an empty
+          // body (a stray colon) — keep the payload WHOLE and unattributed
+          // rather than splitting it on a colon that meant something else.
           turns.push({ speaker: null, text: joined });
         } else {
-          const text = match[2].trim();
-          // A label with an empty body is not a turn — it is a stray colon.
-          if (text !== "") turns.push({ speaker: match[1].trim(), text });
+          turns.push({ speaker: label, text });
         }
       }
     }

@@ -247,7 +247,22 @@ export function createZoomTranscriptClient(
   const audienceDeps = options.audienceDeps ?? {};
 
   /**
-   * One meeting → its transcript episodes, or a reason it produced none.
+   * One meeting → its transcript episodes, plus whether it was BLOCKED.
+   *
+   * `blocked` is returned rather than left to the caller to infer from an empty
+   * episode list, because the two empty cases mean opposite things and only one
+   * of them may let the mark advance:
+   *
+   *   - out of scope, or no transcript file yet → nothing to ingest, the window
+   *     IS covered, the mark may pass;
+   *   - audience underivable → the window is NOT covered. The meeting must be
+   *     retried, so the pass reports `coverageIncomplete` and the high-water
+   *     mark stays put.
+   *
+   * Conflating them is how a blocked meeting gets skipped permanently: the pass
+   * reports itself fully covered, the mark advances past the meeting, and no
+   * later cycle ever looks at it again. (That is not hypothetical — the first
+   * cut of this function returned a bare array and did exactly that.)
    *
    * The AUDIENCE is established FIRST, before a byte of transcript is fetched.
    * That ordering is the block arm: a meeting Atlas cannot grant must not have
@@ -261,14 +276,20 @@ export function createZoomTranscriptClient(
     budget: { episodes: number },
     skips: TranscriptSkips,
     warnings: string[],
-  ): Promise<readonly BrainEpisodeRecord[]> {
+  ): Promise<{ readonly episodes: readonly BrainEpisodeRecord[]; readonly blocked: boolean }> {
     if (grantedHosts !== null && (meeting.hostId === null || !grantedHosts.has(meeting.hostId))) {
       // Outside the configured scope. Not a skip to report — the admin asked
-      // for exactly these hosts — so it is not counted in `skips`.
-      return [];
+      // for exactly these hosts — so it is not counted in `skips`, and the
+      // window IS covered: there was nothing here to ingest.
+      return { episodes: [], blocked: false };
     }
     const transcripts = meeting.files.filter(isTranscriptFile);
-    if (transcripts.length === 0) return [];
+    // No transcript file YET is not a block. Zoom publishes the VTT minutes
+    // after the recording, so this is the ordinary state of a just-finished
+    // meeting — and #4967's `recording.transcript_completed` webhook is what
+    // picks it up promptly. The mark may pass; the next poll re-reads the
+    // frontier day anyway.
+    if (transcripts.length === 0) return { episodes: [], blocked: false };
 
     // ── The BLOCK arm ─────────────────────────────────────────────────────
     const roster = await readMeetingRoster(token, meeting.uuid, audienceDeps);
@@ -292,7 +313,7 @@ export function createZoomTranscriptClient(
         { workspaceId: options.workspaceId, meetingUuid: meeting.uuid, reason },
         "Zoom meeting blocked — no access grant could be derived, so nothing was ingested from it",
       );
-      return [];
+      return { episodes: [], blocked: true };
     }
 
     // Membership BEFORE episodes — see `audience.ts` for why the two failure
@@ -380,7 +401,7 @@ export function createZoomTranscriptClient(
         "Zoom meeting audience reconciled — some participants matched no Atlas user and were not granted",
       );
     }
-    return episodes;
+    return { episodes, blocked: false };
   }
 
   return {
@@ -463,8 +484,14 @@ export function createZoomTranscriptClient(
                 skips,
                 warnings,
               );
-              episodes.push(...produced);
-              remainingEpisodes -= produced.length;
+              episodes.push(...produced.episodes);
+              remainingEpisodes -= produced.episodes.length;
+              // A blocked meeting leaves its window UNCOVERED. Without this the
+              // pass would report itself fully covered, the high-water mark
+              // would advance past the meeting, and no later cycle would ever
+              // look at it again — a permanent silent skip on the SAFETY arm,
+              // which is the worst place to have one.
+              if (produced.blocked) coverageIncomplete = true;
             } catch (err) {
               // Per-meeting isolation, matching the engine's per-collection
               // posture. A rate limit is the one failure that also stops the

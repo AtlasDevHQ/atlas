@@ -34,8 +34,10 @@ import {
   EPISODE_SOURCES,
   HUMAN_SOURCE,
   SLACK_SOURCE,
+  TRANSCRIPT_CLASS,
   WAREHOUSE_CLASS,
   WAREHOUSE_SOURCE,
+  ZOOM_SOURCE,
   episodeSourceClass,
   episodeSourceVendor,
   isEpisodeSource,
@@ -46,6 +48,7 @@ import {
 } from "@atlas/api/lib/brain/sources";
 import { CORRECTION_EPISODE_INSERT_SQL, isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
+import { ZOOM_TRANSCRIPT_SOURCE } from "@atlas/api/lib/brain/ingest/zoom/config";
 
 describe("the episode-source vocabulary", () => {
   test("is a CLOSED key set — widening it has to fail this test first", () => {
@@ -55,7 +58,7 @@ describe("the episode-source vocabulary", () => {
     // reads. A test that merely checked membership would wave `"snowflake"`
     // through. (Preferring the stored value `WAREHOUSE_SOURCE` too is a
     // separate, weaker recommendation — see that header.)
-    expect([...EPISODE_SOURCES]).toEqual(["slack", "warehouse", "human"]);
+    expect([...EPISODE_SOURCES]).toEqual(["slack", "zoom", "warehouse", "human"]);
     // Each named export is pinned to its VALUE, not merely to membership. This
     // file exists to defeat self-referential agreement, so it must not commit
     // the same sin: with only an `every(isEpisodeSource)` check, swapping
@@ -64,8 +67,9 @@ describe("the episode-source vocabulary", () => {
     // `correction.ts` reads, so the two stay agreed while both are wrong).
     // These three lines are the only place the constants are anchored to
     // strings, and that is deliberate — everything else asserts agreement.
-    expect([SLACK_SOURCE, WAREHOUSE_SOURCE, HUMAN_SOURCE]).toEqual([
+    expect([SLACK_SOURCE, ZOOM_SOURCE, WAREHOUSE_SOURCE, HUMAN_SOURCE]).toEqual([
       "slack",
+      "zoom",
       "warehouse",
       "human",
     ]);
@@ -99,14 +103,20 @@ describe("the class/vendor axes (#4963)", () => {
     // one way to change what this vocabulary means (add a stored value); now
     // there are two, and a class arriving without a member is the quieter one
     // — it adds an arm no `switch` ever reaches and no producer ever stamps.
-    // ADR-0036's unshipped classes (transcripts, email, docs) are deliberately
-    // NOT pre-declared here; each lands with its first connector.
-    expect([...EPISODE_SOURCE_CLASSES]).toEqual(["chat", "warehouse", "human"]);
+    // ADR-0036's remaining unshipped classes (email, docs) are deliberately
+    // NOT pre-declared here; each lands with its first connector. `transcript`
+    // stopped being one of them when #4965 landed the Zoom connector — it is
+    // here because a member produces it, not because the ADR names it.
+    expect([...EPISODE_SOURCE_CLASSES]).toEqual(["chat", "transcript", "warehouse", "human"]);
     // Anchored to VALUES, for the same reason the source constants are: every
     // other assertion in this file is about agreement, so if the constants are
     // never pinned to strings, swapping `CHAT_CLASS` and `WAREHOUSE_CLASS`
     // leaves the whole file green while tier-1 refusal points at chat.
-    expect([CHAT_CLASS, WAREHOUSE_CLASS]).toEqual(["chat", "warehouse"]);
+    expect([CHAT_CLASS, TRANSCRIPT_CLASS, WAREHOUSE_CLASS]).toEqual([
+      "chat",
+      "transcript",
+      "warehouse",
+    ]);
   });
 
   test("every stored source declares its class AND its vendor", () => {
@@ -123,6 +133,7 @@ describe("the class/vendor axes (#4963)", () => {
       ),
     ).toEqual({
       slack: ["chat", "slack"],
+      zoom: ["transcript", "zoom"],
       warehouse: ["warehouse", null],
       human: ["human", null],
     });
@@ -184,11 +195,20 @@ describe("the class/vendor axes (#4963)", () => {
     // type-level guarantee gets a guard at all.
     // @ts-expect-error a chat member MUST name its vendor — two chat vendors sharing one stored value share a dedupe namespace
     const chatWithoutVendor: EpisodeSourceSpec = { class: "chat", vendor: null };
+    // A transcript member MUST name its vendor for the SAME reason, and this
+    // line is the one that proves #4965 widened the vendor-grained arm rather
+    // than bolting `transcript` onto the connectorless one. Under the wrong
+    // arm, `{ class: "transcript", vendor: null }` COMPILES — and a second
+    // transcript vendor (Meet, Fireflies) would then share `zoom`'s dedupe
+    // namespace, which is the collision the grain exists to prevent.
+    // @ts-expect-error a transcript member MUST name its vendor
+    const transcriptWithoutVendor: EpisodeSourceSpec = { class: "transcript", vendor: null };
     // @ts-expect-error a connectorless class has no vendor to name
     const warehouseWithVendor: EpisodeSourceSpec = { class: "warehouse", vendor: "snowflake" };
     // @ts-expect-error a class outside the closed set
     const unknownClass: EpisodeSourceSpec = { class: "email", vendor: null };
     void chatWithoutVendor;
+    void transcriptWithoutVendor;
     void warehouseWithVendor;
     void unknownClass;
   });
@@ -235,9 +255,15 @@ describe("the class/vendor axes (#4963)", () => {
     // a caller ask for "the slack class" and get a plausible-looking answer.
     // (`warehouse` and `human` are spelled identically on BOTH axes, so they
     // cannot discriminate here — which is why `slack` carries this test.)
-    // `transcript`/`email`/`docs` are ADR-0036 classes that have not shipped —
-    // naming one must stay false until its connector lands.
-    for (const notClass of ["slack", "transcript", "email", "docs", "Chat", ""]) {
+    // `zoom` is the SECOND such case and it is the one #4965 added: it is a
+    // legal stored source and a legal vendor within the `transcript` class, and
+    // it is not a class. Naming the class after its first vendor — the mistake
+    // `chat`/`slack` avoided — would make this line pass by coincidence.
+    // `email`/`docs` are ADR-0036 classes that have not shipped — naming one
+    // must stay false until its connector lands. (`transcript` moved OFF this
+    // list when the Zoom connector landed, which is the class-axis half of the
+    // "fail this test first" gate.)
+    for (const notClass of ["slack", "zoom", "email", "docs", "Chat", ""]) {
       expect([notClass, isEpisodeSourceClass(notClass)]).toEqual([notClass, false]);
     }
     for (const nonString of [null, undefined, 42, { class: "chat" }, ["chat"]]) {
@@ -310,6 +336,7 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
       "warehouse-prod",
       "Warehouse",
       "chat",
+      "transcript",
       "slack-history",
     ]) {
       expect([value, isWarehouseDerivedSource(value)]).toEqual([value, false]);
@@ -412,6 +439,37 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // And chat is emphatically not the tier-1 class: Slack-derived facts stay
     // correctable, which is the opposite end of the predicate that moved.
     expect(isWarehouseDerivedSource(SLACK_SOURCE)).toBe(false);
+  });
+
+  test("the Zoom producer's source IS the vocabulary's transcript vendor, byte-identical", () => {
+    // The same guard the Slack pair carries, for the same reason and with one
+    // extra creditor. `brain_episodes.source` is half of the `(workspace_id,
+    // source, source_id)` dedupe tuple, so changing this value does not migrate
+    // anything — it re-ingests every meeting in every workspace as a fresh
+    // episode and re-extracts facts from all of them.
+    //
+    // The extra creditor is #4967. Its webhook writer is being built in
+    // PARALLEL against this contract and writes into the SAME idempotent store,
+    // so the two writers must agree on the stored kind as well as on the
+    // source-id. Asserted as a LITERAL, deliberately, and not against
+    // `ZOOM_SOURCE`: comparing the producer to a constant that moved with it is
+    // exactly the self-referential agreement this file exists to defeat.
+    expect(ZOOM_TRANSCRIPT_SOURCE).toBe("zoom");
+    expect(ZOOM_TRANSCRIPT_SOURCE).toBe(ZOOM_SOURCE);
+    // Its grain, readable rather than only described in prose: the transcript
+    // class is VENDOR-grained, so Meet or Fireflies arriving later becomes its
+    // own member rather than a reuse of this one.
+    expect([episodeSourceClass(ZOOM_SOURCE), episodeSourceVendor(ZOOM_SOURCE)]).toEqual([
+      "transcript",
+      "zoom",
+    ]);
+    // And transcript is emphatically not the tier-1 class: a claim extracted
+    // from a meeting is a person's statement and stays CORRECTABLE. Getting
+    // this wrong is silent — `correct_fact` would refuse every transcript fact
+    // with a tier-1 message about the semantic layer, which is nonsense for a
+    // meeting.
+    expect(isWarehouseDerivedSource(ZOOM_SOURCE)).toBe(false);
+    expect(isWarehouseDerived({ source: ZOOM_SOURCE })).toBe(false);
   });
 
   test("the correction episode stamps the vocabulary's human class", () => {

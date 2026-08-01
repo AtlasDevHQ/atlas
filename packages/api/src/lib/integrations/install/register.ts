@@ -68,6 +68,11 @@ import {
   SLACK_HISTORY_SLUG,
 } from "./slack-history-form-handler";
 import { registerSlackHistoryConnector } from "@atlas/api/lib/brain/ingest/slack/connector";
+import {
+  ZoomTranscriptsFormInstallHandler,
+  ZOOM_TRANSCRIPTS_SLUG,
+} from "./zoom-transcripts-form-handler";
+import { registerZoomTranscriptConnector } from "@atlas/api/lib/brain/ingest/zoom/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -402,6 +407,27 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(SLACK_HISTORY_SLUG, new SlackHistoryFormInstallHandler());
   registerSlackHistoryConnector();
   log.info("Registered SlackHistoryFormInstallHandler + brain source connector");
+  // Zoom transcripts (#4965) — ADR-0036 §T6's SECOND brain source class, and
+  // the first connector built on #4963's generalized seam rather than extracted
+  // from one. Same form-handler + source pairing as `slack-history` and for the
+  // same reason: a half-wired deploy would show an installable card whose
+  // scheduled sync has no registered client.
+  //
+  // `registerZoomTranscriptConnector` also registers this source's AUDIENCE
+  // RE-VERIFIER, deliberately in one call. A meeting's `audience:` grant is
+  // suppressed by `acl.ts` once its membership passes
+  // `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`, so a deploy with the connector
+  // and no re-verifier would ingest transcripts that quietly stop being visible
+  // a week later, with every sync still green.
+  //
+  // Unlike Slack this one DOES collect a secret (a Server-to-Server OAuth app's
+  // client id + secret); it lands in `knowledge_sync_credentials` (encrypted),
+  // never in `workspace_plugins.config`, which carries only the account id and
+  // host scope. No env gate: the install fails loudly and actionably on a
+  // workspace whose Zoom app is missing scopes or on the wrong plan.
+  registerFormHandler(ZOOM_TRANSCRIPTS_SLUG, new ZoomTranscriptsFormInstallHandler());
+  registerZoomTranscriptConnector();
+  log.info("Registered ZoomTranscriptsFormInstallHandler + brain source connector + audience re-verifier");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

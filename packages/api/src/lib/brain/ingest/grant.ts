@@ -4,7 +4,28 @@
  * ADR-0036 derives a grant AT INGEST and evaluates it read-time-local: the
  * grant is a self-contained principal set frozen onto the row, and the LIVE
  * half — the revocation path — is `audience:` membership. This module is where
- * a chat source's visibility becomes that principal set.
+ * a source's visibility becomes that principal set.
+ *
+ * ## Two classes, two derivations, one grammar
+ *
+ * `chat` (#4770) and `transcript` (#4965) each get their own deriver, and they
+ * do NOT share a code path even though both end in a single `audience:` token.
+ * The reason is that their SHAPES differ in the one place that matters:
+ *
+ *   - a chat channel has a public mode, so {@link deriveChatChannelGrant}
+ *     branches and `[org]` is a faithful answer for half its inputs;
+ *   - a recorded meeting has none, so {@link deriveMeetingParticipantGrant} has
+ *     no `[org]` arm at all and could not acquire one by accident.
+ *
+ * A single "generic" deriver taking an optional visibility bit would have made
+ * the public arm reachable from the transcript path, and the failure mode there
+ * is publishing a private meeting to the whole org — a leak no downstream
+ * review gate can catch, because the reviewer is shown the grant Atlas derived
+ * rather than the one the vendor had. Two functions, one of which cannot
+ * express the dangerous answer, is worth the duplication.
+ *
+ * What they DO share is the grammar (`acl.ts`'s exported constants), the
+ * usability gate ({@link isUsableGrant}), and the rule below.
  *
  * ## The one rule that is easy to get subtly, permanently wrong
  *
@@ -176,6 +197,174 @@ export function deriveChatChannelGrant(visibility: ChatChannelVisibility): Brain
   ];
   // Belt-and-braces: the arm above cannot construct an unusable token today
   // (both halves are non-empty by the guard), but a future edit to the id
+  // builder could, and this is the one place that mistake is cheap to catch.
+  return isUsableGrant(grant) ? grant : null;
+}
+
+// ---------------------------------------------------------------------------
+// Meeting transcripts (#4965) — the transcript class's grant derivation
+// ---------------------------------------------------------------------------
+
+/**
+ * The `audience:` id prefix for a source-derived MEETING — the stored form is
+ * `audience:meeting:<source>:<meetingId>`.
+ *
+ * A separate namespace from {@link CHAT_CHANNEL_AUDIENCE_NAMESPACE} rather than
+ * a reuse, because the two audiences have different LIFECYCLES and the
+ * namespace is what stops a future reader from treating them alike. A chat
+ * channel's roster is mutable and open-ended; a meeting's participant list is
+ * closed the moment the meeting ends. `parseChatChannelAudienceId` returning
+ * `null` for a meeting id — and vice versa — is the property #4825's oversight
+ * view depends on to label them differently.
+ *
+ * Namespaced by SOURCE for the same reason chat is: `audience_id` is
+ * workspace-scoped but NOT source-scoped, and a Zoom meeting and a (future)
+ * Google Meet meeting could mint the same id. `fact_audience_member` has no
+ * column to tell them apart, so the namespace has to live in the id.
+ */
+export const MEETING_AUDIENCE_NAMESPACE = "meeting" as const;
+
+/**
+ * Build the meeting audience id (WITHOUT the `audience:` prefix — that is
+ * grammar).
+ *
+ * `source` must contain NO COLON, and unlike {@link chatChannelAudienceId} that
+ * is ENFORCED rather than merely documented: this function returns `null` on a
+ * colon-bearing source instead of round-tripping it into the wrong halves.
+ * The chat builder's prose constraint was safe because `slack` was the only
+ * source that would ever reach it; the transcript class ships with a second
+ * vendor already on the roadmap (Meet, Fireflies), so the constraint acquires a
+ * real chance to be violated and a silent mis-NAMING is the failure mode —
+ * `zoom:eu` would round-trip to `{ source: "zoom", meetingId: "eu:4kd8…" }`,
+ * minting an audience nobody is a member of.
+ *
+ * `meetingId` may contain colons in principle; the parser takes the whole
+ * remainder. (Zoom's cannot — a meeting uuid is base64 — but the id grammar is
+ * per-vendor and the next vendor's is not this one's.)
+ */
+export function meetingAudienceId(source: string, meetingId: string): string | null {
+  const cleanSource = source.trim();
+  const cleanMeetingId = meetingId.trim();
+  if (cleanSource === "" || cleanMeetingId === "") return null;
+  if (cleanSource.includes(":")) return null;
+  return `${MEETING_AUDIENCE_NAMESPACE}:${cleanSource}:${cleanMeetingId}`;
+}
+
+/** The two halves {@link meetingAudienceId} joins. */
+export interface MeetingAudienceParts {
+  readonly source: string;
+  readonly meetingId: string;
+}
+
+/**
+ * The INVERSE of {@link meetingAudienceId}, or `null` when the id does not name
+ * a meeting at all.
+ *
+ * Same direction-of-safety argument as {@link parseChatChannelAudienceId}: a
+ * second MINTER could disagree with the first about which id a meeting gets and
+ * the disagreement would be silent, but a PARSER cannot — it consumes ids the
+ * deriver already produced, and if the format changed under it, it stops
+ * matching and the caller falls back to opaque, which is fail-CLOSED for a
+ * disclosure decision. The audience re-verifier (`zoom/audience.ts`) is the
+ * consumer: it reads the meeting id back out of a stored grant rather than
+ * re-deriving one, so it can only ever re-verify audiences that were actually
+ * minted.
+ */
+export function parseMeetingAudienceId(audienceId: string): MeetingAudienceParts | null {
+  const namespacePrefix = `${MEETING_AUDIENCE_NAMESPACE}:`;
+  if (!audienceId.startsWith(namespacePrefix)) return null;
+  const rest = audienceId.slice(namespacePrefix.length);
+  const separator = rest.indexOf(":");
+  if (separator <= 0 || separator === rest.length - 1) return null;
+  return { source: rest.slice(0, separator), meetingId: rest.slice(separator + 1) };
+}
+
+/** The visibility facts a recorded meeting exposes, normalised across vendors. */
+export interface MeetingParticipation {
+  /** The connector's stored source kind (`brain_episodes.source`), e.g. `zoom`. */
+  readonly source: string;
+  /** The vendor's identifier for this meeting INSTANCE (not the series). */
+  readonly meetingId: string;
+  /**
+   * True only when the participant roster was enumerated COMPLETELY.
+   *
+   * A vendor that could not finish the enumeration — a paging error, an
+   * exhausted retry budget, a per-cycle page cap — must pass `false`, and must
+   * NOT pass `true` with a partial list. This is the single most load-bearing
+   * field in this module, for a reason that is invisible from the grant alone:
+   * the roster does not merely GRANT, it is also what
+   * `reconcileAudienceMembership` DELETES against. A partial roster reaching
+   * that reconcile is indistinguishable from a mass removal, so it would revoke
+   * every member it failed to fetch — and because episodes are gated rather
+   * than deleted, the damage looks exactly like correct fail-closed behaviour
+   * from every surface. `audience/sync.ts` makes the same complete-or-abort
+   * argument for chat rosters; this is the ingest-side half of it.
+   */
+  readonly rosterComplete: boolean;
+}
+
+/**
+ * Derive the grant for one recorded meeting's transcript episodes.
+ *
+ * **There is no public arm, and that is the design.** `deriveChatChannelGrant`
+ * branches on `isPrivate` because a Slack channel genuinely has two modes and
+ * the public one is faithfully `[org]`. A recorded meeting does not: its
+ * audience is the people who were in it, always, and Zoom exposes no
+ * "everyone at the company may watch this" bit that would license `[org]`.
+ * Adding such an arm later on the strength of some vendor field that LOOKS like
+ * one is the leak this module exists to prevent — the reviewer downstream is
+ * shown the grant Atlas derived, not the one the vendor had, so nothing catches
+ * it.
+ *
+ * So the only outcomes are the audience and the block:
+ *
+ * - **Derivable → `[audience:meeting:<source>:<meetingId>]`.** The grant names
+ *   an Atlas-owned audience whose membership `fact_audience_member` carries.
+ *   Membership is written at ingest from the same complete roster this
+ *   derivation was licensed by, and re-verified periodically — see
+ *   `zoom/audience.ts` for why a set of humans that CANNOT change still needs
+ *   re-verification (the humans are fixed; which of them are Atlas users in
+ *   this workspace is not, and `acl.ts` suppresses an audience nobody has
+ *   verified within `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`).
+ *
+ * - **Underivable → `null`, and the caller BLOCKS and logs.** ADR-0036 §T6 puts
+ *   grant-derivation failure on the BLOCK side of the block-vs-flag asymmetry:
+ *   the caller abandons that meeting (its mark preserved, a warning surfaced)
+ *   and never falls back to a wider grant. There is no safe default — `[org]`
+ *   would publish a meeting whose audience Atlas failed to establish.
+ *
+ * Three things make it underivable, and they are all failures to ESTABLISH the
+ * audience rather than facts about its size:
+ *   - an incomplete roster (see {@link MeetingParticipation.rosterComplete});
+ *   - a blank meeting id or a blank source, either of which makes the audience
+ *     id ambiguous;
+ *   - a source containing a colon, which would mis-split on the way back out.
+ *
+ * ⚠️ What is deliberately NOT on this list: **a roster that resolves to no
+ * Atlas users.** That is the FLAG side, and conflating the two is the specific
+ * mistake this asymmetry exists to prevent. A meeting of five external guests
+ * has a perfectly well-established audience that currently contains nobody; the
+ * faithful result is a stored, gated, invisible episode — not a block. Blocking
+ * it would discard evidence permanently on a condition that repairs itself the
+ * moment one of those people gets an Atlas account, which is exactly what the
+ * `audience:` indirection buys. `membership.ts` makes the same call from the
+ * other end: "the channel resolved to nobody" reconciles to an empty audience
+ * rather than skipping the delete.
+ */
+export function deriveMeetingParticipantGrant(
+  participation: MeetingParticipation,
+): BrainGrant | null {
+  // Checked FIRST, before the id is even built. An incomplete roster is not a
+  // malformed input — every id below may be perfectly well-formed — so a
+  // reader scanning for the guard would not find it among the string checks.
+  if (!participation.rosterComplete) return null;
+
+  const audienceId = meetingAudienceId(participation.source, participation.meetingId);
+  if (audienceId === null) return null;
+
+  const grant: BrainGrant = [`${AUDIENCE_PREFIX}${audienceId}`];
+  // Belt-and-braces, the same one `deriveChatChannelGrant` carries: the arm
+  // above cannot construct an unusable token today, but a future edit to the id
   // builder could, and this is the one place that mistake is cheap to catch.
   return isUsableGrant(grant) ? grant : null;
 }

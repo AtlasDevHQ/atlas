@@ -289,7 +289,14 @@ interface InstallRow extends Record<string, unknown> {
 export async function reverifyZoomMeetingAudiences(
   deps: ZoomAudienceDeps = {},
 ): Promise<AudienceReverifyResult> {
-  if (!hasInternalDB()) return ZERO_REVERIFY;
+  // The internal-DB guard applies only to the REAL query path. An injected
+  // `query` means the caller supplied the database, so gating on the process's
+  // ambient one would make this function untestable without a live Postgres —
+  // and, worse, would make it silently return "nothing to do" in a test that
+  // believed it was exercising the scan. Same shape as `sync.ts`'s guard,
+  // narrowed to the case it is actually about: a self-hosted deploy with no
+  // internal DB has no episodes and no audiences to re-verify.
+  if (deps.query === undefined && !hasInternalDB()) return ZERO_REVERIFY;
   const query = deps.query ?? internalQuery;
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
   const resolveToken = deps.resolveToken;

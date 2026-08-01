@@ -293,7 +293,7 @@ describe("reverifyZoomMeetingAudiences", () => {
   it("DOES reconcile an empty roster for an audience with no members — that is the flag side", async () => {
     // The guard must not become "never write an empty audience", or the
     // all-external meeting never picks up its later repair.
-    let userIds: readonly string[] | null = null;
+    const seen: (readonly string[])[] = [];
     const out = await reverifyZoomMeetingAudiences(
       deps({
         hasMembers: false,
@@ -307,12 +307,12 @@ describe("reverifyZoomMeetingAudiences", () => {
         // anything.
         resolve: async () => ({ resolved: new Map(), unresolvedCount: 0 }),
         reconcile: async (input) => {
-          userIds = input.userIds;
+          seen.push(input.userIds);
           return { added: 0, revoked: 0 };
         },
       }),
     );
-    expect(userIds).toEqual([]);
+    expect(seen).toEqual([[]]);
     expect(out.reconciled).toBe(1);
   });
 

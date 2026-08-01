@@ -259,7 +259,7 @@ async function graphGet(
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
+    const body = await readErrorBody(res);
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
   const declared = Number(res.headers.get("content-length") ?? "");
@@ -284,6 +284,28 @@ async function graphGet(
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   return { ok: true, data: parsed as Record<string, unknown> };
+}
+
+/**
+ * Read an error response's body for {@link toReadError} to classify.
+ *
+ * The empty-string fallback is NOT cosmetic and is therefore logged rather than
+ * swallowed: `toReadError` decides `mailbox_denied` vs `missing_scope` — two
+ * repairs in two different Microsoft consoles — by regexing this body, and it
+ * decides `invalid_auth` vs a bare `http_400` the same way. A body that could
+ * not be read silently downgrades both splits to their generic arm, which is the
+ * "no generic error messages" rule failing in its most expensive form.
+ */
+async function readErrorBody(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch (err) {
+    log.warn(
+      { status: res.status, err: err instanceof Error ? err.message : String(err) },
+      "Microsoft Graph error body could not be read — the 403/400 repair split falls back to its generic arm",
+    );
+    return "";
+  }
 }
 
 /** A URL's host for logging, or a placeholder — never throws on a bad URL. */
@@ -316,8 +338,13 @@ export function graphUrl(path: string, query: Record<string, string | undefined>
  * `tenantId` is interpolated into the PATH, so it is validated first. An
  * unvalidated value there is a path-traversal surface on an identity endpoint —
  * `common/oauth2/v2.0/token/../../..` — and the value arrives from an install
- * form. A tenant id is a GUID or a verified domain name; both are covered by the
- * character class, and neither contains a slash.
+ * form.
+ *
+ * `encodeURIComponent` at the interpolation site is the PRIMARY defence and this
+ * pattern is defence in depth — worth keeping because a value that is neither
+ * GUID- nor domain-shaped is wrong for reasons beyond traversal. A tenant id is
+ * a GUID or a verified domain name; both are covered by the character class, and
+ * neither contains a slash.
  */
 export const TENANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$/;
 
@@ -352,7 +379,7 @@ export async function fetchGraphAccessToken(params: {
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
+    const body = await readErrorBody(res);
     // Microsoft answers a bad client secret with 401 AND a bad tenant/app with
     // 400 `unauthorized_client` / `invalid_client`. Both are credential faults
     // and both must reach the admin as one, or a 400 falls through to
@@ -402,17 +429,22 @@ export interface OutlookMailbox {
  * facts would go invisible at the staleness bound with nothing red anywhere.
  *
  * ⚠️ THIS READ NEEDS A SECOND APPLICATION PERMISSION. `/users/{id}` is a
- * DIRECTORY read, so the app registration needs `User.Read.All` on top of
- * `Mail.Read` — the install form and the catalog row both say so, because
- * discovering it as a sync error a cycle later is discovering it in the wrong
- * place.
+ * DIRECTORY read, so the app registration needs one on top of `Mail.Read` — the
+ * install form and the catalog row both say so, because discovering it as a sync
+ * error a cycle later is discovering it in the wrong place.
+ *
+ * **`User.ReadBasic.All`, not `User.Read.All`.** The `$select` below asks for
+ * exactly `id`, `userPrincipalName` and `mail`, all three of which are in the
+ * basic profile, so the wider grant buys nothing — and naming it would undercut
+ * the next paragraph at the moment an Entra admin is most likely to push back.
+ * (`User.Read.All` also works; an app that already has it needs no change.)
  *
  * Worth being explicit that this is not a permission ESCALATION, since asking
  * for a second scope reads like one. `Mail.Read` (application) already grants
- * this app the contents of every mailbox in the tenant; `User.Read.All` grants
- * names and addresses of directory objects, which is strictly less than what it
- * can already read. What it buys is that no personal address is written into a
- * stored ACL token.
+ * this app the contents of every mailbox in the tenant; `User.ReadBasic.All`
+ * grants names and addresses of directory objects, which is strictly less than
+ * what it can already read. What it buys is that no personal address is written
+ * into a stored ACL token.
  *
  * The asymmetry to know about: an Exchange ApplicationAccessPolicy narrows
  * `Mail.Read` to a security group, and it does NOT narrow `User.Read.All`. So a
@@ -479,7 +511,12 @@ export interface OutlookAddress {
  * a stored key by accident.
  */
 export interface OutlookMessage {
-  /** Graph's own per-mailbox id. Used ONLY for logging — never as a stored key. */
+  /**
+   * Graph's own per-mailbox id. Parsed but currently READ BY NOTHING — carried
+   * so a future log line has a vendor-side handle on a message the per-message
+   * warnings identify only by mailbox today. Never a stored key: it differs per
+   * mailbox and is re-minted when a message moves between folders.
+   */
   readonly graphId: string | null;
   /** The RFC 5322 Message-ID, RAW as Graph returned it (brackets included). */
   readonly internetMessageId: string | null;
@@ -566,13 +603,24 @@ function toAddress(raw: unknown): OutlookAddress | null {
   };
 }
 
-/** Normalise a Graph recipient ARRAY, or null when the key was absent/not an array. */
+/**
+ * Normalise a Graph recipient ARRAY, or null when the key was absent, was not an
+ * array, or held an entry this parser could not read.
+ *
+ * An unreadable ENTRY fails the whole list rather than being dropped from it,
+ * on the same argument `headersComplete` rests on one level up: a silently
+ * shortened recipient list is a PARTIAL set that LOOKS complete, and the set is
+ * what `reconcileAudienceMembership` deletes against — so the dropped entries
+ * would be REVOKED rather than merely ungranted. There is no safe way to
+ * under-report a roster here.
+ */
 function toAddressList(raw: unknown): OutlookAddress[] | null {
   if (!Array.isArray(raw)) return null;
   const out: OutlookAddress[] = [];
   for (const entry of raw) {
     const address = toAddress(entry);
-    if (address !== null) out.push(address);
+    if (address === null) return null;
+    out.push(address);
   }
   return out;
 }
@@ -583,13 +631,15 @@ export function parseOutlookMessage(raw: unknown): OutlookMessage | null {
   const row = raw as Record<string, unknown>;
   const to = toAddressList(row.toRecipients);
   const cc = toAddressList(row.ccRecipients);
-  // `from` is absent on a message Graph could not attribute; that is a real
-  // state (some system-generated mail) and it is NOT the same as an omitted
-  // field. Both are folded into `headersComplete: false` here because this
-  // parser cannot tell them apart from the payload alone, and the safe reading
-  // of an unattributable sender is the same as the safe reading of a missing
-  // one: do not derive an audience from headers that did not fully arrive.
-  const from = Object.hasOwn(row, "from") ? toAddress(row.from) : null;
+  // An absent `from` and an unattributable one (some system-generated mail) are
+  // folded together into `headersComplete: false`, deliberately: this parser
+  // cannot tell them apart from the payload alone, and the safe reading of an
+  // unattributable sender is the same as the safe reading of a missing one — do
+  // not derive an audience from headers that did not fully arrive.
+  //
+  // No `Object.hasOwn` guard, because it would draw a distinction the sentence
+  // above disclaims: `toAddress(undefined)` already answers `null`.
+  const from = toAddress(row.from);
   return {
     graphId: str(row.id),
     internetMessageId: str(row.internetMessageId),
@@ -629,7 +679,13 @@ function readBody(raw: unknown): { bodyText: string | null; bodyUnreadable: bool
   const contentType = str(row.contentType);
   const content = str(row.content);
   if (content === null) return { bodyText: null, bodyUnreadable: false };
-  if (contentType !== null && contentType.toLowerCase() !== "text") {
+  // An ABSENT `contentType` with content present is REFUSED, not trusted. The
+  // module applies "keyed on presence, not contents" to `headersComplete` two
+  // functions up and must apply it here too: content whose type Graph did not
+  // state could be HTML, and storing HTML as evidence is the whole failure
+  // `bodyUnreadable` exists to prevent. Reading absence as "probably text" is a
+  // fail-OPEN in the one direction this docstring claims is closed.
+  if (contentType === null || contentType.toLowerCase() !== "text") {
     return { bodyText: null, bodyUnreadable: true };
   }
   return { bodyText: content, bodyUnreadable: false };
@@ -657,14 +713,21 @@ export async function fetchMailboxMessagesPage(
   token: string,
   params: {
     readonly mailboxId: string;
-    /** ISO-8601 instant. Messages received strictly at or after it. */
+    /** ISO-8601 instant. Messages received at or after it (`ge`, inclusive). */
     readonly since: string;
     readonly pageSize: number;
   },
 ): Promise<OutlookMessagesPage | OutlookReadError> {
   const url = graphUrl(`/users/${encodeURIComponent(params.mailboxId)}/messages`, {
     $select: `${MESSAGE_PARTICIPANT_SELECT},body`,
-    $filter: `isDraft eq false and receivedDateTime ge ${params.since}`,
+    // ⚠️ ORDER MATTERS INSIDE `$filter`, and not for the reason it looks like.
+    // Outlook's documented restriction is that every property in `$orderby` must
+    // ALSO appear in `$filter`, in the SAME order, and BEFORE any property that
+    // appears only in `$filter`. So `receivedDateTime` leads and `isDraft`
+    // follows; the reverse spelling risks a 400 (`InefficientFilter` / "the
+    // restriction or sort order is too complex"), which reads like a malformed
+    // request rather than like an unsupported combination.
+    $filter: `receivedDateTime ge ${params.since} and isDraft eq false`,
     $orderby: "receivedDateTime asc",
     $top: String(params.pageSize),
   });
@@ -771,6 +834,9 @@ export async function fetchMessageByInternetMessageId(
       // produces a malformed filter — Graph answers 400, the audience fails
       // every cycle, and the cause is one character in a value nobody prints.
       $filter: `internetMessageId eq '${filterValue}'`,
+      // TWO, and the second one IS read — see the ambiguity check below. Asking
+      // for one would make a duplicate Message-ID invisible rather than
+      // detectable.
       $top: "2",
     });
     const result = await graphGet(token, url);
@@ -782,6 +848,25 @@ export async function fetchMessageByInternetMessageId(
       return { ok: false, error: "transport", retryAfterSeconds: null };
     }
     if (rawValue.length === 0) continue;
+    if (rawValue.length > 1) {
+      // Two messages in ONE mailbox claiming the same Message-ID. Graph's
+      // ordering for an unordered `$filter` is unspecified, so picking
+      // `rawValue[0]` would reconcile against an ARBITRARY one of the two and
+      // could flap the audience between two participant sets on alternate
+      // cycles — revoking and re-granting members with nothing in the logs to
+      // explain it.
+      //
+      // It is also the shape of a FORGED header: a Message-ID is chosen by the
+      // sending system, so anyone who has seen a thread's `References:` can mail
+      // the same mailbox claiming that id. Treating the ambiguity as unreadable
+      // is the complete-or-abort posture this module applies everywhere else —
+      // membership is left exactly as it was.
+      log.error(
+        { mailboxId, matches: rawValue.length },
+        "Microsoft Graph returned more than one message for this Message-ID — the audience cannot be attributed to one header set, so membership is left unchanged",
+      );
+      return { ok: false, error: "transport", retryAfterSeconds: null };
+    }
     const message = parseOutlookMessage(rawValue[0]);
     if (message === null) {
       log.warn({}, "Microsoft Graph message lookup returned an unreadable message object");

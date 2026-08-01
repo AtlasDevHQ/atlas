@@ -1846,7 +1846,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Sync",
     description:
-      "Keep private chat channels' membership in sync so facts drawn from them are visible to the people in the channel — and hidden again when someone leaves. Matches channel members' email addresses against existing Atlas accounts; it never creates accounts and never stores the channel roster. Requires Slack's users:read and users:read.email scopes.",
+      "Keep company-brain audience membership in sync so facts drawn from private chat channels, meeting transcripts and mail are visible to the people who were in them — and hidden again when someone leaves. Matches participants' email addresses against existing Atlas accounts; it never creates accounts and never stores a roster. Switching this OFF does not stop those facts being collected: it stops the membership behind them being refreshed, so they stop granting anyone once they pass the staleness bound. Slack channels additionally need Slack's users:read and users:read.email scopes.",
     type: "boolean",
     default: "true",
     envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",

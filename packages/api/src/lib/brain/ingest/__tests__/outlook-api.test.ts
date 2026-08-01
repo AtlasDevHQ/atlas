@@ -152,6 +152,14 @@ describe("parseOutlookMessage — the mass-revocation guard", () => {
     // An empty-string body is absence, not refusal.
     const blank = parseOutlookMessage({ ...complete, body: { contentType: "text", content: "" } });
     expect([blank?.bodyText, blank?.bodyUnreadable]).toEqual([null, false]);
+    // ⭐ An ABSENT contentType with content present is REFUSED, not trusted —
+    // the same presence-not-contents rule `headersComplete` rests on. Content
+    // whose type Graph did not state could be HTML, and this is the fail-OPEN
+    // direction the docstring claims is closed.
+    //
+    // MUTATION THIS CATCHES: `contentType !== null && ... !== "text"`.
+    const untyped = parseOutlookMessage({ ...complete, body: { content: "<p>hi</p>" } });
+    expect([untyped?.bodyText, untyped?.bodyUnreadable]).toEqual([null, true]);
   });
 
   it("returns null for a non-object entry rather than a half-built message", () => {
@@ -327,6 +335,24 @@ describe("fetchMessageByInternetMessageId — the re-verifier's read", () => {
     });
   });
 
+  it("⭐ ABORTS when one mailbox holds TWO messages with the same Message-ID", async () => {
+    // `$top: 2` exists to detect this. Graph's ordering for an unordered
+    // `$filter` is unspecified, so taking `rawValue[0]` would reconcile against
+    // an arbitrary one of the two and flap the audience between two participant
+    // sets on alternate cycles — revoking and re-granting with nothing in the
+    // logs to explain it.
+    //
+    // It is also the shape of a FORGED header: a Message-ID is chosen by the
+    // sending system, so anyone who has seen a thread's `References:` can mail
+    // the same mailbox claiming it.
+    //
+    // MUTATION THIS CATCHES: dropping the `rawValue.length > 1` guard.
+    stub([{ value: [found.value[0], { ...found.value[0], id: "OTHER" }] }]);
+    const ambiguous = await fetchMessageByInternetMessageId("tok", "mb", "a@contoso.com");
+    expect(ambiguous.ok).toBe(false);
+    expect(ambiguous.ok === false && ambiguous.error).toBe("transport");
+  });
+
   it("reports a genuine miss as ok-with-null, distinct from a read failure", async () => {
     // The caller must be able to tell "Graph answered and the mailbox does not
     // have it" from "Graph did not answer" — both abort, but only one of them
@@ -367,10 +393,34 @@ describe("fetchMailbox / fetchMailboxMessagesPage", () => {
       pageSize: 25,
     });
     expect(calls[0].searchParams.get("$orderby")).toBe("receivedDateTime asc");
+    // ⚠️ ORDER inside `$filter` is pinned, not incidental. Outlook requires every
+    // `$orderby` property to appear in `$filter` too, in the same order, and
+    // BEFORE any filter-only property — so `receivedDateTime` must lead and
+    // `isDraft` must follow. The reverse spelling risks a 400 that reads like a
+    // malformed request rather than like an unsupported combination, and no unit
+    // test can see that, so this pins the shape the vendor rule requires.
     expect(calls[0].searchParams.get("$filter")).toBe(
-      "isDraft eq false and receivedDateTime ge 2026-01-01T00:00:00Z",
+      "receivedDateTime ge 2026-01-01T00:00:00Z and isDraft eq false",
     );
     expect(calls[0].searchParams.get("$top")).toBe("25");
+  });
+
+  it("⭐ REFUSES a partially-readable recipient list rather than shortening it", async () => {
+    // A silently shortened list is a PARTIAL set that looks complete, and the set
+    // is what `reconcileAudienceMembership` deletes against — so the dropped
+    // entries would be REVOKED, not merely ungranted. The only safe answer is
+    // that the headers did not fully arrive.
+    //
+    // MUTATION THIS CATCHES: `if (address !== null) out.push(address)` — i.e.
+    // dropping the bad entry and keeping the rest.
+    const partial = parseOutlookMessage({
+      id: "AAMkAGx",
+      internetMessageId: "<a@contoso.com>",
+      from: ADDRESS("sender@contoso.com"),
+      toRecipients: [ADDRESS("to@contoso.com"), "not-an-object"],
+      ccRecipients: [],
+    });
+    expect(partial?.headersComplete).toBe(false);
   });
 
   it("counts unreadable entries as dropped rather than skipping them silently", async () => {

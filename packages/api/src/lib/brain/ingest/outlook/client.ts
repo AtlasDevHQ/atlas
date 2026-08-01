@@ -28,6 +28,14 @@
  * identical forever. Ascending means an interrupted pass has covered a
  * contiguous PREFIX, which a resume point can describe.
  *
+ * `params.since` and the returned `highWaterMark` are deliberately NOT this
+ * client's resume path — the per-mailbox cursor is, because one high-water mark
+ * cannot describe N mailboxes sitting at different depths. `since` is read for
+ * nothing; `highWaterMark` is reported honestly for the engine's own bookkeeping.
+ * Naming that here because it is the trap #4965's review found by execution: its
+ * block arm nulled a mark the connector never read, while the CURSOR advanced
+ * past the blocked meeting anyway.
+ *
  * The resume point is inclusive (`ge`, not `gt`): a pass resumes AT the last
  * message it processed rather than after it. That re-reads one message, which is
  * a deduped no-op write, and it is the safe direction — an exclusive resume
@@ -96,14 +104,18 @@ import {
   MAX_MESSAGE_PARTICIPANTS,
   messageParticipants,
   reconcileEmailAudience,
-  type EmailParticipant,
   type OutlookAudienceDeps,
 } from "./audience";
 import { OUTLOOK_MAIL_SOURCE, normalizeInternetMessageId, outlookEpisodeSourceId } from "./config";
 
 const log = createLogger("brain.ingest.outlook.client");
 
-/** Messages per page. Graph's documented maximum for `$top` on messages. */
+/**
+ * Messages per page — a deliberate size well inside Graph's ceiling rather than
+ * the ceiling itself. A page carries `$top` message BODIES, so this trades round
+ * trips against `MAX_PAGE_BYTES`; raising it makes the buffered-response
+ * pre-filter more likely to fire, which is a worse failure than one more request.
+ */
 export const MESSAGES_PAGE_SIZE = 50;
 
 /** Hard bound on message pages per mailbox per pass — one mailbox can't hog the cycle. */
@@ -251,8 +263,19 @@ export function toOutlookClientError(context: string, failure: OutlookReadError)
 
 /** Per-pass drop tally — every message seen but not stored, by reason. */
 interface MessageSkips {
-  /** Messages blocked because their audience could not be established. */
+  /**
+   * Messages BLOCKED — retryable, the resume point does not advance past them.
+   * The safety counter an operator alerts on.
+   */
   blockedAudience: number;
+  /**
+   * Messages whose headers arrived complete and named NOBODY — permanent, so the
+   * resume point advances. Counted apart from `blockedAudience` deliberately:
+   * folding it in inflates the one number that is supposed to mean "this mail is
+   * coming back", and the block-vs-skip distinction is the whole organising idea
+   * of this file.
+   */
+  unattributable: number;
   /** Messages with no usable RFC 5322 Message-ID. */
   unidentifiable: number;
   /** Messages whose participant set exceeded the cap. */
@@ -300,8 +323,10 @@ export interface OutlookMailClientOptions {
  *
  * The To/Cc addresses this writes ARE visible to the episode's audience, which
  * is exactly the set of people who already received the message and saw the same
- * header block in their own mail client. No address reaches anyone who did not
- * already have it.
+ * header block in their own mail client. So no address reaches any ACL-PATH
+ * reader who did not already have it — scoped deliberately, because operator and
+ * export paths are outside that claim: an episode body travels verbatim in a
+ * region-migration bundle, exactly as `grant.ts` says of `visible_to`.
  */
 export function composeEmailBody(message: OutlookMessage): string {
   const lines: string[] = [];
@@ -388,14 +413,15 @@ export function createOutlookMailClient(
     if (participants.length === 0) {
       // PERMANENT: headers came back complete and named nobody. A message with
       // no sender and no To/Cc has no audience to mint, and it will not acquire
-      // one — the headers are immutable.
-      skips.blockedAudience++;
+      // one — the headers are immutable. So it is REFUSED, not blocked: nothing
+      // is ingested and nothing is granted, but the walk does not wait for it.
+      skips.unattributable++;
       warnings.push(
-        `Message ${messageId} was NOT ingested — its headers name no sender and no recipients, so there is no audience to grant it to.`,
+        `Message ${messageId} was NOT ingested — its headers name no sender and no recipients, so there is no audience to grant it to. It is not retried; the headers cannot change.`,
       );
       log.warn(
         { workspaceId: options.workspaceId, mailboxId },
-        "Outlook message blocked — headers complete but empty, so no access grant could be derived",
+        "Outlook message refused — headers complete but empty, so no access grant could be derived. Permanent: the walk advances past it",
       );
       return { episode: null, blocked: false };
     }
@@ -416,7 +442,11 @@ export function createOutlookMailClient(
       // Narrowed by the guard above rather than passed through from the message,
       // so the deriver cannot be handed a `false` this branch already rejected.
       headersComplete: true,
-      participantCount: participants.length,
+      // The SET, and the same one the reconcile below is handed. The audience id
+      // embeds a digest of it, so passing a different collection here than to
+      // `reconcileEmailAudience` would mint an audience under a name that does
+      // not describe its own members.
+      participants: participants.map((participant) => participant.address),
     });
     if (grant === null) {
       // ADR-0036 §T6: grant-derivation failure BLOCKS and LOGS. There is no
@@ -448,6 +478,11 @@ export function createOutlookMailClient(
         {
           workspaceId: options.workspaceId,
           mailboxId,
+          // The audience id, so this line can be joined to `resolvePrincipals`'s
+          // unresolved SAMPLE — which carries positional labels (`cc:3`) and, by
+          // design, no addresses. Without an id on one side of that join the
+          // labels name nothing an operator can open.
+          audienceId,
           unresolved: reconciled.unresolved,
           granted: reconciled.added,
         },
@@ -526,6 +561,7 @@ export function createOutlookMailClient(
       const warnings: string[] = [];
       const skips: MessageSkips = {
         blockedAudience: 0,
+        unattributable: 0,
         unidentifiable: 0,
         oversizeAudience: 0,
         oversizeBody: 0,
@@ -558,8 +594,16 @@ export function createOutlookMailClient(
       let walkIncomplete = false;
       let historyTruncated = false;
       let remainingEpisodes = params.maxEpisodes;
-      /** The marks to persist — only for mailboxes this pass was configured for. */
+      /** The marks to persist. Seeded empty; see the carry-forward after the loop. */
       const nextMarks: Record<string, string> = {};
+      /**
+       * Every mailbox whose OBJECT ID this pass resolved, configured-spelling →
+       * id. The carry-forward below needs it because the cursor is keyed on the
+       * object id while the config holds UPNs: a mailbox the pass never resolved
+       * has no known key, so "did this pass reach it?" cannot be asked of
+       * `nextMarks` alone.
+       */
+      const resolvedIds = new Map<string, string>();
       /** Newest source-side event time actually ingested, for the high-water mark. */
       let newestIngested: string | null = null;
 
@@ -569,6 +613,7 @@ export function createOutlookMailClient(
         // cannot be resolved contributes nothing rather than contributing
         // episodes under a key that will not match next pass.
         const resolved = await api.fetchMailbox(token, configured);
+        if (resolved.ok) resolvedIds.set(configured, resolved.mailbox.id);
         if (!resolved.ok) {
           const error = toOutlookClientError(`the mailbox ${configured}`, resolved);
           if (error instanceof ConnectorRateLimitError && episodes.length === 0) throw error;
@@ -680,11 +725,11 @@ export function createOutlookMailClient(
               // unread tail was gone with `coverageIncomplete: false`.
               //
               // Here the flag is set on the line below BEFORE breaking, so a
-              // bare `break` would merely cost one wasted page fetch (the
-              // top-of-page check catches it on the next iteration) rather than
-              // losing anything. Stated plainly because the difference matters
+              // bare `break` would merely push a duplicate budget warning — the
+              // top-of-page guard runs before the next fetch, so not even a
+              // wasted round trip. Stated plainly because the difference matters
               // to whoever edits this next: the correctness lives in the flag,
-              // and `break pages` is the efficiency.
+              // and `break pages` is tidiness.
               mailboxIncomplete = true;
               warnings.push(
                 `The per-sync record budget (${params.maxEpisodes}) was reached inside mailbox ${configured} — the unread messages in it resume next cycle.`,
@@ -721,10 +766,20 @@ export function createOutlookMailClient(
               if (throttled && episodes.length === 0) throw err;
               mailboxIncomplete = true;
               const messageText = err instanceof Error ? err.message : String(err);
+              if (!throttled) {
+                // The dominant throw on this path is a failed membership WRITE —
+                // the most safety-relevant failure in the file, since an audience
+                // that could not be written is an audience nobody is in. It is
+                // counted as a BLOCK so the dedicated safety warning below fires,
+                // and it is worded "NOT ingested … retried" rather than "skipped":
+                // "skipped" is this module's word for the permanent arm, and this
+                // one comes back.
+                skips.blockedAudience++;
+              }
               warnings.push(
                 throttled
                   ? `Mailbox ${configured} stopped mid-page — Microsoft Graph is rate limiting this tenant. It resumes next cycle.`
-                  : `A message in mailbox ${configured} was skipped: ${messageText}`,
+                  : `A message in mailbox ${configured} was NOT ingested — ${messageText}. Nothing from it is stored; it is retried next cycle.`,
               );
               log.warn(
                 { workspaceId: options.workspaceId, mailbox: configured, err: messageText, throttled },
@@ -761,6 +816,39 @@ export function createOutlookMailClient(
         }
       }
 
+      // ── Carry forward every mailbox this pass did not WALK ────────────────
+      //
+      // Structural, and done ONCE here rather than per-branch, because per-branch
+      // is exactly how the Slack connector lost every channel after a throttled
+      // one (`slack/client.ts` carries the same block and the same post-mortem).
+      // `serialiseOutlookCursor` writes a whole-cursor REPLACEMENT and
+      // `connector-sync.ts` only COALESCEs a NULL cursor forward, so a mailbox
+      // missing from `nextMarks` is a mailbox whose mark is DELETED — it restarts
+      // at the backfill floor, and because the floor slides with the clock, any
+      // history older than it is never re-fetched. Worse, the "stored mark was
+      // older than the backfill window" warning cannot fire for it, because by
+      // then there is no stored mark to compare against.
+      //
+      // Three paths reach here without having walked a mailbox: an unresolvable
+      // identity read (`continue`), a rate limit (`break mailboxes`), and a
+      // per-message throttle. None of them is evidence that the mailbox left the
+      // config, which is the only thing pruning is for.
+      //
+      // PRUNING therefore requires PROOF. The cursor is keyed on the Graph object
+      // id while the config holds UPNs, so "is this stored key still configured?"
+      // is only answerable for mailboxes this pass resolved. When every
+      // configured mailbox resolved, `resolvedIds.values()` IS the configured set
+      // and a stored key outside it really was removed. When any mailbox did not
+      // resolve, nothing is pruned — carrying a dead map entry costs one key,
+      // dropping a live one costs history nothing will ever re-fetch.
+      const everyMailboxResolved = resolvedIds.size === options.mailboxes.length;
+      const configuredIds = new Set(resolvedIds.values());
+      for (const [mailboxId, mark] of Object.entries(storedMarks)) {
+        if (nextMarks[mailboxId] !== undefined) continue;
+        if (everyMailboxResolved && !configuredIds.has(mailboxId)) continue;
+        nextMarks[mailboxId] = mark;
+      }
+
       if (skips.blockedAudience > 0) {
         // Surfaced at WARN and separately from the other skips: every other
         // entry in this tally is a quality loss, this one is a SAFETY refusal,
@@ -772,6 +860,7 @@ export function createOutlookMailClient(
       }
       if (
         skips.unidentifiable +
+          skips.unattributable +
           skips.oversizeAudience +
           skips.oversizeBody +
           skips.bodyUnreadable +

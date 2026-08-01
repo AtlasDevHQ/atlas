@@ -66,6 +66,7 @@
  * refusing what already landed is not.
  */
 
+import { createHash } from "node:crypto";
 import {
   AUDIENCE_PREFIX,
   ORG_PRINCIPAL,
@@ -384,7 +385,7 @@ export function deriveMeetingParticipantGrant(
 
 /**
  * The `audience:` id prefix for a source-derived MAIL MESSAGE — the stored form
- * is `audience:email-message:<source>:<mailboxId>:<messageId>`.
+ * is `audience:email-message:<source>:<mailboxId>:<participantsDigest>:<messageId>`.
  *
  * A third namespace rather than a reuse, on the same lifecycle argument the
  * meeting namespace makes against the chat one, plus one that is specific to
@@ -410,6 +411,34 @@ export function deriveMeetingParticipantGrant(
  * of the disclosure. It also survives a rename, which a UPN does not.
  * `outlook/client.ts` resolves the configured mailbox (which an admin may well
  * have typed as a UPN) to its object id once per pass for exactly this reason.
+ *
+ * ## And why the PARTICIPANT DIGEST is in it — the forgery this closes
+ *
+ * A Message-ID is chosen by the SENDING system. It is not a secret: it appears
+ * in the `References:` and `In-Reply-To:` headers of every reply, so anyone who
+ * was ever on a thread — including an external counterparty — knows the ids of
+ * the messages in it.
+ *
+ * Without the digest, the audience id is a pure function of (mailbox,
+ * Message-ID), and both are attacker-supplied. Mail a monitored mailbox
+ * claiming an existing message's id and the connector derives the SAME audience
+ * id, then reconciles it against the forged `To:`/`Cc:` — and
+ * `reconcileAudienceMembership` DELETES everyone outside the set it is handed.
+ * The stored evidence survives (the episode insert is `ON CONFLICT DO NOTHING`,
+ * so no new row lands), but the real recipients lose access to every fact drawn
+ * from it, and from `/admin` that is indistinguishable from correct fail-closed
+ * behaviour.
+ *
+ * Binding the digest into the id makes the forged message mint a DIFFERENT
+ * audience — one that no episode names, and which is therefore inert — instead
+ * of overwriting a real one. The property is structural: an audience id can only
+ * ever be reconciled against the participant set it was minted from, because the
+ * set is part of the name.
+ *
+ * It also gives the re-verifier something to VERIFY. `outlook/audience.ts`
+ * recomputes the digest from the message it re-read and aborts on a mismatch,
+ * so a duplicate or altered header set cannot silently rewrite membership on the
+ * clock either.
  */
 export const EMAIL_MESSAGE_AUDIENCE_NAMESPACE = "email-message" as const;
 
@@ -432,14 +461,42 @@ export const EMAIL_MESSAGE_AUDIENCE_NAMESPACE = "email-message" as const;
 export function emailMessageAudienceId(
   source: string,
   mailboxId: string,
+  participantsDigest: string,
   messageId: string,
 ): string | null {
   const cleanSource = source.trim();
   const cleanMailboxId = mailboxId.trim();
+  const cleanDigest = participantsDigest.trim();
   const cleanMessageId = messageId.trim();
   if (cleanSource === "" || cleanMailboxId === "" || cleanMessageId === "") return null;
+  if (cleanDigest === "" || !PARTICIPANTS_DIGEST_PATTERN.test(cleanDigest)) return null;
   if (cleanSource.includes(":") || cleanMailboxId.includes(":")) return null;
-  return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${cleanSource}:${cleanMailboxId}:${cleanMessageId}`;
+  return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${cleanSource}:${cleanMailboxId}:${cleanDigest}:${cleanMessageId}`;
+}
+
+/** The shape {@link emailParticipantsDigest} produces. Pinned so a malformed
+ * digest cannot reach a stored token and quietly widen the `LIKE` scan. */
+export const PARTICIPANTS_DIGEST_PATTERN = /^[0-9a-f]{16}$/;
+
+/**
+ * A stable, order-independent digest of a message's participant addresses.
+ *
+ * Sorted and lower-cased first, so the digest depends on the SET and not on
+ * header order — the same people in a different `To:` order are the same
+ * audience, and a connector that said otherwise would mint a fresh audience for
+ * every reply.
+ *
+ * Truncated to 64 bits. That is a collision bound, not a secrecy one: the point
+ * is that an attacker cannot make a DIFFERENT participant set land on an
+ * EXISTING audience's name, which costs ~2^64 work. It is deliberately not a
+ * privacy mechanism — the addresses are in the episode body, visible to that
+ * audience — so nothing here should be read as protecting them.
+ */
+export function emailParticipantsDigest(addresses: readonly string[]): string {
+  const normalized = [...new Set(addresses.map((a) => a.trim().toLowerCase()))]
+    .filter((a) => a !== "")
+    .sort();
+  return createHash("sha256").update(normalized.join("\n")).digest("hex").slice(0, 16);
 }
 
 /** The three halves {@link emailMessageAudienceId} joins. */
@@ -447,6 +504,8 @@ export interface EmailMessageAudienceParts {
   readonly source: string;
   /** The Graph user object id of the mailbox the message was read from. */
   readonly mailboxId: string;
+  /** The participant-set digest this audience was minted from. */
+  readonly participantsDigest: string;
   /** The RFC 5322 Message-ID, angle brackets already stripped. */
   readonly messageId: string;
 }
@@ -474,10 +533,20 @@ export function parseEmailMessageAudienceId(audienceId: string): EmailMessageAud
   const afterSource = rest.slice(firstSeparator + 1);
   const secondSeparator = afterSource.indexOf(":");
   if (secondSeparator <= 0 || secondSeparator === afterSource.length - 1) return null;
+  const mailboxId = afterSource.slice(0, secondSeparator);
+  const afterMailbox = afterSource.slice(secondSeparator + 1);
+  const thirdSeparator = afterMailbox.indexOf(":");
+  if (thirdSeparator <= 0 || thirdSeparator === afterMailbox.length - 1) return null;
+  const participantsDigest = afterMailbox.slice(0, thirdSeparator);
+  // Validated on the way OUT as well as in: a token whose digest slot does not
+  // hold a digest was not minted by `emailMessageAudienceId`, and treating it as
+  // one would hand the re-verifier a mismatch it would report as tampering.
+  if (!PARTICIPANTS_DIGEST_PATTERN.test(participantsDigest)) return null;
   return {
     source,
-    mailboxId: afterSource.slice(0, secondSeparator),
-    messageId: afterSource.slice(secondSeparator + 1),
+    mailboxId,
+    participantsDigest,
+    messageId: afterMailbox.slice(thirdSeparator + 1),
   };
 }
 
@@ -509,10 +578,18 @@ export interface EmailMessageParticipation {
    */
   readonly headersComplete: boolean;
   /**
-   * How many distinct participant addresses the headers yielded (sender plus
-   * To plus Cc). Zero is an audience that cannot be established at all.
+   * The distinct participant addresses the headers yielded — sender plus To plus
+   * Cc, already normalised and deduped by the caller.
+   *
+   * The SET, not a count. A count is a derived scalar the caller computes from a
+   * collection it also passes to the reconcile, so the two could describe
+   * different things; taking the set makes the deriver and the membership write
+   * licensed by ONE value, and makes the digest in the audience id a property of
+   * exactly the people who will be granted.
+   *
+   * Empty is an audience that cannot be established at all.
    */
-  readonly participantCount: number;
+  readonly participants: readonly string[];
 }
 
 /**
@@ -553,13 +630,28 @@ export interface EmailMessageParticipation {
  * consequence of that collapse is that **which copy wins is undetermined**. It
  * depends on configured mailbox order and on which pass had budget left.
  *
- * `bccRecipients` is populated only on the sender's copy. So a grant that
- * honoured BCC would name a different set of people depending on whether the
- * sender's mailbox happened to be walked before the recipients' — the same
- * stored row, granted differently on different days, for reasons no operator
- * could reconstruct. That is not a stricter posture or a looser one; it is not a
- * posture at all. Ignoring BCC everywhere makes every copy of a message derive
- * a byte-identical grant, which is what makes the dedupe safe.
+ * `bccRecipients` is populated on the sender's copy and generally not on
+ * recipients' copies. So a grant that honoured BCC would name a different set of
+ * PEOPLE depending on whether the sender's mailbox happened to be walked before
+ * the recipients' — the same stored row, granted differently on different days,
+ * for reasons no operator could reconstruct. That is not a stricter posture or a
+ * looser one; it is not a posture at all.
+ *
+ * ⚠️ State the property precisely, because the obvious phrasing is FALSE. The
+ * grant TOKEN is not copy-independent: {@link emailMessageAudienceId} embeds the
+ * mailbox, deliberately (the re-verifier needs to know where to re-read from),
+ * so Alice's copy and Bob's copy mint different tokens. What ignoring BCC buys
+ * is that every copy resolves to the IDENTICAL SET OF PEOPLE — and that is what
+ * makes the dedupe safe, because whichever copy wins, the membership is the
+ * same.
+ *
+ * The cost of the token being copy-dependent is real and belongs here rather
+ * than in a footnote: the winning copy's mailbox is baked into the stored row,
+ * so if THAT mailbox later loses `Mail.Read` (an ApplicationAccessPolicy edit, a
+ * deleted user) the episode's audience fails re-verification forever and goes
+ * invisible at the staleness bound — even though every other recipient's mailbox
+ * still holds the message. `outlook/audience.ts` §GRAIN PROBLEM covers what that
+ * does to the scan.
  *
  * ⚠️ The two decisions are therefore LOAD-BEARING ON EACH OTHER. If a future
  * change makes the grant depend on which copy was read, the Message-ID dedupe
@@ -625,11 +717,12 @@ export function deriveEmailRecipientGrant(
   if (!participation.headersComplete) return null;
   // A message that names nobody. Distinct from "names people Atlas does not
   // know", which is the flag side above and must reach the audience arm.
-  if (participation.participantCount <= 0) return null;
+  if (participation.participants.length === 0) return null;
 
   const audienceId = emailMessageAudienceId(
     participation.source,
     participation.mailboxId,
+    emailParticipantsDigest(participation.participants),
     participation.messageId,
   );
   if (audienceId === null) return null;

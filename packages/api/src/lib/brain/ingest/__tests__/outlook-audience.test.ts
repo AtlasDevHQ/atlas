@@ -17,10 +17,15 @@ import {
   type OutlookAudienceDeps,
 } from "@atlas/api/lib/brain/ingest/outlook/audience";
 import type { OutlookMessage } from "@atlas/api/lib/brain/ingest/outlook/api";
+import { emailParticipantsDigest } from "@atlas/api/lib/brain/ingest/grant";
 
 const MAILBOX = "8f14e45f";
 const MESSAGE = "a@contoso.com";
-const TOKEN = `audience:email-message:outlook:${MAILBOX}:${MESSAGE}`;
+/** The participant set the fixture message carries, in the deriver's order. */
+const PARTICIPANTS = ["sender@contoso.com", "to@contoso.com", "cc@contoso.com"];
+const DIGEST = emailParticipantsDigest(PARTICIPANTS);
+const AUDIENCE_ID = `email-message:outlook:${MAILBOX}:${DIGEST}:${MESSAGE}`;
+const TOKEN = `audience:${AUDIENCE_ID}`;
 
 function address(addr: string | null) {
   return { address: addr, name: null };
@@ -149,7 +154,7 @@ describe("reconcileEmailAudience", () => {
   it("reconciles to the resolved set, stamped with this source", async () => {
     const { deps: d, reconciled } = deps();
     const result = await reconcileEmailAudience(
-      { workspaceId: "ws", audienceId: `email-message:outlook:${MAILBOX}:${MESSAGE}`, participants: messageParticipants(message()) },
+      { workspaceId: "ws", audienceId: AUDIENCE_ID, participants: messageParticipants(message()) },
       d,
     );
     expect(result).toEqual({ added: 3, revoked: 0, unresolved: 0 });
@@ -220,8 +225,14 @@ describe("the re-verify scan", () => {
     // vendor's message is not this re-verifier's to touch — reconciling it would
     // resolve the wrong roster against the wrong audience.
     const { deps: d, reconciled } = deps({
-      query: scanQuery([{ token: "audience:email-message:gmail:mb:msg", synced_at: null, has_members: false },
-              { token: "audience:email-message:malformed", synced_at: null, has_members: false }]),
+      query: scanQuery([
+        { token: `audience:email-message:gmail:mb:${DIGEST}:msg`, synced_at: null, has_members: false },
+        { token: "audience:email-message:malformed", synced_at: null, has_members: false },
+        // A token whose digest slot does not hold a digest was not minted by
+        // `emailMessageAudienceId`. The parser refuses it, so the re-verifier
+        // skips it rather than reporting the inevitable mismatch as tampering.
+        { token: `audience:email-message:outlook:${MAILBOX}:nope:${MESSAGE}`, synced_at: null, has_members: false },
+      ]),
     });
     const result = await reverifyOutlookMessageAudiences(d);
     expect(reconciled).toHaveLength(0);
@@ -265,6 +276,32 @@ describe("the re-verify scan", () => {
     }
   });
 
+  it("⭐ ABORTS when the re-read message's participants do not match the token's digest", async () => {
+    // The audience id NAMES the participant set it was minted from, so a message
+    // that now describes a different one is not this audience's message. An
+    // email's headers are immutable, so the realistic causes are a DIFFERENT
+    // message claiming the same Message-ID (a forged header — the id is chosen by
+    // the sending system and leaks in every reply's `References:`) or vendor
+    // drift. Either way, reconciling would hand the deletes-everyone-outside-this
+    // set a roster this audience was never named for.
+    //
+    // MUTATION THIS CATCHES: dropping the digest comparison in `reverifyWorkspace`.
+    const { deps: d, reconciled } = deps({
+      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      fetchMessage: async () => ({
+        ok: true,
+        message: message({
+          from: address("attacker@evil.test"),
+          toRecipients: [address("victim@contoso.com")],
+          ccRecipients: [],
+        }),
+      }),
+    });
+    const result = await reverifyOutlookMessageAudiences(d);
+    expect(reconciled).toHaveLength(0);
+    expect(result.failed).toBe(1);
+  });
+
   it("ABORTS on a vendor read failure, leaving the previous membership standing", async () => {
     const { deps: d, reconciled } = deps({
       query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
@@ -281,7 +318,7 @@ describe("the re-verify scan", () => {
     });
     const result = await reverifyOutlookMessageAudiences(d);
     expect(reconciled).toHaveLength(1);
-    expect(reconciled[0].audienceId).toBe(`email-message:outlook:${MAILBOX}:${MESSAGE}`);
+    expect(reconciled[0].audienceId).toBe(AUDIENCE_ID);
     expect(result.reconciled).toBe(1);
     expect(result.failed).toBe(0);
     expect(result.membersAdded).toBe(3);
@@ -313,8 +350,13 @@ describe("the re-verify scan", () => {
       isEnabled: () => false,
       query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
     });
-    await reverifyOutlookMessageAudiences(d);
+    const disabled = await reverifyOutlookMessageAudiences(d);
     expect(reconciled).toHaveLength(0);
+    // A skip, not a failure — the operator asked for this. It is LOGGED rather
+    // than silent (ingest keeps minting audiences regardless of the flag, so they
+    // age past the staleness bound and stop granting), but a deliberate setting
+    // must not make the cycle report `degraded`.
+    expect(disabled.failed).toBe(0);
 
     // The cap is passed as the scan's LIMIT rather than applied in JS, or the
     // query would return every audience in the workspace before bounding.

@@ -52,6 +52,15 @@
  * stops granting a week later — silently, with the facts still stored and every
  * sync still green.
  *
+ * ⚠️ REGISTRATION IS NOT EXECUTION. `connector.ts` guarantees this re-verifier
+ * EXISTS whenever the connector does, by registering both in one call. It does
+ * not guarantee the fiber RUNS: `effect/layers.ts` gates the whole periodic
+ * audience cycle on `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED` (platform), and
+ * {@link reverifyOutlookMessageAudiences} re-checks it per workspace. An admin
+ * who switches that off gets precisely the silent expiry above — which is why
+ * the per-workspace skip below is logged rather than passed over, and why that
+ * setting's description names this source rather than only Slack.
+ *
  * ══════════════════════════════════════════════════════════════════════
  * ██  THE GRAIN PROBLEM — read before changing the cap
  * ══════════════════════════════════════════════════════════════════════
@@ -99,7 +108,10 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { AUDIENCE_PREFIX } from "@atlas/api/lib/brain/acl";
-import { parseEmailMessageAudienceId } from "@atlas/api/lib/brain/ingest/grant";
+import {
+  emailParticipantsDigest,
+  parseEmailMessageAudienceId,
+} from "@atlas/api/lib/brain/ingest/grant";
 import { reconcileAudienceMembership } from "@atlas/api/lib/brain/audience/membership";
 import { resolvePrincipals } from "@atlas/api/lib/brain/audience/resolver";
 import {
@@ -163,11 +175,21 @@ export const MAX_MESSAGE_PARTICIPANTS = 500;
  * exactly the audience the "someone joined Atlas later" repair exists for.
  *
  * Reading `visible_to` also means only LIVE audiences are scanned. That matters
- * more here than for Zoom because this connector genuinely mints audiences that
- * no episode ends up naming: the Message-ID dedupe collapses one mail across
- * every recipient mailbox to ONE episode, so the second mailbox to see it writes
- * membership for an audience whose episode insert then no-ops. Those orphans are
- * inert (nothing references them) and this scan never spends a cycle on them.
+ * more here than for Zoom, because this connector genuinely mints audiences that
+ * no episode ends up naming, by two routes:
+ *
+ *   - the Message-ID dedupe collapses one mail across every recipient mailbox to
+ *     ONE episode, so the second mailbox to see it writes membership for an
+ *     audience whose episode insert then no-ops;
+ *   - every SKIP that lands AFTER the membership write does the same — an HTML
+ *     body, an oversize body, a compose that came out empty. `client.ts` writes
+ *     membership before those checks because the audience must be established
+ *     before any content decision, and the cost is these orphans.
+ *
+ * They are inert (nothing references them) and this scan never spends a cycle on
+ * them, but they are rows: on a 50-mailbox install an all-internal thread can
+ * write up to 50× the `fact_audience_member` rows it needs, with no TTL and no
+ * sweeper. Worth knowing before raising the mailbox cap.
  *
  * ## The ordering, which is two keys and not one
  *
@@ -245,10 +267,15 @@ export interface EmailParticipant {
    * for free because their vendors issue opaque user ids; email has no
    * non-address identifier at all, so one is synthesised here.
    *
-   * Positional rather than hashed because it stays ACTIONABLE: the log line
-   * beside it carries the audience id, which names the mailbox and the
-   * Message-ID, so an operator can open the message and see who `cc:3` is. A
-   * hash would be equally private and answer nothing.
+   * Positional rather than hashed so it is at least READABLE as a header slot.
+   *
+   * ⚠️ Be honest about what that does NOT buy. `resolvePrincipals` logs its
+   * unresolved sample with `workspaceId` alone — no audience id, no mailbox, no
+   * Message-ID — so `cc:3` on its own does not let an operator reach the
+   * message. The correlating line is `client.ts`'s reconcile log, which now
+   * carries the audience id for that purpose; the two still have to be joined by
+   * hand. The property that holds unconditionally is the PRIVACY one: no address
+   * reaches the log. Do not read this label as an investigation tool it is not.
    */
   readonly id: string;
   readonly address: string;
@@ -396,7 +423,18 @@ export async function reverifyOutlookMessageAudiences(
 
   let total = ZERO_REVERIFY;
   for (const install of installs) {
-    if (!isEnabled(install.workspace_id)) continue;
+    if (!isEnabled(install.workspace_id)) {
+      // NOT a silent skip. Ingest mints `audience:` grants regardless of this
+      // flag, so a workspace with audience sync switched off keeps accumulating
+      // email audiences that age past the staleness bound and stop granting a
+      // week later — with this cycle reporting clean. `sync.ts` counts the same
+      // condition as `workspacesSkippedDisabled` for exactly this reason.
+      log.warn(
+        { workspaceId: install.workspace_id },
+        "brain audience: audience sync is disabled for this workspace — its Outlook message audiences are NOT re-verified and will stop granting once they pass ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",
+      );
+      continue;
+    }
     try {
       total = sum(total, await reverifyWorkspace(install, query, resolveToken, deps));
     } catch (err) {
@@ -519,11 +557,43 @@ async function reverifyWorkspace(
         continue;
       }
       const participants = messageParticipants(found.message);
+      if (
+        participants.length > 0 &&
+        emailParticipantsDigest(participants.map((p) => p.address)) !== parts.participantsDigest
+      ) {
+        // ⭐ The token says which participant set this audience was minted from,
+        // and the message we just re-read describes a different one. For an
+        // email that is not a legitimate transition — headers are immutable — so
+        // one of two things happened: the mailbox now holds a DIFFERENT message
+        // claiming the same Message-ID (a forged header; see `grant.ts`), or the
+        // vendor returned something other than what was ingested.
+        //
+        // Either way the only safe move is to touch nothing. Reconciling would
+        // hand `reconcileAudienceMembership` a set the audience was never named
+        // for, and it deletes everyone outside the set it is handed — so this is
+        // the exact line between "membership repaired" and "membership
+        // rewritten by whoever chose the Message-ID".
+        log.error(
+          { workspaceId, mailboxId: parts.mailboxId },
+          "brain audience: the re-read message's participants do not match the set this audience was minted from — refusing to reconcile. A Message-ID is chosen by the sending system, so a mismatch can mean a forged duplicate; membership is unchanged",
+        );
+        total = { ...total, failed: total.failed + 1 };
+        continue;
+      }
       if (participants.length === 0) {
         // Headers complete and yet nobody in them. Not a legitimate transition
         // for an audience that exists — it was minted from at least one
         // participant — so it is unreadable data wearing the shape of a mass
-        // removal, exactly as `zoom/audience.ts`'s empty-roster guard describes.
+        // removal.
+        //
+        // STRICTER than `zoom/audience.ts`'s empty-roster guard, which fires
+        // only when `row.has_members`. The divergence is deliberate and the
+        // reason is the class, not the connector: a Zoom roster can legitimately
+        // be empty at ingest (an all-external meeting), so Zoom needs the
+        // prior-membership condition to tell a legal empty from an unreadable
+        // one. An email's headers are IMMUTABLE, so no zero-participant read is
+        // ever legal for an audience that was minted from some — which is why
+        // this scan selects `has_members` and never reads it.
         log.error(
           { workspaceId, mailboxId: parts.mailboxId },
           "brain audience: Outlook returned a message with NO participants for an audience that was minted from some — treating it as unreadable. Membership unchanged",

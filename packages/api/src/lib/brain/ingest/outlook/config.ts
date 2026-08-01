@@ -98,10 +98,19 @@
  *
  * ⚠️ The consequence a maintainer must hold onto: **which mailbox wins is not
  * determined.** It depends on the configured order and on which pass had budget.
- * That is safe ONLY because the derived grant is identical from every copy —
- * see `ingest/grant.ts`'s {@link deriveEmailRecipientGrant}, where ignoring BCC
- * is what buys that determinism. If anything ever makes the grant depend on
- * WHICH copy was read, this dedupe turns into a non-deterministic ACL and the
+ *
+ * That is safe because every copy resolves to the IDENTICAL SET OF PEOPLE — see
+ * `ingest/grant.ts`'s {@link deriveEmailRecipientGrant}, where ignoring BCC is
+ * what buys that. Note the precise claim: the grant TOKEN is *not* identical
+ * across copies, because it embeds the mailbox on purpose (the re-verifier has
+ * to know where to re-read from). Only the membership it resolves to is.
+ *
+ * That distinction has a real cost, so do not read the winning mailbox as
+ * inconsequential: it is baked into the stored row, so if THAT mailbox later
+ * loses `Mail.Read`, the episode's audience fails re-verification forever and
+ * goes invisible at the staleness bound — while every other recipient's mailbox
+ * still holds the message. If anything ever makes the granted PEOPLE depend on
+ * which copy was read, this dedupe turns into a non-deterministic ACL and the
  * two decisions have to be revisited together.
  *
  * ### The absent-header case
@@ -201,15 +210,21 @@ export function normalizeInternetMessageId(raw: string | null | undefined): stri
   // reach a stored key AND an `audience:` grant token, and both are read back by
   // `LIKE` scans that a stray byte silently defeats.
   //
-  // The control-byte class is spelled with `\u` ESCAPES and never as a literal
-  // range. A raw control character in source is invisible in review and a
-  // formatter is free to eat it, which leaves the guard looking present and
-  // doing nothing. (Written literally the first time, and caught only because
-  // grep stopped matching the file.) `\s` does not cover them — it stops at the
-  // usual five.
+  // The control-byte check is a CODEPOINT SCAN rather than a regex, for two
+  // reasons that point the same way. `oxlint`'s `no-control-regex` rejects the
+  // character class even spelled with `\u` escapes, so a regex here needs a
+  // suppression comment to exist at all; and a regex written with LITERAL
+  // control characters — the form that lints clean — is invisible in review and
+  // a formatter is free to eat it, leaving a guard that looks present and does
+  // nothing. (That is not hypothetical: this file was written that way first and
+  // it was caught only because `grep` stopped matching it.) `\s` does not cover
+  // these — it stops at the usual five.
   if (/[<>]/.test(value)) return null;
   if (/\s/.test(value)) return null;
-  if (/[\u0000-\u001f\u007f]/.test(value)) return null;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return null;
+  }
   return value;
 }
 

@@ -799,10 +799,12 @@ export const BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW: BuiltinKnowledgeCatalogRow = 
  * plan-capped knowledge-collection slots, the price of reusing the collection
  * spine verbatim.
  *
- * Its `mailboxes` field is REQUIRED, which no other source's scope field is.
- * Graph's application `Mail.Read` is tenant-wide and has no narrower form, so an
- * empty scope defaulting to "everything" would mean every mailbox in the
- * company; `lib/brain/ingest/outlook/config.ts` carries the argument. The
+ * Its `mailboxes` field is REQUIRED — as `slack-history`'s `channels` is, and
+ * as `zoom-transcripts`' `hosts` deliberately is NOT. That contrast is the point:
+ * Zoom's blank field means "the whole account", and there is no such spelling
+ * here, because Graph's application `Mail.Read` is tenant-wide with no narrower
+ * form and an empty scope defaulting to "everything" would mean every mailbox in
+ * the company. `lib/brain/ingest/outlook/config.ts` carries the argument. The
  * id/slug are the config SSOT (`OUTLOOK_MAIL_CATALOG_ID` / `OUTLOOK_MAIL_SLUG`).
  */
 export const BUILTIN_OUTLOOK_MAIL_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
@@ -839,7 +841,7 @@ export const BUILTIN_OUTLOOK_MAIL_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
       label: "Client secret",
       required: true,
       description:
-        "A client secret VALUE (not its ID) from the same app registration. Stored encrypted and never shown again. The app needs the Mail.Read and User.Read.All APPLICATION permissions with admin consent granted. Entra secrets expire — the sync fails loudly when one does.",
+        "A client secret VALUE (not its ID) from the same app registration. Stored encrypted and never shown again. The app needs the Mail.Read and User.ReadBasic.All APPLICATION permissions with admin consent granted. Entra secrets expire — the sync fails loudly when one does.",
     },
     {
       key: "mailboxes",

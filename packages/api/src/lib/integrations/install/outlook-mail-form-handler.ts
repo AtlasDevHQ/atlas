@@ -33,7 +33,7 @@
  *   1. **the token exchange** proves the tenant id / client id / client secret
  *      triple. A token mints fine for an app with no permissions at all, so it
  *      proves nothing else;
- *   2. **a directory read per mailbox** proves `User.Read.All` AND that every
+ *   2. **a directory read per mailbox** proves `User.ReadBasic.All` AND that every
  *      configured mailbox actually exists. Run for EVERY mailbox, in parallel,
  *      because a typo in the seventh entry would otherwise become a per-cycle
  *      sync warning nobody reads;
@@ -42,7 +42,7 @@
  *
  * ⚠️ What probe 3 deliberately does NOT prove: that every OTHER mailbox is
  * readable. An Exchange ApplicationAccessPolicy narrows `Mail.Read` per mailbox
- * and does not narrow `User.Read.All`, so a mailbox can pass probe 2 and still
+ * and does not narrow the directory permission, so a mailbox can pass probe 2 and still
  * be refused at sync time. Probing all of them would double a 50-mailbox
  * install's round trips to prove something an admin can change five minutes
  * later anyway; the honest position is that per-mailbox mail access is verified
@@ -287,7 +287,7 @@ export class OutlookMailFormInstallHandler implements FormBasedInstallHandler {
         (entry) => !entry.result.ok && entry.result.error === "missing_scope",
       );
       const message = anyMissingScope
-        ? "This app registration cannot read the directory — add the User.Read.All application permission in Entra and grant admin consent, then install again. (Atlas needs it to record mailboxes by their stable object ID rather than by email address.)"
+        ? "This app registration cannot read the directory — add the User.ReadBasic.All application permission in Entra and grant admin consent, then install again. (Atlas needs it to record mailboxes by their stable object ID rather than by email address. User.Read.All also works if the app already has it.)"
         : failure === "not_found"
           ? `Microsoft does not recognise the mailbox "${first.mailbox}" — check the address or object ID. ${unresolved.length > 1 ? `${unresolved.length} of the listed mailboxes could not be found.` : ""}`.trim()
           : failure === "mailbox_unavailable"
@@ -302,7 +302,17 @@ export class OutlookMailFormInstallHandler implements FormBasedInstallHandler {
     // Probe 3 — the mail permission itself, on the first mailbox. `resolved` is
     // non-empty because `validateMailboxes` refuses an empty list.
     const firstMailbox = resolved[0];
-    if (!firstMailbox.result.ok) return;
+    if (!firstMailbox.result.ok) {
+      // Unreachable: the `unresolved.length > 0` throw above has already fired
+      // for any failed identity read. It THROWS rather than returning, because a
+      // bare `return` here is a fail-OPEN — verification would silently pass and
+      // the install would land unverified. CLAUDE.md's "prefer errors over
+      // silent fallbacks" points at exactly this shape, and the guard above is
+      // one narrowing edit away from making it reachable.
+      throw new Error(
+        "Outlook install verification reached the mail probe with an unresolved mailbox — this is a bug in the install handler's guard order, not a configuration problem.",
+      );
+    }
     const probe = await this.probeMessages(token.token, {
       mailboxId: firstMailbox.result.mailbox.id,
       // A one-day window with a single-record page: enough to exercise the

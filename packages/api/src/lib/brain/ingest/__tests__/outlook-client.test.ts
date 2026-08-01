@@ -23,6 +23,7 @@ import {
   type OutlookMailClientOptions,
 } from "@atlas/api/lib/brain/ingest/outlook/client";
 import type { OutlookMessage } from "@atlas/api/lib/brain/ingest/outlook/api";
+import { emailParticipantsDigest } from "@atlas/api/lib/brain/ingest/grant";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 const MAILBOX_ID = "8f14e45f";
@@ -103,54 +104,29 @@ const PARAMS = { mode: "incremental" as const, since: null, cursor: null, maxEpi
 
 describe("the happy path", () => {
   it("produces one episode keyed on the Message-ID, granted to a message audience", async () => {
-    const { vendor } = client([{ messages: [message()] }]);
+    const { vendor, harness } = client([{ messages: [message()] }]);
     const changes = await vendor.fetchEpisodes(PARAMS);
     expect(changes.episodes).toHaveLength(1);
     const episode = changes.episodes[0];
     // The stored key is the bare Message-ID — see `outlook-config.test.ts` for
     // why that and not Graph's own per-mailbox id.
     expect(episode.sourceId).toBe("a@contoso.com");
+    const digest = emailParticipantsDigest(["sender@contoso.com", "to@contoso.com"]);
     expect(episode.visibleTo).toEqual([
-      `audience:email-message:outlook:${MAILBOX_ID}:a@contoso.com`,
+      `audience:email-message:outlook:${MAILBOX_ID}:${digest}:a@contoso.com`,
     ]);
+    // ⭐ Membership is written under EXACTLY the token the episode carries. An
+    // off-by-one in the `slice(AUDIENCE_PREFIX.length)` would write it under an
+    // id no episode names: every email fact stored, gated, invisible to
+    // everyone, sync green — and self-healing a cycle later when the re-verifier
+    // repairs it from `visible_to`, which makes the window silent AND hard to
+    // diagnose after the fact.
+    expect(harness.reconciled).toEqual([episode.visibleTo[0].slice("audience:".length)]);
     // The SENDER, not a recipient: `sourceActor` is the principal who authored
     // the evidence, which a mail header states unambiguously.
     expect(episode.sourceActor).toBe("sender@contoso.com");
     expect(episode.occurredAt?.toISOString()).toBe("2026-07-01T10:00:00.000Z");
     expect(changes.coverageIncomplete).toBeFalsy();
-  });
-
-  it("⭐ writes membership BEFORE handing the episode back", async () => {
-    // The failure modes are not symmetric. Membership without episodes is an
-    // audience nothing references — inert. Episodes without membership is a
-    // message whose facts are invisible to the people it was addressed to, for
-    // as long as it takes the re-verifier to come round: a silent outage.
-    //
-    // MUTATION THIS CATCHES: moving the `reconcileEmailAudience` call after the
-    // episode is pushed. Asserted by RECORDING the episode count at the moment
-    // each reconcile ran, because both orderings produce the same final state.
-    const harness: Harness = { reconciled: [], episodesAtReconcile: [] };
-    let produced = 0;
-    const { vendor } = client([{ messages: [message(), message({ internetMessageId: "<b@contoso.com>" })] }], {
-      harness,
-      audienceDeps: {
-        resolve: async (_ws, principals) => ({
-          resolved: new Map(principals.map((p) => [p.id, `user-${p.id}`])),
-          unresolvedCount: 0,
-        }),
-        reconcile: async (input) => {
-          harness.reconciled.push(input.audienceId);
-          harness.episodesAtReconcile.push(produced);
-          return { added: input.userIds.length, revoked: 0 };
-        },
-      },
-    });
-    const changes = await vendor.fetchEpisodes(PARAMS);
-    produced = changes.episodes.length;
-    // Message 1's membership was written while zero episodes existed; message
-    // 2's while one did. Under the inverted ordering both would read 1 and 2.
-    expect(harness.episodesAtReconcile).toEqual([0, 0]);
-    expect(harness.reconciled).toHaveLength(2);
   });
 
   it("stores the headers as part of the evidence — but never a Bcc line", async () => {
@@ -226,18 +202,7 @@ describe("the block arm — RETRYABLE, freezes the resume point", () => {
     expect(changes.highWaterMark).toBeNull();
   });
 
-  it("blocks a message that names nobody at all", async () => {
-    const { vendor } = client([
-      {
-        messages: [
-          message({ from: address(null), toRecipients: [], ccRecipients: [] }),
-        ],
-      },
-    ]);
-    const changes = await vendor.fetchEpisodes(PARAMS);
-    expect(changes.episodes).toHaveLength(0);
-    expect(changes.warnings?.join(" ")).toMatch(/no audience to grant it to/);
-  });
+
 
   it("never falls back to a wider grant on the block arm", async () => {
     // There is no `[org]` answer available anywhere in this path — it would
@@ -294,6 +259,19 @@ describe("the skip arm — PERMANENT, advances past", () => {
     expect(changes.warnings?.join(" ")).toMatch(/skipped rather than truncated/);
   });
 
+  it("measures the body in BYTES, not UTF-16 units", async () => {
+    // The guard's own comment says `String.length` "would pass at up to ~3× the
+    // stated bound" — and an ASCII fixture cannot show that, because for ASCII
+    // the two are identical. 400k CJK characters are 400k UTF-16 units (well
+    // under the 1MB cap by that measure) and 1.2MB of UTF-8.
+    //
+    // MUTATION THIS CATCHES: `body.length > MAX_EMAIL_BODY_BYTES`.
+    const { vendor } = client([{ messages: [message({ bodyText: "あ".repeat(400_000) })] }]);
+    const changes = await vendor.fetchEpisodes(PARAMS);
+    expect(changes.episodes).toHaveLength(0);
+    expect(changes.warnings?.join(" ")).toMatch(/skipped rather than truncated/);
+  });
+
   it("skips a message over the participant cap, and advances", async () => {
     const many = Array.from({ length: 600 }, (_, i) => address(`u${i}@contoso.com`));
     const { vendor } = client([{ messages: [message({ toRecipients: many })] }]);
@@ -337,7 +315,33 @@ describe("the skip arm — PERMANENT, advances past", () => {
     expect(changes.episodes[0].body).toContain("Subject: Q3 pricing");
   });
 
-  it("skips a message that composes to nothing at all", async () => {
+  it("⭐ REFUSES a message that names nobody, and still advances past it", async () => {
+    // Nothing is ingested and nothing is granted — but the headers of a stored
+    // message are IMMUTABLE, so this condition is permanent and the walk must
+    // not wait for it. Sitting under the skip arm rather than the block arm is
+    // the whole point: routing it to `blocked: true` freezes the resume point at
+    // the sliding floor and that mailbox never gets past this one message.
+    //
+    // MUTATION THIS CATCHES: `blocked: true` on the zero-participant branch.
+    // Without the two assertions below it survives — the episode count and the
+    // warning text are identical either way.
+    const { vendor, harness } = client([
+      {
+        messages: [
+          message({ from: address(null), toRecipients: [], ccRecipients: [] }),
+        ],
+      },
+    ]);
+    const changes = await vendor.fetchEpisodes(PARAMS);
+    expect(changes.episodes).toHaveLength(0);
+    expect(changes.warnings?.join(" ")).toMatch(/no audience to grant it to/);
+    // No membership either — an audience Atlas could not establish gets no rows.
+    expect(harness.reconciled).toHaveLength(0);
+    expect(changes.coverageIncomplete).toBeFalsy();
+    expect(parseOutlookCursor(changes.cursor ?? null)[MAILBOX_ID]).toBe(NOW.toISOString());
+  });
+
+  it("stores a sender-only message — a header block alone is complete evidence", async () => {
     // No subject, no printable participants, no body — `''` is refused outright
     // by `chk_brain_episodes_body_xor_locator`, so there is nothing to store.
     // Reached only via the block guard's sibling path, so it is asserted through
@@ -350,9 +354,12 @@ describe("the skip arm — PERMANENT, advances past", () => {
       },
     ]);
     const changes = await vendor.fetchEpisodes(PARAMS);
-    // The sender line alone is still evidence of who wrote it, so this one IS
-    // stored — the empty-compose branch is unreachable while any header exists,
-    // which is worth knowing rather than asserting a false negative.
+    // Named for what it PROVES. The `body === ""` branch it was originally
+    // written against is in fact unreachable: a non-zero participant count
+    // implies at least one of From/To/Cc is non-empty, which implies a non-empty
+    // header block. Kept as a positive assertion rather than deleted, because
+    // "a sender-only mail is still evidence" is the claim that stops someone
+    // "fixing" the empty-compose guard by refusing every bodyless message.
     expect(changes.episodes).toHaveLength(1);
     expect(changes.episodes[0].body).toBe("From: sender@contoso.com");
   });
@@ -505,6 +512,157 @@ describe("budgets and throttling", () => {
     expect(changes.episodes).toHaveLength(1);
     expect(changes.coverageIncomplete).toBe(true);
     expect(call).toBe(1);
+  });
+
+  it("⭐ a mailbox the pass never REACHED keeps the mark it came in with", async () => {
+    // THE cursor-loss defect three reviewers found, and it was invisible because
+    // every throttle test configured exactly ONE mailbox.
+    //
+    // `serialiseOutlookCursor` writes a whole-cursor REPLACEMENT and the state
+    // upsert only COALESCEs a NULL cursor forward, so a mailbox absent from
+    // `nextMarks` has its watermark DELETED — it restarts at the sliding backfill
+    // floor, and everything between its old frontier and that floor is never
+    // fetched. The "stored mark was older than the window" warning cannot fire
+    // either, because by then there is no stored mark.
+    //
+    // MUTATION THIS CATCHES: deleting the carry-forward loop after the walk.
+    const ids: Record<string, string> = { "a@contoso.com": "mb-a", "b@contoso.com": "mb-b" };
+    const stored = serialiseOutlookCursor({
+      "mb-a": "2026-07-10T00:00:00.000Z",
+      "mb-b": "2026-07-11T00:00:00.000Z",
+    });
+    const vendor = createOutlookMailClient({
+      workspaceId: "ws",
+      resolveToken: async () => "tok",
+      mailboxes: ["a@contoso.com", "b@contoso.com"],
+      backfillWindowMs: 30 * 86_400_000,
+      now: () => NOW,
+      api: {
+        fetchMailbox: async (_t, mailbox) => ({
+          ok: true as const,
+          mailbox: { id: ids[mailbox], userPrincipalName: mailbox, mail: mailbox },
+        }),
+        // The FIRST mailbox throttles, which stops the whole pass before the
+        // second is ever visited.
+        fetchMailboxMessagesPage: async () => ({
+          ok: false as const,
+          error: "ratelimited" as const,
+          retryAfterSeconds: 30,
+        }),
+        fetchMailboxMessagesNextPage: async () => ({
+          ok: false as const,
+          error: "ratelimited" as const,
+          retryAfterSeconds: 30,
+        }),
+      },
+      audienceDeps: {},
+    });
+    // Nothing banked, so the throttle rethrows and the ENGINE owns the retry —
+    // which is correct, and is why the carry-forward has to survive a THROW too.
+    await expect(vendor.fetchEpisodes({ ...PARAMS, cursor: stored })).rejects.toBeInstanceOf(
+      ConnectorRateLimitError,
+    );
+
+    // Now the same shape with something banked, so the pass RETURNS and we can
+    // inspect the cursor it wrote.
+    let firstCall = true;
+    const banking = createOutlookMailClient({
+      workspaceId: "ws",
+      resolveToken: async () => "tok",
+      mailboxes: ["a@contoso.com", "b@contoso.com"],
+      backfillWindowMs: 30 * 86_400_000,
+      now: () => NOW,
+      api: {
+        fetchMailbox: async (_t, mailbox) => ({
+          ok: true as const,
+          mailbox: { id: ids[mailbox], userPrincipalName: mailbox, mail: mailbox },
+        }),
+        fetchMailboxMessagesPage: async () => {
+          if (firstCall) {
+            firstCall = false;
+            return {
+              ok: true as const,
+              messages: [message()],
+              nextLink: "https://graph.microsoft.com/next",
+              dropped: 0,
+            };
+          }
+          return { ok: false as const, error: "ratelimited" as const, retryAfterSeconds: 30 };
+        },
+        fetchMailboxMessagesNextPage: async () => ({
+          ok: false as const,
+          error: "ratelimited" as const,
+          retryAfterSeconds: 30,
+        }),
+      },
+      audienceDeps: {
+        resolve: async (_ws, principals) => ({
+          resolved: new Map(principals.map((p) => [p.id, `u-${p.id}`])),
+          unresolvedCount: 0,
+        }),
+        reconcile: async () => ({ added: 1, revoked: 0 }),
+      },
+    });
+    const changes = await banking.fetchEpisodes({ ...PARAMS, cursor: stored });
+    expect(changes.episodes).toHaveLength(1);
+    const marks = parseOutlookCursor(changes.cursor ?? null);
+    // mailbox B was never visited — its mark must survive untouched.
+    expect(marks["mb-b"]).toBe("2026-07-11T00:00:00.000Z");
+    // …and A, which was walked and interrupted, resumes at the message it read.
+    expect(marks["mb-a"]).toBe("2026-07-01T10:00:00Z");
+  });
+
+  it("⭐ one unresolvable mailbox does not starve the mailboxes after it", async () => {
+    // With a single mailbox configured, `continue` and `break mailboxes` are
+    // indistinguishable — so the original version of this test could not tell
+    // isolation from abandonment. In production one deleted or unlicensed user
+    // at position 1 of a 50-mailbox install would silently starve the other 49.
+    //
+    // MUTATION THIS CATCHES: `continue` → `break mailboxes` on the identity-read
+    // failure.
+    const vendor = createOutlookMailClient({
+      workspaceId: "ws",
+      resolveToken: async () => "tok",
+      mailboxes: ["gone@contoso.com", "b@contoso.com"],
+      backfillWindowMs: 30 * 86_400_000,
+      now: () => NOW,
+      api: {
+        fetchMailbox: async (_t, mailbox) =>
+          mailbox === "gone@contoso.com"
+            ? { ok: false as const, error: "not_found" as const, retryAfterSeconds: null }
+            : {
+                ok: true as const,
+                mailbox: { id: "mb-b", userPrincipalName: mailbox, mail: mailbox },
+              },
+        fetchMailboxMessagesPage: async () => ({
+          ok: true as const,
+          messages: [message()],
+          nextLink: null,
+          dropped: 0,
+        }),
+        fetchMailboxMessagesNextPage: async () => ({
+          ok: true as const,
+          messages: [],
+          nextLink: null,
+          dropped: 0,
+        }),
+      },
+      audienceDeps: {
+        resolve: async (_ws, principals) => ({
+          resolved: new Map(principals.map((p) => [p.id, `u-${p.id}`])),
+          unresolvedCount: 0,
+        }),
+        reconcile: async () => ({ added: 1, revoked: 0 }),
+      },
+    });
+    const changes = await vendor.fetchEpisodes(PARAMS);
+    // The SECOND mailbox was still walked.
+    expect(changes.episodes).toHaveLength(1);
+    expect(changes.coverageIncomplete).toBe(true);
+    expect(changes.warnings?.join(" ")).toMatch(/no longer recognises/);
+    // Nothing was pruned: one mailbox did not resolve, so this pass cannot prove
+    // any stored key left the config.
+    expect(parseOutlookCursor(changes.cursor ?? null)["mb-b"]).toBe(NOW.toISOString());
   });
 
   it("isolates an unresolvable mailbox without losing the pass", async () => {

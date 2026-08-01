@@ -73,6 +73,11 @@ import {
   ZOOM_TRANSCRIPTS_SLUG,
 } from "./zoom-transcripts-form-handler";
 import { registerZoomTranscriptConnector } from "@atlas/api/lib/brain/ingest/zoom/connector";
+import {
+  OutlookMailFormInstallHandler,
+  OUTLOOK_MAIL_SLUG,
+} from "./outlook-mail-form-handler";
+import { registerOutlookMailConnector } from "@atlas/api/lib/brain/ingest/outlook/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -428,6 +433,30 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(ZOOM_TRANSCRIPTS_SLUG, new ZoomTranscriptsFormInstallHandler());
   registerZoomTranscriptConnector();
   log.info("Registered ZoomTranscriptsFormInstallHandler + brain source connector + audience re-verifier");
+  // Outlook mail (#4966) — ADR-0036 §T6's THIRD brain source class, and the
+  // second connector built on #4963's generalized seam. Same form-handler +
+  // source pairing as its two siblings and for the same reason: a half-wired
+  // deploy would show an installable card whose scheduled sync has no
+  // registered client.
+  //
+  // `registerOutlookMailConnector` also registers this source's AUDIENCE
+  // RE-VERIFIER in the same call, deliberately. A message's `audience:` grant is
+  // suppressed by `acl.ts` once its membership passes
+  // `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`, so a deploy with the connector
+  // and no re-verifier would ingest mail that quietly stops being visible a week
+  // later, with every sync still green.
+  //
+  // Like Zoom this one collects a secret (an Entra app registration's client id
+  // + secret); it lands in `knowledge_sync_credentials` (encrypted), never in
+  // `workspace_plugins.config`, which carries only the tenant id and the
+  // mailbox scope. That scope is REQUIRED — Graph's application `Mail.Read` is
+  // tenant-wide, so unlike Zoom's optional host list there is no spelling of
+  // this config that means "everything" by omission. No env gate: the install
+  // fails loudly and actionably on a tenant whose app is missing consent or
+  // whose mailboxes an ApplicationAccessPolicy excludes.
+  registerFormHandler(OUTLOOK_MAIL_SLUG, new OutlookMailFormInstallHandler());
+  registerOutlookMailConnector();
+  log.info("Registered OutlookMailFormInstallHandler + brain source connector + audience re-verifier");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

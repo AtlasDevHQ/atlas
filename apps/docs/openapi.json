@@ -58194,7 +58194,8 @@
                               "helpscout",
                               "freshdesk",
                               "slack-history",
-                              "zoom-transcripts"
+                              "zoom-transcripts",
+                              "outlook-mail"
                             ]
                           },
                           "description": {

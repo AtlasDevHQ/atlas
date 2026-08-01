@@ -1760,6 +1760,52 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // Company-brain TRANSCRIPT ingest backfill window (#4965, ADR-0036 §T6).
+    // Read per cycle by
+    // `lib/brain/ingest/zoom/connector.ts::getTranscriptBackfillWindowMs`.
+    //
+    // Registered by #4966 rather than by #4965: the reader shipped with the
+    // Zoom connector but the registry entry did not, so a knob that connector's
+    // own clamp warnings name by key was reachable only as an env var and never
+    // from Admin → Settings. The reader-side default and clamp are unchanged;
+    // this makes the lever the warnings promise actually exist. (The registry
+    // guard `scripts/check-settings-readers.sh` runs registry → reader, so an
+    // unregistered key with a live reader is exactly the direction it cannot
+    // see.)
+    key: "ATLAS_BRAIN_TRANSCRIPT_BACKFILL_DAYS",
+    section: "Knowledge Base",
+    label: "Meeting Transcript Backfill (days)",
+    description:
+      "How much history a newly-connected Zoom account reads on its first sync (default 30). Clamped to 180 days — Zoom serves at most six months of cloud recordings, so a wider window only spends API calls walking empty date ranges. Hot-reloaded; non-positive values fall back to the default.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_BRAIN_TRANSCRIPT_BACKFILL_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // Company-brain EMAIL ingest backfill window (#4966, ADR-0036 §T6) — how
+    // far back a mailbox with no stored mark reads on its first pass. Read per
+    // cycle by `lib/brain/ingest/outlook/connector.ts::getEmailBackfillWindowMs`.
+    //
+    // Its ceiling is a COST bound and not a vendor one, which is the difference
+    // from the transcript knob above and the reason the default is not simply
+    // raised: Exchange really does hold years of mail, and every message
+    // ingested mints its own `audience:` row set to re-verify forever
+    // (`lib/brain/ingest/outlook/audience.ts` §GRAIN PROBLEM). Widening this is
+    // a standing per-cycle cost, not a one-off catch-up.
+    key: "ATLAS_BRAIN_EMAIL_BACKFILL_DAYS",
+    section: "Knowledge Base",
+    label: "Email Backfill (days)",
+    description:
+      "How much history a newly-connected mailbox reads on its first sync (default 30). Clamped to 365 days. Raise it deliberately: unlike chat and meetings, every message ingested creates its own access audience that is re-verified on every cycle from then on. Hot-reloaded; non-positive values fall back to the default.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_BRAIN_EMAIL_BACKFILL_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // Company-brain extraction fiber (#4771, ADR-0036 §Ingestion). Default OFF
     // while the brain milestone is in flight: the review surface (#4772) is
     // what makes an extracted fact usable, so until it lands the fiber would
@@ -1800,7 +1846,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Sync",
     description:
-      "Keep private chat channels' membership in sync so facts drawn from them are visible to the people in the channel — and hidden again when someone leaves. Matches channel members' email addresses against existing Atlas accounts; it never creates accounts and never stores the channel roster. Requires Slack's users:read and users:read.email scopes.",
+      "Keep company-brain audience membership in sync so facts drawn from private chat channels, meeting transcripts and mail are visible to the people who were in them — and hidden again when someone leaves. Matches participants' email addresses against existing Atlas accounts; it never creates accounts and never stores a roster. Switching this OFF does not stop those facts being collected: it stops the membership behind them being refreshed, so they stop granting anyone once they pass the staleness bound. Slack channels additionally need Slack's users:read and users:read.email scopes.",
     type: "boolean",
     default: "true",
     envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",

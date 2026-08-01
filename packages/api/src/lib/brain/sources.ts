@@ -83,9 +83,9 @@
  *
  * ## ⚠️ The two axes OVERLAP, and the compiler will not catch it
  *
- * `EpisodeSource` is `slack | zoom | warehouse | human`; `EpisodeSourceClass`
- * is `chat | transcript | warehouse | human`. Two members are spelled
- * IDENTICALLY on both axes.
+ * `EpisodeSource` is `slack | zoom | outlook | warehouse | human`;
+ * `EpisodeSourceClass` is `chat | transcript | email | warehouse | human`. Two
+ * members are spelled IDENTICALLY on both axes.
  *
  * The UNIONS are not mutually assignable — `slack` and `chat` see to that, and
  * each direction is a TS2322. What IS interchangeable is the literal-typed
@@ -98,10 +98,18 @@
  *     findBrainSourceConnectors({ vendor: SLACK_SOURCE })  // a kind where a VENDOR is wanted
  *
  * The last one is the axis this refactor added: {@link EpisodeSourceVendor} is
- * `"slack" | "zoom"`, and BOTH are also stored kinds. `CHAT_CLASS` and
- * `TRANSCRIPT_CLASS` are the only constants that error against a stored kind,
- * and that is a coincidence which expires the day a `chat` or `transcript`
- * stored value exists.
+ * `"slack" | "zoom" | "outlook"`, and ALL THREE are also stored kinds.
+ * `CHAT_CLASS`, `TRANSCRIPT_CLASS` and `EMAIL_CLASS` are the only constants that
+ * error against a stored kind, and that is a coincidence which expires the day a
+ * `chat`, `transcript` or `email` stored value exists.
+ *
+ * `EMAIL_CLASS` is the one most likely to expire, and the trap is worth naming
+ * because it reads as the obvious next step rather than as a mistake: a second
+ * email vendor arrives and `{ class: "email", vendor: "gmail" }` is correct,
+ * while collapsing both onto a stored `"email"` — tempting, since Message-ID
+ * really is cross-vendor — is not. See {@link EpisodeSourceSpec}'s
+ * vendor-grained arm for why the shared identifier does not license a shared
+ * stored value.
  *
  * So do NOT read the split as compiler-enforced separation: it is a separation
  * of MEANING, kept honest by routing every cross-axis question through one
@@ -171,14 +179,26 @@
  * conventions in one closed set is how you end up asking whether it is spelled
  * `docs` or `doc` at each of four call sites.
  *
- * The connector classes first, in ADR-0036 §T6's order — `chat` (#4770), then
- * `transcript` (#4965) — and then the two that come from no connector at all:
- * `warehouse` is the tier-1 class {@link isWarehouseDerivedSource} keys off,
- * `human` is a person's own recorded words.
+ * The connector classes first, in ADR-0036 §T6's order — `chat` (#4770),
+ * `transcript` (#4965), then `email` (#4966) — and then the two that come from
+ * no connector at all: `warehouse` is the tier-1 class
+ * {@link isWarehouseDerivedSource} keys off, `human` is a person's own recorded
+ * words.
+ *
+ * `email` is where the ordering stops being merely a sequence and starts being
+ * the ACL-difficulty gradient §T6 says it is. Chat and transcript audiences are
+ * ENUMERABLE — a channel has a roster, a meeting has a participant list, and in
+ * both cases the vendor will tell you the whole of it. An email's will not:
+ * BCC is invisible to recipients and forwarding mutates the audience after the
+ * fact with no signal on the original. So the email class is the first one whose
+ * derived grant is a LOWER BOUND on who has seen the content rather than an
+ * exact set. `ingest/grant.ts`'s {@link deriveEmailRecipientGrant} is where that
+ * posture is decided and argued; it is a property of the CLASS, not of Outlook.
  */
 export const EPISODE_SOURCE_CLASSES = Object.freeze([
   "chat",
   "transcript",
+  "email",
   "warehouse",
   "human",
 ] as const);
@@ -229,8 +249,24 @@ export type EpisodeSourceSpec =
        * That is nearly every connector class, which is why the ADR's remaining
        * classes (email, docs) should be expected to widen this arm too rather
        * than the one below.
+       *
+       * `email` joined it with #4966, and its case is the strongest of the three
+       * rather than the weakest — despite email having something chat and
+       * transcripts do not: a genuinely CROSS-VENDOR identifier, the RFC 5322
+       * `Message-ID`. Outlook's source-id contract (`ingest/outlook/config.ts`)
+       * is built on exactly that header, so an Outlook and a Gmail connector
+       * WOULD mint identical ids for the same message, and one shared stored
+       * value would look like it dedupes them for free.
+       *
+       * It would not. The stored value is also what every downstream
+       * discriminator reads, what the audience re-verifier scans on
+       * (`brain_episodes.source = $2`), and what routes a correction; two
+       * vendors sharing it means one vendor's re-verifier walking the other's
+       * audiences with the wrong credential. The id COLLISION being benign is
+       * not the same claim as the SOURCE being shared, and conflating them is
+       * how a dedupe convenience becomes a cross-vendor ACL fault.
        */
-      readonly class: "chat" | "transcript";
+      readonly class: "chat" | "transcript" | "email";
       readonly vendor: string;
     }
   | {
@@ -286,6 +322,7 @@ export const EPISODE_SOURCE_SPECS = Object.freeze({
   // Checking each literal at the point it is still a literal restores that.
   slack: Object.freeze({ class: "chat", vendor: "slack" } as const satisfies EpisodeSourceSpec),
   zoom: Object.freeze({ class: "transcript", vendor: "zoom" } as const satisfies EpisodeSourceSpec),
+  outlook: Object.freeze({ class: "email", vendor: "outlook" } as const satisfies EpisodeSourceSpec),
   warehouse: Object.freeze({ class: "warehouse", vendor: null } as const satisfies EpisodeSourceSpec),
   human: Object.freeze({ class: "human", vendor: null } as const satisfies EpisodeSourceSpec),
 }) satisfies Record<string, EpisodeSourceSpec>;
@@ -360,6 +397,20 @@ export const SLACK_SOURCE = "slack" satisfies EpisodeSource;
 export const ZOOM_SOURCE = "zoom" satisfies EpisodeSource;
 
 /**
+ * The email class's first vendor — what `OUTLOOK_MAIL_SOURCE` resolves to
+ * (#4966). Microsoft Graph, maintainer-confirmed over the issue's own Gmail
+ * recommendation: Atlas already ships a Teams adapter, so the Microsoft OAuth
+ * surface is partly familiar.
+ *
+ * Spelled `outlook` and not `microsoft-graph` or `exchange`, because the stored
+ * value names the VENDOR SURFACE a user recognises, the way `slack` and `zoom`
+ * do. Graph is the transport; a hypothetical future Microsoft source that is not
+ * mail (Teams messages, SharePoint) would be its own member under its own class
+ * rather than a second meaning for this one.
+ */
+export const OUTLOOK_SOURCE = "outlook" satisfies EpisodeSource;
+
+/**
  * The tier-1 kind: facts derived from the warehouse itself.
  *
  * The only member of {@link WAREHOUSE_CLASS} today, and so the only value
@@ -402,6 +453,25 @@ export const CHAT_CLASS = "chat" satisfies EpisodeSourceClass;
  * `ingest/grant.ts`'s {@link deriveMeetingParticipantGrant}.
  */
 export const TRANSCRIPT_CLASS = "transcript" satisfies EpisodeSourceClass;
+
+/**
+ * ADR-0036 §T6's third connector class — a mail message (#4966), and the first
+ * rung of the ACL gradient where the derived audience is knowingly INCOMPLETE.
+ *
+ * The distinction from its two predecessors is not degree, it is kind. A chat
+ * channel's roster and a meeting's participant list are both sets the vendor can
+ * state in full; what varies is whether the set can still change (chat: yes,
+ * meeting: no). An email's true audience is stateable by NOBODY — a BCC'd
+ * recipient is invisible to every other copy of the message, and a forward
+ * enlarges the audience with no trace on the original.
+ *
+ * So the email class derives a grant that is a LOWER BOUND, deliberately, and
+ * accepts under-granting as the price of never over-granting. That decision, and
+ * the determinism argument that is its real justification, live at
+ * {@link deriveEmailRecipientGrant} in `ingest/grant.ts` — the file a maintainer
+ * reaches for when they wonder why a BCC'd colleague cannot see a fact.
+ */
+export const EMAIL_CLASS = "email" satisfies EpisodeSourceClass;
 
 /** Narrow an arbitrary value — a config string, a stored row — to the vocabulary. */
 export function isEpisodeSource(value: unknown): value is EpisodeSource {

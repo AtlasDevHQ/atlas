@@ -42,7 +42,8 @@ const {
   nonDashboardRegistry,
   buildRegistry,
   buildHeadlessRegistry,
-  headlessRegistryFallbackWarning,
+  registryBuildFailedWarning,
+  ACTION_TOOLS_UNAVAILABLE_WARNING,
   WORKSPACE_DASHBOARD_URL_RESOLVER,
   INTENTIONAL_TOOL_SHADOWS,
   TOOL_SHADOW_REMEDIATIONS,
@@ -538,7 +539,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
       async () => {
         const { registry, warnings } = await buildHeadlessRegistry();
         expect(registry).toBe(nonDashboardRegistry);
-        expect(warnings).toEqual([headlessRegistryFallbackWarning()]);
+        expect(warnings).toEqual([registryBuildFailedWarning()]);
         // Copy addressed to the MODEL, not to an operator reading logs — it has
         // to be relayable as-is, which is the whole point of #4941.
         expect(warnings[0]).toContain("temporarily unavailable");
@@ -546,42 +547,69 @@ describe("buildHeadlessRegistry (#4936)", () => {
     );
   });
 
-  // The copy is DERIVED from the env, not fixed, and these two pin why. The
-  // fallback registry is lesser-privileged, not stripped: `sendEmail` and
-  // `createLinearIssue` are core tools and survive it. A fixed string claiming
-  // "action tools (JIRA, email) are unavailable" would hand the model a live
-  // `sendEmail` while telling it email is down — the same wrong-explanation bug
-  // #4941 fixes, one capability over.
-  describe("#4941 — the fallback warning never over-claims", () => {
+  // The copy is DERIVED from the env, not fixed, and this block pins why. A
+  // degraded registry is lesser-privileged, not stripped: `sendEmail` and
+  // `createLinearIssue` are CORE tools and survive both the action-load failure
+  // and the whole-build failure. A fixed string claiming "action tools (JIRA,
+  // email) are unavailable" hands the model a live `sendEmail` while telling it
+  // email is down — the same wrong-explanation bug #4941 fixes, one capability
+  // over. Both strings are swept, against both registries a surface can fall
+  // back to, because the over-claim was found in the second one after the first
+  // was fixed.
+  describe("#4941 — no degraded-tools warning ever over-claims", () => {
     it("names only what the env asked for and the fallback could not carry", async () => {
       await withEnv({ ATLAS_ACTIONS_ENABLED: "true", ATLAS_PYTHON_ENABLED: "true" }, async () => {
-        const warning = headlessRegistryFallbackWarning();
+        const warning = registryBuildFailedWarning();
         expect(warning).toContain("createJiraTicket");
         expect(warning).toContain("executePython");
       });
     });
 
-    it("claims nothing lost when nothing was configured, and never disowns a surviving tool", async () => {
+    it("claims nothing lost when nothing was configured", async () => {
       await withEnv({ ATLAS_ACTIONS_ENABLED: undefined, ATLAS_PYTHON_ENABLED: undefined }, async () => {
-        const warning = headlessRegistryFallbackWarning();
+        const warning = registryBuildFailedWarning();
         expect(warning).not.toContain("createJiraTicket");
         expect(warning).not.toContain("executePython");
       });
+    });
 
-      // Whatever the env, the copy must never name a tool the fallback still
-      // carries — `sendEmail` is the one that made the first draft wrong.
+    it("every warning ends with the never-disown-a-visible-tool instruction", async () => {
+      // Naming only what was lost is necessary but not sufficient: the model
+      // generalizes from "the action tools are gone" to "email is gone".
+      await withEnv({ ATLAS_ACTIONS_ENABLED: "true", ATLAS_PYTHON_ENABLED: undefined }, async () => {
+        for (const warning of [ACTION_TOOLS_UNAVAILABLE_WARNING, registryBuildFailedWarning()]) {
+          expect(warning).toContain("do NOT tell the user that one of them is unavailable");
+          expect(warning).toContain("temporarily unavailable");
+          // Addressed to the reader of the answer, who on Slack / SDK / MCP has
+          // no server logs. The operator half is the pino line.
+          expect(warning).not.toContain("server logs");
+        }
+      });
+    });
+
+    it("no warning ever disowns a tool the surface still carries", async () => {
+      // Swept against BOTH fallback registries: `nonDashboardRegistry` (the
+      // headless seam) and `defaultRegistry` (both web chat paths).
       for (const env of [{ ATLAS_ACTIONS_ENABLED: "true" }, { ATLAS_ACTIONS_ENABLED: undefined }]) {
         await withEnv({ ...env, ATLAS_PYTHON_ENABLED: undefined }, async () => {
-          const warning = headlessRegistryFallbackWarning();
-          const survivors = Object.keys(nonDashboardRegistry.getAll());
+          const warnings = [ACTION_TOOLS_UNAVAILABLE_WARNING, registryBuildFailedWarning()];
+          const survivors = [
+            ...Object.keys(nonDashboardRegistry.getAll()),
+            ...Object.keys(defaultRegistry.getAll()),
+          ];
+          // Non-vacuous, and these two are the ones that made the drafts wrong.
           expect(survivors).toContain("sendEmail");
-          for (const survivor of survivors) {
-            // Word-bounded on purpose: the action tool `sendEmailReport` may
-            // legitimately be named, and it CONTAINS the surviving `sendEmail`.
-            expect(
-              new RegExp(`\\b${survivor}\\b`).test(warning),
-              `the warning disowns ${survivor}, which the fallback still carries`,
-            ).toBe(false);
+          expect(survivors).toContain("createLinearIssue");
+
+          for (const warning of warnings) {
+            for (const survivor of survivors) {
+              // Word-bounded on purpose: the action tool `sendEmailReport` is
+              // legitimately named, and it CONTAINS the surviving `sendEmail`.
+              expect(
+                new RegExp(`\\b${survivor}\\b`).test(warning),
+                `"${warning.slice(0, 60)}…" disowns ${survivor}, which the surface still carries`,
+              ).toBe(false);
+            }
           }
         });
       }

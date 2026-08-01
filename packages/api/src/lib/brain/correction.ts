@@ -147,7 +147,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { diagnosticValue } from "@atlas/api/lib/audit/diagnostic-scrub";
 import { ADMIN_ACTIONS, logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
 import {
   aclVisibilityClause,
@@ -1104,27 +1104,38 @@ async function emitCorrectionAudit(args: {
  * still the only copy. It also names the fields at the top level under the
  * stable keys this module's test pins.
  *
- * Bounded and scrubbed to the same policy as the serializer's whitelist,
- * deliberately: two doors onto one log line must not enforce two different
- * disclosure rules. `detail` is left off on both: pg echoes row values into it.
+ * Value policy is `diagnosticValue` — the SAME function the serializer's
+ * whitelist uses, not a parallel bound: two doors onto one log line must not
+ * enforce two different disclosure rules, and a duplicated constant is how they
+ * would drift. `detail` is left off on both: pg echoes row values into it.
+ *
+ * The read is guarded because `emitCorrectionAudit` is contracted NEVER to
+ * throw and this runs inside it, on an already-committed correction. A plain
+ * destructure would invoke an accessor; if that accessor threw, the throw would
+ * escape into `applyCorrection`'s catch and tell the caller to RETRY a
+ * correction that already landed — a duplicate brain mutation authored by a
+ * logging helper. Own non-accessor reads plus a catch, matching
+ * `errorDiagnostics`. The catch also covers `diagnosticValue` being absent under
+ * a partial `mock.module` in some other test file: the cost is a missing log
+ * field, never a throw.
  */
-const PG_FIELD_MAX = 63;
-
-function pgDiagnostic(value: unknown): string | undefined {
-  const text = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
-  if (text === undefined || text.length === 0) return undefined;
-  return text.length <= PG_FIELD_MAX ? errorMessage(text) : "[dropped: oversized]";
-}
-
 function pgErrorFields(err: unknown): { pgCode?: string; pgConstraint?: string } {
   if (typeof err !== "object" || err === null) return {};
-  const { code, constraint } = err as { code?: unknown; constraint?: unknown };
-  const pgCode = pgDiagnostic(code);
-  const pgConstraint = pgDiagnostic(constraint);
-  return {
-    ...(pgCode !== undefined && { pgCode }),
-    ...(pgConstraint !== undefined && { pgConstraint }),
-  };
+  try {
+    const pgCode = diagnosticValue(Object.getOwnPropertyDescriptor(err, "code")?.value);
+    const pgConstraint = diagnosticValue(
+      Object.getOwnPropertyDescriptor(err, "constraint")?.value,
+    );
+    return {
+      ...(pgCode !== undefined && { pgCode }),
+      ...(pgConstraint !== undefined && { pgConstraint }),
+    };
+  } catch (err_) {
+    // intentionally ignored: a trapping diagnostic property must not turn a
+    // best-effort audit log line into a throw out of a never-throw contract.
+    void err_;
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------

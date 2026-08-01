@@ -178,9 +178,11 @@ export async function resumeChatTurn(input: ResumeChatTurnInput): Promise<Resume
         const { registry: toolRegistry, warnings: registryWarnings } =
           await buildHeadlessRegistry();
         if (registryWarnings.length > 0) {
-          // The operator half: the registry's own error line carries only
-          // `component: "registry"`, and these are the identifiers whoever
-          // fields "why did Slack say X was unavailable" actually has.
+          // The operator half. The registry's own error line already carries a
+          // requestId (the pino mixin reads the context bound above) but
+          // nothing domain-level; conversationId / orgId / runId are the
+          // identifiers whoever fields "why did Slack say X was unavailable"
+          // actually has.
           log.warn(
             { conversationId, orgId, runId: handle.runId, warningCount: registryWarnings.length },
             "Chat resume running on a DEGRADED tool set — the approved turn may lack the tool it parked on",

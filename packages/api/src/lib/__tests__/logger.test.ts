@@ -411,6 +411,16 @@ describe("logger", () => {
       expect((scrubErrSerializer(objectish) as Record<string, unknown>).code).toBeUndefined();
     });
 
+    test("a value AT the bound survives — the boundary is inclusive", () => {
+      // 63 is `NAMEDATALEN - 1`, i.e. the longest legal Postgres identifier, so
+      // an off-by-one here would replace a real max-length constraint name with
+      // the oversized sentinel — losing exactly the signal the whitelist exists
+      // for, and only for the longest names.
+      const maxLength = "c".repeat(63);
+      const err = Object.assign(new Error("fk violation"), { constraint: maxLength });
+      expect((scrubErrSerializer(err) as { constraint?: string }).constraint).toBe(maxLength);
+    });
+
     test("an oversized code is replaced by a sentinel, not silently dropped", () => {
       // A SQLSTATE is 5 chars and a pg identifier caps at 63, so a longer value
       // is not the field the disclosure argument reasoned about — it is some

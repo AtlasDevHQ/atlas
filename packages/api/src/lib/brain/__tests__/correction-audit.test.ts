@@ -595,12 +595,103 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     expect(errors[0]?.message).toContain("may not have been committed");
     // The top-level lift, under stable keys this assertion pins. #4941 also put
     // `code`/`constraint` on `scrubErrSerializer`'s whitelist, so they survive
-    // on the serialized `err` too — but that serializer is opt-in per pino
-    // instance, and this payload must carry the diagnostics either way.
+    // on the serialized `err` too — but the `err:` field is normalized through
+    // `new Error(String(err))`, which discards a non-`Error` thrower's own
+    // properties, so on that path this lift is still the only copy.
     expect(errors[0]?.payload).toMatchObject({
       writeAttempted: true,
       pgCode: "42P01",
       pgConstraint: "pk_admin_action_log",
+    });
+  });
+
+  // #4941 — the lift shares its value policy with `scrubErrSerializer`'s
+  // whitelist (`diagnosticValue`), and the docstring's claim that "two doors
+  // onto one log line must not enforce two different disclosure rules" is only
+  // worth anything if this door has the negative cases too. Before these, every
+  // assertion here used a short, already-clean string.
+  describe("#4941 — the lift enforces the same disclosure policy as the serializer", () => {
+    /** Run a correction whose audit write rejects with `thrown`, return the error payload. */
+    async function payloadForRejection(thrown: unknown): Promise<Record<string, unknown>> {
+      logCalls.length = 0;
+      auditBehaviour = async () => {
+        throw thrown;
+      };
+      await correctFact(
+        { ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
+        fakeTransaction(),
+      );
+      const errors = logCalls.filter((c) => c.level === "error");
+      expect(errors).toHaveLength(1);
+      return (errors[0]?.payload ?? {}) as Record<string, unknown>;
+    }
+
+    test("an over-length code becomes a sentinel rather than being echoed or vanishing", async () => {
+      const payload = await payloadForRejection(
+        Object.assign(new Error("odd driver"), {
+          code: `postgres://user:hunter2@db.internal/atlas ${"x".repeat(64)}`,
+        }),
+      );
+      expect(payload.pgCode).toBe("[dropped: oversized]");
+      // Scoped to the LIFTED field on purpose. This file mocks
+      // `scrubErrSerializer` to the identity function, so the raw `err` object
+      // sits in the payload unscrubbed — a harness artifact, not the shipped
+      // path (the real serializer sentinels the same value, pinned in
+      // logger.test.ts). Asserting over the whole payload would be asserting
+      // about the mock.
+      expect(String(payload.pgCode)).not.toContain("hunter2");
+    });
+
+    test("a value inside the bound is still scrubbed, not trusted", async () => {
+      const payload = await payloadForRejection(
+        Object.assign(new Error("weird"), { constraint: "postgres://u:pw@h/db" }),
+      );
+      expect(payload.pgConstraint).toBe("postgres://***@h/db");
+    });
+
+    test("a numeric code is coerced rather than dropped", async () => {
+      const payload = await payloadForRejection(
+        Object.assign(new Error("http failure"), { code: 500 }),
+      );
+      expect(payload.pgCode).toBe("500");
+    });
+
+    test("a diagnostic accessor is never INVOKED — own data properties only", async () => {
+      // `emitCorrectionAudit` is awaited on an ALREADY-COMMITTED correction and
+      // is contracted NEVER to throw: a throw from this logging helper surfaces
+      // as "nothing was changed — retry", inviting a duplicate brain mutation.
+      // Two defenses hold that line and each has its own test, because the
+      // guarded read alone and the catch alone each make the other's mutation
+      // survive. This one is the read.
+      let invoked = false;
+      const hostile = new Error("write failed");
+      Object.defineProperty(hostile, "code", {
+        get() {
+          invoked = true;
+          throw new Error("trap");
+        },
+        enumerable: true,
+        configurable: true,
+      });
+
+      const payload = await payloadForRejection(hostile);
+      expect(invoked, "the lift read through an accessor instead of its own descriptor").toBe(false);
+      expect(payload.writeAttempted).toBe(true);
+      expect(payload.pgCode).toBeUndefined();
+    });
+
+    test("a trapping descriptor lookup still costs only the fields, never a throw", async () => {
+      // And this one is the catch: a Proxy can trap the descriptor lookup
+      // itself, which no amount of careful reading avoids.
+      const hostile = new Proxy(new Error("write failed"), {
+        getOwnPropertyDescriptor() {
+          throw new Error("trap");
+        },
+      });
+
+      const payload = await payloadForRejection(hostile);
+      expect(payload.writeAttempted).toBe(true);
+      expect(payload.pgCode).toBeUndefined();
     });
   });
 

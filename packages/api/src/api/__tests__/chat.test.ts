@@ -122,25 +122,33 @@ void mock.module("@atlas/api/lib/workspace-capability", () => ({
 
 // Mock action tools so buildRegistry({ includeActions: true }) works
 // without needing JIRA/email credentials or external services.
+//
+// Hoisted to module-level MUTABLE objects (#4941) so one test can break an
+// entry and drive `buildRegistry`'s action-tool failure branch — the case where
+// the build SUCCEEDS and returns a warning, which is what the issue is about
+// and which a "buildRegistry throws" test cannot reach. `mock.module`'s factory
+// is file-wide, so a per-test lever has to be data, not a different factory.
+const mockJiraAction = {
+  name: "createJiraTicket",
+  description: "### Create JIRA Ticket\nMock",
+  tool: { type: "function" },
+  actionType: "jira:create",
+  reversible: true,
+  defaultApproval: "manual",
+  requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+};
+const mockEmailAction = {
+  name: "sendEmailReport",
+  description: "### Send Email Report\nMock",
+  tool: { type: "function" },
+  actionType: "email:send",
+  reversible: false,
+  defaultApproval: "admin-only",
+  requiredCredentials: ["RESEND_API_KEY"],
+};
 void mock.module("@atlas/api/lib/tools/actions", () => ({
-  createJiraTicket: {
-    name: "createJiraTicket",
-    description: "### Create JIRA Ticket\nMock",
-    tool: { type: "function" },
-    actionType: "jira:create",
-    reversible: true,
-    defaultApproval: "manual",
-    requiredCredentials: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"],
-  },
-  sendEmailReport: {
-    name: "sendEmailReport",
-    description: "### Send Email Report\nMock",
-    tool: { type: "function" },
-    actionType: "email:send",
-    reversible: false,
-    defaultApproval: "admin-only",
-    requiredCredentials: ["RESEND_API_KEY"],
-  },
+  createJiraTicket: mockJiraAction,
+  sendEmailReport: mockEmailAction,
 }));
 
 const mockCreateConversation = mock((): Promise<{ id: string } | null> =>
@@ -1715,9 +1723,35 @@ describe("POST /api/v1/chat", () => {
       const call = calls[0]![0] as { warnings?: string[] };
       expect(call.warnings).toBeDefined();
       expect(call.warnings!.length).toBe(1);
-      expect(call.warnings![0]).toContain("tool registry failed to build");
+      expect(call.warnings![0]).toContain("stopped the tool registry from building");
     } finally {
       delete process.env.ATLAS_PYTHON_ENABLED;
+    }
+  });
+
+  it("#4941 — relays a failed ACTION-TOOL load, where the build SUCCEEDS with a warning", async () => {
+    // The branch the sibling test above cannot reach: `buildRegistry` resolves,
+    // and its `warnings` ride out on `result.warnings`. This is the reference
+    // implementation the headless seam's docstring points at, so it needs its
+    // own pin — deleting `warnings.push(...result.warnings)` left the whole
+    // suite green before this test existed.
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    const realDescription = mockJiraAction.description;
+    // An entry the registry refuses ("Tool description must not be empty"),
+    // which is what `buildRegistry`'s action catch is there for.
+    mockJiraAction.description = "";
+    try {
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(200);
+      const calls = mockRunAgent.mock.calls as unknown as unknown[][];
+      const call = calls[0]![0] as { warnings?: string[] };
+      expect(call.warnings).toHaveLength(1);
+      expect(call.warnings![0]).toContain("createJiraTicket");
+      // The core `sendEmail` is still in the registry, so the copy must not
+      // generalize the loss into "email is unavailable".
+      expect(call.warnings![0]).toContain("do NOT tell the user");
+    } finally {
+      mockJiraAction.description = realDescription;
     }
   });
 
@@ -1778,7 +1812,7 @@ describe("POST /api/v1/chat", () => {
       const call = calls[0]![0] as { warnings?: string[] };
       expect(call.warnings).toBeDefined();
       expect(call.warnings!.length).toBe(2);
-      expect(call.warnings![0]).toContain("tool registry failed to build");
+      expect(call.warnings![0]).toContain("stopped the tool registry from building");
       expect(call.warnings![1]).toContain("Plugin tools failed to load");
     } finally {
       delete process.env.ATLAS_PYTHON_ENABLED;

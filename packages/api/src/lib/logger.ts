@@ -12,6 +12,7 @@ import { AsyncLocalStorage } from "async_hooks";
 import { createHash } from "node:crypto";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { diagnosticValue } from "@atlas/api/lib/audit/diagnostic-scrub";
 
 // --- Request context ---
 
@@ -231,9 +232,11 @@ const CREDENTIAL_URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s@/]*@/i;
  * Driver diagnostic fields carried through the `Error` branch of
  * {@link scrubErrSerializer} (#4941).
  *
- * The serializer rebuilds an `Error`, keeping an own property only if it is
- * `message` / `stack` or is named here. Everything else — `cause`, and every
- * driver field below — is dropped. `code` and `constraint` are what separate
+ * The serializer rebuilds an `Error` as `{ type, message, stack }` from `name`
+ * / `message` / `stack`, then adds only the fields named here, read as own
+ * non-accessor values. `cause` and every other driver field — `detail`,
+ * `where`, `internalQuery`, `table` — are dropped. `code` and `constraint`
+ * are what separate
  * "the write failed" from "WHICH invariant rejected the write" — `23505` a
  * unique violation, `23503` a foreign key, `42P01` a missing relation, `53300`
  * pool exhaustion — and without them a pg error in the log is materially less
@@ -254,46 +257,38 @@ const CREDENTIAL_URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s@/]*@/i;
  */
 const ERROR_DIAGNOSTIC_FIELDS = ["code", "constraint"] as const;
 
-/**
- * Longest value accepted for an {@link ERROR_DIAGNOSTIC_FIELDS} field.
- *
- * A SQLSTATE is 5 characters and a Postgres identifier is capped at 63 bytes
- * (`NAMEDATALEN - 1`), so anything longer is not the field this whitelist
- * reasoned about — it is some other library's `code` carrying a payload, which
- * the disclosure argument above never covered. Measured in UTF-16 code units
- * rather than bytes: conservative for a multi-byte identifier, which is the
- * direction to err in.
- */
-const ERROR_DIAGNOSTIC_MAX = 63;
-
-/** Stands in for an over-length diagnostic value. See {@link errorDiagnostics}. */
-const ERROR_DIAGNOSTIC_OVERSIZED = "[dropped: oversized]";
+type ErrorDiagnosticField = (typeof ERROR_DIAGNOSTIC_FIELDS)[number];
 
 /**
- * Lift the whitelisted diagnostic fields off an error, scrubbed and bounded.
+ * Lift the whitelisted diagnostic fields off an error.
  *
- * Three deliberate behaviours:
- *   - A number is coerced (`mysql2`'s and Node's numeric codes are real
- *     signal); anything else is skipped, so the serialized field's type never
- *     depends on the thrower.
- *   - An over-length value becomes {@link ERROR_DIAGNOSTIC_OVERSIZED} rather
- *     than vanishing. Dropping it silently reads to an operator as "the driver
- *     set no code", which is a different — and wrong — diagnosis.
- *   - Values are read as OWN, non-accessor properties and the whole lift has
- *     its own `catch`. Without both, a hostile or half-initialized getter on
- *     `code` would throw past the caller's `try` and collapse the entire
- *     serialized error to `"[log scrub failed]"`, costing the operator the
- *     type, message and stack it used to get for free.
+ * Value normalization — number coercion, the length bound, the oversized
+ * sentinel, the scrub — is `diagnosticValue` in `lib/audit/diagnostic-scrub.ts`,
+ * shared with `brain/correction.ts`'s parallel top-level lift so one policy
+ * governs both doors onto the same log line. What is local to here is the READ:
+ *
+ * Values are read as OWN, non-accessor properties (`getOwnPropertyDescriptor`,
+ * never a plain index) and the whole loop has its own `catch`. Without both, a
+ * hostile or half-initialized getter on `code` — or a Proxy trapping the
+ * descriptor lookup — would land in `scrubErrSerializer`'s outer catch and
+ * collapse the entire serialized error to `"[log scrub failed]"`, costing the
+ * operator the type, message and stack it used to get for free. Each defense
+ * has its own test because either alone leaves the other's mutation alive.
+ *
+ * On that trap path the fields are simply ABSENT — no sentinel, unlike the
+ * over-length case. Deliberate: a sentinel would have to be a key outside
+ * {@link ERROR_DIAGNOSTIC_FIELDS}, and the exact-key assertion in
+ * `logger.test.ts` ("only these ever appear on a serialized error") is a
+ * stronger property to keep than a marker for a case no real driver produces.
+ * The prototype-accessor `code` some SDK classes expose is dropped the same
+ * way, and for the same reason.
  */
-function errorDiagnostics(err: Error): Record<string, string> {
-  const out: Record<string, string> = {};
+function errorDiagnostics(err: Error): Partial<Record<ErrorDiagnosticField, string>> {
+  const out: Partial<Record<ErrorDiagnosticField, string>> = {};
   try {
     for (const field of ERROR_DIAGNOSTIC_FIELDS) {
-      const raw = Object.getOwnPropertyDescriptor(err, field)?.value as unknown;
-      const text = typeof raw === "string" || typeof raw === "number" ? String(raw) : undefined;
-      if (text === undefined || text.length === 0) continue;
-      out[field] =
-        text.length <= ERROR_DIAGNOSTIC_MAX ? errorMessage(text) : ERROR_DIAGNOSTIC_OVERSIZED;
+      const value = diagnosticValue(Object.getOwnPropertyDescriptor(err, field)?.value as unknown);
+      if (value !== undefined) out[field] = value;
     }
   } catch (err_) {
     // intentionally ignored: a thrower whose diagnostic property is a trap must
@@ -312,9 +307,12 @@ function errorDiagnostics(err: Error): Record<string, string> {
  * Accepts:
  *   - Error instance → `{ type, message, stack }` with scrubbed message +
  *     stack, plus any {@link ERROR_DIAGNOSTIC_FIELDS} the error carries as a
- *     non-empty own value. Note the whitelist guards this branch only: a
- *     PRE-SERIALIZED error-shape object (below) is passed through field-for-
- *     field, so a raw pg object logged as `err` would still carry `detail`
+ *     non-empty own value (coerced from a number; replaced by a sentinel when
+ *     over-length — see {@link errorDiagnostics}). Note the whitelist guards
+ *     this branch only: a PRE-SERIALIZED error-shape object (below) is passed
+ *     through field-for-field. No live producer does that — pg's
+ *     `DatabaseError` extends `Error`, so a real pg rejection always takes THIS
+ *     branch — but a future one that logged a raw pg object would carry `detail`
  *   - pre-serialized error-shape object (`{ message, ... }`) → same object
  *     with scrubbed `message`
  *   - string → scrubbed string (this is the hot path — most call sites

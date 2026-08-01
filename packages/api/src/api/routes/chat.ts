@@ -1522,9 +1522,15 @@ chat.openapi(chatRoute, async (c) => {
                 { err: errObj },
                 "Failed to build tool registry — falling back to default tools",
               );
-              warnings.push(
-                "Actions were requested but the tool registry failed to build. Action tools are unavailable for this session. Inform the user that actions are currently unavailable and suggest they check server logs or retry later.",
+              // #4941 — one shared copy across all three fallback sites. The
+              // string this replaced said "action tools are unavailable" while
+              // the `defaultRegistry` fallback still carried the core
+              // `sendEmail` / `createLinearIssue`, so the model was primed to
+              // disown a tool it could see.
+              const { registryBuildFailedWarning } = await import(
+                "@atlas/api/lib/tools/registry"
               );
+              warnings.push(registryBuildFailedWarning());
             }
           }
   
@@ -2165,12 +2171,14 @@ chat.openapi(chatResumeRoute, async (c) => {
               toolRegistry = result.registry;
               resumeWarnings.push(...result.warnings);
             } catch (err) {
-              log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to build tool registry on resume — falling back to default tools");
-              resumeWarnings.push(
-                "Actions were requested but the tool registry failed to build. Action tools are unavailable for this session. Inform the user that actions are currently unavailable and suggest they check server logs or retry later.",
+              log.error({ err: err instanceof Error ? err : new Error(String(err)), conversationId, runId: handle.runId }, "Failed to build tool registry on resume — falling back to default tools");
+              const { registryBuildFailedWarning } = await import(
+                "@atlas/api/lib/tools/registry"
               );
+              resumeWarnings.push(registryBuildFailedWarning());
             }
           }
+          const prePluginResumeRegistry = toolRegistry;
           try {
             const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
             const pluginTools = getPluginTools();
@@ -2181,7 +2189,18 @@ chat.openapi(chatResumeRoute, async (c) => {
               toolRegistry.freeze();
             }
           } catch (err) {
-            log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to merge plugin tools on resume — continuing without");
+            // #4941 — the initial turn restores the pre-merge registry and warns
+            // the model; this path did neither. A `freeze()` throw left
+            // `toolRegistry` holding the half-merged registry while the log said
+            // "continuing without", and the user heard nothing at all — which
+            // bites harder on RESUME, where the tool call just approved may
+            // itself be the plugin tool that vanished.
+            toolRegistry = prePluginResumeRegistry;
+            const errObj = err instanceof Error ? err : new Error(String(err));
+            log.error({ err: errObj, conversationId, runId: handle.runId }, "Failed to merge plugin tools on resume — continuing without");
+            resumeWarnings.push(
+              `Plugin tools failed to load: ${errObj.message}. This turn will continue without plugin tools. Inform the user that plugin-provided tools are unavailable for this session.`,
+            );
           }
 
           // #4936 — same opt-in as the chat route above: the WEB resume, on the

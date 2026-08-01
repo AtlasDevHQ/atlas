@@ -87,6 +87,16 @@ const mockRunAgent = mock(() =>
 );
 void mock.module("@atlas/api/lib/agent", () => ({ runAgent: mockRunAgent }));
 
+// #4941 — the action barrel does not load. A throwing factory makes the
+// `await import("./actions")` inside `buildRegistry` reject, which is the branch
+// that authors a warning while the BUILD ITSELF SUCCEEDS — the failure mode the
+// issue is actually about, and the one a `buildRegistry`-throws test cannot
+// reach. Inert for every other test in this file: `buildRegistry` only imports
+// the barrel when `ATLAS_ACTIONS_ENABLED === "true"`, which nothing else sets.
+void mock.module("@atlas/api/lib/tools/actions", () => {
+  throw new Error("simulated action-module load failure (#4941)");
+});
+
 void mock.module("@atlas/api/lib/tools/python-stream", () => ({
   setStreamWriter: () => {},
   clearStreamWriter: () => {},
@@ -305,14 +315,32 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
           "the resumed web turn ran on a degraded tool set and told the model nothing",
         ).toBeDefined();
         expect(arg.warnings).toHaveLength(1);
-        expect(arg.warnings![0]).toContain("tool registry failed to build");
+        expect(arg.warnings![0]).toContain("stopped the tool registry from building");
       } finally {
         delete process.env.ATLAS_ACTIONS_ENABLED;
         delete process.env.ATLAS_PYTHON_ENABLED;
       }
     });
 
-    it("passes no warnings when the build is healthy — the signal is not always-on", async () => {
+    it("threads a failed ACTION-TOOL load — the build succeeds and still carries a warning", async () => {
+      // Distinct branch from the one above, and the one #4941 is really about:
+      // `buildRegistry` RESOLVES, with a warning in its result. The catch-path
+      // test cannot reach `resumeWarnings.push(...result.warnings)` at all.
+      process.env.ATLAS_ACTIONS_ENABLED = "true";
+      try {
+        const res = await app.fetch(resumeRequest());
+        expect(res.status).toBe(200);
+
+        const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];
+        expect(arg.warnings).toHaveLength(1);
+        expect(arg.warnings![0]).toContain("createJiraTicket");
+        expect(arg.warnings![0]).toContain("do NOT tell the user");
+      } finally {
+        delete process.env.ATLAS_ACTIONS_ENABLED;
+      }
+    });
+
+    it("passes no warnings when actions are not requested — the signal is not always-on", async () => {
       const res = await app.fetch(resumeRequest());
       expect(res.status).toBe(200);
       const arg = (mockRunAgent.mock.calls as unknown as Array<[{ warnings?: string[] }]>)[0]![0];

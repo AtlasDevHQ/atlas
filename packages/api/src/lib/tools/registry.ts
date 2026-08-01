@@ -454,33 +454,69 @@ export const TOOL_SHADOW_REMEDIATIONS: Readonly<Record<string, string>> = {
  * `buildHeadlessRegistry` returns the same shape, so both builders share one
  * type rather than growing a parallel headless-only one that can drift.
  * Exported because it is the return type of two exported functions — a consumer
- * that wants to hold the result in a named local cannot spell it otherwise.
+ * that wants to name the result can otherwise only spell it as an
+ * `Awaited<ReturnType<…>>` incantation that breaks on any signature change.
+ *
+ * `warnings` is `readonly` for a reason that is not stylistic: `runAgent`
+ * treats its own `warnings` option as an in/out param and PUSHES into whatever
+ * array it is handed (`agent.ts` adds semantic-layer and focus-datasource
+ * warnings). A call site that wrote `warnings: registryWarnings` would hand it
+ * this array; if a builder ever memoized its result, those pushes would
+ * accumulate across turns and poison every later system prompt. `readonly`
+ * makes the spread-copy at each call site the only thing that compiles, which
+ * turns a comment into a compiler error.
  */
 export interface BuildRegistryResult {
-  registry: ToolRegistry;
-  warnings: string[];
+  readonly registry: ToolRegistry;
+  readonly warnings: readonly string[];
 }
 
 /**
- * The warning `buildHeadlessRegistry` authors when it falls back.
+ * The one rule every degraded-tools warning has to end with, and the reason
+ * these strings live here instead of at each surface.
  *
- * Distinct from `buildRegistry`'s action-tool warning, which says "the operator
- * action tools are gone". This one says "the build failed outright, so the
- * session is on the known-good core set" — and it has to be careful, because
- * the fallback (`nonDashboardRegistry`) is lesser-privileged, NOT stripped: it
- * still carries `sendEmail`, `createLinearIssue` and (when the OAuth env is
- * wired) `querySalesforce`, exactly as a successful build would. What the
- * fallback actually loses, relative to a build that succeeded, is only what the
- * env asked for on top: the `tools/actions` operator pair under
- * `ATLAS_ACTIONS_ENABLED`, and `executePython` under `ATLAS_PYTHON_ENABLED`.
- *
- * So the copy is DERIVED from that env rather than fixed. A fixed string
- * claiming "action tools (JIRA, email) are unavailable" would hand the model a
- * live `sendEmail` tool while instructing it to tell the user email is down —
- * re-creating, one capability over, the exact wrong-explanation bug #4941
- * exists to fix. The closing instruction pins the same rule for the model.
+ * A registry that failed to build is still LESSER-PRIVILEGED, not stripped:
+ * `registerCoreTools` gives `nonDashboardRegistry` and `defaultRegistry` alike
+ * `sendEmail`, `createLinearIssue` and (when the OAuth env is wired)
+ * `querySalesforce`, whatever else went wrong. So copy naming a whole category
+ * — "action tools (JIRA, email) are unavailable" — hands the model a live
+ * `sendEmail` while instructing it to tell the user email is down: the exact
+ * wrong-explanation bug #4941 exists to fix, one capability over. Naming only
+ * what was actually lost is necessary but not sufficient, because the model
+ * generalizes; this says the quiet part outright.
  */
-export function headlessRegistryFallbackWarning(): string {
+const NEVER_DISOWN_A_VISIBLE_TOOL =
+  "Every tool you can see in your tool list works — do NOT tell the user that one of them is " +
+  "unavailable. If the user asks for a capability you do not have, say it is temporarily " +
+  "unavailable and suggest they retry or contact their Atlas administrator.";
+
+/**
+ * The warning for "the operator action tools did not load", authored by
+ * {@link buildRegistry} and relayed by every surface that requested them.
+ *
+ * Names the two tools by their registry names rather than "JIRA and email":
+ * `sendEmailReport` is gone, the core `sendEmail` is not, and the model has to
+ * be able to tell them apart.
+ */
+export const ACTION_TOOLS_UNAVAILABLE_WARNING =
+  "The operator action tools (createJiraTicket, sendEmailReport) failed to load and are " +
+  "unavailable for this session. " +
+  NEVER_DISOWN_A_VISIBLE_TOOL;
+
+/**
+ * The warning for "the registry build failed outright and the surface fell back
+ * to a known-good set" — `nonDashboardRegistry` for the headless seam,
+ * `defaultRegistry` for the two web chat paths. One function for all three so
+ * three hand-maintained strings cannot drift into three policies, which is how
+ * the first draft of this fix re-created the bug it was fixing.
+ *
+ * Relative to a build that SUCCEEDED, a fallback loses only what the env asked
+ * for on top of the core set: the `tools/actions` operator pair under
+ * `ATLAS_ACTIONS_ENABLED`, and `executePython` under `ATLAS_PYTHON_ENABLED`.
+ * The copy is derived from exactly that, so a deployment that never enabled
+ * either is never told it lost them.
+ */
+export function registryBuildFailedWarning(): string {
   const lost: string[] = [];
   if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
     lost.push("the operator action tools (createJiraTicket, sendEmailReport)");
@@ -490,11 +526,10 @@ export function headlessRegistryFallbackWarning(): string {
   }
   return (
     "A server configuration problem stopped the tool registry from building, so this session fell " +
-    "back to a known-good core tool set" +
+    "back to a known-good tool set" +
     (lost.length > 0 ? `; ${lost.join(" and ")} did not load.` : ".") +
-    " Every tool you can see in your tool list works — do NOT tell the user that one of them is " +
-    "unavailable. If the user asks for a capability you do not have, say it is temporarily " +
-    "unavailable and suggest they retry or contact their Atlas administrator."
+    " " +
+    NEVER_DISOWN_A_VISIBLE_TOOL
   );
 }
 
@@ -579,9 +614,7 @@ export async function buildRegistry(options?: {
         { err: err instanceof Error ? err : new Error(String(err)) },
         "Failed to load action tools — JIRA and email actions will be unavailable",
       );
-      warnings.push(
-        "Action tools (JIRA, email) failed to load and are unavailable for this session. Inform the user and suggest they check server logs or retry later.",
-      );
+      warnings.push(ACTION_TOOLS_UNAVAILABLE_WARNING);
     }
   }
 
@@ -640,7 +673,7 @@ export async function buildHeadlessRegistry(): Promise<BuildRegistryResult> {
       { err: err instanceof Error ? err : new Error(String(err)) },
       "Failed to build headless tool registry — falling back to the non-dashboard core registry",
     );
-    return { registry: nonDashboardRegistry, warnings: [headlessRegistryFallbackWarning()] };
+    return { registry: nonDashboardRegistry, warnings: [registryBuildFailedWarning()] };
   }
 }
 

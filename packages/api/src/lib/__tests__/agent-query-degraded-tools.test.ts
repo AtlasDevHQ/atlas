@@ -6,8 +6,10 @@
  * later"), and `api/routes/chat.ts` threads it into `runAgent({ warnings })` so
  * a web user hears "temporarily unavailable, retry". Every headless surface that
  * BUILDS a registry — the SDK query route, Slack, MCP, the scheduler — goes
- * through `executeAgentQuery`, which resolved a seam that returned a bare
- * registry and dropped the warnings at the destructure. The agent then reported
+ * through `executeAgentQuery` (the chat-platform approval resume calls the seam
+ * directly, and is covered by its own file), which resolved a seam that
+ * returned a bare registry and dropped the warnings at the destructure. The
+ * agent then reported
  * the capability as ABSENT rather than degraded: a wrong explanation, not a
  * missing one, which is what makes it a truthfulness bug rather than a papercut.
  * (`ee/src/proactive/answer-adapter.ts` is headless too, but passes a STATIC
@@ -93,7 +95,7 @@ async function withEnv(
   }
 }
 
-const ACTION_WARNING = "Action tools (JIRA, email) failed to load";
+const ACTION_WARNING = "The operator action tools (createJiraTicket, sendEmailReport) failed to load";
 
 describe("#4941 — headless surfaces relay a degraded tool load", () => {
   it("the headless seam surfaces buildRegistry's action-tool warning to its caller", async () => {
@@ -126,7 +128,11 @@ describe("#4941 — headless surfaces relay a degraded tool load", () => {
     expect(warnings![0]).toContain(ACTION_WARNING);
     // The instruction half is what makes it relayable copy rather than an
     // operator log line; dropping it leaves the model free to invent a reason.
-    expect(warnings![0]).toContain("Inform the user");
+    // Both halves matter: the second stops the model generalizing "the action
+    // tools are gone" into "email is gone", when the core `sendEmail` is right
+    // there in its tool list.
+    expect(warnings![0]).toContain("temporarily unavailable");
+    expect(warnings![0]).toContain("do NOT tell the user that one of them is unavailable");
   });
 
   it("a healthy turn passes no warnings — the signal is not always-on", async () => {

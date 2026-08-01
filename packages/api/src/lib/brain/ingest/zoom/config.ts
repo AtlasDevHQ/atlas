@@ -85,8 +85,11 @@
  *
  * ⚠️ AND THE ENCODING TRAP, which is specific to Zoom and has no Slack analogue.
  * A meeting `uuid` is base64 (`A-Za-z0-9+/=`), so it routinely contains `/`
- * and `+`. Zoom's own REST paths require such a uuid to be **double**
- * URL-encoded when it is used as a path segment. That encoding is a TRANSPORT
+ * and `+`. Zoom's documented rule is that a uuid which BEGINS with `/` or
+ * CONTAINS `//` must be **double** URL-encoded as a path segment;
+ * `api.ts`'s `encodeMeetingUuidForPath` applies it unconditionally (the
+ * conditional form has a rare branch that is never tested and always broken).
+ * What matters for THIS contract is the other direction: That encoding is a TRANSPORT
  * concern and must never reach the stored id:
  *
  *     store   `4kd8sZTiSHagYbwYtLpMRA==`      ← the RAW value, verbatim
@@ -153,7 +156,15 @@ export const ZOOM_MAX_HOSTS = 50;
 /**
  * A Zoom meeting `uuid` is base64 — `A-Za-z0-9+/=` — and a recording file id
  * is a GUID. Both are validated because they are interpolated into a
- * `source_id` and into an `audience:` grant token, which are stored keys.
+ * `source_id`, which is a stored key.
+ *
+ * ⚠️ NOT into the `audience:` grant token, despite the obvious reading. The
+ * grant is `audience:meeting:<source>:<meetingUuid>` — the recording-file id
+ * never appears in it — and the uuid reaching it is checked only by
+ * `meetingAudienceId`'s own blank/colon guards, because `client.ts` derives the
+ * grant and WRITES the audience membership before `zoomEpisodeSourceId` runs.
+ * That ordering is deliberate (the block arm must be decided before any
+ * transcript byte is fetched), so these patterns are a source-id guard only.
  *
  * Deliberately NOT anchored to a fixed LENGTH. Zoom has changed uuid width
  * before (the 22-char form predates the 24-char one) and a length check would
@@ -163,7 +174,7 @@ export const ZOOM_MAX_HOSTS = 50;
  */
 export const ZOOM_MEETING_UUID_PATTERN = /^[A-Za-z0-9+/=]+$/;
 
-/** A Zoom recording-file id: a lowercase GUID, hyphenated. */
+/** A Zoom recording-file id: a hyphenated GUID. Case-INSENSITIVE deliberately — the vendor's casing is not a contract. */
 export const ZOOM_RECORDING_FILE_ID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
@@ -216,14 +227,26 @@ export function zoomEpisodeSourceId(meetingUuid: string, recordingFileId: string
  * shape that silently ingests an audio file's metadata as a transcript. One
  * predicate, both writers.
  *
- * Case-INSENSITIVE on `file_type` and tolerant of a missing one. Zoom
- * documents the type as uppercase and returns it that way today; a vendor-side
- * case change would otherwise stop every transcript being recognised while the
- * sync reported a clean, empty, entirely green pass — the exact silent-drop
- * failure an evidence store must not have.
+ * Case-INSENSITIVE on `file_type`. Zoom documents the type as uppercase and
+ * returns it that way today; a vendor-side case change would otherwise stop
+ * every transcript being recognised while the sync reported a clean, empty,
+ * entirely green pass — the exact silent-drop failure an evidence store must
+ * not have.
+ *
+ * The parameter admits `undefined` as well as `null` because the two writers
+ * hand it different shapes: the poll path normalises through `api.ts`'s `str()`
+ * and always passes `null`, while #4967's webhook writer reads raw JSON where an
+ * absent `file_type` is `undefined`. A `!== null` test would have let that
+ * through to `.toUpperCase()` and thrown inside the webhook handler.
  */
-export function isTranscriptFile(file: { readonly fileType: string | null }): boolean {
-  return file.fileType !== null && file.fileType.toUpperCase() === ZOOM_TRANSCRIPT_FILE_TYPE;
+export function isTranscriptFile(file: {
+  readonly fileType: string | null | undefined;
+}): boolean {
+  return (
+    file.fileType !== null &&
+    file.fileType !== undefined &&
+    file.fileType.toUpperCase() === ZOOM_TRANSCRIPT_FILE_TYPE
+  );
 }
 
 /** The non-secret config persisted on the install's `workspace_plugins` row. */

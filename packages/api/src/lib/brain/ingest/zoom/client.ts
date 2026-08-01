@@ -6,10 +6,16 @@
  * engine's. It DOES own bounding its own fetch, because the engine hands it the
  * per-sync budget as `maxEpisodes` and refuses any batch that exceeds it.
  *
- * **Nothing in `lib/brain/ingest/` outside `zoom/` changed to add this file.**
- * That is #4965's other job: it is the first connector built ON #4963's seam
- * rather than extracted from one, so it is the proof the seam holds.
- * `episode-sync.ts` and `episodes.ts` are untouched.
+ * **The shared ingest ENGINE did not change to add this file** — `episode-sync.ts`,
+ * `episodes.ts` and `ingest/types.ts` are all untouched. That is #4965's other
+ * job: it is the first connector built ON #4963's seam rather than extracted
+ * from one, so it is the proof the seam holds.
+ *
+ * The one shared file this connector does extend is `ingest/grant.ts`, which
+ * gains the transcript class's deriver alongside the chat one — ADDITIVELY, as
+ * a new function with no public arm, never by branching the existing deriver.
+ * Stated precisely because "nothing outside `zoom/` changed" is the stronger
+ * claim and it is not true.
  *
  * ## The window walk, and why it is date-granular
  *
@@ -276,12 +282,17 @@ export function createZoomTranscriptClient(
     budget: { episodes: number },
     skips: TranscriptSkips,
     warnings: string[],
-  ): Promise<{ readonly episodes: readonly BrainEpisodeRecord[]; readonly blocked: boolean }> {
+  ): Promise<{
+    readonly episodes: readonly BrainEpisodeRecord[];
+    readonly blocked: boolean;
+    /** The episode budget ran out mid-meeting — its later segments are unread. */
+    readonly truncated: boolean;
+  }> {
     if (grantedHosts !== null && (meeting.hostId === null || !grantedHosts.has(meeting.hostId))) {
       // Outside the configured scope. Not a skip to report — the admin asked
       // for exactly these hosts — so it is not counted in `skips`, and the
       // window IS covered: there was nothing here to ingest.
-      return { episodes: [], blocked: false };
+      return { episodes: [], blocked: false, truncated: false };
     }
     const transcripts = meeting.files.filter(isTranscriptFile);
     // No transcript file YET is not a block. Zoom publishes the VTT minutes
@@ -289,16 +300,24 @@ export function createZoomTranscriptClient(
     // meeting — and #4967's `recording.transcript_completed` webhook is what
     // picks it up promptly. The mark may pass; the next poll re-reads the
     // frontier day anyway.
-    if (transcripts.length === 0) return { episodes: [], blocked: false };
+    if (transcripts.length === 0) return { episodes: [], blocked: false, truncated: false };
 
     // ── The BLOCK arm ─────────────────────────────────────────────────────
+    // The roster is narrowed FIRST, before the grant is derived, so that
+    // `roster.participants` below is control-flow narrowed and the reconcile
+    // cannot be handed a `[]` fallback. The earlier shape passed
+    // `rosterComplete: roster.complete` and then wrote `roster.complete ?
+    // roster.participants : []` — dead today, but a mass revocation the moment
+    // anything reordered these two guards, and TypeScript could not see it.
     const roster = await readMeetingRoster(token, meeting.uuid, audienceDeps);
-    const grant = deriveMeetingParticipantGrant({
-      source: ZOOM_TRANSCRIPT_SOURCE,
-      meetingId: meeting.uuid,
-      rosterComplete: roster.complete,
-    });
-    if (grant === null) {
+    const grant = roster.complete
+      ? deriveMeetingParticipantGrant({
+          source: ZOOM_TRANSCRIPT_SOURCE,
+          meetingId: meeting.uuid,
+          rosterComplete: true,
+        })
+      : null;
+    if (grant === null || !roster.complete) {
       // ADR-0036 §T6: grant-derivation failure BLOCKS and LOGS. Nothing from
       // this meeting is ingested, and there is no wider-grant fallback — `[org]`
       // would publish a meeting whose audience Atlas failed to establish.
@@ -313,7 +332,7 @@ export function createZoomTranscriptClient(
         { workspaceId: options.workspaceId, meetingUuid: meeting.uuid, reason },
         "Zoom meeting blocked — no access grant could be derived, so nothing was ingested from it",
       );
-      return { episodes: [], blocked: true };
+      return { episodes: [], blocked: true, truncated: false };
     }
 
     // Membership BEFORE episodes — see `audience.ts` for why the two failure
@@ -322,17 +341,20 @@ export function createZoomTranscriptClient(
     // audience nobody is in.
     const audienceId = grant[0].slice(AUDIENCE_PREFIX.length);
     const reconciled = await reconcileMeetingAudience(
-      {
-        workspaceId: options.workspaceId,
-        audienceId,
-        participants: roster.complete ? roster.participants : [],
-      },
+      { workspaceId: options.workspaceId, audienceId, participants: roster.participants },
       audienceDeps,
     );
 
     const episodes: BrainEpisodeRecord[] = [];
+    let truncated = false;
     for (const file of transcripts) {
-      if (episodes.length >= budget.episodes) break;
+      if (episodes.length >= budget.episodes) {
+        // A stop/restart recording legitimately has several transcript files.
+        // Dropping the later ones silently would mark the meeting covered with
+        // part of it unread, so the caller must hear about it.
+        truncated = true;
+        break;
+      }
       if (file.downloadUrl === null) {
         skips.unidentifiable++;
         continue;
@@ -357,11 +379,16 @@ export function createZoomTranscriptClient(
         continue;
       }
 
-      const downloaded = await api.fetchTranscriptText(token, file.downloadUrl);
+      const downloaded = await api.fetchTranscriptText(token, file.downloadUrl, MAX_TRANSCRIPT_BYTES);
       if (!downloaded.ok) throw toZoomClientError(`the transcript for meeting ${meeting.uuid}`, downloaded);
-      if (downloaded.text.length > MAX_TRANSCRIPT_BYTES) {
+      if (Buffer.byteLength(downloaded.text, "utf8") > MAX_TRANSCRIPT_BYTES) {
         // Zoom's `file_size` is advisory and occasionally absent; this is the
         // check that actually bounds what is stored.
+        //
+        // `Buffer.byteLength`, not `String.length`: the latter counts UTF-16
+        // code units, so a non-Latin transcript would pass at up to ~3× the
+        // stated bound — and the `file_size` gate above genuinely is bytes, so
+        // the two checks would disagree about what "4MB" means.
         skips.oversize++;
         warnings.push(
           `Meeting ${meeting.uuid} downloaded a transcript over the ${MAX_TRANSCRIPT_BYTES / 1_048_576}MB limit — it was skipped rather than truncated.`,
@@ -401,7 +428,7 @@ export function createZoomTranscriptClient(
         "Zoom meeting audience reconciled — some participants matched no Atlas user and were not granted",
       );
     }
-    return { episodes, blocked: false };
+    return { episodes, blocked: false, truncated };
   }
 
   return {
@@ -474,7 +501,19 @@ export function createZoomTranscriptClient(
           }
 
           for (const meeting of page.meetings) {
-            if (remainingEpisodes <= 0) break;
+            if (remainingEpisodes <= 0) {
+              // `break` (not `break windows`) was a silent skip: on the LAST
+              // page of the LAST window the loops simply ran out, the window
+              // was marked covered, and every unread meeting on that page was
+              // gone forever with `coverageIncomplete: false` and no warning.
+              // The top-of-page check above only fires when there IS a
+              // subsequent page or window.
+              coverageIncomplete = true;
+              warnings.push(
+                `The per-sync record budget (${params.maxEpisodes}) was reached inside the window starting ${from} — the unread meetings in it resume next cycle.`,
+              );
+              break windows;
+            }
             try {
               const produced = await runMeeting(
                 token,
@@ -491,7 +530,7 @@ export function createZoomTranscriptClient(
               // would advance past the meeting, and no later cycle would ever
               // look at it again — a permanent silent skip on the SAFETY arm,
               // which is the worst place to have one.
-              if (produced.blocked) coverageIncomplete = true;
+              if (produced.blocked || produced.truncated) coverageIncomplete = true;
             } catch (err) {
               // Per-meeting isolation, matching the engine's per-collection
               // posture. A rate limit is the one failure that also stops the
@@ -523,8 +562,26 @@ export function createZoomTranscriptClient(
           if (page.nextPageToken === null || page.nextPageToken === "") break;
           nextPageToken = page.nextPageToken;
         }
-        // This window completed end to end, so the mark may reach its last day.
-        coveredThrough = to;
+        // The window may advance the resume point ONLY if nothing in the pass
+        // so far left work undone.
+        //
+        // This gate is the whole correctness of the block arm, and it was
+        // missing: `coverageIncomplete` nulled the high-water mark, but this
+        // connector never READS the high-water mark — `params.since` is unused
+        // and `params.cursor` is the sole resume point. So a blocked meeting
+        // set the flag, the mark went null (costing nothing), and the CURSOR
+        // still advanced past the meeting's date. `episode-sync.ts` persists a
+        // non-null cursor on any `ok` attempt and `connector-sync.ts` COALESCEs
+        // it forward, so the meeting was never re-read — a permanent silent
+        // skip on the SAFETY arm, while the pass loudly reported
+        // `coverageIncomplete: true` the entire time.
+        //
+        // Gating on the flag rather than on a per-window boolean is deliberate:
+        // the walk is in date order and the flag is monotonic, so the FIRST
+        // window that leaves anything undone freezes the resume point for the
+        // whole pass. A per-window flag would let a later clean window carry
+        // the cursor over an earlier dirty one.
+        if (!coverageIncomplete) coveredThrough = to;
       }
 
       if (skips.blockedAudience > 0) {

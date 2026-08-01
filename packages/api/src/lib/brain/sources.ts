@@ -123,7 +123,7 @@
  * The closed set of source CLASSES — ADR-0036 §T6's class-major axis.
  *
  * Not "connector classes": `warehouse` and `human` come from no connector at
- * all, and only `chat` names a connector class today.
+ * all; only `chat` and `transcript` name connector classes today.
  *
  * Only classes with a member in {@link EPISODE_SOURCE_SPECS} are listed. The
  * ADR's remaining classes (email, docs/wiki/code/drive) are deliberately
@@ -135,7 +135,7 @@
  * SINGULAR, all four. The ADR's prose sequences them as "chat → transcripts →
  * email → docs" and that plural is a list of SUBJECT AREAS; these are the
  * values a stored row's class resolves TO, read one row at a time
- * (`episodeSourceClass(row.source) === TRANSCRIPT_CLASS`). Mixing the two
+ * (`episodeSourceClassOf(row.source) === TRANSCRIPT_CLASS`). Mixing the two
  * conventions in one closed set is how you end up asking whether it is spelled
  * `docs` or `doc` at each of four call sites.
  *
@@ -181,9 +181,13 @@ export type EpisodeSourceSpec =
        *
        * `transcript` joined this arm with #4965 rather than getting one of its
        * own, because it passes the SAME test `chat` passes and for the same
-       * reason. Zoom's source-id is `<meetingUuid>:<recordingStart>`
-       * (`ingest/zoom/config.ts`); Google Meet's would be a Drive file id and
-       * Fireflies' a transcript id. Those are three unrelated id GRAMMARS, so
+       * reason. Zoom's source-id grammar lives in `ingest/zoom/config.ts` and
+       * is owned THERE, not restated here — it is a live contract with #4967's
+       * webhook writer, and a contract with two published spellings is exactly
+       * the hazard this section is about. (This comment carried a second,
+       * WRONG spelling until the review panel caught it.) Google Meet's would
+       * be a Drive file id and Fireflies' a transcript id. Those are three
+       * unrelated id GRAMMARS, so
        * one stored `transcript` value would put them in one dedupe namespace —
        * and a collision there does not error, it silently drops one vendor's
        * meeting as a duplicate of another's.
@@ -208,7 +212,7 @@ export type EpisodeSourceSpec =
  * IS — THE definition this whole module derives from.
  *
  * The key is the value stored in the column, verbatim. `db/schema.ts` names the
- * same three beside the column and points here; migration 0180 leaves the
+ * same set beside the column and points here; migration 0180 leaves the
  * column plain `text` with no CHECK, which is what lets the region import
  * restore a value this map does not yet know.
  *
@@ -289,7 +293,7 @@ export const EPISODE_SOURCES = Object.freeze(
 );
 
 /**
- * The vendors named by vendor-grained members — `"slack"` today.
+ * The vendors named by vendor-grained members — `"slack"` and `"zoom"` today.
  *
  * Derived rather than declared so a query cannot ask for a vendor that no
  * member has: `findBrainSourceConnectors({ vendor: "slakc" })` returning an

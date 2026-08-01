@@ -76,6 +76,7 @@ export type ZoomReadErrorCode =
   | "missing_scope"
   | "not_found"
   | "plan_required"
+  | "too_large"
   | "transport";
 
 export interface ZoomReadError {
@@ -210,10 +211,16 @@ export async function fetchZoomAccessToken(params: {
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
   const parsed: unknown = await res.json().catch(() => null);
-  const token =
-    parsed !== null && typeof parsed === "object" && "access_token" in parsed
-      ? (parsed as { access_token: unknown }).access_token
-      : null;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    // A 200 whose body is not JSON is Zoom-side (a proxy interstitial, a
+    // maintenance page) — NOT a bad credential. Collapsing it into
+    // `invalid_auth` sends the admin to rotate a secret that was fine, which
+    // is the "no generic/misleading error messages" rule in its most expensive
+    // form. Only a genuine 401 (mapped in `toReadError`) blames the credential.
+    log.warn({}, "Zoom token exchange returned an unreadable body");
+    return { ok: false, error: "transport", retryAfterSeconds: null };
+  }
+  const token = (parsed as Record<string, unknown>).access_token;
   if (typeof token !== "string" || token === "") {
     log.warn({}, "Zoom token exchange returned no access_token");
     return { ok: false, error: "invalid_auth", retryAfterSeconds: null };
@@ -432,13 +439,16 @@ export async function fetchMeetingParticipantsPage(
 export async function fetchTranscriptText(
   token: string,
   downloadUrl: string,
+  maxBytes = Number.POSITIVE_INFINITY,
 ): Promise<{ ok: true; text: string } | ZoomReadError> {
   let host: string;
   try {
     host = new URL(downloadUrl).hostname.toLowerCase().replace(/\.+$/, "");
   } catch {
-    // intentionally ignored: an unparseable URL is refused, and the caller
-    // reports it per meeting — there is nothing further to learn from the throw.
+    // Not a silent catch, so no `// intentionally ignored:` marker — that
+    // marker is reserved for a genuinely swallowed error and using it here
+    // would cost it its signal value. The URL is refused and reported; the
+    // throw carries nothing this log line does not.
     log.warn({}, "Zoom recording download_url is not a parseable URL — refusing to fetch it");
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
@@ -471,5 +481,27 @@ export async function fetchTranscriptText(
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
-  return { ok: true, text: await res.text() };
+  // Refuse over-cap BEFORE buffering. The caller's size check runs on an
+  // already-materialised string, so without this the memory bound is Zoom's
+  // rather than ours — in a region process shared by every tenant.
+  const declared = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    log.warn(
+      { declared, maxBytes },
+      "Zoom transcript exceeds the stored-transcript byte cap — refusing the download rather than buffering it",
+    );
+    return { ok: false, error: "too_large", retryAfterSeconds: null };
+  }
+  try {
+    return { ok: true, text: await res.text() };
+  } catch (err) {
+    // The one place this module could otherwise THROW, breaking its stated
+    // "every read returns a discriminated result" contract: a mid-stream socket
+    // reset happens after the headers are in hand.
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Zoom transcript body read failed mid-stream",
+    );
+    return { ok: false, error: "transport", retryAfterSeconds: null };
+  }
 }

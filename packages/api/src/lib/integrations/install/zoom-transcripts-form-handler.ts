@@ -64,7 +64,9 @@ import {
 import { KNOWLEDGE_INSTALL_ID_FIELD, resolveCollectionSlug } from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
-// Re-exported for the register.ts boot wiring; both are single-homed in config.ts.
+// Re-exported for callers that want the slug/id without importing the brain
+// module directly; both are single-homed in config.ts. (`register.ts` uses only
+// the slug.)
 export { ZOOM_TRANSCRIPTS_SLUG, ZOOM_TRANSCRIPTS_CATALOG_ID };
 
 /**
@@ -72,7 +74,9 @@ export { ZOOM_TRANSCRIPTS_SLUG, ZOOM_TRANSCRIPTS_CATALOG_ID };
  * `status='published'` because the install CONTAINER is live immediately — the
  * review gate is on the FACTS drawn from the episodes (#4769), never on the
  * episodes themselves, which are evidence and are deliberately not content-mode
- * registered. Exported so the real-Postgres test executes this exact string.
+ * registered. Exported so a caller can execute this exact string; NOTE there is
+ * no `-pg` test behind it yet, unlike the Notion/GitBook upserts in
+ * `knowledge-lifecycle-pg.test.ts`.
  */
 export const ZOOM_TRANSCRIPTS_INSTALL_UPSERT_SQL = `INSERT INTO workspace_plugins
            (id, workspace_id, catalog_id, install_id, pillar, config, enabled, status, installed_at, updated_at)

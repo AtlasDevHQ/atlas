@@ -1227,6 +1227,15 @@ describe("buildAppLayer", () => {
       const text = String(Exit.isFailure(exit) ? exit.cause : "");
       expect(text).toContain("PythonSandboxUrlMissingError");
       expect(text).toContain("ATLAS_SANDBOX_URL");
+
+      // The symmetric half, and not decoration: without it this canary cannot
+      // tell "the guard fired" from "this layer was going to fail anyway", so a
+      // guard that failed unconditionally would still look wired.
+      process.env.ATLAS_SANDBOX_URL = "http://sandbox-sidecar:8080";
+      const okExit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(buildAppLayer(config))),
+      );
+      expect(Exit.isSuccess(okExit)).toBe(true);
     } finally {
       if (savedEnabled !== undefined) process.env.ATLAS_PYTHON_ENABLED = savedEnabled;
       else delete process.env.ATLAS_PYTHON_ENABLED;

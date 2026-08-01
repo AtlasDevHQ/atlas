@@ -120,7 +120,7 @@ const KEY_META: Record<SaasEnvKey, KeyMeta> = {
   ATLAS_SANDBOX_URL: {
     category: "Sandbox",
     purpose:
-      "Base URL of the sandbox sidecar `executePython` runs inside. Required whenever `ATLAS_PYTHON_ENABLED=true` — the Python tool is never registered unsandboxed, so the pair is a boot contract rather than a preference.",
+      "Base URL of the sandbox sidecar `executePython` is registered against. Required whenever `ATLAS_PYTHON_ENABLED=true`: registration is gated on this env var alone, so a vercel-sandbox or nsjail backend does not substitute, and neither does the workspace setting of the same name. The pair is a boot contract rather than a preference.",
   },
   ATLAS_SMTP_URL: {
     category: "Platform email (DPA)",

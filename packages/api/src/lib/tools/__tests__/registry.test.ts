@@ -530,7 +530,6 @@ describe("buildHeadlessRegistry (#4936)", () => {
 
         const { registry } = await buildHeadlessRegistry();
         expect(registry).toBe(nonDashboardRegistry);
-        expect(registry).not.toBe(defaultRegistry);
         const names = Object.keys(registry.getAll());
         expect(names).not.toContain("createDashboard");
         expect(names).not.toContain("correct_fact");
@@ -539,7 +538,7 @@ describe("buildHeadlessRegistry (#4936)", () => {
     );
   });
 
-  it("#4940 — the fatal misconfiguration is refused at BOOT, so this seam is the dev-relaxed path", async () => {
+  it("#4940 — the shared predicate is the join between this seam and the boot guard", async () => {
     // What the issue was actually about. Before the boot guard, the env above
     // was a state a deployment could sit in indefinitely: all five
     // `buildRegistry` callers catch, so nothing failed boot and the operator's

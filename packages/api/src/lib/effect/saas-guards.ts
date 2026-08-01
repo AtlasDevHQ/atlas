@@ -3,10 +3,11 @@
  *
  * Each guard is a `Layer.effectDiscard` that throws a typed
  * `Data.TaggedError` at boot when a SaaS-mode contract is violated.
- * Self-hosted is unaffected — with ONE deliberate exception,
- * {@link PythonSandboxGuardLive} (#4940), which is deploy-mode-agnostic
- * because the misconfiguration it catches is a self-hosted-facing knob;
- * its docstring carries that argument. The shape comes from `DpaGuardLive`
+ * Self-hosted is unaffected for most members, but not all: the guards whose
+ * decision lever is an env knob rather than `deployMode` run in EVERY deploy
+ * mode — {@link PluginConfigGuardLive} (`ATLAS_STRICT_PLUGIN_SECRETS`) and
+ * {@link PythonSandboxGuardLive} (#4940, `ATLAS_PYTHON_ENABLED`). Each carries
+ * the argument in its own docstring. The shape comes from `DpaGuardLive`
  * (architecture-wins #45) and was extended into a family in #1978;
  * subsequent extensions (#1983, #1988) follow the same shape mechanically.
  *
@@ -144,10 +145,12 @@ const log = createLogger("effect:saas-guards");
  * deploy ENV. SaaS-gated callers (all of them but one) MUST therefore call it
  * AFTER their `deployMode !== "saas"` early-return, or they would log a
  * relaxation for a self-hosted boot that was never going to be checked.
- * {@link PythonSandboxGuardLive} (#4940) is the deliberate exception: it is
- * deploy-mode-agnostic because the env var it guards is self-hosted-facing, and
- * it calls this first thing so a `development` box keeps booting in EITHER mode.
- * The wording below is mode-neutral for that reason.
+ * A deploy-mode-AGNOSTIC caller has no such early-return to sit behind, so it
+ * must instead check its own misconfiguration predicate FIRST and call this only
+ * once it knows it is about to fail — otherwise it logs a relaxation on every
+ * `development` boot with nothing to relax, which is how this warning class
+ * stops being read. {@link PythonSandboxGuardLive} (#4940) does exactly that.
+ * The wording below is mode-neutral for the same reason.
  */
 function relaxSaasGuardForDev(guardName: string): boolean {
   if (resolveDeployEnv() !== "development") return false;
@@ -521,7 +524,7 @@ export class SandboxCredentialsMissingError extends Data.TaggedError("SandboxCre
  */
 export class PythonSandboxUrlMissingError extends Data.TaggedError("PythonSandboxUrlMissingError")<{
   readonly message: string;
-  readonly remediationEnvVar: string;
+  readonly remediationEnvVar: typeof PYTHON_SANDBOX_URL_ENV;
 }> {}
 
 // ══════════════════════════════════════════════════════════════════════
@@ -942,27 +945,49 @@ export const SandboxCredsGuardLive: Layer.Layer<never, SandboxCredentialsMissing
  * indefinitely without the capability, `/health` green throughout. Turning that
  * into a boot failure is the CLAUDE.md "prefer errors over silent fallbacks"
  * rule applied at the boot layer; the cost, accepted deliberately, is that a
- * config mistake which used to degrade now stops the process on restart.
+ * config mistake which used to degrade now stops the process on restart. Scope:
+ * the boot Layer is built by `api/server.ts` only, so `packages/mcp`'s binary
+ * (which calls `initializeConfig()` and nothing else) is not covered —
+ * `buildHeadlessRegistry`'s docstring enumerates that honestly.
  *
- * THE ONE DEPLOY-MODE-AGNOSTIC MEMBER of this family, and the deviation is the
- * point: `ATLAS_PYTHON_ENABLED` is a self-hosted-facing knob, so a
- * `deployMode !== "saas"` early-return would leave the entire population that
- * actually sets it unguarded — the guard would be inert exactly where the bug
- * lives. SaaS is covered too, by the same predicate, because SaaS reads the same
- * two env vars.
+ * DEPLOY-MODE-AGNOSTIC, and the deviation is the point: `ATLAS_PYTHON_ENABLED`
+ * is a self-hosted-facing knob, so a `deployMode !== "saas"` early-return would
+ * leave the entire population that actually sets it unguarded — the guard would
+ * be inert exactly where the bug lives. SaaS is covered too, by the same
+ * predicate, because SaaS reads the same two env vars. It is not alone in this:
+ * {@link PluginConfigGuardLive} also runs in every deploy mode, for the same
+ * shape of reason (its lever is `ATLAS_STRICT_PLUGIN_SECRETS`, an env knob, not
+ * `deployMode`).
  *
  * It DOES still take {@link relaxSaasGuardForDev}: a local dev box running
  * `ATLAS_DEPLOY_ENV=development` with a half-configured sandbox must keep
  * booting (CLAUDE.md documents that relaxation), and there the registry throw
  * plus its degraded-tools warning is the appropriate, already-tested behavior.
- * That is why this reads the relaxation rather than reimplementing a check —
- * see the note in `relaxSaasGuardForDev` about mode-agnostic callers.
+ * The relaxation is checked AFTER the predicate, not before — see the note in
+ * `relaxSaasGuardForDev` about mode-agnostic callers. Order matters here in a
+ * way it does not for the SaaS-gated guards: those return early on self-hosted,
+ * so they never log on a default local box, whereas relaxing first would print a
+ * "guard RELAXED, NEVER do this on a customer-facing deploy" warning on EVERY
+ * dev boot, including the overwhelming majority that never requested Python.
+ * That line has to stay alarming to be worth anything.
  *
  * Depends only on `Config` (reads env via `readSaasEnv()`), so it fails as fast
  * as the other env-only guards. The predicate is imported from
  * `lib/tools/python-sandbox-requirement` — the same function `buildRegistry`
  * calls, so the guard and the builder cannot drift into disagreeing about what
  * "misconfigured" means (the #4838 drift mode, one subsystem over).
+ *
+ * KNOWN NARROWNESS, deliberate and inherited. `ATLAS_SANDBOX_URL` gates only the
+ * `sidecar` step of `planSandboxSelection`; `lib/tools/python.ts` can also run
+ * Python under `vercel-sandbox` or `nsjail`. This guard is NOT the isolation
+ * check — `buildRegistry`'s registration gate is sidecar-only (pre-existing), so
+ * on a vercel-sandbox or nsjail deploy `executePython` is not registered no
+ * matter how well isolated the box is. The guard therefore still tells the
+ * operator the truth ("you asked for this tool and you will not get it"), and
+ * fails boot on exactly the set the builder refuses. Widening BOTH seams to the
+ * real selection chain would newly register the tool on deploys that do not have
+ * it today — a product change, not a fix, and out of scope for #4940. Do not
+ * widen this predicate without widening `buildRegistry` in the same change.
  */
 export const PythonSandboxGuardLive: Layer.Layer<never, PythonSandboxUrlMissingError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -970,18 +995,29 @@ export const PythonSandboxGuardLive: Layer.Layer<never, PythonSandboxUrlMissingE
     // (and so this guard cannot run before config resolution), not because the
     // decision reads it — the check is deploy-mode-agnostic by design.
     yield* Config;
-    if (relaxSaasGuardForDev("PythonSandbox")) return;
 
+    // Predicate BEFORE the relaxation: see the docstring. A mode-agnostic guard
+    // that relaxes first logs on every dev boot regardless of configuration.
     if (!isPythonSandboxMisconfigured(readSaasEnv())) return;
+
+    if (relaxSaasGuardForDev("PythonSandbox")) {
+      // The relaxation line names no variable, so on its own it would leave a
+      // dev operator with a silently absent tool and no clue — the #4940 bug in
+      // miniature, one env away. Say the actionable part here.
+      log.warn(
+        { remediationEnvVar: PYTHON_SANDBOX_URL_ENV },
+        `${PYTHON_SANDBOX_MISCONFIGURED_MESSAGE} Boot continues only because ` +
+          `ATLAS_DEPLOY_ENV=development; executePython will be ABSENT this run.`,
+      );
+      return;
+    }
 
     yield* Effect.fail(
       new PythonSandboxUrlMissingError({
         remediationEnvVar: PYTHON_SANDBOX_URL_ENV,
         message:
           `Atlas booted with ${PYTHON_ENABLED_ENV}=true but no ${PYTHON_SANDBOX_URL_ENV}. ` +
-          `${PYTHON_SANDBOX_MISCONFIGURED_MESSAGE} Until ${SANDBOX_PYTHON_ISSUE_REF} this ` +
-          `combination booted green and ran indefinitely with executePython absent, because ` +
-          `every tool-registry caller catches the builder's throw. See ${SANDBOX_PYTHON_ISSUE_REF}.`,
+          `${PYTHON_SANDBOX_MISCONFIGURED_MESSAGE} See ${SANDBOX_PYTHON_ISSUE_REF}.`,
       }),
     );
   }),

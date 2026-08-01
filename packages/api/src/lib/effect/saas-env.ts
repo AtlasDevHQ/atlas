@@ -87,19 +87,22 @@ export interface SaasEnv {
   readonly VERCEL_TOKEN: string | undefined;
 
   // Python sandbox sidecar (PythonSandboxGuardLive, #4940). `ATLAS_PYTHON_ENABLED`
-  // requests the `executePython` tool; `ATLAS_SANDBOX_URL` is the sidecar it runs
-  // inside. Enabling the first without the second used to boot green forever with
-  // the tool silently absent, because every `buildRegistry` caller catches the
-  // throw — so the guard fails boot on it instead. Listed here for two reasons:
-  // the boot-smoke fixture populates them (both unset, the inert shape), and
-  // `saas-guards.test.ts :: withCleanEnv` consumes `SAAS_ENV_KEYS` to clear the
-  // env between cases — without that, a leaked `ATLAS_PYTHON_ENABLED` from the
-  // repo-root `.env` would flip this guard's assertions.
+  // requests the `executePython` tool; `ATLAS_SANDBOX_URL` is the sidecar the tool
+  // is REGISTERED against (`buildRegistry` refuses without it, even on a deploy
+  // whose Vercel/nsjail backend would run Python fine — see the narrowness note in
+  // `lib/tools/python-sandbox-requirement.ts`). Enabling the first without the
+  // second used to boot green forever with the tool silently absent, because every
+  // `buildRegistry` caller catches the throw — so the guard fails boot instead.
   //
-  // Note this guard is the family's one deploy-mode-AGNOSTIC member (see its
-  // docstring): the knob is self-hosted-facing, so gating it on SaaS would leave
-  // the population that actually sets it unguarded. It is still a SaaS boot input
-  // — SaaS reads the same two vars through the same predicate.
+  // Listed here for two reasons: the boot-smoke fixture populates them (both unset,
+  // the inert shape), and `saas-guards.test.ts :: withCleanEnv` consumes
+  // `SAAS_ENV_KEYS` to clear the env between cases — without that, a leaked
+  // `ATLAS_PYTHON_ENABLED` would flip this guard's assertions.
+  //
+  // Note this guard is deploy-mode-AGNOSTIC (like `PluginConfigGuardLive`; see its
+  // own docstring): the knob is self-hosted-facing, so gating it on SaaS would
+  // leave the population that actually sets it unguarded. It is still a SaaS boot
+  // input — SaaS reads the same two vars through the same predicate.
   readonly ATLAS_PYTHON_ENABLED: string | undefined;
   readonly ATLAS_SANDBOX_URL: string | undefined;
 
@@ -313,8 +316,9 @@ export function makeBootSmokeFixture(
     // PythonSandboxGuardLive (#4940) is inert unless ATLAS_PYTHON_ENABLED is
     // literally "true", so both stay unset: boot-smoke exercises the shape every
     // real deploy has (the Python tool not requested). A run that wants the
-    // guard's fail path sets both via `overrides` — which is also the only way
-    // to reach it, since there is no default that could turn it on by accident.
+    // guard's fail path sets ATLAS_PYTHON_ENABLED via `overrides` and leaves
+    // ATLAS_SANDBOX_URL unset — setting BOTH is the passing shape. Nothing here
+    // can turn the guard on by accident, since neither has a default.
     ATLAS_PYTHON_ENABLED: undefined,
     ATLAS_SANDBOX_URL: undefined,
     ATLAS_SMTP_URL: undefined,

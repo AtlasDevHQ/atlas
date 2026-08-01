@@ -2699,6 +2699,31 @@ describe("relaxSaasGuardForDev (ATLAS_DEPLOY_ENV=development)", () => {
     }
   });
 
+  // The relaxation is `development` ONLY, and `staging` is the case worth naming:
+  // it is where a SaaS change lands first, and `resolveDeployEnv` maps anything it
+  // does not recognise to `production` — so a future "relax on any non-production
+  // env" widening would silently disarm this guard on the soak environment. Pinned
+  // here rather than in the block above because it is a property of the
+  // relaxation, not of the guard.
+  test("PythonSandboxGuard: does NOT relax on staging — only development", async () => {
+    for (const deployEnv of ["staging", "production"]) {
+      await withCleanEnv(async () => {
+        process.env.ATLAS_DEPLOY_ENV = deployEnv;
+        process.env.ATLAS_PYTHON_ENABLED = "true";
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              PythonSandboxGuardLive.pipe(
+                Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              ),
+            ),
+          ),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+      });
+    }
+  });
+
   // The remaining five guards that opt into `relaxSaasGuardForDev` — each fed the
   // exact misconfig that fails boot in its own describe block, now proven to no-op
   // under `development`. (The ENFORCE path for each is that same "fails boot in

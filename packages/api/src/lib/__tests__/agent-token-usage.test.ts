@@ -87,8 +87,8 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
-// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
-// surface these turns already resolved to when they omitted it.
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
 const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 /**

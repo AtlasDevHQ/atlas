@@ -87,11 +87,14 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
-// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
-// surface these turns already resolved to when they omitted it. Named at each
-// `drive(...)` call rather than defaulted inside the helper: a helper that filled
-// it in would be exactly the pre-built-bag shape that launders the posture out of
-// sight, which is the one escape the compiler cannot see.
+// #4943 — runAgent's `tools` is now required; this is its own fail-closed
+// default, so these turns are unchanged. See agent.ts's `@param tools`.
+//
+// Named at each `drive(...)` call rather than defaulted inside the helper:
+// `drive` forwards a pre-built bag to `runAgent(opts)`, a shape neither guard
+// can read (the scanner treats it as `absent`, and it skips `__tests__` anyway),
+// so keeping the registry in each test body is the only thing that makes the
+// posture visible here.
 const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 const STOP_USAGE: LanguageModelV3Usage = {

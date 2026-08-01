@@ -1,16 +1,18 @@
 /**
  * The Atlas agent.
  *
- * Runs a single-agent loop driven by a ToolRegistry (default: explore,
- * executeSQL). The loop runs until the step limit is reached (configurable
- * via `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing
- * tool calls.
+ * Runs a single-agent loop driven by a ToolRegistry, which every caller names
+ * explicitly — see the `@param tools` note on {@link runAgent} for what the
+ * fall-back registry actually carries (it is lesser-privileged, not minimal).
+ * The loop runs until the step limit is reached (configurable via
+ * `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing tool calls.
  *
  * Effect migration (P10c):
- * The agent function optionally reads its dependencies (model, tools,
- * user context) from Effect Context when available, falling back to
- * global singletons otherwise. This makes the agent testable via
- * Layer.provide with mock services.
+ * The agent function optionally reads its dependencies (model, user context)
+ * from Effect Context when available, falling back to global singletons
+ * otherwise. This makes the agent testable via Layer.provide with mock
+ * services. The tool registry is NOT among them — it is a required parameter
+ * (#4943), not a context lookup.
  */
 
 import {
@@ -1085,19 +1087,33 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  *   what enforces that. A required property rejects all five shapes the bug
  *   class used, including the two conditional spreads that were its actual
  *   source (`...(reg ? { tools: reg } : {})`, `...(reg && { tools: reg })`):
- *   TypeScript distributes the spread over the union, so the empty branch
- *   surfaces `tools` as optional and fails the required target.
+ *   TypeScript merges the spread of `{ tools: T } | {}` into ONE object type
+ *   with `tools` OPTIONAL, which then fails the required target with "Type
+ *   'undefined' is not assignable to type 'ToolRegistry'". Each shape is pinned
+ *   by a `@ts-expect-error` fixture in `agent-runagent-call-sites.test.ts`, so
+ *   re-widening this property to `tools?:` fails `bun run type`.
  *
- *   `agent-runagent-call-sites.test.ts` is the BACKSTOP, not the gate. It still
- *   pins WHICH registry each production surface must resolve to — a choice no
- *   type can express — and still catches `runAgent(opts)`, where a pre-built
- *   bag typechecks clean while laundering the posture out of sight. It scans
- *   the roots listed in its `SCAN_ROOTS` (`packages/api|mcp|sdk/src` +
+ *   Corollary for helpers: a wrapper that forwards to `runAgent` types its
+ *   options as the FULL `Parameters<typeof runAgent>[0]`, never `Partial<…>` —
+ *   a `Partial` wrapper fills `tools` in on its callers' behalf and erases the
+ *   requirement for every surface behind it.
+ *
+ *   `agent-runagent-call-sites.test.ts` is the BACKSTOP, not the gate, and it
+ *   is not redundant — it catches four things no type can: WHICH registry each
+ *   production surface must resolve to; `runAgent(opts)`, where a pre-built bag
+ *   typechecks clean while laundering the posture out of sight; a LATER spread
+ *   re-assigning `tools` (last-write-wins, the one escape that fails UPWARD by
+ *   re-adding `correct_fact`) which compiles clean under a required property;
+ *   and trees the root tsconfig excludes (`scripts/`, `deploy/`, `examples/*`,
+ *   `plugins/obsidian`), which its repo-wide `git grep` drift check covers. It
+ *   scans the roots listed in its `SCAN_ROOTS` (`packages/api|mcp|sdk/src` +
  *   `ee/src`) — add a root there when a new package can reach `runAgent`.
  *
- *   The destructuring default below stays as defense in depth: it covers
- *   callers the type system never sees (an `any`-typed bag, a separately
- *   compiled plugin). It is now {@link nonDashboardRegistry}, not the
+ *   The first line of the function body coalesces to a fall-back registry as
+ *   defense in depth for callers the type system never sees (an `any`-typed
+ *   bag, a separately compiled plugin). Note it fires on `undefined` ONLY — a
+ *   `null` from such a caller is not covered and will fail later in the turn.
+ *   That fall-back is now {@link nonDashboardRegistry}, not the
  *   dashboards-owning `defaultRegistry` (#4936). The old default was
  *   write-carrying: any caller that omitted `tools` silently received
  *   `createDashboard` AND `correct_fact` — re-opening, from the outside, the
@@ -1120,7 +1136,7 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  */
 export async function runAgent({
   messages,
-  tools: toolRegistry = nonDashboardRegistry,
+  tools: declaredToolRegistry,
   conversationId,
   warnings,
   persona,
@@ -1274,6 +1290,16 @@ export async function runAgent({
    */
   abortSignal?: AbortSignal;
 }) {
+  // #4943 — the fail-closed backstop, moved off the destructuring default (a
+  // default on a REQUIRED property is dead code to the compiler, and
+  // `typescript/no-useless-default-assignment` says so as an error). It is not
+  // dead to callers the type system never sees: an `any`-typed options bag, a
+  // separately compiled plugin. Forgetting a registry has to land on the
+  // LESSER-privileged one — the pre-#4936 default carried `createDashboard`
+  // AND `correct_fact`, which re-opened the #4915 surface gate from outside.
+  // Coalesces on `undefined` only; a `null` from such a caller is not covered
+  // and fails later in the turn.
+  const toolRegistry = declaredToolRegistry ?? nonDashboardRegistry;
   // #3931 — per-turn latency clock. Captured at runAgent entry so the
   // token_usage INSERT in onFinish can persist the agent-turn wall-clock
   // (entry → finish) on the same row as the turn's tokens + cache split.

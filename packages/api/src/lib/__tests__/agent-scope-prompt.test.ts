@@ -254,8 +254,10 @@ function makeSpyingModel(toolCallArgs: Record<string, unknown>): InstanceType<ty
 const { runAgent } = await import("@atlas/api/lib/agent");
 const { buildSystemParam, buildRestDatasourceScopeNote } = await import("@atlas/api/lib/agent");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
-// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
-// surface these turns already resolved to when they omitted it.
+// #4943 — runAgent's `tools` is now required. `nonDashboardRegistry` (added
+// here) is its own fail-closed default, so those turns are unchanged; see
+// agent.ts's `@param tools`. `defaultRegistry` is unrelated and pre-existing —
+// the #3067 focus-strip turns below need `createDashboard` present.
 const { defaultRegistry, nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 function userMessages(content: string): UIMessage[] {

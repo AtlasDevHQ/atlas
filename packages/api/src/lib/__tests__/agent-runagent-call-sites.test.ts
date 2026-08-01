@@ -5,10 +5,14 @@
  * `runAgent`'s options, so the COMPILER is the primary enforcement: it rejects
  * all five shapes of this bug class — conditional spread on a ternary, on `&&`,
  * a spread of a partial options object, plain omission, and a possibly-
- * `undefined` value — because TypeScript distributes the spread over the union
- * and the empty branch surfaces `tools` as optional against a required target.
+ * `undefined` value. The mechanism is not spread-over-union distribution:
+ * TypeScript MERGES `{ tools: T } | {}` into one object type with `tools`
+ * OPTIONAL, and that fails the required target on property incompatibility
+ * ("Type 'undefined' is not assignable to type 'ToolRegistry'"). Section 1b
+ * below pins each shape with a `@ts-expect-error`, which is also what stops the
+ * property being silently re-widened to `tools?:`.
  *
- * This file is the BACKSTOP, and it is not redundant. Three things it catches
+ * This file is the BACKSTOP, and it is not redundant. Four things it catches
  * that a required parameter cannot:
  *
  *   - WHICH registry each surface must resolve to (`EXPECTED_REGISTRY`). No
@@ -16,12 +20,21 @@
  *     WRONG registry typechecks perfectly.
  *   - `runAgent(opts)`, where a pre-built bag typed as the options object
  *     compiles clean while laundering the posture out of sight.
+ *   - A LATER spread that RE-ASSIGNS `tools` (`{ tools: nonDashboardRegistry,
+ *     ...(isInternal && { tools: defaultRegistry }) }`). Object spread is
+ *     last-write-wins, so this compiles clean under a required property — and
+ *     it is the one escape shape whose failure direction is UPWARD, re-adding
+ *     `correct_fact` rather than landing on the fail-closed default. The most
+ *     dangerous shape here is the one the compiler cannot see at all.
  *   - Anything outside the type-checked graph — an `any`-typed caller, a
- *     separately compiled plugin — which is also why `runAgent` keeps its
- *     fail-closed destructuring default rather than trusting the signature.
+ *     separately compiled plugin, or a tree the root tsconfig excludes
+ *     (`scripts/`, `deploy/`, `examples/*`, `plugins/obsidian`), which the
+ *     repo-wide `git grep` drift check at the bottom of this file covers. That
+ *     is also why `runAgent` keeps its fail-closed fall-back coalesce rather
+ *     than trusting the signature.
  *
- * The rest of this comment describes the shape of the original bug, which is
- * what both layers exist to keep closed.
+ * The rest of this comment is the original bug's shape, plus the two axes this
+ * file still pins.
  *
  * #4915 keeps `correct_fact` — a brain-mutating WRITE — off the read-safe
  * agent surface by registering it only when a `dashboardUrlResolver` is
@@ -37,10 +50,12 @@
  * WHICH REGISTRY EACH CALL SITE RESOLVES TO. This file closes that axis from
  * both ends:
  *
- *   1. BEHAVIOURAL — a real `runAgent` turn with no `tools` hands the model a
- *      tool set with no brain-write and no dashboard-write verb. The same turn
- *      with `defaultRegistry` passed explicitly DOES carry them, so the
- *      assertion is a real gate and not a tautology about an empty tool set.
+ *   1. BEHAVIOURAL — a real `runAgent` turn that reaches the fall-back
+ *      coalesce (since #4943 a typed caller cannot omit `tools`, so the turn
+ *      goes through the `OMIT_TOOLS` stand-in for an untyped one) hands the
+ *      model a tool set with no brain-write and no dashboard-write verb. The
+ *      same turn with `defaultRegistry` passed explicitly DOES carry them, so
+ *      the assertion is a real gate and not a tautology about an empty tool set.
  *   2. STRUCTURAL — every production `runAgent(...)` call site resolves to the
  *      registry its surface is supposed to have. Not merely "passes something
  *      called `tools`": `EXPECTED_REGISTRY` pins the actual expression per
@@ -58,9 +73,9 @@
  *      surface's behavioural test — named per entry, including the one entry
  *      (`admin-semantic-improve.ts`) whose route test mocks its builder.
  *
- * The safe default is the backstop for anything the scan cannot see (an
- * untyped caller, a plugin compiled separately); naming the registry at the
- * surface is the contract.
+ * The safe fall-back is the backstop for anything neither the scan nor the
+ * compiler can see (an untyped caller, a plugin compiled separately); naming
+ * the registry at the surface is the contract.
  *
  * Sibling guardrail: `agent-surface-registry.test.ts` pins the ACTOR-binding
  * axis (F-54/F-55), but over a DIFFERENT set — its roots are
@@ -150,17 +165,7 @@ void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
-const { defaultRegistry, nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
-
-/**
- * The omission the runtime backstop exists for. Since #4943 a TYPED caller
- * cannot omit `tools` at all, so the only way left to reach the destructuring
- * default is to stand in for a caller the type system never sees — an
- * `any`-typed options bag, a separately compiled plugin. That is what this cast
- * models, and it is the whole reason the first behavioural test below is still
- * a real assertion rather than a tautology about a registry it passed itself.
- */
-const OMITTED_TOOLS = undefined as unknown as ToolRegistry;
+const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
 
 let lastToolNames: string[] | undefined;
 
@@ -209,7 +214,21 @@ function userMessages(text: string): UIMessage[] {
  * `Partial<…>` rather than a hand-written bag: it is tied to `runAgent`'s real
  * signature, so a misspelled option (`tolls:`) is a compile error instead of a
  * silently ignored key that would turn the negative assertions below into a
- * tautology about a default-tools turn.
+ * tautology about the base call's own registry.
+ *
+ * This is the one place a `Partial` of `runAgent`'s options is legitimate —
+ * erasing the #4943 requirement is the entire point, because there is otherwise
+ * no way to reach the fall-back coalesce from typed code. Everywhere else, a
+ * helper that forwards to `runAgent` takes the FULL parameter type (see
+ * `agent-resume.test.ts`), or it silently exempts every caller behind it.
+ *
+ * The base call deliberately passes `defaultRegistry`, NOT the value the
+ * default resolves to. If it passed `nonDashboardRegistry`, the assertions
+ * below would hold whether or not the `OMIT_TOOLS` override actually landed —
+ * the test would be pinning a registry it supplied itself. Passing the
+ * write-carrying registry makes the override load-bearing: any future edit that
+ * stops `...extra` winning (reordering it above `tools:`, or a defensive
+ * `tools: extra.tools ?? …`) fails both `not.toContain` assertions loudly.
  */
 async function toolNamesForTurn(
   extra: Partial<Parameters<typeof runAgent>[0]>,
@@ -217,7 +236,7 @@ async function toolNamesForTurn(
   lastToolNames = undefined;
   const result = await runAgent({
     messages: userMessages("How many orders last month?"),
-    tools: nonDashboardRegistry,
+    tools: defaultRegistry,
     aiModel: {
       model: makeSpyingModel(),
       providerType: "openai",
@@ -234,11 +253,32 @@ async function toolNamesForTurn(
 const BRAIN_WRITE_TOOL = "correct_fact";
 const DASHBOARD_WRITE_TOOL = "createDashboard";
 
+/**
+ * The omission `runAgent`'s fall-back coalesce exists for. Since #4943 a
+ * TYPED caller cannot omit `tools` at all, so the only way left to reach that
+ * default is to stand in for a caller the type system never sees — an
+ * `any`-typed options bag, a separately compiled plugin.
+ *
+ * Shaped as a `Pick` fragment rather than `undefined as unknown as ToolRegistry`
+ * so nothing is mis-typed as a registry: this value cannot be dereferenced, it
+ * can only be spread. `...extra` is spread LAST in `toolNamesForTurn`, and an
+ * own key whose value is `undefined` still wins over the base literal, so the
+ * property arrives as `undefined` and the default fires.
+ *
+ * Deleting this is not a cleanup: with the 16 test files that used to exercise
+ * the default now naming their registry explicitly, this is the only remaining
+ * BEHAVIOURAL assertion that the default is least-privileged. The source-text
+ * pin in "the fail-closed defaults are pinned in source" below is its only
+ * other net, and that one reads spelling, not behaviour.
+ */
+const OMIT_TOOLS = { tools: undefined } as unknown as Pick<
+  Parameters<typeof runAgent>[0],
+  "tools"
+>;
+
 describe("#4936 — runAgent's default tool surface fails closed", () => {
-  it("a turn that omits `tools` gets no brain-write and no dashboard-write verb", async () => {
-    // `...extra` is spread LAST, so this genuinely overrides the base call's
-    // registry with nothing and lands on runAgent's own default.
-    const names = await toolNamesForTurn({ tools: OMITTED_TOOLS });
+  it("a turn that reaches the fall-back coalesce gets no brain-write and no dashboard-write verb", async () => {
+    const names = await toolNamesForTurn(OMIT_TOOLS);
 
     // The whole point of the issue: omitting `tools` used to yield
     // `defaultRegistry`, which carries both of these.
@@ -262,6 +302,50 @@ describe("#4936 — runAgent's default tool surface fails closed", () => {
     expect(names).toContain(DASHBOARD_WRITE_TOOL);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1b. Compile-time — the PRIMARY gate pins itself
+// ---------------------------------------------------------------------------
+
+/**
+ * #4943's gate is a TYPE, so its guard has to be a type too.
+ *
+ * Nothing below runs. The assertion IS each `@ts-expect-error`: `tsgo --noEmit`
+ * reports an UNUSED directive as an error, so `bun run type` fails the moment
+ * the shape it marks stops being rejected. Test files are inside the root
+ * program (`packages/api/tsconfig.json` includes `src/**` and the root config
+ * excludes neither), so this is a live CI gate, not decoration.
+ *
+ * Without it, widening `tools: ToolRegistry` back to `tools?: ToolRegistry` is
+ * SILENT: every test in this file still passes, every call site still passes
+ * `tools`, and the two source pins below only read the DEFAULT's spelling —
+ * which is byte-identical either way. Enforcement would quietly drop back to
+ * text-scanning, while the header six hundred lines up kept claiming otherwise.
+ *
+ * `maybeRegistry` is `declare`d rather than assigned because a `const`
+ * initialised from a definite value is narrowed by control flow, and the last
+ * two shapes then compile clean — a false pass that this fixture, of all
+ * things, must not have. (Learned the hard way while verifying #4943.)
+ */
+declare function maybeRegistry(): ToolRegistry | undefined;
+
+// oxlint-disable-next-line no-unused-vars -- compile-time fixture; never invoked
+function _compilerRejectsEveryOmissionShape(): void {
+  const messages: UIMessage[] = [];
+  const maybe = maybeRegistry();
+  const partial: Partial<Parameters<typeof runAgent>[0]> = {};
+
+  // @ts-expect-error #4943 — ternary conditional spread (the pre-fix ee/answer-adapter.ts shape)
+  void runAgent({ messages, ...(maybe ? { tools: maybe } : {}) });
+  // @ts-expect-error #4943 — `&&` conditional spread (the pre-fix routes/chat.ts shape)
+  void runAgent({ messages, ...(maybe && { tools: maybe }) });
+  // @ts-expect-error #4943 — spread of a partial options object
+  void runAgent({ messages, ...partial });
+  // @ts-expect-error #4943 — plain omission (the pre-fix resume-turn.ts / demo.ts shape)
+  void runAgent({ messages });
+  // @ts-expect-error #4943 — a value that may be `undefined`
+  void runAgent({ messages, tools: maybe });
+}
 
 // ---------------------------------------------------------------------------
 // 2. Structural — every production call site names the RIGHT registry
@@ -438,10 +522,21 @@ function inspectToolsProp(args: string): ToolsProp {
  * A call site is an offender if it does not name `tools` UNCONDITIONALLY, with
  * a value that cannot be `undefined`.
  *
- * The last clause matters because `exactOptionalPropertyTypes` is off, so
- * `tools: ToolRegistry | undefined` typechecks against `tools?: ToolRegistry`:
- * `tools: cond ? registry : undefined` reads as explicit and behaves as
- * omission. `SCANNER_FIXTURES` pins every one of these shapes.
+ * Since #4943 a typed caller cannot reach most of these shapes at all — the
+ * required property rejects them. The `undefined` arms are kept because this is
+ * a TEXT guard over trees the compiler may not cover (the root tsconfig
+ * excludes `scripts/`, `deploy/`, `examples/*`, `plugins/obsidian`) and callers
+ * it never sees, and because a second, independently-spelled signal is the
+ * point of a backstop.
+ *
+ * The assertion arm is new pressure created by #4943: a caller holding a
+ * `ToolRegistry | undefined` can no longer pass it, so the path of least
+ * resistance becomes `tools: reg!` or `tools: reg as ToolRegistry`. Both
+ * typecheck, both satisfy `EXPECTED_REGISTRY`'s regexes, and both can still be
+ * `undefined` at runtime — the requirement is declared and not met. It fails
+ * DOWNWARD onto the fail-closed default, so it is not an open door, but it
+ * voids the "declared unconditionally at the surface" contract silently.
+ * `SCANNER_FIXTURES` pins every one of these shapes.
  */
 function offenceFor(args: string): string | undefined {
   const prop = inspectToolsProp(args);
@@ -455,8 +550,16 @@ function offenceFor(args: string): string | undefined {
     case "shorthand":
       return undefined;
     case "value":
-      return /\bundefined\b/.test(prop.text)
-        ? "passes a `tools` value that can be `undefined`, which is the same as omitting it"
+      if (/\bundefined\b/.test(prop.text)) {
+        return "passes a `tools` value that can be `undefined`, which is the same as omitting it";
+      }
+      // A trailing `!` or `as ToolRegistry` on the whole value — `reg!`,
+      // `map.get(id)!`, `maybeReg as ToolRegistry`. Deliberately anchored to the
+      // END of the value so an assertion INSIDE a resolved expression
+      // (`(await buildHeadlessRegistry()).registry`) is untouched.
+      return /(?:!|\bas\s+ToolRegistry)\s*$/.test(prop.text)
+        ? "asserts the `tools` value non-null (`!` / `as ToolRegistry`) rather than resolving one — " +
+            "the assertion hides exactly the `undefined` the required parameter exists to reject"
         : undefined;
   }
 }
@@ -623,10 +726,23 @@ describe("#4936 — the call-site scanner detects the shapes the bug actually ha
       true,
     ],
     ["explicit undefined", `{ messages, tools: undefined }`, true],
-    // `exactOptionalPropertyTypes` is off, so a value that MAY be undefined
-    // typechecks against `tools?: ToolRegistry` and behaves as an omission.
+    // Rejected by the compiler too since #4943; kept because this guard also
+    // covers trees the root tsconfig excludes and callers it never typechecks.
     ["ternary that can yield undefined", `{ messages, tools: cond ? reg : undefined }`, true],
     ["nullish-coalescing to undefined", `{ messages, tools: reg ?? undefined }`, true],
+    // The shape a required `tools` pressures a caller toward: the requirement is
+    // declared, the assertion is what actually satisfies it, and the value can
+    // still be undefined at runtime.
+    ["non-null assertion on a maybe-registry", `{ messages, tools: maybeReg! }`, true],
+    ["non-null assertion on a lookup", `{ messages, tools: registries.get(id)! }`, true],
+    ["cast that erases the undefined", `{ messages, tools: maybeReg as ToolRegistry }`, true],
+    // …but an assertion INSIDE an otherwise-resolved expression is not the
+    // `tools` value being asserted, and must not be flagged.
+    [
+      "an assertion nested inside a resolved value",
+      `{ messages, tools: (await buildRegistry(opts!)).registry }`,
+      false,
+    ],
     // A nested `tools` is not the options-object property.
     ["tools nested under another key", `{ messages, resume: { runId, tools: r } }`, true],
     ["a pre-built options bag hides the posture", `opts`, true],
@@ -747,11 +863,15 @@ describe("#4936 — the fail-closed defaults are pinned in source", () => {
   it("runAgent defaults `tools` to nonDashboardRegistry, never a write-carrying registry", async () => {
     const source = await readFile(resolve(REPO_ROOT, AGENT_MODULE), "utf8");
 
+    // #4943 moved this off the destructuring default: a default on a REQUIRED
+    // property is dead code to the compiler, and the repo's type-aware lint
+    // (`typescript/no-useless-default-assignment`) errors on it. Same invariant,
+    // spelled as a body coalesce — so this pin reads the coalesce.
     expect(
       source,
-      "runAgent's `tools` default must stay the least-privileged registry — reverting it " +
-        "to `defaultRegistry` re-opens #4936 for every caller that omits `tools`.",
-    ).toMatch(/tools:\s*toolRegistry\s*=\s*nonDashboardRegistry/);
+      "runAgent's `tools` backstop must stay the least-privileged registry — reverting it " +
+        "to `defaultRegistry` re-opens #4936 for every caller the type system never sees.",
+    ).toMatch(/declaredToolRegistry\s*\?\?\s*nonDashboardRegistry/);
   });
 
   it("buildSystemParam defaults `registry` to nonDashboardRegistry too", async () => {
@@ -762,6 +882,22 @@ describe("#4936 — the fail-closed defaults are pinned in source", () => {
     const source = await readFile(resolve(REPO_ROOT, AGENT_MODULE), "utf8");
 
     expect(source).toMatch(/registry\s*=\s*nonDashboardRegistry,/);
+  });
+
+  it("#4943 — `tools` is still REQUIRED on the options type", async () => {
+    // Second signal for the compile-time fixtures above, in a different CI job:
+    // `_compilerRejectsEveryOmissionShape` fails the `type` gate, this fails the
+    // `test` gate. A revert to `tools?: ToolRegistry` demotes the compiler back
+    // to a no-op and leaves text scanning as the only enforcement — the posture
+    // #4943 exists to end. Both nets read the signature; neither reads the other.
+    const source = await readFile(resolve(REPO_ROOT, AGENT_MODULE), "utf8");
+
+    expect(
+      source,
+      "runAgent's `tools` must stay REQUIRED. Making it optional again means the compiler " +
+        "stops rejecting the five omission shapes (#4943) and this file's text scan becomes " +
+        "the only gate.",
+    ).not.toMatch(/^\s*tools\?:\s*ToolRegistry/m);
   });
 });
 

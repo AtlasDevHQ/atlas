@@ -25,12 +25,20 @@ import { join } from "path";
 import { INSERT_EPISODES_SQL } from "@atlas/api/lib/brain/ingest/episodes";
 import {
   _resetBrainSourceConnectors,
+  findBrainSourceConnectors,
   getBrainSourceConnector,
   listBrainSourceCatalogIds,
   registerBrainSourceConnector,
   type BrainSourceConnector,
 } from "@atlas/api/lib/brain/ingest/types";
-import { SLACK_SOURCE, WAREHOUSE_SOURCE, type EpisodeSource } from "@atlas/api/lib/brain/sources";
+import {
+  CHAT_CLASS,
+  HUMAN_SOURCE,
+  SLACK_SOURCE,
+  WAREHOUSE_CLASS,
+  WAREHOUSE_SOURCE,
+  type EpisodeSource,
+} from "@atlas/api/lib/brain/sources";
 
 const INGEST_DIR = join(import.meta.dir, "..");
 
@@ -190,6 +198,113 @@ describe("the brain source registry", () => {
     // …and a real member still registers, so the rule is a vocabulary check
     // and not a blanket refusal.
     expect(() => registerBrainSourceConnector(connector({ source: WAREHOUSE_SOURCE }))).not.toThrow();
+    _resetBrainSourceConnectors();
+  });
+});
+
+describe("resolving connectors by class + vendor (#4963)", () => {
+  /**
+   * Three connectors spanning both grains: a vendor-grained chat one, and two
+   * class-grained ones with no vendor at all. `catalog:chat-b` deliberately
+   * shares `slack`'s class AND vendor — nothing bounds a class+vendor pair to
+   * one catalog row, and the lookup must not quietly behave as if something
+   * did.
+   */
+  function seedRegistry(): void {
+    _resetBrainSourceConnectors();
+    const make = (catalogId: string, source: EpisodeSource): BrainSourceConnector => ({
+      catalogId,
+      source,
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    registerBrainSourceConnector(make("catalog:chat-a", SLACK_SOURCE));
+    registerBrainSourceConnector(make("catalog:chat-b", SLACK_SOURCE));
+    registerBrainSourceConnector(make("catalog:wh", WAREHOUSE_SOURCE));
+    registerBrainSourceConnector(make("catalog:human", HUMAN_SOURCE));
+  }
+
+  const ids = (found: readonly BrainSourceConnector[]) => found.map((c) => c.catalogId).toSorted();
+
+  it("resolves by class, by vendor, and by both together", () => {
+    seedRegistry();
+    expect(ids(findBrainSourceConnectors({ sourceClass: CHAT_CLASS }))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+    ]);
+    expect(ids(findBrainSourceConnectors({ vendor: "slack" }))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+    ]);
+    expect(ids(findBrainSourceConnectors({ sourceClass: CHAT_CLASS, vendor: "slack" }))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+    ]);
+    expect(ids(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS }))).toEqual([
+      "catalog:wh",
+    ]);
+    _resetBrainSourceConnectors();
+  });
+
+  it("returns EVERY connector sharing a class+vendor, not the first", () => {
+    // The registry is keyed by catalog id, so two catalog rows can legitimately
+    // serve one vendor (Slack history and a later Slack-canvases source). A
+    // lookup that returned a single connector would silently drop one of them,
+    // and the M3 webhook fast-path — the caller this exists for — would deliver
+    // events to whichever registered first.
+    seedRegistry();
+    expect(findBrainSourceConnectors({ sourceClass: CHAT_CLASS, vendor: "slack" })).toHaveLength(2);
+    _resetBrainSourceConnectors();
+  });
+
+  it("treats `vendor: null` as a REAL query, not as an omitted field", () => {
+    // The trap this guard exists for. `null` asks for the class-grained
+    // sources — the ones that come from no vendor at all — and a truthiness or
+    // `!= null` test would collapse it into "do not constrain" and hand back
+    // the Slack connectors too. Distinct answers here are the whole proof.
+    seedRegistry();
+    expect(ids(findBrainSourceConnectors({ vendor: null }))).toEqual([
+      "catalog:human",
+      "catalog:wh",
+    ]);
+    expect(ids(findBrainSourceConnectors({}))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+      "catalog:human",
+      "catalog:wh",
+    ]);
+    // …and an omitted argument behaves as the omitted field, not as a filter.
+    expect(ids(findBrainSourceConnectors())).toEqual(ids(findBrainSourceConnectors({})));
+    _resetBrainSourceConnectors();
+  });
+
+  it("AND-s the two axes — a mismatched pair resolves to nothing", () => {
+    // Not an OR and not a fallback: asking for the slack vendor within the
+    // warehouse class is asking for something that does not exist, and an
+    // empty result is the only honest answer. A lookup that fell back to
+    // either axis alone would route warehouse work to the Slack connector.
+    seedRegistry();
+    expect(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS, vendor: "slack" })).toEqual([]);
+    expect(findBrainSourceConnectors({ sourceClass: CHAT_CLASS, vendor: null })).toEqual([]);
+    expect(findBrainSourceConnectors({ vendor: "teams" })).toEqual([]);
+    _resetBrainSourceConnectors();
+  });
+
+  it("reads both axes off the connector's declared source, not off separate fields", () => {
+    // The structural claim behind the contract: a connector declares ONE
+    // identity (`source`) and the axes are derived from it, so they cannot
+    // disagree with the value that lands in `brain_episodes.source`. Registering
+    // a warehouse connector and finding it under the chat class would mean the
+    // stored column and this lookup answered different questions.
+    _resetBrainSourceConnectors();
+    registerBrainSourceConnector({
+      catalogId: "catalog:only",
+      source: WAREHOUSE_SOURCE,
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    expect(findBrainSourceConnectors({ sourceClass: CHAT_CLASS })).toEqual([]);
+    expect(ids(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS }))).toEqual([
+      "catalog:only",
+    ]);
     _resetBrainSourceConnectors();
   });
 });

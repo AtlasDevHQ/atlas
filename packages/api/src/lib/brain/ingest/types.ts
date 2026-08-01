@@ -50,7 +50,14 @@ import {
   _resetCatalogIngestClaims,
 } from "@atlas/api/lib/knowledge/catalog-claims";
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
-import { EPISODE_SOURCES, isEpisodeSource, type EpisodeSource } from "@atlas/api/lib/brain/sources";
+import {
+  EPISODE_SOURCES,
+  episodeSourceClass,
+  episodeSourceVendor,
+  isEpisodeSource,
+  type EpisodeSource,
+  type EpisodeSourceClass,
+} from "@atlas/api/lib/brain/sources";
 
 /**
  * One record a source produced, ready to become a tier-3 episode row.
@@ -203,9 +210,16 @@ export interface BrainSourceConnector {
    *
    * A CLOSED type rather than a slug pattern, because downstream predicates
    * read this value as a discriminator: `isWarehouseDerived` refuses tier-1
-   * correction on `WAREHOUSE_SOURCE` alone, so a warehouse connector that
-   * named its class `"snowflake"` would fail that ADR-level invariant OPEN and
-   * nothing would go red. `sources.ts`'s header carries the full argument.
+   * correction on the WAREHOUSE CLASS alone, so a warehouse connector whose
+   * kind resolved to some other class would fail that ADR-level invariant OPEN
+   * and nothing would go red. `sources.ts`'s header carries the full argument.
+   *
+   * This is the connector's ONE identity declaration. Its class and vendor are
+   * derived from it (`episodeSourceClass` / `episodeSourceVendor`, and
+   * {@link findBrainSourceConnectors} on top of them) rather than declared
+   * beside it — two separately-stated fields could disagree, and then the
+   * stored column and the registry lookup would answer different questions
+   * about the same connector.
    */
   readonly source: EpisodeSource;
   createClient(
@@ -262,6 +276,58 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
 
 export function getBrainSourceConnector(catalogId: string): BrainSourceConnector | undefined {
   return registry.get(catalogId);
+}
+
+/** Which connectors to resolve. An omitted field does not constrain. */
+export interface BrainSourceConnectorQuery {
+  /** ADR-0036's class-major axis — `chat`, `warehouse`, … */
+  readonly sourceClass?: EpisodeSourceClass;
+  /**
+   * The vendor-minor axis. Pass `null` to select only the classes that HAVE no
+   * vendor (`warehouse`, `human`); omit the field to not constrain on vendor at
+   * all. The two are different questions and `undefined` must not stand in for
+   * `null`, or "the vendorless sources" would silently mean "all sources".
+   */
+  readonly vendor?: string | null;
+}
+
+/**
+ * Resolve registered connectors by ADR-0036's class-major / vendor-minor axes
+ * (#4963) — the class+vendor lookup the catalog-id map cannot serve, since a
+ * catalog id is an INSTALL-routing key and says nothing about what class of
+ * evidence the connector produces.
+ *
+ * Both axes are read off the connector's declared `source` through
+ * `lib/brain/sources.ts`, never off fields the connector states separately. A
+ * connector that could name its own class alongside its stored value could name
+ * them INCONSISTENTLY, and then "the chat connectors" and "the connectors whose
+ * episodes are chat-class" would be two different sets — with the ACL and
+ * extraction paths keying off the stored value and this lookup keying off the
+ * declaration. One declared fact, both axes derived, no way to disagree.
+ *
+ * Returns an array, not a single connector: nothing bounds a class+vendor pair
+ * to one catalog row, and two rows for one vendor (say Slack history and a
+ * later Slack-canvases source) is a shape the ADR permits. A caller that needs
+ * exactly one must say so itself rather than inherit a uniqueness this registry
+ * never enforced.
+ */
+export function findBrainSourceConnectors(
+  query: BrainSourceConnectorQuery = {},
+): readonly BrainSourceConnector[] {
+  const { sourceClass, vendor } = query;
+  return [...registry.values()].filter((connector) => {
+    if (sourceClass !== undefined && episodeSourceClass(connector.source) !== sourceClass) {
+      return false;
+    }
+    // `!== undefined`, and NOT a truthiness or `!= null` check: `vendor: null`
+    // is a REAL query — "the sources that have no vendor" — and only an
+    // `undefined` test keeps it distinct from an omitted field. `null` clears
+    // this guard and is then compared as itself, which is exactly right.
+    if (vendor !== undefined && episodeSourceVendor(connector.source) !== vendor) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /** The catalog ids with a registered brain source — the cycle walk's filter. */

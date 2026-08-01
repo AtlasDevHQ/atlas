@@ -168,7 +168,7 @@ import {
   SUPERSEDE_STAMP_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { classifyFactForPromotion, isJsonObject, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
-import { HUMAN_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
+import { HUMAN_SOURCE, isWarehouseDerivedSource } from "@atlas/api/lib/brain/sources";
 import { BRAIN_CORRECTION_VERBS } from "@useatlas/schemas";
 import type { BrainCorrectionVerb, BrainFactCorrectionResponse } from "@useatlas/types";
 
@@ -1391,15 +1391,25 @@ async function applyVouch(
  * never stored in `brain_facts` at all — this guards the DERIVED class the ADR
  * likewise exempts from correction.
  *
- * The constant, not the literal `"warehouse"`, and that is the whole strength
+ * The vocabulary, not the literal `"warehouse"`, and that is the whole strength
  * of this predicate: the kind comes from a producer ADR-0036 commits to but no
  * milestone has scoped, and while both sides spelled their own string their
  * agreement was a coincidence — a producer naming itself `"snowflake"` would
  * have silently stopped every tier-1 refusal without failing a test. See
  * `lib/brain/sources.ts`.
+ *
+ * It asks for the CLASS rather than `=== WAREHOUSE_SOURCE` (#4963). The two are
+ * the same answer today, because `warehouse` is the warehouse class's only
+ * member — but they differ in what a FUTURE member can do to this invariant. A
+ * warehouse vendor that needed its own stored value (the same source-id-collision
+ * argument that makes the chat class vendor-grained) would, under the old
+ * comparison, have escaped tier-1 refusal the moment it was added, and the only
+ * thing standing in the way was a paragraph in `sources.ts` asking it not to.
+ * Reading the class moves that from prose to the spec map, where declaring the
+ * class is how the member gets into the vocabulary at all.
  */
 export function isWarehouseDerived(provenance: unknown): boolean {
-  return isJsonObject(provenance) && provenance.source === WAREHOUSE_SOURCE;
+  return isJsonObject(provenance) && isWarehouseDerivedSource(provenance.source);
 }
 
 function normalizeReplacement(

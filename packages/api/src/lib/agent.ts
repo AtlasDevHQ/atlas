@@ -1080,17 +1080,24 @@ function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): 
  * Run the Atlas agent loop.
  *
  * @param messages - The conversation history from the chat UI.
- * @param tools - The surface's {@link ToolRegistry}. Every production call site
- *   passes it explicitly, and `agent-runagent-call-sites.test.ts` pins WHICH
- *   registry each one must resolve to. That guard scans the roots listed in its
- *   `SCAN_ROOTS` (`packages/api|mcp|sdk/src` + `ee/src`) — add a root there when
- *   a new package can reach `runAgent`.
+ * @param tools - The surface's {@link ToolRegistry}. REQUIRED (#4943): every
+ *   call site — production and test — names its registry, and the COMPILER is
+ *   what enforces that. A required property rejects all five shapes the bug
+ *   class used, including the two conditional spreads that were its actual
+ *   source (`...(reg ? { tools: reg } : {})`, `...(reg && { tools: reg })`):
+ *   TypeScript distributes the spread over the union, so the empty branch
+ *   surfaces `tools` as optional and fails the required target.
  *
- *   The parameter stays optional for TESTS; production callers are required to
- *   name a registry. Making it required outright — so the compiler enforces this
- *   instead of a source scanner — is #4943.
+ *   `agent-runagent-call-sites.test.ts` is the BACKSTOP, not the gate. It still
+ *   pins WHICH registry each production surface must resolve to — a choice no
+ *   type can express — and still catches `runAgent(opts)`, where a pre-built
+ *   bag typechecks clean while laundering the posture out of sight. It scans
+ *   the roots listed in its `SCAN_ROOTS` (`packages/api|mcp|sdk/src` +
+ *   `ee/src`) — add a root there when a new package can reach `runAgent`.
  *
- *   The default is now {@link nonDashboardRegistry}, not the
+ *   The destructuring default below stays as defense in depth: it covers
+ *   callers the type system never sees (an `any`-typed bag, a separately
+ *   compiled plugin). It is now {@link nonDashboardRegistry}, not the
  *   dashboards-owning `defaultRegistry` (#4936). The old default was
  *   write-carrying: any caller that omitted `tools` silently received
  *   `createDashboard` AND `correct_fact` — re-opening, from the outside, the
@@ -1130,7 +1137,8 @@ export async function runAgent({
   abortSignal,
 }: {
   messages: UIMessage[];
-  tools?: ToolRegistry;
+  /** Required — see the `@param tools` note above (#4943). */
+  tools: ToolRegistry;
   conversationId?: string;
   warnings?: string[];
   /**

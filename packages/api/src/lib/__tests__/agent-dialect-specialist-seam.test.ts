@@ -112,6 +112,9 @@ function makeSpyingModel(): InstanceType<typeof MockLanguageModelV3> {
 }
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
+// surface these turns already resolved to when they omitted it.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 function userMessages(text: string): UIMessage[] {
   return [{ id: "msg-1", role: "user" as const, parts: [{ type: "text" as const, text }] }];
@@ -120,6 +123,7 @@ function userMessages(text: string): UIMessage[] {
 async function runTurn(): Promise<string> {
   lastSystemPrompt = undefined;
   const result = await runAgent({
+    tools: nonDashboardRegistry,
     messages: userMessages("How many orders last month?"),
     aiModel: {
       model: makeSpyingModel(),

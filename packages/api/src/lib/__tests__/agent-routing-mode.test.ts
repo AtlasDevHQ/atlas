@@ -150,6 +150,9 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
 // ---------------------------------------------------------------------------
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
+// surface these turns already resolved to when they omitted it.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
 
 // ---------------------------------------------------------------------------
@@ -290,7 +293,7 @@ describe("agent routing-mode picker — executeSQL `routingMode`", () => {
         connectionId: "eu",
         routingMode: "pin",
       },
-      () => runAgent({ messages: userMessages("EU revenue this month") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("EU revenue this month") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
@@ -325,7 +328,7 @@ describe("agent routing-mode picker — executeSQL `routingMode`", () => {
         connectionId: "us-int",
         routingMode: "all",
       },
-      () => runAgent({ messages: userMessages("Compare across regions") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
@@ -357,7 +360,7 @@ describe("agent routing-mode picker — executeSQL `routingMode`", () => {
         connectionId: "us-int",
         routingMode: "all",
       },
-      () => runAgent({ messages: userMessages("Compare across regions") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
@@ -383,7 +386,7 @@ describe("agent routing-mode picker — executeSQL `routingMode`", () => {
         connectionId: "us-int",
         routingMode: "auto",
       },
-      () => runAgent({ messages: userMessages("Compare across regions") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
@@ -405,7 +408,7 @@ describe("agent routing-mode picker — executeSQL `routingMode`", () => {
         connectionId: "eu",
         routingMode: "auto",
       },
-      () => runAgent({ messages: userMessages("EU revenue") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("EU revenue") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
@@ -438,7 +441,7 @@ describe("agent routing-mode picker — executeSQL `routingMode`", () => {
         // conversation NULL→'pin' default. Tools / MCP / scheduler /
         // direct unit tests fall through to the agent-decides default.
       },
-      () => runAgent({ messages: userMessages("Compare across regions") }),
+      () => runAgent({ tools: nonDashboardRegistry, messages: userMessages("Compare across regions") }),
     );
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];

@@ -133,6 +133,9 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
 // ---------------------------------------------------------------------------
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
+// surface these turns already resolved to when they omitted it.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 const { invalidateExploreBackend } = await import("@atlas/api/lib/tools/explore");
 
 // ---------------------------------------------------------------------------
@@ -251,7 +254,7 @@ describe("agent integration", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Show me all companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Show me all companies") });
     const steps = await result.steps;
 
     // Loop terminated naturally after 3 steps (explore + executeSQL + text-only)
@@ -294,7 +297,7 @@ describe("agent integration", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("List companies") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("List companies") });
     const steps = await result.steps;
 
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
@@ -324,6 +327,7 @@ describe("agent integration", () => {
     });
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("What data do you have?"),
     });
     const steps = await result.steps;
@@ -354,7 +358,7 @@ describe("agent integration", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Read .env") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Read .env") });
     const steps = await result.steps;
 
     // The real boundary is sandbox isolation (writes never touch host files),
@@ -395,7 +399,7 @@ describe("agent integration", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Show secret data") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Show secret data") });
     const steps = await result.steps;
 
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
@@ -428,6 +432,7 @@ describe("agent integration", () => {
     });
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Do something bad"),
     });
     const steps = await result.steps;
@@ -473,7 +478,7 @@ describe("agent integration", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Test") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Test") });
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
     expect(sqlResults.length).toBe(1);
@@ -512,7 +517,7 @@ describe("agent integration", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Test") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Test") });
     const steps = await result.steps;
     const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
     expect(sqlResults.length).toBe(1);
@@ -550,7 +555,7 @@ describe("agent integration", () => {
       },
     });
 
-    const result = await runAgent({ messages: userMessages("Test") });
+    const result = await runAgent({ tools: nonDashboardRegistry, messages: userMessages("Test") });
     await result.steps;
     expect(capturedSQL).toContain("LIMIT 1000");
   });

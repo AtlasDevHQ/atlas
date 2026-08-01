@@ -202,6 +202,9 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 // ---------------------------------------------------------------------------
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
+// surface these turns already resolved to when they omitted it.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 const { invalidateExploreBackend } = await import("@atlas/api/lib/tools/explore");
 const { COMPACTION_SUMMARY_PREFIX, COMPACTION_STREAM_PART_TYPE } = await import(
   "@atlas/api/lib/agent-compaction"
@@ -425,6 +428,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-1",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -459,6 +463,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-roll",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -491,6 +496,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-failsoft",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -516,6 +522,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-2",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -552,6 +559,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(3);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-3",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 3 },
@@ -576,6 +584,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-4",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -605,6 +614,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-5",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -630,6 +640,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-nodb-enabled",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -652,6 +663,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     const transcript = rehydratedTranscript(6);
 
     const result = await runAgent({
+      tools: nonDashboardRegistry,
       messages: userMessages("Analyze companies"),
       conversationId: "conv-resume-6",
       resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
@@ -683,6 +695,7 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
       await withRequestContext({ requestId: REQ_ID }, async () => {
         setStreamWriter(REQ_ID, fakeWriter);
         const result = await runAgent({
+          tools: nonDashboardRegistry,
           messages: userMessages("Analyze companies"),
           conversationId: "conv-resume-7",
           resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },

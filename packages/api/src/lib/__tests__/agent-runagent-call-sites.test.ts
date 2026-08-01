@@ -1,6 +1,28 @@
 /**
  * #4936 — the `runAgent` tool-surface guardrail.
  *
+ * DIVISION OF LABOUR (changed by #4943). `tools` is now a REQUIRED property of
+ * `runAgent`'s options, so the COMPILER is the primary enforcement: it rejects
+ * all five shapes of this bug class — conditional spread on a ternary, on `&&`,
+ * a spread of a partial options object, plain omission, and a possibly-
+ * `undefined` value — because TypeScript distributes the spread over the union
+ * and the empty branch surfaces `tools` as optional against a required target.
+ *
+ * This file is the BACKSTOP, and it is not redundant. Three things it catches
+ * that a required parameter cannot:
+ *
+ *   - WHICH registry each surface must resolve to (`EXPECTED_REGISTRY`). No
+ *     type expresses "the demo route gets the restricted one"; passing the
+ *     WRONG registry typechecks perfectly.
+ *   - `runAgent(opts)`, where a pre-built bag typed as the options object
+ *     compiles clean while laundering the posture out of sight.
+ *   - Anything outside the type-checked graph — an `any`-typed caller, a
+ *     separately compiled plugin — which is also why `runAgent` keeps its
+ *     fail-closed destructuring default rather than trusting the signature.
+ *
+ * The rest of this comment describes the shape of the original bug, which is
+ * what both layers exist to keep closed.
+ *
  * #4915 keeps `correct_fact` — a brain-mutating WRITE — off the read-safe
  * agent surface by registering it only when a `dashboardUrlResolver` is
  * present (`lib/tools/registry.ts`). That gate decides what each REGISTRY
@@ -58,6 +80,7 @@ import {
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import type { UIMessage } from "ai";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import type { ToolRegistry } from "@atlas/api/lib/tools/registry";
 
 // ---------------------------------------------------------------------------
 // 1. Behavioural — what tool set does the model actually receive?
@@ -127,7 +150,17 @@ void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
-const { defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+const { defaultRegistry, nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
+
+/**
+ * The omission the runtime backstop exists for. Since #4943 a TYPED caller
+ * cannot omit `tools` at all, so the only way left to reach the destructuring
+ * default is to stand in for a caller the type system never sees — an
+ * `any`-typed options bag, a separately compiled plugin. That is what this cast
+ * models, and it is the whole reason the first behavioural test below is still
+ * a real assertion rather than a tautology about a registry it passed itself.
+ */
+const OMITTED_TOOLS = undefined as unknown as ToolRegistry;
 
 let lastToolNames: string[] | undefined;
 
@@ -184,6 +217,7 @@ async function toolNamesForTurn(
   lastToolNames = undefined;
   const result = await runAgent({
     messages: userMessages("How many orders last month?"),
+    tools: nonDashboardRegistry,
     aiModel: {
       model: makeSpyingModel(),
       providerType: "openai",
@@ -202,7 +236,9 @@ const DASHBOARD_WRITE_TOOL = "createDashboard";
 
 describe("#4936 — runAgent's default tool surface fails closed", () => {
   it("a turn that omits `tools` gets no brain-write and no dashboard-write verb", async () => {
-    const names = await toolNamesForTurn({});
+    // `...extra` is spread LAST, so this genuinely overrides the base call's
+    // registry with nothing and lands on runAgent's own default.
+    const names = await toolNamesForTurn({ tools: OMITTED_TOOLS });
 
     // The whole point of the issue: omitting `tools` used to yield
     // `defaultRegistry`, which carries both of these.

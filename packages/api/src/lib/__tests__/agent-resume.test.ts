@@ -87,6 +87,12 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+// #4943 — runAgent's `tools` is required; nonDashboardRegistry is the restricted
+// surface these turns already resolved to when they omitted it. Named at each
+// `drive(...)` call rather than defaulted inside the helper: a helper that filled
+// it in would be exactly the pre-built-bag shape that launders the posture out of
+// sight, which is the one escape the compiler cannot see.
+const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
 
 const STOP_USAGE: LanguageModelV3Usage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
@@ -210,6 +216,7 @@ describe("agent crash-resume seam (#3747)", () => {
     ];
 
     await drive(finalTextOnlyModel(), {
+      tools: nonDashboardRegistry,
       messages: userMessages("hi"),
       conversationId: "conv-1",
       resume: { runId: RESUMED_RUN_ID, transcript: storedTranscript, priorStepIndex: 2 },
@@ -235,7 +242,7 @@ describe("agent crash-resume seam (#3747)", () => {
   it("resumed step accounting equals the uninterrupted run (same final index + transcript, one token row)", async () => {
     // Baseline: an uninterrupted 3-step turn. Capture its final step index AND
     // its terminal transcript — the resume must converge on both.
-    await drive(multiStepModel(), { messages: userMessages("hi"), conversationId: "conv-1" });
+    await drive(multiStepModel(), { tools: nonDashboardRegistry, messages: userMessages("hi"), conversationId: "conv-1" });
     const baselineTerminal = terminalWrites();
     expect(baselineTerminal).toHaveLength(1);
     const baselineFinalIndex = stepIndexOf(baselineTerminal[0]!);
@@ -257,6 +264,7 @@ describe("agent crash-resume seam (#3747)", () => {
       { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "executeSQL", output: { type: "json", value: { rows: [] } } }] },
     ];
     await drive(finalTextOnlyModel(), {
+      tools: nonDashboardRegistry,
       messages: userMessages("hi"),
       conversationId: "conv-1",
       resume: { runId: RESUMED_RUN_ID, transcript: storedTranscript, priorStepIndex: 2 },
@@ -277,7 +285,7 @@ describe("agent crash-resume seam (#3747)", () => {
   });
 
   it("a fresh turn (no resume) is unchanged — new (minted) run id, lands at the full step count", async () => {
-    await drive(multiStepModel(), { messages: userMessages("hi"), conversationId: "conv-fresh" });
+    await drive(multiStepModel(), { tools: nonDashboardRegistry, messages: userMessages("hi"), conversationId: "conv-fresh" });
     const terminals = terminalWrites();
     expect(terminals).toHaveLength(1);
     // A fresh turn mints a UUID run id (not one we supplied via `resume`).

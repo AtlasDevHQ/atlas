@@ -1009,12 +1009,22 @@ export interface BrainFactRetractResponse {
    * bypass is an opt-in audit override that is not in play here), so an admin
    * whose grants miss a dependent does receive that dependent's id. What
    * justifies it is that the id is an opaque workspace-scoped UUID carrying no
-   * claim text, it is already written to this actor's own `audit_log` row, and
-   * the actor is the human who has to act on the flag. None of that holds for
-   * an LLM, which is why `lib/tools/correct-fact.ts` reports the count.
+   * claim text, and the recipient is the human who has to act on the flag —
+   * an LLM is neither, which is why `lib/tools/correct-fact.ts` reports the
+   * count. The split is about what the MODEL may see; it is not about where
+   * the record lives, since #4934 the `admin_action_log` row carries the ids
+   * on every entry point including the tool's.
    *
    * No surface links these yet — the console renders the count. See
    * `MERGE_PROVENANCE_MARKER_SQL`'s header for why that is bounded.
+   *
+   * Deliberately UNCAPPED, unlike the analogous `refusedDrafts[]` (which stops
+   * at 100 beside an uncapped `refusedDraftTotal`). The producer is bounded by
+   * construction today — no in-region path mints the fact→fact `derives-from`
+   * edge this reads — so a cap would be a wire change with no producer to
+   * protect against. The M5 write-back producer is the moment to adopt the
+   * cap-plus-total pattern, and it should be decided then rather than
+   * discovered.
    */
   readonly flaggedForReReview: readonly string[];
 }

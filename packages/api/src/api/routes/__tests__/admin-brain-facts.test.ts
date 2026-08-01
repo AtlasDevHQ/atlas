@@ -823,13 +823,17 @@ describe("POST /{id}/retract", () => {
         // shape a drifted machinery actually produces. A distinctive value,
         // not `7`: the payload-must-not-leak assertion below needs a needle
         // that cannot collide with a request id or a status code.
+        // The SECOND deliberately ill-typed fixture in this file, cast at this
+        // site only for the same reason the `invalidatedAt: 42` one below is:
+        // the point is a producer that broke the contract, and every other
+        // fixture stays compile-checked against the real union (#4934).
         correctionEpisodeId: 424242424242,
         invalidatedAt: "2026-07-01T00:00:00.000Z",
         flaggedForReReview: [],
         supersededBy: null,
         validTo: null,
       },
-    };
+    } as unknown as CorrectionOutcome;
     const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
     expect(res.status).toBe(500);
     const text = await res.text();
@@ -843,12 +847,13 @@ describe("POST /{id}/retract", () => {
     // below checks only that the refused payload does not leak.
     expect(text).not.toContain("ep-corr");
 
-    // …and the audit row IS written, deliberately. The retraction already
-    // committed; only the response serialization failed. A caller who sees a
-    // 500 and retracts again must still find the first one on the record —
-    // suppressing the audit row here would make a committed trust decision
-    // invisible precisely when the operator has the least information.
-    expect(auditRows).toHaveLength(1);
+    // …and this ROUTE emits nothing even on the failure path — #4934 moved the
+    // forensic trail inside `correctFact`, which is stubbed here, so zero is
+    // the correct count and this doubles as the router-emits-nothing guard.
+    // The property that matters — the row survives a response that failed to
+    // serialize, because the retraction already committed — now belongs to the
+    // machinery and is pinned in `correction-audit.test.ts`.
+    expect(auditRows).toHaveLength(0);
   });
 });
 

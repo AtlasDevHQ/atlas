@@ -398,9 +398,9 @@ export default function BrainFactsPage() {
                       {flaggedNotice.count} other claim{flaggedNotice.count === 1 ? "" : "s"}
                     </strong>{" "}
                     derived from it for re-review. Nothing was withdrawn automatically — a
-                    conclusion can outlive one of its premises. No queue lists them: to get
-                    the ids back later, search this fact id under Audit &rarr; Actions, or
-                    export that view — the table preview truncates them.
+                    conclusion can outlive one of its premises. No queue lists them: the ids
+                    are kept on this rejection&apos;s row in Audit &rarr; Admin actions, and
+                    the CSV export there is what carries them in full.
                   </span>
                   <Button
                     variant="ghost"

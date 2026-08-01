@@ -62,7 +62,7 @@ A retracted draft (`invalidated_at IS NOT NULL`) is excluded from promotion, fro
 
 **Not registered, deliberately:** `brain_episodes` has no `status` column at all — episodes are append-only *evidence*, and evidence is not review-gated; only the claims drawn from it are. `brain_edges` is derived structure whose visibility follows its endpoints, content-mode-exempt for the same reason `knowledge_links` is.
 
-**Grep-provable single promotion path — four gated columns in three asymmetry classes.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
+**Grep-provable single promotion path — four gated columns, two asymmetries, three INSERT justifications.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
 
 - `status` on **UPDATE and INSERT** — a writer must omit it so 0180's `draft` default applies the gate by construction;
 - `visible_to` — and, on the same terms, `pre_widening_visible_to` (#4836) — on **UPDATE only**, including an upsert's `ON CONFLICT … DO UPDATE` half. An INSERT naming `visible_to` is correct and required: the grant is *derived at ingest*, so an INSERT arm would refuse the write the whole ACL design rests on;
@@ -108,7 +108,7 @@ The carve-out is bounded: only the `/use-demo` route passes `status: "published"
 
 **The carve-out is the file, not a shape.** It covers the statements above and the imported #4912 stamp. Any *new* statement in that module touching `status`, `visible_to`, or `valid_to` needs the same argument the existing ones carry — a banner at the top of that module's SQL section says so, which is where the next editor is standing.
 
-The rationale is recorded in three other places a reader might reach first: `correction.ts`'s module header, the guard's own `ALLOWLIST` comment, and the guard's failure text. It is recorded **here** because [`.claude/rules/content-mode.md`](../../.claude/rules/content-mode.md) names this document as the register a carve-out must appear in — and it was missing from #4915 until #4939 added it. That rule's `paths:` now also cover `lib/brain/**`, so the next editor of the module that *holds* a carve-out sees the register clause, rather than only the editors of the routes and adapters around it.
+The rationale is recorded in two other places a reader might reach first: `correction.ts`'s module header and the guard's own `ALLOWLIST` comment. (The guard's failure text states the *rule* — an allowlist entry needs a recorded rationale — not the rationale itself.) It is recorded **here** because [`.claude/rules/content-mode.md`](../../.claude/rules/content-mode.md) names this document as the register a carve-out must appear in — and it was missing from #4915 until #4939 added it. That rule's `paths:` now also cover `lib/brain/**`, so the next editor of the module that *holds* a carve-out sees the register clause, rather than only the editors of the routes and adapters around it.
 
 ### Amendment approval dual-applies to a draft of the same entity (semantic-improve, #4517)
 

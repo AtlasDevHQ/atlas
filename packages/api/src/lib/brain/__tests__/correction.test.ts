@@ -1178,11 +1178,17 @@ describe("re-authority and pin", () => {
   test("the closed-window predicate IS brainFactCurrentClause, negated — not a second spelling", () => {
     const sql = correctionTargetSql("TRUE", 1);
     expect(sql).toContain(`NOT ${brainFactCurrentClause("f")} AS window_closed`);
-    // And no independent spelling of the same comparison survives alongside it.
+    // And no independent spelling of the same comparison survives alongside
+    // it. `replace` with a STRING pattern removes only the first occurrence,
+    // which fails safe: a second copy of the clause would still trip the
+    // regex below. Both operand orders and `CURRENT_TIMESTAMP` are covered,
+    // since a paraphrase is exactly what this is looking for.
     const withoutTheImport = sql.replace(brainFactCurrentClause("f"), "");
     expect(
-      /valid_to\s*[<>]=?\s*now\(\)/i.test(withoutTheImport),
-      "correctionTargetSql compares `valid_to` against `now()` somewhere other than the imported clause — that is the drift this import exists to prevent",
+      /valid_to\s*[<>]=?\s*(now\(\)|current_timestamp)|(now\(\)|current_timestamp)\s*[<>]=?\s*[a-z]*\.?valid_to/i.test(
+        withoutTheImport,
+      ),
+      "correctionTargetSql compares `valid_to` against the clock somewhere other than the imported clause — that is the drift this import exists to prevent",
     ).toBe(false);
   });
 
@@ -1210,9 +1216,12 @@ describe("re-authority and pin", () => {
   }
 
   // The OTHER drift arm: a column that is present but the wrong TYPE. Dropping
-  // a column can only ever produce `undefined`, which the arm above catches —
-  // so without this, `readTargetRow`'s type check is unexercised, and deleting
-  // it still compiles (the residual narrowing stays assignable).
+  // a column can only ever produce `undefined`, which the arm above catches, so
+  // without this the type check is unexercised. What it pins is BEHAVIOURAL,
+  // not compile-time: a re-typed column must throw with a nameable message
+  // rather than flow on to `iso()` and render a refusal with no date in it.
+  // (The compile side is held separately — `TargetRow.validTo` is
+  // `Date | string | null`, so the assignment itself would not type-check.)
   test("a target projection whose `valid_to` decodes to the wrong type THROWS", async () => {
     const store = new FakeCorrectionStore();
     store.overrideTargetColumns = { valid_to: 1735689600000 };

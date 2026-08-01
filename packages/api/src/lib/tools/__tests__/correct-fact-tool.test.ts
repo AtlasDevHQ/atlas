@@ -17,6 +17,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import type { AuthMode } from "@useatlas/types";
 
@@ -387,13 +388,78 @@ describe("the trust-tier-aware description", () => {
   // description shapes the call it then makes.
   it("states the vouch precondition in every string the model reads", () => {
     const { description } = correctFactTool as unknown as { description: string };
+    // The `verb` enum's own `.describe()` is the THIRD copy, and it is read out
+    // of the served JSON Schema for `search-brain-tool.test.ts`'s reason: that
+    // is the string the model actually receives, and reading `.shape` instead
+    // would go red on a harmless `.describe()`/`.optional()` reorder.
+    const verbDescription = ((): string => {
+      const properties = z.toJSONSchema(correctFactTool.inputSchema as z.ZodType).properties;
+      const verb = properties?.verb;
+      if (typeof verb !== "object" || verb === null || !("description" in verb)) {
+        throw new Error(
+          `correct_fact's input schema no longer exposes a \`verb\` object property (saw: ${Object.keys(properties ?? {}).join(", ") || "none"}) — re-point this read, or the pin below passes vacuously`,
+        );
+      }
+      return typeof verb.description === "string" ? verb.description : "";
+    })();
+
     for (const [label, text] of [
       ["CORRECT_FACT_DESCRIPTION", CORRECT_FACT_DESCRIPTION],
       ["correctFactTool.description", description],
+      ["the `verb` argument description", verbDescription],
     ] as const) {
       expect(
-        /refused[^.]*validity window|validity window[^.]*(closed|refused)/i.test(text),
-        `${label} promises re-authority/pin reset the staleness clock without saying they are refused once the validity window has closed — the model cannot avoid a refusal it was never told about`,
+        /refused[^.]*validity window|validity window[^.]*(closed|refused)|still current/i.test(text),
+        `${label} promises re-authority/pin reset the staleness clock without saying they only apply while the claim is still current — the model cannot avoid a refusal it was never told about`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The guide documents the new refusal (#4939)
+// ---------------------------------------------------------------------------
+
+describe("the public guide", () => {
+  // The Callout added for the vouch refusal is its only public documentation.
+  // The mechanism is already here — this file reads the guide for the
+  // disclosure split — so leaving the refusal's own doc unpinned would be a
+  // choice rather than a cost.
+  it("documents the vouch refusal, and does not advise a verb that refuses too", () => {
+    const guide = readFileSync(
+      join(
+        import.meta.dir,
+        "..",
+        "..",
+        "..",
+        "..",
+        "..",
+        "..",
+        "apps",
+        "docs",
+        "content",
+        "shared",
+        "guides",
+        "brain-corrections.mdx",
+      ),
+      "utf8",
+    );
+    expect(
+      /validity window has \*\*already closed\*\*|validity window[^.]*already closed/i.test(guide),
+      "brain-corrections.mdx does not document that re-authority/pin are refused on a closed validity window — that refusal has no other public description",
+    ).toBe(true);
+
+    // The trap this Callout fell into once: `supersede` refuses ANY non-null
+    // `valid_to`, so advising it as the fallback for an elapsed window sends
+    // the reader into a second refusal. The sentence must say the opposite.
+    const elapsed = guide
+      .split(/(?<=[.;])\s+/)
+      .filter((s) => /elapsed|nothing replaced it/i.test(s));
+    expect(elapsed.length, "the guide no longer discusses an elapsed window").toBeGreaterThan(0);
+    for (const sentence of elapsed) {
+      expect(
+        /no correction|refuses|ingest/i.test(sentence),
+        `brain-corrections.mdx says "${sentence.trim()}" — an elapsed window with no successor has NO correction verb available (\`supersede\` refuses a closed window too), so this must not read as a remedy`,
       ).toBe(true);
     }
   });

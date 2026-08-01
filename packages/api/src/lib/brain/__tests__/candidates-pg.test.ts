@@ -734,8 +734,11 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         episodeId: ep,
         status: "published",
       });
-      // Set through raw SQL rather than a seed argument: `valid_to` is a gated
-      // column, and this file's inserts deliberately never name it.
+      // Set through raw SQL rather than a seed argument, so `seedFact` keeps
+      // mirroring the production INSERT shape — which never names `valid_to`,
+      // because a producer may open a validity window and never close one.
+      // (Not a gate concern: `check-brain-fact-promotion.sh` excludes
+      // `__tests__`, so it never scans this file either way.)
       await pool.query(`UPDATE brain_facts SET valid_to = now() - interval '1 day' WHERE id = $1`, [
         closed,
       ]);

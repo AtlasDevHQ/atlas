@@ -32,9 +32,9 @@ What comes back depends on which surface you called, and the difference is an ac
 
 Note what justifies the ids on the admin side, because it is narrower than "an admin can see everything": a workspace role does **not** confer blanket read on brain facts — access is matched per grant — so an admin whose grants miss a dependent does receive that dependent's id. What makes that acceptable is that the id is an opaque workspace-scoped identifier carrying no claim text, it is already written to that admin's own action-log entry, and they are the human who has to act on the flag. None of those hold for an agent, which is why the tool gets a number.
 
-The flag itself is written onto each dependent's stored provenance, and — **when the retraction came through an admin route** — the ids are recorded in the admin action log. An agent-initiated `correct_fact` writes no admin action row, so there the count in that one response is the only report.
+The flag itself is written onto each dependent's stored provenance, and the ids are recorded in the admin action log — on **every** entry point, the agent tool included. So the record survives an agent-initiated correction even though the agent only ever saw a number.
 
-**No read surface renders the flag yet.** Treat the response as a notification at the moment of the retraction rather than a queue you can come back to.
+**No read surface renders the flag yet.** Treat the response as a notification at the moment of the retraction rather than a queue you can come back to; the admin action log is where the ids remain recoverable.
 
 <Callout type="warn" title="Retract is the GDPR-erasure route, not the erasure itself">
   An erasure request routes *through* `retract` — it is the verb that makes a claim stop being served. It is not, on its own, deletion of content: the fact row and its episodes remain stored, and a retracted claim still appears as a labelled counterpart inside conflict clusters. Actual content deletion is a separate operation, and that carve-out is exactly why it cannot be read off this verb.
@@ -57,7 +57,7 @@ The correction episode becomes evidence: a `provenance` edge from the fact to th
 The same evidence edge plus a `pinned` marker. Advisory at rest, exactly like the [decay signal](/guides/brain-temporal-model#staleness-is-advisory) it counteracts: nothing auto-acts on it — and today nothing reads it either. The marker is recorded on the fact's provenance for a future review surface; the effect you can observe now is the evidence edge, which is what resets the decay clock.
 
 <Callout type="info" title="Both vouching verbs refuse a claim that is no longer current">
-  `re-authority` and `pin` are refused when the target's validity window has **already closed** — no current read serves such a claim, so re-anchoring its staleness clock would change nothing anybody can see. A supersession is the usual cause, and then you vouch for the claim that replaced it; a scheduled end that simply elapsed leaves no successor, and there you `supersede` with the current value rather than vouching for the retired claim. A *future-dated* `validTo` is a live claim whose end is merely scheduled, and is accepted.
+  `re-authority` and `pin` are refused when the target's validity window has **already closed** — no current read serves such a claim, so re-anchoring its staleness clock would change nothing anybody can see. A supersession is the usual cause, and then you vouch for the claim that replaced it. If nothing replaced it — a scheduled end that simply elapsed — there is no correction to apply at all: `supersede` refuses a closed window too, so the claim has to be observed again through ingest before it can be vouched for. A *future-dated* `validTo` is a live claim whose end is merely scheduled, and is accepted.
 </Callout>
 
 ---

@@ -479,13 +479,16 @@ export const DEPENDENT_FACTS_SQL = `SELECT ed.from_fact_id::text AS id
  * and `/correct` return the flagged ids, the agent tool returns the count —
  * not because a surface renders the marker.
  *
- * The two admin ROUTES additionally write the ids to `admin_action_log` (via
- * `logAdminAction`), which is the only durable, re-readable record. Spell that
- * table precisely: `audit_log` is a DIFFERENT real table — SQL query history —
- * so naming it here would send an operator chasing a lost flag to a query that
- * returns zero rows and the conclusion that the write never happened. The tool
- * path writes no admin action row at all, so an agent-initiated retraction's
- * flags live in that one response and in the marker nothing reads.
+ * The DURABLE, re-readable record is the `admin_action_log` row this module
+ * writes below, and since #4934 it is written for EVERY entry point — the two
+ * admin routes and the agent tool alike, which is what that issue fixed. So
+ * the ids survive an agent-initiated retraction too; what the agent does not
+ * get is sight of them.
+ *
+ * Spell that table precisely: `audit_log` is a DIFFERENT real table — SQL
+ * query history — so naming it here would send an operator chasing a lost flag
+ * to a query that returns zero rows and the conclusion that the write never
+ * happened.
  *
  * Give one of the three a reader and the prose in `brain-corrections.mdx` and
  * this module's `pin` header bullet becomes an understatement that should be
@@ -1442,13 +1445,16 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
     );
   }
   // The two temporal gates read DIFFERENT columns, and each needs its own
-  // drift arm. `supersede` reads `validTo` (`!== null`); the vouch verbs read
-  // `windowClosed`, which Postgres computed. Both fail OPEN on a value this
-  // module cannot read — an omitted or re-typed column arrives as "no end
-  // date" / "not closed" and silently re-admits the write that gate exists to
-  // refuse. `undefined` is the load-bearing case for both: `pg` produces it
-  // only when the column was absent from the SELECT, which is drift, not a
-  // fact about the row (the same distinction `attribution.ts` draws for
+  // drift arm — but they fail in OPPOSITE directions, which is why neither can
+  // be left to a default. `windowClosed` absent would arrive as "not closed"
+  // and silently re-ADMIT the vouch this refusal exists to refuse; `validTo`
+  // absent would arrive as `undefined`, which is `!== null`, and silently
+  // REFUSE a legitimate supersession. Either way the module would be answering
+  // off a value it cannot read, which is the thing to refuse.
+  //
+  // `undefined` is the load-bearing case for both: `pg` produces it only when
+  // the column was absent from the SELECT, which is drift, not a fact about
+  // the row (the same distinction `attribution.ts` draws for
   // `pre_widening_visible_to`).
   if (row.valid_to === undefined) {
     return drift(`valid_to absent from the target projection for fact ${row.id}`);

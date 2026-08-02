@@ -849,6 +849,134 @@ describe("the list shows the trust signals without a click", () => {
   });
 });
 
+/**
+ * A live tension counterpart. Overrides stamp the lifecycle axes on top.
+ *
+ * Distinct `factId`s matter: the surfaces key rivals by id, so three fixtures
+ * sharing one id would collapse and the count assertions would pass for the
+ * wrong reason.
+ */
+function rival(factId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    visible: true,
+    factId,
+    edgeDirection: "to",
+    subject: "Acme",
+    predicate: "uses",
+    object: "MySQL",
+    status: "published",
+    validFrom: null,
+    validTo: null,
+    ingestedAt: ISO,
+    invalidatedAt: null,
+    corroborationCount: 1,
+    provenance: PROVENANCE,
+    ...overrides,
+  };
+}
+
+/**
+ * The QUEUE ROW's own text.
+ *
+ * Scoped to `tbody` on purpose: the page chrome carries an "In tension only"
+ * filter button and an "N in tension" stat tile, both of which are edge-existence
+ * signals this fix deliberately leaves alone. A container-wide assertion on the
+ * badge's own words would therefore pass whatever the row renders.
+ */
+function rowText(view: { container: HTMLElement }): string {
+  return view.container.querySelector("tbody")?.textContent ?? "";
+}
+
+describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
+  test("renders NO tension count on a row whose rivals are ALL settled", async () => {
+    // THE negative, and the shipped bug: nothing deletes an `in-tension-with`
+    // edge when a human arbitrates, so a fully resolved row kept wearing "In
+    // tension (2)" — an unresolved-looking row with nothing left to resolve.
+    // One rival per axis, because the count must fall to zero on both.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          rival("fact-2", { invalidatedAt: ISO }),
+          rival("fact-3", { validTo: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).not.toContain("In tension");
+    expect(text).not.toContain("(2)");
+  });
+
+  test("still SHOWS those settled rivals in the sheet — the count changed, not the record", async () => {
+    // The over-correction this fix must not become. A rival that was withdrawn
+    // is still why the claim was contested; dropping it from the sheet would
+    // read as "nothing ever contradicted this", and the reviewer would lose the
+    // evidence that the conflict was resolved rather than absent.
+    const view = await renderPage([
+      candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] }),
+    ]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("MySQL");
+    expect(text).toContain("Withdrawn");
+  });
+
+  test("counts only the open rival when a row is PARTLY arbitrated", async () => {
+    // Three rivals, one still open. A fix that merely dropped the badge when
+    // every rival was settled would pass the negative above and fail here; so
+    // would one that kept counting the settled two.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          rival("fact-2"),
+          rival("fact-3", { invalidatedAt: ISO }),
+          rival("fact-4", { validTo: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("In tension");
+    // Singular — one open rival, so the badge carries no number at all.
+    expect(text).not.toContain("(3)");
+    expect(text).not.toContain("(2)");
+    expect(text).not.toContain("(1)");
+  });
+
+  test("counts a rival whose window has not CLOSED yet", async () => {
+    // `valid_to` non-null is not retirement: `brainFactCurrentClause` is
+    // `valid_to IS NULL OR valid_to > now()`, so a future-dated stamp is a live
+    // rival whose end is merely scheduled. Suppressing the badge for it would
+    // hide an open conflict — worse than the bug being fixed.
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const view = await renderPage([
+      candidate({
+        tensions: [rival("fact-2", { validTo: future }), rival("fact-3", { validTo: future })],
+      }),
+    ]);
+    expect(rowText(view)).toContain("In tension (2)");
+  });
+
+  test("counts a rival the reviewer is not allowed to SEE", async () => {
+    // A withheld rival carries no lifecycle stamps — they are exactly what the
+    // ACL refused to hand over. Inferring "settled" from their absence would be
+    // the guess that suppresses the badge, and "there is a rival you cannot
+    // see" is precisely what should stop a reviewer approving.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          { visible: false, factId: "fact-2", edgeDirection: "to" },
+          rival("fact-3", { invalidatedAt: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("In tension");
+    // The settled rival beside it is still excluded — the withheld one is the
+    // only thing holding the badge up.
+    expect(text).not.toContain("(2)");
+  });
+});
+
 describe("a broken queue gates the publish-everything button", () => {
   test("disables Review & publish when the list failed to load", async () => {
     // Publishing is workspace-wide and independent of this ACL read, so an

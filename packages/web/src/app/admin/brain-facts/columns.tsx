@@ -5,6 +5,7 @@ import type {
   BrainFactCandidate,
   BrainFactDecayLevel,
   BrainFactReviewStatus,
+  BrainFactTensionView,
 } from "@/ui/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
@@ -45,6 +46,63 @@ export const tensionBadge = {
   className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
   label: "In tension",
 };
+
+/**
+ * Which lifecycle stamps a tension counterpart carries, and whether either one
+ * means it has stopped being a reason to hold the claim.
+ *
+ * `settled` is `withdrawn || superseded` and nothing else — derived here rather
+ * than at each call site so the list's count and the detail sheet's
+ * strike-through can never disagree about whether a conflict is still open.
+ */
+export interface TensionRetirement {
+  /** Retracted — the `invalidated_at` tombstone. */
+  readonly withdrawn: boolean;
+  /** Superseded — a `valid_to` window that has actually CLOSED. */
+  readonly superseded: boolean;
+  /** Either axis. The one question the list's "In tension" count asks. */
+  readonly settled: boolean;
+}
+
+/**
+ * Has this rival already been arbitrated?
+ *
+ * ONE definition behind BOTH review surfaces — the list's "In tension (N)"
+ * count and the detail sheet's per-rival badges and strike-through. They
+ * previously disagreed: the sheet labelled a settled rival while the list still
+ * counted it, so a fully arbitrated row read as contested with nothing left to
+ * resolve (#4961).
+ *
+ * A LABEL read off the counterpart's own lifecycle stamps — #4935's invariant
+ * holds unchanged. Nothing here sorts, scores, or picks a winner, and no
+ * ordering key is introduced; it only answers "is there anything left to
+ * resolve".
+ *
+ * Two deliberate asymmetries, both erring toward reporting a conflict:
+ *
+ *   - A WITHHELD rival is NEVER settled. Its stamps are exactly what the ACL
+ *     refused to hand over, so calling it settled would be a guess — and the
+ *     guess that suppresses the badge. "There is a rival you cannot see" is
+ *     precisely what should stop a reviewer approving.
+ *   - Supersession needs a CLOSED window, not merely a stamped one.
+ *     `brainFactCurrentClause` reads `valid_to IS NULL OR valid_to > now()`, so
+ *     a future-dated stamp — a region import (`admin-migrate.ts`) can carry one
+ *     — is a LIVE rival whose end is merely scheduled. An unparseable stamp
+ *     yields `NaN`, whose comparison is false, so it falls through to live: the
+ *     recoverable direction, since over-reporting a conflict costs a second
+ *     look while under-reporting hides one.
+ *
+ * Against the CLIENT clock, accepted: within a skewed browser's offset of the
+ * supersession instant this can disagree with the server. Both surfaces it
+ * feeds are advisory, never a gate.
+ */
+export function tensionRetirement(tension: BrainFactTensionView): TensionRetirement {
+  if (!tension.visible) return { withdrawn: false, superseded: false, settled: false };
+  const withdrawn = tension.invalidatedAt !== null;
+  const validToMs = tension.validTo === null ? null : Date.parse(tension.validTo);
+  const superseded = validToMs !== null && validToMs <= Date.now();
+  return { withdrawn, superseded, settled: withdrawn || superseded };
+}
 
 /**
  * Read-time staleness decay (#4914). One informational hue for the three aged
@@ -210,6 +268,18 @@ export function getBrainFactColumns(
       header: () => "Flags",
       cell: ({ row }) => {
         const c = row.original;
+        // OPEN rivals only. A counterpart somebody already retracted or
+        // superseded is still listed in the detail sheet — it is still why this
+        // claim was contested — but it is not work, and counting it made a
+        // fully arbitrated row read as unresolved (#4961).
+        //
+        // Deliberately NARROWER than the two server-side signals beside it: the
+        // stats tile's "N in tension" and the "In tension only" filter both ask
+        // edge EXISTENCE (`TENSION_EXISTS_SELECT`), i.e. "has this claim ever
+        // been contested", and are unchanged. So the filter can legitimately
+        // return a row wearing no badge; the sheet's "Withdrawn"/"Superseded"
+        // labels are where that row explains itself.
+        const contested = c.tensions.filter((t) => !tensionRetirement(t).settled);
         return (
           <div className="flex flex-wrap gap-1">
             {c.provenance.provisional && (
@@ -218,12 +288,12 @@ export function getBrainFactColumns(
                 {provisionalBadge.label}
               </Badge>
             )}
-            {c.tensions.length > 0 && (
+            {contested.length > 0 && (
               <Badge variant={tensionBadge.variant} className={tensionBadge.className}>
                 <Split className="mr-1 size-3" aria-hidden />
-                {c.tensions.length === 1
+                {contested.length === 1
                   ? tensionBadge.label
-                  : `${tensionBadge.label} (${c.tensions.length})`}
+                  : `${tensionBadge.label} (${contested.length})`}
               </Badge>
             )}
             {c.promotionBlock && (

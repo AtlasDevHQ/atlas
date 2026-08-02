@@ -471,6 +471,22 @@ async function reverifyWorkspace(
         total = { ...total, failed: total.failed + 1 };
         continue;
       }
+      // ⚠️ ACCEPTED RISK, recorded so it is not rediscovered as a hole: this
+      // guard defends the EMPTY case, not the WRONG one. Outlook's audience id
+      // embeds a digest of the participant set (`grant.ts`), so a complete-looking
+      // but substituted recipient list hashes differently and is refused —
+      // a shrunken set is not a representable input to its reconcile. A meeting
+      // id embeds only the meeting uuid, so any complete-looking roster Zoom
+      // returns for that uuid is reconciled, and whoever is not in it is revoked.
+      //
+      // NOT fixed, deliberately. A past meeting's roster is as frozen as an
+      // email's headers, so the digest is constructible — but the audience id is
+      // already minted onto APPEND-ONLY episode rows (0180: no `updated_at`, no
+      // upsert), so changing its shape means migrating every stored
+      // `audience:meeting:zoom:…` grant with no update path, to defend against
+      // Zoom returning another meeting's roster for a uuid it owns. That is a
+      // vendor bug, not an attack, and the migration is riskier than the risk.
+      // Revisit if Zoom's per-instance uuids ever stop being per-instance.
       const changed = await reconcileMeetingAudience(
         { workspaceId, audienceId, participants: roster.participants },
         deps,

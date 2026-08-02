@@ -77,6 +77,18 @@ export type ZoomReadErrorCode =
   | "not_found"
   | "plan_required"
   | "too_large"
+  /**
+   * The `download_url` Zoom handed back is unusable — unparseable, not HTTPS,
+   * or not a Zoom host.
+   *
+   * Separate from `transport` because the two have opposite retry semantics and
+   * the caller acts on that difference. A transport fault is a bad moment; a
+   * stored recording's `download_url` is the same string next pass, so retrying
+   * it freezes the walk at the meeting before it — the exact cursor-freeze that
+   * `too_large` was split out to avoid, and that `outlook/client.ts`'s header
+   * cites as how #4965 shipped an outage.
+   */
+  | "unusable_url"
   | "transport";
 
 export interface ZoomReadError {
@@ -162,6 +174,11 @@ async function zoomGet(
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
+    // intentionally ignored: this reads the error body of an ALREADY-failed
+    // response, purely to enrich the mapped error. The STATUS is the signal and
+    // it is already in hand; a body that will not read (truncated, connection
+    // dropped mid-error) must not turn a clean `http_429` into a transport
+    // fault. `toReadError` treats "" as "no detail", which is the truth.
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
@@ -207,6 +224,11 @@ export async function fetchZoomAccessToken(params: {
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
+    // intentionally ignored: this reads the error body of an ALREADY-failed
+    // response, purely to enrich the mapped error. The STATUS is the signal and
+    // it is already in hand; a body that will not read (truncated, connection
+    // dropped mid-error) must not turn a clean `http_429` into a transport
+    // fault. `toReadError` treats "" as "no detail", which is the truth.
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
@@ -442,15 +464,28 @@ export async function fetchTranscriptText(
   maxBytes = Number.POSITIVE_INFINITY,
 ): Promise<{ ok: true; text: string } | ZoomReadError> {
   let host: string;
+  let scheme: string;
   try {
-    host = new URL(downloadUrl).hostname.toLowerCase().replace(/\.+$/, "");
+    const parsed = new URL(downloadUrl);
+    host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
+    scheme = parsed.protocol;
   } catch {
     // Not a silent catch, so no `// intentionally ignored:` marker — that
     // marker is reserved for a genuinely swallowed error and using it here
     // would cost it its signal value. The URL is refused and reported; the
     // throw carries nothing this log line does not.
     log.warn({}, "Zoom recording download_url is not a parseable URL — refusing to fetch it");
-    return { ok: false, error: "transport", retryAfterSeconds: null };
+    return { ok: false, error: "unusable_url", retryAfterSeconds: null };
+  }
+  // Scheme pinned HERE, not only in the egress guard. `guardedFetch` does reject
+  // non-HTTPS (`isSafeExternalUrl`), so this is defence in depth rather than a
+  // hole being closed — but the bearer token is attached below, and a local
+  // refusal keeps that fact legible at the call site instead of resting on a
+  // property of a helper three modules away. `outlook/api.ts`'s `isGraphUrl`
+  // pins both axes for the same reason; this one had drifted to host-only.
+  if (scheme !== "https:") {
+    log.error({ host }, "Zoom recording download_url is not HTTPS — refusing to fetch it");
+    return { ok: false, error: "unusable_url", retryAfterSeconds: null };
   }
   if (host !== "zoom.us" && !host.endsWith(ZOOM_DOWNLOAD_HOST_SUFFIX)) {
     // Loud, and with the host named: this is the one failure here that could
@@ -459,7 +494,7 @@ export async function fetchTranscriptText(
       { host },
       "Zoom recording download_url points at a non-Zoom host — refusing to fetch it",
     );
-    return { ok: false, error: "transport", retryAfterSeconds: null };
+    return { ok: false, error: "unusable_url", retryAfterSeconds: null };
   }
 
   let res: Response;
@@ -478,6 +513,11 @@ export async function fetchTranscriptText(
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
+    // intentionally ignored: this reads the error body of an ALREADY-failed
+    // response, purely to enrich the mapped error. The STATUS is the signal and
+    // it is already in hand; a body that will not read (truncated, connection
+    // dropped mid-error) must not turn a clean `http_429` into a transport
+    // fault. `toReadError` treats "" as "no detail", which is the truth.
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }

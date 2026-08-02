@@ -51,6 +51,10 @@ import {
 } from "@atlas/api/lib/knowledge/catalog-claims";
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
 import {
+  _resetAudienceReverifiers,
+  hasAudienceReverifier,
+} from "@atlas/api/lib/brain/audience/reverify";
+import {
   EPISODE_SOURCES,
   episodeSourceClass,
   episodeSourceVendor,
@@ -286,6 +290,58 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   registry.set(connector.catalogId, connector);
 }
 
+/**
+ * Register a brain source AND its audience re-verifier as one unit.
+ *
+ * ## Why this exists rather than two calls in a row
+ *
+ * A source that derives per-object grants needs BOTH: the connector to ingest,
+ * and the re-verifier to keep the grants it minted from going stale. They live
+ * in two registries, and both throw on a duplicate. Written as two bare
+ * statements — which is how Zoom and Outlook were first wired — a throw from the
+ * SECOND leaves the first committed, and the caller's idempotence gate
+ * (`getBrainSourceConnector(id) !== undefined`) reads only that first registry.
+ * So the retry short-circuits and the half-state is permanent for the process.
+ *
+ * That half-state is the worst of the three outcomes, and it is worth being
+ * precise about why. Fully registered is correct. Fully absent is fail-closed
+ * and loud — installs 500 at sync time and someone notices the same day. HALF
+ * registered ingests normally for `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`
+ * (168h by default) and only then goes wrong, at which point `acl.ts` suppresses
+ * every audience the missing re-verifier was supposed to refresh and every fact
+ * behind them reads as ABSENT rather than as denied. A week later, in a
+ * different subsystem, with nothing pointing back here.
+ *
+ * So the re-verifier registry is checked BEFORE the connector is committed. That
+ * ordering is the whole point: after this check the only remaining throw sites
+ * are inside {@link registerBrainSourceConnector}, which validates before it
+ * writes and whose own two writes (`claimCatalogIngestTarget` then
+ * `registry.set`) already fail with nothing committed. Registration is
+ * single-threaded boot wiring, so there is no window between the check and the
+ * write for anything else to claim the source.
+ *
+ * A source with no per-object grants (slack-history — its grants are channel
+ * scoped and reconciled by the install-driven sweep) has no re-verifier to pair
+ * and calls {@link registerBrainSourceConnector} directly.
+ *
+ * @param connector the source to register
+ * @param registerReverifier commits the re-verifier; called only once the
+ *   connector is registered and the duplicate check above has passed. Keyed on
+ *   `connector.source`, so the two halves cannot be wired to different sources.
+ */
+export function registerBrainSourceWithAudienceReverifier(
+  connector: BrainSourceConnector,
+  registerReverifier: () => void,
+): void {
+  if (hasAudienceReverifier(connector.source)) {
+    throw new Error(
+      `Audience re-verifier for source "${connector.source}" is already registered — refusing to register its brain source connector, because committing one without the other leaves the source ingesting content whose grants are never re-verified`,
+    );
+  }
+  registerBrainSourceConnector(connector);
+  registerReverifier();
+}
+
 export function getBrainSourceConnector(catalogId: string): BrainSourceConnector | undefined {
   return registry.get(catalogId);
 }
@@ -355,9 +411,12 @@ export interface BrainSourceConnectorQuery {
  * fallback to either axis alone would route warehouse work to a chat connector.
  *
  * The production caller is #4967's Slack webhook fast-path
- * (`ingest/slack/webhook.ts`), which resolves the chat-class connector for an
- * arriving event; #4965/#4966 are the connectors that make the class axis
- * non-trivial.
+ * (`ingest/slack/webhook.ts`), which resolves connectors on the VENDOR axis for
+ * an arriving event — `{ vendor: SLACK_SOURCE }`, not a class. The CLASS axis
+ * has no production caller today; #4965/#4966 are the connectors that make it
+ * non-trivial, and it is kept because a class-grained consumer is the shape the
+ * seam exists to admit. Do not cite the webhook as evidence the class axis is
+ * exercised in production — it is not.
  */
 export function findBrainSourceConnectors(
   query: BrainSourceConnectorQuery = {},
@@ -379,8 +438,21 @@ export function listBrainSourceCatalogIds(): string[] {
   return [...registry.keys()];
 }
 
-/** Test-only: clear the registry (tests register fixtures per-suite). */
+/**
+ * Test-only: clear the registry (tests register fixtures per-suite).
+ *
+ * Clears the audience-re-verifier registry too, because #4965/#4966 made source
+ * registration a TWO-registry write while the idempotence gate inside
+ * `registerZoomTranscriptConnector` / `registerOutlookMailConnector` still reads only this one
+ * (`if (getBrainSourceConnector(id) !== undefined) return;`). Clearing one and
+ * not the other lets them de-sync: a suite that resets connectors and then
+ * re-registers passes the gate, reaches `registerXxxAudienceReverifier`, and
+ * throws `Audience re-verifier for source "…" is already registered` — a failure
+ * with nothing to do with what the suite was testing. Resetting both keeps the
+ * pair that boot writes together torn down together.
+ */
 export function _resetBrainSourceConnectors(): void {
   registry.clear();
   _resetCatalogIngestClaims("brain-episodes");
+  _resetAudienceReverifiers();
 }

@@ -29,9 +29,44 @@ import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   ingestSlackWebhookMessage,
   type SlackWebhookIngestOutcome,
+  type SlackWebhookSkipReason,
 } from "@atlas/api/lib/brain/ingest/slack/webhook";
 
 const log = createLogger("chat-plugin.brain-observer");
+
+/**
+ * Skip reasons where there was genuinely nothing to store, so nothing was lost.
+ *
+ * They are steady-state for any deployment running Atlas chat without a
+ * Slack-history source, or with one scoped to a subset of channels — which is
+ * the normal case, not a fault. They must not reach the `pollBackstopped: false`
+ * warn arm in {@link reportNotStored}: that arm says "this evidence is LOST",
+ * and for a thread reply in a channel the admin deliberately never scoped,
+ * nothing was lost — there was nothing to store. Left as a warn it fires once
+ * per thread reply, forever, on a correct configuration: the exact shape of
+ * alert that trains an operator to ignore the channel that also carries the
+ * real one.
+ *
+ * `unmintable_subtype` is here for a different reason than the other two. The
+ * others were never in scope; a `message_deleted` or `tombstone` IS in a scoped
+ * channel, but a deletion carries no content to lose. It never reaches the warn
+ * arm on its own — `webhook.ts` reports the whole pre-parse read-skip class as
+ * `pollBackstopped: true` — so this is about the MESSAGE, not the level: the
+ * default debug arm would tell an operator "the scheduled sync still covers it",
+ * and there is nothing for the sync to cover.
+ *
+ * ⚠️ `unknown_workspace` is deliberately NOT here, and it is the member a reader
+ * expects to find. See its own arm in {@link reportNotStored}.
+ *
+ * Typed against the union rather than left as bare strings: a renamed reason
+ * must break the BUILD, not silently stop matching and quietly restore the
+ * warn-spam this exists to prevent.
+ */
+const NOTHING_TO_STORE: ReadonlySet<SlackWebhookSkipReason> = new Set<SlackWebhookSkipReason>([
+  "no_install",
+  "channel_not_configured",
+  "unmintable_subtype",
+]);
 
 /**
  * Build the observer the chat plugin calls for every inbound message.
@@ -115,6 +150,46 @@ function reportNotStored(
   // line in the process, and it reports the operator's own configuration back
   // to them.
   if (outcome.status === "skipped" && outcome.reason === "disabled") return;
+
+  // See {@link NOTHING_TO_STORE} for why these must not reach the warn arm.
+  if (outcome.status === "skipped" && NOTHING_TO_STORE.has(outcome.reason)) {
+    const detail = { reason: outcome.reason, messageId: observation.message.id };
+    report?.("debug", detail);
+    log.debug(
+      detail,
+      "Chat brain observer: message carries no evidence to store — either outside this deployment's brain scope, or a subtype with no content. Nothing was lost",
+    );
+    return;
+  }
+
+  // `unknown_workspace` is TWO populations wearing one reason code, and the
+  // observer cannot tell them apart from here.
+  //
+  // The benign one: the Slack team has no Atlas workspace mapped — steady state
+  // for any deployment running Atlas chat without slack-history, so warning
+  // would be the same per-reply forever spam the arm above exists to prevent.
+  //
+  // The other one: `webhook.ts` documents that the installation store's
+  // decrypt-or-hide-row policy hides the WHOLE row when the bot token will not
+  // decrypt, so a rotated envelope key on a deployment that DOES run
+  // slack-history reads here as `unknown_workspace` too. In that state a thread
+  // reply genuinely is lost — `conversations.history` never returns replies, and
+  // the poll needs the same token this path could not decrypt, so it is not a
+  // backstop. Telling an operator "nothing was lost" there would be false in the
+  // one function whose whole job is getting that distinction right.
+  //
+  // So: the benign case's level, without the benign case's claim. Separating
+  // them for real means teaching the store to distinguish absent from
+  // undecryptable — a credential-path change, deliberately not made here.
+  if (outcome.status === "skipped" && outcome.reason === "unknown_workspace") {
+    const detail = { reason: outcome.reason, messageId: observation.message.id };
+    report?.("debug", detail);
+    log.debug(
+      detail,
+      "Chat brain observer: no Atlas workspace is mapped to this Slack team, so nothing was stored. Usually means the brain is not configured for this team — but an install whose bot token will not decrypt is hidden by the same policy and reads identically here, and in THAT case a thread reply is lost rather than delayed",
+    );
+    return;
+  }
 
   const detail = {
     reason: outcome.status === "skipped" ? outcome.reason : "ingest_refused",

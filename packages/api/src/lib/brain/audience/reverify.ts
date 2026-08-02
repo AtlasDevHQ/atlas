@@ -55,6 +55,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { AUDIENCE_PREFIX } from "@atlas/api/lib/brain/acl";
+import type { EpisodeSource } from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain.audience.reverify");
 
@@ -103,7 +104,7 @@ export const ZERO_REVERIFY: AudienceReverifyResult = Object.freeze({
 export type AudienceReverifier = () => Promise<AudienceReverifyResult>;
 
 /** `source` (the stored `brain_episodes.source` kind) → its re-verifier. */
-const registry = new Map<string, AudienceReverifier>();
+const registry = new Map<EpisodeSource, AudienceReverifier>();
 
 /**
  * Register a source's audience re-verifier. Called once per source at wiring
@@ -112,14 +113,34 @@ const registry = new Map<string, AudienceReverifier>();
  * each reconcile against their own roster, and the loser's members would be
  * revoked on every cycle.
  */
-export function registerAudienceReverifier(source: string, reverifier: AudienceReverifier): void {
+export function registerAudienceReverifier(
+  source: EpisodeSource,
+  reverifier: AudienceReverifier,
+): void {
   if (registry.has(source)) {
     throw new Error(`Audience re-verifier for source "${source}" is already registered`);
   }
   registry.set(source, reverifier);
 }
 
-export function listAudienceReverifierSources(): string[] {
+/**
+ * Is a re-verifier already registered for this source?
+ *
+ * Exists so a paired registration can ASK before it commits anything. A source
+ * and its re-verifier are written to two different registries, and
+ * {@link registerAudienceReverifier} throws on a duplicate — so a caller that
+ * registers the connector first and discovers the collision second leaves the
+ * connector registered and the re-verifier absent. That half-state ingests
+ * content whose grants stop being re-verified, which is silent for a week and
+ * then indistinguishable from the content not existing. See
+ * `registerBrainSourceWithAudienceReverifier` in `ingest/types.ts`, which is the
+ * only thing that should need this.
+ */
+export function hasAudienceReverifier(source: EpisodeSource): boolean {
+  return registry.has(source);
+}
+
+export function listAudienceReverifierSources(): EpisodeSource[] {
   return [...registry.keys()];
 }
 

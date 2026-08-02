@@ -289,6 +289,49 @@ describe("readSlackWebhookMessage: which field the ts comes from", () => {
 // Visibility → grant. The block-vs-flag asymmetry.
 // ---------------------------------------------------------------------------
 
+describe("subtypes whose ts is the EVENT's, not the message's", () => {
+  it("⭐ refuses message_deleted rather than minting from the event's own ts", () => {
+    // `message_changed` is recoverable — the original id is at
+    // `event.message.ts`, which the parser unwraps. `message_deleted` carries no
+    // inner message, so its top-level `ts` is the EVENT's timestamp: an id the
+    // poll never mints. Storing on it would create a duplicate episode that no
+    // later pass converges, because `brain_episodes` is append-only.
+    //
+    // It survived before this guard only by ACCIDENT — no `text`, so the
+    // empty-text skip inside `toEpisode` caught it. A payload that ever carried
+    // text would have minted a novel id with nothing to stop it.
+    //
+    // MUTATION THIS CATCHES: removing the subtype guard. Note the fixture gives
+    // it TEXT, which is what makes this test fail without the guard rather than
+    // pass through the accidental noise skip.
+    expect(
+      readSlackWebhookMessage(
+        rawMessageEvent({ subtype: "message_deleted", text: "still here", ts: "1750000900.000777" }),
+      ),
+    ).toEqual({ kind: "skipped", reason: "unmintable_subtype" });
+  });
+
+  it("refuses a tombstone for the same reason", () => {
+    expect(
+      readSlackWebhookMessage(rawMessageEvent({ subtype: "tombstone", text: "x" })),
+    ).toEqual({ kind: "skipped", reason: "unmintable_subtype" });
+  });
+
+  it("still ACCEPTS message_changed — that one is unwrapped, not refused", () => {
+    // The guard must not over-reach: an edit collapses onto the stored episode
+    // by design, and refusing it would lose the one subtype the fast path
+    // handles deliberately.
+    const parsed = readMessage(
+      rawMessageEvent({
+        subtype: "message_changed",
+        message: { ts: TS, text: "edited", user: "U123" },
+        ts: "1750000900.000999",
+      }),
+    );
+    expect(parsed.ts).toBe(TS);
+  });
+});
+
 describe("resolveWebhookChannelVisibility", () => {
   it("maps Slack's own channel_type, and blocks everything it does not recognise", () => {
     expect(resolveWebhookChannelVisibility("channel", CHANNEL)).toEqual({ isPrivate: false });
@@ -409,6 +452,54 @@ describe("configured-channel scoping", () => {
       kind: "skipped",
       reason: "channel_not_configured",
     });
+  });
+
+  it("⭐ does not blame a DIFFERENT catalog id's install for failing a schema that is not its own", () => {
+    // `findBrainSourceConnectors` returns an ARRAY and `ingest/types.ts`
+    // explicitly disclaims uniqueness, so a second chat-vendor brain source
+    // would put foreign installs in this list. Parsing those with
+    // `parseSlackHistoryConfig` — a schema that is not theirs — reported
+    // `install_config_unreadable` for a config that is perfectly valid for its
+    // own connector, sending an admin to fix a row that was never broken.
+    //
+    // Latent today (one catalog id maps to the slack vendor), which is exactly
+    // why it needs pinning: nothing else would notice the day that changes.
+    //
+    // The distinction under test is the REASON, not the refusal. Both outcomes
+    // decline to store; only one of them tells the admin to go repair a healthy
+    // row.
+    //
+    // ⚠️ The fixture below is one the production shell CAN produce, and that is
+    // the point. An earlier version of this guard tested "is this install's
+    // catalog id one of the connectors we resolved" and was pinned with a
+    // catalog id outside that set — which the shell cannot emit, because it
+    // queries BY those ids. The test passed and the guard defended nothing: the
+    // real foreign row, belonging to a second slack-vendor source, IS in the
+    // resolved set and was still blamed. So this fixture uses a foreign catalog
+    // id that the vendor lookup WOULD return.
+    //
+    // MUTATION THIS CATCHES: dropping the `!== SLACK_HISTORY_CATALOG_ID` guard,
+    // or restoring the `ownCatalogIds` form of it.
+    const foreign = install([CHANNEL], {
+      installId: "install-foreign",
+      // A second slack-vendor brain source: resolved alongside slack-history,
+      // so its rows reach here, and its config is not slack-history's schema.
+      catalogId: "catalog:some-other-chat-source",
+      config: { rooms: [CHANNEL] },
+    });
+    expect(derive(eventOf(), [foreign])).toEqual({
+      kind: "skipped",
+      reason: "channel_not_configured",
+    });
+  });
+
+  it("still reports install_config_unreadable for OUR OWN unparseable install", () => {
+    // The guard above must not silence the diagnosis it was narrowing. A
+    // hand-edited slack-history row is a real misconfiguration and has to stay
+    // distinguishable from ordinary out-of-scope traffic.
+    expect(
+      derive(eventOf(), [install([CHANNEL], { config: { channels: "not-a-list" } })]),
+    ).toEqual({ kind: "skipped", reason: "install_config_unreadable" });
   });
 
   it("matches the install whose scope covers the channel when several are installed", () => {

@@ -10,6 +10,7 @@ These hold everywhere. The rest of this file is orientation, not rules.
 
 ### Error handling
 - **Never silently swallow errors** — every `catch` must log (`log.warn`/`console.debug`) or re-throw. Empty `catch {}` forbidden. If intentional: `// intentionally ignored: <reason>`
+  - **The marker means SILENCE, not "something was discarded".** It is the exemption for a catch that emits no signal at all — `res.text().catch(() => "")` reading the body of an already-failed response. A catch that logs does **not** take the marker, even when it deliberately drops the error object (e.g. because the message would echo a secret); explain that in a plain comment instead. Both readings were live in-repo until 2026-08-02 — `zoom/connector.ts` marked a catch that logs, while `zoom/api.ts` and `outlook/api.ts` explicitly declined to on the same shape — and a marker that means two things is worth nothing on the one that matters
 - **Type-narrow caught errors** — always `err instanceof Error ? err.message : String(err)`. Never access `.message` unguarded
 - **Request IDs on all 500s** — every 500 response includes `requestId` for log correlation
 - **No generic error messages** — replace "Something went wrong" with actionable, context-specific messages + retry guidance

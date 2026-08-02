@@ -684,7 +684,7 @@ describe("the re-verifier registry", () => {
     // Swallowing it would leave the cycle looking clean while a source's
     // audiences quietly age out.
     _resetAudienceReverifiers();
-    registerAudienceReverifier("boom", async () => {
+    registerAudienceReverifier("zoom", async () => {
       throw new Error("kaboom");
     });
     const out = await runRegisteredAudienceReverifiers();
@@ -694,8 +694,12 @@ describe("the re-verifier registry", () => {
 
   it("sums across sources and isolates each", async () => {
     _resetAudienceReverifiers();
-    registerAudienceReverifier("a", async () => ({ ...ZERO_REVERIFY, reconciled: 2, membersAdded: 5 }));
-    registerAudienceReverifier("b", async () => ({ ...ZERO_REVERIFY, reconciled: 1, membersRevoked: 3 }));
+    // Real source kinds, not placeholders: the registry is keyed by
+    // `EpisodeSource` so a made-up slug no longer compiles — which is the point,
+    // since a drifted key writes membership under a source the re-verifier's
+    // `brain_episodes.source = $2` scan never matches.
+    registerAudienceReverifier("zoom", async () => ({ ...ZERO_REVERIFY, reconciled: 2, membersAdded: 5 }));
+    registerAudienceReverifier("outlook", async () => ({ ...ZERO_REVERIFY, reconciled: 1, membersRevoked: 3 }));
     const out = await runRegisteredAudienceReverifiers();
     expect(out).toEqual({
       reconciled: 3,

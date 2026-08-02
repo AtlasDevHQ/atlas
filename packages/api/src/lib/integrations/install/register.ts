@@ -182,6 +182,55 @@ function resolvePublicApiUrl(): string | null {
 let alreadyRegistered = false;
 
 /**
+ * Run one registration step in isolation, so a throw costs that vendor and
+ * nothing else.
+ *
+ * The steps below are bare sequential statements in one function body, and
+ * plenty of them can throw on a code defect rather than short-circuit on
+ * missing env. `registerBrainSourceConnector` rejects a bad slug, a kind
+ * outside `EPISODE_SOURCES`, a duplicate catalog id, or a
+ * `claimCatalogIngestTarget` collision, and the audience-re-verifier registry
+ * rejects a duplicate source — but `registerKnowledgeSyncConnector`
+ * (`knowledge/connectors.ts`) throws on the same three classes, and its ten
+ * call sites all run BEFORE the brain ones. An earlier version of this comment
+ * claimed the brain registrations were "the first that can throw"; they are the
+ * first that were noticed, which is not the same thing, and wrapping only them
+ * left a Front duplicate still able to take down all three brain sources plus
+ * every OAuth and static-bot handler.
+ *
+ * Unwrapped, a throw in the middle of this function took down EVERY handler
+ * after it, while `api/index.ts` caught it at boot and carried on. The
+ * deployment then ran, silently, without integrations nobody had touched.
+ *
+ * The idempotency latch above is set BEFORE any of this runs, so that partial
+ * state was also permanent for the process lifetime: the second call site
+ * (`datasources/mcp-lifecycle.ts`) short-circuits, and there is no retry. That
+ * makes containment the fix rather than relocation — moving the latch to the end
+ * would re-enter every already-registered handler on the retry.
+ *
+ * Failure is loud and per-vendor, and it is not swallowed: the error names the
+ * step, and the steps that follow it still run.
+ *
+ * What it does NOT promise is that the failed vendor is cleanly absent. That is
+ * the registration's own job, not this wrapper's — a step that commits to one
+ * registry and then throws on a second would leave a half-wired vendor here, and
+ * no catch can undo it from the outside. `registerBrainSourceWithAudienceReverifier`
+ * (`brain/ingest/types.ts`) is what makes the brain pair all-or-nothing; this
+ * message deliberately says "may be partially wired" rather than asserting an
+ * absence it cannot verify.
+ */
+function registerStep(label: string, register: () => void): void {
+  try {
+    register();
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), step: label },
+      `Install handler registration FAILED for ${label} — this integration is unavailable, or partially wired, for the lifetime of this process. Registration continues with the remaining handlers. This is a code defect (duplicate catalog id, unknown source kind, or a re-verifier registered twice), not a config problem`,
+    );
+  }
+}
+
+/**
  * Register every built-in install handler that has the env wiring to
  * run. Idempotent — safe to call multiple times.
  *
@@ -273,7 +322,7 @@ export function registerBuiltinInstallHandlers(): void {
   // a half-wired deploy from having an installable card whose scheduled sync has
   // no registered vendor client. No env gate.
   registerFormHandler(CONFLUENCE_SLUG, new ConfluenceFormInstallHandler());
-  registerConfluenceKnowledgeConnector();
+  registerStep("confluence knowledge connector", registerConfluenceKnowledgeConnector);
   log.info("Registered ConfluenceFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Confluence Data Center/Server) — the built-in
   // `confluence-datacenter` connector install (#4394, ADR-0030 vendor slice).
@@ -286,7 +335,7 @@ export function registerBuiltinInstallHandlers(): void {
   // a half-wired deploy from having an installable card whose scheduled sync has
   // no registered vendor client. No env gate.
   registerFormHandler(CONFLUENCE_DC_SLUG, new ConfluenceDatacenterFormInstallHandler());
-  registerConfluenceDatacenterKnowledgeConnector();
+  registerStep("confluence-datacenter knowledge connector", registerConfluenceDatacenterKnowledgeConnector);
   log.info("Registered ConfluenceDatacenterFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Notion) — the built-in `notion-knowledge` synced-collection
   // install (#4378, PRD #4375). Knowledge-pillar, multi-instance. Config = an
@@ -298,7 +347,7 @@ export function registerBuiltinInstallHandlers(): void {
   // sync cycle dispatches on). No env gate — the customer admin supplies the
   // token at install time.
   registerFormHandler(NOTION_KNOWLEDGE_SLUG, new NotionKnowledgeFormInstallHandler());
-  registerNotionKnowledgeConnector();
+  registerStep("notion knowledge connector", registerNotionKnowledgeConnector);
   log.info("Registered NotionKnowledgeFormInstallHandler + knowledge sync connector");
   // Knowledge Base (GitBook Cloud) — the built-in `gitbook` connector install
   // (#4393, ADR-0030 vendor slice). Knowledge-pillar, multi-instance (one
@@ -310,7 +359,7 @@ export function registerBuiltinInstallHandlers(): void {
   // Confluence/Notion) keeps a half-wired deploy from having an installable card
   // whose scheduled sync has no registered vendor client. No env gate.
   registerFormHandler(GITBOOK_SLUG, new GitbookFormInstallHandler());
-  registerGitbookKnowledgeConnector();
+  registerStep("gitbook knowledge connector", registerGitbookKnowledgeConnector);
   log.info("Registered GitbookFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Zendesk Guide) — the built-in `zendesk` connector install
   // (#4396, PRD #4395 anchor slice). Knowledge-pillar, multi-instance: ONE
@@ -323,7 +372,7 @@ export function registerBuiltinInstallHandlers(): void {
   // half-wired deploy from having an installable card whose scheduled sync has
   // no registered vendor client. No env gate.
   registerFormHandler(ZENDESK_SLUG, new ZendeskFormInstallHandler());
-  registerZendeskKnowledgeConnector();
+  registerStep("zendesk knowledge connector", registerZendeskKnowledgeConnector);
   log.info("Registered ZendeskFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Salesforce Knowledge) — the built-in `salesforce-knowledge`
   // connector install (#4397, PRD #4395). Knowledge-pillar, multi-instance:
@@ -340,7 +389,7 @@ export function registerBuiltinInstallHandlers(): void {
   // connect-Salesforce-first on a configured deploy where the workspace hasn't
   // connected yet (same posture as the querySalesforce agent tool).
   registerFormHandler(SALESFORCE_KNOWLEDGE_SLUG, new SalesforceKnowledgeFormInstallHandler());
-  registerSalesforceKnowledgeConnector();
+  registerStep("salesforce knowledge connector", registerSalesforceKnowledgeConnector);
   log.info("Registered SalesforceKnowledgeFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Intercom) — the built-in `intercom` connector install
   // (#4399, PRD #4395). Knowledge-pillar, multi-instance: ONE workspace maps to
@@ -355,7 +404,7 @@ export function registerBuiltinInstallHandlers(): void {
   // an installable card whose scheduled sync has no registered vendor client.
   // No env gate.
   registerFormHandler(INTERCOM_SLUG, new IntercomFormInstallHandler());
-  registerIntercomKnowledgeConnector();
+  registerStep("intercom knowledge connector", registerIntercomKnowledgeConnector);
   log.info("Registered IntercomFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Front) — the built-in `front` connector install (#4400,
   // PRD #4395). Knowledge-pillar, multi-instance: ONE install fans out to one
@@ -367,7 +416,7 @@ export function registerBuiltinInstallHandlers(): void {
   // deploy from having an installable card whose scheduled sync has no registered
   // vendor client. No env gate.
   registerFormHandler(FRONT_SLUG, new FrontFormInstallHandler());
-  registerFrontKnowledgeConnector();
+  registerStep("front knowledge connector", registerFrontKnowledgeConnector);
   log.info("Registered FrontFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Help Scout Docs) — the built-in `helpscout` connector
   // install (#4398, PRD #4395). Knowledge-pillar, multi-instance: ONE install
@@ -382,7 +431,7 @@ export function registerBuiltinInstallHandlers(): void {
   // from having an installable card whose scheduled sync has no registered
   // vendor client. No env gate.
   registerFormHandler(HELPSCOUT_SLUG, new HelpScoutFormInstallHandler());
-  registerHelpScoutKnowledgeConnector();
+  registerStep("helpscout knowledge connector", registerHelpScoutKnowledgeConnector);
   log.info("Registered HelpScoutFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Freshdesk Solutions) — the built-in `freshdesk` connector
   // install (#4401, PRD #4395). Knowledge-pillar, multi-instance: ONE install
@@ -395,7 +444,7 @@ export function registerBuiltinInstallHandlers(): void {
   // half-wired deploy from having an installable card whose scheduled sync has
   // no registered vendor client. No env gate.
   registerFormHandler(FRESHDESK_SLUG, new FreshdeskFormInstallHandler());
-  registerFreshdeskKnowledgeConnector();
+  registerStep("freshdesk knowledge connector", registerFreshdeskKnowledgeConnector);
   log.info("Registered FreshdeskFormInstallHandler + knowledge sync connector");
   // Company Brain (Slack history) — the built-in `slack-history` BRAIN SOURCE
   // install (#4770, ADR-0036 §Ingestion & connectors). Knowledge-pillar like
@@ -410,7 +459,7 @@ export function registerBuiltinInstallHandlers(): void {
   // gate: the install fails loudly and actionably ("connect Slack first",
   // "invite the bot to the channel") on a workspace that isn't ready.
   registerFormHandler(SLACK_HISTORY_SLUG, new SlackHistoryFormInstallHandler());
-  registerSlackHistoryConnector();
+  registerStep("slack-history brain source", registerSlackHistoryConnector);
   log.info("Registered SlackHistoryFormInstallHandler + brain source connector");
   // Zoom transcripts (#4965) — ADR-0036 §T6's SECOND brain source class, and
   // the first connector built on #4963's generalized seam rather than extracted
@@ -431,7 +480,7 @@ export function registerBuiltinInstallHandlers(): void {
   // host scope. No env gate: the install fails loudly and actionably on a
   // workspace whose Zoom app is missing scopes or on the wrong plan.
   registerFormHandler(ZOOM_TRANSCRIPTS_SLUG, new ZoomTranscriptsFormInstallHandler());
-  registerZoomTranscriptConnector();
+  registerStep("zoom-transcripts brain source + audience re-verifier", registerZoomTranscriptConnector);
   log.info("Registered ZoomTranscriptsFormInstallHandler + brain source connector + audience re-verifier");
   // Outlook mail (#4966) — ADR-0036 §T6's THIRD brain source class, and the
   // second connector built on #4963's generalized seam. Same form-handler +
@@ -455,7 +504,7 @@ export function registerBuiltinInstallHandlers(): void {
   // fails loudly and actionably on a tenant whose app is missing consent or
   // whose mailboxes an ApplicationAccessPolicy excludes.
   registerFormHandler(OUTLOOK_MAIL_SLUG, new OutlookMailFormInstallHandler());
-  registerOutlookMailConnector();
+  registerStep("outlook-mail brain source + audience re-verifier", registerOutlookMailConnector);
   log.info("Registered OutlookMailFormInstallHandler + brain source connector + audience re-verifier");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).

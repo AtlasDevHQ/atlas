@@ -306,9 +306,14 @@ export function createZoomTranscriptClient(
     const transcripts = meeting.files.filter(isTranscriptFile);
     // No transcript file YET is not a block. Zoom publishes the VTT minutes
     // after the recording, so this is the ordinary state of a just-finished
-    // meeting — and #4967's `recording.transcript_completed` webhook is what
-    // picks it up promptly. The mark may pass; the next poll re-reads the
-    // frontier day anyway.
+    // meeting. The mark may pass; the next poll re-reads the frontier day
+    // anyway, which is what eventually picks the transcript up.
+    //
+    // ⚠️ The POLL is the only thing that picks it up. This comment used to say
+    // #4967's `recording.transcript_completed` webhook did it "promptly" —
+    // #4967 shipped Slack-only and there is no Zoom webhook, so a maintainer
+    // reasoning about transcript latency from that line would be wrong by a
+    // whole poll interval.
     if (transcripts.length === 0) return { episodes: [], blocked: false, truncated: false, notReady: false };
 
     // ── The BLOCK arm ─────────────────────────────────────────────────────
@@ -407,6 +412,23 @@ export function createZoomTranscriptClient(
           skips.oversize++;
           warnings.push(
             `Meeting ${meeting.uuid} has a transcript over the ${MAX_TRANSCRIPT_BYTES / 1_048_576}MB limit — it was skipped rather than truncated, so no partial transcript is stored as if it were whole.`,
+          );
+          continue;
+        }
+        if (downloaded.error === "unusable_url") {
+          // Same shape as `too_large` above, and permanent for the same reason:
+          // the `download_url` on a STORED recording is the same string next
+          // pass, so an unparseable / non-HTTPS / non-Zoom one fails identically
+          // every cycle. Throwing would set `walkIncomplete`, freeze
+          // `coveredThrough` at the prior window forever, and ~30 days later
+          // drop the cursor below the backfill floor and wedge the source — the
+          // outage `too_large` was split out of, reached by a different route.
+          //
+          // Counted as unidentifiable rather than oversize: nothing is wrong
+          // with the transcript's SIZE, the address for it is unusable.
+          skips.unidentifiable++;
+          warnings.push(
+            `Meeting ${meeting.uuid} has a recording whose download URL Zoom returned in an unusable form — it was skipped. It is not retried: a stored recording's URL does not change.`,
           );
           continue;
         }

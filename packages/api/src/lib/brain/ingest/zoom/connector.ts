@@ -42,7 +42,7 @@ import {
 } from "./config";
 import {
   getBrainSourceConnector,
-  registerBrainSourceConnector,
+  registerBrainSourceWithAudienceReverifier,
   type BrainSourceConnector,
   type BrainSourceInstallContext,
   type BrainSourceVendorClient,
@@ -108,25 +108,76 @@ export interface ZoomAppCredential {
  * repair for every way this can fail. The secret VALUES never appear in the
  * message — CLAUDE.md's no-secrets-in-responses rule covers sync state, which
  * is admin-readable.
+ *
+ * `owner` names WHOSE credential failed. Redacting the payload and logging
+ * nothing else is the opposite failure: on a deployment with many workspaces,
+ * "a Zoom credential is unreadable — re-install the source" tells an operator
+ * to go repair something without saying whose. The ids are not secret; the blob
+ * is. Optional because the shape check is also exercised directly.
  */
-export function parseZoomAppCredential(raw: string | null): ZoomAppCredential | null {
+export function parseZoomAppCredential(
+  raw: string | null,
+  owner?: { readonly workspaceId: string; readonly installId: string },
+): ZoomAppCredential | null {
   if (raw === null || raw === "") return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    // Logged without the payload — it IS the secret.
+  } catch {
+    // No `// intentionally ignored:` marker — that marker is for a catch that
+    // emits NO signal, and this one warns below. What is discarded here is the
+    // error OBJECT, deliberately, and the reason is worth the paragraph:
+    //
+    // the parse error's MESSAGE echoes the input, and the
+    // input is the decrypted client secret — `JSON.parse("s3cr3t-value")` throws
+    // `Unexpected identifier "s3cr3t"`. Excluding `raw` from the payload is NOT
+    // enough, which is what the previous version of this catch got wrong: it
+    // logged `err.message` under a comment claiming the payload was withheld,
+    // and shipped a fragment of the secret to the log sink on any blob that is
+    // not JSON (a hand-repaired row, a legacy plaintext secret, a partial
+    // decrypt). `outlook/connector.ts` reached this conclusion two review rounds
+    // in; this is the same code path with the same blob. The shape failure plus
+    // the OWNER is the whole signal; nothing else in the error is actionable.
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Zoom app credential is not valid JSON",
+      { workspaceId: owner?.workspaceId, installId: owner?.installId },
+      "Zoom app credential is not readable JSON — re-install the Zoom transcripts source for this workspace to repair it",
     );
     return null;
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  // The three SHAPE failures below warn too. They used to return `null` in
+  // silence while the parse failure above warned — so three of the four ways
+  // this can fail produced an unreadable-credential error downstream with
+  // nothing in the log saying which shape was wrong, or whose.
+  //
+  // Still no payload: a well-formed JSON object that is missing a field carries
+  // the secret in its OTHER field, so naming the keys is the most that can be
+  // said. Which is enough — the repair is the same re-install either way, and
+  // the distinction an operator needs is "the row is malformed" vs "the row is
+  // fine and Zoom rejected it", which these lines now make.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    log.warn(
+      { workspaceId: owner?.workspaceId, installId: owner?.installId },
+      "Zoom app credential is valid JSON but not an object — re-install the Zoom transcripts source for this workspace to repair it",
+    );
+    return null;
+  }
   const row = parsed as Record<string, unknown>;
   const clientId = typeof row.clientId === "string" ? row.clientId.trim() : "";
   const clientSecret = typeof row.clientSecret === "string" ? row.clientSecret.trim() : "";
-  if (clientId === "" || clientSecret === "") return null;
+  if (clientId === "" || clientSecret === "") {
+    log.warn(
+      {
+        workspaceId: owner?.workspaceId,
+        installId: owner?.installId,
+        // WHICH field, never its value.
+        missing: [clientId === "" ? "clientId" : null, clientSecret === "" ? "clientSecret" : null]
+          .filter((field) => field !== null)
+          .join(", "),
+      },
+      "Zoom app credential is missing a required field — re-install the Zoom transcripts source for this workspace to repair it",
+    );
+    return null;
+  }
   return { clientId, clientSecret };
 }
 
@@ -149,7 +200,7 @@ export async function resolveZoomToken(
   accountId: string,
 ): Promise<string> {
   const stored = await reader.readSyncCredential(workspaceId, installId);
-  const credential = parseZoomAppCredential(stored);
+  const credential = parseZoomAppCredential(stored, { workspaceId, installId });
   if (credential === null) {
     throw new Error(
       "This workspace has no readable Zoom credential — re-install the Zoom transcripts source under Admin → Integrations with your Server-to-Server OAuth app's client id and secret.",
@@ -213,22 +264,29 @@ export function createZoomTranscriptConnector(
 /**
  * Register the Zoom transcript source AND its audience re-verifier idempotently
  * — called from the boot seam that also registers install handlers, and from
- * tests. Both registries throw on a duplicate, so gate on the connector registry
- * first.
+ * tests.
+ *
+ * The pair goes through `registerBrainSourceWithAudienceReverifier` rather than
+ * as two statements. Both registries throw on a duplicate, and the gate below
+ * reads only the connector registry — so registering the connector first and
+ * colliding on the re-verifier second would leave this source ingesting
+ * transcripts whose grants nothing refreshes, permanently and silently. That
+ * helper checks the re-verifier registry before it commits anything.
  */
 export function registerZoomTranscriptConnector(deps: ZoomTranscriptConnectorDeps = {}): void {
   if (getBrainSourceConnector(ZOOM_TRANSCRIPTS_CATALOG_ID) !== undefined) return;
   const reader: ZoomCredentialReader = deps.reader ?? { readSyncCredential, fetchZoomAccessToken };
-  registerBrainSourceConnector(createZoomTranscriptConnector({ reader }));
-  registerZoomAudienceReverifier({
-    // The install id doubles as the credential's `collection_id`, the same
-    // convention every knowledge connector uses.
-    resolveToken: async (workspaceId, installId, config) => {
-      const parsed = parseZoomTranscriptsConfig(config);
-      if (!parsed.ok) throw new Error(parsed.error);
-      return resolveZoomToken(reader, workspaceId, installId, parsed.accountId);
-    },
-  });
+  registerBrainSourceWithAudienceReverifier(createZoomTranscriptConnector({ reader }), () =>
+    registerZoomAudienceReverifier({
+      // The install id doubles as the credential's `collection_id`, the same
+      // convention every knowledge connector uses.
+      resolveToken: async (workspaceId, installId, config) => {
+        const parsed = parseZoomTranscriptsConfig(config);
+        if (!parsed.ok) throw new Error(parsed.error);
+        return resolveZoomToken(reader, workspaceId, installId, parsed.accountId);
+      },
+    }),
+  );
   log.info(
     { catalogId: ZOOM_TRANSCRIPTS_CATALOG_ID },
     "Registered Zoom transcript brain source and its audience re-verifier",

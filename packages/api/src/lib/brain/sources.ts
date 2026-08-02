@@ -163,16 +163,16 @@
  * The closed set of source CLASSES — ADR-0036 §T6's class-major axis.
  *
  * Not "connector classes": `warehouse` and `human` come from no connector at
- * all; only `chat` and `transcript` name connector classes today.
+ * all; `chat`, `transcript` and `email` name connector classes today.
  *
  * Only classes with a member in {@link EPISODE_SOURCE_SPECS} are listed. The
- * ADR's remaining classes (email, docs/wiki/code/drive) are deliberately
+ * ADR's remaining classes (docs/wiki/code/drive) are deliberately
  * absent: a class with no source that can produce it is dead vocabulary, and a
  * downstream `switch` over it would have an arm nothing ever reaches. Each
  * arrives with its first connector, in the same one-line PR that adds the
  * connector's stored value.
  *
- * SINGULAR, all four. The ADR's prose sequences them as "chat → transcripts →
+ * SINGULAR, all five. The ADR's prose sequences them as "chat → transcripts →
  * email → docs" and that plural is a list of SUBJECT AREAS; these are the
  * values a stored row's class resolves TO, read one row at a time
  * (`episodeSourceClassOf(row.source) === TRANSCRIPT_CLASS`). Mixing the two
@@ -234,10 +234,12 @@ export type EpisodeSourceSpec =
        * `transcript` joined this arm with #4965 rather than getting one of its
        * own, because it passes the SAME test `chat` passes and for the same
        * reason. Zoom's source-id grammar lives in `ingest/zoom/config.ts` and
-       * is owned THERE, not restated here — it is a live contract with #4967's
-       * webhook writer, and a contract with two published spellings is exactly
-       * the hazard this section is about. (This comment carried a second,
-       * WRONG spelling until the review panel caught it.) Google Meet's would
+       * is owned THERE, not restated here — it is stamped into an append-only
+       * table, and a contract with two published spellings is exactly the
+       * hazard this section is about. (This comment carried a second, WRONG
+       * spelling until the review panel caught it, and named #4967's webhook
+       * writer as the counterparty until a later pass caught that too — #4967
+       * shipped Slack-only and never writes a Zoom episode.) Google Meet's would
        * be a Drive file id and Fireflies' a transcript id. Those are three
        * unrelated id GRAMMARS, so
        * one stored `transcript` value would put them in one dedupe namespace —
@@ -247,8 +249,9 @@ export type EpisodeSourceSpec =
        * The general rule, since this arm is now the one most members land in:
        * a class belongs here when its vendors mint source-ids independently.
        * That is nearly every connector class, which is why the ADR's remaining
-       * classes (email, docs) should be expected to widen this arm too rather
-       * than the one below.
+       * classes (docs/wiki/code/drive) should be expected to widen this arm too
+       * rather than the one below. `email` was on that list until #4966
+       * actually widened it — see the next paragraph, which has said so since.
        *
        * `email` joined it with #4966, and its case is the strongest of the three
        * rather than the weakest — despite email having something chat and
@@ -389,11 +392,18 @@ export const SLACK_SOURCE = "slack" satisfies EpisodeSource;
  * The transcript class's first vendor — what `ZOOM_TRANSCRIPT_SOURCE` resolves
  * to (#4965).
  *
- * Load-bearing beyond this file in a way `SLACK_SOURCE` was not when it landed:
- * #4967's webhook fast-path is being built in PARALLEL against the Zoom
- * connector and writes into the same idempotent episode store, so this value
- * and the source-id grammar beside it in `ingest/zoom/config.ts` are a contract
- * between two in-flight branches rather than a private naming choice.
+ * This value and the source-id grammar beside it in `ingest/zoom/config.ts` are
+ * a published contract rather than a private naming choice: they are stamped
+ * into `brain_episodes.source` and `source_id`, and that table is append-only,
+ * so a second writer spelling either differently mints episodes nothing
+ * converges.
+ *
+ * ⚠️ That second writer does not exist. This docblock said #4967's webhook
+ * fast-path was "being built in PARALLEL against the Zoom connector" — written
+ * while #4967 was in flight, and wrong once it shipped: it is SLACK-only
+ * (`webhook.ts` resolves `{ vendor: SLACK_SOURCE }`, and `brain-observer.ts`
+ * refuses every non-Slack platform). The contract still stands on the
+ * append-only store; it just has one writer today, which is the poll.
  */
 export const ZOOM_SOURCE = "zoom" satisfies EpisodeSource;
 
@@ -551,8 +561,16 @@ export function episodeSourceVendor(source: EpisodeSource): EpisodeSourceVendor 
  *
  * Use this to read a stored row. Use {@link episodeSourceClass} when the value
  * is already known to be in the vocabulary and an unknown one would be a
- * programmer error worth surfacing loudly. #4967's webhook fast-path is the
- * read-a-stored-row shape and wants this one.
+ * programmer error worth surfacing loudly.
+ *
+ * There is no production caller — zero, not "one elsewhere". #4967's webhook
+ * fast-path was predicted to be one and is NOT: it resolves connectors on the
+ * VENDOR axis (`findBrainSourceConnectors({ vendor: SLACK_SOURCE })`) and never
+ * asks for a class. The region-import lane (`admin-migrate.ts`) has the
+ * read-a-stored-row SHAPE this is for and names it in a comment, but does not
+ * call it either. Spelled out this far because the docstring this replaced
+ * asserted a caller that did not exist, and "names it in a comment" is the same
+ * mistake one step smaller.
  */
 export function episodeSourceClassOf(value: unknown): EpisodeSourceClass | null {
   return isEpisodeSource(value) ? episodeSourceClass(value) : null;

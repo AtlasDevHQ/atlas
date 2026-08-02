@@ -1784,7 +1784,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Chat Webhook Fast-Path",
     description:
-      "Store Slack messages as brain episodes as they arrive, instead of waiting for the next sync. Off by default; the scheduled sync stores everything either way, so this only changes how quickly a message becomes available — never whether it does. Only channels the Slack history source is scoped to are stored. Applies immediately.",
+      "Store Slack messages as brain episodes as they arrive, instead of waiting for the next sync. Off by default. For TOP-LEVEL messages this only changes how quickly one becomes available; for THREAD REPLIES it changes whether they are stored at all, because the scheduled sync reads conversations.history, which never returns replies. Only channels the Slack history source is scoped to are stored. Applies immediately.",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED",

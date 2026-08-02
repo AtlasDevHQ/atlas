@@ -137,7 +137,11 @@ import { findBrainSourceConnectors } from "../types";
 import type { BrainEpisodeRecord, BrainSourceConnector } from "../types";
 import { ingestEpisodes } from "../episodes";
 import { toEpisode } from "./client";
-import { SLACK_CHANNEL_ID_PATTERN, parseSlackHistoryConfig } from "./config";
+import {
+  SLACK_CHANNEL_ID_PATTERN,
+  SLACK_HISTORY_CATALOG_ID,
+  parseSlackHistoryConfig,
+} from "./config";
 
 const log = createLogger("brain.ingest.slack.webhook");
 
@@ -181,6 +185,11 @@ export type SlackWebhookSkipReason =
   | "not_a_message"
   /** A `message` event with no usable `channel`/`ts` identity. */
   | "unparseable_event"
+  /**
+   * A `message` subtype whose top-level `ts` is the EVENT's, not the original
+   * message's — so minting from it would produce an id the poll never mints.
+   */
+  | "unmintable_subtype"
   | "unknown_workspace"
   | "no_install"
   /** An install matched, but its stored config could not be parsed. */
@@ -297,7 +306,10 @@ export type SlackWebhookRead =
   | { readonly kind: "message"; readonly event: SlackWebhookMessageEvent }
   | {
       readonly kind: "skipped";
-      readonly reason: Extract<SlackWebhookSkipReason, "not_a_message" | "unparseable_event">;
+      readonly reason: Extract<
+        SlackWebhookSkipReason,
+        "not_a_message" | "unparseable_event" | "unmintable_subtype"
+      >;
     };
 
 /**
@@ -358,6 +370,23 @@ export function readSlackWebhookMessage(raw: unknown): SlackWebhookRead {
     !Array.isArray(event.message)
       ? (event.message as Record<string, unknown>)
       : null;
+  // Subtypes whose top-level `ts` is the EVENT's timestamp rather than the
+  // message's identity. `message_changed` is the one we can recover, by
+  // unwrapping to `event.message.ts` above; these carry no inner message to
+  // unwrap, so minting from them would produce a source-id the poll NEVER
+  // mints — the exact duplicate-episode failure this module's header is about,
+  // and unrecoverable because `brain_episodes` is append-only.
+  //
+  // Unreachable today: the Chat SDK's Slack adapter drops these before dispatch
+  // (`ignoredSubtypes`). Guarded anyway, and for a sharper reason than
+  // symmetry — `message_deleted` survives that filter's absence only by
+  // ACCIDENT, because it carries no `text` and so trips the empty-text skip
+  // inside `toEpisode`. An accident is not a guarantee: a payload that ever
+  // carried text would mint a novel id with nothing to stop it. Its sibling
+  // `message_changed` got an explicit guard; this is the one that needed it.
+  if (subtype === "message_deleted" || subtype === "tombstone") {
+    return { kind: "skipped", reason: "unmintable_subtype" };
+  }
   // The record the id is minted from. For an edit that is the INNER message —
   // see the docstring. For everything else the event IS the message.
   const source = inner ?? event;
@@ -509,11 +538,34 @@ export function deriveSlackWebhookEpisode(params: {
       // `knowledge_sync_state.error`. Folding it into a boolean here would make
       // a corrupted config skip 100% of a workspace's messages forever with a
       // reason that reads like ordinary out-of-scope traffic.
-      unreadableConfig = true;
-      log.warn(
-        { installId: install.installId, error: parsed.error },
-        "Slack brain webhook: this install's stored channel scope could not be parsed, so nothing is stored for it — the scheduled sync reports the same error into knowledge_sync_state",
-      );
+      // Only a SLACK-HISTORY row's parse failure is a diagnosis, because this
+      // is the only schema read here and it is slack-history's.
+      //
+      // `findBrainSourceConnectors` returns an array and `ingest/types.ts`
+      // explicitly disclaims uniqueness, so the day a second slack-VENDOR brain
+      // source exists, `installs` carries its rows too — the shell queries by
+      // every catalog id the vendor lookup returned. Reading one of those with
+      // `parseSlackHistoryConfig` fails on a config that is perfectly valid for
+      // its own connector, and reporting THAT sends an admin to repair a row
+      // that was never broken.
+      //
+      // Gated on the catalog id that owns the schema, which is the only thing
+      // that discriminates. An earlier attempt gated on "is this install's
+      // catalog id one of the connectors we resolved" — inert, since the shell
+      // queries BY those ids, so it is true for every row that reaches here
+      // including the foreign one it meant to exclude.
+      //
+      // The DIAGNOSIS is gated, never the match. A foreign install whose config
+      // this schema happens to read still matches and still reaches
+      // `no_connector` below — silently reclassifying it as out-of-scope would
+      // trade one wrong answer for another.
+      if (install.catalogId === SLACK_HISTORY_CATALOG_ID) {
+        unreadableConfig = true;
+        log.warn(
+          { installId: install.installId, error: parsed.error },
+          "Slack brain webhook: this install's stored channel scope could not be parsed, so nothing is stored for it — the scheduled sync reports the same error into knowledge_sync_state",
+        );
+      }
       return false;
     }
     // Both sides are already normalised — `parseSlackHistoryConfig` uppercases
@@ -629,8 +681,17 @@ export interface IngestSlackWebhookMessageParams {
  * False for a thread reply — see the module header. Kept as a named function so
  * the rule has one home and the outcome construction reads as a statement about
  * the message rather than as an inline negation.
+ *
+ * `thread_broadcast` is the exception the `threadTs` test alone gets wrong. A
+ * broadcast carries its PARENT's `thread_ts` — never equal to its own `ts` — so
+ * the reply test classifies it as unbacked, yet `conversations.history` does
+ * return broadcasts (this module's header and `client.ts` both say so). It is
+ * the one subtype that is simultaneously a reply and top-level. Mislabelling it
+ * only over-reported "this evidence is lost" in a log line, never lost
+ * anything — but the file asserted the opposite of what it did.
  */
 function hasPollBackstop(event: SlackWebhookMessageEvent): boolean {
+  if (event.subtype === "thread_broadcast") return true;
   return event.threadTs === null || event.threadTs === event.ts;
 }
 

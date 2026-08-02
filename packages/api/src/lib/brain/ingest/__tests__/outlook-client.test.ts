@@ -19,6 +19,7 @@ import {
   composeEmailBody,
   createOutlookMailClient,
   parseOutlookCursor,
+  tallyOutcome,
   serialiseOutlookCursor,
   type OutlookMailClientOptions,
 } from "@atlas/api/lib/brain/ingest/outlook/client";
@@ -254,8 +255,10 @@ describe("the block arm — RETRYABLE, freezes the resume point", () => {
     expect(changes.highWaterMark).toBeNull();
     expect(parseOutlookCursor(changes.cursor ?? null)["mb:a"]).not.toBe(NOW.toISOString());
     expect(changes.warnings?.join(" ")).toMatch(/access grant could not be built/);
-    // No wider-grant fallback on this arm either.
-    expect(JSON.stringify(changes.episodes)).not.toContain("org");
+    // Deliberately NOT asserting `not.toContain("org")` on the episodes here:
+    // they are already asserted empty, so that check cannot fail and would read
+    // as coverage it does not provide. The honest no-wider-grant claim on this
+    // arm is `harness.reconciled` above — nothing was minted at all.
   });
 
   it("never falls back to a wider grant on the block arm", async () => {
@@ -422,9 +425,17 @@ describe("the skip arm — PERMANENT, advances past", () => {
 describe("the cursor", () => {
   it("round-trips, and drops entries a pass was not configured for", async () => {
     // A mailbox removed from the config would otherwise keep its watermark
-    // forever, and re-adding it months later would resume from a stale mark and
-    // silently skip everything in between — invisible, because an append-only
-    // store cannot tell an absence from a not-yet-fetched.
+    // forever.
+    //
+    // ⚠️ This comment used to justify that by saying a stale mark would
+    // "silently skip everything in between". That is wrong on the merits and is
+    // corrected here rather than deleted, because `serialiseOutlookCursor`'s
+    // docstring carries the same correction and says why two contradictory
+    // accounts of one risk is how the next fix goes the wrong way: resuming from
+    // an OLDER mark OVER-reads and cannot skip, and a mark below the backfill
+    // floor hits the `historyTruncated` branch, which warns and restarts at the
+    // floor. Pruning is about not carrying dead keys, not about lost history —
+    // dropping a LIVE entry is the direction that costs history.
     const stale = serialiseOutlookCursor({
       [MAILBOX_ID]: "2026-07-01T00:00:00.000Z",
       removed: "2026-01-01T00:00:00.000Z",
@@ -749,5 +760,90 @@ describe("budgets and throttling", () => {
     expect(changes.episodes).toHaveLength(0);
     expect(changes.coverageIncomplete).toBe(true);
     expect(changes.warnings?.join(" ")).toMatch(/no longer recognises/);
+  });
+});
+
+describe("tallyOutcome — the one place an outcome becomes a number", () => {
+  // Tested directly because the counters reach the outside world only through a
+  // `log.info` these tests do not capture, and the exhaustiveness arm is not
+  // reachable from the walk at all. Every mutation named below leaves all 25
+  // end-to-end tests above green.
+  const emptySkips = () => ({
+    blockedAudience: 0,
+    unattributable: 0,
+    unidentifiable: 0,
+    oversizeAudience: 0,
+    oversizeBody: 0,
+    bodyUnreadable: 0,
+    emptyBody: 0,
+  });
+  const total = (skips: Record<string, number>) =>
+    Object.values(skips).reduce((a, b) => a + b, 0);
+
+  it("⭐ increments exactly the named counter, and never the safety one", () => {
+    // MUTATION THIS CATCHES: `skips[outcome.reason]++` indexing a fixed counter.
+    // The block-vs-skip split is only worth something if a permanent drop cannot
+    // land in `blockedAudience` — that number is what an operator alerts on, and
+    // inflating it with quality losses is what makes it unreadable.
+    const skips = emptySkips();
+    const warnings: string[] = [];
+    tallyOutcome(skips, warnings, { kind: "skipped", reason: "oversizeBody", warning: "w" });
+    expect(skips.oversizeBody).toBe(1);
+    expect(skips.blockedAudience).toBe(0);
+    expect(total(skips)).toBe(1);
+  });
+
+  it("counts a block on the safety counter and nowhere else", () => {
+    const skips = emptySkips();
+    tallyOutcome(skips, [], { kind: "blocked", warning: "w" });
+    expect(skips.blockedAudience).toBe(1);
+    expect(total(skips)).toBe(1);
+  });
+
+  it("counts an ingested message nowhere — `kept` is the episode count", () => {
+    const skips = emptySkips();
+    const warnings: string[] = [];
+    tallyOutcome(skips, warnings, {
+      kind: "ingested",
+      episode: { sourceId: "s", sourceActor: null, body: "b", occurredAt: null, visibleTo: ["x"] },
+    });
+    expect(total(skips)).toBe(0);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("raises a skip's warning, and stays silent when the arm says `null`", () => {
+    // The `emptyBody` arm is counted but deliberately NOT warned — it is the
+    // high-volume one. MUTATION THIS CATCHES: pushing unconditionally, which
+    // buries the arms an operator needs under per-message noise.
+    const warnings: string[] = [];
+    const skips = emptySkips();
+    tallyOutcome(skips, warnings, { kind: "skipped", reason: "emptyBody", warning: null });
+    expect(warnings).toHaveLength(0);
+    expect(skips.emptyBody).toBe(1);
+    tallyOutcome(skips, warnings, { kind: "skipped", reason: "unidentifiable", warning: "said so" });
+    expect(warnings).toEqual(["said so"]);
+  });
+
+  it("⭐ never puts an outcome's PAYLOAD in the thrown message", () => {
+    // The exhaustiveness arm is unreachable by construction, so nothing but this
+    // test stops it being "improved" back to `JSON.stringify(unexpected)` —
+    // which is what it was until review caught it. That throw is caught by the
+    // walk, interpolated into an operator-facing warning and persisted to
+    // `knowledge_sync_state`, and one arm of this union carries `episode.body`:
+    // the full plaintext of somebody's mail.
+    //
+    // MUTATION THIS CATCHES: stringifying the outcome rather than its discriminant.
+    const rogue = {
+      kind: "someFutureArm",
+      episode: { body: "SECRET PLAINTEXT" },
+    } as unknown as Parameters<typeof tallyOutcome>[2];
+    expect(() => tallyOutcome(emptySkips(), [], rogue)).toThrow(/someFutureArm/);
+    let thrown = "";
+    try {
+      tallyOutcome(emptySkips(), [], rogue);
+    } catch (err) {
+      thrown = err instanceof Error ? err.message : String(err);
+    }
+    expect(thrown).not.toContain("SECRET PLAINTEXT");
   });
 });

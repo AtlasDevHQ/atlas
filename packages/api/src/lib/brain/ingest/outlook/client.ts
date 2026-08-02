@@ -327,6 +327,10 @@ export function toOutlookClientError(context: string, failure: OutlookReadError)
  * exactly the #4965 direction this file is organised against. Here neither
  * classification is the default: a permanent reason is an entry in this array, a
  * retryable one is a field on the interface below, and both are a visible edit.
+ *
+ * A VALUE rather than a bare union type because the aggregate drop total at the
+ * end of the pass sums over it, which is what keeps that total from drifting
+ * from this list the way its hand-written predecessor did.
  */
 const PERMANENT_SKIP_REASONS = [
   /**
@@ -351,6 +355,21 @@ const PERMANENT_SKIP_REASONS = [
 
 type PermanentSkipReason = (typeof PERMANENT_SKIP_REASONS)[number];
 
+/**
+ * The disjointness the whole split rests on, asserted at compile time.
+ *
+ * `interface … extends Record<…>` permits a member that COLLIDES with an
+ * inherited one as long as the declared type is identical — and `number` vs
+ * `number` is identical. So adding `"blockedAudience"` to the array above
+ * compiles cleanly, and the safety counter silently becomes a legal `skipped`
+ * reason for `skips[outcome.reason]++` to land in. That is the one hole the move
+ * off `Exclude<keyof MessageSkips, …>` opened, and it costs two lines to close.
+ */
+type AssertTrue<T extends true> = T;
+type _BlockStaysRetryable = AssertTrue<
+  "blockedAudience" extends PermanentSkipReason ? false : true
+>;
+
 /** Per-pass drop tally — every message seen but not stored, by reason. */
 interface MessageSkips extends Record<PermanentSkipReason, number> {
   /**
@@ -358,10 +377,7 @@ interface MessageSkips extends Record<PermanentSkipReason, number> {
    * The safety counter an operator alerts on.
    *
    * Deliberately NOT a {@link PermanentSkipReason}, which is what stops a
-   * `skipped` outcome naming it: a permanent condition cannot be tallied as
-   * retryable. Choosing which arm a new CONDITION belongs on is still a human
-   * decision — no type can make it — but it is now spelled once, at `kind`,
-   * instead of inferred from a `blocked: boolean` a new arm can forget.
+   * `skipped` outcome naming it.
    */
   blockedAudience: number;
 }
@@ -388,18 +404,29 @@ type MessageOutcome =
 
 /**
  * The only writer of {@link MessageSkips} — the one place a message that was NOT
- * stored becomes a number, and the one place its warning is raised.
+ * stored becomes a number, and the one place an OUTCOME's warning is raised.
+ * (The caller's throttle branch pushes a warning of its own, but a throttle is
+ * not an outcome of the message; it says so there.)
  *
- * (An INGESTED message becomes numbers at the call site instead, as
- * `episodes.length` and the budget decrement. Nothing to tally: `kept` is the
- * episode count, not a drop counter.)
+ * An INGESTED message becomes numbers at the call site instead, as
+ * `episodes.length` and the budget decrement — `kept` is the episode count, not
+ * a drop counter.
  *
- * One site rather than nine is the point. A tally spread across the arms that
- * produce it is a tally whose next arm can forget to increment, or increment the
- * wrong counter, and neither shows up as anything but a number quietly missing
- * from an operator's log line.
+ * One site is the point. A tally spread across the arms that produce it is a
+ * tally whose next arm can forget to increment, or increment the wrong counter,
+ * and neither shows up as anything but a number quietly missing from an
+ * operator's log line.
+ *
+ * Exported for its own unit tests, like this module's other pure helpers. The
+ * counters reach the outside world only through a `log.info`, so a mutation that
+ * indexes the WRONG counter is invisible to the walk's end-to-end tests — and
+ * the `default` arm's no-payload rule is unreachable from them entirely.
  */
-function tallyOutcome(skips: MessageSkips, warnings: string[], outcome: MessageOutcome): void {
+export function tallyOutcome(
+  skips: MessageSkips,
+  warnings: string[],
+  outcome: MessageOutcome,
+): void {
   switch (outcome.kind) {
     case "ingested":
       return;
@@ -417,9 +444,11 @@ function tallyOutcome(skips: MessageSkips, warnings: string[], outcome: MessageO
     default: {
       const unexpected: never = outcome;
       // The DISCRIMINANT only, never the payload. This message reaches an
-      // operator-visible warning through the caller's `catch`, and the
-      // `ingested` arm carries `episode.body` — the full plaintext of somebody's
-      // mail. Same reason the audience digest is redacted further down.
+      // operator-visible warning through the caller's `catch`, and this union
+      // already has an arm carrying `episode.body` — the full plaintext of
+      // somebody's mail — so any FUTURE arm that lands here must be assumed to
+      // as well. (Today's ingested arm returns above and cannot reach this.)
+      // Same reason the audience digest is redacted further down.
       throw new Error(
         `Unhandled Outlook message outcome: ${String((unexpected as { readonly kind?: unknown }).kind)}`,
       );
@@ -611,7 +640,8 @@ export function createOutlookMailClient(
       // input `deriveEmailRecipientGrant` could reject has already been settled
       // by the guards above. `headersComplete` is the literal `true`,
       // `participants` is non-empty, `source` is a module constant, the digest
-      // is 16 hex bytes by construction, and `messageId` came back non-empty and
+      // is 16 hex characters (64 bits) by construction, and `messageId` came
+      // back non-empty and
       // whitespace-free from `normalizeInternetMessageId`, so the id builder's
       // own trim-and-empty guard cannot fire on it.
       //
@@ -626,10 +656,14 @@ export function createOutlookMailClient(
       // and the mailbox freezes at this message.
       //
       // What says so is the stall detector further down, which raises a
-      // `log.error` AND an operator-facing warning. Note the timing: it is gated
-      // on the mailbox making no forward progress, so unless the block is the
-      // mailbox's first timestamped message it fires from the SECOND consecutive
-      // stalled cycle, once the resume mark has converged on `coveredThrough`.
+      // `log.error` AND an operator-facing warning. Two things about it are
+      // easy to assume and wrong. Its gate is a CONJUNCTION — `blockedAudience
+      // > 0`, which is PASS-scoped across every mailbox, AND this mailbox
+      // making no forward progress. And on timing: unless nothing ahead of the
+      // block in this pass's walk carried a timestamp (the block being the
+      // first message walked, which is the ordinary case after a clean prior
+      // pass), it fires from the SECOND consecutive stalled cycle, once the
+      // resume mark has converged on `coveredThrough`.
       //
       // It stays a block anyway, and that is the deliberate choice rather than
       // the leftover one. Skipping would advance the resume point past a message
@@ -1087,13 +1121,25 @@ export function createOutlookMailClient(
           "Outlook pass blocked messages whose audience could not be established — nothing was ingested from them, and nothing was granted more widely",
         );
       }
-      // Every counter EXCEPT the block one, by construction rather than by a
-      // hand-written sum of six field names. The sum this replaces would have
-      // silently omitted any reason added after it was written, so a whole
-      // permanent-drop class could have gone unreported while its counter sat
-      // right there in the object.
-      const { blockedAudience: _blocked, ...permanentSkips } = skips;
-      if (Object.values(permanentSkips).reduce((total, count) => total + count, 0) > 0) {
+      // Summed over the SSOT itself. Two things that matters for, both of which
+      // the obvious spellings get wrong:
+      //
+      // A hand-written sum of six field names — what this replaces — silently
+      // omits any reason added after it was written, so a whole permanent-drop
+      // class goes unreported while its counter sits right there in the object.
+      //
+      // Subtracting the block counter out of the object instead (`const {
+      // blockedAudience, ...rest } = skips`) fixes that but re-creates, in value
+      // space, the DEFAULT-to-permanent classification that
+      // `PERMANENT_SKIP_REASONS` exists to remove from the type: a second
+      // RETRYABLE counter would land in the rest and be announced on the
+      // permanent-drop line. Reading the array means `blockedAudience` is
+      // excluded because it is not in it, not because it was subtracted out.
+      const permanentDrops = PERMANENT_SKIP_REASONS.reduce(
+        (total, reason) => total + skips[reason],
+        0,
+      );
+      if (permanentDrops > 0) {
         log.info(
           { workspaceId: options.workspaceId, kept: episodes.length, ...skips },
           "Outlook mail pass complete — messages read but not stored, by reason",

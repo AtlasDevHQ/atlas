@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import type { StreamChunk } from "chat";
+import type { Message, StreamChunk } from "chat";
 // #2665 — catalog vocabulary lives in @useatlas/types so the chat plugin
 // and @atlas/api share one source of truth for the literal unions.
 // Re-exported below as `ChatAdapterName` for back-compat with downstream
@@ -197,6 +197,43 @@ export interface ChatResumeBridge {
  * Additive + host-optional: the plugin works unchanged when it's absent.
  */
 export type OnBridgeReady = (bridge: ChatResumeBridge | null) => void;
+
+/**
+ * One inbound chat message, handed to {@link ObserveMessageFn} — the fields an
+ * OBSERVER may read, and no more.
+ *
+ * `Pick<Message, "id" | "raw">` deliberately, the same narrowing
+ * `ResolverEventLite` uses: an observer's job is to record what arrived, so it
+ * gets the platform's own payload and the message id. It gets no `Thread`,
+ * which is what keeps the seam one-way — an observer cannot post, react,
+ * subscribe, or otherwise become a second author of chat behaviour.
+ */
+export interface ChatMessageObservation {
+  /** The adapter that delivered it — `"slack"`, `"teams"`, … */
+  readonly platform: string;
+  readonly message: Pick<Message, "id" | "raw">;
+}
+
+/**
+ * Host callback invoked for every inbound message the bridge dispatches
+ * (#4967). Wired by `@atlas/api` to the Company Brain's webhook fast-path,
+ * which stores the message as an episode ahead of the scheduled poll.
+ *
+ * Additive + host-optional: with no `observeMessage` the bridge registers no
+ * observer at all and behaves exactly as before.
+ *
+ * ⚠️ CONTRACT: it must NEVER throw and it must NEVER be slow. The bridge awaits
+ * it inline, ahead of the pillar handler for the same message, because a
+ * fast-path that ran after a multi-second agent turn would not be one. The
+ * bridge wraps it defensively (`bridge.ts`) so a rejection cannot abort the
+ * remaining handlers — but that wrapper is a backstop, not a licence: an
+ * observer that blocks delays every chat answer on the deploy.
+ *
+ * It is an OBSERVER, not a filter — its result cannot suppress, alter, or
+ * reorder the message's normal handling, and the bridge ignores what it
+ * returns.
+ */
+export type ObserveMessageFn = (observation: ChatMessageObservation) => Promise<void>;
 
 /** Adapter-specific credential configuration. */
 /**
@@ -679,6 +716,20 @@ export interface ChatPluginConfig {
    * `deploy/api/atlas.config.ts` → `registerChatResumeDeliverer`.
    */
   onBridgeReady?: OnBridgeReady;
+
+  /**
+   * Per-message observer (#4967) — invoked for every inbound message the bridge
+   * dispatches, ahead of the handler that owns it. The host wires it to the
+   * Company Brain's chat webhook fast-path.
+   *
+   * Top-level rather than under `proactive`: the two are unrelated gates. The
+   * proactive listener is enterprise + per-workspace opt-in and only ever sees
+   * the pattern arm of the SDK's dispatch cascade; this observer is registered
+   * on every arm that carries a channel message and is gated host-side.
+   *
+   * See {@link ObserveMessageFn} for the never-throw / never-block contract.
+   */
+  observeMessage?: ObserveMessageFn;
 }
 
 /** Proactive chat configuration. */
@@ -1150,6 +1201,13 @@ export const ChatConfigSchema = z.object({
   // rejects the key and boot crashes before HTTP binds (caught by Boot Smoke).
   onBridgeReady: zCallback<NonNullable<ChatPluginConfig["onBridgeReady"]>>(
     "onBridgeReady must be a function",
+  ).optional(),
+  // #4967 — per-message observer for the Company Brain's chat webhook
+  // fast-path. Optional callback; the host (`@atlas/api`) wires it to the
+  // episode writer. Must be in this `.strict()` schema or config load rejects
+  // the key and boot crashes before HTTP binds (caught by Boot Smoke).
+  observeMessage: zCallback<NonNullable<ChatPluginConfig["observeMessage"]>>(
+    "observeMessage must be a function returning Promise<void>",
   ).optional(),
 }).strict().refine(
   (c) => {

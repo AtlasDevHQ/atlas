@@ -92,6 +92,12 @@ import {
   clearChatResumeDeliverer,
 } from "./packages/api/src/lib/chat-plugin/resume-delivery-registry";
 import { buildChatResumeDeliverer } from "./packages/api/src/lib/chat-plugin/resume-deliverer-factory";
+// #4967 — Company Brain chat webhook fast-path. `observeMessage` tees every
+// inbound chat message into the SAME idempotent episode store the scheduled
+// poll writes to, so a Slack message becomes evidence in seconds rather than at
+// the next sync tick. Safe by source-id dedupe; gated off by default behind
+// `ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED`.
+import { createBrainChatMessageObserver } from "./packages/api/src/lib/chat-plugin/brain-observer";
 
 // Dedicated runtime for the proactive classifier + answer adapters.
 // Built inside the workspace by `getProactiveAiRuntime()` so this file
@@ -930,6 +936,13 @@ export default defineConfig({
           }),
         );
       },
+      // #4967 — Company Brain chat webhook fast-path. Registered
+      // unconditionally; the gate is the settings knob the writer reads per
+      // event (`ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED`, default off), NOT the
+      // presence of this callback. Wiring it here and gating there is what
+      // makes the operator's off switch immediate rather than a redeploy — and
+      // what keeps "poll is the correctness floor" the shipped default.
+      observeMessage: createBrainChatMessageObserver(),
       // ── Proactive listener wiring (#2607) ─────────────────────────
       // Wires every callback the proactive listener consumes to host
       // helpers under `packages/api/src/lib/proactive/`. After this

@@ -7,9 +7,9 @@ import { isTensionOpen, isTensionSuperseded, isTensionWithdrawn } from "../tensi
  * the sheet's strike-through (#4961).
  *
  * Unit-level on purpose. `review-honesty.test.tsx` proves the two SURFACES
- * render what this decided; these pin the decision itself, including the arms
- * a render fixture reaches only awkwardly — a junk stamp, a stamp missing from
- * the payload, and both axes at once. The first two are documented in
+ * render what this decided; these pin the decision itself, including the two
+ * arms a render fixture cannot reach without the `drifted()` cast — a junk
+ * stamp and a stamp missing from the payload. Both are documented in
  * `tension-state.ts` as safety properties, and a documented safety property
  * that no test pins is one refactor from silently inverting.
  */
@@ -55,10 +55,13 @@ function visible(overrides: Partial<BrainFactTensionVisible> = {}): BrainFactTen
  * could only build well-typed inputs could not reach them at all.
  *
  * The keys are bound to the wire type through `Extract` rather than spelled as
- * free string literals. Renaming a stamp upstream then collapses this to
- * `never` and fails the call sites — where a free literal would leave the
- * spread setting a phantom property, the real field keeping its `null` from
- * `visible()`, and both drift tests passing while testing nothing.
+ * free string literals: renaming one stamp upstream narrows this to the
+ * SURVIVING key, and the call site passing the renamed one fails as an unknown
+ * property. A free literal would instead leave the spread setting a phantom
+ * property, the real field keeping its `null` from `visible()`, and both drift
+ * tests passing while testing nothing. (Renaming BOTH at once narrows to
+ * `never`, which `Partial<Record<…>>` widens back to `{}` — that case is not
+ * caught, and `visible()`'s typed literal is what fails instead.)
  */
 function drifted(
   stamps: Partial<

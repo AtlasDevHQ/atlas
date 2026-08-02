@@ -59,7 +59,14 @@
  * `correctionTargetSql` already does exactly that for the correction verbs
  * (`NOT brainFactCurrentClause("f") AS window_closed`, #4939) and states the
  * argument in full; the equivalent here is a computed boolean per counterpart
- * on `BrainFactTensionVisible` — a wire change, and the right one when this is
+ * on `BrainFactTensionVisible`.
+ *
+ * A wire change, and it trades rather than only removes — like every fetch-time
+ * verdict it is fixed until refetch, so a window closing while the reviewer
+ * holds the page open keeps the badge up, where the client comparison
+ * re-evaluates each render. That is the same bound `correctionTargetSql` draws
+ * around its own claim: what a server boundary eliminates is the clock-SOURCE
+ * skew, which is the part that can be eliminated. Worth doing when this is
  * worth hardening beyond an advisory badge.
  */
 

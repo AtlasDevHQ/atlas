@@ -854,9 +854,12 @@ describe("the list shows the trust signals without a click", () => {
  * A live tension counterpart. Overrides stamp the lifecycle axes on top.
  *
  * Introduced for the block below; the #4935 fixtures further down hand-roll the
- * same object and are left alone deliberately — re-pointing them here would
- * flip `status` from "draft" to this helper's "published" and quietly gut the
- * assertion they exist for ("retraction never writes `status`").
+ * same object and are left alone. One of them has to be: the WITHDRAWN fixture
+ * carries `status: "draft"` as its whole PREMISE — "retraction never writes
+ * `status`, so a retracted rival still reports Draft" — and no assertion pins
+ * it, so this helper's "published" default would erase the premise while every
+ * assertion in that test stayed green. The other three already carry
+ * "published" and are left hand-rolled only for symmetry with it.
  *
  * Distinct `factId`s are hygiene for the sheet, which keys its cards
  * `${edgeDirection}-${factId}` — nothing dedupes the count, which is a plain

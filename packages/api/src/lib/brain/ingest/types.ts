@@ -354,8 +354,10 @@ export interface BrainSourceConnectorQuery {
  * warehouse class) resolves to nothing, which is the only honest answer — a
  * fallback to either axis alone would route warehouse work to a chat connector.
  *
- * No production caller today; #4967's webhook fast-path is the one this exists
- * for, and #4965/#4966 are the connectors that make the class axis non-trivial.
+ * The production caller is #4967's Slack webhook fast-path
+ * (`ingest/slack/webhook.ts`), which resolves the chat-class connector for an
+ * arriving event; #4965/#4966 are the connectors that make the class axis
+ * non-trivial.
  */
 export function findBrainSourceConnectors(
   query: BrainSourceConnectorQuery = {},

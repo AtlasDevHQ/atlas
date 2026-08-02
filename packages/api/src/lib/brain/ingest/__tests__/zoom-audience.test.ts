@@ -616,6 +616,44 @@ describe("rotation — this source inherits the shared attempt stamp (#4971)", (
     expect([out.failed, out.reconciled]).toEqual([1, 0]);
   });
 
+  it("resolves NO token at all when the workspace has no audiences to verify", async () => {
+    // The benefit the ordering was reverted FOR, which the test above does not
+    // reach: it only catches a hoist above the scan (the stamp disappears). A
+    // hoist landing between the scan and the `candidates.length === 0` early
+    // return keeps the stamp and stays green — while reintroducing exactly the
+    // cost that motivated the revert. `resolveZoomToken` is a credential decrypt
+    // plus a live token exchange with no cache, so an enabled install with zero
+    // audiences would pay it 48 times a day, and a broken credential there would
+    // stand the cycle permanently `degraded` over a workspace with nothing to
+    // verify.
+    //
+    // MUTATION THIS CATCHES: moving `resolveToken` above the zero-candidate
+    // early return.
+    let tokenCalls = 0;
+    const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+      T extends Record<string, unknown>,
+    >(
+      sql: string,
+    ): Promise<T[]> => {
+      if (/workspace_plugins/.test(sql)) {
+        return [
+          { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } },
+        ] as unknown as T[];
+      }
+      return [] as T[];
+    };
+    const out = await reverifyZoomMeetingAudiences({
+      isEnabled: () => true,
+      resolveToken: async () => {
+        tokenCalls++;
+        return "tok";
+      },
+      query,
+    });
+    expect(tokenCalls).toBe(0);
+    expect(out).toEqual(ZERO_REVERIFY);
+  });
+
   it("scans with the NAMESPACE prefix, not the vendor-narrowed one", async () => {
     // `audience:meeting:` rather than `audience:meeting:zoom:`, deliberately: the
     // scan is coarser than the parser so another vendor's meeting token comes

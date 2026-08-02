@@ -709,8 +709,10 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       //     attempted, go to the front") and deferring exactly the audiences a
       //     fresh deploy needs to reach first.
       //
-      // Six member-bearing audiences at limit 4 (reserve 1) → tier 1 takes 3 and
-      // tier 3 decides the 4th, which is what makes the clause observable.
+      // Six member-bearing audiences at limit 4 (reserve 1). The window ranks
+      // them f(NULL)=1, a(50m)=2, b(40m)=3, c=4, d=5, e=6; tier 1 admits rn ≤ 3
+      // = {f,a,b} and tier 3 supplies the 4th slot — so the final clause is
+      // observable in BOTH the tier-1 internal ordering and the tier-3 pick.
       for (const name of ["a", "b", "c", "d", "e", "f"]) {
         await audience(`audience:meeting:zoom:${name}`, ["user-ada"]);
       }
@@ -726,14 +728,56 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       }
 
       // Stalest-first with the never-attempted one at the very front:
-      // f (NULL) → a (50m) → b (40m) → c (30m). Under DESC the page would start
-      // at `e`; under NULLS LAST `f` would fall off the page entirely.
+      // f (NULL) → a (50m) → b (40m) → c (30m).
+      //
+      // The two mutant pages, checked against the database rather than guessed:
+      //   * `attempted_at DESC` → [f, b, a, e]. Note `f` STAYS first — Postgres
+      //     defaults DESC to NULLS FIRST — so the observable is that the
+      //     freshest audience `e` takes the tier-3 slot instead of the stalest
+      //     `c`, and takes it again every cycle.
+      //   * `ASC NULLS LAST` → [a, b, f, c]. `f` does not fall off the page; it
+      //     is demoted from first to third, behind two audiences that HAVE been
+      //     attempted — which is what 0186's "an absent row means never
+      //     attempted, go to the front" forbids.
       expect(idsOf(await scan(4))).toEqual([
         "meeting:zoom:f",
         "meeting:zoom:a",
         "meeting:zoom:b",
         "meeting:zoom:c",
       ]);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("breaks an exact tie on the TOKEN, so a page is deterministic", async () => {
+      // Every audience stamped by one page shares an attempt instant — `now()`
+      // is transaction time — so ties are the NORMAL case, not an edge one, and
+      // `token ASC` is what stops a cap-bound workspace getting an arbitrary
+      // page each cycle (an audience could otherwise be skipped indefinitely by
+      // luck). The `⭐ RESERVES` case above also rests on this tie-break.
+      //
+      // ⚠️ This does NOT catch deleting `token ASC` — I checked, from both the
+      // window and the final sort, and both stay green. The `SELECT DISTINCT`
+      // in the `tokens` CTE is planned as a sort, so the rows arrive in token
+      // order anyway and the explicit key is masked. That is an accident of the
+      // plan, not a contract: a hash-aggregate for the DISTINCT would break it
+      // with no SQL change at all, which is exactly why the key stays.
+      //
+      // So what this pins is the OUTCOME — a tied page is deterministic and in
+      // token order — rather than the clause. Stated plainly instead of carrying
+      // a `MUTATION THIS CATCHES` line that would be false.
+      for (const name of ["ccc", "aaa", "bbb"]) {
+        await audience(`audience:meeting:zoom:${name}`, ["user-ada"]);
+      }
+      // One shared instant, so `attempted_at` cannot decide anything.
+      await pool.query(
+        `INSERT INTO brain_audience_reverify_attempt (workspace_id, audience_id, source, attempted_at)
+         SELECT $1, x, $2, now() FROM unnest($3::text[]) AS x`,
+        [
+          SCAN_WORKSPACE,
+          SOURCE,
+          ["meeting:zoom:aaa", "meeting:zoom:bbb", "meeting:zoom:ccc"],
+        ],
+      );
+      expect(idsOf(await scan(2))).toEqual(["meeting:zoom:aaa", "meeting:zoom:bbb"]);
     }, PG_TEST_TIMEOUT_MS);
 
     it("matches the prefix LITERALLY — a `_` in it is not a wildcard", async () => {

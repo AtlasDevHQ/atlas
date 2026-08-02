@@ -174,11 +174,17 @@ export function _resetAudienceReverifiers(): void {
  * meeting or a mail to five customers grants nobody today and can only start
  * granting if something re-runs its resolution.
  *
- * A tenth, so the priority survives: member-bearing audiences — the ones whose
- * suppression costs somebody access they have RIGHT NOW — still take nine slots
- * in ten, and the repair is slow rather than absent. Nothing is wasted when a
- * workspace has no member-less audiences: the reserve is a floor on their share,
- * not a hold on the cap. See {@link REVERIFY_CANDIDATES_SQL}'s tiering.
+ * A tenth of the cap ROUNDED DOWN, and never the whole cap — so at the shipped
+ * cap of 200 it is exactly 20, at 25 it is 2 (8%, not 10%), and at a cap of 1 it
+ * is 0, because starving the member-BEARING side is the worse failure. The
+ * priority survives: audiences whose suppression costs somebody access they have
+ * RIGHT NOW keep the large majority of every cycle, and the repair is slow
+ * rather than absent.
+ *
+ * Nothing is wasted when a workspace has no member-less audiences: this is a
+ * FLOOR on their share, not a quota against the cap, so where member-bearing
+ * audiences do not fill the rest the member-less ones take the remainder too.
+ * See {@link REVERIFY_CANDIDATES_SQL}'s tiering.
  */
 export const MEMBERLESS_RESERVE_FRACTION = 0.1;
 
@@ -225,9 +231,8 @@ export const MEMBERLESS_RESERVE_FRACTION = 0.1;
  * worth more of a short cycle than one granting nobody — but it is expressed by
  * TIER PREDICATES rather than by the plain `has_members DESC` key the per-source
  * scans used, and it is no longer ABSOLUTE. Absolute priority is the second
- * residual the pre-fix `zoom/audience.ts` header recorded against #4971:
- * member-less audiences deferred indefinitely, so the "someone joined Atlas
- * later" repair never runs. So:
+ * residual — see {@link MEMBERLESS_RESERVE_FRACTION}, which states it in full.
+ * So:
  *
  *   1. member-bearing audiences, up to `limit - reserve` of them, stalest first;
  *   2. then the reserved member-less slice, up to `reserve` of them;
@@ -255,9 +260,10 @@ export const MEMBERLESS_RESERVE_FRACTION = 0.1;
  * Sourced from `brain_episodes.visible_to`, not from `fact_audience_member`:
  * membership is the thing being repaired, so scanning the membership table would
  * make every member-less audience invisible to the pass meant to repair it. It
- * also means only LIVE audiences are scanned, which is what keeps the orphan
- * rows both connectors document (a de-duplicated message, a post-membership
- * skip) from costing a cycle.
+ * also means only LIVE audiences are scanned, which is what keeps orphan
+ * membership rows from costing a cycle — see `outlook/audience.ts`'s token-prefix
+ * note, the one place that class is documented (a de-duplicated message, a
+ * post-membership skip). Zoom does not mint them.
  *
  * `starts_with(tok, $3)` rather than the `LIKE $3` the per-source copies used.
  * Same result for today's prefixes and no escaping question: `_` is a LIKE
@@ -287,6 +293,10 @@ export const REVERIFY_CANDIDATES_SQL = `
   scored AS (
     SELECT t.token AS token,
            count(m.user_id) > 0 AS has_members,
+           -- MIN is a GROUP BY formality: 0186's PK makes the attempt row
+           -- unique per audience, and the fan-out being aggregated over is the
+           -- MEMBERSHIP join's. Not the "as verified as its least recent row"
+           -- reading that MIN(m.synced_at) carried.
            MIN(a.attempted_at) AS attempted_at
       FROM tokens t
       LEFT JOIN fact_audience_member m
@@ -362,15 +372,21 @@ export interface ReverifyScanDeps {
 /**
  * A token prefix that provably carries the grant prefix.
  *
- * Not decoration. `selectReverifyCandidates` slices returned tokens at
- * `AUDIENCE_PREFIX.length` and the scan's two LEFT JOINs key on
- * `substr(token, length($4) + 1)`, so a prefix-less value — `meeting:` instead
- * of `audience:meeting:` — would chop nine characters off tokens that never had
- * them. Every derived `audienceId` becomes garbage: membership is written under
- * a key `acl.ts` never matches, `has_members` reads false for everything, and
- * the cycle reports `reconciled` while the facts go invisible. The slice also
- * stops being injective, so two distinct tokens can collapse to one id and the
- * stamp's `ON CONFLICT` fails outright.
+ * Not decoration, but be precise about which failure it prevents — the obvious
+ * example is the harmless one. `$3` is the caller's prefix and `$4` is hardcoded
+ * to `AUDIENCE_PREFIX`, so a prefix-less `meeting:` simply matches NOTHING
+ * (`starts_with("audience:meeting:…", "meeting:")` is false) and the source goes
+ * quietly dead — bad, and the `log.debug` below is about it.
+ *
+ * The corrupting case is a prefix-less value that DOES match, and `visible_to`
+ * offers several: `org`, `role:*`, `user:*` all live in the same array. With
+ * `tokenPrefix: "user:"` the scan returns real tokens, `substr(token, 10)`
+ * chops nine characters off strings that never had the grant prefix, and every
+ * derived `audienceId` is garbage — membership written under a key `acl.ts`
+ * never matches, `has_members` false for everything, the cycle reporting
+ * `reconciled` while the facts go invisible. The slice also stops being
+ * injective there, so two tokens can collapse to one id and the stamp's
+ * `ON CONFLICT` aborts the whole statement.
  *
  * A template-literal type costs nothing and makes the whole class unreachable.
  * ⚠️ Call sites need `as const` on the template string — without it TS widens

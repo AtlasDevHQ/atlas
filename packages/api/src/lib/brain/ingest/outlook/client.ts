@@ -104,6 +104,7 @@ import {
   MAX_MESSAGE_PARTICIPANTS,
   messageParticipants,
   reconcileEmailAudience,
+  redactAudienceDigest,
   type OutlookAudienceDeps,
 } from "./audience";
 import { OUTLOOK_MAIL_SOURCE, normalizeInternetMessageId, outlookEpisodeSourceId } from "./config";
@@ -504,7 +505,14 @@ export function createOutlookMailClient(
           // unresolved SAMPLE — which carries positional labels (`cc:3`) and, by
           // design, no addresses. Without an id on one side of that join the
           // labels name nothing an operator can open.
-          audienceId,
+          //
+          // REDACTED, like every other audience-id log site in this connector.
+          // This one is the routine path — it fires for essentially every mail
+          // with an external recipient — so shipping the raw id here would leak
+          // the participants digest far more often than the abort branches
+          // `audience.ts` guards, and would make that module's "goes out of its
+          // way to keep addresses out of the sink" claim false in practice.
+          audienceId: redactAudienceDigest(audienceId),
           unresolved: reconciled.unresolved,
           granted: reconciled.added,
         },

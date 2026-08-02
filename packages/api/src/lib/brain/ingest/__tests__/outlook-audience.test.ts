@@ -193,8 +193,11 @@ describe("redactAudienceDigest", () => {
   });
 
   it("passes through anything that is not a parseable audience id", () => {
-    // A token this module did not mint is logged verbatim rather than mangled:
+    // A token this module did not mint keeps its non-digest segments, because
     // the whole point of logging it is to identify the thing that went wrong.
+    // NOT "verbatim" — that was true before the fail-closed repair below, and a
+    // 16-hex segment anywhere in an unparseable id is now blanked. These
+    // fixtures deliberately contain none, so they round-trip unchanged.
     for (const opaque of ["", "not-an-audience", "meeting:zoom:abc"]) {
       expect([opaque, redactAudienceDigest(opaque)]).toEqual([opaque, opaque]);
     }
@@ -571,6 +574,55 @@ describe("rotation — this source inherits the shared attempt stamp (#4971)", (
     expect(
       await stampedIds([{ token: "audience:email-message:malformed", has_members: false }]),
     ).toEqual(["email-message:malformed"]);
+  });
+
+  it("STAMPS the page even when the workspace's token cannot be resolved", async () => {
+    // The same ordering decision Zoom pins, and it needs its own test because it
+    // is per-connector code — the identical hoist here was green while Zoom's
+    // was red. It also matters MORE here: the GRAIN PROBLEM header argues this
+    // source is the one whose rotation carries the most weight.
+    //
+    // The token resolves AFTER the scan, so a revoked Graph credential still
+    // leaves the page stamped — which is correct, not a lie: the failure hits
+    // every audience in the workspace equally, so no audience is starved
+    // relative to any other.
+    //
+    // MUTATION THIS CATCHES: hoisting `resolveToken` above
+    // `selectReverifyCandidates` — the stamp would then never be issued.
+    let stamped: readonly string[] = [];
+    const { deps: d } = deps({
+      query: scanQuery([{ token: TOKEN, has_members: true }], undefined, (params) => {
+        stamped = (params?.[1] as string[] | undefined) ?? [];
+      }),
+      resolveToken: async () => {
+        throw new Error("mailbox access revoked");
+      },
+    });
+    const out = await reverifyOutlookMessageAudiences(d);
+    expect(stamped).toEqual([AUDIENCE_ID]);
+    expect([out.failed, out.reconciled]).toEqual([1, 0]);
+  });
+
+  it("resolves NO token at all when the workspace has no audiences to verify", async () => {
+    // The benefit the ordering was reverted FOR — a hoist landing between the
+    // scan and the `candidates.length === 0` early return keeps the stamp and
+    // would otherwise stay green. Graph's `client_credentials` exchange is not
+    // cached, so an enabled install with zero audiences would pay it every
+    // cycle, and a broken credential there would stand the cycle permanently
+    // `degraded` over a workspace with nothing to verify.
+    //
+    // MUTATION THIS CATCHES: moving `resolveToken` above the zero-candidate
+    // early return.
+    let tokenCalls = 0;
+    const { deps: d } = deps({
+      query: scanQuery([]),
+      resolveToken: async () => {
+        tokenCalls++;
+        return "tok";
+      },
+    });
+    await reverifyOutlookMessageAudiences(d);
+    expect(tokenCalls).toBe(0);
   });
 
   it("counts a FAILED scan or stamp as a workspace failure, doing no vendor work", async () => {

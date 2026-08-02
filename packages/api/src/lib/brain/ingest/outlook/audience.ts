@@ -110,9 +110,9 @@
  * #4971 touched. Fair rotation past the ceiling means the whole set ages under
  * ONE rotation rather than a lucky prefix staying fresh — better, and still
  * fail-closed for whatever falls outside the bound. Not EVENLY, though:
- * `MEMBERLESS_RESERVE_FRACTION` guarantees audiences that grant NOBODY at least
- * a tenth of each cycle. A floor, not a quota — where member-bearing audiences
- * do not fill the rest, member-less ones take the remainder too. For this source
+ * `MEMBERLESS_RESERVE_FRACTION` reserves a tenth of each cycle (rounded down)
+ * for audiences that grant NOBODY. A floor, not a quota — where member-bearing
+ * audiences do not fill the rest, member-less ones take the remainder too. For this source
  * that second class is large (mail addressed only to customers), and the floor
  * is what keeps its "someone joined Atlas later" repair running at all.
  */
@@ -175,9 +175,11 @@ export function redactAudienceDigest(audienceId: string): string {
   // real digest in a slot this parser no longer knows about. It is also the
   // exact branch `reverifyWorkspace`'s parse check logs, so the disclosure this
   // function exists to prevent would land in the sink precisely when the format
-  // moved. `parseEmailMessageAudienceId` argues the opposite direction for
-  // itself ("it stops matching and the caller falls back to opaque, which is
-  // fail-CLOSED for a disclosure decision"); this now matches it.
+  // moved. `parseEmailMessageAudienceId` argues this direction for itself ("it
+  // stops matching and the caller falls back to opaque, which is fail-CLOSED for
+  // a disclosure decision"); this adopts that direction without going all the way
+  // to opaque — non-digest segments still pass through verbatim, because the
+  // point of logging the id at all is to identify what went wrong.
   //
   // Blanking every digest-SHAPED segment is deliberately structural rather than
   // positional: with the format unknown, position is exactly what cannot be

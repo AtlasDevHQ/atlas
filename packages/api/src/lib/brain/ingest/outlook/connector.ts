@@ -34,7 +34,7 @@ import { getSettingAuto } from "@atlas/api/lib/settings";
 import { readSyncCredential } from "@atlas/api/lib/knowledge/sync-credentials";
 import { createOutlookMailClient } from "./client";
 import { fetchGraphAccessToken } from "./api";
-import { registerOutlookAudienceReverifier } from "./audience";
+import { createOutlookAudienceReverifier } from "./audience";
 import {
   OUTLOOK_MAIL_CATALOG_ID,
   OUTLOOK_MAIL_SOURCE,
@@ -42,7 +42,7 @@ import {
 } from "./config";
 import {
   getBrainSourceConnector,
-  registerBrainSourceWithAudienceReverifier,
+  registerBrainSourceConnector,
   type BrainSourceConnector,
   type BrainSourceInstallContext,
   type BrainSourceVendorClient,
@@ -197,7 +197,7 @@ export interface OutlookMailConnectorDeps {
 /** Build the Outlook mail brain source. `deps` is test-only injection. */
 export function createOutlookMailConnector(
   deps: OutlookMailConnectorDeps = {},
-): BrainSourceConnector {
+): BrainSourceConnector<typeof OUTLOOK_MAIL_SOURCE> {
   const reader: OutlookCredentialReader = deps.reader ?? {
     readSyncCredential,
     fetchGraphAccessToken,
@@ -205,6 +205,23 @@ export function createOutlookMailConnector(
   return {
     catalogId: OUTLOOK_MAIL_CATALOG_ID,
     source: OUTLOOK_MAIL_SOURCE,
+    // Mail is a grant-DERIVING class: a message's audience comes from its own
+    // headers, so nothing but this re-verifier can refresh it and
+    // `BrainSourceAudienceFor<"outlook">` admits no other arm. Built here, beside
+    // the client, so the connector and its re-verifier share one `reader` and
+    // reach the registry as one value.
+    audience: {
+      kind: "reverified",
+      reverifier: createOutlookAudienceReverifier({
+        // The install id doubles as the credential's `collection_id`, the same
+        // convention every knowledge connector uses.
+        resolveToken: async (workspaceId, installId, config) => {
+          const parsed = parseOutlookMailConfig(config);
+          if (!parsed.ok) throw new Error(parsed.error);
+          return resolveOutlookToken(reader, workspaceId, installId, parsed.tenantId);
+        },
+      }),
+    },
     createClient(ctx: BrainSourceInstallContext): BrainSourceVendorClient {
       const parsed = parseOutlookMailConfig(ctx.config);
       if (!parsed.ok) throw new Error(parsed.error);
@@ -227,30 +244,17 @@ export function createOutlookMailConnector(
  * called from the boot seam that also registers install handlers, and from
  * tests.
  *
- * The pair goes through `registerBrainSourceWithAudienceReverifier` rather than
- * as two statements. Both registries throw on a duplicate, and the gate below
- * reads only the connector registry — so registering the connector first and
- * colliding on the re-verifier second would leave this source ingesting mail
- * whose grants nothing refreshes, permanently and silently. That helper checks
- * the re-verifier registry before it commits anything.
+ * The pair is ONE value and ONE call (#4985). Both registries throw on a
+ * duplicate, and the gate below reads only the connector registry — so a
+ * registration that committed the connector first and collided on the re-verifier
+ * second would leave this source ingesting mail whose grants nothing refreshes,
+ * permanently and silently, because the retry short-circuits on the connector the
+ * failed attempt left behind. `registerBrainSourceConnector` does all of its
+ * throwing before any of its writing, so that half-state has no path.
  */
 export function registerOutlookMailConnector(deps: OutlookMailConnectorDeps = {}): void {
   if (getBrainSourceConnector(OUTLOOK_MAIL_CATALOG_ID) !== undefined) return;
-  const reader: OutlookCredentialReader = deps.reader ?? {
-    readSyncCredential,
-    fetchGraphAccessToken,
-  };
-  registerBrainSourceWithAudienceReverifier(createOutlookMailConnector({ reader }), () =>
-    registerOutlookAudienceReverifier({
-      // The install id doubles as the credential's `collection_id`, the same
-      // convention every knowledge connector uses.
-      resolveToken: async (workspaceId, installId, config) => {
-        const parsed = parseOutlookMailConfig(config);
-        if (!parsed.ok) throw new Error(parsed.error);
-        return resolveOutlookToken(reader, workspaceId, installId, parsed.tenantId);
-      },
-    }),
-  );
+  registerBrainSourceConnector(createOutlookMailConnector(deps));
   log.info(
     { catalogId: OUTLOOK_MAIL_CATALOG_ID },
     "Registered Outlook mail brain source and its audience re-verifier",

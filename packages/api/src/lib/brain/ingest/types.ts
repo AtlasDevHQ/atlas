@@ -52,10 +52,12 @@ import {
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
 import {
   _resetAudienceReverifiers,
-  hasAudienceReverifier,
+  prepareAudienceReverifier,
+  type AudienceReverifier,
 } from "@atlas/api/lib/brain/audience/reverify";
 import {
   EPISODE_SOURCES,
+  EPISODE_SOURCE_SPECS,
   episodeSourceClass,
   episodeSourceVendor,
   isEpisodeSource,
@@ -199,13 +201,108 @@ export interface BrainSourceInstallContext {
 }
 
 /**
- * A registered brain ingest source: one catalog row → one client factory.
+ * How a source's `audience:` grants are kept inside the staleness bound (#4985).
+ *
+ * ## Why this is a FIELD and not a second registration call
+ *
+ * A source that mints per-object grants needs two things registered: the
+ * connector, so it ingests, and an audience re-verifier, so the grants it minted
+ * keep resolving. They live in two registries and both throw on a duplicate, so
+ * written as two statements the first can commit and the second throw — leaving a
+ * source that ingests normally for `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`
+ * (168h by default) and then goes silently invisible when `acl.ts` suppresses the
+ * audiences nothing refreshed. That half-state is worse than either clean
+ * outcome: fully absent is fail-closed and loud (installs 500 at sync time,
+ * someone notices the same day), while half-wired is quiet for a week and then
+ * reads as the content NOT EXISTING rather than as denied, in a different
+ * subsystem, with nothing pointing back at boot.
+ *
+ * #4983 closed that at runtime by checking the re-verifier registry before
+ * committing the connector. This closes it in the SHAPE: a connector carries its
+ * audience strategy as one value, {@link registerBrainSourceConnector} is the
+ * only registration call, and there is no pair of statements a fourth source
+ * could write in the wrong order. "Forgot the re-verifier" stops being a class of
+ * mistake — the field is required, so the only remaining question is which arm,
+ * and {@link BrainSourceAudienceFor} answers that at compile time for the classes
+ * where getting it wrong is the silent failure above.
+ */
+export type BrainSourceAudience =
+  /**
+   * This source mints its own `audience:` grants and brings the re-verifier that
+   * refreshes them. Registered under the connector's `source` kind, so the two
+   * halves cannot be wired to different sources.
+   */
+  | { readonly kind: "reverified"; readonly reverifier: AudienceReverifier }
+  /**
+   * This source's audiences are reconciled by something OTHER than a registered
+   * re-verifier, and it registers none.
+   *
+   * `slack-history` is the shipped case: its grants are channel-scoped and
+   * `audience/sync.ts` walks Slack channel rosters directly, parameterised by
+   * `SLACK_HISTORY_CATALOG_ID`. Naming that here is the point — the arm is a
+   * DECLARATION that somebody else owns the refresh, not an opt-out, so a source
+   * that picks it is making a claim a reviewer can check rather than leaving a
+   * field off.
+   */
+  | { readonly kind: "externally-synced" };
+
+/**
+ * The episode classes whose grants are per-object and therefore CANNOT be
+ * externally synced — a transcript's participants and a mail's recipients are
+ * derived from the record itself, so nothing but a re-verifier for this source
+ * can refresh them.
+ *
+ * ADR-0036's other classes are deliberately absent, each for its own reason:
+ * `chat` grants are channel-scoped and reconciled by the install-driven Slack
+ * walk; `warehouse` and `human` episodes do not come from a connector at all.
+ * Those may legitimately pick either arm, so the type leaves the choice open and
+ * the arm's own docstring is what a reviewer reads.
+ */
+export const REVERIFIER_REQUIRED_CLASSES = ["transcript", "email"] as const satisfies
+  readonly EpisodeSourceClass[];
+
+type ReverifierRequiredClass = (typeof REVERIFIER_REQUIRED_CLASSES)[number];
+
+/**
+ * The audience strategies a source of kind `S` may declare.
+ *
+ * This is AC-5 of #4985 answered YES: for a grant-deriving class, "mints
+ * audience grants with no re-verifier" is a TS2322 at the connector literal
+ * rather than a runbook item. `BrainSourceAudienceFor<"zoom">` is the
+ * `"reverified"` arm alone; `BrainSourceAudienceFor<"slack">` is the whole union.
+ *
+ * The narrowing bites wherever the source is LITERAL-typed, which is every
+ * hand-written connector: each `create*Connector` declares
+ * `BrainSourceConnector<typeof X_SOURCE>`, and {@link registerBrainSourceConnector}
+ * infers `S` from the value it is handed, so an inline literal is checked too.
+ *
+ * At the default `S = EpisodeSource` the class set spans both grant-deriving and
+ * not, the conditional is false, and the field widens to the union. That is what
+ * the registry stores, and it is the honest answer for a connector that arrives
+ * as DATA rather than as a checked type — a plugin-supplied one, compiled
+ * separately. Those get the runtime all-or-nothing guarantee in
+ * {@link registerBrainSourceConnector} and nothing more, which is the same split
+ * `lib/brain/sources.ts` already draws for the source vocabulary itself.
+ */
+export type BrainSourceAudienceFor<S extends EpisodeSource> =
+  (typeof EPISODE_SOURCE_SPECS)[S]["class"] extends ReverifierRequiredClass
+    ? Extract<BrainSourceAudience, { kind: "reverified" }>
+    : BrainSourceAudience;
+
+/**
+ * A registered brain ingest source: one catalog row → one client factory, plus
+ * the audience strategy that keeps its grants alive.
  *
  * `createClient` may throw (bad config, a disconnected upstream OAuth install)
  * — the engine turns that into the source's error outcome with the message
  * surfaced to the admin, so make it actionable.
+ *
+ * The type parameter exists ONLY to carry the compile-time audience narrowing
+ * described on {@link BrainSourceAudienceFor}; every consumer that merely holds
+ * connectors (the registry, the cycle walk, the webhook fast-path) uses the
+ * unparameterised form and sees the widest shape.
  */
-export interface BrainSourceConnector {
+export interface BrainSourceConnector<S extends EpisodeSource = EpisodeSource> {
   /** The catalog row this connector serves — the cycle-walk dispatch key. */
   readonly catalogId: string;
   /**
@@ -230,7 +327,12 @@ export interface BrainSourceConnector {
    * stored column and the registry lookup would answer different questions
    * about the same connector.
    */
-  readonly source: EpisodeSource;
+  readonly source: S;
+  /**
+   * How this source's `audience:` grants stay inside the staleness bound.
+   * Required, and required for a REASON — see {@link BrainSourceAudience}.
+   */
+  readonly audience: BrainSourceAudienceFor<S>;
   createClient(
     ctx: BrainSourceInstallContext,
   ): Promise<BrainSourceVendorClient> | BrainSourceVendorClient;
@@ -245,14 +347,49 @@ const SOURCE_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const registry = new Map<string, BrainSourceConnector>();
 
 /**
- * Register a brain source for its catalog row. Called once per source at
- * wiring time. Duplicate catalog ids, malformed source slugs, and kinds
- * outside the vocabulary all fail loudly — a silent overwrite would let one
- * source shadow another's installs, a malformed slug would land unqueryable
- * garbage in `brain_episodes.source`, and an unknown kind would land a value
- * that every downstream discriminator silently declines to recognise.
+ * Register a brain source — the connector AND the audience half it declares —
+ * for its catalog row. Called once per source at wiring time.
+ *
+ * Duplicate catalog ids, malformed source slugs, kinds outside the vocabulary,
+ * and a re-verifier already held for this source all fail loudly. A silent
+ * overwrite would let one source shadow another's installs, a malformed slug
+ * would land unqueryable garbage in `brain_episodes.source`, an unknown kind
+ * would land a value that every downstream discriminator silently declines to
+ * recognise, and a duplicate re-verifier would have two of them reconciling
+ * against their own rosters with the loser's members revoked every cycle.
+ *
+ * ## ALL-OR-NOTHING, and how the body is arranged to guarantee it
+ *
+ * This function writes THREE process-global structures — the catalog-ingest
+ * claim, this registry, and the audience re-verifier registry — and a partial
+ * commit is the failure #4983/#4985 exist to prevent (see
+ * {@link BrainSourceAudience} for what a half-wired source costs). `registerStep`
+ * in `integrations/install/register.ts` bounds the blast radius ACROSS vendors and
+ * can do nothing about a vendor that committed to one registry and then threw on
+ * a second, because no catch can undo a write from the outside.
+ *
+ * So every throw site sits ABOVE the first write, and the body is split to make
+ * that readable:
+ *
+ *   - the validation half throws and writes nothing. {@link prepareAudienceReverifier}
+ *     belongs to it: it performs the duplicate check and returns the commit,
+ *     which is why the check cannot be separated from the write it protects;
+ *   - `claimCatalogIngestTarget` is the boundary — it checks before it writes, so
+ *     a cross-target collision still throws with nothing committed anywhere;
+ *   - the two writes after it are `Map.set` calls that cannot fail.
+ *
+ * Registration is single-threaded boot wiring, so there is no window between the
+ * checks and the writes for anything else to claim the source.
+ *
+ * `const S` so an inline connector literal keeps its literal source kind and gets
+ * {@link BrainSourceAudienceFor}'s compile-time check rather than the widened
+ * union. A caller holding an already-widened `BrainSourceConnector` still passes
+ * — that arm is for connectors that arrive as data, and it is the runtime
+ * validation above, not the type, that covers them.
  */
-export function registerBrainSourceConnector(connector: BrainSourceConnector): void {
+export function registerBrainSourceConnector<const S extends EpisodeSource>(
+  connector: BrainSourceConnector<S>,
+): void {
   if (!SOURCE_SLUG.test(connector.source)) {
     throw new Error(
       `Brain source slug "${connector.source}" is invalid — expected a lowercase alphanumeric slug matching ${SOURCE_SLUG.source} (it is stored verbatim in brain_episodes.source)`,
@@ -282,64 +419,23 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
       `Brain source connector for catalog id "${connector.catalogId}" is already registered`,
     );
   }
+  // The re-verifier's duplicate check, fused to the only thing that installs it.
+  // Keyed on `connector.source`, so the connector and its re-verifier cannot be
+  // wired to different sources.
+  const commitReverifier =
+    connector.audience.kind === "reverified"
+      ? prepareAudienceReverifier(connector.source, connector.audience.reverifier)
+      : undefined;
+
+  // ── Past this line nothing may throw with a write already committed. ──
   // One catalog id, one ingest target. Both registries claim through the same
   // module so the check is ORDER-INDEPENDENT — an earlier one-sided peek at the
   // knowledge registry only covered the direction that cannot happen (brain
-  // sources register last today) and missed the one that can.
+  // sources register last today) and missed the one that can. It checks before
+  // it writes, so a collision here still leaves nothing committed.
   claimCatalogIngestTarget(connector.catalogId, "brain-episodes");
   registry.set(connector.catalogId, connector);
-}
-
-/**
- * Register a brain source AND its audience re-verifier as one unit.
- *
- * ## Why this exists rather than two calls in a row
- *
- * A source that derives per-object grants needs BOTH: the connector to ingest,
- * and the re-verifier to keep the grants it minted from going stale. They live
- * in two registries, and both throw on a duplicate. Written as two bare
- * statements — which is how Zoom and Outlook were first wired — a throw from the
- * SECOND leaves the first committed, and the caller's idempotence gate
- * (`getBrainSourceConnector(id) !== undefined`) reads only that first registry.
- * So the retry short-circuits and the half-state is permanent for the process.
- *
- * That half-state is the worst of the three outcomes, and it is worth being
- * precise about why. Fully registered is correct. Fully absent is fail-closed
- * and loud — installs 500 at sync time and someone notices the same day. HALF
- * registered ingests normally for `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`
- * (168h by default) and only then goes wrong, at which point `acl.ts` suppresses
- * every audience the missing re-verifier was supposed to refresh and every fact
- * behind them reads as ABSENT rather than as denied. A week later, in a
- * different subsystem, with nothing pointing back here.
- *
- * So the re-verifier registry is checked BEFORE the connector is committed. That
- * ordering is the whole point: after this check the only remaining throw sites
- * are inside {@link registerBrainSourceConnector}, which validates before it
- * writes and whose own two writes (`claimCatalogIngestTarget` then
- * `registry.set`) already fail with nothing committed. Registration is
- * single-threaded boot wiring, so there is no window between the check and the
- * write for anything else to claim the source.
- *
- * A source with no per-object grants (slack-history — its grants are channel
- * scoped and reconciled by the install-driven sweep) has no re-verifier to pair
- * and calls {@link registerBrainSourceConnector} directly.
- *
- * @param connector the source to register
- * @param registerReverifier commits the re-verifier; called only once the
- *   connector is registered and the duplicate check above has passed. Keyed on
- *   `connector.source`, so the two halves cannot be wired to different sources.
- */
-export function registerBrainSourceWithAudienceReverifier(
-  connector: BrainSourceConnector,
-  registerReverifier: () => void,
-): void {
-  if (hasAudienceReverifier(connector.source)) {
-    throw new Error(
-      `Audience re-verifier for source "${connector.source}" is already registered — refusing to register its brain source connector, because committing one without the other leaves the source ingesting content whose grants are never re-verified`,
-    );
-  }
-  registerBrainSourceConnector(connector);
-  registerReverifier();
+  commitReverifier?.();
 }
 
 export function getBrainSourceConnector(catalogId: string): BrainSourceConnector | undefined {
@@ -439,17 +535,26 @@ export function listBrainSourceCatalogIds(): string[] {
 }
 
 /**
- * Test-only: clear the registry (tests register fixtures per-suite).
+ * Test-only: tear down EVERYTHING {@link registerBrainSourceConnector} writes —
+ * the connector registry, this target's catalog-ingest claims, and the audience
+ * re-verifier registry.
  *
- * Clears the audience-re-verifier registry too, because #4965/#4966 made source
- * registration a TWO-registry write while the idempotence gate inside
- * `registerZoomTranscriptConnector` / `registerOutlookMailConnector` still reads only this one
- * (`if (getBrainSourceConnector(id) !== undefined) return;`). Clearing one and
- * not the other lets them de-sync: a suite that resets connectors and then
- * re-registers passes the gate, reaches `registerXxxAudienceReverifier`, and
- * throws `Audience re-verifier for source "…" is already registered` — a failure
- * with nothing to do with what the suite was testing. Resetting both keeps the
- * pair that boot writes together torn down together.
+ * The three clears mirror the three writes one-for-one, and that is deliberately
+ * the invariant to maintain rather than "remember the re-verifiers too": since
+ * #4985 registration has ONE entry point, so teardown has one, and a future
+ * fourth structure is added to both halves of the same pair of functions.
+ *
+ * Why totality matters here and not just tidiness: `registerZoomTranscriptConnector`
+ * / `registerOutlookMailConnector` gate on the CONNECTOR registry alone
+ * (`if (getBrainSourceConnector(id) !== undefined) return;`). Clearing one and not
+ * the other lets them de-sync — a suite that resets connectors and then
+ * re-registers passes the gate, reaches the re-verifier commit, and throws
+ * `Audience re-verifier for source "…" is already registered`, a failure with
+ * nothing to do with what the suite was testing.
+ *
+ * So this is the reset a suite that registers a brain source calls.
+ * `_resetAudienceReverifiers` is for suites whose subject is the re-verifier
+ * registry itself and which register no connector at all.
  */
 export function _resetBrainSourceConnectors(): void {
   registry.clear();

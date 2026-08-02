@@ -600,10 +600,12 @@ describe("registerBuiltinInstallHandlers — BRAIN source connector pairing (#49
     // Same provocation as above: Zoom's re-verifier is taken, so the pair cannot
     // complete. The connector registry must come out of it EMPTY for Zoom.
     //
-    // MUTATION THIS CATCHES: reverting `registerBrainSourceWithAudienceReverifier`
-    // to a bare `registerBrainSourceConnector(...)` + `registerXReverifier(...)`
-    // pair — the ordering this asserts is the only thing standing between a
-    // duplicate re-verifier and a silently decaying source.
+    // MUTATION THIS CATCHES: moving `registerBrainSourceConnector`'s writes above
+    // its `prepareAudienceReverifier` call — the validate-then-commit ordering
+    // this asserts is the only thing standing between a duplicate re-verifier and
+    // a silently decaying source. (#4985 folded the audience half into the
+    // connector value, so the older "two bare statements" mutation this line used
+    // to name is no longer expressible; the ordering claim is unchanged.)
     registerAudienceReverifier(ZOOM_TRANSCRIPT_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
 
     registerBuiltinInstallHandlers();

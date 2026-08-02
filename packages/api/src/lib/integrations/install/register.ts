@@ -214,10 +214,12 @@ let alreadyRegistered = false;
  * What it does NOT promise is that the failed vendor is cleanly absent. That is
  * the registration's own job, not this wrapper's — a step that commits to one
  * registry and then throws on a second would leave a half-wired vendor here, and
- * no catch can undo it from the outside. `registerBrainSourceWithAudienceReverifier`
- * (`brain/ingest/types.ts`) is what makes the brain pair all-or-nothing; this
- * message deliberately says "may be partially wired" rather than asserting an
- * absence it cannot verify.
+ * no catch can undo it from the outside. `registerBrainSourceConnector`
+ * (`brain/ingest/types.ts`) is what makes the brain pair all-or-nothing — it takes
+ * the connector and its audience half as ONE value and does all of its throwing
+ * above its first write; this message deliberately says "may be partially wired"
+ * rather than asserting an absence it cannot verify, because the knowledge
+ * connectors and OAuth handlers it also wraps make no such promise.
  */
 function registerStep(label: string, register: () => void): void {
   try {

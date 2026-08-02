@@ -46,6 +46,7 @@ function brainConnector(catalogId = CATALOG): BrainSourceConnector {
   return {
     catalogId,
     source: SLACK_SOURCE,
+    audience: { kind: "externally-synced" },
     createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
   };
 }

@@ -32,6 +32,11 @@ import {
   type BrainSourceConnector,
 } from "@atlas/api/lib/brain/ingest/types";
 import {
+  ZERO_REVERIFY,
+  listAudienceReverifierSources,
+  registerAudienceReverifier,
+} from "@atlas/api/lib/brain/audience/reverify";
+import {
   CHAT_CLASS,
   HUMAN_SOURCE,
   SLACK_SOURCE,
@@ -150,6 +155,10 @@ describe("the brain source registry", () => {
     return {
       catalogId: "catalog:fixture",
       source: SLACK_SOURCE,
+      // Chat grants are reconciled by the install-driven Slack walk, so the
+      // default fixture registers no re-verifier. The tests below that DO care
+      // override it.
+      audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
       ...overrides,
     };
@@ -219,6 +228,70 @@ describe("the brain source registry", () => {
     expect(() => registerBrainSourceConnector(connector({ source: WAREHOUSE_SOURCE }))).not.toThrow();
     _resetBrainSourceConnectors();
   });
+
+  // ── The audience half, registered as ONE unit with the connector (#4985) ──
+
+  const reverified = (): BrainSourceConnector =>
+    connector({
+      audience: { kind: "reverified", reverifier: () => Promise.resolve(ZERO_REVERIFY) },
+    });
+
+  it("commits the connector AND its re-verifier from one call", () => {
+    // The `reverified` arm is not decoration: a source that declares it must end
+    // up in BOTH registries off a single `registerBrainSourceConnector`, because
+    // the whole point of folding the audience strategy into the connector value
+    // is that there is no second statement anyone can forget.
+    //
+    // MUTATION THIS CATCHES: dropping the `commitReverifier?.()` call.
+    registerBrainSourceConnector(reverified());
+    expect(getBrainSourceConnector("catalog:fixture")).toBeDefined();
+    expect(listAudienceReverifierSources()).toEqual([SLACK_SOURCE]);
+  });
+
+  it("registers NO re-verifier for an externally-synced source", () => {
+    // The other arm has to be a real branch, not a shrug. Slack's grants are
+    // reconciled by the install-driven walk, and a connector that quietly
+    // registered a re-verifier anyway would put a second writer on audiences the
+    // walk already owns.
+    registerBrainSourceConnector(connector());
+    expect(getBrainSourceConnector("catalog:fixture")).toBeDefined();
+    expect(listAudienceReverifierSources()).toEqual([]);
+  });
+
+  it("⭐ registers NEITHER half when the re-verifier registry is already taken", () => {
+    // The half-state this seam exists to prevent, asserted at the registry rather
+    // than per-vendor. A connector committed with its re-verifier rejected ingests
+    // normally for ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS (168h) and only then
+    // goes wrong, at which point `acl.ts` suppresses every audience nothing
+    // refreshed and the facts behind them read as ABSENT rather than denied.
+    //
+    // MUTATION THIS CATCHES: moving `claimCatalogIngestTarget` / `registry.set`
+    // above the `prepareAudienceReverifier` call, i.e. writing before validating.
+    registerAudienceReverifier(SLACK_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
+
+    expect(() => registerBrainSourceConnector(reverified())).toThrow(/already registered/);
+
+    expect(getBrainSourceConnector("catalog:fixture")).toBeUndefined();
+    expect(listBrainSourceCatalogIds()).toEqual([]);
+  });
+
+  it("⭐ _resetBrainSourceConnectors tears down the re-verifier registry too", () => {
+    // The teardown mirrors the registration one-for-one. If it stopped doing so,
+    // every suite that registers a brain source and re-registers it would fail on
+    // a duplicate re-verifier — a failure with nothing to do with what it was
+    // testing — because the `register*Connector` idempotence gates read only the
+    // CONNECTOR registry and would wave the second attempt through.
+    //
+    // MUTATION THIS CATCHES: dropping `_resetAudienceReverifiers()` from
+    // `_resetBrainSourceConnectors`.
+    registerBrainSourceConnector(reverified());
+    expect(listAudienceReverifierSources()).toEqual([SLACK_SOURCE]);
+
+    _resetBrainSourceConnectors();
+
+    expect(listAudienceReverifierSources()).toEqual([]);
+    expect(() => registerBrainSourceConnector(reverified())).not.toThrow();
+  });
 });
 
 describe("resolving connectors by class + vendor (#4963)", () => {
@@ -238,6 +311,7 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     const make = (catalogId: string, source: EpisodeSource): BrainSourceConnector => ({
       catalogId,
       source,
+      audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     registerBrainSourceConnector(make("catalog:chat-a", SLACK_SOURCE));
@@ -337,6 +411,7 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:only",
       source: WAREHOUSE_SOURCE,
+      audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     expect(findBrainSourceConnectors({ sourceClass: CHAT_CLASS })).toEqual([]);

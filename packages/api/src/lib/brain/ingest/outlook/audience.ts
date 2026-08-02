@@ -133,9 +133,9 @@ import {
   isAudienceSyncEnabled,
 } from "@atlas/api/lib/brain/audience/sync";
 import {
-  registerAudienceReverifier,
   selectReverifyCandidates,
   ZERO_REVERIFY,
+  type AudienceReverifier,
   type AudienceReverifyResult,
 } from "@atlas/api/lib/brain/audience/reverify";
 import { fetchMessageByInternetMessageId, type OutlookMessage } from "./api";
@@ -685,11 +685,16 @@ async function reverifyWorkspace(
 }
 
 /**
- * Register the Outlook re-verifier. Called from the same wiring seam that
- * registers the connector, so a deployment can never have one without the other
- * — an ingest path that mints audiences with no re-verifier is the silent-expiry
- * bug this module exists to prevent.
+ * Build the Outlook re-verifier. It is the `audience` half of the Outlook
+ * connector value (`connector.ts`), so a deployment can never have one without
+ * the other — an ingest path that mints audiences with no re-verifier is the
+ * silent-expiry bug this module exists to prevent.
+ *
+ * Returns rather than registers (#4985): the registration is
+ * `registerBrainSourceConnector`'s single all-or-nothing write, and a second
+ * function that also wrote to the re-verifier registry would be exactly the loose
+ * half a caller can commit on its own.
  */
-export function registerOutlookAudienceReverifier(deps: OutlookAudienceDeps): void {
-  registerAudienceReverifier(OUTLOOK_MAIL_SOURCE, () => reverifyOutlookMessageAudiences(deps));
+export function createOutlookAudienceReverifier(deps: OutlookAudienceDeps): AudienceReverifier {
+  return () => reverifyOutlookMessageAudiences(deps);
 }

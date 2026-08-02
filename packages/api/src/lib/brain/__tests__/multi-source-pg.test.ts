@@ -218,7 +218,10 @@ import {
   ZOOM_TRANSCRIPT_SOURCE,
   zoomEpisodeSourceId,
 } from "@atlas/api/lib/brain/ingest/zoom/config";
-import type { ZoomAudienceDeps } from "@atlas/api/lib/brain/ingest/zoom/audience";
+import {
+  createZoomAudienceReverifier,
+  type ZoomAudienceDeps,
+} from "@atlas/api/lib/brain/ingest/zoom/audience";
 import type { ZoomParticipant, ZoomRecordingMeeting } from "@atlas/api/lib/brain/ingest/zoom/api";
 import { createOutlookMailClient } from "@atlas/api/lib/brain/ingest/outlook/client";
 import {
@@ -226,6 +229,7 @@ import {
   outlookEpisodeSourceId,
 } from "@atlas/api/lib/brain/ingest/outlook/config";
 import {
+  createOutlookAudienceReverifier,
   messageParticipants,
   type OutlookAudienceDeps,
 } from "@atlas/api/lib/brain/ingest/outlook/audience";
@@ -827,9 +831,12 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
     },
   };
 
-  const slackConnector: BrainSourceConnector = {
+  const slackConnector: BrainSourceConnector<typeof SLACK_HISTORY_SOURCE> = {
     catalogId: "slack-history-multisource-test",
     source: SLACK_HISTORY_SOURCE,
+    // Channel-scoped grants, reconciled by the Slack-scoped walk in
+    // `audience/sync.ts` rather than by a registered re-verifier.
+    audience: { kind: "externally-synced" },
     createClient: () =>
       createSlackHistoryClient({
         token: "xoxb-test",
@@ -862,9 +869,14 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
     },
   };
 
-  const zoomConnector: BrainSourceConnector = {
+  const zoomConnector: BrainSourceConnector<typeof ZOOM_TRANSCRIPT_SOURCE> = {
     catalogId: "zoom-transcripts-multisource-test",
     source: ZOOM_TRANSCRIPT_SOURCE,
+    // A transcript audience is derived per meeting, so the type admits no arm
+    // but this one. Never driven here — this suite exercises the re-verify pass
+    // through `reverifyZoomMeetingAudiences` directly — but stating the real
+    // strategy keeps the fixture honest about what production registers.
+    audience: { kind: "reverified", reverifier: createZoomAudienceReverifier(zoomAudienceDeps) },
     createClient: () =>
       createZoomTranscriptClient({
         workspaceId: WORKSPACE,
@@ -899,9 +911,15 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
 
   const outlookAudienceDeps: OutlookAudienceDeps = { ...audienceDbDeps };
 
-  const outlookConnector: BrainSourceConnector = {
+  const outlookConnector: BrainSourceConnector<typeof OUTLOOK_MAIL_SOURCE> = {
     catalogId: "outlook-mail-multisource-test",
     source: OUTLOOK_MAIL_SOURCE,
+    // Same as Zoom above: a mail audience is derived per message, so the type
+    // admits no other arm.
+    audience: {
+      kind: "reverified",
+      reverifier: createOutlookAudienceReverifier(outlookAudienceDeps),
+    },
     createClient: () =>
       createOutlookMailClient({
         workspaceId: WORKSPACE,

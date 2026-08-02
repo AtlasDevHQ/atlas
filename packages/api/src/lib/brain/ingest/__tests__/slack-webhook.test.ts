@@ -43,9 +43,10 @@ const PRIVATE_CHANNEL = "G01PRIVATE";
 const TS = "1750000000.000100";
 
 /** The registered Slack brain source, as the writer sees it in the registry. */
-const CONNECTOR: BrainSourceConnector = {
+const CONNECTOR: BrainSourceConnector<typeof SLACK_SOURCE> = {
   catalogId: SLACK_HISTORY_CATALOG_ID,
   source: SLACK_SOURCE,
+  audience: { kind: "externally-synced" },
   createClient() {
     throw new Error("the webhook path never builds a vendor client");
   },

@@ -29,6 +29,41 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
+/**
+ * Capture every argument of every log call (#4984) — a payload-field assertion
+ * would miss a secret interpolated into the message string. Same harness as
+ * `credentials/__tests__/store.test.ts`, pinning the same class on the sibling
+ * store.
+ */
+const LOG_CALLS: unknown[][] = [];
+function createCapturingLogger(): Record<string, (...args: unknown[]) => void> {
+  const record =
+    (level: string) =>
+    (...args: unknown[]): void => {
+      LOG_CALLS.push([level, ...args]);
+    };
+  return {
+    trace: record("trace"),
+    debug: record("debug"),
+    info: record("info"),
+    warn: record("warn"),
+    error: record("error"),
+    fatal: record("fatal"),
+  };
+}
+void mock.module("@atlas/api/lib/logger", () => ({
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  getLogger: () => createCapturingLogger(),
+  createLogger: () => createCapturingLogger(),
+  hashShareToken: (token: string) => token,
+  setLogLevel: () => true,
+}));
+
 type StoreModule = typeof import("../store");
 let store!: StoreModule;
 
@@ -44,6 +79,7 @@ beforeEach(() => {
   delete process.env.BETTER_AUTH_SECRET;
   _resetEncryptionKeyCache();
   mockInternalQuery.mockClear();
+  LOG_CALLS.length = 0;
 });
 
 afterEach(() => {
@@ -155,6 +191,86 @@ describe("readOperatorCredentials", () => {
     );
 
     await expect(store.readOperatorCredentials(PLATFORM)).rejects.toThrow(/validation failed/);
+  });
+
+  describe("a row that decrypts cleanly but is not JSON (#4984)", () => {
+    /**
+     * The sibling of `credentials/store.ts`'s leak, found by the same grep.
+     * `parseBundle` wrapped BOTH the JSON parse and the Zod shape check in one
+     * catch that logged `err.message` — and only one of those two errors can
+     * echo a secret. They are split so the shape arm keeps its diagnostic.
+     *
+     * ⚠️ The fixture is DELIMITER-FREE on purpose, and the first draft of this
+     * test was vacuous for want of that. JSC's message echoes only the leading
+     * IDENTIFIER, which ends at the first `-`: a realistic `xoxb-<secret>` token
+     * leaks just `"xoxb"` — a public prefix — and an assertion on any
+     * secret-bearing fragment of it passes against the bug. An opaque
+     * delimiter-free token leaks in FULL, so that is what this pins. (Verified
+     * empirically against bun/JSC rather than assumed.)
+     */
+    const LEGACY_PLAINTEXT_SECRET = "s3cr3tSlackSigningValueNotJson";
+
+    async function readNonJsonRow(): Promise<unknown> {
+      const { encryptSecret } = await import("@atlas/api/lib/db/secret-encryption");
+      mockInternalQuery.mockImplementationOnce(() =>
+        Promise.resolve([
+          {
+            credentials_encrypted: encryptSecret(LEGACY_PLAINTEXT_SECRET),
+            credentials_key_version: 1,
+          },
+        ]),
+      );
+      return store.readOperatorCredentials(PLATFORM).catch((err: unknown) => err);
+    }
+
+    it("⭐ logs no derivative of the decrypted plaintext, but still names the platform", async () => {
+      await readNonJsonRow();
+
+      expect(LOG_CALLS.length).toBeGreaterThan(0);
+      const written = JSON.stringify(LOG_CALLS);
+      expect(written).not.toContain(LEGACY_PLAINTEXT_SECRET);
+      // The leading fragment is what `JSON.parse`'s message actually carries.
+      expect(written).not.toContain("s3cr3t");
+      // Over-redaction is the opposite bug: the platform is not a secret and
+      // is the only thing that locates the row.
+      expect(written).toContain(PLATFORM);
+    });
+
+    it("throws with no cause chain back to the parse failure", async () => {
+      const err = await readNonJsonRow();
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).cause).toBeUndefined();
+      expect((err as Error).message).not.toContain("s3cr3t");
+    });
+
+    it("⭐ the SHAPE arm keeps a diagnostic — the split is not a blanket redaction", async () => {
+      // The whole point of splitting the two catches. `z.record(z.string(),
+      // z.string())` issues carry the PATH (an env-var name, not a secret) and
+      // an `invalid_type` code naming the received TYPE — never the value. A
+      // fix that dropped diagnostics from BOTH arms would pass every assertion
+      // above and lose this.
+      const { encryptSecret } = await import("@atlas/api/lib/db/secret-encryption");
+      mockInternalQuery.mockImplementationOnce(() =>
+        Promise.resolve([
+          {
+            credentials_encrypted: encryptSecret(
+              JSON.stringify({ SLACK_CLIENT_ID: 1234, SLACK_CLIENT_SECRET: "fine" }),
+            ),
+            credentials_key_version: 1,
+          },
+        ]),
+      );
+
+      await expect(store.readOperatorCredentials(PLATFORM)).rejects.toThrow(/validation failed/);
+
+      const written = JSON.stringify(LOG_CALLS);
+      expect(written).toContain("SLACK_CLIENT_ID");
+      expect(written).toContain("invalid_type");
+      // The offending VALUE is never logged, even though it is the thing that
+      // failed — and neither is the sibling key's value.
+      expect(written).not.toContain("fine");
+    });
   });
 });
 

@@ -299,7 +299,11 @@ export async function reverifyZoomMeetingAudiences(
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
   const resolveToken = deps.resolveToken;
   if (resolveToken === undefined) {
-    // Unreachable in production — `createZoomAudienceReverifier` binds one.
+    // Unreachable in production — the connector literal in
+    // `createZoomTranscriptConnector` binds one. NOT
+    // `createZoomAudienceReverifier`, which forwards whatever deps it is handed
+    // (`resolveToken` is optional on `ZoomAudienceDeps`, and test fixtures do
+    // build it without one).
     // Loud rather than a silent no-op: a re-verifier that quietly does nothing
     // lets every meeting audience age past the staleness bound while the cycle
     // reports success, which is the exact failure this module exists to prevent.

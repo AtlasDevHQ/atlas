@@ -670,13 +670,13 @@ describe("rotation — this source inherits the shared attempt stamp (#4971)", (
 describe("the re-verifier registry", () => {
   // `_resetAudienceReverifiers` and not `_resetBrainSourceConnectors`, which is
   // the reset every suite that registers a BRAIN SOURCE must use since #4985.
-  // The distinction is the point rather than an oversight: these tests register
-  // bare fixture re-verifiers and never touch the connector registry, so this is
-  // the un-paired primitive's one legitimate caller — a suite whose subject IS
-  // this registry. A suite that registered a connector and then reset only this
-  // half would leave the idempotence gate (`getBrainSourceConnector(id) !==
-  // undefined`) saying "already registered" about a source whose re-verifier had
-  // just been deleted.
+  // The distinction is the point rather than an oversight, and the criterion is
+  // what the suite REGISTERS: these tests register bare fixture re-verifiers and
+  // never a connector, so the un-paired primitive is the right tool (the other
+  // compliant caller is `audience/__tests__/sync.test.ts`, same reason). A suite
+  // that registered a connector and then reset only this half would leave the
+  // idempotence gate (`getBrainSourceConnector(id) !== undefined`) saying
+  // "already registered" about a source whose re-verifier had just been deleted.
   //
   // In `beforeEach`/`afterEach`, not inline at the top and bottom of each test.
   // The inline form is what `audience/__tests__/sync.test.ts` was burned by: a

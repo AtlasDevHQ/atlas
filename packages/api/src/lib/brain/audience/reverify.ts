@@ -125,16 +125,23 @@ const registry = new Map<EpisodeSource, AudienceReverifier>();
  * asked the caller to consult it first. That works and it is what #4983 shipped,
  * but the check and the write it protects were two separate statements a future
  * source could put back in the wrong order — or drop. Here they are ONE
- * expression: the duplicate check is the thing that mints the commit, so there is
- * no way to reach the write without having passed the check. Deleting the check
- * deletes the write with it.
+ * expression: the duplicate check is the thing that mints the commit, so a CALLER
+ * cannot reach the write without having passed the check, and deleting the call
+ * deletes both halves together.
+ *
+ * Be precise about the limit of that. It is a property of the call site, not of
+ * this function's body — deleting the `if` below leaves the `registry.set` thunk
+ * intact and turns a duplicate into a silent overwrite. What it buys is that the
+ * ORDERING bug is gone: there is no arrangement of statements a caller can write
+ * that commits one half and then throws on the other.
  *
  * Keyed by the stored source kind, so a duplicate is a loud error rather than a
  * silent overwrite — two re-verifiers for one source would each reconcile against
  * their own roster, and the loser's members would be revoked on every cycle.
  *
  * @returns a commit thunk that CANNOT throw. Call it only once the caller's own
- *   writes are past their last failure point.
+ *   writes are past their last failure point. Dropping it on the floor registers
+ *   nothing — the check has no side effect of its own.
  */
 export function prepareAudienceReverifier(
   source: EpisodeSource,
@@ -155,10 +162,15 @@ export function prepareAudienceReverifier(
  *
  * Production wiring does NOT come through here — a source declares its audience
  * strategy on its connector and `registerBrainSourceConnector` commits both
- * halves in one call (#4985). This is the un-paired entry point that the
- * re-verifier registry's OWN unit suites need (a fixture re-verifier with no
- * connector behind it), and the provocation `register.test.ts` uses to take the
- * name before the real registration reaches it.
+ * halves in one call (#4985). Two test shapes still need the un-paired write, and
+ * they are described rather than enumerated because a hard-coded caller list rots
+ * on the next PR:
+ *
+ *   - a bare fixture re-verifier with no connector behind it, for suites whose
+ *     subject is this registry or the cycle that drains it;
+ *   - the PROVOCATION — taking a source's name before a paired registration
+ *     reaches it, so the pair cannot complete and the all-or-nothing claim has
+ *     something to fail against.
  */
 export function registerAudienceReverifier(
   source: EpisodeSource,
@@ -205,13 +217,18 @@ export async function runRegisteredAudienceReverifiers(): Promise<AudienceReveri
 /**
  * Test-only: clear the re-verifier registry ALONE.
  *
- * ⚠️ Only for a suite whose subject IS this registry — the drain, the duplicate
- * refusal, the summing. A suite that registers a brain source must reset through
- * `_resetBrainSourceConnectors` (`ingest/types.ts`) instead, which clears this
- * registry as well: since #4985 the two are written by one call, so tearing down
- * one and not the other de-syncs them, and the connector registry is the one every
- * `register*Connector` idempotence gate reads. Clearing THIS one alone leaves the
- * gate saying "already registered" about a source whose re-verifier is gone.
+ * ⚠️ The rule is about what the suite REGISTERS, not what it is named after: only
+ * a suite that registers no brain-source connector may call this. A suite that
+ * registers one must reset through `_resetBrainSourceConnectors`
+ * (`ingest/types.ts`), which clears this registry as well — since #4985 the two
+ * are written by one call, so tearing down one and not the other de-syncs them,
+ * and the connector registry is the one every `register*Connector` idempotence
+ * gate reads. Clearing THIS one alone leaves the gate saying "already registered"
+ * about a source whose re-verifier is gone.
+ *
+ * The compliant callers today are the suites for this registry and for the cycle
+ * that drains it (`audience/__tests__/sync.test.ts`), both of which register
+ * fixture re-verifiers only.
  */
 export function _resetAudienceReverifiers(): void {
   registry.clear();

@@ -217,9 +217,10 @@ let alreadyRegistered = false;
  * no catch can undo it from the outside. `registerBrainSourceConnector`
  * (`brain/ingest/types.ts`) is what makes the brain pair all-or-nothing — it takes
  * the connector and its audience half as ONE value and does all of its throwing
- * above its first write; this message deliberately says "may be partially wired"
- * rather than asserting an absence it cannot verify, because the knowledge
- * connectors and OAuth handlers it also wraps make no such promise.
+ * above its first write. The message below still hedges — "unavailable, OR
+ * PARTIALLY WIRED" — rather than asserting an absence it cannot verify, because
+ * the knowledge connectors and OAuth handlers this also wraps make no such
+ * promise.
  */
 function registerStep(label: string, register: () => void): void {
   try {
@@ -227,7 +228,7 @@ function registerStep(label: string, register: () => void): void {
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), step: label },
-      `Install handler registration FAILED for ${label} — this integration is unavailable, or partially wired, for the lifetime of this process. Registration continues with the remaining handlers. This is a code defect (duplicate catalog id, unknown source kind, or a re-verifier registered twice), not a config problem`,
+      `Install handler registration FAILED for ${label} — this integration is unavailable, or partially wired, for the lifetime of this process. Registration continues with the remaining handlers. This is a code defect (a duplicate catalog id, an unknown source kind, a malformed connector declaration, a re-verifier registered twice, … — the err field says which), not a config problem`,
     );
   }
 }

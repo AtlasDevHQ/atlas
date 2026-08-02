@@ -419,7 +419,10 @@ export async function reverifyOutlookMessageAudiences(
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
   const resolveToken = deps.resolveToken;
   if (resolveToken === undefined) {
-    // Unreachable in production — `registerOutlookMailConnector` binds one.
+    // Unreachable in production — the connector literal in
+    // `createOutlookMailConnector` binds one. NOT
+    // `createOutlookAudienceReverifier`, which forwards whatever deps it is
+    // handed (`resolveToken` is optional on `OutlookAudienceDeps`).
     // Loud rather than a silent no-op: a re-verifier that quietly does nothing
     // lets every message audience age past the staleness bound while the cycle
     // reports success, which is the exact failure this module exists to prevent.

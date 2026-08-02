@@ -120,7 +120,8 @@ const DAY_MS = 86_400_000;
 afterEach(() => {
   SETTING = undefined;
   LOG_CALLS.length = 0;
-  // ONE reset. It clears BOTH registries, which matters because
+  // ONE reset. It clears all three structures a registration writes — connector,
+  // catalog claim, and the re-verifier — which matters because
   // `registerOutlookMailConnector`'s idempotence gate reads only the connector
   // one: clearing that alone would let the gate pass on a second call while the
   // re-verifier commit throws on the duplicate. The totality is pinned in

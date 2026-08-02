@@ -873,9 +873,12 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
     catalogId: "zoom-transcripts-multisource-test",
     source: ZOOM_TRANSCRIPT_SOURCE,
     // A transcript audience is derived per meeting, so the type admits no arm
-    // but this one. Never driven here — this suite exercises the re-verify pass
-    // through `reverifyZoomMeetingAudiences` directly — but stating the real
-    // strategy keeps the fixture honest about what production registers.
+    // but this one. NEVER DRIVEN here: this connector goes to `syncSource` and
+    // never to `registerBrainSourceConnector`, and the suite asserts
+    // `brain_audience_reverify_attempt` stays EMPTY (see the module header —
+    // #4971's scan is out of scope for this file). `zoomAudienceDeps` carries no
+    // `resolveToken` for the same reason. The arm is stated so the fixture is
+    // honest about what production registers, not because it runs.
     audience: { kind: "reverified", reverifier: createZoomAudienceReverifier(zoomAudienceDeps) },
     createClient: () =>
       createZoomTranscriptClient({
@@ -915,7 +918,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
     catalogId: "outlook-mail-multisource-test",
     source: OUTLOOK_MAIL_SOURCE,
     // Same as Zoom above: a mail audience is derived per message, so the type
-    // admits no other arm.
+    // admits no other arm — and this one is equally never driven.
     audience: {
       kind: "reverified",
       reverifier: createOutlookAudienceReverifier(outlookAudienceDeps),

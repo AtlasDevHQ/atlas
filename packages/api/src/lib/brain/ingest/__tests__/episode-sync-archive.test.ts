@@ -29,8 +29,14 @@ import {
   getBrainSourceConnector,
   listBrainSourceCatalogIds,
   registerBrainSourceConnector,
+  type BrainSourceAudienceFor,
   type BrainSourceConnector,
 } from "@atlas/api/lib/brain/ingest/types";
+import {
+  _resetCatalogIngestClaims,
+  claimCatalogIngestTarget,
+  getCatalogIngestTarget,
+} from "@atlas/api/lib/knowledge/catalog-claims";
 import {
   ZERO_REVERIFY,
   listAudienceReverifierSources,
@@ -39,9 +45,11 @@ import {
 import {
   CHAT_CLASS,
   HUMAN_SOURCE,
+  OUTLOOK_SOURCE,
   SLACK_SOURCE,
   WAREHOUSE_CLASS,
   WAREHOUSE_SOURCE,
+  ZOOM_SOURCE,
   type EpisodeSource,
   type EpisodeSourceVendor,
 } from "@atlas/api/lib/brain/sources";
@@ -231,8 +239,21 @@ describe("the brain source registry", () => {
 
   // ── The audience half, registered as ONE unit with the connector (#4985) ──
 
+  /**
+   * A `reverified` fixture on WAREHOUSE_SOURCE, not on the fixture default.
+   *
+   * The key the re-verifier lands under has to be DERIVED from
+   * `connector.source`, and the assertions below are the only thing pinning that.
+   * On `SLACK_SOURCE` — which is both the fixture default and the value a
+   * hardcoding mutation would most plausibly reach for — a
+   * `prepareAudienceReverifier(SLACK_SOURCE, …)` mutation would pass every one of
+   * them. Same argument `episode-sync.test.ts` records for using `HUMAN_SOURCE`
+   * in its fixture. `warehouse` is not a grant-deriving class, so it may declare
+   * either arm and the runtime backstop is not what is under test here.
+   */
   const reverified = (): BrainSourceConnector =>
     connector({
+      source: WAREHOUSE_SOURCE,
       audience: { kind: "reverified", reverifier: () => Promise.resolve(ZERO_REVERIFY) },
     });
 
@@ -242,10 +263,17 @@ describe("the brain source registry", () => {
     // the whole point of folding the audience strategy into the connector value
     // is that there is no second statement anyone can forget.
     //
-    // MUTATION THIS CATCHES: dropping the `commitReverifier?.()` call.
+    // MUTATION THIS CATCHES: dropping the `commitReverifier()` call, or keying it
+    // on a literal instead of `connector.source`.
+    //
+    // The precondition is load-bearing, not ceremony: without it a re-verifier
+    // leaked by an earlier test makes this pass for the wrong reason.
+    expect(listAudienceReverifierSources()).toEqual([]);
+
     registerBrainSourceConnector(reverified());
+
     expect(getBrainSourceConnector("catalog:fixture")).toBeDefined();
-    expect(listAudienceReverifierSources()).toEqual([SLACK_SOURCE]);
+    expect(listAudienceReverifierSources()).toEqual([WAREHOUSE_SOURCE]);
   });
 
   it("registers NO re-verifier for an externally-synced source", () => {
@@ -253,6 +281,10 @@ describe("the brain source registry", () => {
     // reconciled by the install-driven walk, and a connector that quietly
     // registered a re-verifier anyway would put a second writer on audiences the
     // walk already owns.
+    //
+    // No mutation is named because none is expressible: the branch reads
+    // `audience.kind`, and the other arm has no `.reverifier` to pass. It earns
+    // its place as the leak detector for the test above.
     registerBrainSourceConnector(connector());
     expect(getBrainSourceConnector("catalog:fixture")).toBeDefined();
     expect(listAudienceReverifierSources()).toEqual([]);
@@ -267,25 +299,132 @@ describe("the brain source registry", () => {
     //
     // MUTATION THIS CATCHES: moving `claimCatalogIngestTarget` / `registry.set`
     // above the `prepareAudienceReverifier` call, i.e. writing before validating.
-    registerAudienceReverifier(SLACK_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
+    // All THREE structures are asserted, so no half of the mutation slips past —
+    // the claim in particular has no other assertion anywhere in this file.
+    registerAudienceReverifier(WAREHOUSE_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
 
-    expect(() => registerBrainSourceConnector(reverified())).toThrow(/already registered/);
+    // The ACTIONABLE half of the message, not the shared prefix: the duplicate
+    // CATALOG ID error also ends in "is already registered", so `/already
+    // registered/` alone cannot tell which registry refused — and this test is
+    // meaningless unless it was the re-verifier one.
+    expect(() => registerBrainSourceConnector(reverified())).toThrow(
+      /refusing to register its brain source connector too/,
+    );
 
     expect(getBrainSourceConnector("catalog:fixture")).toBeUndefined();
+    expect(getCatalogIngestTarget("catalog:fixture")).toBeUndefined();
     expect(listBrainSourceCatalogIds()).toEqual([]);
   });
 
+  it("⭐ leaves the re-verifier registry EMPTY when the catalog claim collides", () => {
+    // The other throw site above the writes, and the one with no coverage before
+    // #4985: `claimCatalogIngestTarget` sits BETWEEN the prepare and the commit.
+    // If `prepareAudienceReverifier` wrote eagerly and returned a no-op — a
+    // tempting "simplification" — this collision would leave a re-verifier for a
+    // source with no connector. That inverted half-state is loud rather than
+    // silent (the vendor's idempotence gate sees no connector, retries, and then
+    // throws `already registered` forever), but it is still a partial commit.
+    //
+    // MUTATION THIS CATCHES: making `prepareAudienceReverifier` commit eagerly, or
+    // hoisting `commitReverifier()` above `claimCatalogIngestTarget`.
+    claimCatalogIngestTarget("catalog:fixture", "knowledge-documents");
+
+    expect(() => registerBrainSourceConnector(reverified())).toThrow(
+      /already registered as knowledge-documents/,
+    );
+
+    expect(listAudienceReverifierSources()).toEqual([]);
+    expect(getBrainSourceConnector("catalog:fixture")).toBeUndefined();
+    _resetCatalogIngestClaims("knowledge-documents");
+  });
+
+  it("⭐ refuses a grant-deriving class that declares externally-synced", () => {
+    // The RUNTIME backstop for the lane the type cannot see. `BrainSourceAudienceFor`
+    // makes this a TS2322 at a literal-typed connector, but a plugin arrives as
+    // data, and a cast or a widened return type compiles — the cast below is
+    // standing in for all three. Without this check a transcript source would
+    // register cleanly and mint grants nothing ever refreshes.
+    //
+    // MUTATION THIS CATCHES: deleting the `requiresAudienceReverifier` branch from
+    // `registerBrainSourceConnector`.
+    const widened = connector({
+      source: ZOOM_SOURCE,
+      audience: { kind: "externally-synced" },
+    } as Partial<BrainSourceConnector>);
+
+    expect(() => registerBrainSourceConnector(widened)).toThrow(/MUST declare audience/);
+    // …and the actionable half — what a plugin author actually reads.
+    expect(() => registerBrainSourceConnector(widened)).toThrow(/reads as ABSENT rather than denied/);
+
+    expect(listBrainSourceCatalogIds()).toEqual([]);
+    expect(listAudienceReverifierSources()).toEqual([]);
+
+    // The same class WITH a re-verifier still registers, so this is a pairing rule
+    // and not a blanket refusal of the transcript class.
+    expect(() =>
+      registerBrainSourceConnector(
+        connector({
+          source: ZOOM_SOURCE,
+          audience: { kind: "reverified", reverifier: () => Promise.resolve(ZERO_REVERIFY) },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("refuses a malformed audience declaration rather than throwing a TypeError", () => {
+    // Same data lane. An absent field used to surface as `undefined is not an
+    // object (evaluating 'connector.audience.kind')` — fail-closed, but the one
+    // input whose absence is the entire subject of #4985 deserves the same
+    // actionable message every other invalid input here gets.
+    //
+    // A `reverified` arm with no function is the subtler half: it would register
+    // `undefined` and make `runRegisteredAudienceReverifiers` count that source
+    // failed on every cycle, forever.
+    for (const bad of [undefined, null, {}, { kind: "nonsense" }, { kind: "reverified" }]) {
+      expect(() =>
+        registerBrainSourceConnector(connector({ audience: bad } as Partial<BrainSourceConnector>)),
+      ).toThrow(/declared no usable audience strategy/);
+    }
+    expect(listBrainSourceCatalogIds()).toEqual([]);
+  });
+
+  it("⭐ a grant-deriving class cannot declare externally-synced (COMPILE time)", () => {
+    // AC-5 of #4985, pinned. Everything else in this describe is a runtime
+    // assertion, and the compile-time narrowing degrades SILENTLY and in the
+    // permissive direction: drop an `as const` from an `EPISODE_SOURCE_SPECS`
+    // entry, annotate that map `Record<EpisodeSource, EpisodeSourceSpec>`, revert
+    // `BrainSourceAudienceFor` to a bare `BrainSourceAudience`, or drop the
+    // `const` modifier on `registerBrainSourceConnector`'s type parameter, and the
+    // conditional goes false for EVERY source with not one test going red.
+    //
+    // `@ts-expect-error` is the instrument — the same one `sources.test.ts` uses
+    // for the sibling claim — because it inverts: when the narrowing evaporates
+    // the annotation stops erroring and the unused directive becomes the failure.
+    //
+    // @ts-expect-error zoom is transcript-class — the reverified arm is the only one
+    const zoom: BrainSourceAudienceFor<typeof ZOOM_SOURCE> = { kind: "externally-synced" };
+    // @ts-expect-error outlook is email-class — same
+    const outlook: BrainSourceAudienceFor<typeof OUTLOOK_SOURCE> = { kind: "externally-synced" };
+    // Chat is NOT grant-deriving, so both arms are legal — no directive here, and
+    // that asymmetry is what proves the conditional discriminates rather than
+    // refusing everything.
+    const slack: BrainSourceAudienceFor<typeof SLACK_SOURCE> = { kind: "externally-synced" };
+
+    expect([zoom, outlook, slack]).toHaveLength(3);
+  });
+
   it("⭐ _resetBrainSourceConnectors tears down the re-verifier registry too", () => {
-    // The teardown mirrors the registration one-for-one. If it stopped doing so,
-    // every suite that registers a brain source and re-registers it would fail on
-    // a duplicate re-verifier — a failure with nothing to do with what it was
-    // testing — because the `register*Connector` idempotence gates read only the
-    // CONNECTOR registry and would wave the second attempt through.
+    // The teardown mirrors the registration. If it stopped doing so, every suite
+    // that registers a brain source and re-registers it would fail on a duplicate
+    // re-verifier — a failure with nothing to do with what it was testing —
+    // because the `register*Connector` idempotence gates read only the CONNECTOR
+    // registry and would wave the second attempt through.
     //
     // MUTATION THIS CATCHES: dropping `_resetAudienceReverifiers()` from
     // `_resetBrainSourceConnectors`.
+    expect(listAudienceReverifierSources()).toEqual([]);
     registerBrainSourceConnector(reverified());
-    expect(listAudienceReverifierSources()).toEqual([SLACK_SOURCE]);
+    expect(listAudienceReverifierSources()).toEqual([WAREHOUSE_SOURCE]);
 
     _resetBrainSourceConnectors();
 

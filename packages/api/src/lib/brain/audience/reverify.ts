@@ -320,6 +320,15 @@ export const REVERIFY_CANDIDATES_SQL = `
    ORDER BY (has_members AND rn <= $5::int - $6::int) DESC,
             ((NOT has_members) AND rn <= $6::int) DESC,
             attempted_at ASC NULLS FIRST,
+            -- Redundant against the window's identical key WHENEVER the planner
+            -- preserves its output order, which is why no fixture can observe
+            -- it: every tier is homogeneous in has_members, so two rows tied
+            -- here came from one window partition and already arrive in
+            -- (attempted_at, token) order. It stays because that redundancy
+            -- rests on sort STABILITY, which Postgres does not promise. The
+            -- window's copy is the one under test -- audience-sync-pg.test.ts
+            -- runs the scan with enable_sort = off to reach the plan where a
+            -- tie is decidable at all.
             token ASC
    LIMIT $5::int
 ` as const;

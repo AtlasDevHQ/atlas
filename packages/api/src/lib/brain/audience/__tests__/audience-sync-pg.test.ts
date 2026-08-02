@@ -749,25 +749,42 @@ describeIfPg("brain audience membership (real Postgres)", () => {
 
     it("breaks an exact tie on the TOKEN, so a page is deterministic", async () => {
       // Every audience stamped by one page shares an attempt instant — `now()`
-      // is transaction time — so ties are the NORMAL case, not an edge one, and
+      // is transaction time — so ties are the NORMAL case here, not an edge one.
       // `token ASC` is what stops a cap-bound workspace getting an arbitrary
-      // page each cycle (an audience could otherwise be skipped indefinitely by
-      // luck). The `⭐ RESERVES` case above also rests on this tie-break.
+      // page each cycle, which would let an audience be skipped indefinitely by
+      // luck. The `⭐ RESERVES` case above also rests on this tie-break.
       //
-      // ⚠️ This does NOT catch deleting `token ASC` — I checked, from both the
-      // window and the final sort, and both stay green. The `SELECT DISTINCT`
-      // in the `tokens` CTE is planned as a sort, so the rows arrive in token
-      // order anyway and the explicit key is masked. That is an accident of the
-      // plan, not a contract: a hash-aggregate for the DISTINCT would break it
-      // with no SQL change at all, which is exactly why the key stays.
+      // ⚠️ RUN UNDER `enable_sort = off`, and that is the whole point of the
+      // test rather than a workaround. At fixture scale Postgres plans the
+      // `tokens` CTE's `SELECT DISTINCT` as a Sort, so rows arrive in token
+      // order anyway and deleting the explicit key changes nothing — I checked,
+      // and both deletions are green by default. That masking is an accident of
+      // the plan, not a contract: with the DISTINCT planned as a HashAggregate
+      // the arrival order is arbitrary and the key is the only thing left. The
+      // GUC reaches that plan deterministically at three rows instead of
+      // requiring a fixture large enough to earn it. `SET LOCAL` inside a
+      // transaction, so it cannot leak into another test.
       //
-      // So what this pins is the OUTCOME — a tied page is deterministic and in
-      // token order — rather than the clause. Stated plainly instead of carrying
-      // a `MUTATION THIS CATCHES` line that would be false.
+      // MUTATION THIS CATCHES: dropping `token ASC` from the `row_number()`
+      // WINDOW. Red under this plan, green without it.
+      //
+      // It does NOT catch dropping it from the FINAL ORDER BY, and that one is
+      // a different animal rather than a gap to chase. Every tier is
+      // homogeneous in `has_members` (tiers 1 and 2 by their own predicates,
+      // tier 3 by the LIMIT argument in `REVERIFY_CANDIDATES_SQL`), so any two
+      // rows the final sort must break a tie between came from the SAME window
+      // partition and are already in `(attempted_at, token)` order. The final
+      // key therefore only matters if the final Sort reorders equal keys — and
+      // Postgres does not promise sort stability, which is exactly why it stays.
+      // Guarding against an unstable sort is not something a fixture can
+      // observe; unlike the tier-3 `has_members` key deleted earlier, which was
+      // unreachable by PREDICATE logic and so was genuinely dead.
+      //
+      // Inserted in NON-token order, so a plan that preserves arrival order is
+      // distinguishable from one that sorts.
       for (const name of ["ccc", "aaa", "bbb"]) {
         await audience(`audience:meeting:zoom:${name}`, ["user-ada"]);
       }
-      // One shared instant, so `attempted_at` cannot decide anything.
       await pool.query(
         `INSERT INTO brain_audience_reverify_attempt (workspace_id, audience_id, source, attempted_at)
          SELECT $1, x, $2, now() FROM unnest($3::text[]) AS x`,
@@ -777,7 +794,33 @@ describeIfPg("brain audience membership (real Postgres)", () => {
           ["meeting:zoom:aaa", "meeting:zoom:bbb", "meeting:zoom:ccc"],
         ],
       );
-      expect(idsOf(await scan(2))).toEqual(["meeting:zoom:aaa", "meeting:zoom:bbb"]);
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL enable_sort = off");
+        const candidates = await selectReverifyCandidates(
+          { workspaceId: SCAN_WORKSPACE, source: SOURCE, tokenPrefix: PREFIX, limit: 2 },
+          {
+            query: async <T extends Record<string, unknown>>(
+              sql: string,
+              params?: unknown[],
+            ): Promise<T[]> => {
+              const { rows } = await client.query(sql, params);
+              return rows as T[];
+            },
+          },
+        );
+        await client.query("COMMIT");
+        expect(idsOf(candidates)).toEqual(["meeting:zoom:aaa", "meeting:zoom:bbb"]);
+      } catch (err) {
+        await client.query("ROLLBACK").catch((rbErr: unknown) => {
+          console.debug("fixture rollback failed", rbErr);
+        });
+        throw err;
+      } finally {
+        client.release();
+      }
     }, PG_TEST_TIMEOUT_MS);
 
     it("matches the prefix LITERALLY — a `_` in it is not a wildcard", async () => {

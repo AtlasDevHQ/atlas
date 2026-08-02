@@ -28,6 +28,48 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
+/**
+ * Capture EVERY argument of every log call (#4984).
+ *
+ * Asserting on a payload field would miss the two ways a secret actually
+ * reaches a sink: as a value under some other key, or interpolated into the
+ * MESSAGE string. A whole-call capture sees both. Mirrors the harness in
+ * `brain/ingest/__tests__/zoom-connector.test.ts`, which pins the same class
+ * on the same kind of blob.
+ *
+ * `scrubErrSerializer` is passed through as identity here deliberately: this
+ * suite is asserting what the STORE hands the logger, not what pino would
+ * then do with it. The real serializer's behaviour is `logger.test.ts`'s.
+ */
+const LOG_CALLS: unknown[][] = [];
+function createCapturingLogger(): Record<string, (...args: unknown[]) => void> {
+  const record =
+    (level: string) =>
+    (...args: unknown[]): void => {
+      LOG_CALLS.push([level, ...args]);
+    };
+  return {
+    trace: record("trace"),
+    debug: record("debug"),
+    info: record("info"),
+    warn: record("warn"),
+    error: record("error"),
+    fatal: record("fatal"),
+  };
+}
+void mock.module("@atlas/api/lib/logger", () => ({
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  getLogger: () => createCapturingLogger(),
+  createLogger: () => createCapturingLogger(),
+  hashShareToken: (token: string) => token,
+  setLogLevel: () => true,
+}));
+
 type StoreModule = typeof import("../store");
 let store!: StoreModule;
 
@@ -43,6 +85,7 @@ beforeEach(() => {
   delete process.env.BETTER_AUTH_SECRET;
   _resetEncryptionKeyCache();
   mockInternalQuery.mockClear();
+  LOG_CALLS.length = 0;
 });
 
 afterEach(() => {
@@ -128,6 +171,79 @@ describe("readCredentialBundle", () => {
     );
 
     await expect(store.readCredentialBundle(WSID, CATALOG_ID)).rejects.toThrow();
+  });
+
+  describe("a row that decrypts cleanly but is not JSON (#4984)", () => {
+    /**
+     * Store a plaintext blob that is NOT JSON, encrypted under a live key, so
+     * `decryptSecret` succeeds and `JSON.parse` is the thing that fails. That
+     * is the reachable case: a hand-repaired row, a LEGACY PLAINTEXT secret
+     * that was never JSON, or a partial decrypt. The AES-GCM auth tag rules
+     * out "decrypted to garbage", which is why that was never the danger.
+     *
+     * ⚠️ DELIMITER-FREE on purpose. JSC's parse error echoes only the leading
+     * IDENTIFIER, which stops at the first `-`, so a realistic `xoxb-<secret>`
+     * shaped token leaks just its public prefix and a fragment assertion on it
+     * passes against the bug. An opaque token leaks in FULL — that is the worst
+     * case and the one worth pinning. Verified empirically under bun/JSC; the
+     * sibling operator-credentials suite was vacuous for exactly this reason
+     * before it was caught by mutation.
+     */
+    const LEGACY_PLAINTEXT_SECRET = "s3cr3tPassw0rdNotJson";
+
+    async function readNonJsonRow(): Promise<unknown> {
+      const { encryptSecret } = await import("@atlas/api/lib/db/secret-encryption");
+      mockInternalQuery.mockImplementationOnce(() =>
+        Promise.resolve([
+          {
+            credentials_encrypted: encryptSecret(LEGACY_PLAINTEXT_SECRET),
+            credentials_key_version: 1,
+          },
+        ]),
+      );
+      return store.readCredentialBundle(WSID, CATALOG_ID).catch((err: unknown) => err);
+    }
+
+    it("⭐ logs no derivative of the decrypted plaintext", async () => {
+      await readNonJsonRow();
+
+      expect(LOG_CALLS.length).toBeGreaterThan(0);
+      const written = JSON.stringify(LOG_CALLS);
+      expect(written).not.toContain(LEGACY_PLAINTEXT_SECRET);
+      // Not merely absent as a whole. `JSON.parse`'s message leaks a LEADING
+      // FRAGMENT — under bun/JSC, `JSON Parse error: Unexpected identifier
+      // "s3cr3t"` — so a test asserting only on the full value passes against
+      // the bug it exists to catch.
+      expect(written).not.toContain("s3cr3t");
+      // MUTATION THIS CATCHES: restoring `err: err instanceof Error ?
+      // err.message : String(err)` to the catch's log payload.
+    });
+
+    it("⭐ still names WHICH row failed — over-redaction is the opposite bug", async () => {
+      await readNonJsonRow();
+
+      const written = JSON.stringify(LOG_CALLS);
+      expect(written).toContain(WSID);
+      expect(written).toContain(CATALOG_ID);
+      // …and the identifiers do not buy back the payload.
+      expect(written).not.toContain("s3cr3t");
+      // MUTATION THIS CATCHES: "fixing" the leak by logging `{}` — which
+      // leaves an operator on a fleet with "a credential is unreadable" and no
+      // way to tell whose. #4983's Zoom fix had to state this the same way.
+    });
+
+    it("throws an error carrying no cause chain back to the parse failure", async () => {
+      const err = await readNonJsonRow();
+
+      expect(err).toBeInstanceOf(Error);
+      // The thrown message is composed from identifiers only, so it is safe —
+      // but `cause` would re-attach the parse error whose message holds the
+      // secret. Today no 500 renderer and no log serializer walks a cause
+      // chain (verified in #4984); this asserts we do not DEPEND on that.
+      expect((err as Error).cause).toBeUndefined();
+      expect(JSON.stringify((err as Error).message)).not.toContain("s3cr3t");
+      // MUTATION THIS CATCHES: restoring `{ cause: err }` on the throw.
+    });
   });
 });
 

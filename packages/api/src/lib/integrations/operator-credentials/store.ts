@@ -184,23 +184,48 @@ export async function deleteOperatorCredentials(platform: string): Promise<boole
 
 function parseBundle(platform: string, ciphertext: string): OperatorCredentialBundle {
   const plaintext = decryptSecret(ciphertext);
+  // The JSON parse and the SHAPE validation are split into two catches on
+  // purpose, because only one of them can echo a secret (#4984).
+  //
+  // `JSON.parse`'s error message embeds its input — `JSON.parse("s3cr3t")`
+  // throws `JSON Parse error: Unexpected identifier "s3cr3t"` — and the input
+  // here is the DECRYPTED operator bundle. So this arm logs the platform and
+  // nothing derived from the plaintext, and omits `cause` rather than trusting
+  // that no current log serializer or 500 renderer walks a cause chain.
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(plaintext) as unknown;
+    parsed = JSON.parse(plaintext);
+  } catch {
+    log.error(
+      { platform },
+      "Decrypted operator_integration_credentials payload did not parse as JSON — the row is corrupt or holds a legacy non-JSON secret; re-save this platform's operator credentials to repair it",
+    );
+    throw new Error(
+      `operator_integration_credentials JSON.parse failed for platform=${platform}`,
+    );
+  }
+  try {
     // Validate the shape (string→string map), not just "is an object" — a
     // mistyped value is corruption and must fail loud here, not silently get
     // dropped by a downstream `typeof` guard.
     return OperatorCredentialBundleSchema.parse(parsed);
   } catch (err) {
-    // AES-GCM auth-tag verification makes "decrypted to garbage" highly
-    // unlikely; a parse/shape failure on a row that decrypted cleanly is data
-    // corruption (or key-version drift producing wrong-but-plausible bytes).
+    // This arm CAN keep a diagnostic, because the schema is
+    // `z.record(z.string(), z.string())`: a Zod issue on it carries the PATH
+    // (the env-var name, which is not a secret) and an `invalid_type` code
+    // naming the received TYPE — never the received value. The issue list is
+    // lifted explicitly rather than logging `err.message`, so that stays true
+    // if the schema later grows a refinement whose message would echo a value.
+    const issues =
+      err instanceof z.ZodError
+        ? err.issues.map((i) => ({ path: i.path.join("."), code: i.code }))
+        : undefined;
     log.error(
-      { platform, err: err instanceof Error ? err.message : String(err) },
-      "Decrypted operator_integration_credentials payload did not parse as a string→string map",
+      { platform, issues },
+      "Decrypted operator_integration_credentials payload is not a string→string map",
     );
     throw new Error(
       `operator_integration_credentials payload validation failed for platform=${platform}`,
-      { cause: err },
     );
   }
 }

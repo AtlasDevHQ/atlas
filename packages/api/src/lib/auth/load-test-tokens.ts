@@ -304,9 +304,14 @@ async function unwrapPrivateJwk(
     // than the bearer it protects. The route's failure-path catch
     // forwards `.message` into pino + `admin_action_log.metadata.error`,
     // so the message must carry no attacker-recoverable content. The
-    // `cause` option is also intentionally omitted — pino's err
-    // serializer walks the cause chain and would surface the original
-    // JSON.parse message identically. The bare `catch` (no binding) is
+    // `cause` option is also intentionally omitted — but NOT for the
+    // reason this comment used to give. It claimed pino's err serializer
+    // walks the cause chain; the custom `scrubErrSerializer` this repo
+    // installs does not (verified #4984: it emits `{type, message, stack}`
+    // plus the `code`/`constraint` whitelist, and no 500 renderer
+    // serializes a cause either). Omit it anyway — that is a property of
+    // today's serializer, not a contract, and a secret is the wrong thing
+    // to leave depending on one. The bare `catch` (no binding) is
     // the explicit "we deliberately do not propagate the caught error"
     // signal to project conventions.
     throw new Error(

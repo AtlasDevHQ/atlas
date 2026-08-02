@@ -138,20 +138,40 @@ export async function readCredentialBundle(
   const plaintext = decryptSecret(rows[0].credentials_encrypted);
   try {
     return JSON.parse(plaintext) as CredentialBundle;
-  } catch (err) {
-    // AES-GCM auth-tag verification makes "decrypted to garbage" highly
-    // unlikely, but a JSON.parse failure on a row that decrypted
-    // successfully is data corruption (or a key-version drift that
-    // produced wrong-but-plausible bytes). Surface workspace + catalog
-    // so log search can locate the row; let the caller propagate so the
-    // route returns a 500 with `requestId`.
+  } catch {
+    // No `// intentionally ignored:` marker — that marker is for a catch that
+    // emits NO signal, and this one logs and throws below. What is discarded
+    // is the error OBJECT, deliberately:
+    //
+    // the parse error's MESSAGE echoes its input, and the input here is the
+    // DECRYPTED credential bundle. `JSON.parse("s3cr3t-value")` throws
+    // `JSON Parse error: Unexpected identifier "s3cr3t"` (verified empirically
+    // under bun/JSC). Excluding `plaintext` from the log payload is NOT enough
+    // — which is what the previous version of this catch got wrong: it logged
+    // `err.message` while withholding the payload, and shipped a fragment of a
+    // real secret to the log sink. `brain/ingest/zoom/connector.ts` and
+    // `auth/load-test-tokens.ts` reached this conclusion independently; this is
+    // the same class on the same kind of blob (#4984).
+    //
+    // The AES-GCM auth tag makes "decrypted to garbage" unlikely, and that is
+    // not the dangerous case. The dangerous ones are a hand-repaired row, a
+    // LEGACY PLAINTEXT secret that was never JSON, or a partial decrypt — in
+    // all three the parse error echoes a live secret verbatim.
+    //
+    // `cause` is omitted for the same reason. Today's `scrubErrSerializer`
+    // emits only `{type, message, stack}` plus the `code`/`constraint`
+    // whitelist, so a cause chain does not currently reach a log line and no
+    // 500 renderer serializes one — but that is a property of the current
+    // serializer, not a contract, and this is the wrong place to depend on it.
+    //
+    // The identifiers stay: withholding them too would leave an operator with
+    // "a credential is unreadable" across a fleet and no way to tell whose.
     log.error(
-      { workspaceId, catalogId, err: err instanceof Error ? err.message : String(err) },
-      "Decrypted integration_credentials payload did not parse as JSON",
+      { workspaceId, catalogId },
+      "Decrypted integration_credentials payload did not parse as JSON — the row is corrupt or holds a legacy non-JSON secret; re-save this integration's credentials to repair it",
     );
     throw new Error(
       `integration_credentials JSON.parse failed for (workspace=${workspaceId}, catalog=${catalogId})`,
-      { cause: err },
     );
   }
 }

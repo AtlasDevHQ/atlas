@@ -110,9 +110,12 @@ const { ZOOM_TRANSCRIPTS_CATALOG_ID, ZOOM_TRANSCRIPT_SOURCE } = await import(
 const { _resetBrainSourceConnectors, getBrainSourceConnector } = await import(
   "@atlas/api/lib/brain/ingest/types"
 );
-const { _resetAudienceReverifiers, listAudienceReverifierSources } = await import(
-  "@atlas/api/lib/brain/audience/reverify"
-);
+const {
+  ZERO_REVERIFY,
+  _resetAudienceReverifiers,
+  listAudienceReverifierSources,
+  registerAudienceReverifier,
+} = await import("@atlas/api/lib/brain/audience/reverify");
 type ZoomCredentialReader =
   import("@atlas/api/lib/brain/ingest/zoom/connector").ZoomCredentialReader;
 
@@ -221,6 +224,28 @@ describe("parseZoomAppCredential", () => {
     expect(written).not.toContain("SUPER");
     // …and the operator still gets something actionable out of it.
     expect(written).toContain("re-install");
+  });
+
+  it("⭐ names WHOSE credential failed — redaction is not an excuse to log nothing", () => {
+    // The opposite failure to the one above, and easy to introduce while fixing
+    // it: withholding the payload AND every identifier leaves an operator with
+    // "a Zoom credential is unreadable, re-install the source" on a deployment
+    // with hundreds of workspaces, and no way to tell whose. The ids are not
+    // secret; the blob is.
+    //
+    // MUTATION THIS CATCHES: dropping the `owner` argument, or the `{}` payload
+    // this replaced.
+    const secret = "SUPER-SECRET-CLIENT-VALUE";
+    expect(
+      parseZoomAppCredential(secret, { workspaceId: "ws-42", installId: "inst-7" }),
+    ).toBeNull();
+
+    const written = JSON.stringify(LOG_CALLS);
+    expect(written).toContain("ws-42");
+    expect(written).toContain("inst-7");
+    // The identifiers do NOT buy back the payload.
+    expect(written).not.toContain(secret);
+    expect(written).not.toContain("SUPER");
   });
 
   it("does not log the blob on the SHAPE-failure path either", () => {
@@ -402,5 +427,27 @@ describe("registerZoomTranscriptConnector", () => {
     expect(
       listAudienceReverifierSources().filter((s) => s === ZOOM_TRANSCRIPT_SOURCE),
     ).toHaveLength(1);
+  });
+
+  it("⭐ registers NEITHER half when the re-verifier registry is already taken", () => {
+    // The gate above reads only the connector registry, so it cannot see a
+    // re-verifier registered by something else. Written as two bare statements,
+    // this sequence registered the connector, threw on the re-verifier, and left
+    // Zoom ingesting transcripts whose grants nothing refreshes — permanent for
+    // the process, because the retry short-circuits on the connector the failed
+    // attempt left behind.
+    //
+    // All-or-nothing is the contract: throwing is fine, half-registering is not.
+    // A clean absence is fail-closed and loud (installs 500 at sync time); the
+    // half state is quiet for 168h and then reads as the content not existing.
+    //
+    // MUTATION THIS CATCHES: reverting to `registerBrainSourceConnector(...)`
+    // followed by `registerZoomAudienceReverifier(...)`.
+    registerAudienceReverifier(ZOOM_TRANSCRIPT_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
+
+    expect(() => registerZoomTranscriptConnector()).toThrow(/already registered/);
+
+    // The connector registry must be untouched — this is the whole assertion.
+    expect(getBrainSourceConnector(ZOOM_TRANSCRIPTS_CATALOG_ID)).toBeUndefined();
   });
 });

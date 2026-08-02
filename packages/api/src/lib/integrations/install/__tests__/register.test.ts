@@ -561,8 +561,7 @@ describe("registerBuiltinInstallHandlers — BRAIN source connector pairing (#49
     // without integrations nobody had touched.
     //
     // Provoked by pre-registering Zoom's re-verifier so the real registration
-    // hits the duplicate throw, having already passed its connector-registry
-    // gate. Asserts on the vendors AFTER it in the sequence.
+    // hits the duplicate throw. Asserts on the vendors AFTER it in the sequence.
     //
     // MUTATION THIS CATCHES: removing the `registerStep` wrapper.
     registerAudienceReverifier(ZOOM_TRANSCRIPT_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
@@ -575,5 +574,33 @@ describe("registerBuiltinInstallHandlers — BRAIN source connector pairing (#49
     // radius was: every OAuth and static bot handler follows these three.
     expect(getInstallHandler({ slug: "outlook-mail", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "clickhouse", install_model: "form" }).kind).toBe("form");
+  });
+
+  it("⭐ …and leaves the FAILING vendor wholly unregistered, not half-wired", () => {
+    // The other half of the containment claim, and the one that actually bites.
+    // `registerStep` bounds the blast radius ACROSS vendors; it can do nothing
+    // about a vendor that committed to one registry and then threw on a second,
+    // because no catch can undo a write from the outside.
+    //
+    // That half-state is worse than either clean outcome. Fully absent is
+    // fail-closed and loud — installs 500 at sync time. HALF wired ingests
+    // normally for ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS (168h) and only then
+    // goes wrong, at which point `acl.ts` suppresses every audience the missing
+    // re-verifier should have refreshed and the facts behind them read as ABSENT
+    // rather than denied. A week later, in a different subsystem, with nothing
+    // pointing back at boot.
+    //
+    // Same provocation as above: Zoom's re-verifier is taken, so the pair cannot
+    // complete. The connector registry must come out of it EMPTY for Zoom.
+    //
+    // MUTATION THIS CATCHES: reverting `registerBrainSourceWithAudienceReverifier`
+    // to a bare `registerBrainSourceConnector(...)` + `registerXReverifier(...)`
+    // pair — the ordering this asserts is the only thing standing between a
+    // duplicate re-verifier and a silently decaying source.
+    registerAudienceReverifier(ZOOM_TRANSCRIPT_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
+
+    registerBuiltinInstallHandlers();
+
+    expect(getBrainSourceConnector(ZOOM_TRANSCRIPTS_CATALOG_ID)).toBeUndefined();
   });
 });

@@ -42,7 +42,7 @@ import {
 } from "./config";
 import {
   getBrainSourceConnector,
-  registerBrainSourceConnector,
+  registerBrainSourceWithAudienceReverifier,
   type BrainSourceConnector,
   type BrainSourceInstallContext,
   type BrainSourceVendorClient,
@@ -225,8 +225,14 @@ export function createOutlookMailConnector(
 /**
  * Register the Outlook mail source AND its audience re-verifier idempotently —
  * called from the boot seam that also registers install handlers, and from
- * tests. Both registries throw on a duplicate, so gate on the connector registry
- * first.
+ * tests.
+ *
+ * The pair goes through `registerBrainSourceWithAudienceReverifier` rather than
+ * as two statements. Both registries throw on a duplicate, and the gate below
+ * reads only the connector registry — so registering the connector first and
+ * colliding on the re-verifier second would leave this source ingesting mail
+ * whose grants nothing refreshes, permanently and silently. That helper checks
+ * the re-verifier registry before it commits anything.
  */
 export function registerOutlookMailConnector(deps: OutlookMailConnectorDeps = {}): void {
   if (getBrainSourceConnector(OUTLOOK_MAIL_CATALOG_ID) !== undefined) return;
@@ -234,16 +240,17 @@ export function registerOutlookMailConnector(deps: OutlookMailConnectorDeps = {}
     readSyncCredential,
     fetchGraphAccessToken,
   };
-  registerBrainSourceConnector(createOutlookMailConnector({ reader }));
-  registerOutlookAudienceReverifier({
-    // The install id doubles as the credential's `collection_id`, the same
-    // convention every knowledge connector uses.
-    resolveToken: async (workspaceId, installId, config) => {
-      const parsed = parseOutlookMailConfig(config);
-      if (!parsed.ok) throw new Error(parsed.error);
-      return resolveOutlookToken(reader, workspaceId, installId, parsed.tenantId);
-    },
-  });
+  registerBrainSourceWithAudienceReverifier(createOutlookMailConnector({ reader }), () =>
+    registerOutlookAudienceReverifier({
+      // The install id doubles as the credential's `collection_id`, the same
+      // convention every knowledge connector uses.
+      resolveToken: async (workspaceId, installId, config) => {
+        const parsed = parseOutlookMailConfig(config);
+        if (!parsed.ok) throw new Error(parsed.error);
+        return resolveOutlookToken(reader, workspaceId, installId, parsed.tenantId);
+      },
+    }),
+  );
   log.info(
     { catalogId: OUTLOOK_MAIL_CATALOG_ID },
     "Registered Outlook mail brain source and its audience re-verifier",

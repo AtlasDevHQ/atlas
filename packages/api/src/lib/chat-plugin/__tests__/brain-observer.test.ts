@@ -151,8 +151,23 @@ describe("the not-stored report's level", () => {
     // That is the shape of alert that trains an operator to filter the channel
     // that also carries the real one, so the cost is paid by the warn above.
     //
-    // MUTATION THIS CATCHES: removing the never-in-scope classification.
-    for (const reason of ["no_install", "unknown_workspace", "channel_not_configured"] as const) {
+    // `unmintable_subtype` rides along for a DIFFERENT reason, and the
+    // difference matters. The other three were never in scope; a
+    // `message_deleted` or `tombstone` IS in a scoped channel — but a deletion
+    // carries no evidence to lose, and minting from the event's own `ts` would
+    // produce an id the poll never mints. Warning "this evidence is lost" for a
+    // deletion is as wrong as warning for out-of-scope traffic, and it would
+    // arrive at the same steady-state volume the day the Chat SDK stops
+    // filtering these before dispatch.
+    //
+    // MUTATION THIS CATCHES: removing the never-in-scope classification, or
+    // dropping any single member from the set.
+    for (const reason of [
+      "no_install",
+      "unknown_workspace",
+      "channel_not_configured",
+      "unmintable_subtype",
+    ] as const) {
       const sink = collect();
       const observe = createBrainChatMessageObserver({
         ingest: spyIngest({ status: "skipped", reason, pollBackstopped: false }).ingest,

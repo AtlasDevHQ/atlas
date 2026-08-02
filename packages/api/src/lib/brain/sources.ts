@@ -553,12 +553,14 @@ export function episodeSourceVendor(source: EpisodeSource): EpisodeSourceVendor 
  * is already known to be in the vocabulary and an unknown one would be a
  * programmer error worth surfacing loudly.
  *
- * There is no production caller yet. #4967's webhook fast-path was predicted to
- * be one and is NOT — it resolves connectors on the VENDOR axis
- * (`findBrainSourceConnectors({ vendor: SLACK_SOURCE })`) and never asks for a
- * class. The region-import lane (`admin-migrate.ts`) is the read-a-stored-row
- * shape this exists for; said plainly so the next reader does not take a
- * predicted caller for an actual one.
+ * There is no production caller — zero, not "one elsewhere". #4967's webhook
+ * fast-path was predicted to be one and is NOT: it resolves connectors on the
+ * VENDOR axis (`findBrainSourceConnectors({ vendor: SLACK_SOURCE })`) and never
+ * asks for a class. The region-import lane (`admin-migrate.ts`) has the
+ * read-a-stored-row SHAPE this is for and names it in a comment, but does not
+ * call it either. Spelled out this far because the docstring this replaced
+ * asserted a caller that did not exist, and "names it in a comment" is the same
+ * mistake one step smaller.
  */
 export function episodeSourceClassOf(value: unknown): EpisodeSourceClass | null {
   return isEpisodeSource(value) ? episodeSourceClass(value) : null;

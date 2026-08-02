@@ -295,6 +295,17 @@ export function isBrainExtractionEnabled(): boolean {
  * {@link FAILURE_LEDGER_CAP}, and `id <> ALL('{}')` is true for every row, so
  * the empty case needs no special handling.
  *
+ * That bound caps the array at 1000 uuids, which is a filter evaluated per
+ * candidate row — and it is worth being straight about what it sits on top of.
+ * `idx_brain_episodes_extraction_queue` is `(workspace_id, ingested_at) WHERE
+ * extracted_at IS NULL`, so it does NOT serve this query's ordering: the drain
+ * is deployment-wide with no `workspace_id` predicate and sorts on
+ * `ingested_at` alone. That mismatch predates the exclusion and is not what the
+ * exclusion introduced — but it does mean the added filter rides a scan-and-sort
+ * rather than an index walk, and the honest reading of "bounded" here is
+ * "bounded, on a plan that was already doing more work than the LIMIT suggests".
+ * Fixing that is an index migration, deliberately not folded into a defect fix.
+ *
  * `::uuid[]`, not `::text[]` — `brain_episodes.id` is a `uuid`, and Postgres
  * refuses the cross-type comparison outright (`operator does not exist: uuid <>
  * text`) rather than coercing it. That is the good direction: the whole drain

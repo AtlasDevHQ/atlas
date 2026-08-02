@@ -961,7 +961,7 @@ export async function runAudienceSyncCycle(
     scanError = err instanceof Error ? err.message : String(err);
     log.error(
       { err: scanError },
-      "brain audience: the Slack install scan failed — no Slack membership was reconciled this cycle. The other sources' re-verifiers and the staleness sweep still ran",
+      "brain audience: the Slack install scan failed — no Slack membership will be reconciled this cycle. The other sources' re-verifiers and the staleness sweep still run; the cycle reports failure at the end",
     );
   }
 

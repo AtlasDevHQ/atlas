@@ -202,9 +202,16 @@ let alreadyRegistered = false;
  * makes containment the fix rather than relocation — moving the latch to the end
  * would re-enter every already-registered handler on the retry.
  *
- * Failure is loud and per-vendor. It is not swallowed: the vendor is absent from
- * the registry, which is fail-closed (its installs 500 at sync time rather than
- * running unwired), and the error names it.
+ * Failure is loud and per-vendor, and it is not swallowed: the error names the
+ * step, and the steps that follow it still run.
+ *
+ * What it does NOT promise is that the failed vendor is cleanly absent. That is
+ * the registration's own job, not this wrapper's — a step that commits to one
+ * registry and then throws on a second would leave a half-wired vendor here, and
+ * no catch can undo it from the outside. `registerBrainSourceWithAudienceReverifier`
+ * (`brain/ingest/types.ts`) is what makes the brain pair all-or-nothing; this
+ * message deliberately says "may be partially wired" rather than asserting an
+ * absence it cannot verify.
  */
 function registerStep(label: string, register: () => void): void {
   try {
@@ -212,7 +219,7 @@ function registerStep(label: string, register: () => void): void {
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), step: label },
-      `Install handler registration FAILED for ${label} — this integration is unavailable for the lifetime of this process. Every other handler still registered. This is a code defect (duplicate catalog id, unknown source kind, or a re-verifier registered twice), not a config problem`,
+      `Install handler registration FAILED for ${label} — this integration is unavailable, or partially wired, for the lifetime of this process. Registration continues with the remaining handlers. This is a code defect (duplicate catalog id, unknown source kind, or a re-verifier registered twice), not a config problem`,
     );
   }
 }

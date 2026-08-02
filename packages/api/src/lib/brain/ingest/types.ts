@@ -50,7 +50,10 @@ import {
   _resetCatalogIngestClaims,
 } from "@atlas/api/lib/knowledge/catalog-claims";
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
-import { _resetAudienceReverifiers } from "@atlas/api/lib/brain/audience/reverify";
+import {
+  _resetAudienceReverifiers,
+  hasAudienceReverifier,
+} from "@atlas/api/lib/brain/audience/reverify";
 import {
   EPISODE_SOURCES,
   episodeSourceClass,
@@ -285,6 +288,58 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   // sources register last today) and missed the one that can.
   claimCatalogIngestTarget(connector.catalogId, "brain-episodes");
   registry.set(connector.catalogId, connector);
+}
+
+/**
+ * Register a brain source AND its audience re-verifier as one unit.
+ *
+ * ## Why this exists rather than two calls in a row
+ *
+ * A source that derives per-object grants needs BOTH: the connector to ingest,
+ * and the re-verifier to keep the grants it minted from going stale. They live
+ * in two registries, and both throw on a duplicate. Written as two bare
+ * statements — which is how Zoom and Outlook were first wired — a throw from the
+ * SECOND leaves the first committed, and the caller's idempotence gate
+ * (`getBrainSourceConnector(id) !== undefined`) reads only that first registry.
+ * So the retry short-circuits and the half-state is permanent for the process.
+ *
+ * That half-state is the worst of the three outcomes, and it is worth being
+ * precise about why. Fully registered is correct. Fully absent is fail-closed
+ * and loud — installs 500 at sync time and someone notices the same day. HALF
+ * registered ingests normally for `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`
+ * (168h by default) and only then goes wrong, at which point `acl.ts` suppresses
+ * every audience the missing re-verifier was supposed to refresh and every fact
+ * behind them reads as ABSENT rather than as denied. A week later, in a
+ * different subsystem, with nothing pointing back here.
+ *
+ * So the re-verifier registry is checked BEFORE the connector is committed. That
+ * ordering is the whole point: after this check the only remaining throw sites
+ * are inside {@link registerBrainSourceConnector}, which validates before it
+ * writes and whose own two writes (`claimCatalogIngestTarget` then
+ * `registry.set`) already fail with nothing committed. Registration is
+ * single-threaded boot wiring, so there is no window between the check and the
+ * write for anything else to claim the source.
+ *
+ * A source with no per-object grants (slack-history — its grants are channel
+ * scoped and reconciled by the install-driven sweep) has no re-verifier to pair
+ * and calls {@link registerBrainSourceConnector} directly.
+ *
+ * @param connector the source to register
+ * @param registerReverifier commits the re-verifier; called only once the
+ *   connector is registered and the duplicate check above has passed. Keyed on
+ *   `connector.source`, so the two halves cannot be wired to different sources.
+ */
+export function registerBrainSourceWithAudienceReverifier(
+  connector: BrainSourceConnector,
+  registerReverifier: () => void,
+): void {
+  if (hasAudienceReverifier(connector.source)) {
+    throw new Error(
+      `Audience re-verifier for source "${connector.source}" is already registered — refusing to register its brain source connector, because committing one without the other leaves the source ingesting content whose grants are never re-verified`,
+    );
+  }
+  registerBrainSourceConnector(connector);
+  registerReverifier();
 }
 
 export function getBrainSourceConnector(catalogId: string): BrainSourceConnector | undefined {

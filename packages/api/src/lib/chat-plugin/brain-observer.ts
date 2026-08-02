@@ -29,9 +29,45 @@ import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   ingestSlackWebhookMessage,
   type SlackWebhookIngestOutcome,
+  type SlackWebhookSkipReason,
 } from "@atlas/api/lib/brain/ingest/slack/webhook";
 
 const log = createLogger("chat-plugin.brain-observer");
+
+/**
+ * Skip reasons that mean "this traffic was NEVER in scope for the brain", as
+ * opposed to "in scope and we failed to store it".
+ *
+ * They are steady-state for any deployment running Atlas chat without a
+ * Slack-history source, or with one scoped to a subset of channels — which is
+ * the normal case, not a fault. They must not reach the `pollBackstopped: false`
+ * warn arm in {@link reportNotStored}: that arm says "this evidence is LOST",
+ * and for a thread reply in a channel the admin deliberately never scoped,
+ * nothing was lost — there was nothing to store. Left as a warn it fires once
+ * per thread reply, forever, on a correct configuration: the exact shape of
+ * alert that trains an operator to ignore the channel that also carries the
+ * real one.
+ *
+ * `unmintable_subtype` is here for a different reason than the other three, and
+ * the difference is worth keeping straight. The others were never in scope;
+ * a `message_deleted` or `tombstone` IS in a scoped channel, but there is no
+ * evidence in it to lose — a deletion carries no content, and minting an episode
+ * from the event's own `ts` would produce an id the poll never mints (see the
+ * `unmintable_subtype` docstring on the union). Warning "this evidence is lost"
+ * for a deletion is as wrong as warning for out-of-scope traffic, and would
+ * arrive at the same steady-state volume if the Chat SDK ever stopped filtering
+ * these before dispatch.
+ *
+ * Typed against the union rather than left as bare strings: a renamed reason
+ * must break the BUILD, not silently stop matching and quietly restore the
+ * warn-spam this exists to prevent.
+ */
+const NEVER_LOST: ReadonlySet<SlackWebhookSkipReason> = new Set<SlackWebhookSkipReason>([
+  "no_install",
+  "unknown_workspace",
+  "channel_not_configured",
+  "unmintable_subtype",
+]);
 
 /**
  * Build the observer the chat plugin calls for every inbound message.
@@ -116,24 +152,13 @@ function reportNotStored(
   // to them.
   if (outcome.status === "skipped" && outcome.reason === "disabled") return;
 
-  // Arms that mean "this traffic was NEVER in scope for the brain", as opposed
-  // to "in scope and we failed to store it". They are steady-state for any
-  // deployment running Atlas chat without a Slack-history source, or with one
-  // scoped to a subset of channels — which is the normal case, not a fault.
-  //
-  // They must not reach the `pollBackstopped: false` warn arm below. That arm
-  // says "this evidence is LOST", and for a thread reply in a channel the admin
-  // deliberately never scoped, nothing was lost: there was nothing to store. Left
-  // as a warn it fires once per thread reply, forever, on a correct
-  // configuration — the exact shape of alert that trains an operator to ignore
-  // the channel that also carries the real one.
-  const NEVER_IN_SCOPE = new Set(["no_install", "unknown_workspace", "channel_not_configured"]);
-  if (outcome.status === "skipped" && NEVER_IN_SCOPE.has(outcome.reason)) {
+  // See {@link NEVER_LOST} for why these must not reach the warn arm below.
+  if (outcome.status === "skipped" && NEVER_LOST.has(outcome.reason)) {
     const detail = { reason: outcome.reason, messageId: observation.message.id };
     report?.("debug", detail);
     log.debug(
       detail,
-      "Chat brain observer: message is outside this deployment's brain scope — nothing was lost",
+      "Chat brain observer: message carries no evidence to store — either outside this deployment's brain scope, or a subtype with no content. Nothing was lost",
     );
     return;
   }

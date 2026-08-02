@@ -119,6 +119,23 @@ export function registerAudienceReverifier(source: string, reverifier: AudienceR
   registry.set(source, reverifier);
 }
 
+/**
+ * Is a re-verifier already registered for this source?
+ *
+ * Exists so a paired registration can ASK before it commits anything. A source
+ * and its re-verifier are written to two different registries, and
+ * {@link registerAudienceReverifier} throws on a duplicate — so a caller that
+ * registers the connector first and discovers the collision second leaves the
+ * connector registered and the re-verifier absent. That half-state ingests
+ * content whose grants stop being re-verified, which is silent for a week and
+ * then indistinguishable from the content not existing. See
+ * `registerBrainSourceWithAudienceReverifier` in `ingest/types.ts`, which is the
+ * only thing that should need this.
+ */
+export function hasAudienceReverifier(source: string): boolean {
+  return registry.has(source);
+}
+
 export function listAudienceReverifierSources(): string[] {
   return [...registry.keys()];
 }

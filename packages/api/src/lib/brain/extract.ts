@@ -72,16 +72,28 @@
  * and an episode the reconcile gate refuses wholesale. Only a pass that THREW
  * retries.
  *
- * A deterministically-failing episode therefore keeps its slot indefinitely —
+ * A deterministically-failing episode therefore keeps its ROW indefinitely —
  * stamping it would be a silent drop on a guess, which is the thing this
- * module's whole ordering avoids. What IS bounded is the SPEND: after
- * {@link QUARANTINE_AFTER_FAILURES} consecutive failures the episode moves to a
- * widening probe backoff and logs at ERROR, so it costs at most one model call
- * per window instead of one per tick — PER PROCESS. The ledger is in-memory and
- * this fiber has no leader election, so a fleet of R replicas each runs its own
- * ramp: read every spend figure here as ×R on SaaS. So the honest statement of the bound is:
- * N permanently-failing episodes at the head of the queue WOULD starve it,
- * cheaply and loudly, until an operator acts on the recurring error.
+ * module's whole ordering avoids. Two separate bounds keep that affordable, and
+ * conflating them is how the second one went missing for a while:
+ *
+ *   - **Spend.** After {@link QUARANTINE_AFTER_FAILURES} consecutive failures
+ *     the episode moves to a widening probe backoff and logs at ERROR, so it
+ *     costs at most one model call per window instead of one per tick — PER
+ *     PROCESS. The ledger is in-memory and this fiber has no leader election, so
+ *     a fleet of R replicas each runs its own ramp: read every spend figure here
+ *     as ×R on SaaS.
+ *   - **Throughput.** Quarantine alone does NOT stop a poisoned episode holding
+ *     a slot: the skip used to happen after the row had already been selected,
+ *     so past `BATCH_SIZE` poisoned episodes at the head, every tick selected the
+ *     same full batch, skipped all of it for free, and drained nothing — for
+ *     every workspace in the deployment. The drain now excludes backing-off ids
+ *     (`$2`), so the batch bound means "25 episodes we will actually try". See
+ *     {@link DRAIN_EPISODES_SQL}.
+ *
+ * So the honest statement of the bound is: permanently-failing episodes cost one
+ * probe per window each and are loudly logged until an operator acts, and they
+ * no longer block the episodes queued behind them while that happens.
  */
 
 import { Effect } from "effect";
@@ -262,11 +274,38 @@ export function isBrainExtractionEnabled(): boolean {
  * after it was said, and per-workspace fairness is not something a single
  * ordered queue can express without starving whoever is not first. The batch
  * bound is what keeps one noisy workspace from monopolizing a tick.
+ *
+ * ## `$2` — why the backing-off episodes are excluded HERE and not skipped later
+ *
+ * Quarantine (see {@link QUARANTINE_AFTER_FAILURES}) bounds what a poisoned
+ * episode COSTS. On its own it does not bound what a poisoned episode BLOCKS,
+ * and those are different properties: a failing episode is never stamped, so it
+ * stays at the head of this queue forever, and `extractEpisode` used to skip it
+ * only AFTER it had already consumed one of the `LIMIT $1` slots. Past
+ * `BATCH_SIZE` poisoned episodes at the head — one workspace's content filter,
+ * one 404ing model — every tick selected the same full batch, skipped all of it
+ * for free, and drained NOTHING. Cheap, silent, and total: the healthy episodes
+ * behind them belong to every other workspace and source in the deployment.
+ *
+ * Excluding them at the query is what makes the batch bound mean "25 episodes
+ * we will actually try". The list is the ledger's currently-backing-off ids, so
+ * an episode whose probe window has elapsed is deliberately NOT in it — it gets
+ * selected, probed, and heals itself, which is the whole point of quarantine
+ * being a backoff rather than a terminal state. The array is bounded by
+ * {@link FAILURE_LEDGER_CAP}, and `id <> ALL('{}')` is true for every row, so
+ * the empty case needs no special handling.
+ *
+ * `::uuid[]`, not `::text[]` — `brain_episodes.id` is a `uuid`, and Postgres
+ * refuses the cross-type comparison outright (`operator does not exist: uuid <>
+ * text`) rather than coercing it. That is the good direction: the whole drain
+ * fails loudly on the wrong cast instead of silently matching nothing and
+ * quietly re-admitting every quarantined episode.
  */
 export const DRAIN_EPISODES_SQL = `SELECT id, workspace_id, source, source_id, source_actor,
               body, locator, occurred_at, visible_to
          FROM brain_episodes
         WHERE extracted_at IS NULL
+          AND id <> ALL($2::uuid[])
         ORDER BY ingested_at
         LIMIT $1`;
 
@@ -693,6 +732,14 @@ export function runBrainExtractionCycle(
     // `tallyEpisode` writes it, and they have to be the same object.
     const failures = failureLedger;
     const charged: { episodeId: string; workspaceId: string }[] = [];
+    /**
+     * How many episodes the scan EXCLUDED as backing-off, this tick.
+     *
+     * Set in `scan` and read in the settle hook, which is why it lives out here
+     * beside `charged` rather than inside either. Reset by `scan` on every tick,
+     * so a fiber that runs for weeks cannot carry a stale count.
+     */
+    let excludedThisTick = 0;
 
     /**
      * Forgive one strike each when the whole tick failed, then emit the cycle
@@ -767,6 +814,16 @@ export function runBrainExtractionCycle(
           );
         }
       }
+      // Fold in the episodes the DRAIN never selected because they are inside
+      // their backoff window. They are the same population `skipped.quarantined`
+      // has always meant — "not extracted this tick, because quarantined" — and
+      // without this the counter would read 0 the moment the exclusion started
+      // working, which is the opposite of what happened.
+      //
+      // Sourced from the ledger rather than from the batch, which makes it
+      // strictly better than before: it now reports EVERY quarantined episode,
+      // not just the ones that happened to fall inside one tick's 25.
+      result.skipped.quarantined += excludedThisTick;
       charged.length = 0;
       emitCycleAudit(result);
     };
@@ -776,7 +833,14 @@ export function runBrainExtractionCycle(
       label: "Brain extraction",
       emptyResult,
       failureResult: (error) => ({ ...emptyResult(), status: "failure", error }),
-      scan: () => internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE]),
+      // Computed per tick, not once: the set shrinks as probe windows elapse,
+      // and an episode that has become due must be selected on THIS tick rather
+      // than whenever the fiber happens to restart.
+      scan: () => {
+        const excluded = backingOffIds(failures, now());
+        excludedThisTick = excluded.length;
+        return internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE, excluded]);
+      },
       applyRow: (row) => extractEpisode(row, { extract, modelFor, reconcile, now, failures }),
       defectOutcome: (error) => ({ kind: "failed", error }),
       tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
@@ -797,6 +861,25 @@ interface ApplyDeps {
    * would leave quarantine permanently disarmed with nothing to notice it.
    */
   readonly failures: Map<string, QuarantineEntry>;
+}
+
+/**
+ * The episode ids the drain must not select this tick.
+ *
+ * The same predicate `extractEpisode` applies, moved in front of the `LIMIT` so
+ * a backing-off episode does not consume a slot it will only be skipped in. Both
+ * call sites stay because they answer different questions: this one keeps the
+ * batch productive, and the guard in `extractEpisode` keeps a row that slipped
+ * through — a hand-passed fixture, a future caller that bypasses `scan` — from
+ * costing a model call. Removing either one alone is safe; removing both is the
+ * poisoned-queue stall.
+ */
+function backingOffIds(ledger: ReadonlyMap<string, QuarantineEntry>, now: Date): string[] {
+  const ids: string[] = [];
+  for (const [id, entry] of ledger) {
+    if (isQuarantined(entry, now)) ids.push(id);
+  }
+  return ids;
 }
 
 /**

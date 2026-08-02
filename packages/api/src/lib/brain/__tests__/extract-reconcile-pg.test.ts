@@ -503,7 +503,11 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect(calls).toBe(4);
 
     const quarantined = await cycleWith(exploding);
-    expect(quarantined).toMatchObject({ inspected: 1, failed: 0 });
+    // `inspected: 0`, not 1: a backing-off episode is now excluded by the DRAIN
+    // rather than selected and then skipped, so it no longer consumes a slot in
+    // the batch. That is the point of the exclusion — see the poisoned-head test
+    // below. It is still COUNTED as quarantined, sourced from the ledger.
+    expect(quarantined).toMatchObject({ inspected: 0, failed: 0 });
     expect(quarantined.skipped.quarantined).toBe(1);
     // No fifth model call…
     expect(calls).toBe(4);
@@ -538,6 +542,49 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     await cycleWith(exploding);
     // …and no further model calls while the backoff holds.
     expect(calls).toBe(callsBefore);
+  });
+
+  it("⭐ a poisoned HEAD of the queue does not block the healthy episodes behind it", async () => {
+    // Quarantine bounds what a poisoned episode COSTS. It did not bound what one
+    // BLOCKS, and those are different properties. A failing episode is never
+    // stamped, so it stays at the head of `ORDER BY ingested_at` forever — and
+    // the skip used to happen AFTER the row had already consumed one of the
+    // batch's slots. Past `BATCH_SIZE` poisoned episodes at the head (one
+    // workspace's content filter, one 404ing model) every tick selected the same
+    // full batch, skipped all of it for free, and drained NOTHING — for every
+    // other workspace and source in the deployment. Cheap, silent, and total.
+    //
+    // Uses a batch-sized poison block so the test fails for the RIGHT reason: a
+    // smaller block would leave room in the LIMIT and pass without the fix.
+    //
+    // MUTATION THIS CATCHES: dropping the `id <> ALL($2::text[])` exclusion.
+    const BATCH = 25;
+    for (let i = 0; i < BATCH; i++) {
+      await insertEpisode({ sourceId: `C01:poison-${i}`, body: "explode" });
+    }
+    let failing = true;
+    const selective: FactExtractor = (input) => {
+      if (input.body === "explode") return Promise.reject(new Error("model refused"));
+      return Promise.resolve([candidate()]);
+    };
+
+    // Drive the poison block into quarantine (tick 1 is refunded as an outage).
+    for (let i = 0; i < 4; i++) await cycleWith(selective);
+    const stalled = await cycleWith(selective);
+    expect(stalled.skipped.quarantined).toBe(BATCH);
+    expect(stalled.extracted).toBe(0);
+    void failing;
+
+    // NOW a healthy episode arrives BEHIND all of them. Before the exclusion it
+    // was unreachable: the 25 quarantined rows filled the LIMIT on every tick.
+    const healthy = await insertEpisode({ sourceId: "C01:healthy", body: "the deploy window is Thursdays" });
+    const drained = await cycleWith(selective);
+
+    expect(drained.extracted).toBe(1);
+    expect(await extractedAtOf(healthy.id)).not.toBeNull();
+    // …and the quarantined block is still REPORTED, not silently dropped from
+    // the counters just because it left the SELECT.
+    expect(drained.skipped.quarantined).toBe(BATCH);
   });
 
   it("forgives one strike each when a whole tick fails, so an outage costs nothing", async () => {

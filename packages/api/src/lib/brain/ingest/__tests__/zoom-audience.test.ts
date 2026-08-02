@@ -19,13 +19,14 @@
 import { describe, expect, it } from "bun:test";
 import {
   MAX_PARTICIPANT_PAGES,
-  ZOOM_MEETING_AUDIENCES_SQL,
   readMeetingRoster,
   reconcileMeetingAudience,
   reverifyZoomMeetingAudiences,
   type ZoomAudienceDeps,
 } from "@atlas/api/lib/brain/ingest/zoom/audience";
 import {
+  REVERIFY_CANDIDATES_SQL,
+  TOUCH_REVERIFY_ATTEMPT_SQL,
   ZERO_REVERIFY,
   _resetAudienceReverifiers,
   listAudienceReverifierSources,
@@ -202,21 +203,39 @@ describe("reconcileMeetingAudience", () => {
 describe("reverifyZoomMeetingAudiences", () => {
   const install = { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } };
 
+  /**
+   * A `query` double routed by STATEMENT and typed to the real dependency.
+   *
+   * Not `as never`, which is what this fixture used to be: `query` is GENERIC
+   * (`<T extends Record<string, unknown>>`) so an inline `async (sql: string)`
+   * does not satisfy it, and the cast made the whole fixture invisible to the
+   * type gate. Routing by identity also means an unrecognised statement is a
+   * fixture that has drifted from the code, not something to answer with canned
+   * rows — the old form answered the attempt stamp with candidate rows.
+   */
   function deps(
     overrides: Partial<ZoomAudienceDeps> & { audiences?: string[]; hasMembers?: boolean } = {},
   ): ZoomAudienceDeps {
     const audiences = overrides.audiences ?? [`audience:meeting:zoom:${UUID}`];
+    const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+      T extends Record<string, unknown>,
+    >(
+      sql: string,
+    ): Promise<T[]> => {
+      if (/workspace_plugins/.test(sql)) return [install] as unknown as T[];
+      if (sql === TOUCH_REVERIFY_ATTEMPT_SQL) return [] as T[];
+      if (sql !== REVERIFY_CANDIDATES_SQL) {
+        throw new Error(`unexpected statement in the Zoom re-verify fixture: ${sql}`);
+      }
+      return audiences.map((token) => ({
+        token,
+        has_members: overrides.hasMembers ?? false,
+      })) as unknown as T[];
+    };
     return {
       isEnabled: () => true,
       resolveToken: async () => "tok",
-      query: (async (sql: string) =>
-        /workspace_plugins/.test(sql)
-          ? [install]
-          : audiences.map((token) => ({
-              token,
-              synced_at: null,
-              has_members: overrides.hasMembers ?? false,
-            }))) as never,
+      query,
       fetchParticipantsPage: async () => ({
         ok: true as const,
         participants: [p("a@x.example", "z1")],
@@ -386,38 +405,265 @@ describe("reverifyZoomMeetingAudiences", () => {
   });
 });
 
-describe("the scan's ORDER BY — the round-1 starvation fix itself", () => {
-  it("prioritises audiences that HAVE members, then the stalest", () => {
-    // Round 2's finding: this ordering IS the whole starvation fix, and it is a
-    // SQL string no test asserted and no `-pg` test executes — the `query` stub
-    // dictates the returned order, so the clause is unobservable by construction
-    // and reverting it to the naive single key stayed green.
+describe("rotation — this source inherits the shared attempt stamp (#4971)", () => {
+  interface Call {
+    readonly sql: string;
+    readonly params: readonly unknown[];
+  }
+
+  /**
+   * Run one re-verification pass and hand back every statement it issued.
+   *
+   * The `query` double is typed to the real dependency signature: a stub typed
+   * `async (sql: string) => …` is green under `bun test` and red only in the
+   * separate type gate.
+   */
+  async function runAndRecord(
+    overrides: Partial<ZoomAudienceDeps> & { audiences?: string[]; hasMembers?: boolean },
+  ): Promise<Call[]> {
+    const calls: Call[] = [];
+    const audiences = overrides.audiences ?? [`audience:meeting:zoom:${UUID}`];
+    const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+      T extends Record<string, unknown>,
+    >(
+      sql: string,
+      params?: unknown[],
+    ): Promise<T[]> => {
+      calls.push({ sql, params: params ?? [] });
+      if (/workspace_plugins/.test(sql)) {
+        return [
+          { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } },
+        ] as unknown as T[];
+      }
+      if (sql === REVERIFY_CANDIDATES_SQL) {
+        return audiences.map((token) => ({
+          token,
+          has_members: overrides.hasMembers ?? false,
+        })) as unknown as T[];
+      }
+      return [] as T[];
+    };
+    await reverifyZoomMeetingAudiences({
+      isEnabled: () => true,
+      resolveToken: async () => "tok",
+      fetchParticipantsPage: async () => ({
+        ok: true as const,
+        participants: [p("a@x.example", "z1")],
+        nextPageToken: null,
+      }),
+      resolve: async () => ({ resolved: new Map([["z1", "user-1"]]), unresolvedCount: 0 }),
+      reconcile: async () => ({ added: 1, revoked: 0 }),
+      ...overrides,
+      query,
+    });
+    return calls;
+  }
+
+  function touchedAudienceIds(calls: readonly Call[]): readonly string[] {
+    const touch = calls.find((call) => call.sql === TOUCH_REVERIFY_ATTEMPT_SQL);
+    return (touch?.params[1] as string[] | undefined) ?? [];
+  }
+
+  // The ORDER BY that makes rotation work is executed against a real schema in
+  // `audience/__tests__/audience-sync-pg.test.ts`, and the scan/stamp coupling
+  // is pinned in `audience/__tests__/reverify-scan.test.ts`. What is source-
+  // specific — and what this connector could regress on its own — is whether
+  // Zoom's own abort paths still go through that seam. They are the paths a
+  // stale meeting takes on EVERY cycle, because Zoom's past-meeting participant
+  // report ages out of its retention window.
+
+  it("stamps an attempt for a meeting whose roster read FAILS every cycle", async () => {
+    // The starvation itself. Before #4971 this audience advanced no column the
+    // scan ordered on, so it held a slot at the front forever and everything
+    // behind it aged past the staleness bound with `acl.ts` suppressing it.
     //
-    // The failure it prevents: an audience resolving to no Atlas users never
-    // gets a `fact_audience_member` row, so `MIN(synced_at)` is NULL forever and
-    // it pins the front of a NULLS-FIRST scan on every cycle. Past the cap, no
-    // member-BEARING audience is ever re-verified and they all cross the
-    // staleness bound while the cycle reports failed: 0.
-    //
-    // Asserted as text because that is the only instrument available without a
-    // `-pg` case; the ordering's SEMANTICS still want one (see the module doc).
-    const normalised = ZOOM_MEETING_AUDIENCES_SQL.replace(/\s+/g, " ");
-    expect(normalised).toContain(
-      "ORDER BY (count(m.user_id) > 0) DESC, MIN(m.synced_at) ASC NULLS FIRST, t.token ASC",
+    // MUTATION THIS CATCHES: reverting `reverifyWorkspace` to its own scan SQL,
+    // or moving the stamp into the success branch.
+    const touched = touchedAudienceIds(
+      await runAndRecord({
+        fetchParticipantsPage: async () => ({
+          ok: false as const,
+          error: "not_found",
+          retryAfterSeconds: null,
+        }),
+      }),
     );
-    // …and the column the empty-roster guard reads must actually be selected,
-    // or that guard silently never fires.
-    expect(normalised).toContain("count(m.user_id) > 0 AS has_members");
+    expect(touched).toEqual([`meeting:zoom:${UUID}`]);
   });
 
-  it("scopes the scan to this workspace and this source", () => {
-    // `audience_id` is workspace-scoped but not globally unique, and a
-    // cross-tenant membership row grants inside the reader's OWN tenant — the
-    // one leak `acl.ts`'s workspace containment cannot catch.
-    const normalised = ZOOM_MEETING_AUDIENCES_SQL.replace(/\s+/g, " ");
-    expect(normalised).toContain("e.workspace_id = $1");
-    expect(normalised).toContain("e.source = $2");
-    expect(normalised).toContain("m.workspace_id = $1");
+  it("stamps an attempt for the EMPTY-ROSTER refusal too", async () => {
+    // The second permanent-failure path, and the one #4965 noted makes the
+    // starvation MORE likely rather than less: before that guard an empty roster
+    // reconciled (wrongly) and at least stamped `synced_at`. Choosing safety
+    // over rotation was right — this is what pays for it.
+    //
+    // MUTATION THIS CATCHES: stamping only the audiences that reach the
+    // reconcile.
+    const calls = await runAndRecord({
+      hasMembers: true,
+      fetchParticipantsPage: async () => ({
+        ok: true as const,
+        participants: [],
+        nextPageToken: null,
+      }),
+      reconcile: async () => {
+        throw new Error("must not reconcile an empty roster over members");
+      },
+    });
+    expect(touchedAudienceIds(calls)).toEqual([`meeting:zoom:${UUID}`]);
+  });
+
+  it("stamps an attempt for a token that does not parse as this source's", async () => {
+    // A token nothing can ever reconcile is the worst possible thing to leave
+    // unstamped: it would sit on a NULL attempt time forever and pin the front
+    // of every future scan — #4971's starvation rebuilt out of its one
+    // irreparable case.
+    //
+    // MUTATION THIS CATCHES: stamping inside the loop, after the parse check.
+    const calls = await runAndRecord({ audiences: ["audience:meeting:not-a-zoom-token"] });
+    expect(touchedAudienceIds(calls)).toEqual(["meeting:not-a-zoom-token"]);
+  });
+
+  it("counts a FAILED scan or stamp as a workspace failure, doing no vendor work", async () => {
+    // The other half of `selectReverifyCandidates`'s contract: it throws, and
+    // the caller counts. Only the throw was covered — this pins the catch.
+    //
+    // Untested, a `catch { return ZERO_REVERIFY }` around the call restores
+    // #4971's exact signature: a source that re-verifies nothing while the cycle
+    // reports `success`, because "scan failed" and "nothing to do" are the same
+    // empty result. Reachable in production from an unapplied migration, a
+    // statement timeout, or a saturated pool.
+    //
+    // MUTATION THIS CATCHES: swallowing the throw, or dropping the `failed + 1`
+    // in the per-workspace catch.
+    for (const failing of [REVERIFY_CANDIDATES_SQL, TOUCH_REVERIFY_ATTEMPT_SQL]) {
+      let vendorCalls = 0;
+      const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+        T extends Record<string, unknown>,
+      >(
+        sql: string,
+      ): Promise<T[]> => {
+        if (/workspace_plugins/.test(sql)) {
+          return [
+            { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } },
+          ] as unknown as T[];
+        }
+        if (sql === failing) throw new Error("relation does not exist");
+        return [{ token: `audience:meeting:zoom:${UUID}`, has_members: true }] as unknown as T[];
+      };
+      const out = await reverifyZoomMeetingAudiences({
+        isEnabled: () => true,
+        resolveToken: async () => "tok",
+        query,
+        fetchParticipantsPage: async () => {
+          vendorCalls++;
+          return { ok: true as const, participants: [], nextPageToken: null };
+        },
+        resolve: async () => ({ resolved: new Map(), unresolvedCount: 0 }),
+        reconcile: async () => ({ added: 0, revoked: 0 }),
+      });
+      expect([out.failed, out.reconciled]).toEqual([1, 0]);
+      // A page that could not be stamped must not be WORKED — working it without
+      // rotating is the starvation this whole change removes.
+      expect(vendorCalls).toBe(0);
+    }
+  });
+
+  it("STAMPS the page even when the workspace's token cannot be resolved", async () => {
+    // The token is resolved AFTER the scan, and that ordering was tried the
+    // other way and reverted — so it needs a test rather than a paragraph.
+    //
+    // Hoisting `resolveToken` above the scan looks tidier (a workspace that
+    // cannot make one vendor call would not "consume" a page of rotation), but
+    // it makes an enabled install with ZERO audiences resolve a token it never
+    // uses on every cycle, and a broken credential there stands the whole cycle
+    // permanently `degraded` over a workspace with nothing to verify.
+    //
+    // And the fairness it looked like it was protecting is not real, which is
+    // what this pins: a token failure hits EVERY audience in the workspace
+    // equally, so stamping them all is the correct rotation outcome. No audience
+    // is starved relative to any other, and the failure is still counted.
+    //
+    // MUTATION THIS CATCHES: hoisting `resolveToken` above
+    // `selectReverifyCandidates` — the stamp would then never be issued.
+    let stamped: readonly string[] = [];
+    const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+      T extends Record<string, unknown>,
+    >(
+      sql: string,
+      params?: unknown[],
+    ): Promise<T[]> => {
+      if (/workspace_plugins/.test(sql)) {
+        return [
+          { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } },
+        ] as unknown as T[];
+      }
+      if (sql === TOUCH_REVERIFY_ATTEMPT_SQL) {
+        stamped = (params?.[1] as string[] | undefined) ?? [];
+        return [] as T[];
+      }
+      return [{ token: `audience:meeting:zoom:${UUID}`, has_members: true }] as unknown as T[];
+    };
+    const out = await reverifyZoomMeetingAudiences({
+      isEnabled: () => true,
+      resolveToken: async () => {
+        throw new Error("credential revoked");
+      },
+      query,
+      reconcile: async () => ({ added: 0, revoked: 0 }),
+    });
+    expect(stamped).toEqual([`meeting:zoom:${UUID}`]);
+    expect([out.failed, out.reconciled]).toEqual([1, 0]);
+  });
+
+  it("resolves NO token at all when the workspace has no audiences to verify", async () => {
+    // The benefit the ordering was reverted FOR, which the test above does not
+    // reach: it only catches a hoist above the scan (the stamp disappears). A
+    // hoist landing between the scan and the `candidates.length === 0` early
+    // return keeps the stamp and stays green — while reintroducing exactly the
+    // cost that motivated the revert. `resolveZoomToken` is a credential decrypt
+    // plus a live token exchange with no cache, so an enabled install with zero
+    // audiences would pay it 48 times a day, and a broken credential there would
+    // stand the cycle permanently `degraded` over a workspace with nothing to
+    // verify.
+    //
+    // MUTATION THIS CATCHES: moving `resolveToken` above the zero-candidate
+    // early return.
+    let tokenCalls = 0;
+    const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+      T extends Record<string, unknown>,
+    >(
+      sql: string,
+    ): Promise<T[]> => {
+      if (/workspace_plugins/.test(sql)) {
+        return [
+          { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } },
+        ] as unknown as T[];
+      }
+      return [] as T[];
+    };
+    const out = await reverifyZoomMeetingAudiences({
+      isEnabled: () => true,
+      resolveToken: async () => {
+        tokenCalls++;
+        return "tok";
+      },
+      query,
+    });
+    expect(tokenCalls).toBe(0);
+    expect(out).toEqual(ZERO_REVERIFY);
+  });
+
+  it("scans with the NAMESPACE prefix, not the vendor-narrowed one", async () => {
+    // `audience:meeting:` rather than `audience:meeting:zoom:`, deliberately: the
+    // scan is coarser than the parser so another vendor's meeting token comes
+    // back and gets LOGGED by the parse check above. Narrowing it here would
+    // turn that diagnostic into a silent skip.
+    //
+    // MUTATION THIS CATCHES: passing `audience:meeting:zoom:` as the prefix.
+    const calls = await runAndRecord({});
+    const scan = calls.find((call) => call.sql === REVERIFY_CANDIDATES_SQL);
+    expect(scan?.params.slice(0, 3)).toEqual(["ws1", "zoom", "audience:meeting:"]);
   });
 });
 

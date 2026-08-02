@@ -10,13 +10,16 @@
 import { describe, expect, it } from "bun:test";
 import {
   MAX_REVERIFY_AUDIENCES_PER_WORKSPACE,
-  OUTLOOK_MESSAGE_AUDIENCES_SQL,
   messageParticipants,
   reconcileEmailAudience,
   redactAudienceDigest,
   reverifyOutlookMessageAudiences,
   type OutlookAudienceDeps,
 } from "@atlas/api/lib/brain/ingest/outlook/audience";
+import {
+  REVERIFY_CANDIDATES_SQL,
+  TOUCH_REVERIFY_ATTEMPT_SQL,
+} from "@atlas/api/lib/brain/audience/reverify";
 import type { OutlookMessage } from "@atlas/api/lib/brain/ingest/outlook/api";
 import { emailParticipantsDigest } from "@atlas/api/lib/brain/ingest/grant";
 
@@ -51,8 +54,11 @@ function message(overrides: Partial<OutlookMessage> = {}): OutlookMessage {
 type QueryFn = NonNullable<OutlookAudienceDeps["query"]>;
 
 /**
- * A typed stand-in for `internalQuery` that answers the install scan and the
- * audience scan from canned rows.
+ * A typed stand-in for `internalQuery` that answers the install scan, the shared
+ * candidate scan, and the attempt stamp from canned rows.
+ *
+ * Routed by STATEMENT rather than by call order, so a test cannot pass because
+ * the statements happened to be issued in the order it assumed.
  *
  * One helper rather than an inline closure per test, because `query` is GENERIC
  * (`<T extends Record<string, unknown>>`) and an inline `async (sql: string)`
@@ -60,18 +66,31 @@ type QueryFn = NonNullable<OutlookAudienceDeps["query"]>;
  * here and red only in the type gate.
  */
 function scanQuery(
-  audiences: readonly { token: string; synced_at: string | null; has_members: boolean }[],
+  audiences: readonly { token: string; has_members: boolean }[],
   onAudienceScan?: (params?: unknown[]) => void,
+  onTouch?: (params?: unknown[]) => void,
 ): QueryFn {
-  return (async (sql: string, params?: unknown[]) => {
+  return async <T extends Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<T[]> => {
     if (sql.includes("workspace_plugins")) {
       return [
         { workspace_id: "ws", install_id: "i", config: { tenantId: "t", mailboxes: ["a@b.com"] } },
-      ];
+      ] as unknown as T[];
+    }
+    if (sql === TOUCH_REVERIFY_ATTEMPT_SQL) {
+      onTouch?.(params);
+      return [] as T[];
+    }
+    if (sql !== REVERIFY_CANDIDATES_SQL) {
+      // Routed by statement, so an unrecognised one is a fixture that has
+      // drifted from the code rather than something to answer with canned rows.
+      throw new Error(`unexpected statement in the Outlook re-verify fixture: ${sql}`);
     }
     onAudienceScan?.(params);
-    return audiences;
-  }) as QueryFn;
+    return audiences as unknown as T[];
+  };
 }
 
 /** A deps bundle whose every vendor/DB call is recorded, none real. */
@@ -174,11 +193,38 @@ describe("redactAudienceDigest", () => {
   });
 
   it("passes through anything that is not a parseable audience id", () => {
-    // A token this module did not mint is logged verbatim rather than mangled:
+    // A token this module did not mint keeps its non-digest segments, because
     // the whole point of logging it is to identify the thing that went wrong.
+    // NOT "verbatim" — that was true before the fail-closed repair below, and a
+    // 16-hex segment anywhere in an unparseable id is now blanked. These
+    // fixtures deliberately contain none, so they round-trip unchanged.
     for (const opaque of ["", "not-an-audience", "meeting:zoom:abc"]) {
       expect([opaque, redactAudienceDigest(opaque)]).toEqual([opaque, opaque]);
     }
+  });
+
+  it("⭐ still blanks a digest when the id no longer PARSES — fail-closed, not open", () => {
+    // The unparseable branch used to `return audienceId` untouched, which fails
+    // OPEN on the one input most likely to carry a real digest. The reachable
+    // case is a FORMAT CHANGE: give the id another segment and
+    // `parseEmailMessageAudienceId` finds the wrong thing in the digest slot and
+    // returns null — so the branch designed to fire on a format change was
+    // exactly the branch where the redaction stopped working, and the whole raw
+    // id including a valid digest reached the log sink.
+    //
+    // `parseEmailMessageAudienceId` argues fail-closed for itself; this now
+    // matches it, by blanking digest-SHAPED segments rather than trusting
+    // position — with the format unknown, position is what cannot be trusted.
+    //
+    // MUTATION THIS CATCHES: restoring `if (parts === null) return audienceId`.
+    const futureFormat = `email-message:outlook:${MAILBOX}:thread-77:${DIGEST}:${MESSAGE}`;
+    expect(redactAudienceDigest(futureFormat)).not.toContain(DIGEST);
+    // Everything else survives — the point is still to identify what went wrong.
+    expect(redactAudienceDigest(futureFormat)).toContain(MAILBOX);
+    expect(redactAudienceDigest(futureFormat)).toContain("thread-77");
+    // And a genuinely opaque token is still not mangled (asserted above), so the
+    // blanking is scoped to segments that actually look like a digest.
+    expect(redactAudienceDigest("not-an-audience")).toBe("not-an-audience");
   });
 });
 
@@ -233,37 +279,38 @@ describe("reconcileEmailAudience", () => {
 });
 
 describe("the re-verify scan", () => {
-  it("orders member-BEARING audiences first, then stalest — two keys, not one", () => {
-    // A naive `MIN(synced_at) ASC NULLS FIRST` alone STARVES the audiences that
-    // matter: an audience resolving to no Atlas users never gets a
-    // `fact_audience_member` row, so its `MIN(synced_at)` is NULL forever and it
-    // sorts first on every cycle. Past the cap the scan returns the identical
-    // rows every time and no member-bearing audience is re-verified again.
+  it("scans with the NAMESPACE prefix and this source's own kind", async () => {
+    // The three things that stayed source-specific when #4971 moved the ordering
+    // into `audience/reverify.ts`. `email-message:` rather than
+    // `email-message:outlook:`, deliberately: the scan is coarser than the parser
+    // so another vendor's token comes back and gets LOGGED by the parse check
+    // rather than silently skipped.
     //
-    // MUTATION THIS CATCHES: dropping the `has_members DESC` key.
-    expect(OUTLOOK_MESSAGE_AUDIENCES_SQL).toContain(
-      "ORDER BY (count(m.user_id) > 0) DESC, MIN(m.synced_at) ASC NULLS FIRST",
-    );
-    // Sourced from `visible_to`, not from `fact_audience_member`: membership is
-    // the thing being repaired, so an audience with no members has no row there
-    // and would be invisible to a scan of it — and it is exactly the audience
-    // the "someone joined Atlas later" repair exists for.
-    expect(OUTLOOK_MESSAGE_AUDIENCES_SQL).toContain("unnest(e.visible_to)");
-    expect(OUTLOOK_MESSAGE_AUDIENCES_SQL).toContain("LEFT JOIN fact_audience_member");
+    // MUTATION THIS CATCHES: narrowing the prefix to the vendor, or passing
+    // another source's kind (which would scan the wrong episodes entirely).
+    let scanParams: unknown[] | undefined;
+    const { deps: d } = deps({
+      query: scanQuery([{ token: TOKEN, has_members: true }], (params) => {
+        scanParams = params;
+      }),
+    });
+    await reverifyOutlookMessageAudiences(d);
+    expect(scanParams?.slice(0, 3)).toEqual(["ws", "outlook", "audience:email-message:"]);
+    expect(scanParams?.[4]).toBe(MAX_REVERIFY_AUDIENCES_PER_WORKSPACE);
   });
 
   it("skips a token that is not this source's rather than reconciling it", async () => {
-    // The scan's `LIKE` is coarser than the parser. A token naming another
+    // The scan's prefix is coarser than the parser. A token naming another
     // vendor's message is not this re-verifier's to touch — reconciling it would
     // resolve the wrong roster against the wrong audience.
     const { deps: d, reconciled } = deps({
       query: scanQuery([
-        { token: `audience:email-message:gmail:mb:${DIGEST}:msg`, synced_at: null, has_members: false },
-        { token: "audience:email-message:malformed", synced_at: null, has_members: false },
+        { token: `audience:email-message:gmail:mb:${DIGEST}:msg`, has_members: false },
+        { token: "audience:email-message:malformed", has_members: false },
         // A token whose digest slot does not hold a digest was not minted by
         // `emailMessageAudienceId`. The parser refuses it, so the re-verifier
         // skips it rather than reporting the inevitable mismatch as tampering.
-        { token: `audience:email-message:outlook:${MAILBOX}:nope:${MESSAGE}`, synced_at: null, has_members: false },
+        { token: `audience:email-message:outlook:${MAILBOX}:nope:${MESSAGE}`, has_members: false },
       ]),
     });
     const result = await reverifyOutlookMessageAudiences(d);
@@ -283,7 +330,7 @@ describe("the re-verify scan", () => {
     // MUTATION THIS CATCHES: treating `message: null` as a message with no
     // recipients and falling through to the reconcile.
     const { deps: d, reconciled } = deps({
-      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      query: scanQuery([{ token: TOKEN, has_members: true }]),
       fetchMessage: async () => ({ ok: true, messages: [] }),
     });
     const result = await reverifyOutlookMessageAudiences(d);
@@ -299,7 +346,7 @@ describe("the re-verify scan", () => {
       message({ from: address(null), toRecipients: [], ccRecipients: [] }),
     ]) {
       const { deps: d, reconciled } = deps({
-        query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+        query: scanQuery([{ token: TOKEN, has_members: true }]),
         fetchMessage: async () => ({ ok: true, messages: [bad] }),
       });
       const result = await reverifyOutlookMessageAudiences(d);
@@ -319,7 +366,7 @@ describe("the re-verify scan", () => {
     //
     // MUTATION THIS CATCHES: dropping the digest comparison in `reverifyWorkspace`.
     const { deps: d, reconciled } = deps({
-      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      query: scanQuery([{ token: TOKEN, has_members: true }]),
       fetchMessage: async () => ({
         ok: true,
         messages: [message({
@@ -348,7 +395,7 @@ describe("the re-verify scan", () => {
     //
     // MUTATION THIS CATCHES: refusing when `lookup.messages.length > 1`.
     const { deps: d, reconciled } = deps({
-      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      query: scanQuery([{ token: TOKEN, has_members: true }]),
       fetchMessage: async () => ({ ok: true, messages: [message(), message()] }),
     });
     const result = await reverifyOutlookMessageAudiences(d);
@@ -368,7 +415,7 @@ describe("the re-verify scan", () => {
       ccRecipients: [],
     });
     const { deps: d, reconciled } = deps({
-      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      query: scanQuery([{ token: TOKEN, has_members: true }]),
       fetchMessage: async () => ({ ok: true, messages: [forged, message()] }),
     });
     const result = await reverifyOutlookMessageAudiences(d);
@@ -381,7 +428,7 @@ describe("the re-verify scan", () => {
 
   it("ABORTS on a vendor read failure, leaving the previous membership standing", async () => {
     const { deps: d, reconciled } = deps({
-      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      query: scanQuery([{ token: TOKEN, has_members: true }]),
       fetchMessage: async () => ({ ok: false, error: "mailbox_denied", retryAfterSeconds: null }),
     });
     const result = await reverifyOutlookMessageAudiences(d);
@@ -391,7 +438,7 @@ describe("the re-verify scan", () => {
 
   it("reconciles a healthy audience and reports what changed", async () => {
     const { deps: d, reconciled } = deps({
-      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      query: scanQuery([{ token: TOKEN, has_members: true }]),
     });
     const result = await reverifyOutlookMessageAudiences(d);
     expect(reconciled).toHaveLength(1);
@@ -425,7 +472,7 @@ describe("the re-verify scan", () => {
   it("respects the workspace enable gate and the per-cycle cap", async () => {
     const { deps: d, reconciled } = deps({
       isEnabled: () => false,
-      query: scanQuery([{ token: TOKEN, synced_at: null, has_members: true }]),
+      query: scanQuery([{ token: TOKEN, has_members: true }]),
     });
     const disabled = await reverifyOutlookMessageAudiences(d);
     expect(reconciled).toHaveLength(0);
@@ -445,5 +492,180 @@ describe("the re-verify scan", () => {
     });
     await reverifyOutlookMessageAudiences(capped);
     expect(limitParam).toBe(MAX_REVERIFY_AUDIENCES_PER_WORKSPACE);
+  });
+});
+
+describe("rotation — this source inherits the shared attempt stamp (#4971)", () => {
+  // The ORDER BY is executed against a real schema in
+  // `audience/__tests__/audience-sync-pg.test.ts`, and the scan/stamp coupling is
+  // pinned in `audience/__tests__/reverify-scan.test.ts`. What is source-specific
+  // — and what this connector could regress on its own — is whether Outlook's own
+  // abort paths still go through that seam. They matter more here than anywhere:
+  // a mailbox whose Graph access is revoked fails EVERY audience minted from it,
+  // all at once, so before rotation one Exchange admin action could park the
+  // whole workspace's re-verification on a set that can never succeed.
+
+  /** One pass over `audiences`, returning the ids it stamped as attempted. */
+  async function stampedIds(
+    audiences: readonly { token: string; has_members: boolean }[],
+    overrides: Partial<OutlookAudienceDeps> = {},
+  ): Promise<readonly string[]> {
+    let stamped: readonly string[] = [];
+    const { deps: d } = deps({
+      query: scanQuery(audiences, undefined, (params) => {
+        stamped = (params?.[1] as string[] | undefined) ?? [];
+      }),
+      ...overrides,
+    });
+    await reverifyOutlookMessageAudiences(d);
+    return stamped;
+  }
+
+  it("stamps an attempt for a message whose Graph read FAILS every cycle", async () => {
+    // The revoked-mailbox case. Before #4971 this audience advanced no column the
+    // scan ordered on, so it held a slot at the front forever and everything
+    // behind it aged past the staleness bound with `acl.ts` suppressing it — the
+    // outage being fail-CLOSED does not make it less of an outage.
+    //
+    // MUTATION THIS CATCHES: reverting `reverifyWorkspace` to its own scan SQL,
+    // or moving the stamp into the success branch.
+    expect(
+      await stampedIds([{ token: TOKEN, has_members: true }], {
+        fetchMessage: async () => ({ ok: false, error: "forbidden", retryAfterSeconds: null }),
+      }),
+    ).toEqual([AUDIENCE_ID]);
+  });
+
+  it("stamps an attempt for a message Graph no longer returns", async () => {
+    // The deleted-or-moved case, which aborts rather than reconciling to empty
+    // because an email's headers are immutable. It aborts on every cycle for as
+    // long as the message stays gone, which is forever.
+    expect(
+      await stampedIds([{ token: TOKEN, has_members: true }], {
+        fetchMessage: async () => ({ ok: true, messages: [] }),
+      }),
+    ).toEqual([AUDIENCE_ID]);
+  });
+
+  it("stamps an attempt for the digest-MISMATCH refusal", async () => {
+    // The refusal that protects membership from a forged Message-ID. It is also
+    // permanent by construction — the stored token names a participant set the
+    // mailbox no longer holds — so leaving it unstamped would let one forged
+    // header park a slot for good.
+    //
+    // MUTATION THIS CATCHES: stamping only the audiences that reach the reconcile.
+    expect(
+      await stampedIds([{ token: TOKEN, has_members: true }], {
+        fetchMessage: async () => ({
+          ok: true,
+          messages: [message({ toRecipients: [address("someone-else@contoso.com")] })],
+        }),
+      }),
+    ).toEqual([AUDIENCE_ID]);
+  });
+
+  it("stamps an attempt for a token that does not parse as this source's", async () => {
+    // A token nothing can ever reconcile is the worst possible thing to leave
+    // unstamped: it would sit on a NULL attempt time forever and pin the front of
+    // every future scan — #4971's starvation rebuilt out of its one irreparable
+    // case.
+    //
+    // MUTATION THIS CATCHES: stamping inside the loop, after the parse check.
+    expect(
+      await stampedIds([{ token: "audience:email-message:malformed", has_members: false }]),
+    ).toEqual(["email-message:malformed"]);
+  });
+
+  it("STAMPS the page even when the workspace's token cannot be resolved", async () => {
+    // The same ordering decision Zoom pins, and it needs its own test because it
+    // is per-connector code — the identical hoist here was green while Zoom's
+    // was red. It also matters MORE here: the GRAIN PROBLEM header argues this
+    // source is the one whose rotation carries the most weight.
+    //
+    // The token resolves AFTER the scan, so a revoked Graph credential still
+    // leaves the page stamped — which is correct, not a lie: the failure hits
+    // every audience in the workspace equally, so no audience is starved
+    // relative to any other.
+    //
+    // MUTATION THIS CATCHES: hoisting `resolveToken` above
+    // `selectReverifyCandidates` — the stamp would then never be issued.
+    let stamped: readonly string[] = [];
+    const { deps: d } = deps({
+      query: scanQuery([{ token: TOKEN, has_members: true }], undefined, (params) => {
+        stamped = (params?.[1] as string[] | undefined) ?? [];
+      }),
+      resolveToken: async () => {
+        throw new Error("mailbox access revoked");
+      },
+    });
+    const out = await reverifyOutlookMessageAudiences(d);
+    expect(stamped).toEqual([AUDIENCE_ID]);
+    expect([out.failed, out.reconciled]).toEqual([1, 0]);
+  });
+
+  it("resolves NO token at all when the workspace has no audiences to verify", async () => {
+    // The benefit the ordering was reverted FOR — a hoist landing between the
+    // scan and the `candidates.length === 0` early return keeps the stamp and
+    // would otherwise stay green. Graph's `client_credentials` exchange is not
+    // cached, so an enabled install with zero audiences would pay it every
+    // cycle, and a broken credential there would stand the cycle permanently
+    // `degraded` over a workspace with nothing to verify.
+    //
+    // MUTATION THIS CATCHES: moving `resolveToken` above the zero-candidate
+    // early return.
+    let tokenCalls = 0;
+    const { deps: d } = deps({
+      query: scanQuery([]),
+      resolveToken: async () => {
+        tokenCalls++;
+        return "tok";
+      },
+    });
+    await reverifyOutlookMessageAudiences(d);
+    expect(tokenCalls).toBe(0);
+  });
+
+  it("counts a FAILED scan or stamp as a workspace failure, doing no vendor work", async () => {
+    // The other half of `selectReverifyCandidates`'s contract: it throws, and
+    // the caller counts. Only the throw was covered — this pins the catch.
+    //
+    // Untested, a `catch { return ZERO_REVERIFY }` around the call restores
+    // #4971's exact signature: a source that re-verifies nothing while the cycle
+    // reports `success`, because "scan failed" and "nothing to do" are the same
+    // empty result.
+    //
+    // MUTATION THIS CATCHES: swallowing the throw, or dropping the `failed + 1`
+    // in the per-workspace catch.
+    for (const failing of [REVERIFY_CANDIDATES_SQL, TOUCH_REVERIFY_ATTEMPT_SQL]) {
+      let vendorCalls = 0;
+      const query: QueryFn = async <T extends Record<string, unknown>>(
+        sql: string,
+      ): Promise<T[]> => {
+        if (sql.includes("workspace_plugins")) {
+          return [
+            {
+              workspace_id: "ws",
+              install_id: "i",
+              config: { tenantId: "t", mailboxes: ["a@b.com"] },
+            },
+          ] as unknown as T[];
+        }
+        if (sql === failing) throw new Error("relation does not exist");
+        return [{ token: TOKEN, has_members: true }] as unknown as T[];
+      };
+      const { deps: d, reconciled } = deps({
+        query,
+        fetchMessage: async () => {
+          vendorCalls++;
+          return { ok: true, messages: [message()] };
+        },
+      });
+      const out = await reverifyOutlookMessageAudiences(d);
+      expect([out.failed, out.reconciled]).toEqual([1, 0]);
+      // A page that could not be stamped must not be WORKED — working it without
+      // rotating is the starvation this whole change removes.
+      expect(vendorCalls).toBe(0);
+      expect(reconciled).toHaveLength(0);
+    }
   });
 });

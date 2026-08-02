@@ -147,7 +147,7 @@ export const OUTLOOK_MAIL_CATALOG_ID = "catalog:outlook-mail";
  * the same message would mint the same id. The grain is still vendor here
  * because the stored value does more than dedupe: it is the audience
  * re-verifier's scan key (`brain_episodes.source = $2` in
- * {@link OUTLOOK_MESSAGE_AUDIENCES_SQL}) and the routing key for every
+ * `audience/reverify.ts`'s `REVERIFY_CANDIDATES_SQL`) and the routing key for every
  * class-keyed discriminator. Two vendors sharing it would put one vendor's
  * re-verifier in front of the other's audiences holding the wrong credential.
  *

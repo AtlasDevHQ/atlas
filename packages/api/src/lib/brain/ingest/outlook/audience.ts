@@ -87,22 +87,34 @@
  * the number; it does not change the shape, and it spends proportionally more
  * Graph calls per cycle.
  *
- * ⚠️ INHERITED FROM #4971, AND WORSE HERE THAN FOR ZOOM. That issue is OPEN and
- * has NOT landed on `milestone/brain-m3` as this connector ships: the scan below
- * orders on `MIN(synced_at)`, which only a SUCCESSFUL reconcile advances, so an
- * audience that fails every cycle never rotates out of the front of the scan and
- * starves everything behind it. This connector deliberately does NOT carry a
- * second copy of the fix — #4971's acceptance criteria put it behind
- * `audience/reverify.ts` precisely so both sources inherit one implementation —
- * and it will inherit the fix when that lands.
+ * ⚠️ THE CAP IS A CEILING, AND STARVATION WAS A SEPARATE PROBLEM. Do not read
+ * #4971 as having raised the number above. That issue fixed the ORDERING — the
+ * scan used to key on `MIN(synced_at)`, which only a successful reconcile
+ * advances, so an audience that failed every cycle held a slot at the front
+ * forever and starved everything behind it. `audience/reverify.ts`'s
+ * `selectReverifyCandidates` now orders on an ATTEMPT stamp written for every
+ * outcome, so a permanent failure costs one slot per cycle instead of one slot
+ * forever, and both shipped sources inherit that from one implementation.
  *
- * Email makes the starvation likelier than Zoom did, for a reason specific to
+ * The starvation mattered more here than for Zoom, for a reason specific to
  * Graph: mailbox access is revocable at any time (an ApplicationAccessPolicy
  * edit, a licence change, a deleted user), and a revoked mailbox fails EVERY one
  * of its audiences on EVERY cycle. Zoom's equivalent — a past-meeting report
  * ageing out of retention — arrives gradually. This one arrives all at once, for
  * every audience minted from that mailbox, the moment an Exchange admin makes a
- * change Atlas cannot see.
+ * change Atlas cannot see. Rotation now spends those failures across cycles
+ * rather than parking on them.
+ *
+ * What rotation does NOT do is create capacity. The ~67,000 figure above is
+ * unchanged: it is `cap × cadence × bound`, and none of those three is what
+ * #4971 touched. Fair rotation past the ceiling means the whole set ages under
+ * ONE rotation rather than a lucky prefix staying fresh — better, and still
+ * fail-closed for whatever falls outside the bound. Not EVENLY, though:
+ * `MEMBERLESS_RESERVE_FRACTION` reserves a tenth of each cycle (rounded down)
+ * for audiences that grant NOBODY. A floor, not a quota — where member-bearing
+ * audiences do not fill the rest, member-less ones take the remainder too. For this source
+ * that second class is large (mail addressed only to customers), and the floor
+ * is what keeps its "someone joined Atlas later" repair running at all.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -110,6 +122,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { AUDIENCE_PREFIX } from "@atlas/api/lib/brain/acl";
 import {
   EMAIL_MESSAGE_AUDIENCE_NAMESPACE,
+  PARTICIPANTS_DIGEST_PATTERN,
   emailParticipantsDigest,
   parseEmailMessageAudienceId,
 } from "@atlas/api/lib/brain/ingest/grant";
@@ -121,6 +134,7 @@ import {
 } from "@atlas/api/lib/brain/audience/sync";
 import {
   registerAudienceReverifier,
+  selectReverifyCandidates,
   ZERO_REVERIFY,
   type AudienceReverifyResult,
 } from "@atlas/api/lib/brain/audience/reverify";
@@ -148,12 +162,33 @@ const log = createLogger("brain.ingest.outlook.audience");
  * joinable to `resolvePrincipals`'s unresolved sample. Redacting rather than
  * salting is deliberate: a rotating salt would change every audience id, and an
  * audience whose token no longer matches its own members fails re-verification
- * forever — the exact permanent-failure class this file's #4971 note is about.
+ * forever. Rotation (#4971) bounds what that costs the REST of the workspace; it
+ * does nothing for the audience itself, which would simply never be repaired.
  */
 export function redactAudienceDigest(audienceId: string): string {
   const parts = parseEmailMessageAudienceId(audienceId);
-  if (parts === null) return audienceId;
-  return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${parts.source}:${parts.mailboxId}:[digest]:${parts.messageId}`;
+  if (parts !== null) {
+    return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${parts.source}:${parts.mailboxId}:[digest]:${parts.messageId}`;
+  }
+  // ⚠️ Unparseable is the FORMAT-CHANGE case, and returning the raw id here —
+  // which is what this did — fails OPEN on the one input most likely to carry a
+  // real digest in a slot this parser no longer knows about. It is also the
+  // exact branch `reverifyWorkspace`'s parse check logs, so the disclosure this
+  // function exists to prevent would land in the sink precisely when the format
+  // moved. `parseEmailMessageAudienceId` argues this direction for itself ("it
+  // stops matching and the caller falls back to opaque, which is fail-CLOSED for
+  // a disclosure decision"); this adopts that direction without going all the way
+  // to opaque — non-digest segments still pass through verbatim, because the
+  // point of logging the id at all is to identify what went wrong.
+  //
+  // Blanking every digest-SHAPED segment is deliberately structural rather than
+  // positional: with the format unknown, position is exactly what cannot be
+  // trusted. `PARTICIPANTS_DIGEST_PATTERN` is anchored for validation, so the
+  // segment test is applied per `:`-delimited part rather than by loosening it.
+  return audienceId
+    .split(":")
+    .map((segment) => (PARTICIPANTS_DIGEST_PATTERN.test(segment) ? "[digest]" : segment))
+    .join(":");
 }
 
 /**
@@ -165,9 +200,9 @@ export function redactAudienceDigest(audienceId: string): string {
  * keep inside the staleness bound at all, and the set it bounds grows with every
  * message ingested.
  *
- * The same starvation caveat applies as for Zoom and applies harder: a
- * permanently-failing audience never rotates out of the front of the scan
- * (#4971, open and not landed).
+ * Raising it buys audiences-per-cycle linearly and spends Graph calls linearly
+ * with it. It does not change the shape, and it is NOT the lever for a stalled
+ * rotation — that was the ordering, fixed in `audience/reverify.ts` (#4971).
  */
 export const MAX_REVERIFY_AUDIENCES_PER_WORKSPACE = 200;
 
@@ -190,71 +225,35 @@ export const MAX_REVERIFY_AUDIENCES_PER_WORKSPACE = 200;
 export const MAX_MESSAGE_PARTICIPANTS = 500;
 
 /**
- * The workspace's Outlook message audiences, STALEST FIRST.
+ * The `visible_to` token prefix this source's audiences carry.
  *
- * Sourced from `brain_episodes.visible_to` rather than from
- * `fact_audience_member`, deliberately: membership is the thing being repaired,
- * so an audience with NO members — the message addressed entirely to external
- * customers — has no row there and would be invisible to a scan of it. That is
- * exactly the audience the "someone joined Atlas later" repair exists for.
+ * NAMESPACE-wide rather than vendor-wide — `email-message:`, not
+ * `email-message:outlook:` — so a token naming another vendor's message still
+ * comes back from the scan and hits the parse check below, which logs it.
+ * Narrowing this would turn that diagnostic into a silent skip.
  *
- * Reading `visible_to` also means only LIVE audiences are scanned. That matters
- * more here than for Zoom, because this connector genuinely mints audiences that
- * no episode ends up naming, by two routes:
+ * The scan behind it is `audience/reverify.ts`'s `selectReverifyCandidates`,
+ * shared with every other source (#4971). Two things that used to be documented
+ * on a per-source copy of that SQL still belong here, because they are facts
+ * about THIS connector rather than about the scan:
  *
- *   - the Message-ID dedupe collapses one mail across every recipient mailbox to
- *     ONE episode, so the second mailbox to see it writes membership for an
- *     audience whose episode insert then no-ops;
- *   - every SKIP that lands AFTER the membership write does the same — an HTML
- *     body, an oversize body, a compose that came out empty. `client.ts` writes
- *     membership before those checks because the audience must be established
- *     before any content decision, and the cost is these orphans.
- *
- * They are inert (nothing references them) and this scan never spends a cycle on
- * them, but they are rows: on a 50-mailbox install an all-internal thread can
- * write up to 50× the `fact_audience_member` rows it needs, with no TTL and no
- * sweeper. Worth knowing before raising the mailbox cap.
- *
- * ## The ordering, which is two keys and not one
- *
- * Identical to `zoom/audience.ts`'s and load-bearing for the same reason: a
- * naive `MIN(synced_at) ASC NULLS FIRST` alone STARVES the audiences that
- * matter. An audience resolving to no Atlas users never gets a
- * `fact_audience_member` row, so its `MIN(synced_at)` is NULL forever and it
- * sorts first on every cycle; past the cap, the deterministic scan returns the
- * identical rows every time and no member-BEARING audience is re-verified again.
- *
- * So the primary key is `has_members DESC`: audiences whose suppression would
- * actually cost somebody access go first, and a successful reconcile advances
- * their `synced_at` (`TOUCH_AUDIENCE_MEMBERS_SQL` stamps even the no-op case) so
- * they rotate to the back. Member-less audiences take whatever cap remains.
- *
- * Within each group it is `MIN(synced_at)` — an audience is as verified as its
- * LEAST recently verified row, matching `acl.ts`'s own `min(synced_at)` reading.
- *
- * Exported so a caller can execute this exact string rather than a paraphrase.
- * NOTE there is no `-pg` test behind it yet — the same gap `zoom/audience.ts`
- * declares. Until one exists, a `visible_to` or `fact_audience_member` shape
- * change breaks this at runtime, not in CI.
+ *   1. It reads `brain_episodes.visible_to`, so only LIVE audiences are scanned
+ *      — and this connector genuinely mints audiences no episode ends up naming.
+ *      The Message-ID dedupe collapses one mail across every recipient mailbox
+ *      to ONE episode, so the second mailbox to see it writes membership for an
+ *      audience whose episode insert then no-ops; and every SKIP landing AFTER
+ *      the membership write does the same (an HTML body, an oversize body, a
+ *      compose that came out empty), because `client.ts` establishes the
+ *      audience before any content decision. Those orphans are inert and cost no
+ *      cycle, but they are rows: on a 50-mailbox install an all-internal thread
+ *      can write up to 50× the `fact_audience_member` rows it needs, with no TTL
+ *      and no sweeper. Worth knowing before raising the mailbox cap.
+ *   2. The scan's `has_members` flag is deliberately NOT read by this connector.
+ *      Zoom needs it to tell a legally-empty roster from an unreadable one; an
+ *      email's headers are immutable, so no zero-participant read is ever legal
+ *      here and the guard below is unconditional.
  */
-export const OUTLOOK_MESSAGE_AUDIENCES_SQL = `
-  SELECT t.token AS token,
-         MIN(m.synced_at) AS synced_at,
-         count(m.user_id) > 0 AS has_members
-    FROM (
-      SELECT DISTINCT tok AS token
-        FROM brain_episodes e, unnest(e.visible_to) AS tok
-       WHERE e.workspace_id = $1
-         AND e.source = $2
-         AND tok LIKE $3
-    ) t
-    LEFT JOIN fact_audience_member m
-      ON m.workspace_id = $1
-     AND m.audience_id = substr(t.token, length($4) + 1)
-   GROUP BY t.token
-   ORDER BY (count(m.user_id) > 0) DESC, MIN(m.synced_at) ASC NULLS FIRST, t.token ASC
-   LIMIT $5
-` as const;
+const EMAIL_MESSAGE_AUDIENCE_TOKEN_PREFIX = `${AUDIENCE_PREFIX}email-message:` as const;
 
 /** The DB + vendor surface this module needs — injectable so tests need no HTTP. */
 export interface OutlookAudienceDeps {
@@ -392,12 +391,6 @@ export async function reconcileEmailAudience(
   };
 }
 
-interface AudienceRow extends Record<string, unknown> {
-  readonly token: string;
-  readonly synced_at: string | null;
-  readonly has_members: boolean;
-}
-
 interface InstallRow extends Record<string, unknown> {
   readonly workspace_id: string;
   readonly install_id: string;
@@ -501,15 +494,22 @@ async function reverifyWorkspace(
     return { ...ZERO_REVERIFY, failed: 1 };
   }
 
-  const rows = await query<AudienceRow>(OUTLOOK_MESSAGE_AUDIENCES_SQL, [
-    workspaceId,
-    OUTLOOK_MAIL_SOURCE,
-    `${AUDIENCE_PREFIX}email-message:%`,
-    AUDIENCE_PREFIX,
-    MAX_REVERIFY_AUDIENCES_PER_WORKSPACE,
-  ]);
-  if (rows.length === 0) return ZERO_REVERIFY;
-  if (rows.length >= MAX_REVERIFY_AUDIENCES_PER_WORKSPACE) {
+  // Scans AND stamps the attempt in one call, so this pass cannot consume a
+  // slot without rotating the audience out of the front of the next scan
+  // (#4971) — which matters more here than anywhere, because a single revoked
+  // mailbox fails every audience minted from it at once. Throws if either half
+  // fails, and the caller counts the workspace.
+  const candidates = await selectReverifyCandidates(
+    {
+      workspaceId,
+      source: OUTLOOK_MAIL_SOURCE,
+      tokenPrefix: EMAIL_MESSAGE_AUDIENCE_TOKEN_PREFIX,
+      limit: MAX_REVERIFY_AUDIENCES_PER_WORKSPACE,
+    },
+    { query },
+  );
+  if (candidates.length === 0) return ZERO_REVERIFY;
+  if (candidates.length >= MAX_REVERIFY_AUDIENCES_PER_WORKSPACE) {
     // The cap bounded this pass, so some audiences were NOT looked at. Silent
     // truncation reads as "everything is fresh" when it is the opposite — and
     // the deferred tail is exactly what ages past the staleness bound. For this
@@ -518,25 +518,38 @@ async function reverifyWorkspace(
     // header's GRAIN PROBLEM section quantifies.
     log.warn(
       { workspaceId, cap: MAX_REVERIFY_AUDIENCES_PER_WORKSPACE },
-      "brain audience: this workspace has at least as many Outlook message audiences as the per-cycle cap — the tail is deferred. This source mints one audience per MESSAGE, so the set grows without bound; check the failed count alongside this line, because an audience that FAILS every cycle never rotates out of the front (#4971)",
+      "brain audience: this workspace has at least as many Outlook message audiences as the per-cycle cap — the tail is deferred. This source mints one audience per MESSAGE, so the set grows without bound. The scan rotates on attempt, so the tail IS reached on later cycles; what the cap bounds is how much of the set can stay inside ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS at all",
     );
   }
 
+  // AFTER the scan, deliberately — see `zoom/audience.ts`'s note at the same
+  // point, which carries the argument in full. The short version: hoisting it
+  // above the scan makes an enabled install with ZERO live audiences resolve a
+  // token it never uses on every cycle (Graph's `client_credentials` exchange is
+  // not cached), and a broken credential there stands the cycle permanently
+  // `degraded` over a workspace with nothing to verify. The rotation it looked
+  // like it was protecting is not at risk: a token failure hits every audience
+  // in the workspace equally, so stamping them all is the correct outcome.
   const token = await resolveToken(workspaceId, install.install_id, install.config);
   const fetchMessage = deps.fetchMessage ?? fetchMessageByInternetMessageId;
 
   let total = ZERO_REVERIFY;
-  for (const row of rows) {
-    const audienceId = row.token.slice(AUDIENCE_PREFIX.length);
+  for (const candidate of candidates) {
+    const audienceId = candidate.audienceId;
     const parts = parseEmailMessageAudienceId(audienceId);
     if (parts === null || parts.source !== OUTLOOK_MAIL_SOURCE) {
-      // The scan's `LIKE` is coarser than the parser: a token that starts
+      // The scan's prefix is coarser than the parser: a token that starts
       // `audience:email-message:` but does not parse, or names another vendor's
       // message, is not this re-verifier's to touch. Not counted as a failure —
       // nothing failed — but logged, because the only ways to get here are a
       // format change or a stored token no minter would have produced.
+      //
+      // It HAS been attempt-stamped by now, which is correct rather than a leak:
+      // it consumed a slot, and a token that never stamped would sit on NULL
+      // forever and pin the front of every future scan — #4971's starvation,
+      // rebuilt out of the one case nothing can ever reconcile.
       log.warn(
-        { workspaceId, audienceId },
+        { workspaceId, audienceId: redactAudienceDigest(audienceId) },
         "brain audience: a message audience token did not parse as this source's — skipping it",
       );
       continue;
@@ -576,9 +589,10 @@ async function reverifyWorkspace(
       // hostile: `/users/{id}/messages` spans every folder, so a self-CC leaves
       // one copy in Sent Items and one in the Inbox. An earlier cut refused any
       // multi-match outright and thereby turned a routine habit into an audience
-      // that fails EVERY cycle — which #4971's starvation then spreads across the
-      // whole workspace. That traded an integrity hole for an availability hole,
-      // which is not a fix.
+      // that fails EVERY cycle. #4971's rotation keeps that from spreading across
+      // the whole workspace; it does not make the audience itself recoverable, so
+      // the self-CC would still never be repaired. That traded an integrity hole
+      // for an availability hole, which is not a fix.
       //
       // The audience id NAMES the participant set it was minted from, so the
       // right question is not "how many matched" but "which of them is THIS
@@ -628,7 +642,7 @@ async function reverifyWorkspace(
         // removal.
         //
         // STRICTER than `zoom/audience.ts`'s empty-roster guard, which fires
-        // only when `row.has_members`. The divergence is deliberate and the
+        // only when the candidate `hasMembers`. The divergence is deliberate and the
         // reason is the class, not the connector: a Zoom roster can legitimately
         // be empty at ingest (an all-external meeting), so Zoom needs the
         // prior-membership condition to tell a legal empty from an unreadable

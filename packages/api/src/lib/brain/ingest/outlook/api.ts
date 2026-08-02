@@ -818,8 +818,9 @@ async function readMessagesPage(
  * even though the direct GET is one fewer moving part. Graph's own message id is
  * re-minted when a message MOVES BETWEEN FOLDERS, so an archived or
  * rule-filed message would 404 on the direct form and its audience would fail
- * every cycle forever — a permanent failure that #4971's starvation then spreads
- * to every other audience in the workspace. The Message-ID is immutable, so the
+ * every cycle forever. Rotation (#4971) bounds what that costs the rest of the
+ * workspace to one slot per cycle; it does nothing for the audience itself,
+ * which would simply never be repaired. The Message-ID is immutable, so the
  * filter finds the message wherever it now lives.
  *
  * Returns EVERY match, not one, and that is the correction to a fix that was
@@ -829,8 +830,9 @@ async function readMessagesPage(
  * MAILBOX-WIDE collection, spanning every folder, so a user who CCs themselves
  * (or a shared mailbox that mails a distribution list it belongs to) has one
  * copy in Sent Items and one in the Inbox, same id, same mailbox. Refusing that
- * turned a routine habit into an audience that fails EVERY cycle forever — and
- * `#4971`'s starvation then spreads that one failure across the whole workspace.
+ * turned a routine habit into an audience that fails EVERY cycle forever. Since
+ * #4971 that no longer spreads across the whole workspace — the scan rotates on
+ * attempt — but the self-CC's own audience would still never be repaired.
  * Trading an integrity hole for an availability hole is not a fix.
  *
  * So ambiguity is resolved rather than refused, and the discriminator already
@@ -861,8 +863,8 @@ export async function fetchMessageByInternetMessageId(
   //
   // Missing here is not a benign miss: the caller reads a zero-result lookup as
   // "unreadable" and aborts, so a message that is really there would fail its
-  // audience EVERY cycle — a permanent failure, which is exactly the class
-  // #4971's starvation then spreads to every other audience in the workspace.
+  // audience EVERY cycle — permanently, and rotation (#4971) does not repair it,
+  // it only stops it starving the rest of the workspace.
   // The fallback costs one extra call only when the first found nothing.
   const literal = internetMessageId.replace(/'/g, "''");
   for (const filterValue of [`<${literal}>`, literal]) {

@@ -3540,3 +3540,33 @@ export const factAudienceMember = pgTable(
     index("idx_fact_audience_member_stale").on(t.workspaceId, t.syncedAt),
   ],
 );
+
+// brain_audience_reverify_attempt — fair-share rotation for the non-Slack
+// audience re-verifiers (0186, #4971).
+//
+// Separate from `fact_audience_member` in both directions that matter. A
+// member-LESS audience has no row there to stamp, and those are the audiences
+// most in need of rotating; and `synced_at` there means LAST VERIFIED, which
+// `acl.ts` reads as evidence, so a stamp that advanced on an abort would fake a
+// verification and keep a revoked grant alive past the staleness bound. Ordering
+// the re-verifier's scan on a SUCCESS column is what let a permanently-failing
+// audience hold a slot at the front forever; ordering on this one rotates it out
+// after a single cycle.
+//
+// Written by `lib/brain/audience/reverify.ts`'s `selectReverifyCandidates`, on
+// SELECTION rather than per outcome, and read by nothing but that scan's ORDER
+// BY.
+export const brainAudienceReverifyAttempt = pgTable(
+  "brain_audience_reverify_attempt",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // WITHOUT the `audience:` prefix, matching `fact_audience_member`.
+    audienceId: text("audience_id").notNull(),
+    // Not part of the key, for the same reason it is not part of
+    // `fact_audience_member`'s: an audience id is source-namespaced by
+    // construction, so two sources cannot contend for one row.
+    source: text("source").notNull(),
+    attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.audienceId] })],
+);

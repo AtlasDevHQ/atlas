@@ -55,6 +55,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { AUDIENCE_PREFIX } from "@atlas/api/lib/brain/acl";
+import type { EpisodeSource } from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain.audience.reverify");
 
@@ -103,7 +104,7 @@ export const ZERO_REVERIFY: AudienceReverifyResult = Object.freeze({
 export type AudienceReverifier = () => Promise<AudienceReverifyResult>;
 
 /** `source` (the stored `brain_episodes.source` kind) → its re-verifier. */
-const registry = new Map<string, AudienceReverifier>();
+const registry = new Map<EpisodeSource, AudienceReverifier>();
 
 /**
  * Register a source's audience re-verifier. Called once per source at wiring
@@ -112,7 +113,10 @@ const registry = new Map<string, AudienceReverifier>();
  * each reconcile against their own roster, and the loser's members would be
  * revoked on every cycle.
  */
-export function registerAudienceReverifier(source: string, reverifier: AudienceReverifier): void {
+export function registerAudienceReverifier(
+  source: EpisodeSource,
+  reverifier: AudienceReverifier,
+): void {
   if (registry.has(source)) {
     throw new Error(`Audience re-verifier for source "${source}" is already registered`);
   }
@@ -132,11 +136,11 @@ export function registerAudienceReverifier(source: string, reverifier: AudienceR
  * `registerBrainSourceWithAudienceReverifier` in `ingest/types.ts`, which is the
  * only thing that should need this.
  */
-export function hasAudienceReverifier(source: string): boolean {
+export function hasAudienceReverifier(source: EpisodeSource): boolean {
   return registry.has(source);
 }
 
-export function listAudienceReverifierSources(): string[] {
+export function listAudienceReverifierSources(): EpisodeSource[] {
   return [...registry.keys()];
 }
 

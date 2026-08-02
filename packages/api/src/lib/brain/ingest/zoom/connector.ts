@@ -124,7 +124,11 @@ export function parseZoomAppCredential(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // intentionally ignored: the parse error's MESSAGE echoes the input, and the
+    // No `// intentionally ignored:` marker — that marker is for a catch that
+    // emits NO signal, and this one warns below. What is discarded here is the
+    // error OBJECT, deliberately, and the reason is worth the paragraph:
+    //
+    // the parse error's MESSAGE echoes the input, and the
     // input is the decrypted client secret — `JSON.parse("s3cr3t-value")` throws
     // `Unexpected identifier "s3cr3t"`. Excluding `raw` from the payload is NOT
     // enough, which is what the previous version of this catch got wrong: it

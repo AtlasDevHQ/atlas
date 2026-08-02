@@ -174,6 +174,11 @@ async function zoomGet(
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
+    // intentionally ignored: this reads the error body of an ALREADY-failed
+    // response, purely to enrich the mapped error. The STATUS is the signal and
+    // it is already in hand; a body that will not read (truncated, connection
+    // dropped mid-error) must not turn a clean `http_429` into a transport
+    // fault. `toReadError` treats "" as "no detail", which is the truth.
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
@@ -219,6 +224,11 @@ export async function fetchZoomAccessToken(params: {
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
+    // intentionally ignored: this reads the error body of an ALREADY-failed
+    // response, purely to enrich the mapped error. The STATUS is the signal and
+    // it is already in hand; a body that will not read (truncated, connection
+    // dropped mid-error) must not turn a clean `http_429` into a transport
+    // fault. `toReadError` treats "" as "no detail", which is the truth.
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }
@@ -503,6 +513,11 @@ export async function fetchTranscriptText(
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (!res.ok) {
+    // intentionally ignored: this reads the error body of an ALREADY-failed
+    // response, purely to enrich the mapped error. The STATUS is the signal and
+    // it is already in hand; a body that will not read (truncated, connection
+    // dropped mid-error) must not turn a clean `http_429` into a transport
+    // fault. `toReadError` treats "" as "no detail", which is the truth.
     const body = await res.text().catch(() => "");
     return toReadError(res.status, res.headers.get("retry-after"), body);
   }

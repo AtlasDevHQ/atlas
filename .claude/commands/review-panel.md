@@ -23,6 +23,14 @@ If there is nothing to review, say so and stop.
 
 Launch all four in a single message (multiple `Agent` tool calls, one response) so they run concurrently. Each gets the diff scope and is told to review only the changed lines:
 
+> ⚠️ **Call `Agent` with `run_in_background: false` and NO `name:`.** Both matter, and getting either wrong loses the whole panel *silently* — the agents run, write complete reports, and you never see them.
+>
+> Passing `name:` makes an agent an addressable teammate. A teammate signals completion with an `idle_notification` and its final text stays in its own transcript; it is never returned as the tool result. `SendMessage` does not rescue it — each nudge writes another full reply into the same transcript and sends another idle ping. The failure looks like four agents that "never delivered", so the natural reaction is to give up on the panel and review inline, which is exactly the rubber-stamp this command exists to prevent.
+>
+> Synchronous is what makes the report the tool result. Four concurrent `Agent` calls in one message still run in parallel with `run_in_background: false` — synchronous does not mean serial.
+>
+> **If a panel run ever does come back empty:** the reports are not lost. They are the last assistant message in each `~/.claude/projects/<project>/<session>/subagents/agent-*.jsonl`. Recover them before re-running — a re-run costs four fresh contexts and loses the reasoning.
+
 - `Agent(silent-failure-hunter)` — error handling & silent failures
 - `Agent(type-design-analyzer)` — type invariants & safety
 - `Agent(pr-test-analyzer)` — test coverage & discipline

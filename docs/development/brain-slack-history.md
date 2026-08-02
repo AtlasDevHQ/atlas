@@ -75,6 +75,58 @@ current state, not its edit events.
 every message in every workspace as a new episode, and #4771 would re-extract
 facts from all of them.
 
+## The webhook fast-path (#4967)
+
+The fast-path the section above anticipates now exists:
+`lib/brain/ingest/slack/webhook.ts`, fed by the chat plugin's `observeMessage`
+callback (`lib/chat-plugin/brain-observer.ts` is the host wiring). It tees the
+Slack event stream Atlas *already receives* for the chat pillar into the same
+episode store, so a message becomes evidence in seconds instead of at the next
+sync tick.
+
+**It does not re-derive the source-id.** It builds the same
+`SlackHistoryMessage` record the poll's page walk produces and hands it to
+`toEpisode` — the poll's own converter. So `slackEpisodeSourceId` has one caller
+for both writers, and the skip rules (bot authorship, the membership-subtype
+denylist, empty `text`) come along for free. The field-path table above is
+implemented in exactly one place, `readSlackWebhookMessage`.
+
+**Visibility comes from the event, never a round-trip.** The poll calls
+`conversations.info` for `isPrivate`; the webhook reads `channel_type`
+(`channel` → public, `group`/`mpim` → private). A round-trip per message is the
+latency this path exists to avoid. An unrecognised `channel_type` **blocks** —
+ADR-0036 §T6's block-vs-flag asymmetry — because an episode's grant is frozen at
+insert and `ON CONFLICT DO NOTHING` means the poll's later, correct grant would
+arrive too late to replace a wrong one.
+
+**Poll remains the correctness floor — for top-level messages.**
+`ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED` defaults **off**; off is a supported steady
+state, not a degraded one. Even when on, the tee drops messages by design — the
+Chat SDK's default `drop` concurrency strategy discards a message whose thread
+lock is held, and the adapter filters `message_changed`/`message_deleted` before
+dispatch. Turning the knob on is a staging-first change like every other
+Slack-surface change, because it changes *which writer wins the race* for a
+message and therefore whose grant derivation is frozen onto the row.
+
+**What it covers that the poll does not — and the asymmetry that creates.**
+Thread replies. The poll calls only `conversations.history`, which never returns
+replies; the webhook sees them and keys each on its own `ts`. That is pure gain
+and carries no duplication risk, because the poll never mints those ids at all.
+
+⚠️ But it also means "anything we drop, the poll stores" is **false for
+replies** — and replies are the only messages that can be dropped by lock
+contention, because the SDK's lock key is `slack:<channel>:<thread_ts || ts>`.
+A top-level message's key contains its own `ts`, so it is unique and never
+contends; a reply shares its key with its parent and siblings. So a reply
+dropped here is dropped *permanently*, not deferred.
+
+That asymmetry is why the writer's not-stored outcomes carry `pollBackstopped`
+and why `lib/chat-plugin/brain-observer.ts` logs a reply's loss at **warn**
+rather than reciting "the scheduled sync still covers it" at debug. A log line
+that cannot tell the two apart is worse than none: it tells an operator to stop
+looking. Closing the gap properly needs `conversations.replies` on the poll
+side — not in this slice.
+
 ## Grants
 
 Derived at ingest (ADR-0036 §T5), by `lib/brain/ingest/grant.ts`:

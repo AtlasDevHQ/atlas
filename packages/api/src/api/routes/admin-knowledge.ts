@@ -64,6 +64,8 @@ import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 import { ZENDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/zendesk/config";
 import { SALESFORCE_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/salesforce/config";
 import { SLACK_HISTORY_CATALOG_ID } from "@atlas/api/lib/brain/ingest/slack/config";
+import { ZOOM_TRANSCRIPTS_CATALOG_ID } from "@atlas/api/lib/brain/ingest/zoom/config";
+import { OUTLOOK_MAIL_CATALOG_ID } from "@atlas/api/lib/brain/ingest/outlook/config";
 import { getBrainSourceConnector } from "@atlas/api/lib/brain/ingest/types";
 import { syncBrainEpisodeSource } from "@atlas/api/lib/brain/ingest/episode-sync";
 import { INTERCOM_CATALOG_ID } from "@atlas/api/lib/knowledge/intercom/config";
@@ -157,6 +159,8 @@ function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === HELPSCOUT_CATALOG_ID) return "helpscout";
   if (catalogId === FRESHDESK_CATALOG_ID) return "freshdesk";
   if (catalogId === SLACK_HISTORY_CATALOG_ID) return "slack-history";
+  if (catalogId === ZOOM_TRANSCRIPTS_CATALOG_ID) return "zoom-transcripts";
+  if (catalogId === OUTLOOK_MAIL_CATALOG_ID) return "outlook-mail";
   return "unknown";
 }
 
@@ -174,10 +178,12 @@ function isSyncedSource(source: KnowledgeSource): boolean {
     source === "front" ||
     source === "helpscout" ||
     source === "freshdesk" ||
-    // #4770: a brain source has no documents, but it DOES have sync
-    // bookkeeping in the same `knowledge_sync_state` row, so the list's sync
-    // column and "Sync now" apply to it unchanged.
-    source === "slack-history"
+    // #4770 / #4965 / #4966: a brain source has no documents, but it DOES have
+    // sync bookkeeping in the same `knowledge_sync_state` row, so the list's
+    // sync column and "Sync now" apply to it unchanged.
+    source === "slack-history" ||
+    source === "zoom-transcripts" ||
+    source === "outlook-mail"
   );
 }
 
@@ -209,7 +215,7 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk", "slack-history"]),
+      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk", "slack-history", "zoom-transcripts", "outlook-mail"]),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),

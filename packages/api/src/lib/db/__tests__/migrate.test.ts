@@ -258,7 +258,11 @@ describe("runMigrations", () => {
     //   rows from `workspace_plugins.config->>'bot_user_id'` — without it
     //   the #4907 fix protects only NEW installs and every pre-existing
     //   workspace keeps answering its own messages) = 186.
-    expect(count).toBe(186);
+    //   Plus 0186 (brain_audience_reverify_attempt — the per-audience ATTEMPT
+    //   stamp the non-Slack re-verifiers order their scan on, so an audience
+    //   that fails every cycle rotates out of the front instead of holding a
+    //   slot forever and starving everything behind it, #4971) = 187.
+    expect(count).toBe(187);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -473,6 +477,7 @@ describe("runMigrations", () => {
         "0183_brain_facts_pre_widening_grant.sql",
         "0184_scim_provider_seal_ownerless.sql",
         "0185_backfill_slack_bot_user_id.sql",
+        "0186_brain_audience_reverify_attempt.sql",
       ],
     });
 

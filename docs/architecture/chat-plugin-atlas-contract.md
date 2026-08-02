@@ -164,6 +164,67 @@ through, re-resolving auth/scoping live on that fresh dispatch. #3750 only adds 
 resume-hint string (`MCP_APPROVAL_RESUME_HINT`) to those results so the LLM client knows to
 retry the same call. No MCP/chat-adapter boundary field changed.
 
+### Company Brain chat webhook fast-path — `ChatPluginConfig.observeMessage` (#4967)
+
+ADR-0036 §T6's freshness rule is "poll + reconcile universally, **plus** a webhook
+fast-path for event-native chat". #4967 wires that fast-path as an **alternate writer
+into the same idempotent episode store** the scheduled sync writes to, so a Slack message
+becomes evidence in seconds rather than at the next sync tick. It rides one new boundary
+point, host-side and Atlas-owned:
+
+| Boundary field | Host wiring | Atlas resolver / store | Fail-loud? | Status |
+|---|---|---|---|---|
+| `ChatPluginConfig.observeMessage` (top-level config callback; invoked with `{ platform, message: Pick<Message, "id" \| "raw"> }` for every inbound message the bridge dispatches) | wired in `deploy/api/atlas.config.ts` → `createBrainChatMessageObserver()` | `lib/chat-plugin/brain-observer.ts` routes `platform === "slack"` to `lib/brain/ingest/slack/webhook.ts:ingestSlackWebhookMessage()`, which writes through the shared `ingestEpisodes` core. Non-Slack platforms are refused, not fallen through | ✓ — the writer never throws (every failure is a counted outcome + log), and `bridge.ts:buildObservedMessageHandler` wraps the host callback so a rejection cannot abort the remaining handlers for that message | ✓ verified |
+
+**Why it takes `message.raw` and nothing else.** The writer reads Slack's own `channel`,
+`ts`, `channel_type` and `subtype` off the raw event — none of which the SDK's normalised
+`Message` carries. It gets no `Thread`, which is what keeps the seam one-way: an observer
+cannot post, react, or subscribe, so it can never become a second author of chat behaviour.
+Same `Pick<Message, "id" | "raw">` narrowing `ResolverEventLite` (proactive) already uses.
+
+**Why it registers on three arms.** `Chat.dispatchToHandlers` is a router with early
+returns — DM → subscribed → mention → pattern — so a pattern-only registration would miss
+every @-mention and every subscribed-thread follow-up. The bridge registers the observer on
+`onNewMention`, `onSubscribedMessage` **and** `onNewMessage(/[\s\S]/)` via
+`registerMessageObserver`. The DM arm is deliberately skipped: 1:1 DMs are not admissible
+channels for the brain's chat source. It registers **first**, because the SDK awaits
+handlers sequentially and registering after the pillar handler would put the brain write
+behind a full agent turn — the entire latency win, spent.
+
+The proactive listener is the instructive contrast and is *not* pattern-only: it registers
+the pattern arm **and** the DM arm (`proactive/listener.ts`), deliberately not
+mention/subscribed, since it stays out of conversations Atlas is already in. The brain
+observer inverts that exactly.
+
+**The observer is deadline-bounded.** `buildObservedMessageHandler` races the host callback
+against `OBSERVE_DEADLINE_MS` (2s). The try/catch bounds *errors*; only the deadline bounds
+*duration*, and duration is the damaging one — the observer runs first, inline, while the
+SDK holds the thread lock, and the host wires it to uncached internal-DB round trips whose
+own connect timeout defaults to 10s. Three of those would exceed the SDK's 30s
+`DEFAULT_LOCK_TTL_MS`, expiring the lock mid-handler.
+
+**Poll stays the correctness floor — for top-level messages.** The knob
+`ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED` defaults **off**, and off is a fully-supported steady
+state rather than a degraded one. The tee drops messages by design — the SDK's default
+`drop` concurrency strategy discards a message whose thread lock is held, and
+`@chat-adapter/slack`'s `ignoredSubtypes` filter drops `message_changed`/`message_deleted`
+before dispatch.
+
+⚠ **The lock is thread-scoped, so contention only ever drops thread replies** — and
+`conversations.history` never returns replies, so those are lost rather than deferred. The
+writer's not-stored outcomes carry `pollBackstopped` and the observer logs an unbacked loss
+at warn. Do not restate the loose "anything dropped is stored next cycle" claim.
+
+⚠ Row to watch: `handleMessageEvent`'s `ignoredSubtypes` set. If a future adapter version
+stops filtering `message_changed`, the writer's edit handling (read `event.message.ts`,
+never the envelope's `ts` or `edited.ts`) becomes a live path rather than a guard — it is
+unit-tested either way.
+
+⚠ Row to watch: the adapter's `team_id` envelope backfill in `processEventPayload`. Slack
+puts `team_id` on the envelope, not inside `event`, and the fast path works only because
+the adapter copies it down. If that stops, every event resolves to `unknown_workspace` and
+the feature silently does nothing.
+
 ### Future platforms (post-1.5.2)
 
 `plugins/chat/src/adapter-registry.ts` keeps catalog rows for Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp. Telegram (#2748) is the first to ship a real `StaticBotInstallHandler` — the keystone slice for the remaining Phase D platforms. Each platform that gains an install flow gets a new section in this table — one row per Atlas-extension field. Track:

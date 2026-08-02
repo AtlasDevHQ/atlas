@@ -50,12 +50,17 @@ export interface KnowledgeDocumentCounts {
  *     Help Scout Docs API via a single Docs API key; one collection per Docs
  *     site, one document per published article).
  *
- *   - `slack-history` — the #4770 company-brain CHAT SOURCE (ADR-0036). The one
- *     member that does not mirror DOCUMENTS: it reads Slack channel history
- *     into `brain_episodes` as immutable tier-3 evidence, so its collection
- *     always reports zero documents. It is listed here because it installs and
- *     syncs through the same knowledge-pillar spine; the brain's own review
- *     surface is #4772.
+ *   - `slack-history` — the #4770 company-brain CHAT SOURCE (ADR-0036). The
+ *     first member that does not mirror DOCUMENTS: it reads Slack channel
+ *     history into `brain_episodes` as immutable tier-3 evidence, so its
+ *     collection always reports zero documents. It is listed here because it
+ *     installs and syncs through the same knowledge-pillar spine; the brain's
+ *     own review surface is #4772.
+ *   - `zoom-transcripts` — the #4965 company-brain TRANSCRIPT SOURCE, and
+ *     `outlook-mail` — the #4966 EMAIL SOURCE. Same episode-not-document shape
+ *     as `slack-history`, so all three report zero documents; they are separate
+ *     members because ADR-0036 §T6 is class-major and vendor-minor, and each
+ *     class derives its access grant differently.
  *
  * Every value except `upload` is a "synced" collection: its content is owned by
  * an external source, it has last-sync bookkeeping, and it can be re-pulled with
@@ -78,7 +83,9 @@ export type KnowledgeCollectionSource =
   | "front"
   | "helpscout"
   | "freshdesk"
-  | "slack-history";
+  | "slack-history"
+  | "zoom-transcripts"
+  | "outlook-mail";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

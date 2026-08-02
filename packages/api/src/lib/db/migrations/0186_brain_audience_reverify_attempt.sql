@@ -1,0 +1,81 @@
+-- 0186 — a per-audience ATTEMPTED-at stamp, so the re-verifier's scan rotates
+-- on effort rather than on success (#4971).
+--
+-- 0182 gave `fact_audience_member` a `synced_at` meaning LAST VERIFIED, stamped
+-- only inside a successful reconcile. The non-Slack re-verifiers (#4965 Zoom,
+-- #4966 Outlook) then ordered their per-workspace scan on `MIN(synced_at)` — and
+-- ordering a fair-share scan on a SUCCESS column is what this migration exists
+-- to undo. An audience that aborts every cycle never advances the column it is
+-- sorted by, so it holds a slot at the front of the scan forever:
+--
+--   * Zoom — a past meeting's participant report ages out of Zoom's retention
+--     window, so every sufficiently old meeting aborts on every cycle;
+--   * Outlook — a mailbox whose access is revoked (an ApplicationAccessPolicy
+--     edit, a licence change, a deleted user) fails EVERY audience minted from
+--     it, all at once.
+--
+-- Past the per-workspace cap of such audiences, the deterministic scan returns
+-- the identical rows every cycle, no other audience is ever re-verified, they
+-- all cross `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`, and `acl.ts` suppresses
+-- them. Facts stay stored and become invisible. A bigger cap is not a fix; it
+-- moves the threshold, because the defect is in the ordering.
+--
+-- ## Why a TABLE rather than a column
+--
+-- There is nowhere to put the stamp. `fact_audience_member` is per
+-- (audience, user), and the audiences that most need rotating are precisely the
+-- ones with NO members — the meeting whose roster was entirely external, the
+-- mail addressed only to customers. They have no row there to stamp, which is
+-- also why the scan reads `brain_episodes.visible_to` rather than the membership
+-- table. An audience-grained fact needs an audience-grained table.
+--
+-- ## Why this does NOT weaken `synced_at`
+--
+-- These two columns answer different questions and neither may stand in for the
+-- other. `synced_at` is EVIDENCE — "the source confirmed this membership" — and
+-- `acl.ts` suppresses a grant when it goes stale, so anything that stamped it
+-- without a completed roster read would manufacture a verification that did not
+-- happen and keep a revoked person's access alive. `attempted_at` is FAIRNESS —
+-- "this audience has had its turn" — and nothing reads it but the scan's ORDER
+-- BY. Keeping them in separate tables makes the confusion structural rather
+-- than a convention someone has to remember: no write path can advance one while
+-- meaning the other.
+--
+-- ## Why NULL rather than a `now()` backfill
+--
+-- The opposite of 0182's choice, and for the opposite reason. 0182 backfilled
+-- `synced_at` fresh because the alternative expired every grant on deploy. Here
+-- the column orders NULLS FIRST, so an absent row means "never attempted, go to
+-- the front" — which is exactly right for audiences that exist before this table
+-- does. There is no `INSERT ... SELECT` backfill for the same reason: the rows
+-- appear as the scan reaches each audience, and the first cycle after deploy
+-- sees a uniformly-NULL field it then breaks up by token order.
+--
+-- ## Growth
+--
+-- One row per audience, forever, with no TTL and no sweeper — the same shape
+-- `fact_audience_member` already has for the orphan audiences `outlook/audience.ts`
+-- documents. It matters more for Outlook, whose audience count grows with
+-- MESSAGE count rather than with container count, so this table tracks that set.
+-- Three short text columns and a timestamp per audience; stated here so a future
+-- sweeper has a reason recorded rather than a surprise to discover.
+CREATE TABLE IF NOT EXISTS brain_audience_reverify_attempt (
+  workspace_id text NOT NULL,
+  -- Audience id WITHOUT the `audience:` prefix, matching
+  -- `fact_audience_member.audience_id` so the scan's two LEFT JOINs key alike.
+  audience_id text NOT NULL,
+  -- Which connector attempted it. NOT part of the key, for the same reason it is
+  -- not part of `fact_audience_member`'s: an audience id is source-namespaced by
+  -- construction (`meeting:zoom:…`, `email-message:outlook:…`), so two sources
+  -- cannot contend for one row. Kept because "which re-verifier owns this
+  -- audience" is the first question asked of a stalled rotation.
+  source text NOT NULL,
+  attempted_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, audience_id)
+);
+
+-- No secondary index, deliberately. The scan reaches this table only through the
+-- PK on the LEFT JOIN, and the ORDER BY runs over the already-materialised
+-- candidate set; a `(workspace_id, attempted_at)` index would serve no query and
+-- would be paid for on every stamp, which is one row per audience per cycle, for
+-- no reader at all.

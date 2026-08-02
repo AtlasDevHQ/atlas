@@ -40,17 +40,17 @@ end-of-cycle only.
 
 | Part | Area | Risk | File |
 |------|------|------|------|
-| **A** | Environment Variables | HIGH | [`a-env-vars.md`](../../docs/agents/audit-docs/a-env-vars.md) |
-| **B** | CLI Reference | HIGH | [`b-cli-reference.md`](../../docs/agents/audit-docs/b-cli-reference.md) |
-| **C** | Configuration Reference | HIGH | [`c-configuration.md`](../../docs/agents/audit-docs/c-configuration.md) |
-| **D** | API Endpoints / OpenAPI Spec | MEDIUM-HIGH | [`d-api-openapi.md`](../../docs/agents/audit-docs/d-api-openapi.md) |
-| **E** | Plugin Documentation | MEDIUM | [`e-plugins.md`](../../docs/agents/audit-docs/e-plugins.md) |
-| **F** | SDK & React Reference | MEDIUM | [`f-sdk-react.md`](../../docs/agents/audit-docs/f-sdk-react.md) |
-| **G** | Error Codes | MEDIUM | [`g-error-codes.md`](../../docs/agents/audit-docs/g-error-codes.md) |
-| **H** | Guide Accuracy Spot-Check | MEDIUM | [`h-guide-accuracy.md`](../../docs/agents/audit-docs/h-guide-accuracy.md) |
-| **I** | Cross-Cutting Checks | LOW-MEDIUM | [`i-cross-cutting.md`](../../docs/agents/audit-docs/i-cross-cutting.md) |
-| **J** | Undocumented Features | HIGH | [`j-undocumented.md`](../../docs/agents/audit-docs/j-undocumented.md) |
-| **K** | Release-Cycle Scoping | end-of-cycle | [`k-release-cycle.md`](../../docs/agents/audit-docs/k-release-cycle.md) |
+| **A** | Environment Variables | HIGH | [`a-env-vars.md`](../../docs/agents/docs-audit/a-env-vars.md) |
+| **B** | CLI Reference | HIGH | [`b-cli-reference.md`](../../docs/agents/docs-audit/b-cli-reference.md) |
+| **C** | Configuration Reference | HIGH | [`c-configuration.md`](../../docs/agents/docs-audit/c-configuration.md) |
+| **D** | API Endpoints / OpenAPI Spec | MEDIUM-HIGH | [`d-api-openapi.md`](../../docs/agents/docs-audit/d-api-openapi.md) |
+| **E** | Plugin Documentation | MEDIUM | [`e-plugins.md`](../../docs/agents/docs-audit/e-plugins.md) |
+| **F** | SDK & React Reference | MEDIUM | [`f-sdk-react.md`](../../docs/agents/docs-audit/f-sdk-react.md) |
+| **G** | Error Codes | MEDIUM | [`g-error-codes.md`](../../docs/agents/docs-audit/g-error-codes.md) |
+| **H** | Guide Accuracy Spot-Check | MEDIUM | [`h-guide-accuracy.md`](../../docs/agents/docs-audit/h-guide-accuracy.md) |
+| **I** | Cross-Cutting Checks | LOW-MEDIUM | [`i-cross-cutting.md`](../../docs/agents/docs-audit/i-cross-cutting.md) |
+| **J** | Undocumented Features | HIGH | [`j-undocumented.md`](../../docs/agents/docs-audit/j-undocumented.md) |
+| **K** | Release-Cycle Scoping | end-of-cycle | [`k-release-cycle.md`](../../docs/agents/docs-audit/k-release-cycle.md) |
 
 ## Output Format
 

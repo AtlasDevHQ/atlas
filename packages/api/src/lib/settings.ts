@@ -1760,6 +1760,84 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // Company-brain chat WEBHOOK FAST-PATH (#4967, ADR-0036 §T6) — the
+    // alternate writer that stores a Slack message as an episode seconds after
+    // it is said rather than at the next sync tick. Read PER EVENT by
+    // `lib/brain/ingest/slack/webhook.ts::isSlackWebhookFastPathEnabled`, so
+    // flipping it off takes effect immediately — it is the operator's lever for
+    // "stop writing episodes off Slack events right now", which is worth
+    // nothing if it needs a restart.
+    //
+    // Default OFF, and the default is the point: the fast path contributes
+    // LATENCY, never correctness. The poll is the correctness floor, so off is a
+    // fully-supported steady state in which ingest is exactly what it was
+    // before this shipped — not a degraded mode. Turning it on is a
+    // staging-first change like every other Slack-surface change (CLAUDE.md),
+    // because it changes which writer wins the race for a message and therefore
+    // which one's grant derivation is frozen onto the row.
+    //
+    // Platform-scoped: the tee is registered once per process on the shared
+    // Chat SDK instance, so there is no per-workspace half of this to turn on.
+    // Which WORKSPACES it writes for is already decided by which ones installed
+    // the Slack history source and which channels they scoped it to.
+    key: "ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Brain Chat Webhook Fast-Path",
+    description:
+      "Store Slack messages as brain episodes as they arrive, instead of waiting for the next sync. Off by default. For TOP-LEVEL messages this only changes how quickly one becomes available; for THREAD REPLIES it changes whether they are stored at all, because the scheduled sync reads conversations.history, which never returns replies. Only channels the Slack history source is scoped to are stored. Applies immediately.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // Company-brain TRANSCRIPT ingest backfill window (#4965, ADR-0036 §T6).
+    // Read per cycle by
+    // `lib/brain/ingest/zoom/connector.ts::getTranscriptBackfillWindowMs`.
+    //
+    // Registered by #4966 rather than by #4965: the reader shipped with the
+    // Zoom connector but the registry entry did not, so a knob that connector's
+    // own clamp warnings name by key was reachable only as an env var and never
+    // from Admin → Settings. The reader-side default and clamp are unchanged;
+    // this makes the lever the warnings promise actually exist. (The registry
+    // guard `scripts/check-settings-readers.sh` runs registry → reader, so an
+    // unregistered key with a live reader is exactly the direction it cannot
+    // see.)
+    key: "ATLAS_BRAIN_TRANSCRIPT_BACKFILL_DAYS",
+    section: "Knowledge Base",
+    label: "Meeting Transcript Backfill (days)",
+    description:
+      "How much history a newly-connected Zoom account reads on its first sync (default 30). Clamped to 180 days — Zoom serves at most six months of cloud recordings, so a wider window only spends API calls walking empty date ranges. Hot-reloaded; non-positive values fall back to the default.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_BRAIN_TRANSCRIPT_BACKFILL_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // Company-brain EMAIL ingest backfill window (#4966, ADR-0036 §T6) — how
+    // far back a mailbox with no stored mark reads on its first pass. Read per
+    // cycle by `lib/brain/ingest/outlook/connector.ts::getEmailBackfillWindowMs`.
+    //
+    // Its ceiling is a COST bound and not a vendor one, which is the difference
+    // from the transcript knob above and the reason the default is not simply
+    // raised: Exchange really does hold years of mail, and every message
+    // ingested mints its own `audience:` row set to re-verify forever
+    // (`lib/brain/ingest/outlook/audience.ts` §GRAIN PROBLEM). Widening this is
+    // a standing per-cycle cost, not a one-off catch-up.
+    key: "ATLAS_BRAIN_EMAIL_BACKFILL_DAYS",
+    section: "Knowledge Base",
+    label: "Email Backfill (days)",
+    description:
+      "How much history a newly-connected mailbox reads on its first sync (default 30). Clamped to 365 days. Raise it deliberately: unlike chat and meetings, every message ingested creates its own access audience that is re-verified on every cycle from then on. Hot-reloaded; non-positive values fall back to the default.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_BRAIN_EMAIL_BACKFILL_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // Company-brain extraction fiber (#4771, ADR-0036 §Ingestion). Default OFF
     // while the brain milestone is in flight: the review surface (#4772) is
     // what makes an extracted fact usable, so until it lands the fiber would
@@ -1772,7 +1850,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Extraction",
     description:
-      "Draw fact candidates from stored chat episodes with the workspace's configured model and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart.",
+      "Draw fact candidates from stored episodes — chat, meeting transcripts and mail alike — with the workspace's configured model, and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart.",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_BRAIN_EXTRACTION_ENABLED",
@@ -1800,7 +1878,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Sync",
     description:
-      "Keep private chat channels' membership in sync so facts drawn from them are visible to the people in the channel — and hidden again when someone leaves. Matches channel members' email addresses against existing Atlas accounts; it never creates accounts and never stores the channel roster. Requires Slack's users:read and users:read.email scopes.",
+      "Keep company-brain audience membership in sync so facts drawn from private chat channels, meeting transcripts and mail are visible to the people who were in them — and hidden again when someone leaves. Matches participants' email addresses against existing Atlas accounts; it never creates accounts and never stores a roster. Switching this OFF does not stop those facts being collected: it stops the membership behind them being refreshed, so they stop granting anyone once they pass the staleness bound. Slack channels additionally need Slack's users:read and users:read.email scopes.",
     type: "boolean",
     default: "true",
     envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
@@ -1816,7 +1894,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Sync Interval",
     description:
-      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the shortest delay between someone leaving a channel and losing access to facts drawn from it — a channel whose roster cannot be read keeps its membership until it can, up to the staleness limit below. Applies at restart; non-positive or unparseable values fall back to the default.",
+      "How often brain audience membership — private chat channels, meeting participants, mail recipients — is re-read from the source, in minutes (default 30). This is also the shortest delay between someone losing access at the source and losing access to facts drawn from it; an audience whose roster cannot be read keeps its membership until it can, up to the staleness limit below. Applies at restart; non-positive or unparseable values fall back to the default.",
     type: "number",
     default: "30",
     envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
@@ -1841,7 +1919,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Staleness Limit",
     description:
-      "How long a private chat channel's membership stays valid after Atlas last verified it against the source, in hours (default 168 = 7 days). Past this, facts drawn from that channel stop being readable through its membership until a sync succeeds again — so a channel Atlas has lost access to cannot keep granting access indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to 0 to disable the limit and rely on the sync-cycle alerts alone.",
+      "How long a brain audience's membership — a private chat channel, a meeting's participants, a mail message's recipients — stays valid after Atlas last verified it against the source, in hours (default 168 = 7 days). Past this, facts drawn from that source stop being readable through its membership until a sync succeeds again, so a source Atlas has lost access to cannot keep granting access indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to 0 to disable the limit and rely on the sync-cycle alerts alone.",
     type: "number",
     default: "168",
     envVar: "ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",

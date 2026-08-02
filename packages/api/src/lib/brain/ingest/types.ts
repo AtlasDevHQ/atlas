@@ -50,7 +50,19 @@ import {
   _resetCatalogIngestClaims,
 } from "@atlas/api/lib/knowledge/catalog-claims";
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
-import { EPISODE_SOURCES, isEpisodeSource, type EpisodeSource } from "@atlas/api/lib/brain/sources";
+import {
+  _resetAudienceReverifiers,
+  hasAudienceReverifier,
+} from "@atlas/api/lib/brain/audience/reverify";
+import {
+  EPISODE_SOURCES,
+  episodeSourceClass,
+  episodeSourceVendor,
+  isEpisodeSource,
+  type EpisodeSource,
+  type EpisodeSourceClass,
+  type EpisodeSourceVendor,
+} from "@atlas/api/lib/brain/sources";
 
 /**
  * One record a source produced, ready to become a tier-3 episode row.
@@ -197,15 +209,26 @@ export interface BrainSourceConnector {
   /** The catalog row this connector serves — the cycle-walk dispatch key. */
   readonly catalogId: string;
   /**
-   * The connector class stamped into `brain_episodes.source` — ADR-0036 is
+   * The source KIND stamped into `brain_episodes.source` — ADR-0036 is
    * class-major, vendor-minor, and the closed vocabulary lives in
    * `lib/brain/sources.ts`.
    *
+   * A KIND, not a class: Slack stamps `"slack"`, which is a VENDOR within the
+   * chat class. `warehouse` and `human` happen to be spelled the same on both
+   * axes, which is exactly why the distinction is worth naming here.
+   *
    * A CLOSED type rather than a slug pattern, because downstream predicates
    * read this value as a discriminator: `isWarehouseDerived` refuses tier-1
-   * correction on `WAREHOUSE_SOURCE` alone, so a warehouse connector that
-   * named its class `"snowflake"` would fail that ADR-level invariant OPEN and
-   * nothing would go red. `sources.ts`'s header carries the full argument.
+   * correction on the WAREHOUSE CLASS alone, so a warehouse connector whose
+   * kind resolved to some other class would fail that ADR-level invariant OPEN
+   * and nothing would go red. `sources.ts`'s header carries the full argument.
+   *
+   * This is the connector's ONE identity declaration. Its class and vendor are
+   * derived from it (`episodeSourceClass` / `episodeSourceVendor`, and
+   * {@link findBrainSourceConnectors} on top of them) rather than declared
+   * beside it — two separately-stated fields could disagree, and then the
+   * stored column and the registry lookup would answer different questions
+   * about the same connector.
    */
   readonly source: EpisodeSource;
   createClient(
@@ -223,10 +246,10 @@ const registry = new Map<string, BrainSourceConnector>();
 
 /**
  * Register a brain source for its catalog row. Called once per source at
- * wiring time. Duplicate catalog ids, malformed source slugs, and classes
+ * wiring time. Duplicate catalog ids, malformed source slugs, and kinds
  * outside the vocabulary all fail loudly — a silent overwrite would let one
  * source shadow another's installs, a malformed slug would land unqueryable
- * garbage in `brain_episodes.source`, and an unknown class would land a value
+ * garbage in `brain_episodes.source`, and an unknown kind would land a value
  * that every downstream discriminator silently declines to recognise.
  */
 export function registerBrainSourceConnector(connector: BrainSourceConnector): void {
@@ -239,12 +262,19 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   // `EpisodeSource`, which covers every in-repo connector at compile time —
   // but a plugin is compiled separately and arrives here as data, so the
   // check has to exist at runtime too. Failing loudly is the whole point: the
-  // alternative is a novel class flowing into `provenance.source`, where
-  // `isWarehouseDerived` would simply stop matching and tier-1 correction
-  // refusal would fail OPEN without a single red test.
+  // alternative is a novel kind flowing into `provenance.source`, which no
+  // region can resolve to a class. Since #4964 that fails CLOSED rather than
+  // open — every fact derived from it is correction-quarantined under
+  // UNRECOGNIZED_SOURCE_KIND — so the hazard is no longer a silent tier-1
+  // downgrade. It is a loud one that persists until the vocabulary admits the
+  // kind: until then the connector's own facts are uncorrectable everywhere,
+  // which is still a class the registry must never admit. (The neighbouring
+  // hazard `BrainSourceConnector.source`'s own docstring names above — a member
+  // declaring the WRONG class — is unaffected and still fails open; nothing in
+  // the type system knows what "warehouse-shaped" means.)
   if (!isEpisodeSource(connector.source)) {
     throw new Error(
-      `Brain source class "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to lib/brain/sources.ts, and if it is warehouse-shaped it must BE "warehouse" or tier-1 correction refusal stops applying to it`,
+      `Brain source "${connector.source}" is not in the episode-source vocabulary (${EPISODE_SOURCES.join(", ")}) — add it to EPISODE_SOURCE_SPECS in lib/brain/sources.ts, declaring its class. If it is warehouse-shaped it MUST declare class: "warehouse", or tier-1 correction refusal will not apply to any fact derived from it`,
     );
   }
   if (registry.has(connector.catalogId)) {
@@ -260,8 +290,147 @@ export function registerBrainSourceConnector(connector: BrainSourceConnector): v
   registry.set(connector.catalogId, connector);
 }
 
+/**
+ * Register a brain source AND its audience re-verifier as one unit.
+ *
+ * ## Why this exists rather than two calls in a row
+ *
+ * A source that derives per-object grants needs BOTH: the connector to ingest,
+ * and the re-verifier to keep the grants it minted from going stale. They live
+ * in two registries, and both throw on a duplicate. Written as two bare
+ * statements — which is how Zoom and Outlook were first wired — a throw from the
+ * SECOND leaves the first committed, and the caller's idempotence gate
+ * (`getBrainSourceConnector(id) !== undefined`) reads only that first registry.
+ * So the retry short-circuits and the half-state is permanent for the process.
+ *
+ * That half-state is the worst of the three outcomes, and it is worth being
+ * precise about why. Fully registered is correct. Fully absent is fail-closed
+ * and loud — installs 500 at sync time and someone notices the same day. HALF
+ * registered ingests normally for `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`
+ * (168h by default) and only then goes wrong, at which point `acl.ts` suppresses
+ * every audience the missing re-verifier was supposed to refresh and every fact
+ * behind them reads as ABSENT rather than as denied. A week later, in a
+ * different subsystem, with nothing pointing back here.
+ *
+ * So the re-verifier registry is checked BEFORE the connector is committed. That
+ * ordering is the whole point: after this check the only remaining throw sites
+ * are inside {@link registerBrainSourceConnector}, which validates before it
+ * writes and whose own two writes (`claimCatalogIngestTarget` then
+ * `registry.set`) already fail with nothing committed. Registration is
+ * single-threaded boot wiring, so there is no window between the check and the
+ * write for anything else to claim the source.
+ *
+ * A source with no per-object grants (slack-history — its grants are channel
+ * scoped and reconciled by the install-driven sweep) has no re-verifier to pair
+ * and calls {@link registerBrainSourceConnector} directly.
+ *
+ * @param connector the source to register
+ * @param registerReverifier commits the re-verifier; called only once the
+ *   connector is registered and the duplicate check above has passed. Keyed on
+ *   `connector.source`, so the two halves cannot be wired to different sources.
+ */
+export function registerBrainSourceWithAudienceReverifier(
+  connector: BrainSourceConnector,
+  registerReverifier: () => void,
+): void {
+  if (hasAudienceReverifier(connector.source)) {
+    throw new Error(
+      `Audience re-verifier for source "${connector.source}" is already registered — refusing to register its brain source connector, because committing one without the other leaves the source ingesting content whose grants are never re-verified`,
+    );
+  }
+  registerBrainSourceConnector(connector);
+  registerReverifier();
+}
+
 export function getBrainSourceConnector(catalogId: string): BrainSourceConnector | undefined {
   return registry.get(catalogId);
+}
+
+/** Which connectors to resolve. An omitted field does not constrain. */
+export interface BrainSourceConnectorQuery {
+  /** ADR-0036's class-major axis — `chat`, `warehouse`, … */
+  readonly sourceClass?: EpisodeSourceClass;
+  /**
+   * The vendor-minor axis, typed to the vendors that MEMBERS ACTUALLY NAME
+   * rather than to `string`. A typo would otherwise compile and return `[]`,
+   * which is indistinguishable from "that connector is not installed" — for the
+   * M3 webhook fast-path, a silently dropped event rather than a crash.
+   *
+   * There is deliberately no `null` here, and it is not an oversight. "The
+   * sources with no vendor" is not a third state to query: `EpisodeSourceSpec`
+   * (`lib/brain/sources.ts`) makes vendor-ness a property OF the class, so that
+   * set is exactly `sourceClass: "warehouse" | "human"` and is already
+   * expressible on the other axis.
+   *
+   * Be exact about what dropping it bought, because it is NOT the widening.
+   * This repo does not enable `exactOptionalPropertyTypes`, so `{ vendor:
+   * maybeVendor }` still type-checks and an explicit `undefined` still means
+   * "do not constrain" — that behaviour is retained deliberately and pinned in
+   * `episode-sync-archive.test.ts`. What the two-state shape removes is the
+   * ambiguity of INTENT: a caller who meant "the vendorless set" can no longer
+   * express it on this axis at all, so they cannot silently receive "all
+   * sources" instead.
+   *
+   * ⚠️ Composing this with `episodeSourceVendor` — "find this source's
+   * siblings" — therefore needs a BRANCH, not a coalesce. That accessor returns
+   * `EpisodeSourceVendor | null`, which does not fit here, and the repair a
+   * caller reaches for (`?? undefined`) would turn "this source has no vendor"
+   * into "match everything", relocating the over-returning bug from the type to
+   * the call site. Write it as:
+   *
+   *     const v = episodeSourceVendor(source);
+   *     const found = v === null
+   *       ? findBrainSourceConnectors({ sourceClass: episodeSourceClass(source) })
+   *       : findBrainSourceConnectors({ vendor: v });
+   */
+  readonly vendor?: EpisodeSourceVendor;
+}
+
+/**
+ * Resolve registered connectors by ADR-0036's class-major / vendor-minor axes
+ * (#4963) — the class+vendor lookup the catalog-id map cannot serve, since a
+ * catalog id is an INSTALL-routing key and says nothing about what class of
+ * evidence the connector produces.
+ *
+ * Both axes are read off the connector's declared `source` through
+ * `lib/brain/sources.ts`, never off fields the connector states separately. A
+ * connector that could name its own class alongside its stored value could name
+ * them INCONSISTENTLY, and then "the chat connectors" and "the connectors whose
+ * episodes are chat-class" would be two different sets — with the ACL and
+ * extraction paths keying off the stored value and this lookup keying off the
+ * declaration. One declared fact, both axes derived, no way to disagree.
+ *
+ * Returns an array, not a single connector: nothing bounds a class+vendor pair
+ * to one catalog row, and two rows for one vendor (say Slack history and a
+ * later Slack-canvases source) is a shape the ADR permits. A caller that needs
+ * exactly one must say so itself rather than inherit a uniqueness this registry
+ * never enforced.
+ *
+ * The two axes are AND-ed. An unsatisfiable pair (the slack vendor within the
+ * warehouse class) resolves to nothing, which is the only honest answer — a
+ * fallback to either axis alone would route warehouse work to a chat connector.
+ *
+ * The production caller is #4967's Slack webhook fast-path
+ * (`ingest/slack/webhook.ts`), which resolves connectors on the VENDOR axis for
+ * an arriving event — `{ vendor: SLACK_SOURCE }`, not a class. The CLASS axis
+ * has no production caller today; #4965/#4966 are the connectors that make it
+ * non-trivial, and it is kept because a class-grained consumer is the shape the
+ * seam exists to admit. Do not cite the webhook as evidence the class axis is
+ * exercised in production — it is not.
+ */
+export function findBrainSourceConnectors(
+  query: BrainSourceConnectorQuery = {},
+): readonly BrainSourceConnector[] {
+  const { sourceClass, vendor } = query;
+  return [...registry.values()].filter((connector) => {
+    if (sourceClass !== undefined && episodeSourceClass(connector.source) !== sourceClass) {
+      return false;
+    }
+    if (vendor !== undefined && episodeSourceVendor(connector.source) !== vendor) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /** The catalog ids with a registered brain source — the cycle walk's filter. */
@@ -269,8 +438,21 @@ export function listBrainSourceCatalogIds(): string[] {
   return [...registry.keys()];
 }
 
-/** Test-only: clear the registry (tests register fixtures per-suite). */
+/**
+ * Test-only: clear the registry (tests register fixtures per-suite).
+ *
+ * Clears the audience-re-verifier registry too, because #4965/#4966 made source
+ * registration a TWO-registry write while the idempotence gate inside
+ * `registerZoomTranscriptConnector` / `registerOutlookMailConnector` still reads only this one
+ * (`if (getBrainSourceConnector(id) !== undefined) return;`). Clearing one and
+ * not the other lets them de-sync: a suite that resets connectors and then
+ * re-registers passes the gate, reaches `registerXxxAudienceReverifier`, and
+ * throws `Audience re-verifier for source "…" is already registered` — a failure
+ * with nothing to do with what the suite was testing. Resetting both keeps the
+ * pair that boot writes together torn down together.
+ */
 export function _resetBrainSourceConnectors(): void {
   registry.clear();
   _resetCatalogIngestClaims("brain-episodes");
+  _resetAudienceReverifiers();
 }

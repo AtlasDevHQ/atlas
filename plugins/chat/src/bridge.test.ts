@@ -1757,6 +1757,31 @@ describe("ephemeral error delivery", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts an observeMessage callback at the strict-schema layer (#4967)", async () => {
+    // Same Boot-Smoke regression class as `onBridgeReady` above: the host
+    // (`deploy/api/atlas.config.ts`) passes `observeMessage`, and `.strict()`
+    // rejects any key the schema does not name — so omitting it there would
+    // crash config load before HTTP binds, on every deploy, with the brain
+    // fast-path's own knob still switched off and looking innocent.
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      catalog: SLACK_CATALOG,
+      executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      observeMessage: async () => {},
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-function observeMessage at the strict-schema layer (#4967)", async () => {
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      catalog: SLACK_CATALOG,
+      executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      observeMessage: "not a function",
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("EphemeralConfig validates correctly", async () => {
     const { ChatConfigSchema } = await import("./config");
 

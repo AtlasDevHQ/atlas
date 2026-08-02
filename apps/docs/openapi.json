@@ -25827,7 +25827,7 @@
             }
           },
           "409": {
-            "description": "The fact cannot be retracted — it is warehouse-derived (tier-1), which has no correction path; fix the data or the semantic layer instead",
+            "description": "The fact cannot be retracted — either it is warehouse-derived (tier-1), which has no correction path, so fix the data or the semantic layer instead; or its source kind is one this deployment does not recognise, so its tier cannot be determined and corrections are refused until the deployment knows the kind. The message says which",
             "content": {
               "application/json": {
                 "schema": {
@@ -25886,7 +25886,7 @@
           "Admin — Brain Facts"
         ],
         "summary": "Apply a correct_fact verb to a fact",
-        "description": "Applies one of the four correction verbs (#4915, ADR-0036 §Temporal) — the second human-authoritative entry point beside the review gate. Every correction materializes an immutable, actor-attributed correction episode and lands authoritative immediately, without the draft queue. `retract` stamps `invalidated_at` (the only tombstone path and the GDPR-erasure verb) and flags `derives-from` dependents for re-review — never a cascade. `supersede` publishes the human's replacement claim (same subject and predicate, the corrected `replacement.object`) through the ordinary reconcile seam and stamps the target's `valid_to` plus the `supersedes` edge via the publish gate's own machinery (#4912). `re-authority` and `pin` attach the correction episode as fresh human evidence, resetting the staleness clock and recording who vouched. Tier-1 warehouse-derived facts are refused for every verb: fix the data or the semantic layer, not the brain.",
+        "description": "Applies one of the four correction verbs (#4915, ADR-0036 §Temporal) — the second human-authoritative entry point beside the review gate. Every correction materializes an immutable, actor-attributed correction episode and lands authoritative immediately, without the draft queue. `retract` stamps `invalidated_at` (the only tombstone path and the GDPR-erasure verb) and flags `derives-from` dependents for re-review — never a cascade. `supersede` publishes the human's replacement claim (same subject and predicate, the corrected `replacement.object`) through the ordinary reconcile seam and stamps the target's `valid_to` plus the `supersedes` edge via the publish gate's own machinery (#4912). `re-authority` and `pin` attach the correction episode as fresh human evidence, resetting the staleness clock and recording who vouched. Tier-1 warehouse-derived facts are refused for every verb: fix the data or the semantic layer, not the brain. A fact whose source kind this deployment does not recognise — imported verbatim from a region running a newer vocabulary, or left behind by a rollback — is likewise refused for every verb, because its tier cannot be determined here.",
         "parameters": [
           {
             "schema": {
@@ -26078,7 +26078,7 @@
             }
           },
           "409": {
-            "description": "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
+            "description": "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a fact whose source kind this deployment does not recognise or whose recorded source is malformed (so its tier cannot be determined), a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
             "content": {
               "application/json": {
                 "schema": {
@@ -58193,7 +58193,9 @@
                               "front",
                               "helpscout",
                               "freshdesk",
-                              "slack-history"
+                              "slack-history",
+                              "zoom-transcripts",
+                              "outlook-mail"
                             ]
                           },
                           "description": {

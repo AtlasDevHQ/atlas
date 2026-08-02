@@ -53,6 +53,14 @@ import {
   SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SLUG,
 } from "@atlas/api/lib/brain/ingest/slack/config";
+import {
+  ZOOM_TRANSCRIPTS_CATALOG_ID,
+  ZOOM_TRANSCRIPTS_SLUG,
+} from "@atlas/api/lib/brain/ingest/zoom/config";
+import {
+  OUTLOOK_MAIL_CATALOG_ID,
+  OUTLOOK_MAIL_SLUG,
+} from "@atlas/api/lib/brain/ingest/outlook/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -714,6 +722,144 @@ export const BUILTIN_SLACK_HISTORY_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   ],
 };
 
+/**
+ * The Zoom transcript brain source (#4965) — ADR-0036 §T6's second connector
+ * CLASS, and the first connector built on #4963's generalized seam.
+ *
+ * Like `slack-history` it CONSUMES one of the workspace's plan-capped
+ * knowledge-collection slots, the price of reusing the collection spine
+ * verbatim.
+ *
+ * UNLIKE `slack-history`, it carries a secret: a Zoom Server-to-Server OAuth
+ * app's client id and secret, stored as one encrypted
+ * `knowledge_sync_credentials` row (see `zoom-transcripts-form-handler.ts`).
+ * The `accountId` is non-secret scope and stays in the install config. The
+ * id/slug are the config SSOT (`ZOOM_TRANSCRIPTS_CATALOG_ID` /
+ * `ZOOM_TRANSCRIPTS_SLUG`).
+ */
+export const BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: ZOOM_TRANSCRIPTS_CATALOG_ID,
+  slug: ZOOM_TRANSCRIPTS_SLUG,
+  name: "Company Brain (Zoom transcripts)",
+  description:
+    "Read cloud-recording transcripts from Zoom into the company brain as immutable, deduped episodes. Each meeting is granted only to the people who attended it — a meeting whose participant list cannot be read is skipped rather than ingested. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "accountId",
+      type: "string",
+      label: "Zoom account ID",
+      required: true,
+      description:
+        "The Account ID from your Zoom Server-to-Server OAuth app's credentials page.",
+    },
+    {
+      key: "clientId",
+      type: "string",
+      label: "Client ID",
+      required: true,
+      description: "The Client ID from the same Server-to-Server OAuth app.",
+    },
+    {
+      key: "clientSecret",
+      type: "string",
+      // `secret: true` is what makes the admin form mask it and keeps it out of
+      // the config echo — there is no `"password"` field TYPE in this schema,
+      // and reaching for one would have rendered the secret in clear text.
+      secret: true,
+      label: "Client secret",
+      required: true,
+      description:
+        "The Client Secret from the same app. Stored encrypted and never shown again. The app needs the cloud_recording:read:admin and meeting:read:admin scopes.",
+    },
+    {
+      key: "hosts",
+      type: "string",
+      label: "Hosts",
+      description:
+        "Optional. Comma-separated Zoom host user IDs to narrow ingestion to. Leave blank to ingest every recorded meeting in the account.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this brain source.",
+    },
+  ],
+};
+
+/**
+ * The Outlook mail brain source (#4966) — ADR-0036 §T6's third connector CLASS,
+ * and the first whose derived audience is knowingly a LOWER BOUND rather than an
+ * exact set (`lib/brain/ingest/grant.ts`'s `deriveEmailRecipientGrant`).
+ *
+ * Like its two brain-source siblings it CONSUMES one of the workspace's
+ * plan-capped knowledge-collection slots, the price of reusing the collection
+ * spine verbatim.
+ *
+ * Its `mailboxes` field is REQUIRED — as `slack-history`'s `channels` is, and
+ * as `zoom-transcripts`' `hosts` deliberately is NOT. That contrast is the point:
+ * Zoom's blank field means "the whole account", and there is no such spelling
+ * here, because Graph's application `Mail.Read` is tenant-wide with no narrower
+ * form and an empty scope defaulting to "everything" would mean every mailbox in
+ * the company. `lib/brain/ingest/outlook/config.ts` carries the argument. The
+ * id/slug are the config SSOT (`OUTLOOK_MAIL_CATALOG_ID` / `OUTLOOK_MAIL_SLUG`).
+ */
+export const BUILTIN_OUTLOOK_MAIL_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: OUTLOOK_MAIL_CATALOG_ID,
+  slug: OUTLOOK_MAIL_SLUG,
+  name: "Company Brain (Outlook mail)",
+  description:
+    "Read selected Outlook mailboxes into the company brain as immutable, deduped episodes. Each message is granted only to the people named in its From, To and Cc headers — blind-copied and forwarded-to recipients are deliberately NOT granted, so access is a lower bound on who saw the mail rather than a guess. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "tenantId",
+      type: "string",
+      label: "Directory (tenant) ID",
+      required: true,
+      description: "The Directory (tenant) ID from your Entra app registration's overview page.",
+    },
+    {
+      key: "clientId",
+      type: "string",
+      label: "Application (client) ID",
+      required: true,
+      description: "The Application (client) ID from the same app registration.",
+    },
+    {
+      key: "clientSecret",
+      type: "string",
+      // `secret: true` is what makes the admin form mask it and keeps it out of
+      // the config echo — there is no `"password"` field TYPE in this schema,
+      // and reaching for one would have rendered the secret in clear text.
+      secret: true,
+      label: "Client secret",
+      required: true,
+      description:
+        "A client secret VALUE (not its ID) from the same app registration. Stored encrypted and never shown again. The app needs the Mail.Read and User.ReadBasic.All APPLICATION permissions with admin consent granted. Entra secrets expire — the sync fails loudly when one does.",
+    },
+    {
+      key: "mailboxes",
+      type: "string",
+      label: "Mailboxes",
+      required: true,
+      description:
+        "Comma-separated mailboxes to ingest, as email addresses or object IDs. Required: Microsoft's application-level mail permission covers the whole tenant, so Atlas asks you to name the mailboxes rather than inferring them. Narrow the app itself with an Exchange ApplicationAccessPolicy as well — Atlas cannot see whether you have.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this brain source.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -729,6 +875,8 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_HELPSCOUT_CATALOG_ROW,
   BUILTIN_FRESHDESK_CATALOG_ROW,
   BUILTIN_SLACK_HISTORY_CATALOG_ROW,
+  BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW,
+  BUILTIN_OUTLOOK_MAIL_CATALOG_ROW,
 ];
 
 /**

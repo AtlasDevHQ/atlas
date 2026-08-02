@@ -71,6 +71,13 @@ void mock.module("@atlas/api/lib/logger", () => ({
 
 // The verb machinery, stubbed: this file tests the WRAPPER. Mock-all-exports —
 // the factory lists every value export `correction.ts` has.
+//
+// Note what does and does not force that. The REASONS object is held by
+// `satisfies typeof import(...)`, so a new reason is a compile error here. A new
+// FUNCTION export has no such pin and `check-test-discipline.sh` only checks
+// mock/restore pairing — `unrecognizedSourceKind` was missed on exactly that
+// asymmetry and caught in review, not by a gate. Re-read the module's exports
+// when touching this list.
 let correctCalls: Array<Record<string, unknown>> = [];
 let correctionResult: () => unknown = () => ({ kind: "not-found" });
 void mock.module("@atlas/api/lib/brain/correction", () => ({
@@ -82,6 +89,8 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
   CORRECTION_REFUSAL_REASONS: {
     notAuthorized: "NOT_AUTHORIZED",
     warehouseTarget: "WAREHOUSE_TARGET",
+    unrecognizedSourceKind: "UNRECOGNIZED_SOURCE_KIND",
+    malformedSourceKind: "MALFORMED_SOURCE_KIND",
     targetNotPublished: "TARGET_NOT_PUBLISHED",
     validityAlreadyClosed: "VALIDITY_ALREADY_CLOSED",
     targetNotCurrent: "TARGET_NOT_CURRENT",
@@ -99,6 +108,7 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
   REPLACEMENT_ROW_SQL: "SELECT",
   correctionTargetSql: () => "SELECT",
   isWarehouseDerived: () => false,
+  unrecognizedSourceKind: () => null,
   correctFact: async (request: Record<string, unknown>) => {
     correctCalls.push(request);
     return correctionResult();

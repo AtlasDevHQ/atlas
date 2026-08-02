@@ -186,10 +186,17 @@ export const runPeriodicDbCycle = <Row, Outcome, Result extends PeriodicDbCycleR
       { concurrency: 1 },
     );
 
+    // `emitAudit` BEFORE the log, because a settle hook may still be adding to
+    // `result` — brain extraction folds in the episodes its drain excluded as
+    // backing-off, a figure that exists only at scan time. Logging first
+    // reported `quarantined: 0` to the operator while the audit row carried the
+    // real number, so the two disagreed and the human-facing one was the wrong
+    // one. Every other caller's hook is emit-only, so this ordering costs them
+    // nothing and keeps the log the last word rather than a draft.
+    emitAudit(result);
     // Cast for pino's `LogFn`: spreading the generic `Result` leaves its
     // `extends string ? never` guard unresolved (a generic spread is not
     // provably `Record<string, unknown>`), so pin it to a plain record.
     spec.log.info({ ...result } as Record<string, unknown>, `${spec.label}: cycle complete`);
-    emitAudit(result);
     return result;
   });

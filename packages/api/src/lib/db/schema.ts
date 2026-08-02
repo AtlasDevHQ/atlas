@@ -3167,11 +3167,19 @@ export const brainEpisodes = pgTable(
     // Better-Auth organization id — workspace-global, TEXT/no-FK like the
     // other org-scoped Atlas tables.
     workspaceId: text("workspace_id").notNull(),
-    // Connector class/vendor ('slack', 'warehouse', 'human'). The vocabulary
-    // is CLOSED and lives in `lib/brain/sources.ts` — `isWarehouseDerived`
-    // reads this column as a discriminator, so a value outside it silently
-    // escapes tier-1 correction refusal. Plain `text` rather than an enum on
-    // purpose: the region import restores a bundle's value verbatim.
+    // The source KIND — a VENDOR within a class ('slack') or a CLASS with no
+    // vendor ('warehouse', 'human'). The vocabulary is CLOSED, and each kind's
+    // class/vendor is declared in `EPISODE_SOURCE_SPECS` in
+    // `lib/brain/sources.ts`. `reconcile.ts` copies this value into
+    // `brain_facts.provenance.source`, and `isWarehouseDerived` resolves THAT
+    // copy to a CLASS, refusing tier-1 correction on the warehouse one — so a
+    // value outside the vocabulary cannot resolve to a class at all. It does
+    // NOT thereby escape the refusal: corrections on facts carrying an
+    // unresolvable kind are refused outright as UNRECOGNIZED_SOURCE_KIND
+    // (`correction.ts`'s `unrecognizedSourceKind`, #4964), which is what lets
+    // the column stay open below. Nothing queries this column for the refusal
+    // itself. Plain `text` rather than an enum on purpose: the region import
+    // restores a bundle's value verbatim, and no CHECK constrains it.
     source: text("source").notNull(),
     // The source's own stable id — the dedupe key. Per-connector obligation:
     // stable across BOTH the webhook fast-path and the polling path.
@@ -3531,4 +3539,34 @@ export const factAudienceMember = pgTable(
     // staleness sweep behind the `brain_audience_sync` span attributes.
     index("idx_fact_audience_member_stale").on(t.workspaceId, t.syncedAt),
   ],
+);
+
+// brain_audience_reverify_attempt — fair-share rotation for the non-Slack
+// audience re-verifiers (0186, #4971).
+//
+// Separate from `fact_audience_member` in both directions that matter. A
+// member-LESS audience has no row there to stamp, and those are the audiences
+// most in need of rotating; and `synced_at` there means LAST VERIFIED, which
+// `acl.ts` reads as evidence, so a stamp that advanced on an abort would fake a
+// verification and keep a revoked grant alive past the staleness bound. Ordering
+// the re-verifier's scan on a SUCCESS column is what let a permanently-failing
+// audience hold a slot at the front forever; ordering on this one rotates it out
+// after a single cycle.
+//
+// Written by `lib/brain/audience/reverify.ts`'s `selectReverifyCandidates`, on
+// SELECTION rather than per outcome, and read by nothing but that scan's ORDER
+// BY.
+export const brainAudienceReverifyAttempt = pgTable(
+  "brain_audience_reverify_attempt",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // WITHOUT the `audience:` prefix, matching `fact_audience_member`.
+    audienceId: text("audience_id").notNull(),
+    // Not part of the key, for the same reason it is not part of
+    // `fact_audience_member`'s: an audience id is source-namespaced by
+    // construction, so two sources cannot contend for one row.
+    source: text("source").notNull(),
+    attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.audienceId] })],
 );

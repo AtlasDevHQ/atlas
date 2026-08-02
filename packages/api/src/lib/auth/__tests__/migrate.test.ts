@@ -558,6 +558,7 @@ describe("migrateAuthTables", () => {
             // zero new migrations. (0184 is absent because it IS
             // Better-Auth-gated via MANAGED_AUTH_MIGRATIONS.)
             { name: "0185_backfill_slack_bot_user_id.sql" },
+            { name: "0186_brain_audience_reverify_attempt.sql" },
           ],
         };
       }

@@ -96,6 +96,7 @@ import {
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import { resolveSlackHistoryToken } from "@atlas/api/lib/brain/ingest/slack/connector";
 import { reconcileAudienceMembership } from "./membership";
+import { listAudienceReverifierSources, runRegisteredAudienceReverifiers } from "./reverify";
 import { resolvePrincipals } from "./resolver";
 
 const log = createLogger("brain.audience.sync");
@@ -941,13 +942,28 @@ export async function runAudienceSyncCycle(
   const tally: ThrottleTally = { throttled: 0, exhausted: 0 };
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
 
-  let installs: InstallRow[];
+  // RECORDED AND FALLEN THROUGH, never returned on. (Recorded in `scanError`
+  // and returned as the cycle's `error` — there is no counter for it.) This scan is Slack-scoped —
+  // `AUDIENCE_SYNC_INSTALLS_SQL` takes `SLACK_HISTORY_CATALOG_ID` and nothing
+  // else — so its failure says nothing about the OTHER sources' audiences. Both
+  // `runRegisteredAudienceReverifiers` and `sweepStaleness` below are documented
+  // as running UNCONDITIONALLY for exactly that reason, and an early return here
+  // silently skipped both: every Zoom meeting and Outlook message audience in
+  // the deployment would go un-reverified until it crossed
+  // `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`, at which point `acl.ts`
+  // suppresses it and those facts read as absent — with the staleness sweep that
+  // would have WARNED about it skipped by the same return. The cycle still
+  // reports `failure`; it just does the work it can first.
+  let installs: InstallRow[] = [];
+  let scanError: string | null = null;
   try {
     installs = await query<InstallRow>(AUDIENCE_SYNC_INSTALLS_SQL, [SLACK_HISTORY_CATALOG_ID]);
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    log.error({ err: error }, "brain audience: install scan failed — no membership was reconciled");
-    return { status: "failure", ...ZERO, error };
+    scanError = err instanceof Error ? err.message : String(err);
+    log.error(
+      { err: scanError },
+      "brain audience: the Slack install scan failed — no Slack membership will be reconciled this cycle. The other sources' re-verifiers and the staleness sweep still run; the cycle reports failure at the end",
+    );
   }
 
   let result = { ...ZERO };
@@ -981,6 +997,30 @@ export async function runAudienceSyncCycle(
     }
   }
 
+  // Every OTHER source's audiences (#4965). Drained here rather than branched
+  // into the Slack walk above: the scan, the vendor reads, and the roster shape
+  // are all source-specific, and the only thing the cycle genuinely owns is the
+  // clock, the isolation, and this report. See `reverify.ts` for why a source
+  // that mints `audience:` grants MUST have one — an audience nothing
+  // re-verifies stops granting at the staleness bound while every surface stays
+  // green.
+  //
+  // Run UNCONDITIONALLY, for the same reason `sweepStaleness` is: a deployment
+  // with no `slack-history` install at all still has Zoom meeting audiences to
+  // keep fresh, and gating this on `installs.length` would silently retire them.
+  // Its counters fold into the existing audience tallies rather than getting
+  // their own — they are the same units, and `audiencesFailed` is what drives
+  // `degraded` below, which a re-verification failure must also do.
+  const reverified = await runRegisteredAudienceReverifiers();
+  result = {
+    ...result,
+    audiencesReconciled: result.audiencesReconciled + reverified.reconciled,
+    audiencesFailed: result.audiencesFailed + reverified.failed,
+    membersAdded: result.membersAdded + reverified.membersAdded,
+    membersRevoked: result.membersRevoked + reverified.membersRevoked,
+    principalsUnresolved: result.principalsUnresolved + reverified.principalsUnresolved,
+  };
+
   // Swept unconditionally, including when there are no installs left to sync.
   // An install that was disabled or archived stops being reconciled but its
   // membership rows stay — and stay stale — so "no installs" is one of the ways
@@ -994,7 +1034,18 @@ export async function runAudienceSyncCycle(
     ...staleness,
   };
 
-  if (installs.length > 0) {
+  // Gated on the cycle having anything to DO, not on it having found something.
+  // A deployment running only Zoom and/or Outlook reconciles audiences, adds and
+  // revokes members, and would otherwise emit no cycle-complete line at all —
+  // the same Slack-shaped assumption the scan fault above had.
+  //
+  // On registered re-verifiers rather than on their COUNTS: gating on
+  // `reconciled + failed > 0` still went silent on the steady state it was
+  // widened for — a Zoom-only deployment whose audiences are all fresh reports
+  // 0/0 and says nothing, which is precisely when an operator wants to see the
+  // fiber is alive. A registered re-verifier means the cycle had work in scope,
+  // whether or not that work turned anything up.
+  if (installs.length > 0 || listAudienceReverifierSources().length > 0) {
     log.info({ ...result }, "brain audience: membership sync cycle complete");
   }
   if (staleness.staleAudiences !== null && staleness.staleAudiences > 0) {
@@ -1008,6 +1059,11 @@ export async function runAudienceSyncCycle(
   // is a real condition to alert on, but it is not this cycle failing at
   // anything, and folding it in would make `degraded` permanent and therefore
   // ignorable. It gets its own counters and its own log line instead.
+  // A failed install scan outranks `degraded`: Slack membership genuinely did
+  // not reconcile this cycle, and the counters below it are zero for Slack no
+  // matter what the other sources managed. The error rides along so the caller
+  // reports the cause rather than an unexplained `failure`.
+  if (scanError !== null) return { status: "failure", ...result, error: scanError };
   const degraded = result.workspacesFailed > 0 || result.audiencesFailed > 0;
   return { status: degraded ? "degraded" : "success", ...result };
 }

@@ -13,7 +13,7 @@
  * identical to the set the facts were granted to.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { AUDIENCE_PREFIX, parseGrant } from "@atlas/api/lib/brain/acl";
 import { deriveChatChannelGrant } from "@atlas/api/lib/brain/ingest/grant";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
@@ -27,6 +27,11 @@ import {
   type AudienceSyncDeps,
 } from "../sync";
 import type { SlackDirectoryUser } from "@atlas/api/lib/slack/api";
+import {
+  ZERO_REVERIFY,
+  _resetAudienceReverifiers,
+  registerAudienceReverifier,
+} from "../reverify";
 
 const WORKSPACE = "ws-1";
 const PRIVATE_CHANNEL = "C0PRIV";
@@ -179,6 +184,86 @@ describe("runAudienceSyncCycle", () => {
     expect(pages).toBe(MAX_ROSTER_PAGES);
     expect(reconciled).toHaveLength(0);
     expect(result.audiencesFailed).toBe(1);
+  });
+
+  describe("when the Slack install scan itself fails", () => {
+    /**
+     * The scan is Slack-scoped, so its failure must not retire the OTHER
+     * sources' audiences.
+     *
+     * Regression for the cross-cutting defect the M3 review panel found: the
+     * scan's `catch` used to `return`, 48 lines above two calls documented as
+     * running UNCONDITIONALLY. A deployment running Zoom and/or Outlook with a
+     * faulting `workspace_plugins` read would never re-verify those audiences
+     * and never sweep staleness — so they aged past
+     * `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`, `acl.ts` suppressed them, and
+     * the sweep that would have WARNED was skipped by the same return. Facts
+     * silently invisible, every surface green.
+     *
+     * Asserted on the two observable effects rather than on the fix's shape, so
+     * it stays honest if the implementation moves.
+     */
+    function failingScanHarness() {
+      const { deps } = harness();
+      const sweptWith: unknown[][] = [];
+      const failing: AudienceSyncDeps = {
+        ...deps,
+        // Throws for the INSTALL scan only. The staleness sweep shares this
+        // dep, so failing everything would prove nothing about which of the two
+        // ran — the whole point is that one faults and the other still runs.
+        query: (<T extends Record<string, unknown>>(sql: string, params?: unknown[]) => {
+          if (sql.includes("workspace_plugins")) {
+            return Promise.reject(new Error("statement timeout"));
+          }
+          sweptWith.push(params ?? []);
+          return Promise.resolve([] as unknown as T[]);
+        }) as AudienceSyncDeps["query"],
+      };
+      return { deps: failing, sweptWith };
+    }
+
+    // Teardown, not per-test cleanup. The reset used to run inline AFTER the
+    // awaits with no `finally`, so a throw inside the cycle leaked the "zoom"
+    // re-verifier into every later test in the file and folded
+    // `reconciled: 3, membersAdded: 2` into their counters — one real failure
+    // manufacturing several unrelated ones.
+    afterEach(() => {
+      _resetAudienceReverifiers();
+    });
+
+    it("still runs the other sources' re-verifiers", async () => {
+      let ran = 0;
+      registerAudienceReverifier("zoom", () => {
+        ran += 1;
+        return Promise.resolve({ ...ZERO_REVERIFY, reconciled: 3, membersAdded: 2 });
+      });
+      const { deps } = failingScanHarness();
+      const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+      expect(ran).toBe(1);
+      // Its counters fold in, so the cycle reports the work that DID happen
+      // rather than the zeroed report the early return produced.
+      expect(result.audiencesReconciled).toBe(3);
+      expect(result.membersAdded).toBe(2);
+    });
+
+    it("still sweeps staleness — the alert that would name the aging audiences", async () => {
+      const { deps, sweptWith } = failingScanHarness();
+      await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+      expect(sweptWith).toHaveLength(1);
+    });
+
+    it("still reports failure, with the scan's error", async () => {
+      // Falling through must not upgrade a failed cycle to success: Slack
+      // membership genuinely did not reconcile.
+      const { deps } = failingScanHarness();
+      const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+      expect(result.status).toBe("failure");
+      expect(result.error).toContain("statement timeout");
+      expect(result.workspacesInspected).toBe(0);
+    });
   });
 
   it("skips the whole workspace when the directory read fails", async () => {

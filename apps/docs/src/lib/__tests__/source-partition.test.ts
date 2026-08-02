@@ -810,3 +810,104 @@ test("[#4289] no shared page leaks a /self-hosted link on the SaaS mount (Direct
   });
   expect(offenders).toEqual([]);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4969 — SHARED-PAGE NAV PARITY across the two audience mounts.
+//
+// A shared page renders on BOTH mounts from one file, but the SIDEBAR is driven
+// by per-audience `meta.json` `pages` arrays that are maintained BY HAND. Those
+// two facts together make a silent orphan possible: a shared page omitted from
+// one mount's `pages` is still routable and still passes `check-docs-links.ts`
+// (verified — deleting an entry leaves that gate green), it simply vanishes from
+// that audience's navigation. Nothing else covers this: the docs build's
+// `validateContentTaxonomy` checks page PLACEMENT, the canary checks the search
+// index's size, and the KB bundle walks the tree rather than the nav.
+//
+// Scope is exactly the dirs where the hazard exists — a shared subdirectory
+// whose nav is hand-listed in BOTH trees. Everywhere else (`reference`, `sdk`,
+// `architecture`, …) has no per-audience `meta.json`, so fumadocs derives the
+// nav and parity is automatic. Deriving the scope rather than hard-coding it
+// means a NEW hand-maintained pair is covered the day it is added.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `pages` from a meta.json, or null when the file has none (auto-nav). */
+function navPages(tree: string, dir: string): string[] | null {
+  const metaPath = join(CONTENT_DIR, tree, dir, "meta.json");
+  if (!existsSync(metaPath)) return null;
+  const parsed: unknown = JSON.parse(readFileSync(metaPath, "utf8"));
+  const pages = (parsed as { pages?: unknown }).pages;
+  if (!Array.isArray(pages)) return null;
+  // `---` is a separator and `...` is fumadocs' rest-glob; neither names a page.
+  return pages.filter(
+    (p): p is string => typeof p === "string" && p !== "---" && p !== "...",
+  );
+}
+
+/** Shared subdirs whose nav is hand-listed in BOTH audience trees. */
+const handListedSharedDirs = readdirSync(SHARED_ROOT, { withFileTypes: true })
+  .filter((e) => e.isDirectory())
+  .map((e) => e.name)
+  .filter(
+    (dir) => navPages("docs", dir) !== null && navPages("self-hosted", dir) !== null,
+  );
+
+test("[#4969] the hand-listed shared dirs are discovered (non-vacuous floor)", () => {
+  // Without this the parity test below passes trivially if the discovery breaks
+  // — the exact failure mode that makes a nav gate worthless.
+  expect(handListedSharedDirs).toContain("guides");
+  expect(handListedSharedDirs.length).toBeGreaterThanOrEqual(3);
+});
+
+test("[#4969] every shared page is in BOTH audience navs, or it is invisible to one", () => {
+  const missing: string[] = [];
+  for (const dir of handListedSharedDirs) {
+    const docsNav = new Set(navPages("docs", dir) ?? []);
+    const selfHostedNav = new Set(navPages("self-hosted", dir) ?? []);
+    const slugs = readdirSync(join(SHARED_ROOT, dir))
+      .filter((f) => f.endsWith(".mdx"))
+      .map((f) => f.replace(/\.mdx$/i, ""))
+      // A folder landing page is addressed by its folder, not by `index`.
+      .filter((slug) => slug !== "index");
+    // Floor: this dir actually holds shared pages, so an empty read cannot pass.
+    expect(slugs.length).toBeGreaterThan(0);
+    for (const slug of slugs) {
+      if (!docsNav.has(slug)) missing.push(`shared/${dir}/${slug} → docs/${dir}/meta.json`);
+      if (!selfHostedNav.has(slug)) {
+        missing.push(`shared/${dir}/${slug} → self-hosted/${dir}/meta.json`);
+      }
+    }
+  }
+  expect(missing).toEqual([]);
+});
+
+test("[#4969] no nav entry names a page that does not exist on that mount", () => {
+  // The inverse orphan: a typo'd or stale slug in `pages` is silently ignored by
+  // fumadocs and by the link gate, so the page it meant to list is simply absent.
+  const phantoms: string[] = [];
+  for (const tree of ["docs", "self-hosted"] as const) {
+    for (const dir of handListedSharedDirs) {
+      for (const slug of navPages(tree, dir) ?? []) {
+        // A nav entry resolves against its OWN tree or the shared tree — both
+        // mount into the same section source. It may name any of three things:
+        // a page, a folder landing page, or a NAV GROUP — a subdirectory with
+        // its own meta.json and no index page, which fumadocs renders as a
+        // titled group (`docs/integrations/llm-providers` is one today).
+        // Treating a group as a phantom is the false positive this arm exists
+        // to avoid, and it is why the check is existence-of-any rather than a
+        // single `.mdx` probe.
+        const candidates = [
+          join(CONTENT_DIR, tree, dir, `${slug}.mdx`),
+          join(SHARED_ROOT, dir, `${slug}.mdx`),
+          join(CONTENT_DIR, tree, dir, slug, "index.mdx"),
+          join(SHARED_ROOT, dir, slug, "index.mdx"),
+          join(CONTENT_DIR, tree, dir, slug, "meta.json"),
+          join(SHARED_ROOT, dir, slug, "meta.json"),
+        ];
+        if (!candidates.some((p) => existsSync(p))) {
+          phantoms.push(`${tree}/${dir}/meta.json lists "${slug}" — no such page`);
+        }
+      }
+    }
+  }
+  expect(phantoms).toEqual([]);
+});

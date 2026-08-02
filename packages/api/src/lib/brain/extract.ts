@@ -72,16 +72,28 @@
  * and an episode the reconcile gate refuses wholesale. Only a pass that THREW
  * retries.
  *
- * A deterministically-failing episode therefore keeps its slot indefinitely —
+ * A deterministically-failing episode therefore keeps its ROW indefinitely —
  * stamping it would be a silent drop on a guess, which is the thing this
- * module's whole ordering avoids. What IS bounded is the SPEND: after
- * {@link QUARANTINE_AFTER_FAILURES} consecutive failures the episode moves to a
- * widening probe backoff and logs at ERROR, so it costs at most one model call
- * per window instead of one per tick — PER PROCESS. The ledger is in-memory and
- * this fiber has no leader election, so a fleet of R replicas each runs its own
- * ramp: read every spend figure here as ×R on SaaS. So the honest statement of the bound is:
- * N permanently-failing episodes at the head of the queue WOULD starve it,
- * cheaply and loudly, until an operator acts on the recurring error.
+ * module's whole ordering avoids. Two separate bounds keep that affordable, and
+ * conflating them is how the second one went missing for a while:
+ *
+ *   - **Spend.** After {@link QUARANTINE_AFTER_FAILURES} consecutive failures
+ *     the episode moves to a widening probe backoff and logs at ERROR, so it
+ *     costs at most one model call per window instead of one per tick — PER
+ *     PROCESS. The ledger is in-memory and this fiber has no leader election, so
+ *     a fleet of R replicas each runs its own ramp: read every spend figure here
+ *     as ×R on SaaS.
+ *   - **Throughput.** Quarantine alone does NOT stop a poisoned episode holding
+ *     a slot: the skip used to happen after the row had already been selected,
+ *     so past `BATCH_SIZE` poisoned episodes at the head, every tick selected the
+ *     same full batch, skipped all of it for free, and drained nothing — for
+ *     every workspace in the deployment. The drain now excludes backing-off ids
+ *     (`$2`), so the batch bound means "25 episodes we will actually try". See
+ *     {@link DRAIN_EPISODES_SQL}.
+ *
+ * So the honest statement of the bound is: permanently-failing episodes cost one
+ * probe per window each and are loudly logged until an operator acts, and they
+ * no longer block the episodes queued behind them while that happens.
  */
 
 import { Effect } from "effect";
@@ -134,7 +146,17 @@ export const BRAIN_EXTRACTION_PRODUCER = "extraction:v1" as const;
 const INTERVAL_MS = 5 * 60 * 1000;
 
 /** Episodes drained per tick — the per-cycle model-spend bound. */
-const BATCH_SIZE = 25;
+/**
+ * Exported for tests, which must not hardcode it.
+ *
+ * The poisoned-head `-pg` scenario has to fill an entire batch to prove the
+ * exclusion works. With the value copied into the test, raising it here makes
+ * the poison block stop filling the batch — the healthy row is then selected
+ * WITHOUT the exclusion doing anything, so the test passes vacuously and the
+ * stall regression is restored silently. One-directional failure, which is the
+ * kind worth spending an export on.
+ */
+export const BATCH_SIZE = 25;
 
 /** Body characters sent to the model. Beyond this a chat message is a transcript. */
 const MAX_BODY_CHARS = 8_000;
@@ -151,7 +173,7 @@ const EXTRACTION_TIMEOUT_MS = 60_000;
  * body that always trips a content filter, a model id that 404s) without
  * pretending a few failures prove permanence.
  */
-const QUARANTINE_AFTER_FAILURES = 3;
+export const QUARANTINE_AFTER_FAILURES = 3;
 
 /**
  * First probe interval after quarantine, doubling per subsequent failure up to
@@ -166,7 +188,7 @@ const QUARANTINE_AFTER_FAILURES = 3;
  * costs one model call per episode per window and makes a repaired model
  * self-healing.
  */
-const QUARANTINE_PROBE_BASE_MS = 30 * 60 * 1000;
+export const QUARANTINE_PROBE_BASE_MS = 30 * 60 * 1000;
 
 /** Backoff ceiling: 2^5 × 30 min = 16 h between probes. */
 const QUARANTINE_PROBE_MAX_SHIFT = 5;
@@ -188,7 +210,7 @@ const QUARANTINE_ERROR_EVERY = 3;
  * `entry.failures++` would advance the count while leaving `lastFailureAt`
  * describing an older failure, and the backoff reads both.
  */
-interface QuarantineEntry {
+export interface QuarantineEntry {
   readonly failures: number;
   /** Epoch ms of the most recent failure — the backoff window's origin. */
   readonly lastFailureAt: number;
@@ -262,11 +284,49 @@ export function isBrainExtractionEnabled(): boolean {
  * after it was said, and per-workspace fairness is not something a single
  * ordered queue can express without starving whoever is not first. The batch
  * bound is what keeps one noisy workspace from monopolizing a tick.
+ *
+ * ## `$2` — why the backing-off episodes are excluded HERE and not skipped later
+ *
+ * Quarantine (see {@link QUARANTINE_AFTER_FAILURES}) bounds what a poisoned
+ * episode COSTS. On its own it does not bound what a poisoned episode BLOCKS,
+ * and those are different properties: a failing episode is never stamped, so it
+ * stays at the head of this queue forever, and `extractEpisode` used to skip it
+ * only AFTER it had already consumed one of the `LIMIT $1` slots. Past
+ * `BATCH_SIZE` poisoned episodes at the head — one workspace's content filter,
+ * one 404ing model — every tick selected the same full batch, skipped all of it
+ * for free, and drained NOTHING. Cheap, silent, and total: the healthy episodes
+ * behind them belong to every other workspace and source in the deployment.
+ *
+ * Excluding them at the query is what makes the batch bound mean "25 episodes
+ * we will actually try". The list is the ledger's currently-backing-off ids, so
+ * an episode whose probe window has elapsed is deliberately NOT in it — it gets
+ * selected, probed, and heals itself, which is the whole point of quarantine
+ * being a backoff rather than a terminal state. The array is bounded by
+ * {@link FAILURE_LEDGER_CAP}, and `id <> ALL('{}')` is true for every row, so
+ * the empty case needs no special handling.
+ *
+ * That bound caps the array at 1000 uuids, which is a filter evaluated per
+ * candidate row — and it is worth being straight about what it sits on top of.
+ * `idx_brain_episodes_extraction_queue` is `(workspace_id, ingested_at) WHERE
+ * extracted_at IS NULL`, so it does NOT serve this query's ordering: the drain
+ * is deployment-wide with no `workspace_id` predicate and sorts on
+ * `ingested_at` alone. That mismatch predates the exclusion and is not what the
+ * exclusion introduced — but it does mean the added filter rides a scan-and-sort
+ * rather than an index walk, and the honest reading of "bounded" here is
+ * "bounded, on a plan that was already doing more work than the LIMIT suggests".
+ * Fixing that is an index migration, deliberately not folded into a defect fix.
+ *
+ * `::uuid[]`, not `::text[]` — `brain_episodes.id` is a `uuid`, and Postgres
+ * refuses the cross-type comparison outright (`operator does not exist: uuid <>
+ * text`) rather than coercing it. That is the good direction: the whole drain
+ * fails loudly on the wrong cast instead of silently matching nothing and
+ * quietly re-admitting every quarantined episode.
  */
 export const DRAIN_EPISODES_SQL = `SELECT id, workspace_id, source, source_id, source_actor,
               body, locator, occurred_at, visible_to
          FROM brain_episodes
         WHERE extracted_at IS NULL
+          AND id <> ALL($2::uuid[])
         ORDER BY ingested_at
         LIMIT $1`;
 
@@ -693,6 +753,14 @@ export function runBrainExtractionCycle(
     // `tallyEpisode` writes it, and they have to be the same object.
     const failures = failureLedger;
     const charged: { episodeId: string; workspaceId: string }[] = [];
+    /**
+     * How many episodes the scan EXCLUDED as backing-off, this tick.
+     *
+     * Set in `scan` and read in the settle hook, which is why it lives out here
+     * beside `charged` rather than inside either. Reset by `scan` on every tick,
+     * so a fiber that runs for weeks cannot carry a stale count.
+     */
+    let excludedThisTick = 0;
 
     /**
      * Forgive one strike each when the whole tick failed, then emit the cycle
@@ -767,6 +835,16 @@ export function runBrainExtractionCycle(
           );
         }
       }
+      // Fold in the episodes the DRAIN never selected because they are inside
+      // their backoff window. They are the same population `skipped.quarantined`
+      // has always meant — "not extracted this tick, because quarantined" — and
+      // without this the counter would read 0 the moment the exclusion started
+      // working, which is the opposite of what happened.
+      //
+      // Sourced from the ledger rather than from the batch, which makes it
+      // strictly better than before: it now reports EVERY quarantined episode,
+      // not just the ones that happened to fall inside one tick's 25.
+      result.skipped.quarantined += excludedThisTick;
       charged.length = 0;
       emitCycleAudit(result);
     };
@@ -776,7 +854,14 @@ export function runBrainExtractionCycle(
       label: "Brain extraction",
       emptyResult,
       failureResult: (error) => ({ ...emptyResult(), status: "failure", error }),
-      scan: () => internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE]),
+      // Computed per tick, not once: the set shrinks as probe windows elapse,
+      // and an episode that has become due must be selected on THIS tick rather
+      // than whenever the fiber happens to restart.
+      scan: () => {
+        const excluded = backingOffIds(failures, now());
+        excludedThisTick = excluded.length;
+        return internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE, excluded]);
+      },
       applyRow: (row) => extractEpisode(row, { extract, modelFor, reconcile, now, failures }),
       defectOutcome: (error) => ({ kind: "failed", error }),
       tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
@@ -797,6 +882,25 @@ interface ApplyDeps {
    * would leave quarantine permanently disarmed with nothing to notice it.
    */
   readonly failures: Map<string, QuarantineEntry>;
+}
+
+/**
+ * The episode ids the drain must not select this tick.
+ *
+ * The same predicate `extractEpisode` applies, moved in front of the `LIMIT` so
+ * a backing-off episode does not consume a slot it will only be skipped in. Both
+ * call sites stay because they answer different questions: this one keeps the
+ * batch productive, and the guard in `extractEpisode` keeps a row that slipped
+ * through — a hand-passed fixture, a future caller that bypasses `scan` — from
+ * costing a model call. Removing either one alone is safe; removing both is the
+ * poisoned-queue stall.
+ */
+export function backingOffIds(ledger: ReadonlyMap<string, QuarantineEntry>, now: Date): string[] {
+  const ids: string[] = [];
+  for (const [id, entry] of ledger) {
+    if (isQuarantined(entry, now)) ids.push(id);
+  }
+  return ids;
 }
 
 /**
@@ -1017,11 +1121,25 @@ function tallyEpisode(
       // longest-failing entry — the one whose count is doing the most work.
       ledger.delete(row.id);
       if (ledger.size >= FAILURE_LEDGER_CAP) {
-        // Unreachable while the drain is `LIMIT BATCH_SIZE` over a queue whose
-        // head never advances past a failure — the ledger cannot exceed
-        // BATCH_SIZE. Stated because a future drain change (a bigger batch, a
-        // workspace-fair walk) wakes this branch up, and it must not wake up
-        // silently.
+        // ⚠️ REACHABLE. This branch used to be dead: while the drain was a bare
+        // `LIMIT BATCH_SIZE` over a queue whose head never advanced past a
+        // failure, the ledger could not exceed BATCH_SIZE. It said so, and
+        // predicted that "a future drain change wakes this branch up, and it
+        // must not wake up silently".
+        //
+        // The backing-off exclusion (`$2`, see {@link DRAIN_EPISODES_SQL}) IS
+        // that change. Making the head advance is the whole point of it — so
+        // under a BROAD failure (one 404ing model, one workspace-wide content
+        // filter) each tick now reaches 25 fresh episodes instead of re-reading
+        // the same poisoned 25, and the ledger grows to FAILURE_LEDGER_CAP
+        // rather than stalling at BATCH_SIZE.
+        //
+        // That is the trade the exclusion buys, and it is the right one — a
+        // stalled queue drains NOTHING for every workspace, while this walks the
+        // backlog at one probe per episode per window and says so at WARN. But
+        // it means the header's "one probe per window each" bound holds only
+        // below the cap: past it, eviction disarms the oldest quarantine and
+        // that episode returns to full price until it re-earns its strikes.
         //
         // Evict by OLDEST FAILURE, not by insertion order: a quarantined entry
         // is skipped rather than re-`set`, so its insertion position freezes at

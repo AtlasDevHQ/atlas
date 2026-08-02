@@ -11,6 +11,9 @@
     "brain-temporal-model",
     "brain-corrections",
     "brain-conflicts",
+    "brain-sources",
+    "brain-chat-webhook",
+    "brain-connector-authoring",
     "self-serve-signup",
     "self-hosted-billing",
     "self-hosted-models"

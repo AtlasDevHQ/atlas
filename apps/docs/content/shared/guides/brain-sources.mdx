@@ -1,0 +1,207 @@
+---
+title: Company Brain — Sources
+description: The classes of source the company brain ingests, why they are connected in that order, exactly how each one derives who may see a fact — including where that derivation is a lower bound rather than an exact set — and why facts lag episodes by design.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The company brain does not ingest "documents". It ingests **episodes** — immutable, deduped records of something that was said, in a place, to an audience — and every episode carries the access grant Atlas derived for it at the moment it was stored.
+
+That grant is the whole reason sources arrive in the order they do. A source is easy or hard to connect not by how much text it holds, but by **how honestly Atlas can answer "who was allowed to see this?"** This page covers the classes shipped so far, the answer each one gives, and where that answer is knowingly incomplete.
+
+---
+
+## Source classes
+
+A **class** is a kind of evidence. A **vendor** is one product within a class. Atlas stores the vendor, and derives the class from it — so `slack` is a chat source, `zoom` is a transcript source, and a second chat vendor would be its own stored value under the same class rather than a reuse of Slack's.
+
+| Class | Shipped vendor | What one episode is | Status |
+|---|---|---|---|
+| **Chat** | Slack | One message in a channel | Shipped |
+| **Transcripts** | Zoom | One cloud-recording transcript from one meeting instance | Shipped |
+| **Email** | Outlook (Microsoft Graph) | One message — never a thread | Shipped |
+| **Docs / wiki / code / drive** | — | — | Deliberately deferred |
+| **Human** | — | A person's own recorded words — today, a [correction](/guides/brain-corrections) | Produced inside Atlas, not a connector |
+| **Warehouse** | — | A fact derived from your own data, by reference | **Reserved** — the vocabulary has it, no producer ships yet |
+
+The last two never appear in the integrations catalog: they are produced inside Atlas rather than fetched from a vendor. `human` is live today — every correction you make is recorded as one. `warehouse` is a reserved slot: when a producer ships, facts carrying it will be the only ones refused *on tier grounds* from [correction by hand](/guides/brain-corrections), because the fix will belong in your data or your semantic layer, where the next sync will not overwrite it. Separately, a fact imported from a region running a newer vocabulary is quarantined from correction until this deployment learns the kind.
+
+## Why this order — it tracks ACL difficulty, not volume
+
+Chat → transcripts → email → docs is not a ranking by usefulness. It is a gradient of how cleanly the source can state its own audience, and it exists so that the part of Atlas that **blocks ingestion when it cannot establish an audience** was proved on easy inputs before it met hard ones.
+
+<Callout type="info" title="The gradient, in one line each">
+  **Chat** — the vendor will tell you the whole roster, and it changes. **Transcripts** — the vendor will tell you the whole roster, and it is frozen the moment the meeting ends. **Email** — nobody can tell you the whole roster, not even the mail system. **Docs / drive** — permission models are per-file, inherited, and shareable by link; deferred past M3 for exactly that reason.
+</Callout>
+
+Read the gradient before choosing what to connect first. If you connect email first, the first thing you meet is the one class whose audience is a lower bound — and you will meet it without having seen what a complete one looks like.
+
+## How each class derives who may see a fact
+
+Every class derives its grant at ingest and freezes it onto the episode. The grant names an **audience**, not a list of people; membership behind that audience is resolved live, which is what makes revocation work without re-ingesting anything.
+
+| Class | Audience derived from | Complete? | What happens if it can't be established |
+|---|---|---|---|
+| Chat | Channel membership — or the whole org, for a public channel | Yes — the vendor states the whole roster | The channel's pass is abandoned; nothing is ingested at a wider grant |
+| Transcripts | The meeting's participant list | Yes, and frozen when the meeting ends | The meeting is blocked and retried next cycle; a partial roster is never used |
+| Email | `From` + `To` + `Cc` | **No — a lower bound.** See below | The message is refused. Unreadable headers are permanent, so the walk advances past it; only a malformed mailbox/message id or a failed membership write blocks and retries |
+
+Three rules hold across all three, and they are the ones worth internalising:
+
+- **There is no "when in doubt, share it" fallback.** A source that cannot establish an audience blocks and logs. It never widens the grant to the org to get the content in.
+- **Only chat has a public arm.** A public Slack channel maps faithfully to an org-wide grant, because everyone in the workspace can already read it at the source. Meetings and mail have no public mode, so the code that derives their grants has no org-wide branch at all — it cannot be reached by mistake.
+- **"Nobody in this audience has an Atlas account" is not a failure.** A meeting of five external guests, or a mail thread with only customers on it, has a perfectly well-established audience that currently contains no one. The episode is stored, gated, and invisible — and becomes visible the moment one of those people gets an account. Discarding it would throw away evidence over a condition that repairs itself.
+
+### Chat — channel membership
+
+A public channel's episodes are granted org-wide, explicitly. A private channel's episodes are granted to an Atlas-owned audience for that channel, whose membership is re-read from Slack on a schedule — so removing someone from the channel removes their access to facts drawn from it, without anything being re-ingested.
+
+If Slack does not state a channel's visibility, Atlas **refuses the channel's pass** rather than assuming anything. Unknown and public are opposite situations, and defaulting to public would publish an invite-only channel to the whole company — so a response Atlas cannot read a visibility flag out of is an error the sync reports, not a channel it ingests optimistically.
+
+One-to-one DMs are not admissible channels for this source. Legacy multi-person DMs (`G…` ids) **are** — they are ingested as private channels with a channel-scoped grant. That is fail-closed and correct, but it is broader than "no DMs" would suggest, so check what you are scoping the source to.
+
+### Transcripts — the participant list
+
+A meeting's audience is the people who were in it. Nobody joins a past meeting, so unlike a chat roster the set is closed the moment the meeting ends.
+
+What stays mutable is the *resolution* of those participants to Atlas users — people join and leave your organisation — which is why a transcript grant still names an audience and is still re-verified on a schedule rather than being frozen into a list of user ids at ingest.
+
+If the participant roster cannot be enumerated **completely** — a paging error, an exhausted retry budget — the meeting is **blocked**: nothing is ingested, nothing is granted, and the next cycle tries again. It is never ingested against a partial list. A partial roster is not merely a smaller grant: membership reconciliation removes everyone outside the set it is handed, so a truncated roster would revoke the people it failed to fetch, and the damage would look exactly like correct fail-closed behaviour from every screen.
+
+### Email — `To` and `Cc`, and why that is a lower bound
+
+<Callout type="warn" title="An email's grant is a lower bound on who saw the content, deliberately">
+  Atlas grants a mail episode to its `From`, `To` and `Cc` addresses. **`Bcc` is ignored — even on the copy that exposes it — and forwarding is invisible.**
+
+  - **BCC is invisible to recipients.** If Alice BCCs Carol, Bob's copy of the message carries no trace of Carol at all. Only Alice's Sent copy does, and which copy Atlas reads first is not determined.
+  - **Forwarding mutates the audience after the fact.** If Bob forwards to Dave, the message Atlas ingested is byte-identical to what it was before. There is nothing to read — this half is not a choice Atlas made, it is a signal that does not exist.
+
+  So `visible_to` on a mail episode does **not** answer "who has seen this". It answers "who can Atlas prove was addressed".
+</Callout>
+
+The safety argument for ignoring BCC is the obvious one — under-granting costs someone an affordance, over-granting is a leak — but it is not the main one. The main reason is **determinism**.
+
+One email to five colleagues is deduped into **one** episode, keyed on its RFC 5322 `Message-ID`, however many of their mailboxes Atlas walks. A consequence of that collapse is that which copy wins is undetermined: it depends on configured mailbox order and on which pass had budget left. Since `Bcc` is populated on the sender's copy and generally not on recipients' copies, a grant that honoured BCC would name a **different set of people depending on which mailbox happened to be walked first** — the same stored row granted differently on different days, for reasons no operator could reconstruct. Ignoring it is what makes every copy resolve to the identical set of people, which is what makes the dedupe safe.
+
+<Callout type="warn" title="The people are copy-independent. The stored grant is not — and that has a cost.">
+  State this precisely, because the obvious shorthand is false. The grant **token** embeds the mailbox it was read from, deliberately: re-verification has to know where to re-read the message's headers, and Microsoft Graph has no tenant-wide message lookup outside eDiscovery. So Alice's copy and Bob's copy mint *different tokens*. Only the set of people they resolve to is identical.
+
+  The consequence is real and worth planning around: **the winning copy's mailbox is baked into the stored row.** If that mailbox later loses `Mail.Read` — an ApplicationAccessPolicy edit, a deleted user, someone leaving — that episode's audience fails re-verification forever and its facts go invisible at the staleness bound, *even though every other recipient's mailbox still holds the message*. Removing a mailbox from the policy is therefore not only a decision about future ingest; it can silently retire facts already drawn from mail that other people can still read.
+</Callout>
+
+**What this costs, plainly:** a BCC'd colleague, and anyone a message was forwarded to, cannot see facts extracted from it through Atlas. They lose an Atlas affordance. They lose no information they ever had — they still have the mail.
+
+**What you must not conclude from it:** an email grant is not a disclosure record. Any use of it as one — an audit of who knew what, a leak investigation — reads a lower bound as a complete set, and is wrong in the direction that exonerates.
+
+### Blocked and skipped are different outcomes
+
+Not every mail message that fails to become an episode fails the same way, and the difference decides whether it ever arrives:
+
+| Outcome | Cause | Will it arrive later? |
+|---|---|---|
+| **Blocked** | An access grant could not be built from the mailbox/message ids, or the membership write failed | **Yes** — retried on the next cycle |
+| **Skipped** | The participant headers were incomplete, so the audience could not be established | No. Graph does not transiently omit a field it returned a 200 for, and the headers of a stored message do not change — retrying would freeze the walk at the message before it |
+| **Skipped** | The message has no usable `Message-ID` | No. A header a message does not have will never appear on a retry, so retrying forever would freeze the walk |
+| **Skipped** | More than **500** participants — a large distribution list or an all-hands thread | No, not at this bound. Raising it re-admits such mail on the next *backfill* rather than repairing what was already passed over |
+| **Skipped** | The body was over the byte cap, HTML rather than the plain text asked for, or composed to nothing at all | No. Same reason — a stored message's body does not change |
+
+The 500-participant bound is not a safety refusal — such a message has a perfectly well-established audience. It exists because reconciling it writes one membership row per resolved recipient per message, and one all-hands thread could otherwise consume a whole cycle.
+
+<Callout type="info" title="Mail is ingested per message, never per thread">
+  Someone added on reply #5 never received reply #1. A thread-grained grant would be the union of every message's recipients, which hands #5's late arrival access to facts drawn from #1. Per-message grain is what keeps that from happening.
+</Callout>
+
+<Callout type="warn" title="Per-message grain gives email a capacity ceiling the other classes do not have">
+  Chat and transcripts mint one audience per **container** — one per *private* channel, one per meeting; a public channel is granted org-wide and mints none — so their audience count tracks how your company is organised and plateaus. Email mints one per **message**, so it grows with every message ingested, without bound. Re-verification capacity does not grow with it:
+
+  ```
+  200 audiences / workspace / cycle  ×  48 cycles/day (30-min default)
+    = 9,600 re-verifications/day  ×  7 days (the 168h staleness bound)
+    ≈ 67,000 audiences kept fresh per workspace
+  ```
+
+  Past roughly that many mail episodes in a workspace, the set cannot be rotated within the staleness bound and **some email facts stop being readable**. The scan rotates on *attempt* rather than on success, so there is no fixed "oldest tail" that starves — instead the whole set ages under one rotation, and whichever audiences are outside the bound at read time have their facts suppressed. The direction is fail-closed — invisible, never over-visible — but it is a real degradation, and nothing surfaces it more loudly than a warning in the server log: it does **not** appear on the source's sync state, because the audience-sync fiber has no warnings channel into `knowledge_sync_state`. This is the reason to raise `ATLAS_BRAIN_EMAIL_BACKFILL_DAYS` deliberately rather than optimistically: a wide backfill spends this budget permanently, not once.
+
+  Note also that the reserve for audiences with **no** resolved members — mail addressed only to customers, the class the "someone joined Atlas later" repair exists for — is a tenth of each page (`MEMBERLESS_RESERVE_FRACTION`), so that pool rotates roughly 10× more slowly than the figure above when member-bearing audiences over-subscribe the rest.
+</Callout>
+
+## What each source needs to connect
+
+All three are installed from the integrations catalog as a **Company Brain** source, and each consumes one of your workspace's knowledge-collection slots. Every scope field is capped at **50 entries** — channels, hosts, or mailboxes — and going over is refused at install time rather than silently truncated.
+
+<Callout type="info" title="A brain source shows up as a collection with zero documents">
+  This looks like a failed install and is not. A brain source reuses the Knowledge Base collection machinery for scheduling and credentials, so it appears on the Knowledge admin page as a collection — but its records are stored as brain **episodes**, not as knowledge documents, so the document count stays at zero however much it ingests. Check the source's sync state, not its document count.
+</Callout>
+
+| Source | Credentials | Scope field | Required vendor permissions |
+|---|---|---|---|
+| **Company Brain (Slack history)** | None — reuses your existing Slack connection | `Channels` — required, comma-separated channel ids. Invite the Atlas bot to each first | The Slack app's existing scopes; membership sync additionally needs `users:read` and `users:read.email` |
+| **Company Brain (Zoom transcripts)** | A Zoom **Server-to-Server OAuth** app: account id, client id, client secret | `Hosts` — optional. **Blank means the whole account** | `cloud_recording:read:admin` and `meeting:read:admin` |
+| **Company Brain (Outlook mail)** | An Entra app registration: directory (tenant) id, application (client) id, client secret | `Mailboxes` — **required**, non-empty | `Mail.Read` and `User.ReadBasic.All` **application** permissions, with admin consent granted |
+
+Both new credential surfaces are account/tenant-scoped app credentials rather than a three-legged user login, so nothing breaks the day the admin who clicked Authorize leaves — and both work on self-hosted deployments, where there is no Atlas-registered vendor app to authorize through. Client secrets are stored encrypted and never shown again.
+
+That is not the same as set-and-forget. **Entra client secrets expire on a schedule you chose when you created them**, and when one does the sync fails loudly rather than degrading quietly. Put the expiry in a calendar; re-installing the source with a fresh secret is the fix. Note also that the Outlook form wants the secret **value**, not the secret ID — Azure shows both and the ID is the one that is easier to copy.
+
+<Callout type="warn" title="Outlook's blank mailbox field means nothing — on purpose">
+  Zoom's `Hosts` field left blank means "the whole account". Outlook's `Mailboxes` field has **no such spelling**, and the asymmetry is deliberate.
+
+  Microsoft's application `Mail.Read` permission grants read access to **every mailbox in the tenant**. There is no narrower app-only mail scope. Microsoft's own mitigation is an Exchange **ApplicationAccessPolicy** bound to a mail-enabled security group, applied by you, outside Atlas — so Atlas cannot verify the app is narrowed and does not assume it is. Naming the mailboxes is the part Atlas *can* enforce; narrowing the app itself is still worth doing, and Atlas cannot see whether you have.
+
+  Note the asymmetry that policy has: an ApplicationAccessPolicy narrows `Mail.Read`, and does **not** narrow `User.ReadBasic.All`. A correctly-narrowed install can still resolve identities for mailboxes it cannot read mail from.
+
+  The install probe checks the directory read for **every** mailbox you listed and the mail read for the **first one only** — so a missing consent or a typo'd mailbox fails at install time. It deliberately does not prove the rest are readable: a policy excluding mailbox #7 surfaces later as a sync error naming that mailbox and the policy. Probing all fifty would double the install's round trips to prove something you can change five minutes afterwards.
+</Callout>
+
+`User.ReadBasic.All` is not a permission escalation, though asking for a second scope reads like one. `Mail.Read` already grants the app the contents of every mailbox in the tenant; the directory read grants names and addresses, which is strictly less. What it buys is that the **access grant stored on each mail episode** names a directory object id rather than someone's personal email address. That grant is admin-readable and travels verbatim in a region-migration bundle, so the object id carries the same routing information with none of the disclosure — and it survives a rename, which an address does not. (No Graph access token is ever stored; only the app credentials, encrypted.)
+
+## Facts lag episodes — by design
+
+An episode is stored the moment it is fetched. The **facts** drawn from it are produced by a separate pass that runs afterwards, on its own schedule. There is no synchronous fast-path, and that is a design decision rather than a queue that needs tuning.
+
+So a just-ingested episode routinely shows up in retrieval like this:
+
+```json
+{
+  "tier": "raw-episode",
+  "trustTier": 3,
+  "extraction": "pending",
+  "extractedAt": null,
+  "source": "zoom",
+  "sourceId": "4kd8sZTiSHagYbwYtLpMRA==:1a2b3c4d-...",
+  "snippet": "…the **Q3 target** moved to the end of October…"
+  // …plus id, sourceActor, body, bodyTruncated, locator, occurredAt, ingestedAt
+}
+```
+
+<Callout type="info" title="`extraction: pending` is not an error">
+  It means exactly one thing: the extraction pass has not reached this episode yet. The episode is stored, access-checked, searchable, and carries its stable source id — so it is a usable answer, labelled honestly as raw evidence rather than a reviewed fact.
+
+  Atlas deliberately **returns** the unextracted episode rather than hiding it until extraction catches up. A blocked read would be worse than a labelled one: the operator would see nothing and conclude the content was never ingested.
+</Callout>
+
+The window is routinely open, and gets wider the more sources you connect:
+
+- **Extraction is off by default** (`ATLAS_BRAIN_EXTRACTION_ENABLED`). On a deployment that has never switched it on, every ingested episode stays raw and `extraction: pending` permanently, because nothing is drawing facts from them. Turning it on later extracts the backlog rather than losing it. (A workspace can still hold authoritative facts with extraction off — a [correction](/guides/brain-corrections) is a separate, human-authored entry point that does not go through extraction at all.)
+- **Ingest itself is not continuous.** Every brain source is walked by one shared sync cycle on one cadence — `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`, **default 24 hours**. Without the [chat webhook fast-path](/guides/brain-chat-webhook), "the next sync" can be most of a day away. That knob is in the [Knowledge Base section](/reference/environment-variables#knowledge-base), not the Company Brain one, because it governs both pillars.
+- **Extraction drains at a fixed rate, and it is the real bound.** The fiber takes **25 episodes every 5 minutes — roughly 300 an hour, process-wide across every workspace**, oldest first with no per-workspace fairness. Both numbers are constants with no knob. Size a first backfill against that figure: 50 Slack channels with a week of history apiece will sit in the window for a long time, and nothing about that is a fault.
+- **Zoom publishes its transcript asynchronously**, minutes after the meeting ends. The recording exists before the transcript does.
+- **Extracted facts then go through review.** Extraction produces *draft candidates*; nothing **extracted** becomes an authoritative fact without a human approving it at the review gate. (A hand-written correction lands authoritative immediately — it already has its human, so queueing it for a second one would only review the reviewer.)
+
+What `extraction: pending` never means is that something was dropped. Episodes are append-only and deduped by source id: an episode that is stored stays stored, and re-fetching it is a no-op rather than a duplicate.
+
+## When two sources say the same thing
+
+Corroboration and contradiction are decided on the claim, not on the class it came from. The same fact asserted in a meeting and in an email **corroborates** — one fact with two provenance edges — rather than landing as two facts. A claim that contradicts an existing one records an advisory `in-tension-with` edge, and both sides are surfaced with their own provenance.
+
+Nothing ranks one class above another. Atlas has no rule that says a transcript beats an email, and adding one would be [arbitration Atlas deliberately refuses to do](/guides/brain-conflicts#why-atlas-refuses-to-arbitrate).
+
+Access is decided per fact, not per cluster: a reader entitled to a meeting's audience but not to a mail message's sees exactly one side, and the other is reported as a withheld counterpart rather than silently omitted.
+
+## Related
+
+- [Company Brain — Chat Webhook Fast-Path](/guides/brain-chat-webhook) — lower ingest latency for Slack, and why the poll stays the floor
+- [Company Brain — Writing a Source Connector](/guides/brain-connector-authoring) — the contract a new vendor implements
+- [Company Brain — Conflicts](/guides/brain-conflicts) — what happens when two sources disagree
+- [Company Brain — Temporal Model](/guides/brain-temporal-model) — how a claim's validity window is recorded
+- [Environment variables → Company Brain](/reference/environment-variables#company-brain) — backfill windows, cadences, and the staleness bound

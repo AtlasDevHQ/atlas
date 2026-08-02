@@ -19,18 +19,27 @@
  * shouldn't.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 import { INSERT_EPISODES_SQL } from "@atlas/api/lib/brain/ingest/episodes";
 import {
   _resetBrainSourceConnectors,
+  findBrainSourceConnectors,
   getBrainSourceConnector,
   listBrainSourceCatalogIds,
   registerBrainSourceConnector,
   type BrainSourceConnector,
 } from "@atlas/api/lib/brain/ingest/types";
-import { SLACK_SOURCE, WAREHOUSE_SOURCE, type EpisodeSource } from "@atlas/api/lib/brain/sources";
+import {
+  CHAT_CLASS,
+  HUMAN_SOURCE,
+  SLACK_SOURCE,
+  WAREHOUSE_CLASS,
+  WAREHOUSE_SOURCE,
+  type EpisodeSource,
+  type EpisodeSourceVendor,
+} from "@atlas/api/lib/brain/sources";
 
 const INGEST_DIR = join(import.meta.dir, "..");
 
@@ -128,6 +137,10 @@ describe("the episode path cannot reach the engine's archive/upsert half", () =>
 });
 
 describe("the brain source registry", () => {
+  // Same reason as the sibling describe below: these mutate the registry module
+  // singleton, and a throwing assertion would otherwise leave it dirty.
+  afterEach(_resetBrainSourceConnectors);
+
   // The fixture's SOURCE KIND is a real vocabulary member
   // (`lib/brain/sources.ts`) while its CATALOG ID stays fixture-shaped — the
   // two are independent, which is the point: one kind can back many catalog
@@ -178,18 +191,157 @@ describe("the brain source registry", () => {
     // The regression this exists for: a future warehouse producer naming its
     // kind after the VENDOR. `snowflake` is a perfectly legal slug, so
     // the pattern check above waves it through — and `isWarehouseDerived`
-    // would then never match it, so tier-1 correction refusal would fail OPEN
-    // with every existing test still green. Registration is where that has to
-    // stop, because nothing downstream can tell a novel class from a typo.
+    // would then never match it. Since #4964 that no longer fails OPEN (the
+    // correction path is quarantined instead, and `correction.test.ts` loops
+    // these very slugs), but the hazard is only converted, not removed: every
+    // fact the connector produced becomes uncorrectable workspace-wide until
+    // the vocabulary admits the kind. Registration is where that has to stop,
+    // because nothing downstream can tell a novel class from a typo.
     _resetBrainSourceConnectors();
     for (const vendor of ["snowflake", "bigquery", "warehouse-prod", "fixture"]) {
       expect(() => registerBrainSourceConnector(connector({ source: asClass(vendor) }))).toThrow(
         /not in the episode-source vocabulary/,
       );
     }
+    // The ACTIONABLE half, not just the recognisable prefix. `not in the
+    // episode-source vocabulary` matched the OLD message too, so on its own it
+    // would let the string rot straight back to the retired "it must BE
+    // warehouse" wording — the exact comment-rot class this seam keeps fixing.
+    // This is what a plugin author actually reads, so pin what it tells them.
+    expect(() => registerBrainSourceConnector(connector({ source: asClass("snowflake") }))).toThrow(
+      /EPISODE_SOURCE_SPECS/,
+    );
+    expect(() => registerBrainSourceConnector(connector({ source: asClass("snowflake") }))).toThrow(
+      /MUST declare class: "warehouse"/,
+    );
     // …and a real member still registers, so the rule is a vocabulary check
     // and not a blanket refusal.
     expect(() => registerBrainSourceConnector(connector({ source: WAREHOUSE_SOURCE }))).not.toThrow();
     _resetBrainSourceConnectors();
+  });
+});
+
+describe("resolving connectors by class + vendor (#4963)", () => {
+  // `afterEach`, not a trailing statement per test: these mutate the registry
+  // module singleton, and a throwing assertion would skip an inline reset and
+  // cascade a `already registered` failure into the next test.
+  afterEach(_resetBrainSourceConnectors);
+
+  /**
+   * FOUR connectors spanning both grains: TWO vendor-grained chat ones and two
+   * class-grained ones with no vendor at all. `catalog:chat-b` deliberately
+   * shares `catalog:chat-a`'s class AND vendor — nothing bounds a class+vendor
+   * pair to one catalog row, and the lookup must not quietly behave as if
+   * something did. That pair is what the `toHaveLength(2)` test below rests on.
+   */
+  function seedRegistry(): void {
+    const make = (catalogId: string, source: EpisodeSource): BrainSourceConnector => ({
+      catalogId,
+      source,
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    registerBrainSourceConnector(make("catalog:chat-a", SLACK_SOURCE));
+    registerBrainSourceConnector(make("catalog:chat-b", SLACK_SOURCE));
+    registerBrainSourceConnector(make("catalog:wh", WAREHOUSE_SOURCE));
+    registerBrainSourceConnector(make("catalog:human", HUMAN_SOURCE));
+  }
+
+  const ids = (found: readonly BrainSourceConnector[]) => found.map((c) => c.catalogId).toSorted();
+
+  it("resolves by class, by vendor, and by both together", () => {
+    seedRegistry();
+    expect(ids(findBrainSourceConnectors({ sourceClass: CHAT_CLASS }))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+    ]);
+    expect(ids(findBrainSourceConnectors({ vendor: "slack" }))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+    ]);
+    expect(ids(findBrainSourceConnectors({ sourceClass: CHAT_CLASS, vendor: "slack" }))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+    ]);
+    expect(ids(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS }))).toEqual([
+      "catalog:wh",
+    ]);
+  });
+
+  it("returns EVERY connector sharing a class+vendor, not the first", () => {
+    // The registry is keyed by catalog id, so two catalog rows can legitimately
+    // serve one vendor (Slack history and a later Slack-canvases source). A
+    // lookup that returned a single connector would silently drop one of them,
+    // and the M3 webhook fast-path — the caller this exists for — would deliver
+    // events to whichever registered first.
+    seedRegistry();
+    expect(findBrainSourceConnectors({ sourceClass: CHAT_CLASS, vendor: "slack" })).toHaveLength(2);
+  });
+
+  it("an empty query does not constrain, and is the same as no argument", () => {
+    // The vendorless sources are reachable via the CLASS axis rather than a
+    // `vendor: null` state — see `BrainSourceConnectorQuery.vendor` for why
+    // that third state was refused (this repo has `exactOptionalPropertyTypes`
+    // off, so a caller's `{ vendor: maybeUndefined }` would silently widen a
+    // tri-state filter back to "match everything").
+    seedRegistry();
+    expect(ids(findBrainSourceConnectors({}))).toEqual([
+      "catalog:chat-a",
+      "catalog:chat-b",
+      "catalog:human",
+      "catalog:wh",
+    ]);
+    expect(ids(findBrainSourceConnectors())).toEqual(ids(findBrainSourceConnectors({})));
+    // And an EXPLICIT undefined behaves as absence, not as a filter — the
+    // shape a caller plucking an optional field actually produces.
+    expect(ids(findBrainSourceConnectors({ vendor: undefined, sourceClass: undefined }))).toEqual(
+      ids(findBrainSourceConnectors()),
+    );
+    // The vendorless set, asked the way the type permits.
+    expect(ids(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS }))).toEqual(["catalog:wh"]);
+  });
+
+  it("the vendor axis is typed to REAL vendors — a typo cannot compile", () => {
+    // Reverting `vendor?: EpisodeSourceVendor` to `vendor?: string` leaves every
+    // runtime assertion in this file green and cannot fail typecheck (a wider
+    // type is strictly more permissive), so `@ts-expect-error` is the only
+    // instrument that pins it. This also restores coverage the narrowing
+    // DELETED: `{ vendor: "teams" }` used to be a live runtime case here and
+    // stopped compiling, so without this the trade was a net loss.
+    // @ts-expect-error "teams" is not a vendor any member names
+    void findBrainSourceConnectors({ vendor: "teams" });
+    // @ts-expect-error a typo must not read as "that connector is not installed"
+    void findBrainSourceConnectors({ vendor: "slakc" });
+    // @ts-expect-error the vendorless set is asked for on the CLASS axis
+    void findBrainSourceConnectors({ vendor: null });
+    // …and the runtime behaviour for an unmatched-but-legal query still holds.
+    seedRegistry();
+    expect(findBrainSourceConnectors({ vendor: "teams" as EpisodeSourceVendor })).toEqual([]);
+  });
+
+  it("AND-s the two axes — a mismatched pair resolves to nothing", () => {
+    // Not an OR and not a fallback: asking for the slack vendor within the
+    // warehouse class is asking for something that does not exist, and an
+    // empty result is the only honest answer. A lookup that fell back to
+    // either axis alone would route warehouse work to the Slack connector.
+    seedRegistry();
+    expect(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS, vendor: "slack" })).toEqual([]);
+    expect(findBrainSourceConnectors({ sourceClass: "human", vendor: "slack" })).toEqual([]);
+  });
+
+  it("reads both axes off the connector's declared source, not off separate fields", () => {
+    // The structural claim behind the contract: a connector declares ONE
+    // identity (`source`) and the axes are derived from it, so they cannot
+    // disagree with the value that lands in `brain_episodes.source`. Registering
+    // a warehouse connector and finding it under the chat class would mean the
+    // stored column and this lookup answered different questions.
+    registerBrainSourceConnector({
+      catalogId: "catalog:only",
+      source: WAREHOUSE_SOURCE,
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    expect(findBrainSourceConnectors({ sourceClass: CHAT_CLASS })).toEqual([]);
+    expect(ids(findBrainSourceConnectors({ sourceClass: WAREHOUSE_CLASS }))).toEqual([
+      "catalog:only",
+    ]);
   });
 });

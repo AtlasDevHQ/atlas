@@ -1042,15 +1042,35 @@ export async function importBundle(
         // region's registry already admitted, not a new class entering the
         // system (`lib/brain/sources.ts`). But the value is read downstream as
         // a discriminator — `isWarehouseDerived` refuses tier-1 correction on
-        // `WAREHOUSE_SOURCE` alone — so IF the unrecognised class is
-        // warehouse-shaped, every fact derived from this episode silently keeps
-        // a correction path ADR-0036 forbids. If it is a newer chat vendor,
-        // keeping that path is correct. Nothing here can tell which, which is
-        // exactly why this logs rather than refuses: accepting the value is the
-        // decision, accepting it INVISIBLY is not.
+        // the warehouse CLASS. An unrecognised value is refused by
+        // `isEpisodeSource` first, so the predicate answers `false` without
+        // ever resolving a class (asking `episodeSourceClass` directly would
+        // THROW; `episodeSourceClassOf` is the total reader for stored rows).
+        // So IF the unrecognised kind is warehouse-shaped, every fact derived
+        // from this episode would keep a correction path ADR-0036 forbids; if
+        // it is a newer chat vendor, keeping that path is correct. Nothing HERE
+        // can tell which — which is why this still logs rather than refuses.
+        //
+        // #4964 closed that fail-open at the other end rather than this one.
+        // Refusing the bundle was the alternative and it is worse: 0180 leaves
+        // `source` plain `text` with no CHECK, so this route would be stricter
+        // than the database is at rest — the rule `lib/brain/acl.ts`'s header
+        // states for GRANTS, holding here for the same reason, and with all-or-nothing bundle validation one episode
+        // from a newer region would strand the entire workspace, at cutover.
+        // Instead `correction.ts`'s `unrecognizedSourceKind` refuses to CORRECT
+        // a fact whose kind cannot be classified. The episode imports, reads and
+        // searches normally; only the path that would act on an undecided tier
+        // is shut, and it reopens when this region learns the kind.
+        //
+        // Note the two columns are not the same one: that quarantine reads each
+        // FACT's `provenance.source`, restored verbatim in the fact loop below
+        // and never cross-checked against this episode row. They agree because
+        // `reconcile.ts` copies `episode.source` into the payload — a producer
+        // convention, not an invariant this route enforces — so a hand-built
+        // bundle can quarantine facts this log never named, and vice versa.
         log.warn(
           { orgId, episodeId: episode.id, source: episode.source, vocabulary: EPISODE_SOURCES },
-          "Imported a brain episode whose source class is outside the vocabulary — restored verbatim by design, but tier-1 correction refusal will not recognise facts derived from it",
+          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design; any fact whose OWN provenance.source carries this kind is correction-quarantined until this deployment's vocabulary includes it. This route does not verify that the bundle's facts carry the same value",
         );
       }
       await client.query(

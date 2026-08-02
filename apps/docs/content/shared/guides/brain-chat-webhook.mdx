@@ -1,0 +1,136 @@
+---
+title: Company Brain — Chat Webhook Fast-Path
+description: How to enable the Slack webhook fast-path so messages become brain episodes seconds after they are said, why the scheduled poll remains the correctness floor, and the one class of message where that floor does not apply.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+By default, a Slack message becomes a brain episode at the **next scheduled sync** — and that cycle runs on `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`, whose **default is 24 hours**. So "later" can mean most of a day. The webhook fast-path makes it seconds instead, by writing the episode straight off the Slack event you are already receiving.
+
+That gap is the whole decision. If you leave the sync at its default and the fast-path off, a message said this morning is not retrievable until tomorrow; if a workspace expects the brain to know about a conversation that just happened, one of those two has to change.
+
+It is a **second writer into the same store**, not a second pipeline. It stores the same records, with the same access grants, under the same identifiers. What it changes is latency — and only latency.
+
+<Callout type="info" title="Latency to a *fact* is longer still">
+  This page is about how fast a message becomes an **episode**. Becoming a reviewed **fact** is a second, slower stage: extraction drains a fixed 25 episodes every 5 minutes across the whole deployment, and what it produces is a draft for review. See [extraction lag](/guides/brain-sources#facts-lag-episodes--by-design). The fast-path shortens the first leg only.
+</Callout>
+
+---
+
+## Poll is the correctness floor
+
+This is the property the whole design rests on, so it is worth stating before the setup steps.
+
+The scheduled sync stores every top-level message either way. The fast-path stores some of them sooner. So a webhook outage, a dropped event, a Slack delivery failure, or the knob simply being off **degrades freshness, not completeness** — the next sync picks the message up and the episode lands with an identical id.
+
+<Callout type="info" title="Off is a supported steady state, not a degraded mode">
+  The fast-path defaults to **off**. With it off, chat ingest is exactly what it was before this existed. Turning it off during an incident is a real lever — the knob is read per event, so a change applies immediately rather than at the next restart — and it costs you nothing but latency.
+</Callout>
+
+Two writers into one store is only safe because they agree, byte for byte, on a message's identifier. They do, structurally: the fast-path does not compute its own id. It builds the same record shape the poll's page walk produces and hands it to the same function, so both writers reach one identifier-minting call site. When both writers see the same message, the second one is a **deduped no-op**, not a duplicate.
+
+That matters more than it sounds. Episodes are append-only — there is no later pass that merges duplicates — and a duplicated message would be treated by fact reconciliation as *independent corroboration*, so a claim would read as better-evidenced than it is purely because it was stored twice.
+
+### The one exception: thread replies
+
+The loose version of the claim — "anything the fast-path drops, the poll stores" — is false for exactly one class of message, and it is worth knowing which.
+
+The scheduled sync reads a channel's history, which returns **top-level messages and `thread_broadcast` copies** — never ordinary thread replies. So:
+
+| Message | Stored by poll | Stored by fast-path | If the fast-path drops it |
+|---|---|---|---|
+| Top-level message | Yes | Yes (sooner) | Stored at the next sync |
+| Thread reply sent with *also send to channel* | Yes — it is a `thread_broadcast` copy | Yes | Stored at the next sync |
+| Ordinary thread reply | **No** | Yes | **Not stored by anything** |
+
+Ordinary thread replies are therefore **pure gain** from the fast-path — the poll never stored them at all — but a reply the fast-path drops is dropped permanently rather than deferred. The cause is the per-thread processing lock in chat event dispatch: a reply arriving while its thread is already being processed is discarded before it reaches this writer. The lock key is thread-scoped, so a top-level message's key is unique to itself and can never contend — the lock can only ever drop replies.
+
+Atlas does not paper over this. A dropped reply is logged at **warn**; a dropped top-level message is logged at debug with the poll named as its backstop. Every not-stored outcome records which of the two it was, so a log line can never recite "the scheduled sync still covers it" about a message the sync will never see.
+
+The backstop test carries one exception, for the one message that is both a reply and top-level. A `thread_broadcast` copy has a parent — so the "does it carry a `thread_ts`?" test alone would call it unbacked — but `conversations.history` *does* return it, so the poll really is its backstop. It is reported as covered rather than lost. Every other reply is reported as lost, which is the right direction for this check to be wrong in.
+
+## Setup
+
+### 1. Slack events must already be reaching Atlas
+
+The fast-path observes the events your Slack integration already receives. It adds **no new endpoint and no new Slack app**.
+
+Working Slack chat is not quite enough on its own, though: an app subscribed only to mentions delivers no plain `message` events, and those are what the fast-path reads. Confirm your Slack app subscribes to **`message.channels`** (public channels) and **`message.groups`** (private channels) — an existing install that predates the fast-path often does not, and the only symptom is a silent `not_a_message` at debug level.
+
+If you are setting Slack up from scratch, the relevant part is the bot event subscriptions — `message.channels` and `message.groups` — pointed at the standard chat webhook URL. <AudienceLink saas="/guides/slack" selfHosted="/plugins/interactions/slack">The Slack integration guide</AudienceLink> covers the full app configuration.
+
+### 2. Install and scope the Slack history brain source
+
+The fast-path writes episodes **only for channels the Company Brain (Slack history) source is scoped to**. It reads that install's channel list and skips anything outside it. A workspace that has not installed the source stores nothing through this path, regardless of the knob.
+
+See [Company Brain — Sources](/guides/brain-sources#what-each-source-needs-to-connect) for the install fields.
+
+### 3. Turn the knob on
+
+<Callout type="warn" title="Roll this out on staging first">
+  Enabling the fast-path changes **which writer wins the race** for a message, and therefore which writer's access-grant derivation is frozen onto the stored row. Both derive the same grant from the same rules — but this is a Slack-surface change that alters ingest ordering, and it belongs on staging before production, like every other Slack-surface change.
+</Callout>
+
+<WhenSelfHosted>
+Set the platform setting in **Admin → Settings → Knowledge Base**, or set the environment variable:
+
+```bash
+ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED=true
+```
+
+The setting is **platform-scoped** — there is no per-workspace half of it, because the event observer is registered once per process. Which workspaces it writes for is already decided by which of them installed the Slack history source and which channels they scoped it to.
+
+It is read **per event**, so flipping it in **Admin → Settings** takes effect immediately — no restart. That is what makes it an incident lever. The environment variable is only the fallback the Admin setting overrides, and editing it *does* require a restart, so reach for the Admin setting when you need the switch to land now.
+</WhenSelfHosted>
+
+<WhenSaaS>
+On Atlas Cloud this is a platform-level control managed by Atlas, not a per-workspace setting. Which channels are ingested is still entirely yours: it follows the Slack history source's scope.
+</WhenSaaS>
+
+## What the fast-path does and does not store
+
+It applies the **same** rules the scheduled sync does — the same skip rules, the same access-grant derivation, the same block-vs-flag behaviour. There is no privileged shortcut, and that is on purpose: a fast-path that stored what the poll skips would make the store's contents depend on which writer got there first.
+
+| Situation | Outcome |
+|---|---|
+| A message in a scoped channel | Stored as an episode within seconds |
+| The same message when the poll also sees it | Deduped — one episode, not two |
+| An edited message | No second episode — both writers key on the message's *original* identifier, and the stored episode keeps what was said when Atlas first saw it. Evidence is immutable; an edit is not new evidence |
+| A thread reply in a scoped channel | Stored — this is coverage the poll does not have |
+| A message in a channel not in the source's scope | Skipped |
+| A bot or app message, or membership noise | Skipped — the same rules the poll applies |
+| A one-to-one DM | Never stored; DMs are not admissible channels for this source |
+| A channel whose visibility Slack does not state | **Blocked** — never stored at a wider grant |
+
+Visibility is the one thing this path learns differently from the poll. The sync asks Slack about the channel; the fast-path reads the event's own channel-type field instead, because a Slack round-trip inside a webhook handler is both the latency the fast-path exists to avoid and a rate limit waiting to happen. An unrecognised channel type **blocks** rather than guessing — guessing "public" would publish an invite-only channel to the whole company. So does a *recognised* one that contradicts the channel id: a legacy `G…` private channel arriving as `channel_type: "channel"` is two incompatible claims, and the arm it would otherwise take mints the org-wide grant. The check is deliberately one-directional — a modern `C…` private channel is **not** blocked, because that test would refuse correct private channels, which Slack has issued `C…` ids for since 2021.
+
+## Observability
+
+Every event that produces no episode carries a **reason**, and the reasons fall into three groups. What differs between the groups is not just meaning — it is what gets logged, and at what level.
+
+- **Not a fault** — the message was noise, the event was not a message-family event, the channel is not in the source's scope, or the knob is off. This is the bulk of steady-state traffic.
+- **Configuration** — no install matched, the workspace could not be identified, the install config could not be parsed, or the channel's visibility could not be resolved. These are worth acting on.
+- **Fault** — the writer threw. Spelled separately from every refusal so that an outage can never hide inside routine traffic. It is **not** narrowly the episode write: the guard wraps the whole path, so a failure resolving the Slack installation or reaching the internal database lands here too. The log line says so, and warns that if the internal DB is the cause then the scheduled sync is failing as well — so nothing is backstopping that message either.
+
+<Callout type="warn" title="If the fast-path is enabled and storing nothing, raise the log level first">
+  Only the reasons that need a human reach `warn` or `error` on their own: an unparseable install config, an unresolvable channel visibility, a channel whose grant could not be derived, and the fault arm.
+
+  Everything else is logged at **`debug`** — and [`ATLAS_LOG_LEVEL`](/reference/environment-variables#logging--observability) defaults to `info`. So the single most likely cause of "enabled but storing nothing" — `channel_not_configured`, meaning the source is scoped to different channel ids than you think — emits nothing at all by default, as do `no_install` and `unknown_workspace`.
+
+  Set `ATLAS_LOG_LEVEL=debug` before concluding the path is broken.
+</Callout>
+
+One reason is deliberately never logged per message: with the knob off, `disabled` would be the noisiest line in the process and would only report your own configuration back to you. That silence is intentional and is the one exception to everything above.
+
+One more thing to know when reading these logs: the observer runs under a 2-second deadline imposed by the chat bridge, and a breach is logged by the *bridge*, not by the brain. The deadline does **not** cancel the write — the bridge stops waiting, but the observer keeps running, so the episode may still land and the brain still logs its own reason, just later than the bridge's line. So a timeout means "the bridge moved on", not "the message was dropped". If the brain's reason logs look empty while the fast-path is clearly not keeping up, widen the search to the chat plugin's logs.
+
+The reasons named here are the ones an operator acts on, not the complete set — the code carries a few more, and a record the ingest screens refused (a blank body, an unusable grant, an invalid event time) is reported under its own `ingest_refused` rather than as a skip.
+
+The reason this section exists at all: a fast-path that silently stores nothing looks exactly like one that is working, because the poll keeps covering for it. The one thing you cannot conclude from quiet logs is that it is fine.
+
+## Related
+
+- [Company Brain — Sources](/guides/brain-sources) — what each source class ingests and how its audience is derived
+- [Company Brain — Writing a Source Connector](/guides/brain-connector-authoring) — the stable-source-id obligation this page depends on
+- <AudienceLink saas="/guides/slack" selfHosted="/plugins/interactions/slack">Slack integration</AudienceLink> — the app configuration the events arrive through
+- [Environment variables → Company Brain](/reference/environment-variables#company-brain)

@@ -59,6 +59,7 @@ export const BUNDLE_TABLE_DECISIONS = {
   // ── Stays: caches, derived data, history, region-bound state ───────────────
   // (Deleted from the source region by the #4458 cleanup after the grace period.)
   chat_cache: { decision: "stays", reason: "Response cache PLUS the Slack installation store (AES-GCM-encrypted bot tokens under slack:installation:* keys — region-bound ciphertext; Slack is re-installed in the target per the integrations decision). No org_id column: cache keys have no org dimension, Slack rows scope via value->>'orgId' — #4458 cleanup must scope by that expression, not a column." },
+  brain_audience_reverify_attempt: { decision: "stays", reason: "Fair-share scheduling state for the audience re-verifiers (#4971) — 'this audience has had its turn', read by nothing but the scan's ORDER BY. Deliberately NOT the same call as fact_audience_member, which is exported because losing it denies everyone: losing THIS costs the target one uniformly-NULL first cycle, after which token order breaks the tie and rotation re-establishes itself. It carries no membership, no grant and no content, so 'stays' destroys nothing." },
   dashboard_draft_card_cache: { decision: "stays", reason: "Draft-card result cache (ADR-0034) — regenerates on first render." },
   scheduled_task_runs: { decision: "stays", reason: "Run history — operational record of source-region executions." },
   agent_runs: { decision: "stays", reason: "Per-turn checkpoints hold region-local resume leases; un-resumable cross-region — an interrupted turn is re-asked (#4460 decision)." },

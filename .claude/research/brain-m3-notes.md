@@ -166,6 +166,34 @@ Adjacent code rot fixed (comment/description strings only): three `settings.ts` 
 
 ---
 
+## #4962 — the tension module's own test file (M2 debt, last item in M3)
+
+✅ **shipped 2026-08-02** ([PR #4981](https://github.com/AtlasDevHQ/atlas/pull/4981), `b87de758d`)
+
+`tensions.test.ts` — 26 tests, 72 assertions, **38 mutations, zero survivors**. Unit-level over an injected `db.query` rather than a `-pg` suite: every invariant is a decision the module makes in TypeScript, and the database half is already pinned twice, by `acl-visibility-pg.test.ts` (the predicate against real `&&`) and by `search-pg.test.ts` / `multi-source-pg.test.ts` (the integrated walk).
+
+**What the two caller suites structurally could not reach**, each of them having exactly one surface to ask with:
+
+- **The walk is surface-invariant.** One fixture through `review` and through `search` must yield byte-identical clusters, SQL and params — the claim #4913 was made for, and invisible from either caller. Only the log prefix and the error's `surface` may differ. Three mutations pin it: a surface-branched early return, a surface-dropped SELECT column, a surface-dependent cap probe.
+- **The deny-all THROW.** Both callers already threw on the same decision against the same table, so this module's throw is reachable only from here — and it is the guard against FABRICATED ACL WITHHOLDING: delete it and every rival comes back unresolved, i.e. reported as withheld, which no reviewer and no agent can tell from the real thing.
+- **The cap is the CALLER's.** Each caller suite has exactly one cap constant, so a module-level default overriding one of them goes unnoticed there.
+
+**The negative criterion, stated at the layer this module owns.** Nothing deletes an `in-tension-with` edge and neither retirement verb writes `status`, so a settled rival arrives looking *exactly* like a live one. Four rivals identical in every column but their stamps — live · superseded · retracted · scheduled-to-close (FUTURE `valid_to`, which is still LIVE) — asserted in both directions: strip the two stamps and settled is byte-identical to live; keep them and it is not. The id-bearing form of that second assertion would have passed on the id alone.
+
+⭐ **The fixture is an EVALUATOR, not a script.** `store()` evaluates the emitted counterpart statement — overlap against the tokens the module ACTUALLY BOUND, containment against the workspace it bound, and **projection down to the columns its SELECT names**. That last part is what gives "both temporal stamps are SELECTED" a faithful mutation at all: with a canned fixture, deleting `f.valid_to` from `COUNTERPART_COLUMNS` leaves every assertion in the file green. Reader contexts resolve through `resolvePrincipalContext` for the same reason — a hand-written `BrainPrincipalContext` makes each ACL assertion a statement about the literal.
+
+**Both #4968 ACL traps carried forward.** Freshness is a pinned premise through `AUDIENCE_MEMBERSHIP_SQL`, and the suppression is asserted in BOTH directions at this surface: same rival, same grant, same reader — visible when the membership is fresh, **WITHHELD (not dropped)** once it ages past the bound. Three `acl.ts` mutations prove the negatives depend on the real suppression rather than on the fixture's idea of which audiences survived.
+
+⭐ **Method: the shadow-lift loop is worth scripting.** Apply mutation → run → NOOP-out the failing assertion → re-run until green, so each mutation yields EVERY assertion it reaches rather than only the first. It moved verified coverage from 53/72 to 63/72 and produced four extra mutations aimed at assertions the first pass never reached. Without it the battery would have read "37/37 killed" while a fifth of the file was unverified.
+
+⚠️ **`git checkout --` restores the INDEX, and that bit.** The lift loop reverted the test file via git while a staged copy predated an in-flight edit — silently undoing real work and running a whole battery against the wrong file. Caught only because line numbers didn't move after an edit that added ten lines. The loop now snapshots the file verbatim. This is the sharper edge of the known "`git checkout --` cannot revert an UNTRACKED file" trap: tracking the file is necessary but **not sufficient** — the index has to be current too. Prefer a content snapshot over git for any revert inside a mutation loop.
+
+**Three assertions have no faithful mutation and are documented in-source** rather than dropped: `edges.length === 0`'s early return is SHADOWED by the `pairs.length === 0` one (so the test claims the observable property — an empty edge set never reaches the ACL'd statement — which removing *both* does turn red); the empty-result SHAPE has no degradation path, only a value to corrupt; and two assertions are owned elsewhere (an absence pin, and `aclVisibilityClause`'s own tenant containment, which `acl.test.ts` and `acl-visibility-pg.test.ts` pin).
+
+⚠️ **Not reviewed by the review panel** — that gate was not run for this PR.
+
+---
+
 ## Open
 
-- [#4962](https://github.com/AtlasDevHQ/atlas/issues/4962) — M2's tension-module test debt (`lib/brain/tensions.ts` has no dedicated test file).
+Nothing — M3 is 9/9 and ready for closeout.

@@ -190,7 +190,15 @@ describe("the BLOCK side — an unestablished audience must ingest NOTHING", () 
     expect(changes.episodes).toEqual([]);
     // Never silently: the pass reports incomplete coverage and names the meeting.
     expect(changes.coverageIncomplete).toBe(true);
-    expect((changes.warnings ?? []).join(" ")).toMatch(new RegExp(`Meeting ${UUID.replace(/[+/=]/g, "\\$&")} was NOT ingested`));
+    // A plain substring, not a RegExp. The uuid is base64 (`+`, `/`, `=` are
+    // all regex-significant), so building a pattern from it needs escaping —
+    // and the hand-rolled `replace(/[+/=]/g, …)` that did so missed backslash,
+    // which CodeQL flags as `js/incomplete-sanitization` (HIGH). Not
+    // exploitable here (base64 has no backslash, and this is a fixed test
+    // constant), but the escape only ever existed to feed a regex that buys
+    // nothing over an exact substring match. Removing the regex removes the
+    // finding and the assertion gets stricter.
+    expect((changes.warnings ?? []).join(" ")).toContain(`Meeting ${UUID} was NOT ingested`);
     // The high-water mark must NOT advance over a blocked meeting.
     expect(changes.highWaterMark).toBeNull();
     // …and neither must the CURSOR, which is what actually matters: this

@@ -362,7 +362,8 @@ export const EPISODE_SOURCES = Object.freeze(
 );
 
 /**
- * The vendors named by vendor-grained members — `"slack"` and `"zoom"` today.
+ * The vendors named by vendor-grained members — `"slack"`, `"zoom"` and
+ * `"outlook"` today.
  *
  * Derived rather than declared so a query cannot ask for a vendor that no
  * member has: `findBrainSourceConnectors({ vendor: "slakc" })` returning an

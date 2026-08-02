@@ -680,11 +680,16 @@ export interface EmailMessageParticipation {
  * which no downstream review gate can catch because the reviewer is shown the
  * grant Atlas derived rather than the one the mail system had.
  *
- * - **Derivable → `[audience:email-message:<source>:<mailboxId>:<messageId>]`.**
- *   Membership is written at ingest from the same header set this derivation was
- *   licensed by, and re-verified periodically — `outlook/audience.ts` carries
- *   why a header set that CANNOT change still needs re-verification, and what
- *   the per-message audience grain costs at scale.
+ * - **Derivable →
+ *   `[audience:email-message:<source>:<mailboxId>:<participantsDigest>:<messageId>]`.**
+ *   The digest segment is NOT optional and is not decoration — it is the
+ *   anti-forgery half argued at length in {@link EMAIL_MESSAGE_AUDIENCE_NAMESPACE}
+ *   above, and an example that omits it reads as licence to drop it. Membership
+ *   is written at ingest from the same header set this derivation was licensed
+ *   by — the same set the digest is taken over — and re-verified periodically;
+ *   `outlook/audience.ts` carries why a header set that CANNOT change still
+ *   needs re-verification, and what the per-message audience grain costs at
+ *   scale.
  *
  * - **Underivable → `null`, and the caller BLOCKS and logs.** No wider-grant
  *   fallback exists. Three things make it underivable, and all three are

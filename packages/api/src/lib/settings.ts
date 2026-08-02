@@ -1850,7 +1850,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Extraction",
     description:
-      "Draw fact candidates from stored chat episodes with the workspace's configured model and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart.",
+      "Draw fact candidates from stored episodes — chat, meeting transcripts and mail alike — with the workspace's configured model, and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart.",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_BRAIN_EXTRACTION_ENABLED",
@@ -1894,7 +1894,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Sync Interval",
     description:
-      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the shortest delay between someone leaving a channel and losing access to facts drawn from it — a channel whose roster cannot be read keeps its membership until it can, up to the staleness limit below. Applies at restart; non-positive or unparseable values fall back to the default.",
+      "How often brain audience membership — private chat channels, meeting participants, mail recipients — is re-read from the source, in minutes (default 30). This is also the shortest delay between someone losing access at the source and losing access to facts drawn from it; an audience whose roster cannot be read keeps its membership until it can, up to the staleness limit below. Applies at restart; non-positive or unparseable values fall back to the default.",
     type: "number",
     default: "30",
     envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
@@ -1919,7 +1919,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Staleness Limit",
     description:
-      "How long a private chat channel's membership stays valid after Atlas last verified it against the source, in hours (default 168 = 7 days). Past this, facts drawn from that channel stop being readable through its membership until a sync succeeds again — so a channel Atlas has lost access to cannot keep granting access indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to 0 to disable the limit and rely on the sync-cycle alerts alone.",
+      "How long a brain audience's membership — a private chat channel, a meeting's participants, a mail message's recipients — stays valid after Atlas last verified it against the source, in hours (default 168 = 7 days). Past this, facts drawn from that source stop being readable through its membership until a sync succeeds again, so a source Atlas has lost access to cannot keep granting access indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to 0 to disable the limit and rely on the sync-cycle alerts alone.",
     type: "number",
     default: "168",
     envVar: "ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",

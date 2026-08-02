@@ -129,7 +129,43 @@ Adjacent code rot fixed (comment/description strings only): three `settings.ts` 
 
 ---
 
+## #4968 — e2e multi-source proof (the arc proof that closes M3)
+
+✅ **shipped 2026-08-02** ([PR #4980](https://github.com/AtlasDevHQ/atlas/pull/4980), `ce2a3a3d9`)
+
+`multi-source-pg.test.ts`, the third arc proof after #4775 (one source) and #4917 (one timeline). One `it`, three source classes alive in one workspace, nine steps, **119 assertions, 31 mutations**. CI shard 1/4 confirms it EXECUTES there (6.3s) rather than skipping — the api-tests job sets `TEST_DATABASE_URL`, the local `/ci` wrapper does not.
+
+**What it proves that the per-connector suites structurally cannot**, each of them having exactly one class to look at:
+
+- **Cross-class corroboration.** `CORROBORATION_LOOKUP_SQL` is source-blind by design, so a claim said in a Zoom meeting and repeated in an Outlook mail strengthens ONE row with two provenance edges. Asserted as a row TOTAL rather than only "one Q3 row" — a lookup that narrowed by source mints a duplicate, one that widened swallows an unrelated claim, and only a total catches both.
+- **#4823's grant widening AT A CLASS BOUNDARY**, with its read-side companion: the claim was granted to a meeting, corroborated by a mail, published with the UNION — so the mail reader gains the claim and, matching none of `pre_widening_visible_to`, is NOT told it was said in a meeting he was not in. Widening and attribution-narrowing live in different files and this is the only place they meet.
+- **Cross-class contradiction.** The counterpart carries its OWN class's provenance on both surfaces, with the classes swapping sides between them — a projection reusing the owner's provenance is green everywhere else. The withheld arm is the same claim from the other side: the meeting reader is told a contradiction exists in a class she cannot read, and nothing about it.
+- **Per-class ACL isolation** across four readers whose grant sets differ by exactly one token each (`org` / `+meeting` / `+email` / all), at BOTH tiers — facts and episodes are gated by separate clauses over separate tables, and a separate mutation pins each.
+- **Extraction lag** (§T7): a labelled `pending` episode, ACL-gated like any other, in a response that still serves every fact.
+
+**The three arc changes since the issue was written, all reflected:**
+
+- The **email lower bound** is an equality at the deriver AND at `fact_audience_member`, with the narratively-BCC'd reader named. Worth recording: the bound is STRUCTURAL rather than posed — `OutlookMessage` has no bcc field and `$select` never asks for one, so the fixture *could not* put a BCC'd recipient on a message.
+- **Staleness suppression** (#4971 / 0186) would fake every ACL negative in the file, because "suppressed as stale" and "correctly denied" are indistinguishable from the reader's side. Freshness is a pinned premise through `acl.ts`'s own `AUDIENCE_MEMBERSHIP_SQL`; forcing the flag false is one of the 31 mutations; and `brain_audience_reverify_attempt` is asserted EMPTY so freshness is provably the ingest-time reconcile's, not a re-verification's — a future change that wires the scan in has to confront that rather than inherit a green file.
+- Nothing asserts #4967's absolute backstop claim (#4969's panel narrowed it), so chat appears only as the poll.
+
+**Two consequences the test PRODUCED rather than confirmed:**
+
+- ⭐ **Supersession is grant-blind ACROSS A CLASS BOUNDARY.** The collision join never reads `visible_to`, so a mail nobody in the meeting can read retires the meeting's belief for them: the meeting reader's answer does not become the mail's, it simply ENDS. #4917 pinned the same-class version; no ADR states the cross-class one.
+- ⭐ **A principal context is a SNAPSHOT, and email is where that bites.** Chat and transcript audiences are per-container and per-meeting, so a reader's set grows slowly; email's grain is per MESSAGE, so every mail a reader receives invalidates their held context. Two readers had to be re-resolved mid-loop, and the premise is asserted in BOTH directions — one ACL negative would otherwise hold by staleness rather than by exclusion.
+
+**The two #4917 vacuity traps, handled structurally.** The file defines no `AS_OF` constant at all: every fact here has `valid_from NULL`, which #4916 admits at any instant, so the only point reads bracket the gate's own stamp at ±1ms (microseconds put equality out of `parseBrainAsOf`'s reach). Removing the `valid_to` upper-bound predicate is the mutation that arm exists for, and the only one it catches.
+
+**Mutation discipline.** Every mutation REMOVES behaviour; none adds a no-op — the shape that makes a survivor look like a test gap. **One assertion has no faithful mutation and is documented in-source rather than dropped** ("the same call still served the facts" pins the ABSENCE of a degradation path, so failing it would mean ADDING one), as are two COMPOSITION guards whose predicates another assertion already pins (the `asOf` reads' isolation, the queue's counterpart class).
+
+**Two fixture premises the run itself corrected**, both worth carrying: the `duplicate` counts are a statement about the cursor-less premise (no `workspace_plugins` row ⇒ `knowledge_sync_state` stays empty ⇒ every pass re-walks its backfill), now asserted per sync on BOTH tables — the first draft asserted only the install table and got the counts wrong; and audience membership is sorted in JS with an explicit code-unit comparator, so the equalities are not a statement about the test database's collation (and `require-array-sort-compare` is a type-aware lint ERROR, not a warning).
+
+⚠️ **Not reviewed by the review panel** — that gate was not run for this PR.
+
+**Also carried**: a one-line `bun.lock` catch-up. #4965 bumped `packages/types` to 0.8.0 without it and the lockfile still said 0.7.0; local `bun install` reconciled it. CI never caught this because the api install deliberately runs without `--frozen-lockfile`.
+
+---
+
 ## Open
 
-- [#4968](https://github.com/AtlasDevHQ/atlas/issues/4968) — e2e multi-source proof (cross-class corroboration, contradiction, ACL isolation). Unblocked 2026-08-02; all three declared deps shipped.
 - [#4962](https://github.com/AtlasDevHQ/atlas/issues/4962) — M2's tension-module test debt (`lib/brain/tensions.ts` has no dedicated test file).

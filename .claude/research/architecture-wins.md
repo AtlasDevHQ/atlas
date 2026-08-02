@@ -2801,3 +2801,24 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - 634 lines of new tests across `workspace-capability.test.ts` + a real-PG `-pg` suite, plus 317 added to the two chat route suites.
 
 **Category:** Process-level config check standing in for a per-tenant capability question → a single capability-probe seam with an explicit undecidable state, fail-open semantics chosen against a stated threat model, and the rejected alternatives recorded at the sites that would otherwise re-litigate them.
+
+---
+
+## 103. The brain connector seam declares class and vendor as separate axes — two whole source classes land without touching the ingest core (#4963, Brain M3)
+
+**Date:** 2026-08-02
+**Issue:** #4963 (milestone #93, Brain M3: Source Breadth)
+**PR:** #4970 (seam), proved by #4972 and #4976
+**Commit:** 9eccdda66
+
+**Problem:** `brain_episodes.source` had a mixed grain nobody had written down: `warehouse` and `human` are CLASSES with no vendor and no connector, while `slack` is a VENDOR inside the chat class — vendor-grained because the `<channelId>:<ts>` source-id contract is vendor-specific, so collapsing chat vendors onto one stored value would put two vendors' ids in one dedupe namespace. That grain was *described* in prose and re-derived at each reader, which made an ADR-level invariant coincidental: `correction.ts`'s tier-1 refusal (a warehouse-derived fact has no correction path, because the fix belongs in the data or the semantic layer) compared the stored value against its own string literal, and every test on the refusal hand-seeded the same literal it asserted against (#4938). A future warehouse producer stamping `"snowflake"` or `"warehouse:prod"` would have silently stopped tier-1 refusal firing without failing anything. Meanwhile ADR-0036 §T6 wanted three more source classes, and there was no way to ask "what class is this stored value?" at all.
+
+**Solution:** `EPISODE_SOURCE_SPECS` is one map whose KEYS are the stored values and whose entries declare each member's `class` and `vendor` (`null` for the classes that have none); the source list and the `EpisodeSource` union are both derived from it. `isWarehouseDerived` now reads the CLASS, `episodeSourceClassOf` is the total reader for stored rows, and `findBrainSourceConnectors` resolves on either axis. Two gates guard membership at different producers: `BrainSourceConnector.source` is typed `EpisodeSource` so an in-repo connector cannot invent a kind at compile time, and `registerBrainSourceConnector` re-checks at runtime because a registry is a data boundary — M3 makes connectors plugin-shaped, and a separately-compiled plugin arrives as data rather than as a checked type.
+
+**Impact:**
+- **The seam proof is empirical, not asserted.** #4965 (transcripts / Zoom) and #4966 (email / Outlook) each added a whole source class with `episode-sync.ts`, `episodes.ts` and `ingest/types.ts` **untouched**; the one shared ingest file either extended is `grant.ts`, additively — a third `derive*Grant` beside the two existing ones rather than a branch inside one. ~5.8k lines of new connector code, zero core edits.
+- The class axis is what let #4971's audience re-verifier scan move into one `audience/reverify.ts` seam instead of shipping per-source copies — both connectors inherited the starvation fix when it landed, and Outlook registered through the seam rather than duplicating it.
+- **What it deliberately did NOT buy is recorded at the seam.** `{ class: "chat", vendor: "snowflake" }` still compiles clean and still escapes tier-1 refusal; choosing the right class stays a judgement the compiler cannot make. What changed is that the decision is single-sited, so producer and predicate can no longer disagree about which value means warehouse. The pinned key-set in `sources.test.ts` is what forces an author to confront the choice, and it fails on BOTH axes.
+- The overlap trap is documented where it bites: `EpisodeSource` and `EpisodeSourceClass` spell two members identically, the unions are not mutually assignable but the literal-typed CONSTANTS are — so `storedSource === WAREHOUSE_CLASS` (the #4938 bug respelled) compiles. `EMAIL_CLASS` is named as the one most likely to expire, since a second email vendor makes `{ class: "email", vendor: "gmail" }` correct and a collapsed stored `"email"` tempting but wrong.
+
+**Category:** A mixed storage grain described in prose and re-derived per reader → one declared spec map with both axes separable in code, the ADR-level refusal reading the class instead of a literal, and the residual prose rule named rather than pretended away.

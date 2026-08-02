@@ -2,7 +2,7 @@
 
 > Working notes for [milestone #93](https://github.com/AtlasDevHQ/atlas/milestone/93), accumulating on **`milestone/brain-m3`**. The [`ROADMAP.md`](./ROADMAP.md) bullet tracks *shipped/open state only*; the per-issue detail — decisions, review-panel findings, and the traps worth carrying forward — lives here.
 >
-> This file exists because the M3 bullet reached ~14k characters against the ROADMAP's ~240-char line-item cap. At M3 closeout, ROADMAP's section collapses to one line and moves to [`ROADMAP-archive.md`](./ROADMAP-archive.md); this file is the detail layer that survives it.
+> This file exists because the M3 bullet reached ~14k characters against the ROADMAP's ~240-char line-item cap. **Closed out 2026-08-02**: milestone #93 CLOSED 9/9, merged to `main` via PR [#4987](https://github.com/AtlasDevHQ/atlas/pull/4987) @ `f86e61c90`, ROADMAP collapsed to one line with the section moved to [`ROADMAP-archive.md`](./ROADMAP-archive.md). This file is the detail layer that survives it.
 >
 > **Arc conventions** (the #91/#92 pattern): CI fires per #4795, CodeQL is deferred to the eventual `milestone/brain-m3` → `main` PR — deferred, not waived — and `Closes #N` won't auto-close, so issues are closed by hand after merge.
 >
@@ -18,7 +18,7 @@
 
 Issue was stale, the contract/registry/engine-reuse already landed in #4770/#4938; the real work was the class/vendor split. `EPISODE_SOURCE_SPECS` declares each member's class+vendor, `isWarehouseDerived` reads the CLASS, `findBrainSourceConnectors` resolves both axes, `episodeSourceClassOf` is the total reader for stored rows.
 
-⚠️ **`architecture-wins.md` has no entry for this** — flagged on the issue during the 2026-08-02 `/tidy`. The seam proof is empirical and worth capturing: #4965 and #4966 each added a whole source class with `episode-sync.ts`, `episodes.ts`, and `ingest/types.ts` untouched, and #4966 extended `grant.ts` additively with a third deriver rather than branching an existing one.
+✅ **Written up as [`architecture-wins.md` #103](./architecture-wins.md)** at the 2026-08-02 closeout. The seam proof is empirical: #4965 and #4966 each added a whole source class with `episode-sync.ts`, `episodes.ts`, and `ingest/types.ts` untouched, and #4966 extended `grant.ts` additively with a third deriver rather than branching an existing one.
 
 ---
 
@@ -196,4 +196,4 @@ Adjacent code rot fixed (comment/description strings only): three `settings.ts` 
 
 ## Open
 
-Nothing — M3 is 9/9 and ready for closeout.
+Nothing in the milestone — M3 closed 9/9 on 2026-08-02. Three follow-ups the merge PR filed live on the [Architecture Backlog](https://github.com/AtlasDevHQ/atlas/milestone/49): [#4984](https://github.com/AtlasDevHQ/atlas/issues/4984) (the credential-leak class outside the brain diff, at `integrations/credentials/store.ts`), [#4985](https://github.com/AtlasDevHQ/atlas/issues/4985) (source + re-verifier as one unrepresentable-when-split registration unit), [#4986](https://github.com/AtlasDevHQ/atlas/issues/4986) (Outlook's block-vs-skip as a discriminated union). #4975 (shared vendor HTTP client) was filed during the arc and is `ready-for-human`.

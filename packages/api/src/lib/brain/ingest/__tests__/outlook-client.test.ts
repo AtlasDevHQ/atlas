@@ -55,9 +55,18 @@ interface Harness {
 /** Build a client over canned pages, recording every membership write. */
 function client(
   pages: { messages: OutlookMessage[]; nextLink?: string | null; dropped?: number }[],
-  options: Partial<OutlookMailClientOptions> & { readonly harness?: Harness } = {},
+  options: Partial<OutlookMailClientOptions> & {
+    readonly harness?: Harness;
+    /**
+     * The Graph OBJECT ID `fetchMailbox` resolves to. Overridable because it is
+     * the only input left that can make `deriveEmailRecipientGrant` refuse — see
+     * the grant-null block test.
+     */
+    readonly mailboxId?: string;
+  } = {},
 ) {
   const harness: Harness = options.harness ?? { reconciled: [] };
+  const mailboxId = options.mailboxId ?? MAILBOX_ID;
   let pageIndex = 0;
   const readPage = async () => {
     const page = pages[Math.min(pageIndex++, pages.length - 1)];
@@ -79,7 +88,7 @@ function client(
       api: {
         fetchMailbox: async () => ({
           ok: true as const,
-          mailbox: { id: MAILBOX_ID, userPrincipalName: "a@contoso.com", mail: "a@contoso.com" },
+          mailbox: { id: mailboxId, userPrincipalName: "a@contoso.com", mail: "a@contoso.com" },
         }),
         fetchMailboxMessagesPage: readPage,
         fetchMailboxMessagesNextPage: readPage,
@@ -210,9 +219,44 @@ describe("the block arm — RETRYABLE, freezes the resume point", () => {
     // the resume point advances past a message whose audience was never written.
     // A permanent silent skip on the safety arm, with the pass reporting green.
     expect(parseOutlookCursor(changes.cursor ?? null)[MAILBOX_ID]).not.toBe(NOW.toISOString());
+    // The operator-facing half. Both of these survived every mutation until they
+    // were asserted: deleting the catch's tally-and-warn, and deleting the stall
+    // detector outright, each left the suite green. A block that nothing reports
+    // is the "blocked on the same message for 400 cycles" shape the client's own
+    // comment says an operator has no way to see.
+    expect(changes.warnings?.join(" ")).toMatch(/membership write failed/);
+    expect(changes.warnings?.join(" ")).toMatch(/made no forward progress/);
   });
 
-
+  it("⭐ BLOCKS a message whose grant cannot be derived — never skips past it", async () => {
+    // The arm nothing reached until this test existed. `deriveEmailRecipientGrant`
+    // returning null is the ONE in-band block — every other block arrives as a
+    // throw through the caller's catch — and both it and the caller's
+    // `outcome.kind === "blocked"` handler were dead code as far as this suite
+    // was concerned. That is the safety arm, so it is the worst one to leave
+    // unpinned.
+    //
+    // Reached through the only input the guards above it do not settle: a
+    // mailbox OBJECT ID containing a `:`, which `emailMessageAudienceId` refuses
+    // outright (it would otherwise make the audience token's segments ambiguous).
+    //
+    // MUTATION THIS CATCHES: `kind: "blocked"` → `kind: "skipped"` on the
+    // grant-null arm, and neutering the caller's blocked handler. Both leave the
+    // rest of the suite green, and both advance the resume point past a message
+    // whose audience Atlas could not derive — #4965's silent direction.
+    const { vendor, harness } = client([{ messages: [message()] }], { mailboxId: "mb:a" });
+    const changes = await vendor.fetchEpisodes(PARAMS);
+    expect(changes.episodes).toHaveLength(0);
+    // The block happens BEFORE the membership write, so nothing was granted.
+    expect(harness.reconciled).toHaveLength(0);
+    // RETRYABLE: the pass says so, and the resume point does NOT reach pass-start.
+    expect(changes.coverageIncomplete).toBe(true);
+    expect(changes.highWaterMark).toBeNull();
+    expect(parseOutlookCursor(changes.cursor ?? null)["mb:a"]).not.toBe(NOW.toISOString());
+    expect(changes.warnings?.join(" ")).toMatch(/access grant could not be built/);
+    // No wider-grant fallback on this arm either.
+    expect(JSON.stringify(changes.episodes)).not.toContain("org");
+  });
 
   it("never falls back to a wider grant on the block arm", async () => {
     // There is no `[org]` answer available anywhere in this path — it would

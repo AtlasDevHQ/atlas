@@ -73,23 +73,28 @@
  *     null`, so an arm that pushes nothing has to say so rather than simply
  *     omit a `warnings.push` a reader has to notice is missing.
  *
- * ⚠️ **The split is a TYPE, and that is the point.** `runMessage` returns a
- * `MessageOutcome` — `ingested` / `skipped` / `blocked` — and mutates nothing;
- * `tallyOutcome` is the single place any outcome becomes a number. The skip
- * arm's reason is `Exclude<keyof MessageSkips, "blockedAudience">`, so a new
- * permanent reason is ONE edit (a counter on that interface), lands in its own
- * counter by index rather than by a hand-written branch, and cannot be spelled
- * as a block — while a new retryable condition has nowhere to go but `blocked`.
+ * ⚠️ **Where the split is a TYPE, and where it is still a judgement.**
+ * `runMessage` returns a `MessageOutcome` — `ingested` / `skipped` / `blocked` —
+ * and mutates nothing; `tallyOutcome` is the only writer of the tally. The skip
+ * arm's reason is drawn from `PERMANENT_SKIP_REASONS`, which does not contain
+ * `blockedAudience`, so a `skipped` outcome cannot be tallied as retryable and a
+ * new reason lands in its own counter by index rather than by a hand-written
+ * branch.
  *
- * It was not always so, and the previous shape is why this warning is here.
- * `runMessage` used to return `{ episode, blocked: boolean }` and hand-increment
- * a mutable tally at eight sites, one of them outside the function entirely, in
- * the caller's `catch`. Nothing checked exhaustiveness and one of the four
- * inhabitants was meaningless. The failure it invited is directional: forgetting
- * `blocked: true` on a new retryable condition yields a PERMANENT skip that also
- * advances the resume point, so the message is never revisited and the pass
- * reports itself fully covered. That is the #4965 outage class in its silent
- * direction, in the file whose header is about not doing exactly this.
+ * What the type does NOT do is choose the arm for you. Deciding whether a new
+ * CONDITION is permanent or retryable is a human call, and nothing can make it
+ * otherwise; what changed is that the call is now spelled once, at `kind`, and
+ * that adding a reason to either class is a visible edit rather than a default.
+ *
+ * The previous shape is why the warning is here at all. `runMessage` used to
+ * return `{ episode, blocked: boolean }` and hand-increment a mutable tally at
+ * nine sites, one of them outside the function entirely, in the caller's
+ * `catch`. Nothing checked exhaustiveness and one of the four inhabitants was
+ * meaningless. The failure it invited is directional: forgetting `blocked: true`
+ * on a new retryable condition yields a PERMANENT skip that also advances the
+ * resume point, so the message is never revisited and the pass reports itself
+ * fully covered. That is the #4965 outage class in its silent direction, in the
+ * file whose header is about not doing exactly this.
  *
  * ⚠️ **Unreadable participant headers are PERMANENT and belong on the SKIP arm**
  * — the classification `runMessage` implements and the one this list got wrong
@@ -309,19 +314,21 @@ export function toOutlookClientError(context: string, failure: OutlookReadError)
   }
 }
 
-/** Per-pass drop tally — every message seen but not stored, by reason. */
-interface MessageSkips {
-  /**
-   * Messages BLOCKED — retryable, the resume point does not advance past them.
-   * The safety counter an operator alerts on.
-   *
-   * The one key {@link PermanentSkipReason} excludes, and that exclusion is what
-   * turns the block-vs-skip split from a convention into a type: no `skipped`
-   * outcome can name this counter, so a permanent condition cannot be tallied as
-   * retryable, and a retryable one has nowhere to go but {@link MessageOutcome}'s
-   * `blocked` arm.
-   */
-  blockedAudience: number;
+/**
+ * Every PERMANENT drop reason, and the SSOT for that set — `extract.ts`'s
+ * `EXTRACTION_SKIP_REASONS` shape, one directory over.
+ *
+ * The list runs this way round rather than being subtracted out of
+ * {@link MessageSkips} (`Exclude<keyof MessageSkips, "blockedAudience">`) on
+ * purpose, and the difference is not cosmetic. Subtraction gives a NEW counter a
+ * default classification of "permanent" — so a future retryable counter would
+ * become a legal `skipped` reason with no diagnostic, and a permanent skip that
+ * advances the resume point past a message that should have been retried is
+ * exactly the #4965 direction this file is organised against. Here neither
+ * classification is the default: a permanent reason is an entry in this array, a
+ * retryable one is a field on the interface below, and both are a visible edit.
+ */
+const PERMANENT_SKIP_REASONS = [
   /**
    * Messages whose headers arrived complete and named NOBODY — permanent, so the
    * resume point advances. Counted apart from `blockedAudience` deliberately:
@@ -329,29 +336,35 @@ interface MessageSkips {
    * coming back", and the block-vs-skip distinction is the whole organising idea
    * of this file.
    */
-  unattributable: number;
+  "unattributable",
   /** Messages with no usable RFC 5322 Message-ID. */
-  unidentifiable: number;
+  "unidentifiable",
   /** Messages whose participant set exceeded the cap. */
-  oversizeAudience: number;
+  "oversizeAudience",
   /** Bodies skipped as oversize. */
-  oversizeBody: number;
+  "oversizeBody",
   /** Messages whose body was PRESENT but not plain text, so it was refused. */
-  bodyUnreadable: number;
+  "bodyUnreadable",
   /** Messages that composed to nothing at all — no headers and no body. */
-  emptyBody: number;
-}
+  "emptyBody",
+] as const;
 
-/**
- * Every PERMANENT drop reason — DERIVED from {@link MessageSkips} rather than
- * listed a second time, so the counters and the reasons cannot drift apart.
- *
- * Adding a permanent reason is therefore one edit: a counter on that interface.
- * It becomes an inhabitant here, a required key on the tally's initializer (so
- * omitting it does not compile), and a term `tallyOutcome` indexes rather than
- * branches on.
- */
-type PermanentSkipReason = Exclude<keyof MessageSkips, "blockedAudience">;
+type PermanentSkipReason = (typeof PERMANENT_SKIP_REASONS)[number];
+
+/** Per-pass drop tally — every message seen but not stored, by reason. */
+interface MessageSkips extends Record<PermanentSkipReason, number> {
+  /**
+   * Messages BLOCKED — retryable, the resume point does not advance past them.
+   * The safety counter an operator alerts on.
+   *
+   * Deliberately NOT a {@link PermanentSkipReason}, which is what stops a
+   * `skipped` outcome naming it: a permanent condition cannot be tallied as
+   * retryable. Choosing which arm a new CONDITION belongs on is still a human
+   * decision — no type can make it — but it is now spelled once, at `kind`,
+   * instead of inferred from a `blocked: boolean` a new arm can forget.
+   */
+  blockedAudience: number;
+}
 
 /**
  * What one message became. The module header's block-vs-skip split, in three
@@ -374,10 +387,14 @@ type MessageOutcome =
   | { readonly kind: "blocked"; readonly warning: string };
 
 /**
- * The ONE place a message outcome becomes a number, and the only writer of
- * {@link MessageSkips}.
+ * The only writer of {@link MessageSkips} — the one place a message that was NOT
+ * stored becomes a number, and the one place its warning is raised.
  *
- * One site rather than eight is the point: a tally spread across the arms that
+ * (An INGESTED message becomes numbers at the call site instead, as
+ * `episodes.length` and the budget decrement. Nothing to tally: `kept` is the
+ * episode count, not a drop counter.)
+ *
+ * One site rather than nine is the point. A tally spread across the arms that
  * produce it is a tally whose next arm can forget to increment, or increment the
  * wrong counter, and neither shows up as anything but a number quietly missing
  * from an operator's log line.
@@ -391,15 +408,21 @@ function tallyOutcome(skips: MessageSkips, warnings: string[], outcome: MessageO
       warnings.push(outcome.warning);
       return;
     case "skipped":
-      // Indexed, not branched: a reason added to `MessageSkips` cannot silently
-      // land in the wrong counter, and — because `PermanentSkipReason` excludes
-      // it — cannot land in `blockedAudience` at all.
+      // Indexed, not branched: a reason in `PERMANENT_SKIP_REASONS` cannot
+      // silently land in the wrong counter, and — because `blockedAudience` is
+      // not one of them — cannot land in the safety counter at all.
       skips[outcome.reason]++;
       if (outcome.warning !== null) warnings.push(outcome.warning);
       return;
     default: {
       const unexpected: never = outcome;
-      throw new Error(`Unhandled Outlook message outcome: ${JSON.stringify(unexpected)}`);
+      // The DISCRIMINANT only, never the payload. This message reaches an
+      // operator-visible warning through the caller's `catch`, and the
+      // `ingested` arm carries `episode.body` — the full plaintext of somebody's
+      // mail. Same reason the audience digest is redacted further down.
+      throw new Error(
+        `Unhandled Outlook message outcome: ${String((unexpected as { readonly kind?: unknown }).kind)}`,
+      );
     }
   }
 }
@@ -589,12 +612,24 @@ export function createOutlookMailClient(
       // by the guards above. `headersComplete` is the literal `true`,
       // `participants` is non-empty, `source` is a module constant, the digest
       // is 16 hex bytes by construction, and `messageId` came back non-empty and
-      // byte-checked from `normalizeInternetMessageId`. What is left is a
-      // mailbox object id that is empty or carries a `:` — and that id is
-      // resolved ONCE per pass from Graph and is the same on every retry. So if
-      // this ever fires it does not clear: the mailbox freezes at this message,
-      // and the only thing that says so is the stall detector's `log.error`
-      // further down.
+      // whitespace-free from `normalizeInternetMessageId`, so the id builder's
+      // own trim-and-empty guard cannot fire on it.
+      //
+      // What is left is a mailbox object id that TRIMS to empty or carries a
+      // `:`. A literally empty one never reaches here — `fetchMailbox` refuses
+      // it as a transport error and the mailbox is skipped before any message is
+      // run — so the residual set is a whitespace-only id and a colon-bearing
+      // one, neither of which a Graph object id (a GUID) can be. The id IS
+      // re-read from Graph every pass rather than cached, but an object id is an
+      // immutable directory property, so the re-read returns the same value: a
+      // malformed one is not a transient. If this ever fires it does not clear,
+      // and the mailbox freezes at this message.
+      //
+      // What says so is the stall detector further down, which raises a
+      // `log.error` AND an operator-facing warning. Note the timing: it is gated
+      // on the mailbox making no forward progress, so unless the block is the
+      // mailbox's first timestamped message it fires from the SECOND consecutive
+      // stalled cycle, once the resume mark has converged on `coveredThrough`.
       //
       // It stays a block anyway, and that is the deliberate choice rather than
       // the leftover one. Skipping would advance the resume point past a message
@@ -936,8 +971,7 @@ export function createOutlookMailClient(
               } else {
                 // A throw IS an outcome, so it goes through the same tally as
                 // every other one rather than reaching into the counters by hand
-                // — this used to be the eighth increment site and the only one
-                // outside `runMessage`.
+                // — this is the only classification site outside `runMessage`.
                 //
                 // The dominant throw on this path is a failed membership WRITE —
                 // the most safety-relevant failure in the file, since an audience

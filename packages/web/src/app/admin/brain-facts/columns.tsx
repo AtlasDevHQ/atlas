@@ -219,10 +219,12 @@ export function getBrainFactColumns(
         // claim was contested — but it is not work, and counting it made a
         // fully arbitrated row read as unresolved (#4961).
         //
-        // Deliberately NARROWER than the two server-side signals beside it: the
-        // stats tile's "N in tension" and the "In tension only" filter both ask
-        // edge EXISTENCE (`TENSION_EXISTS_SELECT`), i.e. "has this claim ever
-        // been contested", and are unchanged. So the filter can legitimately
+        // Deliberately NARROWER than the server-side signals around it: the
+        // stats tile's "N in tension", the "In tension only" filter, and the
+        // oversight panel's per-audience column all ask edge EXISTENCE
+        // (`TENSION_EXISTS_SELECT`), i.e. "has this claim ever been contested",
+        // and all are unchanged. So the tile can read a number no row's badge
+        // corroborates, and the filter can legitimately
         // return a row wearing no badge, for either of two reasons — every
         // rival is settled, in which case the sheet's "Withdrawn"/"Superseded"
         // labels explain the row; or the page's tension fan-out cap bit, in

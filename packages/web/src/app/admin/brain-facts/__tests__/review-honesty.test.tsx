@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
+import type { BrainFactTensionVisible } from "@/ui/lib/types";
 
 /**
  * What the review gate must SAY, not just fetch (#4772, ADR-0036).
@@ -853,16 +854,19 @@ describe("the list shows the trust signals without a click", () => {
  * A live tension counterpart. Overrides stamp the lifecycle axes on top.
  *
  * Introduced for the block below; the #4935 fixtures further down hand-roll the
- * same object and are left alone deliberately — they predate this helper and
- * pin the SHEET, so re-pointing them would put a count-focused fixture under
- * label assertions.
+ * same object and are left alone deliberately — re-pointing them here would
+ * flip `status` from "draft" to this helper's "published" and quietly gut the
+ * assertion they exist for ("retraction never writes `status`").
  *
  * Distinct `factId`s are hygiene for the sheet, which keys its cards
  * `${edgeDirection}-${factId}` — nothing dedupes the count, which is a plain
  * array length, so a shared id would not hide a miscount. It would produce
  * duplicate React keys in any test that opens the sheet.
  */
-function rival(factId: string, overrides: Record<string, unknown> = {}) {
+function rival(
+  factId: string,
+  overrides: Partial<BrainFactTensionVisible> = {},
+): BrainFactTensionVisible {
   return {
     visible: true,
     factId,
@@ -923,7 +927,13 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     // vacuously if the table markup ever changed.
     expect(text).toContain("Postgres");
     expect(text).not.toContain("In tension");
-    expect(text).not.toContain("(2)");
+    // The stats tile above is UNCHANGED — it asks edge existence server-side,
+    // so it still reports this row. Asserted together with the row's silence
+    // because the divergence is deliberate and load-bearing: a later
+    // "consistency fix" deriving the tile from the rows client-side would pass
+    // every other test in this file while undoing the separation of "has ever
+    // been contested" from "has anything left to resolve".
+    expect(view.container.textContent).toContain("1 in tension");
   });
 
   test("still SHOWS those settled rivals in the sheet — the count changed, not the record", async () => {
@@ -938,6 +948,12 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     const view = await renderPage([
       candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] }),
     ]);
+    // Both surfaces off ONE payload — the cross-surface invariant that is the
+    // whole reason `tension-state.ts` exists. Asserted here rather than in a
+    // second fixture, because "the list is quiet AND the sheet still bears the
+    // record" is a single claim, and split across two renders nothing observes
+    // it.
+    expect(rowText(view)).not.toContain("In tension");
     fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
     await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
     const text = document.body.textContent ?? "";
@@ -986,16 +1002,19 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
 
   test("keeps the truncation banner when the surviving rivals are all settled", async () => {
     // The combination this fix makes newly reachable. The fan-out cap is
-    // applied page-wide in edge-id order, so a row can arrive holding only
-    // SOME of its rivals; if the ones that arrived are settled, the row now
-    // renders completely quiet while open rivals sit beyond the cap. The
-    // page-level banner is the whole of what is left to warn the reviewer, so
-    // it is asserted together with the badge's absence rather than apart.
+    // applied page-wide, ordered by the edges' ENDPOINT fact ids, so a row can
+    // arrive holding only SOME of its rivals; if the ones that arrived are
+    // settled, the row now renders completely quiet while open rivals sit
+    // beyond the cap. The page-level banner is the whole of what is left to
+    // warn the reviewer, so it is asserted together with the badge's absence
+    // rather than apart.
     const view = await renderPage(
       [candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] })],
       { tensionsTruncated: true },
     );
-    expect(rowText(view)).not.toContain("In tension");
+    const text = rowText(view);
+    expect(text).toContain("Postgres");
+    expect(text).not.toContain("In tension");
     expect(view.container.textContent).toContain("more conflicting claims than Atlas can show");
   });
 

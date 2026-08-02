@@ -9,8 +9,8 @@ import { isTensionOpen, isTensionSuperseded, isTensionWithdrawn } from "../tensi
  * Unit-level on purpose. `review-honesty.test.tsx` proves the two SURFACES
  * render what this decided; these pin the decision itself, including the arms
  * a render fixture reaches only awkwardly — a junk stamp, a stamp missing from
- * the payload, and both axes at once. Each of those is documented in
- * `tension-state.ts` as a safety property, and a documented safety property
+ * the payload, and both axes at once. The first two are documented in
+ * `tension-state.ts` as safety properties, and a documented safety property
  * that no test pins is one refactor from silently inverting.
  */
 
@@ -50,11 +50,21 @@ function visible(overrides: Partial<BrainFactTensionVisible> = {}): BrainFactTen
  * A payload that DRIFTED from the wire schema — a stamp the server stopped
  * sending, or sent as something other than a string.
  *
- * Cast because the whole point is a value the type forbids: these arms exist
- * for the surface with no runtime parse, and a test that could only build
- * well-typed inputs could not reach them at all.
+ * Cast because the whole point is a value the type forbids: the guards exist
+ * for exactly the inputs a well-typed fixture cannot express, so a test that
+ * could only build well-typed inputs could not reach them at all.
+ *
+ * The keys are bound to the wire type through `Extract` rather than spelled as
+ * free string literals. Renaming a stamp upstream then collapses this to
+ * `never` and fails the call sites — where a free literal would leave the
+ * spread setting a phantom property, the real field keeping its `null` from
+ * `visible()`, and both drift tests passing while testing nothing.
  */
-function drifted(stamps: { invalidatedAt?: unknown; validTo?: unknown }): BrainFactTensionVisible {
+function drifted(
+  stamps: Partial<
+    Record<Extract<keyof BrainFactTensionVisible, "invalidatedAt" | "validTo">, unknown>
+  >,
+): BrainFactTensionVisible {
   return { ...visible(), ...stamps } as BrainFactTensionVisible;
 }
 
@@ -70,6 +80,16 @@ describe("isTensionWithdrawn", () => {
     // live conflict. Every other arm in this module errs the other way, and so
     // must this one.
     expect(isTensionWithdrawn(drifted({ invalidatedAt: undefined }))).toBe(false);
+  });
+
+  test("treats an EMPTY or malformed stamp as not-retracted either", () => {
+    // `typeof === "string"` alone only moves the hazard from an absent field to
+    // an empty one — a serializer coalescing `null → ""` reads as a tombstone
+    // and suppresses the badge. Parseability is what makes this axis agree with
+    // the supersession axis, whose `NaN` comparison already falls through to
+    // open, so the module's "errs toward reporting" claim is true of both.
+    expect(isTensionWithdrawn(visible({ invalidatedAt: "" }))).toBe(false);
+    expect(isTensionWithdrawn(visible({ invalidatedAt: "n/a" }))).toBe(false);
   });
 });
 
@@ -90,9 +110,15 @@ describe("isTensionSuperseded", () => {
   test("treats an UNPARSEABLE stamp as still open", () => {
     // `Date.parse` yields NaN and every comparison with NaN is false, so this
     // falls through to live. Pinned because the equivalent-looking rewrite
-    // `!(ms === null || ms > Date.now())` inverts exactly this case and nothing
+    // `!(Date.parse(...) > Date.now())` inverts exactly this case and nothing
     // else — it would pass every render fixture in the suite.
     expect(isTensionSuperseded(visible({ validTo: "infinity" }))).toBe(false);
+  });
+
+  test("treats a MISSING stamp as still open", () => {
+    // A different arm from the one above, reached earlier: this returns at the
+    // `typeof` guard and never sees `Date.parse`. Separated so that removing
+    // either guard fails its own assertion.
     expect(isTensionSuperseded(drifted({ validTo: undefined }))).toBe(false);
   });
 });
@@ -130,6 +156,10 @@ describe("isTensionOpen", () => {
   test("is exactly the complement of the two axes the sheet badges", () => {
     // The invariant that stops the count and the strike-through drifting apart
     // — the whole reason this module exists rather than two inline copies.
+    // Fixture-bound, so it catches a change to EITHER existing axis but not a
+    // third one added to `isTensionOpen` with no matching sheet badge; a new
+    // axis has to join this list, which is the point at which someone notices
+    // the sheet needs a badge for it.
     for (const t of [
       visible(),
       visible({ invalidatedAt: PAST }),

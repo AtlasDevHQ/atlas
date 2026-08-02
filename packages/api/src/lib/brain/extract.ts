@@ -146,7 +146,17 @@ export const BRAIN_EXTRACTION_PRODUCER = "extraction:v1" as const;
 const INTERVAL_MS = 5 * 60 * 1000;
 
 /** Episodes drained per tick — the per-cycle model-spend bound. */
-const BATCH_SIZE = 25;
+/**
+ * Exported for tests, which must not hardcode it.
+ *
+ * The poisoned-head `-pg` scenario has to fill an entire batch to prove the
+ * exclusion works. With the value copied into the test, raising it here makes
+ * the poison block stop filling the batch — the healthy row is then selected
+ * WITHOUT the exclusion doing anything, so the test passes vacuously and the
+ * stall regression is restored silently. One-directional failure, which is the
+ * kind worth spending an export on.
+ */
+export const BATCH_SIZE = 25;
 
 /** Body characters sent to the model. Beyond this a chat message is a transcript. */
 const MAX_BODY_CHARS = 8_000;
@@ -163,7 +173,7 @@ const EXTRACTION_TIMEOUT_MS = 60_000;
  * body that always trips a content filter, a model id that 404s) without
  * pretending a few failures prove permanence.
  */
-const QUARANTINE_AFTER_FAILURES = 3;
+export const QUARANTINE_AFTER_FAILURES = 3;
 
 /**
  * First probe interval after quarantine, doubling per subsequent failure up to
@@ -178,7 +188,7 @@ const QUARANTINE_AFTER_FAILURES = 3;
  * costs one model call per episode per window and makes a repaired model
  * self-healing.
  */
-const QUARANTINE_PROBE_BASE_MS = 30 * 60 * 1000;
+export const QUARANTINE_PROBE_BASE_MS = 30 * 60 * 1000;
 
 /** Backoff ceiling: 2^5 × 30 min = 16 h between probes. */
 const QUARANTINE_PROBE_MAX_SHIFT = 5;
@@ -200,7 +210,7 @@ const QUARANTINE_ERROR_EVERY = 3;
  * `entry.failures++` would advance the count while leaving `lastFailureAt`
  * describing an older failure, and the backoff reads both.
  */
-interface QuarantineEntry {
+export interface QuarantineEntry {
   readonly failures: number;
   /** Epoch ms of the most recent failure — the backoff window's origin. */
   readonly lastFailureAt: number;
@@ -885,7 +895,7 @@ interface ApplyDeps {
  * costing a model call. Removing either one alone is safe; removing both is the
  * poisoned-queue stall.
  */
-function backingOffIds(ledger: ReadonlyMap<string, QuarantineEntry>, now: Date): string[] {
+export function backingOffIds(ledger: ReadonlyMap<string, QuarantineEntry>, now: Date): string[] {
   const ids: string[] = [];
   for (const [id, entry] of ledger) {
     if (isQuarantined(entry, now)) ids.push(id);
@@ -1111,11 +1121,25 @@ function tallyEpisode(
       // longest-failing entry — the one whose count is doing the most work.
       ledger.delete(row.id);
       if (ledger.size >= FAILURE_LEDGER_CAP) {
-        // Unreachable while the drain is `LIMIT BATCH_SIZE` over a queue whose
-        // head never advances past a failure — the ledger cannot exceed
-        // BATCH_SIZE. Stated because a future drain change (a bigger batch, a
-        // workspace-fair walk) wakes this branch up, and it must not wake up
-        // silently.
+        // ⚠️ REACHABLE. This branch used to be dead: while the drain was a bare
+        // `LIMIT BATCH_SIZE` over a queue whose head never advanced past a
+        // failure, the ledger could not exceed BATCH_SIZE. It said so, and
+        // predicted that "a future drain change wakes this branch up, and it
+        // must not wake up silently".
+        //
+        // The backing-off exclusion (`$2`, see {@link DRAIN_EPISODES_SQL}) IS
+        // that change. Making the head advance is the whole point of it — so
+        // under a BROAD failure (one 404ing model, one workspace-wide content
+        // filter) each tick now reaches 25 fresh episodes instead of re-reading
+        // the same poisoned 25, and the ledger grows to FAILURE_LEDGER_CAP
+        // rather than stalling at BATCH_SIZE.
+        //
+        // That is the trade the exclusion buys, and it is the right one — a
+        // stalled queue drains NOTHING for every workspace, while this walks the
+        // backlog at one probe per episode per window and says so at WARN. But
+        // it means the header's "one probe per window each" bound holds only
+        // below the cap: past it, eviction disarms the oldest quarantine and
+        // that episode returns to full price until it re-earns its strikes.
         //
         // Evict by OLDEST FAILURE, not by insertion order: a quarantined entry
         // is skipped rather than re-`set`, so its insertion position freezes at

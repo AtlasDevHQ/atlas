@@ -570,10 +570,17 @@ describe("registerBuiltinInstallHandlers — BRAIN source connector pairing (#49
 
     // Outlook registers immediately after Zoom in the sequence…
     expect(getBrainSourceConnector(OUTLOOK_MAIL_CATALOG_ID)).toBeDefined();
-    // …and so do the handlers far below it, which is where the real blast
-    // radius was: every OAuth and static bot handler follows these three.
     expect(getInstallHandler({ slug: "outlook-mail", install_model: "form" }).kind).toBe("form");
-    expect(getInstallHandler({ slug: "clickhouse", install_model: "form" }).kind).toBe("form");
+    // …and so do the handlers far below it, which is where the real blast
+    // radius is: every OAuth and static bot handler follows these three.
+    //
+    // These must be registered AFTER the throw point to witness anything. An
+    // earlier version asserted `clickhouse`, which registers ~195 lines BEFORE
+    // it — already in the registry, so it could not have been a casualty and
+    // the assertion proved nothing. A reversion that contained the throw but
+    // truncated the sequence later would have walked straight past it.
+    expect(getInstallHandler({ slug: "webhook", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "github-pat", install_model: "form" }).kind).toBe("form");
   });
 
   it("⭐ …and leaves the FAILING vendor wholly unregistered, not half-wired", () => {

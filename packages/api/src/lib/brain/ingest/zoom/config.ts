@@ -44,9 +44,15 @@
  * every recording they race on — and because episodes are append-only there is
  * no upsert to converge them afterwards.
  *
- * **#4967 is being built against this section in parallel.** It is a contract
- * between two in-flight branches, not a private naming choice. Changing either
- * half needs both branches to move together.
+ * **This is a published contract, not a private naming choice** — the grammar
+ * is stamped into an append-only `brain_episodes.source_id`, so any second
+ * writer that spells it differently mints episodes nothing converges.
+ *
+ * ⚠️ There is no second writer today. This said "#4967 is being built against
+ * this section in parallel… two in-flight branches", which was true while
+ * #4967 was in flight and wrong once it shipped SLACK-only. The guidance below
+ * still stands for whoever writes a Zoom webhook later; the counterparty does
+ * not exist yet.
  *
  * Why THIS id satisfies the contract:
  *
@@ -222,10 +228,13 @@ export function zoomEpisodeSourceId(meetingUuid: string, recordingFileId: string
 /**
  * Does this recording file carry the transcript this connector ingests?
  *
- * Exported because #4967's webhook writer must apply the SAME selection — its
- * `recording_files[]` is pre-filtered by the event, and "take index 0" is the
- * shape that silently ingests an audio file's metadata as a transcript. One
- * predicate, both writers.
+ * Exported so that a future Zoom WEBHOOK writer applies the SAME selection: its
+ * `recording_files[]` arrives pre-filtered by the event, and "take index 0" is
+ * the shape that silently ingests an audio file's metadata as a transcript. One
+ * predicate, however many writers.
+ *
+ * ⚠️ One writer today. This said "#4967's webhook writer must apply" it, as
+ * though that writer existed; #4967 shipped Slack-only.
  *
  * Case-INSENSITIVE on `file_type`. Zoom documents the type as uppercase and
  * returns it that way today; a vendor-side case change would otherwise stop
@@ -233,11 +242,13 @@ export function zoomEpisodeSourceId(meetingUuid: string, recordingFileId: string
  * entirely green pass — the exact silent-drop failure an evidence store must
  * not have.
  *
- * The parameter admits `undefined` as well as `null` because the two writers
- * hand it different shapes: the poll path normalises through `api.ts`'s `str()`
- * and always passes `null`, while #4967's webhook writer reads raw JSON where an
- * absent `file_type` is `undefined`. A `!== null` test would have let that
- * through to `.toUpperCase()` and thrown inside the webhook handler.
+ * The parameter admits `undefined` as well as `null` because a webhook writer
+ * would hand it a different shape than the poll does: the poll path normalises
+ * through `api.ts`'s `str()` and always passes `null`, while a writer reading
+ * raw event JSON sees `undefined` for an absent `file_type`. A `!== null` test
+ * would let that through to `.toUpperCase()` and throw. Kept deliberately —
+ * widening it later, from the handler that trips over it, is the expensive
+ * order to discover this in.
  */
 export function isTranscriptFile(file: {
   readonly fileType: string | null | undefined;

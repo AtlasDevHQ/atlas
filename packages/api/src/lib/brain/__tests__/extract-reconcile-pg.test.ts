@@ -44,6 +44,7 @@ import {
   type ReconcileEpisodeRef,
 } from "@atlas/api/lib/brain/reconcile";
 import {
+  BATCH_SIZE,
   _resetBrainExtractionFailures,
   runBrainExtractionCycle,
   type FactExtractor,
@@ -557,12 +558,16 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // Uses a batch-sized poison block so the test fails for the RIGHT reason: a
     // smaller block would leave room in the LIMIT and pass without the fix.
     //
-    // MUTATION THIS CATCHES: dropping the `id <> ALL($2::text[])` exclusion.
-    const BATCH = 25;
+    // MUTATION THIS CATCHES: dropping the `id <> ALL($2::uuid[])` exclusion.
+    //
+    // BATCH is IMPORTED, never copied: a local `const BATCH = 25` silently
+    // decouples from `extract.ts` the day the real one is raised, and the test
+    // then passes vacuously — the poison block no longer fills the LIMIT, so
+    // the healthy row is reachable without the exclusion doing anything.
+    const BATCH = BATCH_SIZE;
     for (let i = 0; i < BATCH; i++) {
       await insertEpisode({ sourceId: `C01:poison-${i}`, body: "explode" });
     }
-    let failing = true;
     const selective: FactExtractor = (input) => {
       if (input.body === "explode") return Promise.reject(new Error("model refused"));
       return Promise.resolve([candidate()]);
@@ -573,7 +578,6 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const stalled = await cycleWith(selective);
     expect(stalled.skipped.quarantined).toBe(BATCH);
     expect(stalled.extracted).toBe(0);
-    void failing;
 
     // NOW a healthy episode arrives BEHIND all of them. Before the exclusion it
     // was unreachable: the 25 quarantined rows filled the LIMIT on every tick.

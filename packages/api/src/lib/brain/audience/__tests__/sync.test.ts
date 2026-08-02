@@ -13,7 +13,7 @@
  * identical to the set the facts were granted to.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { AUDIENCE_PREFIX, parseGrant } from "@atlas/api/lib/brain/acl";
 import { deriveChatChannelGrant } from "@atlas/api/lib/brain/ingest/grant";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
@@ -222,8 +222,16 @@ describe("runAudienceSyncCycle", () => {
       return { deps: failing, sweptWith };
     }
 
-    it("still runs the other sources' re-verifiers", async () => {
+    // Teardown, not per-test cleanup. The reset used to run inline AFTER the
+    // awaits with no `finally`, so a throw inside the cycle leaked the "zoom"
+    // re-verifier into every later test in the file and folded
+    // `reconciled: 3, membersAdded: 2` into their counters — one real failure
+    // manufacturing several unrelated ones.
+    afterEach(() => {
       _resetAudienceReverifiers();
+    });
+
+    it("still runs the other sources' re-verifiers", async () => {
       let ran = 0;
       registerAudienceReverifier("zoom", () => {
         ran += 1;
@@ -231,7 +239,6 @@ describe("runAudienceSyncCycle", () => {
       });
       const { deps } = failingScanHarness();
       const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
-      _resetAudienceReverifiers();
 
       expect(ran).toBe(1);
       // Its counters fold in, so the cycle reports the work that DID happen
@@ -241,7 +248,6 @@ describe("runAudienceSyncCycle", () => {
     });
 
     it("still sweeps staleness — the alert that would name the aging audiences", async () => {
-      _resetAudienceReverifiers();
       const { deps, sweptWith } = failingScanHarness();
       await withDatabaseUrl(() => runAudienceSyncCycle(deps));
 
@@ -251,7 +257,6 @@ describe("runAudienceSyncCycle", () => {
     it("still reports failure, with the scan's error", async () => {
       // Falling through must not upgrade a failed cycle to success: Slack
       // membership genuinely did not reconcile.
-      _resetAudienceReverifiers();
       const { deps } = failingScanHarness();
       const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
 

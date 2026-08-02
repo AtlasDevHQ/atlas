@@ -443,7 +443,7 @@ export function listBrainSourceCatalogIds(): string[] {
  *
  * Clears the audience-re-verifier registry too, because #4965/#4966 made source
  * registration a TWO-registry write while the idempotence gate inside
- * `register{Zoom,Outlook}Connector` still reads only this one
+ * `registerZoomTranscriptConnector` / `registerOutlookMailConnector` still reads only this one
  * (`if (getBrainSourceConnector(id) !== undefined) return;`). Clearing one and
  * not the other lets them de-sync: a suite that resets connectors and then
  * re-registers passes the gate, reaches `registerXxxAudienceReverifier`, and

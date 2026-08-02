@@ -467,15 +467,24 @@ describe("configured-channel scoping", () => {
     //
     // The distinction under test is the REASON, not the refusal. Both outcomes
     // decline to store; only one of them tells the admin to go repair a healthy
-    // row. Note this must NOT be fixed by filtering foreign installs out of the
-    // match — a matched install whose catalog id has no registered connector
-    // still has to reach `no_connector`, which the test below pins.
+    // row.
     //
-    // MUTATION THIS CATCHES: flagging `unreadableConfig` unconditionally.
+    // ⚠️ The fixture below is one the production shell CAN produce, and that is
+    // the point. An earlier version of this guard tested "is this install's
+    // catalog id one of the connectors we resolved" and was pinned with a
+    // catalog id outside that set — which the shell cannot emit, because it
+    // queries BY those ids. The test passed and the guard defended nothing: the
+    // real foreign row, belonging to a second slack-vendor source, IS in the
+    // resolved set and was still blamed. So this fixture uses a foreign catalog
+    // id that the vendor lookup WOULD return.
+    //
+    // MUTATION THIS CATCHES: dropping the `!== SLACK_HISTORY_CATALOG_ID` guard,
+    // or restoring the `ownCatalogIds` form of it.
     const foreign = install([CHANNEL], {
       installId: "install-foreign",
+      // A second slack-vendor brain source: resolved alongside slack-history,
+      // so its rows reach here, and its config is not slack-history's schema.
       catalogId: "catalog:some-other-chat-source",
-      // Unreadable to `parseSlackHistoryConfig`, readable to its own connector.
       config: { rooms: [CHANNEL] },
     });
     expect(derive(eventOf(), [foreign])).toEqual({

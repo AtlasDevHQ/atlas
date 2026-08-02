@@ -493,6 +493,33 @@ describe("the two regressions round 1's fixes INTRODUCED", () => {
     expect(parseZoomCursor(changes.cursor ?? null)).toBe("2026-03-10");
   });
 
+  it("⭐ an UNUSABLE download_url is skipped, never thrown — same permanence as over-cap", async () => {
+    // The third route to the same outage, opened by the HTTPS/host pin added in
+    // the M3 review panel. Those refusals returned `transport`, which this
+    // client throws on — so one non-HTTPS or non-Zoom `download_url` from a
+    // hybrid or Meeting-Connector host froze `coveredThrough` at the prior
+    // window on EVERY pass, and ~30 days later the frozen cursor fell below the
+    // backfill floor and wedged the source.
+    //
+    // A stored recording's `download_url` is the same string next pass, so this
+    // is permanent in exactly the way `too_large` is, and belongs on the same
+    // arm. `transport` has to stay retryable — a real network fault IS a bad
+    // moment — which is why the refusals needed their own code rather than a
+    // change of policy for `transport`.
+    //
+    // MUTATION THIS CATCHES: returning `transport` from the URL-shape refusals
+    // in `zoom/api.ts`, or dropping the `unusable_url` arm in the client.
+    const changes = await client({
+      download: async () => ({ ok: false, error: "unusable_url", retryAfterSeconds: null }),
+    }).fetchEpisodes(PARAMS);
+
+    expect(changes.episodes).toEqual([]);
+    expect((changes.warnings ?? []).join(" ")).toMatch(/unusable form/);
+    // The window is covered and the cursor advances — that is the whole point.
+    expect(changes.coverageIncomplete).toBe(false);
+    expect(parseZoomCursor(changes.cursor ?? null)).toBe("2026-03-10");
+  });
+
   it("a transcript Zoom has not published yet is RETRIED, not dropped", async () => {
     // Zoom omits `download_url` while a file is still processing. Bucketing that
     // with permanently-unusable ids let the cursor advance past a transcript

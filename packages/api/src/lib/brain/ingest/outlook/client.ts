@@ -59,20 +59,29 @@
  *     mailbox/message ids; a membership write that failed. Nothing is ingested,
  *     the resume point does NOT advance past the message, and the pass reports
  *     `coverageIncomplete`. The next cycle tries again.
- *   - **SKIP** — permanent. Unreadable participant headers; no RFC 5322
- *     Message-ID; more participants than the cap; a body over the byte cap; a
- *     body Graph returned as HTML rather than the plain text asked for; a
- *     message that composed to nothing at all. Nothing is ingested, it is
- *     COUNTED and warned, and the resume point DOES advance.
+ *   - **SKIP** — permanent. Unreadable participant headers; headers that came
+ *     back complete and named NOBODY; no RFC 5322 Message-ID; more participants
+ *     than the cap; a body over the byte cap; a body Graph returned as HTML
+ *     rather than the plain text asked for; a message that composed to nothing
+ *     at all. Nothing is ingested, it is COUNTED, and the resume point DOES
+ *     advance. All but one also warn — the empty-composed-body skip increments
+ *     `skips.emptyBody` and surfaces only in the aggregate `log.info` at the end
+ *     of the pass, which is deliberate (it is the high-volume one) but means
+ *     "counted and warned" is not true of every arm.
  *
  * ⚠️ **Unreadable participant headers are PERMANENT and belong on the SKIP arm**
  * — the classification `runMessage` implements and the one this list got wrong
  * until it was corrected. Graph does not transiently omit a `$select`ed field on
  * a 200, so the headers of a stored message do not change; routing it down the
- * block arm froze the mailbox at the message before it, which is the very outage
- * the paragraph above cites. Stated loudly here because this header is the first
- * thing a maintainer of this file reads, and it disagreed with the code ~350
- * lines below it.
+ * block arm would freeze the mailbox at the message before it. Stated loudly
+ * here because this header is the first thing a maintainer of this file reads,
+ * and it disagreed with the code ~350 lines below it.
+ *
+ * To be precise about whose outage that was: this connector has classified
+ * `!headersComplete` as a skip since the day it landed, so the frozen mailbox is
+ * the counterfactual, not history. The shipped freeze was ZOOM's (#4965), which
+ * is what the paragraph below cites — an earlier wording compressed the two into
+ * "the very outage", reading as though Outlook had shipped it.
  *
  * Routing a permanent condition down the block arm is what froze Zoom's cursor
  * every pass until it fell below the backfill floor and wedged the source

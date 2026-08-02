@@ -137,7 +137,11 @@ import { findBrainSourceConnectors } from "../types";
 import type { BrainEpisodeRecord, BrainSourceConnector } from "../types";
 import { ingestEpisodes } from "../episodes";
 import { toEpisode } from "./client";
-import { SLACK_CHANNEL_ID_PATTERN, parseSlackHistoryConfig } from "./config";
+import {
+  SLACK_CHANNEL_ID_PATTERN,
+  SLACK_HISTORY_CATALOG_ID,
+  parseSlackHistoryConfig,
+} from "./config";
 
 const log = createLogger("brain.ingest.slack.webhook");
 
@@ -524,21 +528,6 @@ export function deriveSlackWebhookEpisode(params: {
   // set than the channels an admin picked at install time. Storing outside that
   // set would ingest content the workspace never consented to — and the poll
   // never would, so the two writers' contents would diverge by construction.
-  // Which installs this vendor's connectors actually own. Used ONLY to decide
-  // whether a parse failure is worth reporting — deliberately NOT to filter the
-  // match, because an install whose catalog id has no registered connector must
-  // still reach the `no_connector` arm below rather than be silently reclassified
-  // as out-of-scope.
-  //
-  // `findBrainSourceConnectors` returns an array and `ingest/types.ts` explicitly
-  // disclaims uniqueness, so a second chat-vendor brain source would put installs
-  // of a DIFFERENT catalog id in this list. Parsing one of those with
-  // `parseSlackHistoryConfig` — a schema that is not theirs — fails, and flagging
-  // that failure reported `install_config_unreadable` for a config that is
-  // perfectly valid for its own connector, sending an admin to repair a row that
-  // was never broken. Latent today (one catalog id maps to the slack vendor).
-  const ownCatalogIds = new Set(connectors.map((c) => c.catalogId));
-
   let unreadableConfig = false;
   const match = installs.find((install) => {
     const parsed = parseSlackHistoryConfig(install.config);
@@ -549,10 +538,28 @@ export function deriveSlackWebhookEpisode(params: {
       // `knowledge_sync_state.error`. Folding it into a boolean here would make
       // a corrupted config skip 100% of a workspace's messages forever with a
       // reason that reads like ordinary out-of-scope traffic.
-      // Only OUR installs' parse failures are a diagnosis. A foreign install
-      // failing this schema is not a misconfiguration — it is a row that was
-      // never ours to read.
-      if (ownCatalogIds.has(install.catalogId)) {
+      // Only a SLACK-HISTORY row's parse failure is a diagnosis, because this
+      // is the only schema read here and it is slack-history's.
+      //
+      // `findBrainSourceConnectors` returns an array and `ingest/types.ts`
+      // explicitly disclaims uniqueness, so the day a second slack-VENDOR brain
+      // source exists, `installs` carries its rows too — the shell queries by
+      // every catalog id the vendor lookup returned. Reading one of those with
+      // `parseSlackHistoryConfig` fails on a config that is perfectly valid for
+      // its own connector, and reporting THAT sends an admin to repair a row
+      // that was never broken.
+      //
+      // Gated on the catalog id that owns the schema, which is the only thing
+      // that discriminates. An earlier attempt gated on "is this install's
+      // catalog id one of the connectors we resolved" — inert, since the shell
+      // queries BY those ids, so it is true for every row that reaches here
+      // including the foreign one it meant to exclude.
+      //
+      // The DIAGNOSIS is gated, never the match. A foreign install whose config
+      // this schema happens to read still matches and still reaches
+      // `no_connector` below — silently reclassifying it as out-of-scope would
+      // trade one wrong answer for another.
+      if (install.catalogId === SLACK_HISTORY_CATALOG_ID) {
         unreadableConfig = true;
         log.warn(
           { installId: install.installId, error: parsed.error },

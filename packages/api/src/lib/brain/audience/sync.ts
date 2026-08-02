@@ -96,7 +96,7 @@ import {
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import { resolveSlackHistoryToken } from "@atlas/api/lib/brain/ingest/slack/connector";
 import { reconcileAudienceMembership } from "./membership";
-import { runRegisteredAudienceReverifiers } from "./reverify";
+import { listAudienceReverifierSources, runRegisteredAudienceReverifiers } from "./reverify";
 import { resolvePrincipals } from "./resolver";
 
 const log = createLogger("brain.audience.sync");
@@ -942,7 +942,8 @@ export async function runAudienceSyncCycle(
   const tally: ThrottleTally = { throttled: 0, exhausted: 0 };
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
 
-  // COUNTED AND FALLEN THROUGH, never returned on. This scan is Slack-scoped —
+  // RECORDED AND FALLEN THROUGH, never returned on. (Recorded in `scanError`
+  // and returned as the cycle's `error` — there is no counter for it.) This scan is Slack-scoped —
   // `AUDIENCE_SYNC_INSTALLS_SQL` takes `SLACK_HISTORY_CATALOG_ID` and nothing
   // else — so its failure says nothing about the OTHER sources' audiences. Both
   // `runRegisteredAudienceReverifiers` and `sweepStaleness` below are documented
@@ -1033,11 +1034,18 @@ export async function runAudienceSyncCycle(
     ...staleness,
   };
 
-  // Gated on the cycle having done ANY work, not on Slack installs existing. A
-  // deployment running only Zoom and/or Outlook reconciles audiences, adds and
+  // Gated on the cycle having anything to DO, not on it having found something.
+  // A deployment running only Zoom and/or Outlook reconciles audiences, adds and
   // revokes members, and would otherwise emit no cycle-complete line at all —
   // the same Slack-shaped assumption the scan fault above had.
-  if (installs.length > 0 || reverified.reconciled + reverified.failed > 0) {
+  //
+  // On registered re-verifiers rather than on their COUNTS: gating on
+  // `reconciled + failed > 0` still went silent on the steady state it was
+  // widened for — a Zoom-only deployment whose audiences are all fresh reports
+  // 0/0 and says nothing, which is precisely when an operator wants to see the
+  // fiber is alive. A registered re-verifier means the cycle had work in scope,
+  // whether or not that work turned anything up.
+  if (installs.length > 0 || listAudienceReverifierSources().length > 0) {
     log.info({ ...result }, "brain audience: membership sync cycle complete");
   }
   if (staleness.staleAudiences !== null && staleness.staleAudiences > 0) {

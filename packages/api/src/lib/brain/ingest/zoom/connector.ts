@@ -140,11 +140,40 @@ export function parseZoomAppCredential(
     );
     return null;
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  // The three SHAPE failures below warn too. They used to return `null` in
+  // silence while the parse failure above warned — so three of the four ways
+  // this can fail produced an unreadable-credential error downstream with
+  // nothing in the log saying which shape was wrong, or whose.
+  //
+  // Still no payload: a well-formed JSON object that is missing a field carries
+  // the secret in its OTHER field, so naming the keys is the most that can be
+  // said. Which is enough — the repair is the same re-install either way, and
+  // the distinction an operator needs is "the row is malformed" vs "the row is
+  // fine and Zoom rejected it", which these lines now make.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    log.warn(
+      { workspaceId: owner?.workspaceId, installId: owner?.installId },
+      "Zoom app credential is valid JSON but not an object — re-install the Zoom transcripts source for this workspace to repair it",
+    );
+    return null;
+  }
   const row = parsed as Record<string, unknown>;
   const clientId = typeof row.clientId === "string" ? row.clientId.trim() : "";
   const clientSecret = typeof row.clientSecret === "string" ? row.clientSecret.trim() : "";
-  if (clientId === "" || clientSecret === "") return null;
+  if (clientId === "" || clientSecret === "") {
+    log.warn(
+      {
+        workspaceId: owner?.workspaceId,
+        installId: owner?.installId,
+        // WHICH field, never its value.
+        missing: [clientId === "" ? "clientId" : null, clientSecret === "" ? "clientSecret" : null]
+          .filter((field) => field !== null)
+          .join(", "),
+      },
+      "Zoom app credential is missing a required field — re-install the Zoom transcripts source for this workspace to repair it",
+    );
+    return null;
+  }
   return { clientId, clientSecret };
 }
 

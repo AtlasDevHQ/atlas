@@ -77,6 +77,18 @@ export type ZoomReadErrorCode =
   | "not_found"
   | "plan_required"
   | "too_large"
+  /**
+   * The `download_url` Zoom handed back is unusable — unparseable, not HTTPS,
+   * or not a Zoom host.
+   *
+   * Separate from `transport` because the two have opposite retry semantics and
+   * the caller acts on that difference. A transport fault is a bad moment; a
+   * stored recording's `download_url` is the same string next pass, so retrying
+   * it freezes the walk at the meeting before it — the exact cursor-freeze that
+   * `too_large` was split out to avoid, and that `outlook/client.ts`'s header
+   * cites as how #4965 shipped an outage.
+   */
+  | "unusable_url"
   | "transport";
 
 export interface ZoomReadError {
@@ -453,7 +465,7 @@ export async function fetchTranscriptText(
     // would cost it its signal value. The URL is refused and reported; the
     // throw carries nothing this log line does not.
     log.warn({}, "Zoom recording download_url is not a parseable URL — refusing to fetch it");
-    return { ok: false, error: "transport", retryAfterSeconds: null };
+    return { ok: false, error: "unusable_url", retryAfterSeconds: null };
   }
   // Scheme pinned HERE, not only in the egress guard. `guardedFetch` does reject
   // non-HTTPS (`isSafeExternalUrl`), so this is defence in depth rather than a
@@ -463,7 +475,7 @@ export async function fetchTranscriptText(
   // pins both axes for the same reason; this one had drifted to host-only.
   if (scheme !== "https:") {
     log.error({ host }, "Zoom recording download_url is not HTTPS — refusing to fetch it");
-    return { ok: false, error: "transport", retryAfterSeconds: null };
+    return { ok: false, error: "unusable_url", retryAfterSeconds: null };
   }
   if (host !== "zoom.us" && !host.endsWith(ZOOM_DOWNLOAD_HOST_SUFFIX)) {
     // Loud, and with the host named: this is the one failure here that could
@@ -472,7 +484,7 @@ export async function fetchTranscriptText(
       { host },
       "Zoom recording download_url points at a non-Zoom host — refusing to fetch it",
     );
-    return { ok: false, error: "transport", retryAfterSeconds: null };
+    return { ok: false, error: "unusable_url", retryAfterSeconds: null };
   }
 
   let res: Response;

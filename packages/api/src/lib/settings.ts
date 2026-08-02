@@ -1760,6 +1760,38 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // Company-brain chat WEBHOOK FAST-PATH (#4967, ADR-0036 §T6) — the
+    // alternate writer that stores a Slack message as an episode seconds after
+    // it is said rather than at the next sync tick. Read PER EVENT by
+    // `lib/brain/ingest/slack/webhook.ts::isSlackWebhookFastPathEnabled`, so
+    // flipping it off takes effect immediately — it is the operator's lever for
+    // "stop writing episodes off Slack events right now", which is worth
+    // nothing if it needs a restart.
+    //
+    // Default OFF, and the default is the point: the fast path contributes
+    // LATENCY, never correctness. The poll is the correctness floor, so off is a
+    // fully-supported steady state in which ingest is exactly what it was
+    // before this shipped — not a degraded mode. Turning it on is a
+    // staging-first change like every other Slack-surface change (CLAUDE.md),
+    // because it changes which writer wins the race for a message and therefore
+    // which one's grant derivation is frozen onto the row.
+    //
+    // Platform-scoped: the tee is registered once per process on the shared
+    // Chat SDK instance, so there is no per-workspace half of this to turn on.
+    // Which WORKSPACES it writes for is already decided by which ones installed
+    // the Slack history source and which channels they scoped it to.
+    key: "ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Brain Chat Webhook Fast-Path",
+    description:
+      "Store Slack messages as brain episodes as they arrive, instead of waiting for the next sync. Off by default; the scheduled sync stores everything either way, so this only changes how quickly a message becomes available — never whether it does. Only channels the Slack history source is scoped to are stored. Applies immediately.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // Company-brain TRANSCRIPT ingest backfill window (#4965, ADR-0036 §T6).
     // Read per cycle by
     // `lib/brain/ingest/zoom/connector.ts::getTranscriptBackfillWindowMs`.

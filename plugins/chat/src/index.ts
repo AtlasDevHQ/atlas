@@ -86,6 +86,10 @@ export type {
   FileUploadConfig,
   EphemeralConfig,
   ProactiveConfig,
+  // #4967 — the per-message observer seam the host wires to the Company
+  // Brain's chat webhook fast-path.
+  ChatMessageObservation,
+  ObserveMessageFn,
 } from "./config";
 
 // Proactive chat layer (slices #2292 reaction-first tracer, #2293 reaction-to-answer, #2295 kill switch, #2298 feedback)

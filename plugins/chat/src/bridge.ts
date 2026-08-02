@@ -33,6 +33,7 @@ import type {
   ChatPluginConfig,
   ChatQueryResult,
   ChatMessage,
+  ObserveMessageFn,
   PendingAction,
 } from "./config";
 import { DEFAULT_BOT_USER_NAME } from "./config";
@@ -664,6 +665,182 @@ export interface ChatBridge {
 }
 
 /**
+ * The pattern the message observer registers on the SDK's pattern arm (#4967)
+ * — any message carrying at least one character.
+ *
+ * Exported so a test can assert the REGISTERED pattern rather than restate it:
+ * this and `/.+/` differ on the whole class of messages whose text is nothing
+ * but line terminators (`.` matches no LF, CR, U+2028 or U+2029), and a
+ * test that hard-coded its own regex would agree with a narrowed one forever.
+ */
+export const OBSERVE_ANY_MESSAGE_PATTERN = /[\s\S]/;
+
+/**
+ * How long the bridge waits on `config.observeMessage` before giving up on it
+ * (#4967).
+ *
+ * The observer's contract says it must never be slow, and until this existed
+ * that was documentation rather than enforcement — a difference that matters
+ * because the failure is not symmetric with throwing. The try/catch below
+ * bounds ERRORS; only this bounds DURATION, and duration is the damaging one:
+ * the observer runs FIRST, inline, while the SDK holds the thread lock, and the
+ * Atlas host wires it to a callback that makes uncached internal-DB round trips
+ * whose own connect timeout defaults to 10s. Three of those would exceed the
+ * SDK's 30s `DEFAULT_LOCK_TTL_MS`, at which point the lock expires mid-handler
+ * and a second message can acquire it — a degraded internal DB turning a
+ * feature that "contributes nothing to correctness" into a chat-pillar outage.
+ *
+ * 2s is well above a healthy round trip and well below anything a user would
+ * attribute to the bot. Racing does not CANCEL the in-flight work — the write
+ * may still land, which is fine, it is idempotent — it just stops the pillar
+ * waiting for it.
+ */
+export const OBSERVE_DEADLINE_MS = 2_000;
+
+/**
+ * The structural subset of a chat-sdk `Thread` the observer handler reads.
+ * Defined as a subset so tests can pass plain objects rather than construct
+ * real SDK threads — the same reason {@link ApproveDenyActionEvent} exists.
+ */
+export interface ObservedMessageThread {
+  readonly adapter: { readonly name: string };
+}
+
+/**
+ * Build the handler that feeds `config.observeMessage` (#4967), extracted from
+ * the registration lambda in `createChatBridge` so its ONE load-bearing
+ * property is unit-testable: **it never rejects.**
+ *
+ * That property is what makes registering the observer FIRST safe. The SDK
+ * awaits handlers sequentially with no try/catch on ANY arm — `runHandlers` for
+ * the subscribed and mention arms, an inline `for` loop for the pattern and DM
+ * arms — so a rejecting first handler would abort every handler after it: the
+ * brain's fast-path taking the chat pillar's answer down with it. (Worth
+ * spelling out, because grepping `runHandlers` alone would suggest the pattern
+ * arm is exempt, and it is not.) Wrapping here rather
+ * than trusting the host to be careful is deliberate: the host callback crosses
+ * a package boundary, and "the other side promised not to throw" is not a
+ * property this side can check.
+ *
+ * The swallow is intentional and logged. It is the one place in the bridge
+ * where swallowing is right, because the observer is a side-channel whose
+ * failure has its own backstop (the scheduled poll stores the message anyway) —
+ * so the user's answer must not pay for it. Silent would still be wrong: a
+ * fast-path failing while the poll covers for it is invisible from the outside,
+ * since the episodes still appear, just a sync tick late.
+ */
+export function buildObservedMessageHandler(
+  observe: ObserveMessageFn,
+  log: PluginLogger,
+  deadlineMs: number = OBSERVE_DEADLINE_MS,
+): (thread: ObservedMessageThread, message: Message) => Promise<void> {
+  return async (thread, message) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        observe({
+          platform: thread.adapter.name,
+          message: { id: message.id, raw: message.raw },
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`chat message observer exceeded ${deadlineMs}ms`)),
+            deadlineMs,
+          );
+          // Never hold the process open on this timer — it exists to bound a
+          // handler, not to keep the runtime alive waiting for one.
+          timer.unref?.();
+        }),
+      ]);
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          platform: thread.adapter.name,
+          messageId: message.id,
+        },
+        "Chat message observer failed or timed out — message handling continues; whether anything else stores this message is the observer's own business to log",
+      );
+    } finally {
+      // Always cleared: the winning branch is usually `observe`, and a live
+      // timer would keep a rejected promise pending for the full deadline on
+      // every single message.
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+}
+
+/**
+ * The registration surface {@link registerMessageObserver} uses — the four
+ * message-bearing arms of the SDK's dispatch cascade.
+ *
+ * `onDirectMessage` is in the interface even though the observer must never use
+ * it. That is the point: a recording stub can then assert it was NOT called,
+ * which turns "we deliberately skip DMs" from a comment into a test. An
+ * interface that only listed the three arms we do register would make the
+ * omission untestable and therefore silently reversible.
+ */
+export interface MessageObserverRegistrar {
+  onNewMention(handler: (thread: ObservedMessageThread, message: Message) => Promise<void>): void;
+  onSubscribedMessage(
+    handler: (thread: ObservedMessageThread, message: Message) => Promise<void>,
+  ): void;
+  onNewMessage(
+    pattern: RegExp,
+    handler: (thread: ObservedMessageThread, message: Message) => Promise<void>,
+  ): void;
+  onDirectMessage(
+    handler: (thread: ObservedMessageThread, message: Message) => Promise<void>,
+  ): void;
+}
+
+/**
+ * Register the brain fast-path observer on every arm of the SDK's dispatch
+ * cascade that can carry a CHANNEL message (#4967).
+ *
+ * Extracted from `createChatBridge` so the arm SET is testable. Without this
+ * seam the whole feature could be unwired — the `if (config.observeMessage)`
+ * block deleted outright — with every test still green, because they all reach
+ * the writer directly. The arm set is the one part of this slice that nothing
+ * else pins.
+ *
+ * ## Why three arms
+ *
+ * `Chat.dispatchToHandlers` is a router with EARLY RETURNS: DM → subscribed →
+ * mention → pattern. A pattern-only registration would therefore miss every
+ * @-mention and every follow-up in a subscribed thread — the highest-value
+ * messages in the channel, and a gap that would read as a bug rather than a
+ * policy.
+ *
+ * The proactive listener is the instructive contrast, and it is NOT
+ * pattern-only: it registers the pattern arm AND the DM arm
+ * (`proactive/listener.ts`), deliberately not mention/subscribed, since it stays
+ * out of conversations Atlas is already in. This observer inverts that exactly.
+ *
+ * ## Why not the DM arm
+ *
+ * 1:1 DMs are not admissible channels for the brain's chat source at all — a
+ * DM's audience is two people, and `SLACK_CHANNEL_ID_PATTERN` refuses `D…` ids
+ * outright, so an observation there could only ever be discarded downstream.
+ * Registering it would spend a DB round trip per DM to reach a guaranteed
+ * refusal.
+ */
+export function registerMessageObserver(
+  chat: MessageObserverRegistrar,
+  observe: ObserveMessageFn,
+  log: PluginLogger,
+): void {
+  const handler = buildObservedMessageHandler(observe, log);
+  chat.onNewMention(handler);
+  chat.onSubscribedMessage(handler);
+  // The pattern arm is text-matched by the SDK, so a message with EMPTY text
+  // cannot reach it. Not a gap: the brain's ingest drops empty-text messages
+  // anyway (`toEpisode`'s `emptyText` skip — an empty body is refused outright
+  // by `chk_brain_episodes_body_xor_locator`).
+  chat.onNewMessage(OBSERVE_ANY_MESSAGE_PATTERN, handler);
+}
+
+/**
  * Structural subset of the chat-sdk `ActionEvent` that the approve/deny
  * dispatch path actually reads. Defined as a subset so tests can pass
  * plain objects without constructing real chat-sdk event types.
@@ -1275,6 +1452,23 @@ export function createChatBridge(
       });
     }
   };
+
+  // --- Per-message observer (#4967) — the Company Brain's webhook fast-path ---
+  //
+  // MUST STAY ABOVE the `chat.onNewMention(handleMentionOrDM)` line below, and
+  // `bridge-observer.test.ts` pins that ordering against this file's source
+  // text — because it is invisible at runtime and the whole latency win depends
+  // on it. The SDK awaits handlers sequentially, so registering after the
+  // pillar handler would put the brain write behind a full agent turn, seconds
+  // to minutes. Ordering is safe in this direction because
+  // `buildObservedMessageHandler` neither throws nor outlasts its deadline; a
+  // RAW observer registered first could abort or stall the pillar handler,
+  // which is why that wrapper is not optional.
+  //
+  // Which arms, and why not the DM arm: see `registerMessageObserver`.
+  if (config.observeMessage) {
+    registerMessageObserver(chat, config.observeMessage, log);
+  }
 
   chat.onNewMention(handleMentionOrDM);
   chat.onDirectMessage(handleMentionOrDM);

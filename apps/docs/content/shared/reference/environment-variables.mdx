@@ -210,6 +210,28 @@ Caps and cadence for hosted <AudienceLink saas="/guides/knowledge-base">Knowledg
 
 ---
 
+## Company Brain
+
+Ingest, extraction, and access-membership knobs for [company-brain sources](/guides/brain-sources). Like the Knowledge Base knobs above these are **settings-registry keys** — changeable in Admin → Settings without a redeploy, with the env var form honored on self-hosted deployments. Precedence is `workspace > platform > env > default`, so on Atlas Cloud these are set in the admin console rather than by redeploy. All are platform-scoped except `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`, which is the one key a workspace can override for itself.
+
+<Callout type="info" title="Connector credentials are not environment variables">
+  A brain source's vendor credentials — the Zoom account/client id and secret, the Entra tenant/client id and secret — are entered on the source's **install form** and stored encrypted per workspace. There is no env var form for them, deliberately: they are per-install scope, not deployment config. See [Company Brain — Sources](/guides/brain-sources#what-each-source-needs-to-connect).
+</Callout>
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_BRAIN_CHAT_BACKFILL_DAYS` | `7` | How much history a newly-connected chat channel reads on its first sync. Lower it when a first sync reports that a channel has more history than one cycle can read; already-synced channels are unaffected. Hot-reloaded; non-positive values fall back to the default |
+| `ATLAS_BRAIN_TRANSCRIPT_BACKFILL_DAYS` | `30` | How much history a newly-connected Zoom account reads on its first sync. Clamped to 180 days — Zoom serves at most six months of cloud recordings, so a wider window only spends API calls walking empty date ranges. Hot-reloaded |
+| `ATLAS_BRAIN_EMAIL_BACKFILL_DAYS` | `30` | How much history a newly-connected mailbox reads on its first sync. Clamped to 365 days. **Raise it deliberately:** unlike chat and meetings, every message ingested mints its own access audience that is re-verified on every cycle from then on — a standing per-cycle cost, not a one-off catch-up. Hot-reloaded |
+| `ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED` | `false` | Store Slack messages as brain episodes as they arrive instead of waiting for the next sync ([fast-path guide](/guides/brain-chat-webhook)). The scheduled sync stores every top-level message either way, so this changes how quickly a message becomes available, never whether it does. Only channels the Slack history source is scoped to are stored. Read per event — a change applies immediately |
+| `ATLAS_BRAIN_EXTRACTION_ENABLED` | `false` | Draw fact candidates from stored episodes with the workspace's configured model and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart |
+| `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED` | `true` | **Workspace-scoped.** Keep brain audience membership in sync so facts drawn from private channels, meetings and mail stay visible to the people who were in them — and hidden again when someone leaves. Matches participants' email addresses against existing Atlas accounts; never creates accounts, never stores a roster. Switching it off does not stop those facts being collected — it stops the membership behind them being refreshed, so they stop granting anyone once past the staleness bound. Slack channels additionally need `users:read` and `users:read.email` |
+| `ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES` | `30` | How often audience membership is re-read from the source. Also the shortest delay between someone leaving a channel and losing access to facts drawn from it. Applies at restart; non-positive or unparseable values fall back to the default |
+| `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS` | `168` (7 days) | How long an audience's membership stays valid after Atlas last verified it against the source. Past this, facts drawn from it stop being readable through that membership until a sync succeeds again — so a source Atlas has lost access to cannot keep granting indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to `0` to disable the limit and rely on sync-cycle alerts alone |
+| `ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS` | `24` | How often Atlas scans brain facts and episodes for access grants that name nobody. Such rows are invisible to every reader and to the review queue; the sweep only counts and logs them and never changes anything. Applies at restart; values below 0.05 hours are clamped up and values above ~596 hours clamped down |
+
+---
+
 ## Security
 
 Query safety, SQL validation, and security-disclosure settings. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> for how the query-safety settings are enforced.

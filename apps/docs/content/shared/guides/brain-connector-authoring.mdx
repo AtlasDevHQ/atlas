@@ -1,0 +1,185 @@
+---
+title: Company Brain — Writing a Source Connector
+description: The contract a new company-brain source implements — what a vendor directory must provide, why every connector owes a stable source id, and how the stored source value splits into a class and a vendor.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Adding a source to the company brain is deliberately small. The scheduling, high-water marks, incremental-versus-reconcile cadence, rate-limit backoff and per-sync caps are all shared machinery you inherit; what a new vendor writes is a client that fetches records and a declaration of what kind of evidence they are.
+
+This page is the contract. It is written for whoever adds the next vendor — a second chat platform, a second meeting recorder, a mail provider that is not Outlook — or the first connector in a class Atlas has not shipped yet.
+
+---
+
+## What a vendor directory provides
+
+A connector is one object registered against one catalog row:
+
+```ts
+interface BrainSourceConnector {
+  /** The catalog row this connector serves — the dispatch key. */
+  readonly catalogId: string;
+  /** The source kind stamped onto every episode it produces. */
+  readonly source: EpisodeSource;
+  createClient(ctx: BrainSourceInstallContext): Promise<BrainSourceVendorClient> | BrainSourceVendorClient;
+}
+```
+
+`createClient` is handed the install row and nothing else — the workspace id, the install id, and the install's non-secret config. It may throw; a bad config or a disconnected upstream OAuth install becomes that source's error outcome with your message surfaced to the admin, so **write the message for the admin who has to fix it**, not for a log reader.
+
+The client itself is one method:
+
+```ts
+interface BrainSourceVendorClient {
+  fetchEpisodes(params: BrainSourceFetchParams): Promise<BrainSourceChanges>;
+}
+```
+
+In practice a vendor directory holds four or five leaf files, and the split is worth copying: `config.ts` (identity, the stored-config shape, and the source-id contract), `api.ts` (raw vendor calls — absent for Slack, which reuses the existing Slack client), `client.ts` (the page walk and record construction), `connector.ts` (registration and credential resolution), and `audience.ts` for a source that owns its own audience re-verification.
+
+`config.ts` deliberately imports nothing from the ingest core. That is what makes adding a vendor purely additive: the install handler, the connector, the audience re-verifier and the catalog seed all share one definition without any of them reaching into the engine.
+
+## What one record looks like
+
+```ts
+interface BrainEpisodeRecord {
+  readonly sourceId: string;          // THE dedupe key — see below
+  readonly sourceActor: string | null; // the author at the source, or null
+  readonly body: string;               // the content, stored by value; never ""
+  readonly occurredAt: Date | null;    // event time at the source
+  readonly visibleTo: BrainGrant;      // the derived access grant
+}
+```
+
+Note what a connector **cannot** name: the episode's id, its ingest timestamp, and — most importantly — its extraction marker. Extraction is driven by a marker that must stay unset at ingest. A connector able to set it could take an episode off the extraction queue before anything extracted it, turning a visible backlog into a silent drop.
+
+`body` is stored **by value**, not by reference. Chat is by-value on purpose: the vendor may delete the message out from under you and the evidence has to survive. A blank body is dropped rather than stored.
+
+<Callout type="info" title="Grant derivation is not the connector's to invent">
+  Your client decides *what the vendor said about visibility* and hands it to the deriver for your class. It does not build grant tokens itself.
+
+  Each class has its own derivation function, and the duplication is deliberate: only the chat deriver has an org-wide arm, because only a chat channel has a genuine public mode. The transcript and email derivers structurally cannot express "everyone in the org", so the leak they would cause cannot be reached by accident. **A new class adds a function; it does not add a branch to an existing one.**
+</Callout>
+
+## The stable source-id obligation
+
+This is the one contract that is genuinely load-bearing, and the one most likely to be got wrong.
+
+Episodes are **immutable, append-only, and deduped on `(workspace, source, source id)`**. There is no upsert and no archive — the only write is an insert that does nothing on conflict. So:
+
+- Two writers that disagree about a record's id **duplicate it**, and nothing later converges them.
+- A duplicate is not merely wasted storage. Extraction spends a model call on each copy, and fact reconciliation treats the two as *independent* evidence — so a claim gains a corroboration edge from its own echo and reads as better-supported than it is.
+- Changing an id's **format** re-ingests every record in every workspace as a new episode, and re-extracts facts from all of them.
+
+<Callout type="warn" title="The obligation, stated exactly">
+  A connector's source id must be **byte-identical from every writer, on every pass, forever**. That means identical between the scheduled poll and any webhook fast-path, stable across re-fetches, and never reformatted after launch.
+</Callout>
+
+The id format is **vendor-specific by design** — there is no shared grammar to conform to, and inventing one would be worse than useless. What matters is that yours satisfies four properties. The shipped connectors are the worked examples:
+
+| Vendor | Source id | Why that shape |
+|---|---|---|
+| Slack | `<channelId>:<ts>` | `ts` is the message's identity within a channel, but is **not** globally unique — without the channel prefix, two channels' messages collide and one is silently dropped |
+| Zoom | `<meetingUuid>:<recordingFileId>` | The `uuid` identifies a meeting **instance**; the 11-digit meeting number identifies the series, so keying on it would collapse every occurrence of a recurring standup into one episode. The file id is needed because one meeting can hold several transcripts — stopping and restarting a recording produces one per segment |
+| Outlook | The RFC 5322 `Message-ID` | It is minted once by the sending system and is **identical in every copy, in every mailbox**. Graph's own `message.id` is per-mailbox *and* re-minted on a folder move, so it would ingest one five-recipient email as five episodes and re-ingest each one when somebody archives it |
+
+The four properties to check yours against:
+
+1. **Unique within your source's namespace.** Not "unique at the vendor" — unique among the ids *you* mint. Slack's channel prefix exists for exactly this.
+2. **Identifies the right grain.** One episode should be one piece of evidence. Zoom's instance-versus-series trap and Outlook's message-versus-thread decision are both this property.
+3. **Stable across re-fetches.** Re-polling the same record must be a no-op. If the vendor re-mints an identifier when content settles, or when a user moves the item, it is not a source id.
+4. **Reachable identically from every writer.** If you add a webhook path later, it must read the same values — and it will read them from a *different payload shape*.
+
+### Where each writer reads the id from
+
+Every shipped source carries a section in its `config.ts` header enumerating **where each writer reads the id's parts from**, because in all three cases the obvious reading is the wrong one:
+
+- **Slack** — the poll reads `message.ts`; a plain webhook event carries `event.ts`; a `message_changed` event carries the original message's id at `event.message.ts`, while its own top-level `ts` is the *edit's* timestamp. Using the wrong one duplicates every edited message. A thread reply's `thread_ts` is its **parent** — keying on it collapses an entire thread onto one episode.
+- **Zoom** — the poll reads `meeting.uuid` + `recording_files[].id`; the webhook reads `payload.object.*`, whose file list is pre-filtered by the event, so index 0 is not necessarily the transcript. And the `recording.completed` event fires *before* the transcript exists — writing an episode from it mints the transcript's id for a file that is not there yet, which the later transcript event then dedupes against, losing the transcript permanently.
+- **Zoom, again** — a meeting uuid is base64, so it routinely contains `/`, `+` and `=`, and Zoom requires it double-URL-encoded as a path segment. That encoding is a **transport** concern and must never reach the stored id. The poll encodes because it puts the uuid in a URL; a webhook never does, because the uuid arrives in a JSON body. If either normalises before storing, the two writers duplicate every meeting whose uuid contains one of those characters — which is most of them.
+- **Outlook** — the same instance-versus-identity trap as Zoom's, with the polarity reversed, which is what makes it easy to get backwards. Graph's `message.id` is the one that *looks* canonical and is per-mailbox and per-folder; `internetMessageId` is the one that looks like a header detail and is the stable cross-copy identity. There is deliberately **no fallback** from the header to `message.id` for a message that lacks one: a fallback would restore the one-episode-per-recipient duplication for exactly the messages whose identity is already doubtful. A message with no usable header is a counted skip.
+
+The general lesson: **build the id in one function, exported from `config.ts`, and call it from every writer.** Do not re-derive it in the webhook path. That function should throw on a malformed input rather than returning a sentinel — its output is half of a dedupe key, so a malformed id does not fail loudly, it quietly lands a row nothing ever dedupes against.
+
+## Classes and vendors — what the stored value means
+
+Every episode stores one `source` value, and that value carries two axes: a **class** (what kind of evidence this is) and a **vendor** (which product it came from). Atlas stores the vendor and derives the class from it, through one declaration.
+
+Adding a member is a deliberate one-line change that declares its class:
+
+```ts
+slack:   { class: "chat",       vendor: "slack"   },
+zoom:    { class: "transcript", vendor: "zoom"    },
+outlook: { class: "email",      vendor: "outlook" },
+```
+
+### Why the stored value is the vendor and not the class
+
+Because a stored value is a **dedupe namespace**. Two chat vendors both storing `chat` would put Slack's `<channel>:<ts>` ids and Teams' ids in one namespace, and a collision there does not error — it silently drops one vendor's message as a duplicate of the other's.
+
+Email is the case that looks like an exception and is not, so it is worth spelling out. Email *does* have a genuinely cross-vendor identifier: a `Message-ID` is the same in every copy of a message, so an Outlook connector and a Gmail connector would mint identical ids for the same mail. That looks like free deduplication, and one shared stored value looks correct.
+
+It is not, because the stored value does more than dedupe. It is what every downstream discriminator reads, it is the scan key the audience re-verifier walks on, and it is what routes a correction. Two vendors sharing it means **one vendor's re-verifier walking the other's audiences holding the wrong credential**. The id collision being benign is a different claim from the source being shared, and conflating them turns a dedupe convenience into a cross-vendor access fault.
+
+So: a new vendor within an existing class is a **new member**, not a reuse. A new class arrives with its first connector, in the same change.
+
+<Callout type="warn" title="One rule the compiler cannot check for you">
+  If the kind you are adding is warehouse-shaped, it **must** declare the warehouse class. Warehouse-derived facts are refused a hand-correction path — the fix belongs in your data or your semantic layer, not in an override the next sync overwrites — and that refusal keys off the class alone.
+
+  Nothing in the type system knows what "warehouse-shaped" means. `{ class: "chat", vendor: "snowflake" }` compiles cleanly and escapes the refusal entirely. What the single declaration buys is that the producer and the refusal can no longer *disagree* about which value means warehouse. Choosing the right class is still a judgement call, and it is the one this change exists to make you confront.
+</Callout>
+
+## Fetch modes, coverage, and bookkeeping
+
+`fetchEpisodes` receives a mode, a `since` mark, an opaque cursor, and a hard cap on how many episodes this pass may return.
+
+- **`incremental`** — fetch what changed since `since`.
+- **`reconciliation`** — the wider-window cadence. It is **not** a full enumeration, and nothing is archived from its absences. That half of the shared engine scopes to documents, not episodes. A source with nothing wider to fetch may treat it identically to `incremental` — the Slack source does.
+
+`since` is the persisted high-water mark **minus an overlap window**, so you will re-fetch some records. That is intentional and free: re-fetched records no-op in the source-id dedupe, so the overlap costs bandwidth and never correctness. It is also the property that lets the incremental window be rewound safely.
+
+`maxEpisodes` is required rather than optional, and it is the *effective* cap — the smaller of the platform ceiling and the workspace's plan tier. Honour it. A client that fell back to the raw platform ceiling would burn a small workspace's vendor rate limit pulling many times what it can ever ingest.
+
+Return the bookkeeping honestly:
+
+| Field | Contract |
+|---|---|
+| `highWaterMark` | The newest **source-side** event time this fetch covered. Return the source's clock, never the local one. `null` when nothing new was covered |
+| `cursor` | Opaque, persisted verbatim, echoed back next pass |
+| `coverageIncomplete` | `true` when you *know* this pass left part of its window uncovered while the records you returned are sound |
+| `warnings` | Non-fatal notes — a channel that exceeded its budget, a sub-source the vendor refused — surfaced in the sync report so a partially-covered success is never silently green |
+
+<Callout type="warn" title="`coverageIncomplete` puts the correctness burden on you, not the engine">
+  When you report incomplete coverage the engine still ingests your records and still advances the high-water mark **you returned** — it only holds the reconcile clock so the wider re-crawl stays due.
+
+  So a client reporting incomplete coverage must return a mark (and cursor) covering only the **contiguous** part of the window it actually enumerated. Return the newest thing you saw across a gapped walk and you will skip the gap forever.
+</Callout>
+
+Throwing is fine and is isolated per source — a rate-limit error from the shared throttle vocabulary gets the engine's bounded backoff; anything else becomes that source's error outcome and never fails the cycle. But prefer a **counted skip** to a throw for permanent per-record conditions. A message with no usable identifier is skipped, counted, and its window still marked covered, because a header a message does not have will never appear on a retry, and retrying it forever freezes the cursor.
+
+## Registration
+
+Register once, at wiring time. Registration fails loudly on a duplicate catalog id, a malformed source slug, or a kind outside the vocabulary — a silent overwrite would let one source shadow another's installs, and an unknown kind would land a value no downstream discriminator recognises.
+
+The vocabulary check exists at runtime as well as in the type system, because a plugin-shaped connector is compiled separately and arrives as data rather than as a checked type. An unrecognised kind now fails **closed**: every fact derived from it is correction-quarantined until the vocabulary admits the kind. It is a loud failure rather than a silent downgrade, but it is still a state to keep out of the registry.
+
+## Before you ship
+
+- [ ] The source id is minted by **one exported function**, called from every writer.
+- [ ] That function throws on a malformed input rather than returning a sentinel.
+- [ ] Its `config.ts` header enumerates the field paths each writer reads the id's parts from.
+- [ ] Transport encoding never reaches the stored id.
+- [ ] The new member declares its class, and the class is the right one.
+- [ ] The grant deriver is your class's, and a class new to Atlas got its own function rather than a new branch.
+- [ ] "The audience could not be established" blocks; "the audience contains no Atlas users" does not.
+- [ ] `coverageIncomplete` is paired with a contiguous high-water mark.
+- [ ] Permanent per-record failures are counted skips, not throws.
+- [ ] Install-form errors name the field an admin has to fix.
+- [ ] Any new configuration knob is in the settings registry, not only an environment variable.
+
+## Related
+
+- [Company Brain — Sources](/guides/brain-sources) — the classes, and how each one derives its audience
+- [Company Brain — Chat Webhook Fast-Path](/guides/brain-chat-webhook) — the second writer this contract exists for
+- [Company Brain — Corrections](/guides/brain-corrections) — the correction path a source's class determines
+- [Environment variables → Company Brain](/reference/environment-variables#company-brain)

@@ -376,20 +376,6 @@ async function reverifyWorkspace(
     return { ...ZERO_REVERIFY, failed: 1 };
   }
 
-  // Resolved ONCE per workspace, outside the per-audience loop: a token call per
-  // meeting would multiply the auth endpoint's load by the audience count for no
-  // gain, and the token outlives a whole pass.
-  //
-  // BEFORE the scan, deliberately. The scan STAMPS every candidate it returns,
-  // and that stamp means "this audience's turn was consumed". A workspace whose
-  // credential is revoked consumes nobody's turn — it cannot make a single
-  // vendor call — so scanning first would burn a page of rotation per cycle on
-  // work that never happened and leave `attempted_at` reporting a healthy
-  // rotation across a workspace that verified nothing. The cost of this ordering
-  // is one token resolution per cycle for an enabled install with zero
-  // audiences, which is the window between installing and first ingest.
-  const token = await resolveToken(workspaceId, install.install_id, install.config);
-
   // Scans AND stamps the attempt in one call, so this pass cannot consume a
   // slot without rotating the audience out of the front of the next scan
   // (#4971). Throws if either half fails, and the caller counts the workspace.
@@ -412,6 +398,26 @@ async function reverifyWorkspace(
       "brain audience: this workspace has at least as many Zoom meeting audiences as the per-cycle cap — the tail is deferred to the next cycles, which now reach it because the scan rotates on attempt rather than on success. Check the failed count alongside this line: a tail that keeps growing means audiences are being attempted faster than they can be verified",
     );
   }
+
+  // Resolved ONCE per workspace, outside the per-audience loop: a token call per
+  // meeting would multiply the auth endpoint's load by the audience count for no
+  // gain, and the token outlives a whole pass.
+  //
+  // AFTER the scan, deliberately — and this ordering was tried the other way and
+  // reverted, so it is a decision rather than an accident. Hoisting it looks
+  // tidier: the scan STAMPS every candidate, so a workspace whose credential is
+  // revoked "consumes" a page of rotation without making one vendor call. But
+  // that cosmetic complaint costs two real things. An enabled install with ZERO
+  // live audiences would resolve a token it never uses on every cycle — and
+  // `resolveZoomToken` is a credential decrypt plus a live token exchange, with
+  // no cache — and if that credential is broken the workspace reports
+  // `failed: 1` forever, so the cycle stands permanently `degraded` over a
+  // workspace with nothing to verify.
+  //
+  // And the fairness it was meant to buy is not real: a token failure hits every
+  // audience in the workspace equally, so stamping them all is the CORRECT
+  // rotation outcome, not a lie. Nothing is starved either way.
+  const token = await resolveToken(workspaceId, install.install_id, install.config);
 
   let total = ZERO_REVERIFY;
   for (const candidate of candidates) {

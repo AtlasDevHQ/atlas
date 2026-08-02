@@ -110,11 +110,11 @@
  * #4971 touched. Fair rotation past the ceiling means the whole set ages under
  * ONE rotation rather than a lucky prefix staying fresh — better, and still
  * fail-closed for whatever falls outside the bound. Not EVENLY, though:
- * `MEMBERLESS_RESERVE_FRACTION` splits each cycle 9:1, so roughly 90% of that
- * ceiling goes to audiences that currently grant somebody and the rest to the
- * mail addressed only to customers. For this source that second class is large,
- * and the split is what keeps its "someone joined Atlas later" repair running
- * at all.
+ * `MEMBERLESS_RESERVE_FRACTION` guarantees audiences that grant NOBODY at least
+ * a tenth of each cycle. A floor, not a quota — where member-bearing audiences
+ * do not fill the rest, member-less ones take the remainder too. For this source
+ * that second class is large (mail addressed only to customers), and the floor
+ * is what keeps its "someone joined Atlas later" repair running at all.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -122,6 +122,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { AUDIENCE_PREFIX } from "@atlas/api/lib/brain/acl";
 import {
   EMAIL_MESSAGE_AUDIENCE_NAMESPACE,
+  PARTICIPANTS_DIGEST_PATTERN,
   emailParticipantsDigest,
   parseEmailMessageAudienceId,
 } from "@atlas/api/lib/brain/ingest/grant";
@@ -166,8 +167,26 @@ const log = createLogger("brain.ingest.outlook.audience");
  */
 export function redactAudienceDigest(audienceId: string): string {
   const parts = parseEmailMessageAudienceId(audienceId);
-  if (parts === null) return audienceId;
-  return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${parts.source}:${parts.mailboxId}:[digest]:${parts.messageId}`;
+  if (parts !== null) {
+    return `${EMAIL_MESSAGE_AUDIENCE_NAMESPACE}:${parts.source}:${parts.mailboxId}:[digest]:${parts.messageId}`;
+  }
+  // ⚠️ Unparseable is the FORMAT-CHANGE case, and returning the raw id here —
+  // which is what this did — fails OPEN on the one input most likely to carry a
+  // real digest in a slot this parser no longer knows about. It is also the
+  // exact branch `reverifyWorkspace`'s parse check logs, so the disclosure this
+  // function exists to prevent would land in the sink precisely when the format
+  // moved. `parseEmailMessageAudienceId` argues the opposite direction for
+  // itself ("it stops matching and the caller falls back to opaque, which is
+  // fail-CLOSED for a disclosure decision"); this now matches it.
+  //
+  // Blanking every digest-SHAPED segment is deliberately structural rather than
+  // positional: with the format unknown, position is exactly what cannot be
+  // trusted. `PARTICIPANTS_DIGEST_PATTERN` is anchored for validation, so the
+  // segment test is applied per `:`-delimited part rather than by loosening it.
+  return audienceId
+    .split(":")
+    .map((segment) => (PARTICIPANTS_DIGEST_PATTERN.test(segment) ? "[digest]" : segment))
+    .join(":");
 }
 
 /**
@@ -473,15 +492,6 @@ async function reverifyWorkspace(
     return { ...ZERO_REVERIFY, failed: 1 };
   }
 
-  // BEFORE the scan, deliberately — the scan STAMPS every candidate it returns,
-  // and that stamp means "this audience's turn was consumed". A workspace whose
-  // Graph credential is revoked consumes nobody's turn, so scanning first would
-  // burn a page of rotation per cycle on work that never happened and leave
-  // `attempted_at` reporting a healthy rotation across a workspace that verified
-  // nothing. The cost is one token resolution per cycle for an enabled install
-  // with zero audiences — the window between installing and first ingest.
-  const token = await resolveToken(workspaceId, install.install_id, install.config);
-
   // Scans AND stamps the attempt in one call, so this pass cannot consume a
   // slot without rotating the audience out of the front of the next scan
   // (#4971) — which matters more here than anywhere, because a single revoked
@@ -510,6 +520,15 @@ async function reverifyWorkspace(
     );
   }
 
+  // AFTER the scan, deliberately — see `zoom/audience.ts`'s note at the same
+  // point, which carries the argument in full. The short version: hoisting it
+  // above the scan makes an enabled install with ZERO live audiences resolve a
+  // token it never uses on every cycle (Graph's `client_credentials` exchange is
+  // not cached), and a broken credential there stands the cycle permanently
+  // `degraded` over a workspace with nothing to verify. The rotation it looked
+  // like it was protecting is not at risk: a token failure hits every audience
+  // in the workspace equally, so stamping them all is the correct outcome.
+  const token = await resolveToken(workspaceId, install.install_id, install.config);
   const fetchMessage = deps.fetchMessage ?? fetchMessageByInternetMessageId;
 
   let total = ZERO_REVERIFY;

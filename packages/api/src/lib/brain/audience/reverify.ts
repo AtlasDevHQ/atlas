@@ -479,10 +479,17 @@ export async function selectReverifyCandidates(
     reserve,
   ]);
   if (rows.length === 0) {
-    // Expected for an idle workspace, and also the exact signature of a source
-    // wired with the wrong `source` kind — the one condition this subsystem
-    // cannot otherwise see, because "I scanned and found nothing" and "this
-    // workspace has nothing" are the same empty array.
+    // Expected for an idle workspace, and also the signature of a source wired
+    // with the wrong `source` kind — "I scanned and found nothing" and "this
+    // workspace has nothing" are the same empty array, so the two are
+    // indistinguishable here.
+    //
+    // `debug`, so this is OFF on a default deploy (`ATLAS_LOG_LEVEL` defaults to
+    // `info`) — do not read it as a live guard against the mis-wiring. What
+    // actually prevents that is a test per connector asserting the exact
+    // `source` and `tokenPrefix` this seam is called with, which fails in CI
+    // rather than after a week of silent staleness. This line is for an
+    // operator who has already turned debug on to ask "is my source scanning?".
     log.debug(
       { workspaceId: input.workspaceId, source: input.source, tokenPrefix: input.tokenPrefix },
       "brain audience: the re-verify scan matched no live audiences",

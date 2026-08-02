@@ -584,9 +584,11 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       // roster was external at ingest can ONLY start granting if something
       // re-runs its resolution, and under absolute priority nothing ever does.
       //
-      // MUTATION THIS CATCHES: passing 0 as the reserve, or restoring a plain
-      // `ORDER BY has_members DESC, …`, either of which returns two member-
-      // bearing rows here and never reaches the member-less one.
+      // MUTATION THIS CATCHES: passing 0 as the reserve, or deleting the tier-2
+      // predicate — either returns two member-bearing rows here and never
+      // reaches the member-less one. (Dropping the TIER-1 predicate is NOT
+      // caught here; the sibling `puts member-BEARING audiences ahead` case
+      // owns that one.)
       // ⚠️ The member-less token sorts LAST. `token ASC` is the tie-break on a
       // uniformly-NULL attempt column, so a fixture named `external` would be
       // pulled into the page by the ALPHABET and the test would pass with the
@@ -601,7 +603,10 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       const candidates = await scan(2);
       expect(candidates).toHaveLength(2);
       expect(idsOf(candidates)).toContain("meeting:zoom:zzz-external");
-      // Still a MINORITY share: the member-bearing audiences keep the rest.
+      // The member-bearing side still takes its slice of the page. At this
+      // fixture's `limit: 2` the clamp puts the reserve at 1, so the split here
+      // is 1:1 rather than the 9:1 a production-sized cap produces — the
+      // proportion is asserted directly in `reverify-scan.test.ts`.
       expect(candidates.filter((candidate) => candidate.hasMembers)).toHaveLength(1);
     }, PG_TEST_TIMEOUT_MS);
 
@@ -632,6 +637,103 @@ describeIfPg("brain audience membership (real Postgres)", () => {
       const candidates = await scan(10);
       expect(idsOf(candidates)).toEqual(["meeting:zoom:external"]);
       expect(candidates[0]?.hasMembers).toBe(false);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("⭐ scopes BOTH joins by workspace when the same audience id exists in two tenants", async () => {
+      // The sibling test above uses distinct ids per workspace, so it can only
+      // prove the `tokens` CTE's scoping — it cannot see either LEFT JOIN. This
+      // one uses the SAME audience id in two workspaces, which the schema
+      // explicitly permits: `audience_id` is workspace-scoped and deliberately
+      // not globally unique, because two tenants both minting `engineering` is
+      // normal. Everything that reads it must say so.
+      //
+      // Two independent leaks, one fixture:
+      //
+      //   * `m.workspace_id = $1` — without it `has_members` is computed from
+      //     ANOTHER tenant's membership row. A false `true` makes
+      //     `zoom/audience.ts`'s empty-roster guard refuse the all-external
+      //     meeting forever, which is the exact audience the reserve exists to
+      //     repair, and it mis-tiers the row on top.
+      //   * `a.workspace_id = $1` — without it this workspace's audience looks
+      //     freshly attempted because the OTHER one attempted an id-identical
+      //     audience, so it is deferred indefinitely. That is #4971 rebuilt
+      //     across tenants, which no amount of correct ordering can undo.
+      //
+      // MUTATION THIS CATCHES: deleting either `workspace_id` predicate from
+      // either LEFT JOIN.
+      const shared = "audience:meeting:zoom:shared";
+      await audience(shared);
+      await audience(shared, ["user-far"], { workspaceId: OTHER_WORKSPACE });
+      // ⚠️ The other tenant's stamp must be NEWER than ours, or the leak is
+      // invisible. Ours is an hour old and theirs is now: correct scoping leaves
+      // `shared` on NULL so it sorts FIRST, while a leaked join gives it the
+      // freshest stamp in the workspace and sinks it to LAST. Written the other
+      // way round — theirs older — the leak would coincidentally preserve the
+      // right order and this test would pass against the bug.
+      await pool.query(
+        `INSERT INTO brain_audience_reverify_attempt (workspace_id, audience_id, source, attempted_at)
+         VALUES ($1, $2, $3, now())`,
+        [OTHER_WORKSPACE, "meeting:zoom:shared", SOURCE],
+      );
+      // A second audience of OURS that HAS been attempted, an hour ago. `shared`
+      // must still sort ahead of it — `shared` has no attempt row of its own —
+      // and would not if the other tenant's stamp bled through.
+      await audience("audience:meeting:zoom:aaa");
+      await pool.query(
+        `INSERT INTO brain_audience_reverify_attempt (workspace_id, audience_id, source, attempted_at)
+         VALUES ($1, $2, $3, now() - interval '1 hour')`,
+        [SCAN_WORKSPACE, "meeting:zoom:aaa", SOURCE],
+      );
+
+      const candidates = await scan(10);
+      const shine = candidates.find((c) => c.audienceId === "meeting:zoom:shared");
+      // Another tenant's membership row must not make ours look member-bearing.
+      expect(shine?.hasMembers).toBe(false);
+      // …and their attempt stamp must not defer ours behind our own attempted one.
+      expect(idsOf(candidates)).toEqual(["meeting:zoom:shared", "meeting:zoom:aaa"]);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("⭐ orders TIER 3 stalest-attempt first, NULLS before any stamp", async () => {
+      // The final `ORDER BY … attempted_at ASC NULLS FIRST` decides tier 3, and
+      // tier 3 is where a cap-bound workspace's overflow is allocated. The
+      // rotation test above cannot see this clause at all: at `limit: 1` the
+      // reserve clamps to 0 and tier 2 is vacuous, so rotation there is driven
+      // entirely by the `row_number()` WINDOW's ordering.
+      //
+      // Both mutations are real and neither is exotic:
+      //   * `DESC` → the FRESHEST audiences win the overflow slots and win them
+      //     again every cycle, so a fixed set permanently owns tier 3 while the
+      //     stale tail never advances. #4971 at tier-3 scale.
+      //   * `NULLS LAST` → a never-attempted audience sorts BEHIND an attempted
+      //     one, contradicting 0186's stated design ("an absent row means never
+      //     attempted, go to the front") and deferring exactly the audiences a
+      //     fresh deploy needs to reach first.
+      //
+      // Six member-bearing audiences at limit 4 (reserve 1) → tier 1 takes 3 and
+      // tier 3 decides the 4th, which is what makes the clause observable.
+      for (const name of ["a", "b", "c", "d", "e", "f"]) {
+        await audience(`audience:meeting:zoom:${name}`, ["user-ada"]);
+      }
+      // Every audience attempted, at spread-out times, EXCEPT `f` which has no
+      // row at all — the NULLS FIRST case.
+      const attempted = ["a", "b", "c", "d", "e"];
+      for (const [index, name] of attempted.entries()) {
+        await pool.query(
+          `INSERT INTO brain_audience_reverify_attempt (workspace_id, audience_id, source, attempted_at)
+           VALUES ($1, $2, $3, now() - make_interval(mins => $4::int))`,
+          [SCAN_WORKSPACE, `meeting:zoom:${name}`, SOURCE, (attempted.length - index) * 10],
+        );
+      }
+
+      // Stalest-first with the never-attempted one at the very front:
+      // f (NULL) → a (50m) → b (40m) → c (30m). Under DESC the page would start
+      // at `e`; under NULLS LAST `f` would fall off the page entirely.
+      expect(idsOf(await scan(4))).toEqual([
+        "meeting:zoom:f",
+        "meeting:zoom:a",
+        "meeting:zoom:b",
+        "meeting:zoom:c",
+      ]);
     }, PG_TEST_TIMEOUT_MS);
 
     it("matches the prefix LITERALLY — a `_` in it is not a wildcard", async () => {
@@ -665,8 +767,14 @@ describeIfPg("brain audience membership (real Postgres)", () => {
 
     it("counts one audience once, however many episodes name it", async () => {
       // A meeting produces many episodes and every one of them carries the same
-      // `audience:` token. Without the DISTINCT the cap would be spent on
-      // duplicates of a handful of audiences.
+      // `audience:` token; a duplicated audience would spend the cap on a
+      // handful of them and stamp the same id twice in one upsert, which
+      // `ON CONFLICT` rejects outright.
+      //
+      // The guard is the `GROUP BY t.token` in `scored`, NOT the CTE's
+      // `DISTINCT` — deleting the `DISTINCT` alone is an EQUIVALENT mutant,
+      // because the GROUP BY collapses the duplicates anyway. Said explicitly so
+      // nobody reads this as coverage of a keyword it does not exercise.
       await pool.query(
         `INSERT INTO brain_episodes (workspace_id, source, source_id, body, occurred_at, visible_to)
          VALUES ($1, $2, 'ep-1', 'a', now(), $3), ($1, $2, 'ep-2', 'b', now(), $3)`,

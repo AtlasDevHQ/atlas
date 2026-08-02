@@ -16,10 +16,10 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  MEMBERLESS_RESERVE_FRACTION,
   REVERIFY_CANDIDATES_SQL,
   TOUCH_REVERIFY_ATTEMPT_SQL,
   selectReverifyCandidates,
+  type ReverifyCandidateScan,
   type ReverifyScanDeps,
 } from "@atlas/api/lib/brain/audience/reverify";
 
@@ -42,17 +42,13 @@ interface ScanRow extends Record<string, unknown> {
 function recordingQuery(
   calls: Call[],
   rows: readonly ScanRow[],
-  onTouch?: () => void,
 ): NonNullable<ReverifyScanDeps["query"]> {
   return async <T extends Record<string, unknown>>(
     sql: string,
     params?: unknown[],
   ): Promise<T[]> => {
     calls.push({ sql, params: params ?? [] });
-    if (sql === TOUCH_REVERIFY_ATTEMPT_SQL) {
-      onTouch?.();
-      return [];
-    }
+    if (sql === TOUCH_REVERIFY_ATTEMPT_SQL) return [];
     return rows as unknown as T[];
   };
 }
@@ -215,15 +211,25 @@ describe("the member-less reserve", () => {
     expect(await reserveFor(200)).toBe(20);
   });
 
-  it("is a MINORITY share — the reserve must never outrank live access", async () => {
-    // The reserve buys the "someone joined Atlas later" repair, which is a
-    // future grant. Member-bearing audiences hold access somebody has RIGHT NOW,
-    // and suppressing one of those is the failure with a person behind it. A
-    // retune past a half inverts that ordering.
+  it("REFUSES a prefix without the grant prefix — at COMPILE time", () => {
+    // A backstopped guard test: the protection is `AudienceTokenPrefix`, and
+    // nothing else notices if it is weakened to `string`. Both the type gate and
+    // the suites stay green under that mutation, so the "unreachable" claim in
+    // its docstring would quietly stop being true.
     //
-    // MUTATION THIS CATCHES: raising the fraction to 0.5 or beyond.
-    expect(MEMBERLESS_RESERVE_FRACTION).toBeGreaterThan(0);
-    expect(MEMBERLESS_RESERVE_FRACTION).toBeLessThan(0.5);
+    // `@ts-expect-error` inverts that: it FAILS the type gate if the assignment
+    // ever starts compiling. Behaviourally a no-op, which is the point.
+    //
+    // MUTATION THIS CATCHES: `AudienceTokenPrefix = string`.
+    const badPrefix = {
+      workspaceId: "ws1",
+      source: "zoom",
+      // @ts-expect-error a prefix without `audience:` must not be assignable —
+      // it would make every derived audienceId garbage (see AudienceTokenPrefix)
+      tokenPrefix: "meeting:",
+      limit: 200,
+    } satisfies ReverifyCandidateScan;
+    expect(badPrefix.tokenPrefix).toBe("meeting:");
   });
 
   it("REFUSES a non-positive or fractional cap rather than scanning nothing", async () => {

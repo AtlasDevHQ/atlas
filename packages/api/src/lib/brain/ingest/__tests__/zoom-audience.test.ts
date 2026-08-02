@@ -569,6 +569,53 @@ describe("rotation — this source inherits the shared attempt stamp (#4971)", (
     }
   });
 
+  it("STAMPS the page even when the workspace's token cannot be resolved", async () => {
+    // The token is resolved AFTER the scan, and that ordering was tried the
+    // other way and reverted — so it needs a test rather than a paragraph.
+    //
+    // Hoisting `resolveToken` above the scan looks tidier (a workspace that
+    // cannot make one vendor call would not "consume" a page of rotation), but
+    // it makes an enabled install with ZERO audiences resolve a token it never
+    // uses on every cycle, and a broken credential there stands the whole cycle
+    // permanently `degraded` over a workspace with nothing to verify.
+    //
+    // And the fairness it looked like it was protecting is not real, which is
+    // what this pins: a token failure hits EVERY audience in the workspace
+    // equally, so stamping them all is the correct rotation outcome. No audience
+    // is starved relative to any other, and the failure is still counted.
+    //
+    // MUTATION THIS CATCHES: hoisting `resolveToken` above
+    // `selectReverifyCandidates` — the stamp would then never be issued.
+    let stamped: readonly string[] = [];
+    const query: NonNullable<ZoomAudienceDeps["query"]> = async <
+      T extends Record<string, unknown>,
+    >(
+      sql: string,
+      params?: unknown[],
+    ): Promise<T[]> => {
+      if (/workspace_plugins/.test(sql)) {
+        return [
+          { workspace_id: "ws1", install_id: "zoom-transcripts", config: { accountId: "acc1" } },
+        ] as unknown as T[];
+      }
+      if (sql === TOUCH_REVERIFY_ATTEMPT_SQL) {
+        stamped = (params?.[1] as string[] | undefined) ?? [];
+        return [] as T[];
+      }
+      return [{ token: `audience:meeting:zoom:${UUID}`, has_members: true }] as unknown as T[];
+    };
+    const out = await reverifyZoomMeetingAudiences({
+      isEnabled: () => true,
+      resolveToken: async () => {
+        throw new Error("credential revoked");
+      },
+      query,
+      reconcile: async () => ({ added: 0, revoked: 0 }),
+    });
+    expect(stamped).toEqual([`meeting:zoom:${UUID}`]);
+    expect([out.failed, out.reconciled]).toEqual([1, 0]);
+  });
+
   it("scans with the NAMESPACE prefix, not the vendor-narrowed one", async () => {
     // `audience:meeting:` rather than `audience:meeting:zoom:`, deliberately: the
     // scan is coarser than the parser so another vendor's meeting token comes

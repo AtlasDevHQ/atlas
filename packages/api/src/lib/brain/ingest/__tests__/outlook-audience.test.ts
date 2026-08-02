@@ -199,6 +199,30 @@ describe("redactAudienceDigest", () => {
       expect([opaque, redactAudienceDigest(opaque)]).toEqual([opaque, opaque]);
     }
   });
+
+  it("⭐ still blanks a digest when the id no longer PARSES — fail-closed, not open", () => {
+    // The unparseable branch used to `return audienceId` untouched, which fails
+    // OPEN on the one input most likely to carry a real digest. The reachable
+    // case is a FORMAT CHANGE: give the id another segment and
+    // `parseEmailMessageAudienceId` finds the wrong thing in the digest slot and
+    // returns null — so the branch designed to fire on a format change was
+    // exactly the branch where the redaction stopped working, and the whole raw
+    // id including a valid digest reached the log sink.
+    //
+    // `parseEmailMessageAudienceId` argues fail-closed for itself; this now
+    // matches it, by blanking digest-SHAPED segments rather than trusting
+    // position — with the format unknown, position is what cannot be trusted.
+    //
+    // MUTATION THIS CATCHES: restoring `if (parts === null) return audienceId`.
+    const futureFormat = `email-message:outlook:${MAILBOX}:thread-77:${DIGEST}:${MESSAGE}`;
+    expect(redactAudienceDigest(futureFormat)).not.toContain(DIGEST);
+    // Everything else survives — the point is still to identify what went wrong.
+    expect(redactAudienceDigest(futureFormat)).toContain(MAILBOX);
+    expect(redactAudienceDigest(futureFormat)).toContain("thread-77");
+    // And a genuinely opaque token is still not mangled (asserted above), so the
+    // blanking is scoped to segments that actually look like a digest.
+    expect(redactAudienceDigest("not-an-audience")).toBe("not-an-audience");
+  });
 });
 
 describe("reconcileEmailAudience", () => {

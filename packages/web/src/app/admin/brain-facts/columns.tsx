@@ -5,15 +5,18 @@ import type {
   BrainFactCandidate,
   BrainFactDecayLevel,
   BrainFactReviewStatus,
-  BrainFactTensionView,
 } from "@/ui/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { AlertTriangle, Clock, HelpCircle, Link2, ShieldAlert, Split } from "lucide-react";
+import { isTensionOpen } from "./tension-state";
 
 /**
- * Review-queue columns.
+ * Review-queue columns, and the badge vocabulary the sheet shares with them —
+ * `candidate-detail.tsx` imports these tokens so one claim cannot wear two
+ * spellings of the same state on two surfaces. The lifecycle predicate behind
+ * the "In tension" count is the same idea one file over, in `tension-state.ts`.
  *
  * The list is where a reviewer decides whether a claim is worth OPENING, so
  * every signal that could stop them approving is visible without a click:
@@ -46,63 +49,6 @@ export const tensionBadge = {
   className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
   label: "In tension",
 };
-
-/**
- * Which lifecycle stamps a tension counterpart carries, and whether either one
- * means it has stopped being a reason to hold the claim.
- *
- * `settled` is `withdrawn || superseded` and nothing else — derived here rather
- * than at each call site so the list's count and the detail sheet's
- * strike-through can never disagree about whether a conflict is still open.
- */
-export interface TensionRetirement {
-  /** Retracted — the `invalidated_at` tombstone. */
-  readonly withdrawn: boolean;
-  /** Superseded — a `valid_to` window that has actually CLOSED. */
-  readonly superseded: boolean;
-  /** Either axis. The one question the list's "In tension" count asks. */
-  readonly settled: boolean;
-}
-
-/**
- * Has this rival already been arbitrated?
- *
- * ONE definition behind BOTH review surfaces — the list's "In tension (N)"
- * count and the detail sheet's per-rival badges and strike-through. They
- * previously disagreed: the sheet labelled a settled rival while the list still
- * counted it, so a fully arbitrated row read as contested with nothing left to
- * resolve (#4961).
- *
- * A LABEL read off the counterpart's own lifecycle stamps — #4935's invariant
- * holds unchanged. Nothing here sorts, scores, or picks a winner, and no
- * ordering key is introduced; it only answers "is there anything left to
- * resolve".
- *
- * Two deliberate asymmetries, both erring toward reporting a conflict:
- *
- *   - A WITHHELD rival is NEVER settled. Its stamps are exactly what the ACL
- *     refused to hand over, so calling it settled would be a guess — and the
- *     guess that suppresses the badge. "There is a rival you cannot see" is
- *     precisely what should stop a reviewer approving.
- *   - Supersession needs a CLOSED window, not merely a stamped one.
- *     `brainFactCurrentClause` reads `valid_to IS NULL OR valid_to > now()`, so
- *     a future-dated stamp — a region import (`admin-migrate.ts`) can carry one
- *     — is a LIVE rival whose end is merely scheduled. An unparseable stamp
- *     yields `NaN`, whose comparison is false, so it falls through to live: the
- *     recoverable direction, since over-reporting a conflict costs a second
- *     look while under-reporting hides one.
- *
- * Against the CLIENT clock, accepted: within a skewed browser's offset of the
- * supersession instant this can disagree with the server. Both surfaces it
- * feeds are advisory, never a gate.
- */
-export function tensionRetirement(tension: BrainFactTensionView): TensionRetirement {
-  if (!tension.visible) return { withdrawn: false, superseded: false, settled: false };
-  const withdrawn = tension.invalidatedAt !== null;
-  const validToMs = tension.validTo === null ? null : Date.parse(tension.validTo);
-  const superseded = validToMs !== null && validToMs <= Date.now();
-  return { withdrawn, superseded, settled: withdrawn || superseded };
-}
 
 /**
  * Read-time staleness decay (#4914). One informational hue for the three aged
@@ -277,9 +223,15 @@ export function getBrainFactColumns(
         // stats tile's "N in tension" and the "In tension only" filter both ask
         // edge EXISTENCE (`TENSION_EXISTS_SELECT`), i.e. "has this claim ever
         // been contested", and are unchanged. So the filter can legitimately
-        // return a row wearing no badge; the sheet's "Withdrawn"/"Superseded"
-        // labels are where that row explains itself.
-        const contested = c.tensions.filter((t) => !tensionRetirement(t).settled);
+        // return a row wearing no badge, for either of two reasons — every
+        // rival is settled, in which case the sheet's "Withdrawn"/"Superseded"
+        // labels explain the row; or the page's tension fan-out cap bit, in
+        // which case the row's rivals never arrived and the `tensionsTruncated`
+        // banner is the only explanation there is. The banner's "before
+        // treating any row as conflict-free" carries more weight now than when
+        // it was written: pre-#4961 a truncated row still wore a badge for
+        // whatever survived the cap, and now it may wear none at all.
+        const contested = c.tensions.filter(isTensionOpen);
         return (
           <div className="flex flex-wrap gap-1">
             {c.provenance.provisional && (

@@ -852,9 +852,15 @@ describe("the list shows the trust signals without a click", () => {
 /**
  * A live tension counterpart. Overrides stamp the lifecycle axes on top.
  *
- * Distinct `factId`s matter: the surfaces key rivals by id, so three fixtures
- * sharing one id would collapse and the count assertions would pass for the
- * wrong reason.
+ * Introduced for the block below; the #4935 fixtures further down hand-roll the
+ * same object and are left alone deliberately — they predate this helper and
+ * pin the SHEET, so re-pointing them would put a count-focused fixture under
+ * label assertions.
+ *
+ * Distinct `factId`s are hygiene for the sheet, which keys its cards
+ * `${edgeDirection}-${factId}` — nothing dedupes the count, which is a plain
+ * array length, so a shared id would not hide a miscount. It would produce
+ * duplicate React keys in any test that opens the sheet.
  */
 function rival(factId: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -878,10 +884,19 @@ function rival(factId: string, overrides: Record<string, unknown> = {}) {
 /**
  * The QUEUE ROW's own text.
  *
- * Scoped to `tbody` on purpose: the page chrome carries an "In tension only"
- * filter button and an "N in tension" stat tile, both of which are edge-existence
- * signals this fix deliberately leaves alone. A container-wide assertion on the
- * badge's own words would therefore pass whatever the row renders.
+ * Scoped to `tbody` because the page chrome carries an "In tension only" filter
+ * button (`page.tsx`), which is an edge-existence signal this fix deliberately
+ * leaves alone. Unscoped, the button breaks the assertions in BOTH directions:
+ * the negative — the one #4961's acceptance criteria actually demand — would
+ * fail no matter what the row renders, and the positives would pass with the
+ * flags cell deleted outright. (The "N in tension" stat tile does not collide:
+ * it renders lowercase against case-sensitive `toContain`.)
+ *
+ * `querySelector` takes the FIRST tbody, which is the queue's only because the
+ * oversight panel above it — whose table has an "In tension" header — is a
+ * `Collapsible` that defaults to closed and does not `forceMount`. Every caller
+ * below renders exactly one candidate, so "the tbody" and "the row" coincide;
+ * a multi-row fixture would need an index.
  */
 function rowText(view: { container: HTMLElement }): string {
   return view.container.querySelector("tbody")?.textContent ?? "";
@@ -902,6 +917,11 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
       }),
     ]);
     const text = rowText(view);
+    // The row rendered at all — every other assertion here is a negative, and
+    // `rowText` answers "" for a missing tbody, so without this anchor the one
+    // test #4961's acceptance criteria demand is the one that could pass
+    // vacuously if the table markup ever changed.
+    expect(text).toContain("Postgres");
     expect(text).not.toContain("In tension");
     expect(text).not.toContain("(2)");
   });
@@ -911,6 +931,10 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     // is still why the claim was contested; dropping it from the sheet would
     // read as "nothing ever contradicted this", and the reviewer would lose the
     // evidence that the conflict was resolved rather than absent.
+    //
+    // Overlaps "labels a WITHDRAWN rival" below, deliberately: that one pins
+    // #4935's badge, this one pins that #4961 did not reach the sheet's list at
+    // all. Same fixture, different regression — keep both.
     const view = await renderPage([
       candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] }),
     ]);
@@ -936,10 +960,43 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     ]);
     const text = rowText(view);
     expect(text).toContain("In tension");
-    // Singular — one open rival, so the badge carries no number at all.
-    expect(text).not.toContain("(3)");
-    expect(text).not.toContain("(2)");
-    expect(text).not.toContain("(1)");
+    // Singular — one open rival, so the badge carries no parenthetical at all.
+    // Stated as the pattern rather than as "not (3), not (2), not (1)", which
+    // would miss a count of four and any future "(1 of 3)" spelling.
+    expect(text).not.toMatch(/In tension \(/);
+  });
+
+  test("counts a rival retired on BOTH axes exactly once", async () => {
+    // Supersede-then-retract is reachable. The discriminating case for an
+    // implementation that subtracts per axis rather than testing per rival:
+    // `2 - withdrawn(1) - superseded(1)` is 0 and drops the badge, while every
+    // other fixture in this block yields the right number either way.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          rival("fact-2"),
+          rival("fact-3", { invalidatedAt: ISO, validTo: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("In tension");
+    expect(text).not.toMatch(/In tension \(/);
+  });
+
+  test("keeps the truncation banner when the surviving rivals are all settled", async () => {
+    // The combination this fix makes newly reachable. The fan-out cap is
+    // applied page-wide in edge-id order, so a row can arrive holding only
+    // SOME of its rivals; if the ones that arrived are settled, the row now
+    // renders completely quiet while open rivals sit beyond the cap. The
+    // page-level banner is the whole of what is left to warn the reviewer, so
+    // it is asserted together with the badge's absence rather than apart.
+    const view = await renderPage(
+      [candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] })],
+      { tensionsTruncated: true },
+    );
+    expect(rowText(view)).not.toContain("In tension");
+    expect(view.container.textContent).toContain("more conflicting claims than Atlas can show");
   });
 
   test("counts a rival whose window has not CLOSED yet", async () => {
@@ -972,8 +1029,8 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     const text = rowText(view);
     expect(text).toContain("In tension");
     // The settled rival beside it is still excluded — the withheld one is the
-    // only thing holding the badge up.
-    expect(text).not.toContain("(2)");
+    // only thing holding the badge up, so the badge is singular.
+    expect(text).not.toMatch(/In tension \(/);
   });
 });
 
@@ -1093,8 +1150,9 @@ describe("truncation is admitted", () => {
     // The axes are distinct verbs and must not share a badge.
     expect(document.body.textContent).not.toContain("Superseded");
     // The strike-through, which predates #4935 but whose condition #4935
-    // widened to `withdrawn || superseded`. Unasserted, the retraction arm can
-    // be dropped while the supersession fixture keeps every test green.
+    // widened to both axes — spelled `!isTensionOpen(tension)` since #4961
+    // moved it into `tension-state.ts`. Unasserted, the retraction arm can be
+    // dropped while the supersession fixture keeps every test green.
     expect(document.querySelector(".line-through")?.textContent).toContain("MySQL");
   });
 

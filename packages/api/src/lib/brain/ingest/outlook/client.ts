@@ -55,19 +55,41 @@
  * how #4965 shipped an outage. Among the things that stop a message being
  * ingested, some are RETRYABLE and some are PERMANENT:
  *
- *   - **BLOCK** — retryable. An access grant that could not be built from the
- *     mailbox/message ids; a membership write that failed. Nothing is ingested,
+ *   - **BLOCK** — retryable. A membership write that failed; an access grant
+ *     that could not be built from the mailbox/message ids. Nothing is ingested,
  *     the resume point does NOT advance past the message, and the pass reports
- *     `coverageIncomplete`. The next cycle tries again.
+ *     `coverageIncomplete`. The next cycle tries again. (The two are not equally
+ *     transient — the grant arm's own comment says why it is here anyway, and
+ *     what an operator sees if it ever fires.)
  *   - **SKIP** — permanent. Unreadable participant headers; headers that came
  *     back complete and named NOBODY; no RFC 5322 Message-ID; more participants
  *     than the cap; a body over the byte cap; a body Graph returned as HTML
  *     rather than the plain text asked for; a message that composed to nothing
  *     at all. Nothing is ingested, it is COUNTED, and the resume point DOES
- *     advance. All but one also warn — the empty-composed-body skip increments
- *     `skips.emptyBody` and surfaces only in the aggregate `log.info` at the end
- *     of the pass, which is deliberate (it is the high-volume one) but means
- *     "counted and warned" is not true of every arm.
+ *     advance. All but one also WARN — the empty-composed-body skip is counted
+ *     and surfaces only in the aggregate `log.info` at the end of the pass,
+ *     which is deliberate (it is the high-volume one). That exception is in the
+ *     type, not just in this paragraph: the skip arm carries `warning: string |
+ *     null`, so an arm that pushes nothing has to say so rather than simply
+ *     omit a `warnings.push` a reader has to notice is missing.
+ *
+ * ⚠️ **The split is a TYPE, and that is the point.** `runMessage` returns a
+ * `MessageOutcome` — `ingested` / `skipped` / `blocked` — and mutates nothing;
+ * `tallyOutcome` is the single place any outcome becomes a number. The skip
+ * arm's reason is `Exclude<keyof MessageSkips, "blockedAudience">`, so a new
+ * permanent reason is ONE edit (a counter on that interface), lands in its own
+ * counter by index rather than by a hand-written branch, and cannot be spelled
+ * as a block — while a new retryable condition has nowhere to go but `blocked`.
+ *
+ * It was not always so, and the previous shape is why this warning is here.
+ * `runMessage` used to return `{ episode, blocked: boolean }` and hand-increment
+ * a mutable tally at eight sites, one of them outside the function entirely, in
+ * the caller's `catch`. Nothing checked exhaustiveness and one of the four
+ * inhabitants was meaningless. The failure it invited is directional: forgetting
+ * `blocked: true` on a new retryable condition yields a PERMANENT skip that also
+ * advances the resume point, so the message is never revisited and the pass
+ * reports itself fully covered. That is the #4965 outage class in its silent
+ * direction, in the file whose header is about not doing exactly this.
  *
  * ⚠️ **Unreadable participant headers are PERMANENT and belong on the SKIP arm**
  * — the classification `runMessage` implements and the one this list got wrong
@@ -292,6 +314,12 @@ interface MessageSkips {
   /**
    * Messages BLOCKED — retryable, the resume point does not advance past them.
    * The safety counter an operator alerts on.
+   *
+   * The one key {@link PermanentSkipReason} excludes, and that exclusion is what
+   * turns the block-vs-skip split from a convention into a type: no `skipped`
+   * outcome can name this counter, so a permanent condition cannot be tallied as
+   * retryable, and a retryable one has nowhere to go but {@link MessageOutcome}'s
+   * `blocked` arm.
    */
   blockedAudience: number;
   /**
@@ -312,6 +340,68 @@ interface MessageSkips {
   bodyUnreadable: number;
   /** Messages that composed to nothing at all — no headers and no body. */
   emptyBody: number;
+}
+
+/**
+ * Every PERMANENT drop reason — DERIVED from {@link MessageSkips} rather than
+ * listed a second time, so the counters and the reasons cannot drift apart.
+ *
+ * Adding a permanent reason is therefore one edit: a counter on that interface.
+ * It becomes an inhabitant here, a required key on the tally's initializer (so
+ * omitting it does not compile), and a term `tallyOutcome` indexes rather than
+ * branches on.
+ */
+type PermanentSkipReason = Exclude<keyof MessageSkips, "blockedAudience">;
+
+/**
+ * What one message became. The module header's block-vs-skip split, in three
+ * arms — and it is three rather than the previous `{ episode, blocked }`'s four
+ * because that shape's `episode !== null && blocked` never meant anything.
+ *
+ * `warning` sits on the arms rather than being left to the caller for the same
+ * reason `reason` does: it was per-site and therefore forgettable. Exactly one
+ * skip arm deliberately pushes nothing, and `string | null` makes that a
+ * decision an arm states rather than an absence a reader has to notice.
+ */
+type MessageOutcome =
+  | { readonly kind: "ingested"; readonly episode: BrainEpisodeRecord }
+  | {
+      readonly kind: "skipped";
+      readonly reason: PermanentSkipReason;
+      /** `null` on the one arm that is counted but deliberately not warned. */
+      readonly warning: string | null;
+    }
+  | { readonly kind: "blocked"; readonly warning: string };
+
+/**
+ * The ONE place a message outcome becomes a number, and the only writer of
+ * {@link MessageSkips}.
+ *
+ * One site rather than eight is the point: a tally spread across the arms that
+ * produce it is a tally whose next arm can forget to increment, or increment the
+ * wrong counter, and neither shows up as anything but a number quietly missing
+ * from an operator's log line.
+ */
+function tallyOutcome(skips: MessageSkips, warnings: string[], outcome: MessageOutcome): void {
+  switch (outcome.kind) {
+    case "ingested":
+      return;
+    case "blocked":
+      skips.blockedAudience++;
+      warnings.push(outcome.warning);
+      return;
+    case "skipped":
+      // Indexed, not branched: a reason added to `MessageSkips` cannot silently
+      // land in the wrong counter, and — because `PermanentSkipReason` excludes
+      // it — cannot land in `blockedAudience` at all.
+      skips[outcome.reason]++;
+      if (outcome.warning !== null) warnings.push(outcome.warning);
+      return;
+    default: {
+      const unexpected: never = outcome;
+      throw new Error(`Unhandled Outlook message outcome: ${JSON.stringify(unexpected)}`);
+    }
+  }
 }
 
 export interface OutlookMailClientOptions {
@@ -389,34 +479,33 @@ export function createOutlookMailClient(
   /**
    * One message → its episode, or nothing, plus WHY nothing.
    *
-   * `blocked` is returned rather than left to the caller to infer from an absent
-   * episode, because the empty cases mean opposite things and only some of them
-   * may let the resume point advance — see the module header's block-vs-skip
-   * split. Conflating them is how a blocked message gets skipped permanently:
-   * the pass reports itself fully covered, the mark advances past the message,
-   * and no later cycle ever looks at it again.
+   * Returns a {@link MessageOutcome} and mutates NOTHING. The empty cases mean
+   * opposite things and only some of them may let the resume point advance — see
+   * the module header's block-vs-skip split — so which one this is has to be
+   * stated, not inferred from an absent episode. Conflating them is how a
+   * blocked message gets skipped permanently: the pass reports itself fully
+   * covered, the mark advances past the message, and no later cycle ever looks
+   * at it again.
+   *
+   * The counting and the warning both belong to {@link tallyOutcome}, one level
+   * up. This function decides, and the decision is the return value.
    *
    * The AUDIENCE is established and WRITTEN first, before an episode exists.
    * That ordering is the block arm, and `audience.ts` carries why the two
    * failure orders are not symmetric.
    */
-  async function runMessage(
-    mailboxId: string,
-    message: OutlookMessage,
-    skips: MessageSkips,
-    warnings: string[],
-  ): Promise<{ readonly episode: BrainEpisodeRecord | null; readonly blocked: boolean }> {
+  async function runMessage(mailboxId: string, message: OutlookMessage): Promise<MessageOutcome> {
     const messageId = normalizeInternetMessageId(message.internetMessageId);
     if (messageId === null) {
       // PERMANENT: a message without a Message-ID header never grows one. A
       // fallback to Graph's own `message.id` is deliberately NOT taken — it is
       // per-mailbox, so it would re-introduce the one-episode-per-recipient
       // duplication for exactly the messages whose identity is already doubtful.
-      skips.unidentifiable++;
-      warnings.push(
-        `A message in mailbox ${mailboxId} carries no RFC 5322 Message-ID and was skipped — it cannot be deduped against the copy in any other mailbox, so ingesting it would duplicate.`,
-      );
-      return { episode: null, blocked: false };
+      return {
+        kind: "skipped",
+        reason: "unidentifiable",
+        warning: `A message in mailbox ${mailboxId} carries no RFC 5322 Message-ID and was skipped — it cannot be deduped against the copy in any other mailbox, so ingesting it would duplicate.`,
+      };
     }
 
     if (!message.headersComplete) {
@@ -439,15 +528,15 @@ export function createOutlookMailClient(
       // (A genuinely malformed OBJECT is a different path: `parseOutlookMessage`
       // returns null, the page reports it as `dropped`, and THAT truncates the
       // walk retryably.)
-      skips.unattributable++;
-      warnings.push(
-        `Message ${messageId} was NOT ingested — Microsoft Graph did not return its full participant headers, so its audience could not be established. It is not retried; the headers of a stored message do not change.`,
-      );
       log.warn(
         { workspaceId: options.workspaceId, mailboxId },
         "Outlook message refused — incomplete participant headers, so no access grant could be derived. Permanent: the walk advances past it",
       );
-      return { episode: null, blocked: false };
+      return {
+        kind: "skipped",
+        reason: "unattributable",
+        warning: `Message ${messageId} was NOT ingested — Microsoft Graph did not return its full participant headers, so its audience could not be established. It is not retried; the headers of a stored message do not change.`,
+      };
     }
 
     const participants = messageParticipants(message);
@@ -456,23 +545,23 @@ export function createOutlookMailClient(
       // no sender and no To/Cc has no audience to mint, and it will not acquire
       // one — the headers are immutable. So it is REFUSED, not blocked: nothing
       // is ingested and nothing is granted, but the walk does not wait for it.
-      skips.unattributable++;
-      warnings.push(
-        `Message ${messageId} was NOT ingested — its headers name no sender and no recipients, so there is no audience to grant it to. It is not retried; the headers cannot change.`,
-      );
       log.warn(
         { workspaceId: options.workspaceId, mailboxId },
         "Outlook message refused — headers complete but empty, so no access grant could be derived. Permanent: the walk advances past it",
       );
-      return { episode: null, blocked: false };
+      return {
+        kind: "skipped",
+        reason: "unattributable",
+        warning: `Message ${messageId} was NOT ingested — its headers name no sender and no recipients, so there is no audience to grant it to. It is not retried; the headers cannot change.`,
+      };
     }
     if (participants.length > MAX_MESSAGE_PARTICIPANTS) {
       // PERMANENT: the recipient count of a stored message never changes.
-      skips.oversizeAudience++;
-      warnings.push(
-        `Message ${messageId} is addressed to ${participants.length} people, over the ${MAX_MESSAGE_PARTICIPANTS}-participant limit — it was skipped. Raising the limit re-admits it on the next backfill.`,
-      );
-      return { episode: null, blocked: false };
+      return {
+        kind: "skipped",
+        reason: "oversizeAudience",
+        warning: `Message ${messageId} is addressed to ${participants.length} people, over the ${MAX_MESSAGE_PARTICIPANTS}-participant limit — it was skipped. Raising the limit re-admits it on the next backfill.`,
+      };
     }
 
     // ── The BLOCK arm ─────────────────────────────────────────────────────
@@ -492,17 +581,35 @@ export function createOutlookMailClient(
     if (grant === null) {
       // ADR-0036 §T6: grant-derivation failure BLOCKS and LOGS. There is no
       // wider-grant fallback — `[org]` would publish somebody's mail to the
-      // whole company. Retryable: the only ways to reach here past the guards
-      // above are a malformed mailbox id or message id, which a re-read may fix.
-      skips.blockedAudience++;
-      warnings.push(
-        `Message ${messageId} was NOT ingested — an access grant could not be built from its mailbox and message ids. Nothing from it is stored; it is retried next cycle.`,
-      );
+      // whole company.
+      //
+      // ⚠️ This is the BLOCK arm, but do NOT read that as "a re-read may fix
+      // it". An earlier wording said exactly that and it does not hold: every
+      // input `deriveEmailRecipientGrant` could reject has already been settled
+      // by the guards above. `headersComplete` is the literal `true`,
+      // `participants` is non-empty, `source` is a module constant, the digest
+      // is 16 hex bytes by construction, and `messageId` came back non-empty and
+      // byte-checked from `normalizeInternetMessageId`. What is left is a
+      // mailbox object id that is empty or carries a `:` — and that id is
+      // resolved ONCE per pass from Graph and is the same on every retry. So if
+      // this ever fires it does not clear: the mailbox freezes at this message,
+      // and the only thing that says so is the stall detector's `log.error`
+      // further down.
+      //
+      // It stays a block anyway, and that is the deliberate choice rather than
+      // the leftover one. Skipping would advance the resume point past a message
+      // whose audience Atlas could not derive — a silent permanent loss on the
+      // SAFETY arm, which is the worst place to put one. A loud repeating stall
+      // is the better failure of the two. Moving it to the skip arm would be a
+      // BEHAVIOUR change and belongs in its own issue.
       log.warn(
         { workspaceId: options.workspaceId, mailboxId },
         "Outlook message blocked — no access grant could be derived, so nothing was ingested from it",
       );
-      return { episode: null, blocked: true };
+      return {
+        kind: "blocked",
+        warning: `Message ${messageId} was NOT ingested — an access grant could not be built from its mailbox and message ids. Nothing from it is stored; it is retried next cycle.`,
+      };
     }
 
     // Membership BEFORE the episode — see `audience.ts` for why the two failure
@@ -550,11 +657,11 @@ export function createOutlookMailClient(
       //
       // A SKIP rather than a block: `contentType` is a property of the stored
       // message, so retrying reads the same answer forever.
-      skips.bodyUnreadable++;
-      warnings.push(
-        `Message ${messageId} was skipped — Microsoft Graph returned its body as HTML rather than the plain text Atlas asked for, and storing the headers alone would look like a complete message.`,
-      );
-      return { episode: null, blocked: false };
+      return {
+        kind: "skipped",
+        reason: "bodyUnreadable",
+        warning: `Message ${messageId} was skipped — Microsoft Graph returned its body as HTML rather than the plain text Atlas asked for, and storing the headers alone would look like a complete message.`,
+      };
     }
 
     const body = composeEmailBody(message);
@@ -565,8 +672,13 @@ export function createOutlookMailClient(
       // genuinely has no body but DOES have headers is complete evidence (a
       // subject-only "approved — EOM" is a real mail) and is stored as its
       // header block. PERMANENT either way.
-      skips.emptyBody++;
-      return { episode: null, blocked: false };
+      //
+      // The ONE arm with `warning: null`. It is counted like every other skip
+      // and surfaces only in the aggregate `log.info` at the end of the pass,
+      // because it is the high-volume one and a per-message warning would bury
+      // the arms an operator actually needs to read. Stated in the type rather
+      // than left as an absent `warnings.push` — an omission reads as a bug.
+      return { kind: "skipped", reason: "emptyBody", warning: null };
     }
     if (Buffer.byteLength(body, "utf8") > MAX_EMAIL_BODY_BYTES) {
       // `Buffer.byteLength`, not `String.length`: the latter counts UTF-16 code
@@ -574,14 +686,15 @@ export function createOutlookMailClient(
       // PERMANENT, so a SKIP and not a block — routing a permanent size
       // condition through the retry arm is precisely how #4965's size guard
       // became an outage.
-      skips.oversizeBody++;
-      warnings.push(
-        `Message ${messageId} has a body over the ${MAX_EMAIL_BODY_BYTES / 1_048_576}MB limit — it was skipped rather than truncated, so no partial message is stored as if it were whole.`,
-      );
-      return { episode: null, blocked: false };
+      return {
+        kind: "skipped",
+        reason: "oversizeBody",
+        warning: `Message ${messageId} has a body over the ${MAX_EMAIL_BODY_BYTES / 1_048_576}MB limit — it was skipped rather than truncated, so no partial message is stored as if it were whole.`,
+      };
     }
 
     return {
+      kind: "ingested",
       episode: {
         sourceId: outlookEpisodeSourceId(messageId),
         // The SENDER's address. Recipients stay in the body for the extraction
@@ -593,7 +706,6 @@ export function createOutlookMailClient(
         occurredAt: message.receivedDateTime === null ? null : parseDate(message.receivedDateTime),
         visibleTo: grant,
       },
-      blocked: false,
     };
   }
 
@@ -785,8 +897,9 @@ export function createOutlookMailClient(
               break pages;
             }
             try {
-              const produced = await runMessage(mailboxId, message, skips, warnings);
-              if (produced.blocked) {
+              const outcome = await runMessage(mailboxId, message);
+              tallyOutcome(skips, warnings, outcome);
+              if (outcome.kind === "blocked") {
                 // A blocked message leaves its range UNCOVERED. Without this the
                 // pass reports itself fully covered, the resume point advances
                 // past the message, and no later cycle ever looks at it again —
@@ -795,8 +908,8 @@ export function createOutlookMailClient(
                 mailboxIncomplete = true;
                 break pages;
               }
-              if (produced.episode !== null) {
-                episodes.push(produced.episode);
+              if (outcome.kind === "ingested") {
+                episodes.push(outcome.episode);
                 remainingEpisodes--;
                 const at = message.receivedDateTime;
                 if (at !== null && (newestIngested === null || at > newestIngested)) {
@@ -814,7 +927,18 @@ export function createOutlookMailClient(
               if (throttled && episodes.length === 0) throw err;
               mailboxIncomplete = true;
               const messageText = err instanceof Error ? err.message : String(err);
-              if (!throttled) {
+              if (throttled) {
+                // Not an outcome of the message — Graph stopped answering, and
+                // the message itself was never classified. Nothing is tallied.
+                warnings.push(
+                  `Mailbox ${configured} stopped mid-page — Microsoft Graph is rate limiting this tenant. It resumes next cycle.`,
+                );
+              } else {
+                // A throw IS an outcome, so it goes through the same tally as
+                // every other one rather than reaching into the counters by hand
+                // — this used to be the eighth increment site and the only one
+                // outside `runMessage`.
+                //
                 // The dominant throw on this path is a failed membership WRITE —
                 // the most safety-relevant failure in the file, since an audience
                 // that could not be written is an audience nobody is in. It is
@@ -822,13 +946,11 @@ export function createOutlookMailClient(
                 // and it is worded "NOT ingested … retried" rather than "skipped":
                 // "skipped" is this module's word for the permanent arm, and this
                 // one comes back.
-                skips.blockedAudience++;
+                tallyOutcome(skips, warnings, {
+                  kind: "blocked",
+                  warning: `A message in mailbox ${configured} was NOT ingested — ${messageText}. Nothing from it is stored; it is retried next cycle.`,
+                });
               }
-              warnings.push(
-                throttled
-                  ? `Mailbox ${configured} stopped mid-page — Microsoft Graph is rate limiting this tenant. It resumes next cycle.`
-                  : `A message in mailbox ${configured} was NOT ingested — ${messageText}. Nothing from it is stored; it is retried next cycle.`,
-              );
               log.warn(
                 { workspaceId: options.workspaceId, mailbox: configured, err: messageText, throttled },
                 throttled
@@ -931,15 +1053,13 @@ export function createOutlookMailClient(
           "Outlook pass blocked messages whose audience could not be established — nothing was ingested from them, and nothing was granted more widely",
         );
       }
-      if (
-        skips.unidentifiable +
-          skips.unattributable +
-          skips.oversizeAudience +
-          skips.oversizeBody +
-          skips.bodyUnreadable +
-          skips.emptyBody >
-        0
-      ) {
+      // Every counter EXCEPT the block one, by construction rather than by a
+      // hand-written sum of six field names. The sum this replaces would have
+      // silently omitted any reason added after it was written, so a whole
+      // permanent-drop class could have gone unreported while its counter sat
+      // right there in the object.
+      const { blockedAudience: _blocked, ...permanentSkips } = skips;
+      if (Object.values(permanentSkips).reduce((total, count) => total + count, 0) > 0) {
         log.info(
           { workspaceId: options.workspaceId, kept: episodes.length, ...skips },
           "Outlook mail pass complete — messages read but not stored, by reason",

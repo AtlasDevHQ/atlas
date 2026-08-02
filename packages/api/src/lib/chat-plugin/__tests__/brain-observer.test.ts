@@ -110,17 +110,21 @@ describe("the not-stored report's level", () => {
     // replies. A single reassuring debug line for both cases would assert a
     // backstop that does not exist — worse than logging nothing, because it
     // tells an operator to stop looking.
+    // The vehicle is `unresolvable_visibility` rather than
+    // `channel_not_configured`: the channel IS in scope and the fast path still
+    // failed to store the reply, so the evidence really is gone. See the
+    // never-in-scope test below for why the other reason no longer belongs here.
     const sink = collect();
     const observe = createBrainChatMessageObserver({
       ingest: spyIngest({
         status: "skipped",
-        reason: "channel_not_configured",
+        reason: "unresolvable_visibility",
         pollBackstopped: false,
       }).ingest,
       report: sink.report,
     });
     await observe(observation());
-    expect(sink.seen).toEqual([{ level: "warn", reason: "channel_not_configured" }]);
+    expect(sink.seen).toEqual([{ level: "warn", reason: "unresolvable_visibility" }]);
   });
 
   it("stays at debug when the poll will re-store the message", async () => {
@@ -128,13 +132,35 @@ describe("the not-stored report's level", () => {
     const observe = createBrainChatMessageObserver({
       ingest: spyIngest({
         status: "skipped",
-        reason: "channel_not_configured",
+        reason: "unresolvable_visibility",
         pollBackstopped: true,
       }).ingest,
       report: sink.report,
     });
     await observe(observation());
-    expect(sink.seen).toEqual([{ level: "debug", reason: "channel_not_configured" }]);
+    expect(sink.seen).toEqual([{ level: "debug", reason: "unresolvable_visibility" }]);
+  });
+
+  it("⭐ stays at debug for NEVER-IN-SCOPE traffic, even with no poll backstop", async () => {
+    // The warn arm says "this evidence is LOST". For a thread reply in a channel
+    // the admin deliberately never scoped, nothing was lost — there was nothing
+    // to store. Left as a warn it fires once per thread reply, forever, on a
+    // CORRECT configuration: any deployment running Atlas chat without a
+    // Slack-history source, or with one scoped to a subset of channels.
+    //
+    // That is the shape of alert that trains an operator to filter the channel
+    // that also carries the real one, so the cost is paid by the warn above.
+    //
+    // MUTATION THIS CATCHES: removing the never-in-scope classification.
+    for (const reason of ["no_install", "unknown_workspace", "channel_not_configured"] as const) {
+      const sink = collect();
+      const observe = createBrainChatMessageObserver({
+        ingest: spyIngest({ status: "skipped", reason, pollBackstopped: false }).ingest,
+        report: sink.report,
+      });
+      await observe(observation());
+      expect([reason, sink.seen]).toEqual([reason, [{ level: "debug", reason }]]);
+    }
   });
 
   it("warns on a FAULT, which is never reported as backstopped", async () => {

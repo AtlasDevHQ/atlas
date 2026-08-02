@@ -50,6 +50,7 @@ import {
   _resetCatalogIngestClaims,
 } from "@atlas/api/lib/knowledge/catalog-claims";
 import type { BrainGrant } from "@atlas/api/lib/brain/types";
+import { _resetAudienceReverifiers } from "@atlas/api/lib/brain/audience/reverify";
 import {
   EPISODE_SOURCES,
   episodeSourceClass,
@@ -355,9 +356,12 @@ export interface BrainSourceConnectorQuery {
  * fallback to either axis alone would route warehouse work to a chat connector.
  *
  * The production caller is #4967's Slack webhook fast-path
- * (`ingest/slack/webhook.ts`), which resolves the chat-class connector for an
- * arriving event; #4965/#4966 are the connectors that make the class axis
- * non-trivial.
+ * (`ingest/slack/webhook.ts`), which resolves connectors on the VENDOR axis for
+ * an arriving event — `{ vendor: SLACK_SOURCE }`, not a class. The CLASS axis
+ * has no production caller today; #4965/#4966 are the connectors that make it
+ * non-trivial, and it is kept because a class-grained consumer is the shape the
+ * seam exists to admit. Do not cite the webhook as evidence the class axis is
+ * exercised in production — it is not.
  */
 export function findBrainSourceConnectors(
   query: BrainSourceConnectorQuery = {},
@@ -379,8 +383,21 @@ export function listBrainSourceCatalogIds(): string[] {
   return [...registry.keys()];
 }
 
-/** Test-only: clear the registry (tests register fixtures per-suite). */
+/**
+ * Test-only: clear the registry (tests register fixtures per-suite).
+ *
+ * Clears the audience-re-verifier registry too, because #4965/#4966 made source
+ * registration a TWO-registry write while the idempotence gate inside
+ * `register{Zoom,Outlook}Connector` still reads only this one
+ * (`if (getBrainSourceConnector(id) !== undefined) return;`). Clearing one and
+ * not the other lets them de-sync: a suite that resets connectors and then
+ * re-registers passes the gate, reaches `registerXxxAudienceReverifier`, and
+ * throws `Audience re-verifier for source "…" is already registered` — a failure
+ * with nothing to do with what the suite was testing. Resetting both keeps the
+ * pair that boot writes together torn down together.
+ */
 export function _resetBrainSourceConnectors(): void {
   registry.clear();
   _resetCatalogIngestClaims("brain-episodes");
+  _resetAudienceReverifiers();
 }

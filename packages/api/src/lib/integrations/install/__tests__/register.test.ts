@@ -51,6 +51,24 @@ import { INTERCOM_CATALOG_ID } from "@atlas/api/lib/knowledge/intercom/config";
 import { FRONT_CATALOG_ID } from "@atlas/api/lib/knowledge/front/config";
 import { HELPSCOUT_CATALOG_ID } from "@atlas/api/lib/knowledge/helpscout/config";
 import { FRESHDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/freshdesk/config";
+import {
+  _resetBrainSourceConnectors,
+  getBrainSourceConnector,
+} from "@atlas/api/lib/brain/ingest/types";
+import {
+  ZERO_REVERIFY,
+  listAudienceReverifierSources,
+  registerAudienceReverifier,
+} from "@atlas/api/lib/brain/audience/reverify";
+import { SLACK_HISTORY_CATALOG_ID } from "@atlas/api/lib/brain/ingest/slack/config";
+import {
+  ZOOM_TRANSCRIPTS_CATALOG_ID,
+  ZOOM_TRANSCRIPT_SOURCE,
+} from "@atlas/api/lib/brain/ingest/zoom/config";
+import {
+  OUTLOOK_MAIL_CATALOG_ID,
+  OUTLOOK_MAIL_SOURCE,
+} from "@atlas/api/lib/brain/ingest/outlook/config";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -114,6 +132,11 @@ beforeEach(() => {
   _resetRegistrationLatch();
   _resetInstallHandlerRegistries();
   _resetKnowledgeSyncConnectors();
+  // Brain sources dispatch through their own registry, and #4971 added a second
+  // one beside it for audience re-verifiers. Both are process-global and neither
+  // was reset here, so a suite that registers them leaked into the next file's
+  // view of "what is registered". `_resetBrainSourceConnectors` clears both.
+  _resetBrainSourceConnectors();
 });
 
 afterEach(() => {
@@ -122,6 +145,11 @@ afterEach(() => {
   _resetRegistrationLatch();
   _resetInstallHandlerRegistries();
   _resetKnowledgeSyncConnectors();
+  // Brain sources dispatch through their own registry, and #4971 added a second
+  // one beside it for audience re-verifiers. Both are process-global and neither
+  // was reset here, so a suite that registers them leaked into the next file's
+  // view of "what is registered". `_resetBrainSourceConnectors` clears both.
+  _resetBrainSourceConnectors();
 });
 
 describe("registerBuiltinInstallHandlers — SQL plugin datasources (#3300)", () => {
@@ -483,5 +511,69 @@ describe("registerBuiltinInstallHandlers — Google Chat env gate (#2754)", () =
   it("does not throw when the catalog has no gchat row at all (operator hasn't opted in)", () => {
     mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
     expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+  });
+});
+
+describe("registerBuiltinInstallHandlers — BRAIN source connector pairing (#4963/#4965/#4966/#4971)", () => {
+  // The sibling block above pins the KNOWLEDGE connector pairing and would never
+  // have covered these: brain sources dispatch through a DIFFERENT registry
+  // (`getBrainSourceConnector`), so adding the two new slugs to that test would
+  // have asserted nothing. That is why M3 tripled the brain-source surface
+  // (1 → 3) with this enumeration left untouched and still green.
+  //
+  // There is also a THIRD registry now. `register{Zoom,Outlook}Connector` writes
+  // the connector AND its audience re-verifier in one call, and `register.ts`
+  // states the failure mode: a deploy with the connector and no re-verifier
+  // ingests content whose `audience:` grants quietly stop granting a week later,
+  // at the staleness bound, with every sync still green. Pinned here at the boot
+  // seam as well as in each connector's own suite, because this is the file
+  // where a vendor gets forgotten.
+  it("registers all three brain source connectors AND their re-verifiers alongside their form handlers", () => {
+    registerBuiltinInstallHandlers();
+
+    // Every brain source: catalog id in the connector registry…
+    expect(getBrainSourceConnector(SLACK_HISTORY_CATALOG_ID)).toBeDefined();
+    expect(getBrainSourceConnector(ZOOM_TRANSCRIPTS_CATALOG_ID)).toBeDefined();
+    expect(getBrainSourceConnector(OUTLOOK_MAIL_CATALOG_ID)).toBeDefined();
+
+    // …its installable card…
+    expect(getInstallHandler({ slug: "slack-history", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "zoom-transcripts", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "outlook-mail", install_model: "form" }).kind).toBe("form");
+
+    // …and, for the two audience-bearing sources, the re-verifier that keeps
+    // their grants alive. Slack's membership is synced by the Slack-scoped walk
+    // in `audience/sync.ts` rather than by a registered re-verifier, so it is
+    // deliberately absent from this list.
+    const sources = listAudienceReverifierSources();
+    expect(sources).toContain(ZOOM_TRANSCRIPT_SOURCE);
+    expect(sources).toContain(OUTLOOK_MAIL_SOURCE);
+  });
+
+  it("⭐ a throwing brain registration costs that vendor ONLY — every later handler still registers", () => {
+    // `registerBuiltinInstallHandlers` is a sequence of bare statements, and the
+    // brain registrations are the first that can THROW on a code defect
+    // (duplicate catalog id, unknown source kind, a re-verifier registered
+    // twice) rather than short-circuit on missing env. Unwrapped, a throw in the
+    // middle took down every handler after it — the remaining brain sources,
+    // every OAuth handler, and every static bot handler — while `api/index.ts`
+    // caught it at boot and carried on. The deployment then ran, silently,
+    // without integrations nobody had touched.
+    //
+    // Provoked by pre-registering Zoom's re-verifier so the real registration
+    // hits the duplicate throw, having already passed its connector-registry
+    // gate. Asserts on the vendors AFTER it in the sequence.
+    //
+    // MUTATION THIS CATCHES: removing the `registerStep` wrapper.
+    registerAudienceReverifier(ZOOM_TRANSCRIPT_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
+
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+
+    // Outlook registers immediately after Zoom in the sequence…
+    expect(getBrainSourceConnector(OUTLOOK_MAIL_CATALOG_ID)).toBeDefined();
+    // …and so do the handlers far below it, which is where the real blast
+    // radius was: every OAuth and static bot handler follows these three.
+    expect(getInstallHandler({ slug: "outlook-mail", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "clickhouse", install_model: "form" }).kind).toBe("form");
   });
 });

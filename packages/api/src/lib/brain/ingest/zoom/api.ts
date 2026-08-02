@@ -442,14 +442,27 @@ export async function fetchTranscriptText(
   maxBytes = Number.POSITIVE_INFINITY,
 ): Promise<{ ok: true; text: string } | ZoomReadError> {
   let host: string;
+  let scheme: string;
   try {
-    host = new URL(downloadUrl).hostname.toLowerCase().replace(/\.+$/, "");
+    const parsed = new URL(downloadUrl);
+    host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
+    scheme = parsed.protocol;
   } catch {
     // Not a silent catch, so no `// intentionally ignored:` marker — that
     // marker is reserved for a genuinely swallowed error and using it here
     // would cost it its signal value. The URL is refused and reported; the
     // throw carries nothing this log line does not.
     log.warn({}, "Zoom recording download_url is not a parseable URL — refusing to fetch it");
+    return { ok: false, error: "transport", retryAfterSeconds: null };
+  }
+  // Scheme pinned HERE, not only in the egress guard. `guardedFetch` does reject
+  // non-HTTPS (`isSafeExternalUrl`), so this is defence in depth rather than a
+  // hole being closed — but the bearer token is attached below, and a local
+  // refusal keeps that fact legible at the call site instead of resting on a
+  // property of a helper three modules away. `outlook/api.ts`'s `isGraphUrl`
+  // pins both axes for the same reason; this one had drifted to host-only.
+  if (scheme !== "https:") {
+    log.error({ host }, "Zoom recording download_url is not HTTPS — refusing to fetch it");
     return { ok: false, error: "transport", retryAfterSeconds: null };
   }
   if (host !== "zoom.us" && !host.endsWith(ZOOM_DOWNLOAD_HOST_SUFFIX)) {

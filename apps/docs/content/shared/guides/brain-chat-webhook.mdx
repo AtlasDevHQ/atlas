@@ -47,15 +47,17 @@ Ordinary thread replies are therefore **pure gain** from the fast-path — the p
 
 Atlas does not paper over this. A dropped reply is logged at **warn**; a dropped top-level message is logged at debug with the poll named as its backstop. Every not-stored outcome records which of the two it was, so a log line can never recite "the scheduled sync still covers it" about a message the sync will never see.
 
-That backstop test is deliberately **pessimistic**: it asks only whether the message carries a parent, so a dropped `thread_broadcast` copy is warned about as if it were lost even though the poll will in fact store it. Over-warning on a message that is covered is the right direction for this check to be wrong in.
+The backstop test carries one exception, for the one message that is both a reply and top-level. A `thread_broadcast` copy has a parent — so the "does it carry a `thread_ts`?" test alone would call it unbacked — but `conversations.history` *does* return it, so the poll really is its backstop. It is reported as covered rather than lost. Every other reply is reported as lost, which is the right direction for this check to be wrong in.
 
 ## Setup
 
 ### 1. Slack events must already be reaching Atlas
 
-The fast-path observes the events your Slack integration already receives. It adds **no new endpoint and no new Slack app**. If Slack chat works, the events are arriving.
+The fast-path observes the events your Slack integration already receives. It adds **no new endpoint and no new Slack app**.
 
-If you are setting Slack up from scratch, the relevant part is the bot event subscriptions — `message.channels` and `message.groups` — pointed at the standard chat webhook URL. <AudienceLink saas="/guides/slack">The Slack integration guide</AudienceLink> covers the full app configuration.
+Working Slack chat is not quite enough on its own, though: an app subscribed only to mentions delivers no plain `message` events, and those are what the fast-path reads. Confirm your Slack app subscribes to **`message.channels`** (public channels) and **`message.groups`** (private channels) — an existing install that predates the fast-path often does not, and the only symptom is a silent `not_a_message` at debug level.
+
+If you are setting Slack up from scratch, the relevant part is the bot event subscriptions — `message.channels` and `message.groups` — pointed at the standard chat webhook URL. <AudienceLink saas="/guides/slack" selfHosted="/plugins/interactions/slack">The Slack integration guide</AudienceLink> covers the full app configuration.
 
 ### 2. Install and scope the Slack history brain source
 
@@ -78,7 +80,7 @@ ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED=true
 
 The setting is **platform-scoped** — there is no per-workspace half of it, because the event observer is registered once per process. Which workspaces it writes for is already decided by which of them installed the Slack history source and which channels they scoped it to.
 
-It is read **per event**, so flipping it takes effect immediately. No restart.
+It is read **per event**, so flipping it in **Admin → Settings** takes effect immediately — no restart. That is what makes it an incident lever. The environment variable is only the fallback the Admin setting overrides, and editing it *does* require a restart, so reach for the Admin setting when you need the switch to land now.
 </WhenSelfHosted>
 
 <WhenSaaS>
@@ -100,7 +102,7 @@ It applies the **same** rules the scheduled sync does — the same skip rules, t
 | A one-to-one DM | Never stored; DMs are not admissible channels for this source |
 | A channel whose visibility Slack does not state | **Blocked** — never stored at a wider grant |
 
-Visibility is the one thing this path learns differently from the poll. The sync asks Slack about the channel; the fast-path reads the event's own channel-type field instead, because a Slack round-trip inside a webhook handler is both the latency the fast-path exists to avoid and a rate limit waiting to happen. An unrecognised channel type **blocks** rather than guessing — guessing "public" would publish an invite-only channel to the whole company.
+Visibility is the one thing this path learns differently from the poll. The sync asks Slack about the channel; the fast-path reads the event's own channel-type field instead, because a Slack round-trip inside a webhook handler is both the latency the fast-path exists to avoid and a rate limit waiting to happen. An unrecognised channel type **blocks** rather than guessing — guessing "public" would publish an invite-only channel to the whole company. So does a *recognised* one that contradicts the channel id: a legacy `G…` private channel arriving as `channel_type: "channel"` is two incompatible claims, and the arm it would otherwise take mints the org-wide grant. The check is deliberately one-directional — a modern `C…` private channel is **not** blocked, because that test would refuse correct private channels, which Slack has issued `C…` ids for since 2021.
 
 ## Observability
 
@@ -120,7 +122,7 @@ Every event that produces no episode carries a **reason**, and the reasons fall 
 
 One reason is deliberately never logged per message: with the knob off, `disabled` would be the noisiest line in the process and would only report your own configuration back to you. That silence is intentional and is the one exception to everything above.
 
-There is also one way a message can go unstored **without producing a brain reason at all**: the observer runs under a 2-second deadline imposed by the chat bridge, and a timeout is logged by the *bridge*, not by the brain. So if the reason logs look empty while the fast-path is clearly not keeping up, widen the search to the chat plugin's logs before concluding nothing arrived.
+One more thing to know when reading these logs: the observer runs under a 2-second deadline imposed by the chat bridge, and a breach is logged by the *bridge*, not by the brain. The deadline does **not** cancel the write — the bridge stops waiting, but the observer keeps running, so the episode may still land and the brain still logs its own reason, just later than the bridge's line. So a timeout means "the bridge moved on", not "the message was dropped". If the brain's reason logs look empty while the fast-path is clearly not keeping up, widen the search to the chat plugin's logs.
 
 The reasons named here are the ones an operator acts on, not the complete set — the code carries a few more, and a record the ingest screens refused (a blank body, an unusable grant, an invalid event time) is reported under its own `ingest_refused` rather than as a skip.
 
@@ -130,5 +132,5 @@ The reason this section exists at all: a fast-path that silently stores nothing 
 
 - [Company Brain — Sources](/guides/brain-sources) — what each source class ingests and how its audience is derived
 - [Company Brain — Writing a Source Connector](/guides/brain-connector-authoring) — the stable-source-id obligation this page depends on
-- <AudienceLink saas="/guides/slack">Slack integration</AudienceLink> — the app configuration the events arrive through
+- <AudienceLink saas="/guides/slack" selfHosted="/plugins/interactions/slack">Slack integration</AudienceLink> — the app configuration the events arrive through
 - [Environment variables → Company Brain](/reference/environment-variables#company-brain)

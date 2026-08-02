@@ -55,15 +55,24 @@
  * how #4965 shipped an outage. Among the things that stop a message being
  * ingested, some are RETRYABLE and some are PERMANENT:
  *
- *   - **BLOCK** — retryable. Unreadable participant headers; a membership write
- *     that failed. Nothing is ingested, the resume point does NOT advance past
- *     the message, and the pass reports `coverageIncomplete`. The next cycle
- *     tries again.
- *   - **SKIP** — permanent. No RFC 5322 Message-ID; more participants than the
- *     cap; a body over the byte cap; a body Graph returned as HTML rather than
- *     the plain text asked for; a message that composed to nothing at all.
- *     Nothing is ingested, it is COUNTED and warned, and the resume point DOES
- *     advance.
+ *   - **BLOCK** — retryable. An access grant that could not be built from the
+ *     mailbox/message ids; a membership write that failed. Nothing is ingested,
+ *     the resume point does NOT advance past the message, and the pass reports
+ *     `coverageIncomplete`. The next cycle tries again.
+ *   - **SKIP** — permanent. Unreadable participant headers; no RFC 5322
+ *     Message-ID; more participants than the cap; a body over the byte cap; a
+ *     body Graph returned as HTML rather than the plain text asked for; a
+ *     message that composed to nothing at all. Nothing is ingested, it is
+ *     COUNTED and warned, and the resume point DOES advance.
+ *
+ * ⚠️ **Unreadable participant headers are PERMANENT and belong on the SKIP arm**
+ * — the classification `runMessage` implements and the one this list got wrong
+ * until it was corrected. Graph does not transiently omit a `$select`ed field on
+ * a 200, so the headers of a stored message do not change; routing it down the
+ * block arm froze the mailbox at the message before it, which is the very outage
+ * the paragraph above cites. Stated loudly here because this header is the first
+ * thing a maintainer of this file reads, and it disagreed with the code ~350
+ * lines below it.
  *
  * Routing a permanent condition down the block arm is what froze Zoom's cursor
  * every pass until it fell below the backfill floor and wedged the source

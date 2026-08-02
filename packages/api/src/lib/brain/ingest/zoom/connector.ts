@@ -114,12 +114,18 @@ export function parseZoomAppCredential(raw: string | null): ZoomAppCredential | 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    // Logged without the payload — it IS the secret.
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Zoom app credential is not valid JSON",
-    );
+  } catch {
+    // intentionally ignored: the parse error's MESSAGE echoes the input, and the
+    // input is the decrypted client secret — `JSON.parse("s3cr3t-value")` throws
+    // `Unexpected identifier "s3cr3t"`. Excluding `raw` from the payload is NOT
+    // enough, which is what the previous version of this catch got wrong: it
+    // logged `err.message` under a comment claiming the payload was withheld,
+    // and shipped a fragment of the secret to the log sink on any blob that is
+    // not JSON (a hand-repaired row, a legacy plaintext secret, a partial
+    // decrypt). `outlook/connector.ts` reached this conclusion two review rounds
+    // in; this is the same code path with the same blob. The shape failure IS
+    // the whole signal; there is nothing else actionable in it.
+    log.warn({}, "Zoom app credential is not readable JSON — re-install the source to repair it");
     return null;
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;

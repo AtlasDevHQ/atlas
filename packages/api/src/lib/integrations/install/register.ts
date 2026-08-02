@@ -182,6 +182,42 @@ function resolvePublicApiUrl(): string | null {
 let alreadyRegistered = false;
 
 /**
+ * Run one registration step in isolation, so a throw costs that vendor and
+ * nothing else.
+ *
+ * The steps below are bare sequential statements in one function body, and the
+ * brain-source registrations added by #4965/#4966 are the first that can throw
+ * on a code defect rather than short-circuit on missing env:
+ * `registerBrainSourceConnector` rejects a bad slug, a kind outside
+ * `EPISODE_SOURCES`, a duplicate catalog id, or a `claimCatalogIngestTarget`
+ * collision, and the audience-re-verifier registry rejects a duplicate source.
+ * Unwrapped, a throw in the middle of this function took down EVERY handler
+ * after it — the remaining brain sources, every OAuth handler, and every static
+ * bot handler — while `api/index.ts` caught it at boot and carried on. The
+ * deployment then ran, silently, without integrations nobody had touched.
+ *
+ * The idempotency latch above is set BEFORE any of this runs, so that partial
+ * state was also permanent for the process lifetime: the second call site
+ * (`datasources/mcp-lifecycle.ts`) short-circuits, and there is no retry. That
+ * makes containment the fix rather than relocation — moving the latch to the end
+ * would re-enter every already-registered handler on the retry.
+ *
+ * Failure is loud and per-vendor. It is not swallowed: the vendor is absent from
+ * the registry, which is fail-closed (its installs 500 at sync time rather than
+ * running unwired), and the error names it.
+ */
+function registerStep(label: string, register: () => void): void {
+  try {
+    register();
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), step: label },
+      `Install handler registration FAILED for ${label} — this integration is unavailable for the lifetime of this process. Every other handler still registered. This is a code defect (duplicate catalog id, unknown source kind, or a re-verifier registered twice), not a config problem`,
+    );
+  }
+}
+
+/**
  * Register every built-in install handler that has the env wiring to
  * run. Idempotent — safe to call multiple times.
  *
@@ -410,7 +446,7 @@ export function registerBuiltinInstallHandlers(): void {
   // gate: the install fails loudly and actionably ("connect Slack first",
   // "invite the bot to the channel") on a workspace that isn't ready.
   registerFormHandler(SLACK_HISTORY_SLUG, new SlackHistoryFormInstallHandler());
-  registerSlackHistoryConnector();
+  registerStep("slack-history brain source", registerSlackHistoryConnector);
   log.info("Registered SlackHistoryFormInstallHandler + brain source connector");
   // Zoom transcripts (#4965) — ADR-0036 §T6's SECOND brain source class, and
   // the first connector built on #4963's generalized seam rather than extracted
@@ -431,7 +467,7 @@ export function registerBuiltinInstallHandlers(): void {
   // host scope. No env gate: the install fails loudly and actionably on a
   // workspace whose Zoom app is missing scopes or on the wrong plan.
   registerFormHandler(ZOOM_TRANSCRIPTS_SLUG, new ZoomTranscriptsFormInstallHandler());
-  registerZoomTranscriptConnector();
+  registerStep("zoom-transcripts brain source + audience re-verifier", registerZoomTranscriptConnector);
   log.info("Registered ZoomTranscriptsFormInstallHandler + brain source connector + audience re-verifier");
   // Outlook mail (#4966) — ADR-0036 §T6's THIRD brain source class, and the
   // second connector built on #4963's generalized seam. Same form-handler +
@@ -455,7 +491,7 @@ export function registerBuiltinInstallHandlers(): void {
   // fails loudly and actionably on a tenant whose app is missing consent or
   // whose mailboxes an ApplicationAccessPolicy excludes.
   registerFormHandler(OUTLOOK_MAIL_SLUG, new OutlookMailFormInstallHandler());
-  registerOutlookMailConnector();
+  registerStep("outlook-mail brain source + audience re-verifier", registerOutlookMailConnector);
   log.info("Registered OutlookMailFormInstallHandler + brain source connector + audience re-verifier");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).

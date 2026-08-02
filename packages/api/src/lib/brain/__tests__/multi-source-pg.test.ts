@@ -1337,10 +1337,21 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // The class-exclusive claims, each carrying its own class's grant. Without
       // these the isolation arm below could be satisfied by every fact having
       // accidentally landed on one grant.
-      expect(hiring.visible_to).toEqual([MEETING_ALPHA_GRANT]);
-      expect(vendor.visible_to).toEqual([RECAP_GRANT]);
-      expect(officeMove.visible_to).toEqual(["org"]);
-      expect(thursdays.visible_to).toEqual([MEETING_ALPHA_GRANT]);
+      // Collapsed to one comparison: a grant-derivation regression typically
+      // moves several of these at once, and bun's first-failure-shadows rule
+      // would report only the earliest — making a systemic break read as a
+      // single fact's bug.
+      expect({
+        hiring: hiring.visible_to,
+        vendor: vendor.visible_to,
+        officeMove: officeMove.visible_to,
+        thursdays: thursdays.visible_to,
+      }).toEqual({
+        hiring: [MEETING_ALPHA_GRANT],
+        vendor: [RECAP_GRANT],
+        officeMove: ["org"],
+        thursdays: [MEETING_ALPHA_GRANT],
+      });
 
       // ---- 3. the gate publishes, and the cross-class evidence WIDENS ------
       const firstPublish = await publish();
@@ -1418,34 +1429,43 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // never "does not contain X", which is satisfied by a read that returned
       // nothing at all. Every negative below is paired with the positive that
       // proves the reader is reading.
-      expect(subjectsOf(malloryView.results)).toEqual(["office move"]);
-      expect(subjectsOf(adaView.results)).toEqual(
-        ["Q3 revenue target", "deploy window", "hiring plan", "office move"].toSorted(byText),
-      );
-      expect(subjectsOf(boView.results)).toEqual(
-        ["Q3 revenue target", "office move", "vendor contract"].toSorted(byText),
-      );
-      expect(subjectsOf(adminView.results)).toEqual(
-        [
+      // ONE assertion over all four readers, not four in sequence. bun has no
+      // `expect.soft`, so the first failure SHADOWS every assertion after it —
+      // and these four are mutually independent: a widening regression usually
+      // affects several readers at once, and reported one at a time it looks
+      // like a single reader's bug until you fix it and the next one appears.
+      // Compared as one object, every wrong reader diffs simultaneously.
+      expect({
+        mallory: subjectsOf(malloryView.results),
+        ada: subjectsOf(adaView.results),
+        bo: subjectsOf(boView.results),
+        admin: subjectsOf(adminView.results),
+      }).toEqual({
+        mallory: ["office move"],
+        ada: ["Q3 revenue target", "deploy window", "hiring plan", "office move"].toSorted(byText),
+        bo: ["Q3 revenue target", "office move", "vendor contract"].toSorted(byText),
+        admin: [
           "Q3 revenue target",
           "deploy window",
           "hiring plan",
           "office move",
           "vendor contract",
         ].toSorted(byText),
-      );
+      });
 
-      // The same isolation at tier 3. Facts and episodes are gated by separate
-      // clauses over separate tables (`search.ts`: the episode ACL is a FRESH
-      // clause, never the fact predicate reused), so a regression in one is
-      // invisible in the other.
-      expect(sourcesOf(malloryView.results)).toEqual([SLACK_HISTORY_SOURCE]);
-      expect(sourcesOf(adaView.results)).toEqual(
-        [SLACK_HISTORY_SOURCE, ZOOM_TRANSCRIPT_SOURCE].toSorted(byText),
-      );
-      expect(sourcesOf(boView.results)).toEqual(
-        [OUTLOOK_MAIL_SOURCE, SLACK_HISTORY_SOURCE].toSorted(byText),
-      );
+      // The same isolation at tier 3, and collapsed for the same reason. Facts
+      // and episodes are gated by separate clauses over separate tables
+      // (`search.ts`: the episode ACL is a FRESH clause, never the fact
+      // predicate reused), so a regression in one is invisible in the other.
+      expect({
+        mallory: sourcesOf(malloryView.results),
+        ada: sourcesOf(adaView.results),
+        bo: sourcesOf(boView.results),
+      }).toEqual({
+        mallory: [SLACK_HISTORY_SOURCE],
+        ada: [SLACK_HISTORY_SOURCE, ZOOM_TRANSCRIPT_SOURCE].toSorted(byText),
+        bo: [OUTLOOK_MAIL_SOURCE, SLACK_HISTORY_SOURCE].toSorted(byText),
+      });
 
       // ⭐ WIDENED IN, BUT NOT TOLD WHO SAID IT. `bo` reaches the Q3 claim only
       // through #4823's union; he matches none of `pre_widening_visible_to`, so
@@ -1507,14 +1527,27 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       expect(RIVAL_GRANT).not.toBe(RECAP_GRANT);
       expect(await audienceMembers(RIVAL_AUDIENCE)).toEqual(["user-admin", "user-bo"]);
 
-      // The advisory edge reconcile wrote, newer claim → incumbent, once.
-      expect(await edgeCount("in-tension-with", fridays.id, { factId: thursdays.id })).toBe(1);
-      // ⭐ NEITHER RANKED, stated as the absence of every arbitration artefact.
-      // Reconcile recorded a conflict; it retired nothing, in either direction,
-      // and it did not decide that a mail outranks a meeting or the reverse.
-      expect(await edgeCount("in-tension-with", thursdays.id, { factId: fridays.id })).toBe(0);
-      expect(await edgeCount("supersedes", fridays.id, { factId: thursdays.id })).toBe(0);
-      expect(await edgeCount("supersedes", thursdays.id, { factId: fridays.id })).toBe(0);
+      // ⭐ THE WHOLE EDGE PICTURE IN ONE COMPARISON: the advisory edge reconcile
+      // wrote (newer claim → incumbent, once), and NEITHER RANKED, stated as the
+      // absence of every arbitration artefact. Reconcile recorded a conflict; it
+      // retired nothing, in either direction, and did not decide that a mail
+      // outranks a meeting or the reverse.
+      //
+      // One object rather than four awaits in sequence: these four counts are a
+      // single claim about the edge table, and with bun's first-failure-shadows
+      // rule a regression that wrote BOTH `supersedes` directions would surface
+      // as one of them until fixed, then the other. Together they diff at once.
+      expect({
+        tensionForward: await edgeCount("in-tension-with", fridays.id, { factId: thursdays.id }),
+        tensionReverse: await edgeCount("in-tension-with", thursdays.id, { factId: fridays.id }),
+        supersedesForward: await edgeCount("supersedes", fridays.id, { factId: thursdays.id }),
+        supersedesReverse: await edgeCount("supersedes", thursdays.id, { factId: fridays.id }),
+      }).toEqual({
+        tensionForward: 1,
+        tensionReverse: 0,
+        supersedesForward: 0,
+        supersedesReverse: 0,
+      });
       const stillLive = factByClaim(rows, "deploy window", "Thursdays");
       expect(stillLive).toMatchObject({
         status: "published",
@@ -1658,16 +1691,25 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // correct alone, no ADR states it, and it is pinned here so a change to it
       // has to argue with a test. Paired with a positive, so this is a lost
       // belief and not a lost reader.
+      // All three readers at once. The handover is a single event with three
+      // simultaneous consequences, and asserting them in sequence lets bun's
+      // first failure hide the other two — so a regression that broke the
+      // handover for BOTH winners would read as one reader's problem.
       const adaAfterGate = await search(adaCtx);
-      expect(deployObjectsOf(adaAfterGate.results)).toEqual([]);
-      expect(subjectsOf(adaAfterGate.results)).toEqual(
-        ["Q3 revenue target", "hiring plan", "office move"].toSorted(byText),
-      );
-      // The reader who owns the WINNER's class gains the belief in the same
-      // instant — the other half of grant-blindness, and what makes it a
-      // handover rather than a deletion.
-      expect(deployObjectsOf((await search(boLive)).results)).toEqual(["Fridays"]);
-      expect(deployObjectsOf((await search(adminLive)).results)).toEqual(["Fridays"]);
+      expect({
+        adaDeploy: deployObjectsOf(adaAfterGate.results),
+        adaStillReads: subjectsOf(adaAfterGate.results),
+        // The readers who own the WINNER's class gain the belief in the same
+        // instant — the other half of grant-blindness, and what makes this a
+        // handover rather than a deletion.
+        boDeploy: deployObjectsOf((await search(boLive)).results),
+        adminDeploy: deployObjectsOf((await search(adminLive)).results),
+      }).toEqual({
+        adaDeploy: [],
+        adaStillReads: ["Q3 revenue target", "hiring plan", "office move"].toSorted(byText),
+        boDeploy: ["Fridays"],
+        adminDeploy: ["Fridays"],
+      });
 
       // ---- 8. the point read, at the bound the GATE stamped ----------------
       // THE UPPER BOUND, falsified by BRACKETING. Every fact in this file has
@@ -1687,10 +1729,19 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
         throw new Error("the gate stamped no valid_to — the bracket below would be vacuous");
       }
       const stampMs = loser.valid_to.getTime();
+      // The bracket is ONE claim — "the bound is exactly here" — so both sides
+      // are compared together. Split, a predicate that admitted everything would
+      // fail only on the `justAfter` half, and the `justBefore` half that proves
+      // the read still works at all would never be reached to say so.
       const justAfter = await search(adminLive, { asOf: new Date(stampMs + 1).toISOString() });
-      expect(deployObjectsOf(justAfter.results)).toEqual(["Fridays"]);
       const justBefore = await search(adminLive, { asOf: new Date(stampMs - 1).toISOString() });
-      expect(deployObjectsOf(justBefore.results)).toEqual(["Fridays", "Thursdays"]);
+      expect({
+        justAfter: deployObjectsOf(justAfter.results),
+        justBefore: deployObjectsOf(justBefore.results),
+      }).toEqual({
+        justAfter: ["Fridays"],
+        justBefore: ["Fridays", "Thursdays"],
+      });
       // The point read rewinds the FACTS, never the grants of a class the
       // reader never held: `bo` gets the mail-granted winner at both instants
       // and never the meeting-granted loser, so `asOf` is not a way around the

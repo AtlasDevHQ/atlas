@@ -116,6 +116,28 @@ function reportNotStored(
   // to them.
   if (outcome.status === "skipped" && outcome.reason === "disabled") return;
 
+  // Arms that mean "this traffic was NEVER in scope for the brain", as opposed
+  // to "in scope and we failed to store it". They are steady-state for any
+  // deployment running Atlas chat without a Slack-history source, or with one
+  // scoped to a subset of channels — which is the normal case, not a fault.
+  //
+  // They must not reach the `pollBackstopped: false` warn arm below. That arm
+  // says "this evidence is LOST", and for a thread reply in a channel the admin
+  // deliberately never scoped, nothing was lost: there was nothing to store. Left
+  // as a warn it fires once per thread reply, forever, on a correct
+  // configuration — the exact shape of alert that trains an operator to ignore
+  // the channel that also carries the real one.
+  const NEVER_IN_SCOPE = new Set(["no_install", "unknown_workspace", "channel_not_configured"]);
+  if (outcome.status === "skipped" && NEVER_IN_SCOPE.has(outcome.reason)) {
+    const detail = { reason: outcome.reason, messageId: observation.message.id };
+    report?.("debug", detail);
+    log.debug(
+      detail,
+      "Chat brain observer: message is outside this deployment's brain scope — nothing was lost",
+    );
+    return;
+  }
+
   const detail = {
     reason: outcome.status === "skipped" ? outcome.reason : "ingest_refused",
     messageId: observation.message.id,

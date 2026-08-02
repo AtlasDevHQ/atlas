@@ -24,7 +24,7 @@ A **class** is a kind of evidence. A **vendor** is one product within a class. A
 | **Human** | — | A person's own recorded words — today, a [correction](/guides/brain-corrections) | Produced inside Atlas, not a connector |
 | **Warehouse** | — | A fact derived from your own data, by reference | **Reserved** — the vocabulary has it, no producer ships yet |
 
-The last two never appear in the integrations catalog: they are produced inside Atlas rather than fetched from a vendor. `human` is live today — every correction you make is recorded as one. `warehouse` is a reserved slot: when a producer ships, facts carrying it will be the only ones that [cannot be corrected by hand](/guides/brain-corrections), because the fix will belong in your data or your semantic layer, where the next sync will not overwrite it.
+The last two never appear in the integrations catalog: they are produced inside Atlas rather than fetched from a vendor. `human` is live today — every correction you make is recorded as one. `warehouse` is a reserved slot: when a producer ships, facts carrying it will be the only ones refused *on tier grounds* from [correction by hand](/guides/brain-corrections), because the fix will belong in your data or your semantic layer, where the next sync will not overwrite it. Separately, a fact imported from a region running a newer vocabulary is quarantined from correction until this deployment learns the kind.
 
 ## Why this order — it tracks ACL difficulty, not volume
 
@@ -43,8 +43,8 @@ Every class derives its grant at ingest and freezes it onto the episode. The gra
 | Class | Audience derived from | Complete? | What happens if it can't be established |
 |---|---|---|---|
 | Chat | Channel membership — or the whole org, for a public channel | Yes — the vendor states the whole roster | The channel's pass is abandoned; nothing is ingested at a wider grant |
-| Transcripts | The meeting's participant list | Yes, and frozen when the meeting ends | The meeting is skipped; a partial roster is never used |
-| Email | `From` + `To` + `Cc` | **No — a lower bound.** See below | The message is blocked and retried next cycle |
+| Transcripts | The meeting's participant list | Yes, and frozen when the meeting ends | The meeting is blocked and retried next cycle; a partial roster is never used |
+| Email | `From` + `To` + `Cc` | **No — a lower bound.** See below | The message is refused. Unreadable headers are permanent, so the walk advances past it; only a malformed mailbox/message id or a failed membership write blocks and retries |
 
 Three rules hold across all three, and they are the ones worth internalising:
 
@@ -66,7 +66,7 @@ A meeting's audience is the people who were in it. Nobody joins a past meeting, 
 
 What stays mutable is the *resolution* of those participants to Atlas users — people join and leave your organisation — which is why a transcript grant still names an audience and is still re-verified on a schedule rather than being frozen into a list of user ids at ingest.
 
-If the participant roster cannot be enumerated **completely** — a paging error, an exhausted retry budget — the meeting is skipped rather than ingested against a partial list. A partial roster is not merely a smaller grant: membership reconciliation removes everyone outside the set it is handed, so a truncated roster would revoke the people it failed to fetch, and the damage would look exactly like correct fail-closed behaviour from every screen.
+If the participant roster cannot be enumerated **completely** — a paging error, an exhausted retry budget — the meeting is **blocked**: nothing is ingested, nothing is granted, and the next cycle tries again. It is never ingested against a partial list. A partial roster is not merely a smaller grant: membership reconciliation removes everyone outside the set it is handed, so a truncated roster would revoke the people it failed to fetch, and the damage would look exactly like correct fail-closed behaviour from every screen.
 
 ### Email — `To` and `Cc`, and why that is a lower bound
 
@@ -99,9 +99,11 @@ Not every mail message that fails to become an episode fails the same way, and t
 
 | Outcome | Cause | Will it arrive later? |
 |---|---|---|
-| **Blocked** | The participant headers were unreadable, so the audience could not be established | **Yes** — retried on the next cycle |
+| **Blocked** | An access grant could not be built from the mailbox/message ids, or the membership write failed | **Yes** — retried on the next cycle |
+| **Skipped** | The participant headers were incomplete, so the audience could not be established | No. Graph does not transiently omit a field it returned a 200 for, and the headers of a stored message do not change — retrying would freeze the walk at the message before it |
 | **Skipped** | The message has no usable `Message-ID` | No. A header a message does not have will never appear on a retry, so retrying forever would freeze the walk |
 | **Skipped** | More than **500** participants — a large distribution list or an all-hands thread | No, not at this bound. Raising it re-admits such mail on the next *backfill* rather than repairing what was already passed over |
+| **Skipped** | The body was over the byte cap, HTML rather than the plain text asked for, or composed to nothing at all | No. Same reason — a stored message's body does not change |
 
 The 500-participant bound is not a safety refusal — such a message has a perfectly well-established audience. It exists because reconciling it writes one membership row per resolved recipient per message, and one all-hands thread could otherwise consume a whole cycle.
 
@@ -110,7 +112,7 @@ The 500-participant bound is not a safety refusal — such a message has a perfe
 </Callout>
 
 <Callout type="warn" title="Per-message grain gives email a capacity ceiling the other classes do not have">
-  Chat and transcripts mint one audience per **container** — one per channel, one per meeting — so their audience count tracks how your company is organised and plateaus. Email mints one per **message**, so it grows with every message ingested, without bound. Re-verification capacity does not grow with it:
+  Chat and transcripts mint one audience per **container** — one per *private* channel, one per meeting; a public channel is granted org-wide and mints none — so their audience count tracks how your company is organised and plateaus. Email mints one per **message**, so it grows with every message ingested, without bound. Re-verification capacity does not grow with it:
 
   ```
   200 audiences / workspace / cycle  ×  48 cycles/day (30-min default)
@@ -118,7 +120,9 @@ The 500-participant bound is not a safety refusal — such a message has a perfe
     ≈ 67,000 audiences kept fresh per workspace
   ```
 
-  Past roughly that many mail episodes in a workspace, the oldest tail ages beyond the staleness bound and **those email facts stop being readable**. The direction is fail-closed — invisible, never over-visible — but it is a real degradation, and nothing surfaces it more loudly than a cap warning in the sync report. This is the reason to raise `ATLAS_BRAIN_EMAIL_BACKFILL_DAYS` deliberately rather than optimistically: a wide backfill spends this budget permanently, not once.
+  Past roughly that many mail episodes in a workspace, the set cannot be rotated within the staleness bound and **some email facts stop being readable**. The scan rotates on *attempt* rather than on success, so there is no fixed "oldest tail" that starves — instead the whole set ages under one rotation, and whichever audiences are outside the bound at read time have their facts suppressed. The direction is fail-closed — invisible, never over-visible — but it is a real degradation, and nothing surfaces it more loudly than a warning in the server log: it does **not** appear on the source's sync state, because the audience-sync fiber has no warnings channel into `knowledge_sync_state`. This is the reason to raise `ATLAS_BRAIN_EMAIL_BACKFILL_DAYS` deliberately rather than optimistically: a wide backfill spends this budget permanently, not once.
+
+  Note also that the reserve for audiences with **no** resolved members — mail addressed only to customers, the class the "someone joined Atlas later" repair exists for — is a tenth of each page (`MEMBERLESS_RESERVE_FRACTION`), so that pool rotates roughly 10× more slowly than the figure above when member-bearing audiences over-subscribe the rest.
 </Callout>
 
 ## What each source needs to connect

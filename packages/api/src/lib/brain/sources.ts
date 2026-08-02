@@ -163,16 +163,16 @@
  * The closed set of source CLASSES — ADR-0036 §T6's class-major axis.
  *
  * Not "connector classes": `warehouse` and `human` come from no connector at
- * all; only `chat` and `transcript` name connector classes today.
+ * all; `chat`, `transcript` and `email` name connector classes today.
  *
  * Only classes with a member in {@link EPISODE_SOURCE_SPECS} are listed. The
- * ADR's remaining classes (email, docs/wiki/code/drive) are deliberately
+ * ADR's remaining classes (docs/wiki/code/drive) are deliberately
  * absent: a class with no source that can produce it is dead vocabulary, and a
  * downstream `switch` over it would have an arm nothing ever reaches. Each
  * arrives with its first connector, in the same one-line PR that adds the
  * connector's stored value.
  *
- * SINGULAR, all four. The ADR's prose sequences them as "chat → transcripts →
+ * SINGULAR, all five. The ADR's prose sequences them as "chat → transcripts →
  * email → docs" and that plural is a list of SUBJECT AREAS; these are the
  * values a stored row's class resolves TO, read one row at a time
  * (`episodeSourceClassOf(row.source) === TRANSCRIPT_CLASS`). Mixing the two
@@ -551,8 +551,14 @@ export function episodeSourceVendor(source: EpisodeSource): EpisodeSourceVendor 
  *
  * Use this to read a stored row. Use {@link episodeSourceClass} when the value
  * is already known to be in the vocabulary and an unknown one would be a
- * programmer error worth surfacing loudly. #4967's webhook fast-path is the
- * read-a-stored-row shape and wants this one.
+ * programmer error worth surfacing loudly.
+ *
+ * There is no production caller yet. #4967's webhook fast-path was predicted to
+ * be one and is NOT — it resolves connectors on the VENDOR axis
+ * (`findBrainSourceConnectors({ vendor: SLACK_SOURCE })`) and never asks for a
+ * class. The region-import lane (`admin-migrate.ts`) is the read-a-stored-row
+ * shape this exists for; said plainly so the next reader does not take a
+ * predicted caller for an actual one.
  */
 export function episodeSourceClassOf(value: unknown): EpisodeSourceClass | null {
   return isEpisodeSource(value) ? episodeSourceClass(value) : null;

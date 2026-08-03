@@ -1,8 +1,8 @@
 #!/bin/bash
 # Refuse any write to `brain_facts.status`, or any MUTATION of
-# `brain_facts.visible_to` or `brain_facts.valid_to`, outside the atomic
-# publish endpoint (#4769 / #4823 / #4912, ADR-0036). Scope + blind spots
-# below.
+# `brain_facts.visible_to`, `brain_facts.valid_to`, or a fact's IDENTITY KEYS,
+# outside the atomic publish endpoint (#4769 / #4823 / #4912 / #5019,
+# ADR-0036 + ADR-0037). Scope + blind spots below.
 #
 # `brain_facts.status` is the fact class's review gate. ADR-0036 makes the gate
 # the brain's conflict-resolution mechanism, which only holds if `draft →
@@ -37,6 +37,11 @@
 #     may open a validity window (`valid_from` on an INSERT) but never close
 #     one, and an import carrying an already-closed window is a restore rather
 #     than an arbitration.
+#   - the identity keys — `subject_key`, `predicate_key`, `object_key`, and the
+#     `_cmp` comparison columns (#5019) — UPDATE **only**, on the grant's terms
+#     exactly: derived at ingest, so INSERT must stay legal; never RE-derived by
+#     a second writer, because re-keying changes what a claim collides with and
+#     the collision is what stamps `valid_to`.
 # Fixtures pin BOTH directions on every column, so "tidying" this into symmetry
 # has to fail a test first.
 #
@@ -45,6 +50,9 @@
 #   - `UPDATE [schema.]brain_facts … SET … visible_to …`
 #   - `UPDATE [schema.]brain_facts … SET … valid_to …` (#4912 — the
 #     supersession stamp; UPDATE-only like the grant, see the column notes)
+#   - `UPDATE [schema.]brain_facts … SET … subject_key / predicate_key /
+#     object_key / subject_cmp / object_cmp …` (#5019 — a re-key; UPDATE-only,
+#     and the `_cmp` arms are unfalsifiable until #5032 adds the column)
 #   - `INSERT INTO [schema.]brain_facts (… status …)`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … visible_to …`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
@@ -264,6 +272,30 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # script — which migration 0183's header explicitly forecloses — is exactly the
 # shape that would otherwise slip through.
 #
+# The IDENTITY columns — `subject_key`, `predicate_key`, `object_key`, and the
+# `_cmp` comparison columns — join on the same UPDATE-only terms (#5019,
+# ADR-0037). A key is DERIVED AT INGEST exactly as a grant is, so INSERT must
+# stay legal: #5020's `INSERT_FACT_SQL` names all three and must. What must not
+# exist is a second writer that RE-KEYS an existing fact, because a key
+# determines what a claim collides with, and the collision is what the publish
+# gate stamps `valid_to` on. Re-keying outside the alias-approval seam therefore
+# reaches the irreversible column by proxy: de-merging two keys between
+# `SUPERSESSION_TARGETS_SQL`'s SELECT and `SUPERSEDE_STAMP_SQL`'s UPDATE stamps a
+# pair that no longer collides, and every as-of-now read then hides the row it
+# touched. This also converts what was legal-by-OMISSION into a recorded
+# decision: an alias approval mutates PUBLISHED rows' collision behaviour with no
+# draft stage, and that is defensible (the surfaces are untouched, so no
+# user-facing content changed) but it should be defensible on the record.
+#
+# NEITHER `_cmp` COLUMN EXISTS YET — both arms are unfalsifiable until #5032, and
+# they are gated now rather than then so the guard is never the thing lagging the
+# schema. Both spellings are listed on purpose: #5019 names `subject_cmp` while
+# ADR-0037 §4's column table names `object_cmp` (only the object is ever compared
+# for DIFFERENCE; subject and predicate are join arms). Gating a column that
+# never ships costs nothing — the guard is over-broad by design — while missing
+# the one that does ships an ungated writer onto the arm that authorizes the
+# irreversible stamp.
+#
 # `valid_to` (#4912) is the third gated column, UPDATE-only like the grant:
 # "a human promotion stamps `valid_to`; there is no autonomous supersession"
 # (ADR-0036 §Temporal). Its writers are `promoteBrainFacts`' supersession
@@ -275,8 +307,8 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # gated: `INSERT_FACT_SQL` names `valid_from` (a producer may know when a claim
 # began), never `valid_to`, and a future entry point importing a fact with a
 # closed validity window is a restore, not an arbitration.
-UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to)'
-ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo)'
+UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to|subject_key|predicate_key|object_key|subject_cmp|object_cmp)'
+ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo|subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)'
 
 # Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
 # ECHOES which one — they have completely different remedies, and a message
@@ -299,6 +331,10 @@ statement_writes_gated_column() {
     fi
     if grep -qiE '\bvalid_to\b' <<<"$stmt"; then
       echo valid_to
+      return 0
+    fi
+    if grep -qiE '\bsubject_key\b|\bpredicate_key\b|\bobject_key\b|\bsubject_cmp\b|\bobject_cmp\b' <<<"$stmt"; then
+      echo identity
       return 0
     fi
   fi
@@ -337,6 +373,10 @@ statement_writes_gated_column() {
       echo valid_to
       return 0
     fi
+    if grep -qiE '\bsubject_key\b|\bpredicate_key\b|\bobject_key\b|\bsubject_cmp\b|\bobject_cmp\b' <<<"$stmt"; then
+      echo identity
+      return 0
+    fi
   fi
 
   # Raw SQL — a column-less positional INSERT. No gated column can appear by
@@ -364,6 +404,10 @@ statement_writes_gated_column() {
       echo valid_to
       return 0
     fi
+    if grep -qE '\b(subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)\b' <<<"$stmt"; then
+      echo identity
+      return 0
+    fi
   fi
   if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
     && grep -qE '\bstatus\b' <<<"$stmt"; then
@@ -383,6 +427,10 @@ statement_writes_gated_column() {
       echo valid_to
       return 0
     fi
+    if grep -qE '\b(subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)\b' <<<"$stmt"; then
+      echo identity
+      return 0
+    fi
   fi
 
   return 1
@@ -395,6 +443,7 @@ OFFENDERS=""
 SAW_STATUS=0
 SAW_GRANT=0
 SAW_VALIDITY=0
+SAW_IDENTITY=0
 if [ -n "$CANDIDATES" ]; then
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -424,6 +473,7 @@ if [ -n "$CANDIDATES" ]; then
         case "$column" in
           visible_to) SAW_GRANT=1 ;;
           valid_to) SAW_VALIDITY=1 ;;
+          identity) SAW_IDENTITY=1 ;;
           *) SAW_STATUS=1 ;;
         esac
         break
@@ -436,12 +486,14 @@ fi
 OFFENDERS=$(echo "${OFFENDERS%$'\n'}" | grep -v '^$' || true)
 
 if [ -n "$OFFENDERS" ]; then
-  if [ $((SAW_STATUS + SAW_GRANT + SAW_VALIDITY)) -gt 1 ]; then
-    echo "::error::a company-brain fact's gated columns (\`status\` / \`visible_to\` / \`valid_to\`) are written outside the atomic publish endpoint (#4769 / #4823 / #4912)."
+  if [ $((SAW_STATUS + SAW_GRANT + SAW_VALIDITY + SAW_IDENTITY)) -gt 1 ]; then
+    echo "::error::a company-brain fact's gated columns (\`status\` / \`visible_to\` / \`valid_to\` / the identity keys) are written outside the atomic publish endpoint (#4769 / #4823 / #4912 / #5019)."
   elif [ "$SAW_GRANT" -eq 1 ]; then
     echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)."
   elif [ "$SAW_VALIDITY" -eq 1 ]; then
     echo "::error::a company-brain fact's \`valid_to\` is stamped outside the atomic publish endpoint (#4912)."
+  elif [ "$SAW_IDENTITY" -eq 1 ]; then
+    echo "::error::a company-brain fact is RE-KEYED outside the alias-approval seam (#5019)."
   else
     echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)."
   fi
@@ -494,6 +546,30 @@ if [ -n "$OFFENDERS" ]; then
     echo ""
   fi
 
+  if [ "$SAW_IDENTITY" -eq 1 ]; then
+    echo "\`brain_facts.subject_key\` / \`predicate_key\` / \`object_key\` (and the \`_cmp\`"
+    echo "comparison columns) are the claim's IDENTITY — \`alias(lexicalNorm(surface))\`,"
+    echo "materialized (#5019, ADR-0037). A key decides what a claim COLLIDES with, and a"
+    echo "collision is what the publish gate stamps \`valid_to\` on. So a second writer that"
+    echo "re-keys an existing fact reaches the irreversible column by proxy: de-merge two"
+    echo "keys between \`SUPERSESSION_TARGETS_SQL\`'s SELECT and \`SUPERSEDE_STAMP_SQL\`'s"
+    echo "UPDATE and the transaction retires a pair that no longer collides — invisibly,"
+    echo "because every as-of-now read hides the row it touched."
+    echo ""
+    echo "Fixes for an identity-key write — note that OMITTING the columns is NOT one:"
+    echo "  * Writing a NEW fact? Naming the keys on the INSERT is correct and required —"
+    echo "    they are derived at ingest, exactly as the grant is, so only UPDATE (and an"
+    echo "    upsert's \`DO UPDATE\` half) is refused here."
+    echo "  * Re-keying because the vocabulary changed? That is the alias-approval decide"
+    echo "    transaction, which takes the identity-mutation advisory lock and shows the"
+    echo "    reviewer a preview of the effect before they commit. Not a second writer."
+    echo "  * Repairing keys corpus-wide? That is a \`.sql\` migration (0187 is the day-one"
+    echo "    one), and migrations are outside this scan by construction."
+    echo "  * Re-deriving from the surface to undo an alias removal? Same answer — the"
+    echo "    approval seam, where the vocabulary version that authorized it is known."
+    echo ""
+  fi
+
   if [ "$SAW_GRANT" -eq 1 ]; then
     echo "\`brain_facts.visible_to\` is the fact's ACL. ADR-0036 §T5 makes it a"
     echo "per-version snapshot that may widen ONLY at the review gate — which is"
@@ -515,4 +591,4 @@ if [ -n "$OFFENDERS" ]; then
   exit 1
 fi
 
-echo "Brain-fact promotion check passed — no ungated status, visible_to, or valid_to write to brain_facts outside the atomic publish endpoint."
+echo "Brain-fact promotion check passed — no ungated status, visible_to, valid_to, or identity-key write to brain_facts outside the atomic publish endpoint."

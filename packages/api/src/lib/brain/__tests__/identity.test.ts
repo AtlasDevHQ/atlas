@@ -1,0 +1,112 @@
+/**
+ * `lexicalNorm` — the lexical layer of a claim's identity key (#5019,
+ * ADR-0037).
+ *
+ * Scope note, because a green file here is easy to over-read: this proves what
+ * the TypeScript does. It says nothing about migration 0187, which is a SECOND
+ * implementation of the same function written in SQL — that pairing is
+ * `identity-pg.test.ts`'s, against a real database, and it is the assertion
+ * that actually matters.
+ *
+ * The cases below are grouped by what they would catch, not by input shape.
+ * Most of them exist to pin something the function must NOT do.
+ */
+
+import { describe, expect, it } from "bun:test";
+import { lexicalNorm } from "@atlas/api/lib/brain/identity";
+
+describe("lexicalNorm", () => {
+  describe("what it does", () => {
+    it("folds ASCII case", () => {
+      expect(lexicalNorm("OWNED BY")).toBe("owned by");
+      expect(lexicalNorm("Acme Corp")).toBe("acme corp");
+    });
+
+    it("unifies `_`, `-`, and ASCII whitespace into a single space", () => {
+      expect(lexicalNorm("owned_by")).toBe("owned by");
+      expect(lexicalNorm("owned-by")).toBe("owned by");
+      expect(lexicalNorm("owned\tby")).toBe("owned by");
+      expect(lexicalNorm("owned\nby")).toBe("owned by");
+      expect(lexicalNorm("owned\vby")).toBe("owned by");
+      expect(lexicalNorm("owned\fby")).toBe("owned by");
+      expect(lexicalNorm("owned\rby")).toBe("owned by");
+    });
+
+    it("collapses mixed runs and trims the edges", () => {
+      expect(lexicalNorm("  Reports   To  ")).toBe("reports to");
+      expect(lexicalNorm("__Reports-_ To\t\t")).toBe("reports to");
+    });
+
+    it("is idempotent — a norm is its own norm", () => {
+      // The fixpoint the vocabulary's forest invariant will rest on: applying
+      // the table to its own output has to terminate.
+      for (const surface of ["  Owned_By ", "led_by", "ACME-CORP", "$499", ""]) {
+        expect(lexicalNorm(lexicalNorm(surface))).toBe(lexicalNorm(surface));
+      }
+    });
+
+    it("is total — every string has a norm, including degenerate ones", () => {
+      expect(lexicalNorm("")).toBe("");
+      expect(lexicalNorm("___")).toBe("");
+      expect(lexicalNorm("   ")).toBe("");
+    });
+  });
+
+  describe("what it must NOT do", () => {
+    it("keeps `led_by` and `leads` apart — they are INVERSE relations", () => {
+      // The single most important negative in this file. Any stemmer collapses
+      // these into one slot, and the slot is a JOIN arm: publishing "Alice
+      // leads Platform" would then stamp `valid_to` on "Platform led_by Alice".
+      expect(lexicalNorm("led_by")).not.toBe(lexicalNorm("leads"));
+      expect(lexicalNorm("led_by")).toBe("led by");
+      expect(lexicalNorm("leads")).toBe("leads");
+    });
+
+    it("keeps `is owned by` and `owns` apart — no copula or stopword stripping", () => {
+      expect(lexicalNorm("is owned by")).not.toBe(lexicalNorm("owns"));
+      expect(lexicalNorm("is owned by")).toBe("is owned by");
+    });
+
+    it("does NOT close #5000's pair — that repair is a vocabulary entry", () => {
+      // `is priced at` → `priced at` is safe for THAT predicate and unsafe as a
+      // general rule: the same rule collapses `is owned by` into `owns`. Pinned
+      // so nobody "finishes the job" here with a regex.
+      expect(lexicalNorm("is priced at")).not.toBe(lexicalNorm("priced at"));
+    });
+
+    it("does not stem, singularize, or lemmatise", () => {
+      expect(lexicalNorm("reports")).not.toBe(lexicalNorm("report"));
+      expect(lexicalNorm("escalates_to")).not.toBe(lexicalNorm("escalate to"));
+    });
+
+    it("folds ASCII ONLY, so it cannot disagree with Postgres's `lower()`", () => {
+      // Measured, not assumed: `lower()` and `String#toLowerCase()` part ways
+      // on U+0130 and on Greek word-final sigma, and Postgres's answer moves
+      // with the database collation on top of that. The cost is an under-match
+      // — `Café`/`CAFÉ` stay apart — which is a duplicate row and a missed
+      // corroboration, both recoverable, and both repairable by a vocabulary
+      // entry. See `identity-pg.test.ts` for the half that runs the real
+      // migration over these same characters.
+      expect(lexicalNorm("CAFÉ")).toBe("cafÉ");
+      expect(lexicalNorm("İstanbul")).toBe("İstanbul");
+      expect(lexicalNorm("ΣΊΣΥΦΟΣ")).toBe("ΣΊΣΥΦΟΣ");
+      expect(lexicalNorm("МОСКВА")).toBe("МОСКВА");
+    });
+
+    it("does not treat non-ASCII spaces as separators", () => {
+      // JavaScript's `\s` would; Postgres's `[[:space:]]` consults the locale.
+      // Neither is a set the two implementations can agree on, so U+00A0 stays
+      // an ordinary character in the key. Written as an ESCAPE on purpose: a
+      // literal NBSP in the source is indistinguishable from a space on sight,
+      // and this assertion is worthless if it is silently testing a space.
+      expect(lexicalNorm("owned\u00a0by")).toBe("owned\u00a0by");
+      expect(lexicalNorm("owned\u00a0by")).not.toBe("owned by");
+    });
+
+    it("does not touch the interior of a token", () => {
+      expect(lexicalNorm("$499")).toBe("$499");
+      expect(lexicalNorm("499 USD")).toBe("499 usd");
+      expect(lexicalNorm("a.b/c")).toBe("a.b/c");
+    });
+  });
+});

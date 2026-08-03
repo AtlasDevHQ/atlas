@@ -408,6 +408,88 @@ run_fixture "INSERT naming pre_widening_visible_to passes (restore, not a wideni
 'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, pre_widening_visible_to, provenance, source_episode_id)
   VALUES ($1,$2,$3,$4, ARRAY(SELECT jsonb_array_elements_text($5::jsonb)), $6::jsonb, $7::uuid)`);'
 
+# ── the identity keys (#5019, ADR-0037) ──────────────────────────────────
+#
+# UPDATE-forbidden / INSERT-legal, on the grant's exact terms: a key is derived
+# at ingest, and re-keying is what changes a claim's collisions — which is what
+# the publish gate stamps `valid_to` on. Each column gets its OWN failing
+# fixture rather than one representative, because they are four independent
+# alternations in the arm and a fixture on one proves nothing about the others.
+
+run_fixture "UPDATE … SET subject_key fails (a re-key outside the approval seam)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET subject_key = $2 WHERE workspace_id = $1`);'
+
+run_fixture "UPDATE … SET predicate_key fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET predicate_key = $2 WHERE workspace_id = $1 AND predicate_key = $3`);'
+
+run_fixture "UPDATE … SET object_key fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET object_key = $2 WHERE workspace_id = $1`);'
+
+run_fixture "Drizzle .update().set({subjectKey}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ subjectKey: k }).where(eq(brainFacts.id, id));'
+
+run_fixture "Drizzle .update().set({predicateKey}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ predicateKey: k }).where(eq(brainFacts.id, id));'
+
+run_fixture "Drizzle .update().set({objectKey}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ objectKey: k }).where(eq(brainFacts.id, id));'
+
+# The upsert half, the shape that evaded the grant arm when it was first
+# written — it names no table after `UPDATE`.
+run_fixture "ON CONFLICT … DO UPDATE SET predicate_key fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET predicate_key = $4`);'
+
+run_fixture "Drizzle .insert().onConflictDoUpdate({set:{objectKey}}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { objectKey: k } });'
+
+# The `_cmp` arms are gated ahead of the column existing (#5032), so nothing in
+# the tree can hold them yet. These fixtures are the only thing that does —
+# without them the alternations could be deleted and every other test here would
+# still pass. Both spellings, because #5019 names `subject_cmp` and ADR-0037 §4's
+# column table names `object_cmp`.
+run_fixture "UPDATE … SET subject_cmp fails (gated before the column exists, #5032)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET subject_cmp = $2 WHERE workspace_id = $1`);'
+
+run_fixture "UPDATE … SET object_cmp fails (gated before the column exists, #5032)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET object_cmp = $2 WHERE workspace_id = $1`);'
+
+# The must-PASS half. An INSERT naming the keys is #5020'"'"'s `INSERT_FACT_SQL`,
+# and gating it would refuse the write the whole identity design rests on —
+# the same line the grant draws. Names ONLY the key columns beyond the
+# structural minimum, so it cannot pass on some other column'"'"'s arm.
+run_fixture "INSERT naming the identity keys passes — derived at ingest, like the grant" pass \
+  "packages/api/src/lib/brain/reconcile-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::uuid, ARRAY(SELECT jsonb_array_elements_text($10::jsonb)))`);'
+
+run_fixture "Drizzle .insert().values({subjectKey}) passes" pass \
+  "packages/api/src/lib/brain/reconcile-shape.ts" \
+'await db.insert(brainFacts).values({ subject: s, subjectKey: sk, predicateKey: pk, objectKey: ok, visibleTo: tokens });'
+
+# Reading and JOINING on a key is the entire point of materializing it — the
+# gate must not make the slot lookup itself unwritable.
+run_fixture "SELECT joining on the identity keys passes" pass \
+  "packages/api/src/lib/brain/read.ts" \
+'const rows = await db.query(`SELECT id FROM brain_facts WHERE workspace_id = $1 AND subject_key = $2 AND predicate_key = $3 AND object_key = $4 AND invalidated_at IS NULL AND valid_to IS NULL`);'
+
+# The regression that matters: retraction is the one legitimate unallowlisted
+# brain_facts UPDATE, and it must stay legitimate now that four more columns are
+# gated. Re-pinned here rather than assumed from the `valid_to` fixture above,
+# since a new arm is a new way to break it.
+run_fixture "retraction still passes with the identity keys gated" pass \
+  "packages/api/src/lib/brain/retract3.ts" \
+'await db.query(`UPDATE brain_facts AS f SET invalidated_at = now(), updated_at = now() WHERE f.id = $1 AND f.invalidated_at IS NULL`);'
+
 echo ""
 
 echo ""

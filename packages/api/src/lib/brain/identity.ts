@@ -7,8 +7,9 @@
  *
  * This module owns the INNER one. `alias` — the curated, versioned workspace
  * vocabulary — is a later slice, and until it exists it is the identity
- * function, so every key produced today is exactly `lexicalNorm(surface)`. That
- * is why this slice is expected to change no observable behaviour at all.
+ * function, so every key produced today is exactly {@link identityKey} of the
+ * surface: `lexicalNorm(surface)`, or `null` where that is empty. That is why
+ * this slice is expected to change no observable behaviour at all.
  *
  * ## What `lexicalNorm` is, and the harder question of what it is NOT
  *
@@ -138,8 +139,16 @@ export function lexicalNorm(surface: string): string {
  *
  * That is the module's own forbidden direction — an over-match at a join arm,
  * reached from the one input class the lexical layer cannot distinguish. `null`
- * is what the schema already documents as "no writer has keyed this row, joins
- * nothing", and it is the honest answer for a surface that asserts nothing.
+ * joins nothing, which is the honest answer for a surface that asserts nothing.
+ *
+ * ⚠️ It does OVERLOAD the column, though, and the overload has a consequence
+ * worth carrying forward: a NULL key now means either "no writer has keyed this
+ * row yet" (transient) or "this surface norms away" (permanent, and legal). So
+ * `SET NOT NULL` cannot land on the keys until `reconcile.ts`'s
+ * `MALFORMED_CLAIM` guard also refuses a candidate whose `identityKey` is null
+ * — otherwise the constraint turns a claim that is storable today into a
+ * transaction-killing not-null violation. Migration 0187's header records this
+ * as the third prerequisite; no issue owns it yet.
  *
  * Migration 0187 mirrors this with `NULLIF(…, '')`; the two are pinned against
  * each other row by row in `identity-pg.test.ts`.

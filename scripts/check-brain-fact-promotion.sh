@@ -338,9 +338,11 @@ ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo|subject
 #
 # EVERY matching arm is reported, space-separated, NOT the first. First-match
 # was a real defect, not a style choice: each arm asks only "does this statement
-# mention the token", the over-breadth is deliberate, and every brain_facts
-# statement in this repo carries `AND valid_to IS NULL` — all three slot
-# consumers require it by design. So the realistic re-key
+# mention the token", the over-breadth is deliberate, and every SLOT-CONSUMER
+# statement carries `AND valid_to IS NULL` — all three require it by design, so
+# a realistic re-key does too. (Not every brain_facts statement does:
+# `INSERT_FACT_SQL` has no WHERE at all, and the promote UPDATE filters on
+# `status` and `invalidated_at` only.) So the realistic re-key
 #
 #   UPDATE brain_facts SET subject_key = $3
 #    WHERE workspace_id = $1 AND invalidated_at IS NULL AND valid_to IS NULL
@@ -506,10 +508,18 @@ if [ -n "$CANDIDATES" ]; then
         # remedy for the write they actually made.
         for column in $columns; do
           case "$column" in
+            status) SAW_STATUS=1 ;;
             visible_to) SAW_GRANT=1 ;;
             valid_to) SAW_VALIDITY=1 ;;
             identity) SAW_IDENTITY=1 ;;
-            *) SAW_STATUS=1 ;;
+            # NOT a `SAW_STATUS` fallback. An unrouted token would print "omit
+            # `status` entirely", which this script says at length is actively
+            # wrong for a grant — a silent wrong-remedy fallback, in a gate
+            # whose whole argument is that the remedy has to match the column.
+            *)
+              echo "::error::internal: statement_writes_gated_column echoed an unrouted token '$column'. Add a \`case\` arm here AND a remedy block below — a new gated column with no remedy sends every reader the wrong fix." >&2
+              exit 2
+              ;;
           esac
         done
         break
@@ -522,9 +532,19 @@ fi
 OFFENDERS=$(echo "${OFFENDERS%$'\n'}" | grep -v '^$' || true)
 
 if [ -n "$OFFENDERS" ]; then
-  if [ $((SAW_STATUS + SAW_GRANT + SAW_VALIDITY + SAW_IDENTITY)) -gt 1 ]; then
-    echo "::error::a company-brain fact's gated columns (\`status\` / \`visible_to\` / \`valid_to\` / the identity keys) are written outside the atomic publish endpoint (#4769 / #4823 / #4912 / #5019)."
-  elif [ "$SAW_GRANT" -eq 1 ]; then
+  # ONE headline, chosen by SEVERITY rather than by how many arms fired.
+  #
+  # `::error::` is the single line GitHub surfaces in the Actions UI, so it has
+  # to be the most actionable thing available. Multi-arm firing is now the
+  # common case, not the exception — the arms cannot tell a `SET`-list mention
+  # from a `WHERE`-clause one (deliberate over-breadth), and a slot statement
+  # naming `valid_to` in its WHERE is ordinary — so a generic "several columns"
+  # headline would be what almost every reader sees. Precedence follows failure
+  # direction: a grant write DISCLOSES, a re-key reaches the irreversible stamp
+  # by proxy, a stamp retires a belief invisibly, a status write over-trusts one.
+  # Every arm that fired is still named in the offenders line and still prints
+  # its own remedy block below.
+  if [ "$SAW_GRANT" -eq 1 ]; then
     echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)."
   elif [ "$SAW_VALIDITY" -eq 1 ]; then
     echo "::error::a company-brain fact's \`valid_to\` is stamped outside the atomic publish endpoint (#4912)."

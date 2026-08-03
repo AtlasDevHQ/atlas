@@ -35,10 +35,17 @@
  * invisible to it, exactly as `check-brain-fact-promotion.sh` says of its own
  * scan. `stripComments` also blinds the rest of a line after a `//` inside a
  * string literal (a URL), the same blind spot that guard documents. And unlike
- * that guard it does NOT scan `create-atlas/templates/*`, deliberately: those
- * files are generated from the sources scanned here and gated separately by
+ * that guard it does NOT scan `create-atlas/templates/*` or
+ * `create-atlas-plugin`, deliberately: the template sources are GENERATED from
+ * the files scanned here and gated separately by
  * `scripts/check-template-drift.sh`, so a key could only reach them by first
- * reaching a file this scan already covers.
+ * reaching a file this scan already covers, and the plugin scaffold holds no
+ * brain read surface.
+ *
+ * One shape it genuinely cannot see, measured rather than assumed:
+ * `row_to_json(f)` / `to_jsonb(f)` project the whole row without a star token
+ * and are not lexically detectable. `RETURNING …, subject_key` IS covered —
+ * the projection scan reads RETURNING lists too.
  *
  * What it does do is inline the module-level column-list constants
  * (`FACT_COLUMNS` and friends) before matching — which is where a new column
@@ -103,7 +110,15 @@ function readSurfaceFiles(): string[] {
       "grep",
       [
         "-rlE",
-        "brain_facts|\\bbrainFacts\\b",
+        // `BrainFact` as well as the table name: the fact-shaped WIRE types
+        // never say `brain_facts` at all. `packages/schemas/src/brain.ts`
+        // (`BrainFactCandidateSchema`, the REST response schema) matched
+        // nothing under the table-name-only pattern, and it is the file where
+        // adding a field is literally the act that puts a key on the wire —
+        // `z.object` STRIPS unknown keys, so the schema edit is the leak.
+        // `packages/types/src/brain.ts` matched only through comment prose, so
+        // rewording a comment would have dropped it out of the scan silently.
+        "brain_facts|\\bbrainFacts\\b|\\bBrainFact",
         "packages",
         "apps",
         "ee",
@@ -121,13 +136,26 @@ function readSurfaceFiles(): string[] {
       ],
       { cwd: REPO, encoding: "utf8" },
     );
-  } catch {
-    // grep exits 1 on no matches, which would throw at module scope and error
-    // the file BEFORE the vacuity assertion below could produce its diagnostic.
-    // Returning empty lets that assertion be the thing that fails, with the
-    // message that explains why. (A genuine grep failure lands here too and is
-    // reported the same way — as "the scan found nothing", which is exactly
-    // what it means for this guard.)
+  } catch (err: unknown) {
+    // grep exits 1 for "no matches", which would throw at module scope and
+    // error this file BEFORE the vacuity assertion below could produce its
+    // diagnostic — so that ONE status is absorbed and the assertion gets to
+    // fail with the message that explains it.
+    //
+    // Every other status is re-thrown with context. Collapsing them would map
+    // exit 2 (unreadable path, partial stdout discarded), ENOENT (no grep in
+    // the image), and a maxBuffer overflow onto the same "found nothing"
+    // outcome — four different broken scans wearing one benign face, which is
+    // the fail-open shape the guard script itself refuses.
+    const status = (err as { status?: unknown }).status;
+    if (status !== 1) {
+      throw new Error(
+        `the brain_facts discovery grep failed (status=${String(status)}, cwd=${REPO}): ` +
+          (err instanceof Error ? err.message : String(err)) +
+          " — every assertion in this file would otherwise pass vacuously.",
+        { cause: err },
+      );
+    }
     out = "";
   }
   return out.split("\n").filter(Boolean).filter((f) => !DECLARATION_SITES.has(f));
@@ -178,15 +206,28 @@ function inlineTemplateConstants(source: string): string {
  */
 function projections(source: string): { columns: string; from: string }[] {
   const prepared = inlineTemplateConstants(stripComments(source));
-  return [
-    // The FROM clause runs to the first clause keyword that ends it, so a JOIN
-    // list is captured too. Taking only the FIRST table was a hole in the star
-    // arm: `SELECT f.* FROM brain_episodes e JOIN brain_facts f ON …` projects
-    // every key and would have been read as a star over `brain_episodes`.
+
+  // A `RETURNING` list is a projection with a different keyword, and it is the
+  // one #5020 will touch: `INSERT_FACT_SQL` already ends `RETURNING id`, and
+  // `RETURNING id, subject_key` is the natural next line. Attributed to the
+  // statement's own table so the brain_facts-only arms still scope correctly.
+  const returning = [
+    ...prepared.matchAll(
+      /\b(?:INSERT\s+INTO|UPDATE)\s+((?:"?[\w$]+"?\.)?"?[\w$]+"?)[\s\S]*?\bRETURNING\b([^`;]*)/gi,
+    ),
+  ].map((m) => ({ columns: m[2]!, from: m[1]! }));
+
+  // The FROM clause runs to the first clause keyword that ends it, so a JOIN
+  // list is captured too. Taking only the FIRST table was a hole in the star
+  // arm: `SELECT f.* FROM brain_episodes e JOIN brain_facts f ON …` projects
+  // every key and would have been read as a star over `brain_episodes`.
+  const selects = [
     ...prepared.matchAll(
       /\bSELECT\b([\s\S]*?)\bFROM\b([\s\S]*?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bUNION\b|\bRETURNING\b|\bSELECT\b|`|$)/gi,
     ),
   ].map((m) => ({ columns: m[1]!, from: m[2]! }));
+
+  return [...returning, ...selects];
 }
 
 /**
@@ -216,6 +257,12 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
       "packages/api/src/lib/brain/candidates.ts",
       "packages/api/src/lib/residency/export.ts",
       "packages/api/src/lib/content-mode/adapters/brain-facts.ts",
+      // The WIRE contracts specifically. An earlier cut pinned only
+      // `packages/api` files, so the scan could stop reaching the types a key
+      // would actually leak through and nothing would fail.
+      "packages/types/src/brain.ts",
+      "packages/types/src/migration.ts",
+      "packages/schemas/src/brain.ts",
     ]) {
       expect(FILES, `${known} is no longer discovered by the scan`).toContain(known);
     }
@@ -269,6 +316,14 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
       ).toBe(true);
     }
 
+    // A key smuggled out through RETURNING rather than SELECT.
+    const plantedReturning =
+      "const Q = `INSERT INTO brain_facts (workspace_id, subject) VALUES ($1,$2) RETURNING id, subject_key`;";
+    expect(
+      projections(plantedReturning).some((s) => KEY_RE.test(s.columns)),
+      "a key projected through RETURNING is invisible — that is the clause #5020 will touch",
+    ).toBe(true);
+
     // A star behind a long column list — the shape that defeated the first cut.
     const plantedStar = `const Q = \`SELECT f.*, ${"f.col, ".repeat(60)}f.id FROM brain_facts f\`;`;
     expect(
@@ -312,7 +367,7 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
         const hit = KEY_RE.exec(span.columns);
         expect(
           hit?.[1],
-          `${file} projects \`${hit?.[1]}\`. Identity is a join detail: retrieval reads the SURFACE so a vocabulary edit cannot re-rank it, and a key on the wire re-couples the two through the consumer instead. Anything downstream that can branch on a key makes an alias un-removable. If this is a region bundle, whether keys travel is #5035's decision to make, not this projection's to assume.`,
+          `${file} projects \`${hit?.[1]}\`. Identity is a join detail: retrieval reads the SURFACE so a vocabulary edit cannot re-rank it, and a key on the wire re-couples the two through the consumer instead. Anything downstream that can branch on a key makes an alias un-removable. If this is a region bundle, ADR-0037 §8 already settles that keys travel verbatim — that is #5035's to implement, not this projection's to assume ahead of it.`,
         ).toBeUndefined();
       }
     }
@@ -350,7 +405,7 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
       const hit = ORM_KEY_RE.exec(source);
       expect(
         hit?.[1],
-        `${file} names \`${hit?.[1]}\`. Brain reads are raw SQL, so an ORM projection — or a fact-shaped TYPE that grows a key field — would slip past the SELECT-span scan above. A key belongs on the row in the database and nowhere a consumer can branch on it; the only exemption is the Drizzle mirror in DECLARATION_SITES.`,
+        `${file} names \`${hit?.[1]}\`. Brain reads are raw SQL, so an ORM projection — or a fact-shaped TYPE that grows a key field — would slip past the SELECT-span scan above. A key belongs on the row in the database and nowhere a consumer can branch on it. If this is an UNRELATED field that happens to share a name (\`objectKey\` is also blob-storage vocabulary), rename it or add the file to DECLARATION_SITES with a rationale — the arm is deliberately over-broad because a missed key is the unrecoverable direction.`,
       ).toBeUndefined();
     }
   });

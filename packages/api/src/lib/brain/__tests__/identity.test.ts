@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { identityKey, lexicalNorm } from "@atlas/api/lib/brain/identity";
+import { DEGENERATE_SURFACES } from "./identity-fixtures";
 
 describe("lexicalNorm", () => {
   describe("what it does", () => {
@@ -68,7 +69,7 @@ describe("lexicalNorm", () => {
       // That is an over-match at a join arm, the one direction this module is
       // not allowed to be wrong in, reached from the input class the lexical
       // layer cannot tell apart.
-      for (const degenerate of ["", "-", "___", "   ", " - _ ", "--__--"]) {
+      for (const degenerate of DEGENERATE_SURFACES) {
         expect(lexicalNorm(degenerate), `${JSON.stringify(degenerate)} norms to ""`).toBe("");
         expect(
           identityKey(degenerate),

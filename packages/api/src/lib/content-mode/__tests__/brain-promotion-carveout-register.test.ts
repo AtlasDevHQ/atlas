@@ -84,7 +84,7 @@ function allowlistEntries(): string[] {
 function gatedColumns(): string[] {
   const names = new Set<string>();
   // The SQL spellings only. The doc is written in raw column names, and the
-  // ORM twin (`ORM_UPDATE_GATED_COLUMNS`) carries the same three columns in
+  // ORM twin (`ORM_UPDATE_GATED_COLUMNS`) carries the same columns in
   // camelCase — requiring those too would force `visibleTo` into English prose
   // to satisfy a guard, which is a test dictating style rather than coverage.
   const decl = /^UPDATE_GATED_COLUMNS='\(([^']+)\)'/m.exec(guardSource);

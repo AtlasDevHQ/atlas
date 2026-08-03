@@ -3,9 +3,10 @@
 --
 -- A brain claim's identity is `alias(lexicalNorm(surface))`. `alias` is the
 -- curated workspace vocabulary and does not exist yet, so on day one it is the
--- identity function and every key is exactly `lexicalNorm(surface)` — which is
--- why this migration is a pure `UPDATE` and why the slice it belongs to is
--- expected to change no observable behaviour whatsoever.
+-- identity function and every key is exactly `identityKey(surface)` —
+-- `lexicalNorm(surface)`, or NULL when that is empty (see the `NULLIF` below).
+-- That is why this migration is a pure `UPDATE` and why the slice it belongs to
+-- is expected to change no observable behaviour whatsoever.
 --
 -- Shaped on `0092_pillar_install_id_columns.sql`'s `plugin_catalog.pillar` block
 -- — the repo's `ADD COLUMN` nullable → `UPDATE` → (eventually) `SET NOT NULL`
@@ -39,7 +40,27 @@
 --      migration deploying and #5020's does so unkeyed. `SET NOT NULL` would
 --      then fail at boot on real data, and only where that interval was
 --      non-empty — never in CI, never in a fresh scratch schema. The `UPDATE`
---      below is re-runnable by design (`WHERE … IS NULL`); repeat it.
+--      below is re-runnable by design (`WHERE … IS NULL`); repeat it. Two
+--      caveats on that re-run, both narrow and both real:
+--        * it is a PRE-VOCABULARY operation. This statement writes the raw
+--          `identityKey(surface)`, so once `alias` is a real table, re-running
+--          it OVERWRITES aliased keys on every row it matches. After that the
+--          drift re-key (ADR-0037 §7, inside the decide transaction, which
+--          knows the vocabulary) is the only correct rewriter.
+--        * `subject_key IS NULL` stops meaning "unkeyed" the moment the third
+--          item below is true, since a degenerate surface is permanently NULL.
+--          Count unkeyed rows by comparing against the expression, not by
+--          testing the column.
+--   3. **It needs the ingest guard tightened, and no issue owns that yet.**
+--      `identityKey` returns NULL for a surface of only separators, and
+--      `reconcile.ts`'s `MALFORMED_CLAIM` test is `trim() === ""`, which does
+--      not strip `_` or `-` — so `-` is a STORABLE claim today whose key is
+--      permanently NULL. `SET NOT NULL` would therefore not merely fail on
+--      interval rows; it would make that ingest raise a not-null violation and
+--      fail the whole reconcile transaction. The fix belongs at the guard
+--      (refuse a candidate whose `identityKey` is NULL — a claim whose subject
+--      norms away asserts nothing), NOT at a sentinel key, which is the
+--      one-slot-for-every-placeholder hazard again.
 --
 -- ## The backfill is unscoped by `status`, and covers every row
 --
@@ -101,19 +122,6 @@
 -- re-key at corpus scale is the drift path (in TypeScript, inside the
 -- alias-approval decide transaction, ADR-0037 §7), not another migration.
 
--- Escape processing is a GUC, and this file's whole argument is that the two
--- implementations must not depend on server configuration. With
--- `standard_conforming_strings = off` the literal below goes through old-style
--- escape processing, which turns `\t\n\f\r` into control characters but DROPS
--- the backslash on the unrecognized `\v` — leaving a literal `v` inside the
--- character class, so `leaves` norms to `lea es`. It is a WARNING, not an
--- error, so the migration would commit and every key would silently disagree
--- with the TypeScript. On since PG 9.1 by default, but this is a
--- deploy-anywhere product where the customer supplies `DATABASE_URL`. `LOCAL`
--- is correct: the runner wraps each migration file in one transaction.
--- (`E'…'` is NOT a fix — it drops the backslash on `\v` too.)
-SET LOCAL standard_conforming_strings = on;
-
 ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS subject_key TEXT;
 ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS predicate_key TEXT;
 ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS object_key TEXT;
@@ -131,6 +139,35 @@ ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS object_key TEXT;
 -- last in the bracket so it reads as a literal instead of opening a range, and
 -- `btrim`'s second argument is given for the same reason (its default set is
 -- spaces only, but saying so keeps it from drifting with a default).
+--
+-- ## Why the class is built with `chr()` instead of written `'[ \t\n\v\f\r_-]+'`
+--
+-- Because escape processing is a GUC and the readable spelling silently loses
+-- to it. Under `standard_conforming_strings = off` the literal goes through
+-- old-style escape processing, which turns `\t\n\f\r` into control characters
+-- but DROPS the backslash on the unrecognized `\v` — leaving a bare `v` INSIDE
+-- the character class, so the letter `v` becomes a separator and `leaves` keys
+-- as `lea es`. Not the rare vertical-tab under-match you would guess: it
+-- shreds every key containing a `v`, corpus-wide, and disagrees with the
+-- TypeScript on a large fraction of real surfaces. Postgres emits a WARNING,
+-- not an error, and the migration runner attaches no notice listener — so it
+-- would commit silently.
+--
+-- Two repairs that do NOT work, both measured on this repo's
+-- `postgres:16-alpine` rather than reasoned about:
+--
+--   * `E'[ \t\n\v\f\r_-]+'` — the E-string drops the backslash on `\v` too.
+--   * `SET LOCAL standard_conforming_strings = on;` at the top of this file —
+--     `migrate.ts` sends the whole file as ONE simple-query message, and
+--     Postgres LEXES every statement in a message before executing any of
+--     them. The literal is already escape-processed by the time the `SET`
+--     runs. (Verified: with the GUC off at session level, a same-message `SET
+--     LOCAL … = on` still yields `lea es`; the `chr()` form yields `leaves`.)
+--
+-- `chr()` has no escapes to process, so it is correct under either setting and
+-- there is nothing left to configure wrong. `identity-pg.test.ts` runs this
+-- file with the GUC forced OFF and compares it to the TypeScript, so a revert
+-- to the readable spelling fails CI.
 --
 -- `translate()` AND NOT `lower()`, which is the surprising line here and the one
 -- most likely to be "simplified" back. `lower()` and JavaScript's
@@ -163,9 +200,9 @@ ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS object_key TEXT;
 -- every run. It is a no-op — three expressions over one row — and the
 -- alternative is a sentinel, which is the hazard again.)
 UPDATE brain_facts
-   SET subject_key   = NULLIF(btrim(regexp_replace(translate(subject,   'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ \t\n\v\f\r_-]+', ' ', 'g'), ' '), ''),
-       predicate_key = NULLIF(btrim(regexp_replace(translate(predicate, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ \t\n\v\f\r_-]+', ' ', 'g'), ' '), ''),
-       object_key    = NULLIF(btrim(regexp_replace(translate(object,    'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ \t\n\v\f\r_-]+', ' ', 'g'), ' '), '')
+   SET subject_key   = NULLIF(btrim(regexp_replace(translate(subject,   'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
+       predicate_key = NULLIF(btrim(regexp_replace(translate(predicate, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
+       object_key    = NULLIF(btrim(regexp_replace(translate(object,    'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), '')
 -- Parenthesized deliberately. The three arms are all `OR`, so the group is
 -- redundant TODAY — it is here because `AND` binds tighter than `OR`, and the
 -- one edit this statement must never silently accept is a fourth arm that

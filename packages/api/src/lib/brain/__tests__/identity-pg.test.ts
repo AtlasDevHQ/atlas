@@ -53,6 +53,7 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { identityKey, lexicalNorm } from "@atlas/api/lib/brain/identity";
+import { DEGENERATE_SURFACES } from "./identity-fixtures";
 import type { BrainFactStatus } from "@atlas/api/lib/brain/types";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -107,15 +108,24 @@ const SURFACES = [
   "CAFÉ",
   "İstanbul",
   "ΣΊΣΥΦΟΣ",
+  // Every uppercase letter. The SQL fold is a hand-typed 26-character pair
+  // repeated three times, and the TypeScript side is structural
+  // (`/[A-Z]/` + `charCode + 32`) — so this pairing is the ONLY thing that can
+  // catch a transposition or a dropped letter in those literals, and it could
+  // previously see just 16 of the 26.
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "GHIJKL-QVXZ_ghijkl",
+  // U+00A0. The single most load-bearing consequence of spelling the separator
+  // class out instead of writing `\s` or `[[:space:]]`: a non-breaking space is
+  // NOT a separator and survives into the key. Asserted in `identity.test.ts`
+  // for the TypeScript; this is the half that pins Postgres agreeing.
+  "owned\u00a0by",
   // Degenerate: every one of these norms to the empty string, and a STORED `''`
   // would be the `DEFAULT ''` hazard the migration header rejects, reached from
   // the other side — every such row in one slot. They are here to pin that both
   // implementations answer NULL, and that they agree about which surfaces are
   // degenerate.
-  "___",
-  "-",
-  "  ",
-  " - _ ",
+  ...DEGENERATE_SURFACES,
 ] as const;
 
 interface FactRow {
@@ -443,6 +453,104 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
   // ══════════════════════════════════════════════════════════════════
 
   it(
+    "re-runs cleanly: idempotent when keyed, and repairs a PARTIALLY keyed row",
+    async () => {
+      // The migration header instructs #5020 to REPEAT this backfill before
+      // flipping `NOT NULL`, so "re-runnable" has to be a tested property and
+      // not a hope. It is also the only thing that distinguishes the `WHERE`
+      // clause's `OR` chain from an `AND` chain, or from no clause at all —
+      // `rerunBackfill` nulls all three keys first, so every other test in this
+      // file passes under all three forms.
+      await rerunBackfill();
+      const before = await allFacts();
+      await pool.query(migrationSql);
+      const after = await allFacts();
+      expect(after).toEqual(before);
+
+      // Non-vacuity: the corpus must contain a PERMANENTLY-NULL row, since that
+      // is the row the `WHERE … IS NULL` predicate matches forever and the one
+      // a re-run could rewrite. (It cannot today — `alias` is the identity
+      // function — but once the vocabulary lands this statement would overwrite
+      // an aliased key, which is why the header restricts the re-run to the
+      // pre-vocabulary window.)
+      expect(
+        after.filter((r) => r.subject_key === null).length,
+        "no permanently-unkeyed row in the corpus — re-run idempotence is untested on the row that matters",
+      ).toBeGreaterThan(0);
+
+      // …and repair a PARTIALLY-keyed row, which is the only thing separating
+      // the `WHERE` clause's `OR` chain from an `AND` chain. `rerunBackfill`
+      // nulls all three keys, so under that setup the two forms are identical
+      // and the mutation survives every other assertion in this file. A row
+      // with exactly one arm missing is the shape a half-finished manual repair
+      // (or a future partial writer) actually leaves behind.
+      const target = after.find((r) => r.object_key !== null)!;
+      expect(target, "no row with a non-null object_key to blank").toBeDefined();
+      await pool.query(`UPDATE brain_facts SET object_key = NULL WHERE id = $1::uuid`, [
+        target.id,
+      ]);
+      await pool.query(migrationSql);
+      const { rows: repaired } = await pool.query<{ object_key: string | null }>(
+        `SELECT object_key FROM brain_facts WHERE id = $1::uuid`,
+        [target.id],
+      );
+      expect(
+        repaired[0]!.object_key,
+        "a row with only ONE arm unkeyed was skipped — the WHERE clause requires ALL THREE to be NULL, so a partial repair never completes",
+      ).toBe(identityKey(target.object));
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "produces the same keys with `standard_conforming_strings = off`",
+    async () => {
+      // The character class is built with `chr()` precisely so escape
+      // processing cannot touch it. Under the readable `'[ \t\n\v\f\r_-]+'`
+      // spelling and this GUC, Postgres drops the backslash on the unrecognized
+      // `\v` and leaves a bare `v` INSIDE the class — so `leaves` keys as
+      // `lea es` and every key containing a `v` is shredded, with a WARNING
+      // nobody listens for and a transaction that commits.
+      //
+      // A `SET LOCAL … = on` at the top of the migration does NOT fix that, and
+      // this test is what proves it: the runner sends the file as one
+      // simple-query message and Postgres lexes every statement in a message
+      // before executing any of them.
+      const legacy = new Pool({
+        connectionString: TEST_DB_URL,
+        options: `-c search_path="${schemaName}",public -c standard_conforming_strings=off`,
+      });
+      try {
+        await legacy.query(
+          `UPDATE brain_facts SET subject_key = NULL, predicate_key = NULL, object_key = NULL`,
+        );
+        await legacy.query(migrationSql);
+        const { rows } = await legacy.query<FactRow>(
+          `SELECT id::text AS id, subject, predicate, object,
+                  subject_key, predicate_key, object_key,
+                  status, invalidated_at, valid_to, updated_at
+             FROM brain_facts WHERE workspace_id = $1 ORDER BY subject, predicate`,
+          [WS],
+        );
+        expect(rows.length).toBe(SURFACES.length);
+        // The corpus carries `leaves`, `vertical\vtab` and a full alphabet, so
+        // a `v`-shredding class cannot hide here.
+        for (const row of rows) {
+          expect(
+            row.subject_key,
+            `subject_key for ${JSON.stringify(row.subject)} under standard_conforming_strings=off`,
+          ).toBe(identityKey(row.subject));
+        }
+      } finally {
+        await legacy.end();
+      }
+      // Leave the corpus as the rest of the file expects it.
+      await rerunBackfill();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "leaves the FTS vector reading the SURFACE columns, never the keys",
     async () => {
       // Read the expression Postgres actually stored, not the migration text —
@@ -487,14 +595,19 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
       // `(subject_key, workspace_id, predicate_key)`, which is a different,
       // workspace-blind-leading access path.
       expect(slot!.indexdef).toContain("(workspace_id, subject_key, predicate_key)");
-      expect(slot!.indexdef).toContain("invalidated_at IS NULL");
-      expect(slot!.indexdef).toContain("valid_to IS NULL");
+      // The WHOLE predicate, not two `toContain` fragments: appending
+      // `AND status = 'published'` satisfies both fragments, dodges every other
+      // assertion here, and narrows the slot index so the corroboration lookup
+      // stops seeing drafts once #5020 pivots onto it.
+      const where = /\sWHERE\s+([\s\S]+)$/.exec(slot!.indexdef);
+      expect(where, `no WHERE clause on the slot index: ${slot!.indexdef}`).not.toBeNull();
+      expect(where![1]!.trim()).toBe("((invalidated_at IS NULL) AND (valid_to IS NULL))");
       // NOT unique. A `CREATE UNIQUE INDEX` satisfies every assertion above and
       // makes TENSION STRUCTURALLY IMPOSSIBLE — two live claims in one
       // subject+predicate slot IS a tension edge (ADR-0036), and a unique index
       // refuses the second at ingest. On a small corpus the CREATE succeeds and
-      // the loss only shows up in production. ADR-0037 §1 defers the unique
-      // constraint past #5035 deliberately.
+      // the loss only shows up in production. ADR-0037 §1 specifies this index
+      // and says nothing about a unique constraint; that is the point.
       expect(
         slot!.indexdef,
         "the slot index is UNIQUE — that refuses the second live claim in a slot, which is exactly what a tension edge is",

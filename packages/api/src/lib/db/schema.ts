@@ -3277,12 +3277,20 @@ export const brainFacts = pgTable(
     // reading the surface, so a vocabulary edit cannot silently re-rank
     // `searchBrain`.
     //
-    // NULLABLE for exactly one slice. `alias` is the identity function until
-    // the vocabulary lands, so 0187 fills every existing row with
-    // `lexicalNorm(surface)` — but no INSERT site names these columns yet, so
-    // `NOT NULL` here would refuse every write. #5020 supplies the keys at
-    // `INSERT_FACT_SQL` and flips the constraint in the same change; a NULL key
-    // means "no writer has keyed this row" and joins nothing.
+    // NULLABLE, and for longer than one slice. `alias` is the identity function
+    // until the vocabulary lands, so 0187 fills every existing row with
+    // `identityKey(surface)` — but no INSERT site names these columns yet, so
+    // `NOT NULL` here would refuse every write.
+    //
+    // NULL carries TWO meanings, and conflating them is how the constraint
+    // plan goes wrong: "no writer has keyed this row yet" (transient, what
+    // `SET NOT NULL` exists to eliminate) and "this surface norms away to
+    // nothing" (permanent, and a legal state of a storable claim — see
+    // `identityKey`). Either way it joins nothing, which is why one column can
+    // carry both; but the second means `SET NOT NULL` needs an ingest-guard
+    // change as well as a writer. 0187's header enumerates all three
+    // prerequisites — read it there rather than trusting a one-line summary
+    // here, which is what an earlier version of this comment was.
     //
     // Never projected to the wire. No read surface selects a key column —
     // `keys-not-on-the-wire.test.ts` makes that a prohibition rather than an

@@ -77,6 +77,27 @@ run_message_fixture() {
   echo "  ✓ $label"; PASS=$((PASS + 1))
 }
 
+# run_status_fixture <label> <expected-rc> <setup-fn>
+#
+# `run_fixture` only distinguishes rc 0 from rc 1, so the guard's fail-CLOSED
+# branch — "the candidate scan itself failed, this gate did NOT run", rc 2 — was
+# unexpressible and therefore unpinned. That branch is the one that stops a
+# broken scan from printing "check passed".
+run_status_fixture() {
+  local label="$1" expect_rc="$2" setup="$3"
+  local tmp rc=0
+  tmp="$(mktemp -d)"
+  "$setup" "$tmp"
+  BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
+  chmod -R u+rwX "$tmp" 2>/dev/null || true
+  rm -rf "$tmp"
+  if [ "$rc" -eq "$expect_rc" ]; then
+    echo "  ✓ $label"; PASS=$((PASS + 1))
+  else
+    echo "  ✗ $label — expected exit $expect_rc, got $rc"; FAIL=$((FAIL + 1))
+  fi
+}
+
 echo "check-brain-fact-promotion adversarial fixtures:"
 
 # (a) The canonical rogue promotion → must FAIL.
@@ -217,7 +238,7 @@ run_fixture "schema-qualified UPDATE fails" fail \
 'await db.query(`UPDATE public.brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
 
 # (t) A POSITIONAL insert (no column list) → must FAIL. Grep cannot tell whether
-#     it sets status, and a positional insert into a 17-column table is
+#     it sets status, and a positional insert into a table this wide is
 #     unreviewable regardless.
 run_fixture "column-less positional INSERT fails" fail \
   "packages/api/src/lib/brain/rogue.ts" \
@@ -488,8 +509,8 @@ run_fixture "Drizzle .insert().onConflictDoUpdate({set:{objectKey}}) fails" fail
 # The `_cmp` arms are gated ahead of the column existing (#5032), so nothing in
 # the tree can hold them yet. These fixtures are the only thing that does —
 # without them the alternations could be deleted and every other test here would
-# still pass. Both spellings, because #5019 names `subject_cmp` and ADR-0037 §4's
-# column table names `object_cmp`.
+# still pass. Both spellings, because ADR-0037 §2's column table defines
+# both, and `subject_cmp` (#5032) is the INVERTED one.
 run_fixture "UPDATE … SET subject_cmp fails (gated before the column exists, #5032)" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.query(`UPDATE brain_facts SET subject_cmp = $2 WHERE workspace_id = $1`);'
@@ -550,6 +571,28 @@ run_message_fixture "a re-key that also mentions valid_to reports BOTH arms, wit
 
 # …and a re-key that mentions nothing else still gets the identity headline
 # rather than the multi-arm one, so the routing is pinned in both directions.
+# ── the scan's own failure modes ─────────────────────────────────────────
+#
+# A tree with no candidate file at all must PASS (rc 0): grep exits 1, which is
+# the one benign status.
+_setup_empty() { mkdir -p "$1/packages/api/src/lib/brain"; printf 'export const X = 1;\n' > "$1/packages/api/src/lib/brain/unrelated.ts"; }
+run_status_fixture "an empty tree passes — grep exit 1 is 'no match', not 'broken'" 0 _setup_empty
+
+# An UNREADABLE candidate must fail CLOSED (rc 2), not print "check passed".
+# Without this, a permission error, a missing grep, or a bad root all render as
+# a clean scan — the exact fail-open shape CLAUDE.md forbids on a security gate.
+_setup_unreadable() {
+  mkdir -p "$1/packages/api/src/lib/brain"
+  printf 'await db.query(`SELECT id FROM brain_facts`);\n' > "$1/packages/api/src/lib/brain/read.ts"
+  chmod 000 "$1/packages/api/src/lib/brain/read.ts"
+}
+# Skipped for root, which can read anything and would see rc 0 here.
+if [ "$(id -u)" -ne 0 ]; then
+  run_status_fixture "an unreadable candidate fails CLOSED (exit 2), never 'check passed'" 2 _setup_unreadable
+else
+  echo "  ~ skipped (running as root): an unreadable candidate fails CLOSED"
+fi
+
 run_message_fixture "a bare re-key gets the identity headline alone" \
   "packages/api/src/lib/brain/rekey2.ts" \
 'await db.query(`UPDATE brain_facts SET object_key = $2 WHERE workspace_id = $1`);' \

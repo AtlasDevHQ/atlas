@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
 import { buildFetchError, extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { ADMIN_FETCH_QUERY_KEY } from "@/ui/hooks/admin-query-keys";
+import { queryKeys } from "@/ui/lib/query-keys";
 import { useMfaGateOptional } from "@/ui/components/admin/mfa-gate-context";
 
 // See use-admin-fetch.ts for rationale.
@@ -310,6 +311,17 @@ export function useAdminMutation<TResponse = unknown>(
       // This is intentionally broad — can be narrowed to specific keys if needed.
       // fire-and-forget: cache invalidation kick-off, no need to await
       void queryClient.invalidateQueries({ queryKey: [ADMIN_FETCH_QUERY_KEY] });
+      // `mode-status` is NOT in that namespace — it is a plain `useQuery`, not a
+      // `useAdminFetch` consumer — so the broadcast above never reached it. It
+      // carries the top bar's draft counts, and an admin mutation is the only
+      // thing that moves them: publishing empties the queue, rejecting a draft
+      // removes one from it. Invalidated here rather than per call site because
+      // a per-site opt-in is a thing to FORGET, and forgetting is silent — the
+      // pill just keeps displaying a number that was true a moment ago. That
+      // cost us #5001 (publish) and #5002 (reject) as separate bugs with one
+      // cause. Mutations that move no drafts pay one cheap refetch of a small
+      // endpoint; the alternative pays in stale counts nobody notices.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.modeStatus.all() });
     },
   });
 

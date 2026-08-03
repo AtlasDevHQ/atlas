@@ -7,7 +7,8 @@
  *
  * The slice it covers is expected to change no observable behaviour at all —
  * with an empty vocabulary `alias` is the identity function, so every key is
- * exactly `lexicalNorm(surface)` and nothing reads the columns yet. A green
+ * exactly `identityKey(surface)` — `lexicalNorm`, or NULL where that is empty —
+ * and nothing reads the columns yet. A green
  * unit suite therefore proves almost nothing here, and `identity.test.ts`'s
  * assertions about `lexicalNorm` prove nothing about the migration, which is a
  * SECOND implementation of the same function written in SQL. Two
@@ -35,8 +36,10 @@
  *      migration text.
  *   6. **Was the slot index REPOINTED rather than added?** Zero net new
  *      indexes is a result, and a result nobody checks is a wish.
- *   7. **Are the columns still NULLABLE?** #5020 owns `SET NOT NULL`, because
- *      landing it before its writer would refuse every brain-fact write.
+ *   7. **Are the columns still NULLABLE?** The constraint has THREE
+ *      prerequisites, enumerated in 0187's header — landing it before them
+ *      refuses every brain-fact write, every region import, or every claim
+ *      whose surface norms away.
  *
  * The migration is executed by READING THE FILE and running it, so there is no
  * copy of its SQL here to drift from it. `WHERE … IS NULL` is what makes that
@@ -90,6 +93,9 @@ const SURFACES = [
   // Both live in the corpus and are INVERSE relations. They must NOT collapse.
   "led_by",
   "leads",
+  // The worked example in 0187's `chr()` section: under the readable class
+  // spelling with the GUC off, this keys as `lea es`.
+  "leaves",
   "escalates_to",
   "is priced at",
   "priced at",
@@ -512,15 +518,29 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
       // `lea es` and every key containing a `v` is shredded, with a WARNING
       // nobody listens for and a transaction that commits.
       //
-      // A `SET LOCAL … = on` at the top of the migration does NOT fix that, and
-      // this test is what proves it: the runner sends the file as one
-      // simple-query message and Postgres lexes every statement in a message
-      // before executing any of them.
+      // A `SET LOCAL … = on` at the top of the migration does NOT fix that —
+      // the runner sends the file as one simple-query message and Postgres
+      // lexes every statement in a message before executing any of them. That
+      // was measured out of band and recorded in 0187's header; no such variant
+      // exists in the tree, so this test cannot be the proof of it. What it
+      // pins is the property that makes the question moot: the `chr()` form
+      // produces identical keys under either setting.
       const legacy = new Pool({
         connectionString: TEST_DB_URL,
         options: `-c search_path="${schemaName}",public -c standard_conforming_strings=off`,
       });
       try {
+        // The GUC has to actually be off, or this is a byte-for-byte duplicate
+        // of the pairing test above and pins nothing — the exact "the comment
+        // asserts more than the code measures" shape this test exists to close.
+        const { rows: guc } = await legacy.query<{ standard_conforming_strings: string }>(
+          `SHOW standard_conforming_strings`,
+        );
+        expect(
+          guc[0]!.standard_conforming_strings,
+          "the session did not honour `-c standard_conforming_strings=off` — this test would silently degenerate into a duplicate of the pairing test",
+        ).toBe("off");
+
         await legacy.query(
           `UPDATE brain_facts SET subject_key = NULL, predicate_key = NULL, object_key = NULL`,
         );
@@ -532,14 +552,26 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
              FROM brain_facts WHERE workspace_id = $1 ORDER BY subject, predicate`,
           [WS],
         );
-        expect(rows.length).toBe(SURFACES.length);
-        // The corpus carries `leaves`, `vertical\vtab` and a full alphabet, so
-        // a `v`-shredding class cannot hide here.
+        expect(rows.length, "the corpus is empty under the legacy session").toBe(
+          SURFACES.length,
+        );
+        // ALL THREE columns. The character class is a hand-typed literal
+        // repeated three times in the migration, and under the DEFAULT GUC the
+        // readable spelling is correct — so reverting only the `predicate_key`
+        // or `object_key` class passes every other test in this file, and a
+        // subject-only loop here would let it through too.
+        //
+        // The corpus carries `leaves`, `vertical\vtab`, `GHIJKL-QVXZ_ghijkl`
+        // and a full alphabet, so a `v`-shredding class cannot hide.
         for (const row of rows) {
           expect(
-            row.subject_key,
-            `subject_key for ${JSON.stringify(row.subject)} under standard_conforming_strings=off`,
-          ).toBe(identityKey(row.subject));
+            [row.subject_key, row.predicate_key, row.object_key],
+            `keys for ${JSON.stringify([row.subject, row.predicate, row.object])} under standard_conforming_strings=off`,
+          ).toEqual([
+            identityKey(row.subject),
+            identityKey(row.predicate),
+            identityKey(row.object),
+          ]);
         }
       } finally {
         await legacy.end();
@@ -646,7 +678,7 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
   );
 
   it(
-    "leaves the key columns NULLABLE — `SET NOT NULL` belongs to #5020",
+    "leaves the key columns NULLABLE — the constraint has three prerequisites",
     async () => {
       const { rows } = await pool.query<{
         column_name: string;
@@ -683,7 +715,7 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
         ).toBeNull();
         expect(
           row.is_nullable,
-          `${row.column_name} is NOT NULL. Neither INSERT site names these columns yet — \`INSERT_FACT_SQL\` (#5020) and the region import's 18-column INSERT (#5035) — so the constraint refuses every brain-fact write and every region import until its writer lands. Flip it in #5020, with the writer, not here`,
+          `${row.column_name} is NOT NULL. 0187's header enumerates the three prerequisites: neither INSERT site names these columns yet (\`INSERT_FACT_SQL\`, #5020; the region import's 18-column INSERT, #5035), and \`identityKey\` returns NULL for a surface that norms away — which \`reconcile.ts\` admits today, so the constraint would turn a storable claim into a transaction-killing violation. Read the header, not this message, before flipping it`,
         ).toBe("YES");
       }
     },

@@ -50,9 +50,13 @@ run_fixture() {
 # remediation text could be deleted and all the fixtures above stay green.
 #
 # The case that made this concrete: `statement_writes_gated_column` used to
-# return on the first matching arm, and every brain_facts statement in this repo
-# carries `AND valid_to IS NULL` — so a re-key reported a supersession stamp and
-# the identity advice was unreachable in the one shape it exists for.
+# return on the first matching arm, and every SLOT-CONSUMER statement carries
+# `AND valid_to IS NULL` — all three require it by design, so a realistic re-key
+# does too. (Not every brain_facts statement does: `INSERT_FACT_SQL` has no
+# WHERE, and the promote UPDATE never names `valid_to`.) So a re-key reported a
+# supersession stamp and the identity advice was unreachable in the one shape it
+# exists for — and the HEADLINE, which is the line GitHub surfaces, stayed wrong
+# for a further round after the offenders line was fixed.
 run_message_fixture() {
   local label="$1" relpath="$2" contents="$3"
   shift 3
@@ -89,6 +93,9 @@ run_status_fixture() {
   tmp="$(mktemp -d)"
   "$setup" "$tmp"
   BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
+  # intentionally ignored: best-effort restore so `rm -rf` cannot be blocked by
+  # a fixture's own `chmod 000`; a failure here is followed by the `rm -rf`
+  # which reports its own problem.
   chmod -R u+rwX "$tmp" 2>/dev/null || true
   rm -rf "$tmp"
   if [ "$rc" -eq "$expect_rc" ]; then
@@ -565,12 +572,11 @@ run_message_fixture "a re-key that also mentions valid_to reports BOTH arms, wit
    SET subject_key = $3, predicate_key = $4
  WHERE workspace_id = $1 AND subject_key = $2
    AND invalidated_at IS NULL AND valid_to IS NULL`);' \
+  "is RE-KEYED outside the alias-approval seam (#5019)" \
   "(valid_to identity)" \
   "alias-approval" \
   "Naming the keys on the INSERT is correct and required"
 
-# …and a re-key that mentions nothing else still gets the identity headline
-# rather than the multi-arm one, so the routing is pinned in both directions.
 # ── the scan's own failure modes ─────────────────────────────────────────
 #
 # A tree with no candidate file at all must PASS (rc 0): grep exits 1, which is
@@ -593,6 +599,8 @@ else
   echo "  ~ skipped (running as root): an unreadable candidate fails CLOSED"
 fi
 
+# …and a re-key that mentions nothing else gets the same headline by the
+# single-arm route, so the precedence chain is pinned from both directions.
 run_message_fixture "a bare re-key gets the identity headline alone" \
   "packages/api/src/lib/brain/rekey2.ts" \
 'await db.query(`UPDATE brain_facts SET object_key = $2 WHERE workspace_id = $1`);' \

@@ -96,8 +96,9 @@ const DECLARATION_SITES = new Set(["packages/api/src/lib/db/schema.ts"]);
  * day it is written rather than the day somebody remembers this file.
  */
 function readSurfaceFiles(): string[] {
-  // The same roots `check-brain-fact-promotion.sh` scans, and for the same
-  // reason it does not use a bare `src/…` suffix. An earlier cut looked only at
+  // The roots `check-brain-fact-promotion.sh` scans, minus `create-atlas` and
+  // `create-atlas-plugin` (the header says why), and for the same reason it
+  // does not use a bare `src/…` suffix. An earlier cut looked only at
   // `packages/api/src` and `ee`, which left the files that ARE the wire
   // contract outside the scan entirely — `packages/types/src/migration.ts`
   // (`ExportedBrainFact`, the region bundle), `packages/schemas/src/brain.ts`

@@ -3269,9 +3269,10 @@ export const brainFacts = pgTable(
     object: text("object").notNull(),
     // The identity slot — `alias(lexicalNorm(surface))` (#5019, ADR-0037,
     // migration 0187). ADDED beside the surface columns, never rewriting them:
-    // the surface is what display, `projectProvenance`, and the FTS vector all
-    // read, and it is also the ONLY way back from an alias removal, since once
-    // two spellings share a key nothing in the key column tells them apart.
+    // the surface is what display, `candidates.ts`'s `ILIKE` search, and the FTS
+    // vector all read, and it is also the ONLY way back from an alias removal,
+    // since once two spellings share a key nothing in the key column tells them
+    // apart.
     //
     // Retrieval and identity are deliberately decoupled — `fts` below keeps
     // reading the surface, so a vocabulary edit cannot silently re-rank

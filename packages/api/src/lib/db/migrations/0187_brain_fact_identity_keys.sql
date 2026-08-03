@@ -14,7 +14,8 @@
 -- an earlier draft of this cut named: 0169 is data-only and its own header
 -- states that no DDL runs there.
 --
--- ## The columns land NULLABLE, and `SET NOT NULL` needs BOTH #5020 and #5035
+-- ## The columns land NULLABLE, and `SET NOT NULL` needs #5020, #5035, AND an
+-- ingest-guard change
 --
 -- Both existing INSERT sites use an explicit column list and name none of these
 -- columns — `reconcile.ts`'s `INSERT_FACT_SQL` (owned by #5020) and
@@ -29,7 +30,7 @@
 -- direction, where carrying fails to under-match. Until the constraint lands, a
 -- NULL key means "no writer has keyed this row yet" and joins nothing.
 --
--- ⚠️ TWO THINGS THE CONSTRAINT FLIP INHERITS, recorded here because whoever
+-- ⚠️ THREE THINGS THE CONSTRAINT FLIP INHERITS, recorded here because whoever
 -- writes it will be reading this file and not this PR:
 --
 --   1. **It needs BOTH writers.** #5020 keys `INSERT_FACT_SQL`; #5035 carries
@@ -47,10 +48,9 @@
 --          it OVERWRITES aliased keys on every row it matches. After that the
 --          drift re-key (ADR-0037 §7, inside the decide transaction, which
 --          knows the vocabulary) is the only correct rewriter.
---        * `subject_key IS NULL` stops meaning "unkeyed" the moment the third
---          item below is true, since a degenerate surface is permanently NULL.
---          Count unkeyed rows by comparing against the expression, not by
---          testing the column.
+--        * `subject_key IS NULL` ALREADY means two things — see item 3 — since
+--          a degenerate surface is permanently NULL. Count unkeyed rows by
+--          comparing against the expression, not by testing the column.
 --   3. **It needs the ingest guard tightened, and no issue owns that yet.**
 --      `identityKey` returns NULL for a surface of only separators, and
 --      `reconcile.ts`'s `MALFORMED_CLAIM` test is `trim() === ""`, which does
@@ -60,7 +60,10 @@
 --      fail the whole reconcile transaction. The fix belongs at the guard
 --      (refuse a candidate whose `identityKey` is NULL — a claim whose subject
 --      norms away asserts nothing), NOT at a sentinel key, which is the
---      one-slot-for-every-placeholder hazard again.
+--      one-slot-for-every-placeholder hazard again. No issue owns that guard
+--      change; #5020's acceptance criteria claim the `NOT NULL` flip without
+--      it, so #5020 is where a reader will land and is the wrong place to
+--      learn this.
 --
 -- ## The backfill is unscoped by `status`, and covers every row
 --

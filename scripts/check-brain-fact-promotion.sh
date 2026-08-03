@@ -342,7 +342,8 @@ ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo|subject
 # statement carries `AND valid_to IS NULL` — all three require it by design, so
 # a realistic re-key does too. (Not every brain_facts statement does:
 # `INSERT_FACT_SQL` has no WHERE at all, and the promote UPDATE filters on
-# `status` and `invalidated_at` only.) So the realistic re-key
+# `workspace_id`, `status`, `invalidated_at` and an id list — never `valid_to`.)
+# So the realistic re-key
 #
 #   UPDATE brain_facts SET subject_key = $3
 #    WHERE workspace_id = $1 AND invalidated_at IS NULL AND valid_to IS NULL
@@ -546,10 +547,15 @@ if [ -n "$OFFENDERS" ]; then
   # its own remedy block below.
   if [ "$SAW_GRANT" -eq 1 ]; then
     echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)."
+  elif [ "$SAW_IDENTITY" -eq 1 ]; then
+    # BEFORE `valid_to`, and the ordering is the whole point of this block. A
+    # re-key carries `AND valid_to IS NULL` because every slot consumer does, so
+    # a valid_to-first chain hands the motivating case a headline about a
+    # supersession stamp it never made — the round-1 defect, surviving the fix
+    # that was supposed to remove it. The multi-arm message fixture pins it.
+    echo "::error::a company-brain fact is RE-KEYED outside the alias-approval seam (#5019)."
   elif [ "$SAW_VALIDITY" -eq 1 ]; then
     echo "::error::a company-brain fact's \`valid_to\` is stamped outside the atomic publish endpoint (#4912)."
-  elif [ "$SAW_IDENTITY" -eq 1 ]; then
-    echo "::error::a company-brain fact is RE-KEYED outside the alias-approval seam (#5019)."
   else
     echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)."
   fi

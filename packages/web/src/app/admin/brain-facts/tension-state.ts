@@ -45,10 +45,24 @@
  *
  * ## The client clock, accepted
  *
- * Both predicates compare against the browser's clock, so a machine whose clock
- * runs fast by N reads every rival whose window closes within the next N as
- * already superseded — a wider exposure than a knife-edge at the supersession
- * instant, and in the suppressing direction.
+ * The SUPERSESSION predicate compares against the browser's clock (the
+ * retraction one is a parseability check and has no `now()` in it), so a machine
+ * whose clock runs fast by N reads every rival whose window closes within the
+ * next N as already superseded — a wider exposure than a knife-edge at the
+ * supersession instant.
+ *
+ * ⚠️ That used to be purely the SUPPRESSING direction: the worst a skewed clock
+ * could do was drop a badge. Since #4995 the same skew also drives an
+ * AFFIRMATIVE claim — a row whose last live rival falls inside the window now
+ * renders "Conflict resolved", asserting an arbitration that has not happened.
+ *
+ * That breaks the symmetry the argument below rests on, so read it with the
+ * amendment: a margin no longer merely trades one window for another of equal
+ * width, it converts a false ASSERTION into an over-report of an open conflict,
+ * which is the direction this module prefers everywhere else. It is still
+ * declined, but on weaker grounds than before — a margin narrows the affirmative
+ * window without closing it, and only deciding the boundary server-side removes
+ * the class. That last point is now worth more than when it was written.
  *
  * Accepted deliberately rather than overlooked, and NOT for the tempting
  * reason. A skew margin added here would not desynchronize the two surfaces —
@@ -128,4 +142,63 @@ export function isTensionSuperseded(tension: BrainFactTensionVisible): boolean {
 export function isTensionOpen(tension: BrainFactTensionView): boolean {
   if (!tension.visible) return true;
   return !isTensionWithdrawn(tension) && !isTensionSuperseded(tension);
+}
+
+/**
+ * Was this claim contested, and is every counterpart now settled? (#4995)
+ *
+ * The list's "In tension (N)" badge counts open rivals, so #4961 correctly left
+ * a fully arbitrated row wearing NO badge — which made it indistinguishable
+ * from a row nothing ever contradicted, and dropped the arbitration history out
+ * of the list entirely. This is the predicate behind the muted "Conflict
+ * resolved" badge that tells those two apart.
+ *
+ * Defined HERE rather than inline in `columns.tsx` for the module's founding
+ * reason: settled-vs-open gets one definition, not two. It is the exact
+ * complement of the count on a COMPLETE page — `some(isTensionOpen)` and this
+ * cannot both be true — so the two badges are mutually exclusive by construction
+ * rather than by two conditions a later edit could drift apart. (Under the cap
+ * neither renders; see the warning below.)
+ *
+ * ⚠️ **The emptiness check is the whole safety property.** `[].every(...)` is
+ * `true`, so dropping the length test would badge every uncontested claim in
+ * the queue as "resolved" — the exact false history this exists to prevent, and
+ * the one mutation that leaves a naive test green.
+ *
+ * Inherits the module's directional bias unchanged: a WITHHELD rival reads as
+ * open, so a claim whose only counterpart the ACL hid is never reported as
+ * resolved. Absence of evidence is not arbitration.
+ *
+ * ⚠️ **It takes the ROW, not the rival list, and that is the safety property.**
+ * A `true` here is only meaningful if the list is COMPLETE: on a page where
+ * `TENSION_FANOUT_CAP` bit, a row can arrive holding some of its rivals, and if
+ * the ones that arrived happen to be settled then a list-only predicate reports
+ * an arbitration a dropped rival contradicts. That flag is page-level, so an
+ * earlier draft of this took `readonly BrainFactTensionView[]` and left the
+ * check to the caller — which makes the ONE way to misuse this function the
+ * shortest way to call it, and makes the failure silent. Folding it in means
+ * forgetting the cap is not expressible.
+ *
+ * Precisely: it makes OMITTING the check inexpressible. A caller can still
+ * hand over a structural literal with `pageTensionsTruncated: false` hard-coded
+ * — the unit tests' own `row()` helper does — so this buys "you cannot forget",
+ * not "you cannot lie".
+ *
+ * Structural parameter rather than an import of `BrainFactCandidateRow`: this
+ * module stays a domain predicate that `columns.tsx` depends on, never the
+ * reverse.
+ */
+export function isFullyArbitrated(row: {
+  readonly tensions: readonly BrainFactTensionView[];
+  readonly pageTensionsTruncated: boolean;
+}): boolean {
+  // `!== false`, not `!`, so a flag that ever arrives absent or drifted
+  // SUPPRESSES the badge rather than enabling it. Unreachable today — the wire
+  // schema makes it a required boolean and `useAdminFetch` throws on a parse
+  // failure — but this is the module whose stated bias is that every ambiguous
+  // input errs toward reporting a conflict, and this was the one guard in it
+  // that failed open.
+  if (row.pageTensionsTruncated !== false) return false;
+  if (row.tensions.length === 0) return false;
+  return !row.tensions.some(isTensionOpen);
 }

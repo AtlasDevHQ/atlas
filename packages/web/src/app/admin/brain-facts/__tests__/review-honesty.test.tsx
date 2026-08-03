@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
 import type { BrainFactTensionVisible } from "@/ui/lib/types";
+import { resolvedTensionBadge, statusBadge, tensionBadge } from "../columns";
 
 /**
  * What the review gate must SAY, not just fetch (#4772, ADR-0036).
@@ -1019,6 +1020,18 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     expect(text).toContain("Postgres");
     expect(text).not.toContain("In tension");
     expect(view.container.textContent).toContain("more conflicting claims than Atlas can show");
+    // ⭐ And #4995's badge stays away too, which is the whole reason it is gated
+    // on truncation. This row's ONE delivered rival is settled, so the predicate
+    // says "fully arbitrated" — but open rivals may be sitting beyond the cap,
+    // and a badge asserting resolution here would be the one claim
+    // `TENSION_FANOUT_CAP`'s comment says this surface must never make. The
+    // reviewer gets the banner instead, exactly as before #4995.
+    //
+    // MUTATION THIS CATCHES: deleting the `pageTensionsTruncated` guard from
+    // `isFullyArbitrated`. NOT a `select` that stops stamping — that leaves the
+    // flag `undefined`, which `!== false` reads as truncated and SUPPRESSES, so
+    // this test stays green. The badge-present test below is what catches it.
+    expect(text).not.toContain("Conflict resolved");
   });
 
   test("counts a rival whose window has not CLOSED yet", async () => {
@@ -1053,6 +1066,147 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     // The settled rival beside it is still excluded — the withheld one is the
     // only thing holding the badge up, so the badge is singular.
     expect(text).not.toMatch(/In tension \(/);
+  });
+});
+
+describe("an arbitrated row reads as RESOLVED, not as never contested (#4995)", () => {
+  // The pair below is one claim split across two tests, and it has to be — but
+  // not for the reason the DOM suggests. `render()` gives each call its own
+  // container, so two renders do not share a tbody. What they share is the
+  // per-test `testQueryClient`: both fixtures fetch the same path, so the second
+  // mount paints the FIRST fixture's cached rows, and `renderPage`'s
+  // `waitFor(… "Acme")` is satisfied by that stale paint before the refetch
+  // lands. The second assertion then reads fixture 1. (Both containers also sit
+  // in `document.body` until `afterEach`, which matters for the sheet
+  // assertions further down.) One render per test is this file's convention.
+  //
+  // #4961 correctly stopped COUNTING settled rivals, but the row it left behind
+  // was indistinguishable from a claim nothing ever contradicted — the
+  // arbitration vanished from the list, and the stats tile's "N in tension" had
+  // no row to point at. These two say which row gets the badge and which does
+  // not; neither half means anything alone.
+  test("⭐ badges a row whose rivals are ALL settled", async () => {
+    // One rival per axis, because the badge must appear on both.
+    const view = await renderPage([
+      candidate({
+        tensions: [rival("fact-2", { invalidatedAt: ISO }), rival("fact-3", { validTo: ISO })],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("Conflict resolved");
+    // Not BOTH badges — the row is resolved, not resolved-and-contested.
+    expect(text).not.toContain("In tension");
+  });
+
+  test("⭐ leaves a row nothing ever contradicted BARE", async () => {
+    // The other half, and the mutation the predicate is built around:
+    // `[].every(...)` is `true`, so the obvious spelling badges every
+    // uncontested claim in the queue with an arbitration that never happened —
+    // and the test above passes while it does.
+    //
+    // MUTATION THIS CATCHES: deleting `isFullyArbitrated`'s length guard.
+    const view = await renderPage([candidate({ tensions: [] })]);
+    const text = rowText(view);
+    expect(text).toContain("Postgres");
+    expect(text).not.toContain("Conflict resolved");
+    expect(text).not.toContain("In tension");
+  });
+
+  test("shows the LIVE badge and not the resolved one while any rival is open", async () => {
+    // The mutual exclusion, from the contested side. A row that is partly
+    // arbitrated is still work; a "Conflict resolved" badge beside an open
+    // count would tell a reviewer the opposite of what the count says.
+    const view = await renderPage([
+      candidate({
+        tensions: [rival("fact-2"), rival("fact-3", { invalidatedAt: ISO })],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("In tension");
+    expect(text).not.toContain("Conflict resolved");
+  });
+
+  test("⭐ never calls a WITHHELD rival resolved", async () => {
+    // The ACL arm, and the direction that matters: the stamps that would settle
+    // this rival are exactly what the reader was refused, so inferring
+    // "resolved" from their absence would tell a reviewer a conflict they are
+    // not allowed to see has been dealt with. The withheld rival holds the row
+    // open instead — the same call `isTensionOpen` already makes for the count.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          { visible: false, factId: "fact-2", edgeDirection: "to" },
+          rival("fact-3", { invalidatedAt: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).not.toContain("Conflict resolved");
+    expect(text).toContain("In tension");
+  });
+
+  test("⭐ suppresses the badge on EVERY row of a truncated page, not just the first", async () => {
+    // The `select` stamp is per-row, and every other fixture in this file
+    // renders ONE candidate — so a stamp that only reached row 0
+    // (`(c, i) => ({ ...c, pageTensionsTruncated: i === 0 ? r.tensionsTruncated : false })`)
+    // survives the whole suite while rows 2..N of a capped page assert an
+    // arbitration over rivals nobody saw. With a page limit of 50, row 0 is the
+    // unrepresentative one.
+    //
+    // MUTATION THIS CATCHES: stamping `pageTensionsTruncated` on some rows but
+    // not all of them in `page.tsx`'s `select`.
+    const view = await renderPage(
+      [
+        candidate({ id: "fact-1", tensions: [rival("fact-2", { invalidatedAt: ISO })] }),
+        candidate({
+          id: "fact-9",
+          object: "Redis",
+          tensions: [rival("fact-3", { validTo: ISO })],
+        }),
+      ],
+      { tensionsTruncated: true },
+    );
+    const rows = Array.from(view.container.querySelectorAll("tbody tr"));
+    expect(rows).toHaveLength(2);
+    // Anchored per row, so neither assertion can pass because a row is missing.
+    expect(rows[0]!.textContent).toContain("Postgres");
+    expect(rows[0]!.textContent).not.toContain("Conflict resolved");
+    expect(rows[1]!.textContent).toContain("Redis");
+    expect(rows[1]!.textContent).not.toContain("Conflict resolved");
+  });
+
+  test("keeps the badge MUTED — the colour is what separates history from work", async () => {
+    // The badge's whole design claim, and the half no text assertion can see:
+    // swap `resolvedTensionBadge.className` for the violet `tensionBadge` one
+    // and every other test in this file still passes, while a reviewer scanning
+    // the queue for what needs deciding can no longer skip it at a glance. The
+    // sibling convention is `review-honesty.test.tsx`'s strike-through
+    // assertion, which exists for exactly this reason.
+    //
+    // Asserted against the tokens rather than the DOM: `Badge` composes the
+    // className, so a DOM match would pin shadcn's variant classes too and
+    // redden on an unrelated component change.
+    expect(resolvedTensionBadge.className).not.toBe(tensionBadge.className);
+    expect(resolvedTensionBadge.className).toBe("border-muted-foreground/40 text-muted-foreground");
+    // …and it is the same muted spelling the detail sheet gives a settled
+    // rival, which is the cross-surface claim the token's docblock makes.
+    expect(resolvedTensionBadge.className).toBe(statusBadge.archived.className);
+  });
+
+  test("keeps the sheet's per-rival labels as the row badge's detail", async () => {
+    // The cross-surface claim #4995 rests on: the row now says a conflict was
+    // resolved, and opening it must show WHICH rivals and by which verb — the
+    // labels #4935 gave the sheet. A row-level summary with nothing behind it
+    // would be a worse lie than the silence it replaced.
+    const view = await renderPage([
+      candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] }),
+    ]);
+    expect(rowText(view)).toContain("Conflict resolved");
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("MySQL");
+    expect(text).toContain("Withdrawn");
   });
 });
 

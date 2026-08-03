@@ -10,12 +10,14 @@ import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { AlertTriangle, Clock, HelpCircle, Link2, ShieldAlert, Split } from "lucide-react";
-import { isTensionOpen } from "./tension-state";
+import { isFullyArbitrated, isTensionOpen } from "./tension-state";
 
 /**
  * Review-queue columns, and the badge vocabulary the sheet shares with them —
  * `candidate-detail.tsx` imports these tokens so one claim cannot wear two
- * spellings of the same state on two surfaces. The lifecycle predicate behind
+ * spellings of the same state on two surfaces. (Not yet total: the sheet's own
+ * per-rival "Withdrawn"/"Superseded" badges still spell the muted classes
+ * inline rather than importing `resolvedTensionBadge`'s.) The lifecycle predicate behind
  * the "In tension" count is the same idea one file over, in `tension-state.ts`.
  *
  * The list is where a reviewer decides whether a claim is worth OPENING, so
@@ -28,6 +30,44 @@ import { isTensionOpen } from "./tension-state";
  * reviewer would reach for first ("most contested") is exactly the ranking
  * ADR-0036 refuses to perform.
  */
+
+/**
+ * A candidate plus the one PAGE-level fact a row cell cannot otherwise reach:
+ * did the tension fan-out cap bite on this page (#4995)?
+ *
+ * Carried on the row rather than passed to `getBrainFactColumns`, because the
+ * flag arrives with the list response and the columns are built BEFORE that
+ * response exists — `page.tsx` hands `columns` to `useServerDataTable` and gets
+ * `listResponse` back. Threading it through the factory would mean reading the
+ * value a render too early; stamping it in the hook's `select`, which already
+ * holds the whole validated response, means every row carries a value that was
+ * true of the page it came from.
+ *
+ * The other candidate route, TanStack's `meta`, was rejected because it turns a
+ * compile-time obligation into a runtime one: `TableMeta` is globally augmented
+ * across every admin table, so a one-page fact has to be declared OPTIONAL
+ * there, and a page that forgot to pass it would simply read `undefined`.
+ * (Which `isFullyArbitrated`'s `!== false` guard would then suppress, so it
+ * fails safe either way — the objection is that the mistake is silent, not that
+ * it is dangerous.) Widening the row type instead makes a missing stamp a
+ * compile error: `TData` is `BrainFactCandidateRow`, whose extra required field
+ * the raw response elements lack, so `select` cannot hand back `r.candidates`.
+ *
+ * `pageTensionsTruncated`, not `tensionsTruncated`: the value is a fact about
+ * the PAGE riding on a row, and the un-prefixed spelling both reads as a
+ * per-row claim at the use site and would silently shadow a future per-candidate
+ * field of that name on the wire type — collapsing the intersection to one
+ * boolean with no error anywhere.
+ *
+ * Only the "Conflict resolved" badge reads it, and only to STAY SILENT. The
+ * "In tension (N)" count deliberately does not: understating a count is the
+ * direction this surface has always accepted, while asserting an arbitration
+ * that a dropped rival may contradict is the direction `TENSION_FANOUT_CAP`'s
+ * own comment says it must never take.
+ */
+export interface BrainFactCandidateRow extends BrainFactCandidate {
+  readonly pageTensionsTruncated: boolean;
+}
 
 /** Badge for a claim publish would refuse. Not a status — a pre-flight verdict. */
 export const blockedBadge = {
@@ -48,6 +88,33 @@ export const tensionBadge = {
   variant: "outline" as const,
   className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
   label: "In tension",
+};
+
+/**
+ * The arbitrated counterpart of `tensionBadge` (#4995) — this claim WAS
+ * contested and every rival is now settled.
+ *
+ * MUTED, not violet, and that is the whole design: it reports history, not
+ * work. A reviewer scanning for what still needs deciding must be able to skip
+ * it at a glance, which is why it does not share the live badge's hue. It takes
+ * the same `border-muted-foreground/40 text-muted-foreground` the detail
+ * sheet's "Withdrawn"/"Superseded" rival badges carry, because it is the
+ * row-level summary of exactly those and the two surfaces should read as one
+ * statement. (Those two spell the classes inline rather than importing a token,
+ * as `decayBadge.unknown` and `statusBadge.archived` here do too — the muted
+ * treatment is this file's convention, not yet a shared constant.)
+ *
+ * It keeps the `Split` icon so the two badges read as one family: a reviewer
+ * learns the glyph means "contradiction" and the colour tells them whether it
+ * is still theirs to resolve.
+ *
+ * Still a LABEL, not a verdict — #4935's invariant is untouched. It introduces
+ * no ordering key, sorts nothing, and picks no winner.
+ */
+export const resolvedTensionBadge = {
+  variant: "outline" as const,
+  className: "border-muted-foreground/40 text-muted-foreground",
+  label: "Conflict resolved",
 };
 
 /**
@@ -117,8 +184,8 @@ export const statusBadge: Record<
 /** Column set. `showStatus` only for a queue not already pinned to one status. */
 export function getBrainFactColumns(
   opts: { showStatus?: boolean } = {},
-): ColumnDef<BrainFactCandidate>[] {
-  const columns: ColumnDef<BrainFactCandidate>[] = [
+): ColumnDef<BrainFactCandidateRow>[] {
+  const columns: ColumnDef<BrainFactCandidateRow>[] = [
     {
       id: "claim",
       accessorFn: (row) => `${row.subject} ${row.predicate} ${row.object}`,
@@ -223,17 +290,48 @@ export function getBrainFactColumns(
         // stats tile's "N in tension", the "In tension only" filter, and the
         // oversight panel's per-audience column all ask edge EXISTENCE
         // (`TENSION_EXISTS_SELECT`), i.e. "has this claim ever been contested",
-        // and all are unchanged. So the tile can read a number no row's badge
-        // corroborates, and the filter can legitimately
-        // return a row wearing no badge, for either of two reasons — every
-        // rival is settled, in which case the sheet's "Withdrawn"/"Superseded"
-        // labels explain the row; or the page's tension fan-out cap bit, in
-        // which case the row's rivals never arrived and the `tensionsTruncated`
-        // banner is the only explanation there is. The banner's "before
-        // treating any row as conflict-free" carries more weight now than when
-        // it was written: pre-#4961 a truncated row still wore a badge for
-        // whatever survived the cap, and now it may wear none at all.
+        // and all are unchanged. So the tile can still read a number no row's
+        // "In tension" count corroborates, and the filter can still return a
+        // row wearing no VIOLET badge — but as of #4995 those rows are no
+        // longer silent, and the two reasons no longer look alike:
+        //
+        //   - every rival is settled → the muted "Conflict resolved" badge
+        //     below, which is what the tile's count is pointing at;
+        //   - the page's tension fan-out cap bit → NEITHER badge renders, and
+        //     the `tensionsTruncated` banner is still the only explanation
+        //     there is. Its "before treating any row as conflict-free" is
+        //     exactly why the resolved badge suppresses itself there rather
+        //     than reading a partial rival list as an arbitration.
         const contested = c.tensions.filter(isTensionOpen);
+        // The settled case, restored to the list (#4995). #4961 was right to
+        // stop COUNTING an arbitrated rival, but the row it left behind wore no
+        // badge at all — indistinguishable from a claim nothing ever
+        // contradicted, so the arbitration disappeared from the list and the
+        // tile's "N in tension" had no row to point at. This badge is the
+        // difference between "resolved" and "never contested"; the sheet has
+        // drawn it per rival since #4935, this is its row-level equivalent.
+        //
+        // Mutually exclusive with the count above BY CONSTRUCTION, not by two
+        // conditions kept in step: `isFullyArbitrated` is the complement of
+        // `some(isTensionOpen)` over the same list, in the same module.
+        //
+        // ⚠️ And SILENT on a truncated page, which is the one place the two
+        // badges are not symmetric — the whole ROW goes in, not `c.tensions`,
+        // because the cap check is the predicate's own precondition and it
+        // takes it rather than trusting each call site to remember. The cap is
+        // applied page-wide in endpoint fact-id order, so a row can arrive
+        // holding only some of its rivals; if the ones that arrived happen to
+        // be settled, "Conflict resolved" would assert an arbitration that a
+        // dropped rival contradicts. Understating the violet COUNT under the
+        // cap is the long-accepted direction here; asserting a resolution that
+        // is not established is not, and `TENSION_FANOUT_CAP`'s own comment
+        // names it as the one thing this surface must never imply. So the row
+        // falls back to the pre-#4995 silence, and the banner explains it —
+        // approximately, on the arm where the flag was raised by a dropped edge
+        // rather than the cap: it says "more conflicting claims than Atlas can
+        // show", where the truth is "one could not be read". The reviewer is
+        // told not to trust the list either way, which is the part that matters.
+        const arbitrated = isFullyArbitrated(c);
         return (
           <div className="flex flex-wrap gap-1">
             {c.provenance.provisional && (
@@ -248,6 +346,15 @@ export function getBrainFactColumns(
                 {contested.length === 1
                   ? tensionBadge.label
                   : `${tensionBadge.label} (${contested.length})`}
+              </Badge>
+            )}
+            {arbitrated && (
+              <Badge
+                variant={resolvedTensionBadge.variant}
+                className={resolvedTensionBadge.className}
+              >
+                <Split className="mr-1 size-3" aria-hidden />
+                {resolvedTensionBadge.label}
               </Badge>
             )}
             {c.promotionBlock && (

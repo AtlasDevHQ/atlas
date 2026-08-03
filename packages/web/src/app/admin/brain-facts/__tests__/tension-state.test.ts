@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { BrainFactTensionVisible, BrainFactTensionView } from "@/ui/lib/types";
-import { isTensionOpen, isTensionSuperseded, isTensionWithdrawn } from "../tension-state";
+import {
+  isFullyArbitrated,
+  isTensionOpen,
+  isTensionSuperseded,
+  isTensionWithdrawn,
+} from "../tension-state";
 
 /**
  * The lifecycle predicate behind the review queue's "In tension (N)" count and
@@ -171,6 +176,111 @@ describe("isTensionOpen", () => {
       visible({ invalidatedAt: PAST, validTo: PAST }),
     ]) {
       expect(isTensionOpen(t)).toBe(!isTensionWithdrawn(t) && !isTensionSuperseded(t));
+    }
+  });
+});
+
+/**
+ * The row shape `isFullyArbitrated` takes — the rival list plus the page's
+ * fan-out-cap verdict, which is the precondition the predicate now owns rather
+ * than trusting each caller to remember. Defaults to a COMPLETE page so every
+ * assertion below is about the lifecycle axes, and the cap gets its own test.
+ */
+function row(
+  tensions: readonly BrainFactTensionView[],
+  pageTensionsTruncated = false,
+): { readonly tensions: readonly BrainFactTensionView[]; readonly pageTensionsTruncated: boolean } {
+  return { tensions, pageTensionsTruncated };
+}
+
+describe("isFullyArbitrated (#4995)", () => {
+  test("⭐ says NO for a claim nothing ever contradicted", () => {
+    // THE mutation this predicate exists to survive, and the one a naive test
+    // never reaches: `[].every(...)` is `true`, so the obvious spelling
+    // (`tensions.every((t) => !isTensionOpen(t))`) badges every uncontested
+    // claim in the queue as "Conflict resolved" — inventing an arbitration
+    // history for a row that never had one. Every other assertion in this
+    // describe passes under that bug.
+    //
+    // MUTATION THIS CATCHES: deleting the `tensions.length === 0` guard.
+    expect(isFullyArbitrated(row([]))).toBe(false);
+  });
+
+  test("says YES only once EVERY counterpart is settled", () => {
+    // One settled rival is not a resolved conflict while a live one remains —
+    // that row is still work, and still wears the violet count.
+    expect(isFullyArbitrated(row([visible({ invalidatedAt: PAST })]))).toBe(true);
+    expect(isFullyArbitrated(row([visible({ validTo: PAST })]))).toBe(true);
+    expect(
+      isFullyArbitrated(row([visible({ invalidatedAt: PAST }), visible({ validTo: PAST })])),
+    ).toBe(true);
+    expect(isFullyArbitrated(row([visible({ invalidatedAt: PAST }), visible()]))).toBe(false);
+    expect(isFullyArbitrated(row([visible()]))).toBe(false);
+  });
+
+  test("⭐ never reports a WITHHELD rival as arbitrated", () => {
+    // The module's directional bias, inherited rather than re-decided. The ACL
+    // refused the stamps that would settle this rival, and "resolved" inferred
+    // from stamps nobody was allowed to read is the guess that hides a live
+    // conflict from the one person who would have caught it. Absence of
+    // evidence is not arbitration.
+    const withheld: BrainFactTensionView = { visible: false, factId: "f2", edgeDirection: "to" };
+    expect(isFullyArbitrated(row([withheld]))).toBe(false);
+    expect(isFullyArbitrated(row([visible({ validTo: PAST }), withheld]))).toBe(false);
+  });
+
+  test("⭐ refuses to answer at all when the page's rival lists are INCOMPLETE", () => {
+    // The cap arm, and the reason the predicate takes a row rather than an
+    // array. `TENSION_FANOUT_CAP` is applied page-wide and biased to the tail,
+    // so a row can hold only some of its rivals; if the survivors happen to be
+    // settled, a list-only predicate asserts an arbitration a dropped rival
+    // contradicts. Identical input, opposite answer — the flag is the only
+    // difference between these two lines.
+    //
+    // MUTATION THIS CATCHES: deleting the truncation guard, or spelling it
+    // `!row.pageTensionsTruncated` — which additionally fails OPEN on a flag
+    // that ever arrives absent. The first two assertions pass under that
+    // spelling; the THIRD is the one that pins it.
+    expect(isFullyArbitrated(row([visible({ invalidatedAt: PAST })], true))).toBe(false);
+    expect(isFullyArbitrated(row([visible({ invalidatedAt: PAST })], false))).toBe(true);
+    // A drifted payload — the flag missing entirely. `!undefined` is `true`, so
+    // the naive spelling would let a capped page assert a resolution; `!== false`
+    // suppresses it, which is this module's stated bias on every other guard.
+    expect(
+      isFullyArbitrated({
+        tensions: [visible({ invalidatedAt: PAST })],
+        pageTensionsTruncated: undefined as unknown as boolean,
+      }),
+    ).toBe(false);
+  });
+
+  test("⭐ is mutually exclusive with the count beside it, never merely different", () => {
+    // The invariant the two badges rest on: a row can wear "In tension (N)" or
+    // "Conflict resolved", and there is no input that produces both or that
+    // produces neither while rivals exist.
+    //
+    // Be honest about what this can and cannot catch. Both sides route through
+    // `isTensionOpen`, so it is invariant to any change in the lifecycle axes —
+    // unlike the complement test above, which compares against the two axis
+    // predicates separately and IS axis-sensitive. What this pins is narrower
+    // and still worth having: that `isFullyArbitrated` never grows its own
+    // re-derivation of open-ness alongside the count's. The badges' real
+    // mutual-exclusion evidence is in `review-honesty.test.tsx`, where
+    // `columns.tsx` evaluates the two conditions independently.
+    //
+    // Complete pages only — under the cap the surface deliberately shows
+    // NEITHER badge, which the test above pins.
+    for (const list of [
+      [visible()],
+      [visible({ invalidatedAt: PAST })],
+      [visible({ validTo: PAST })],
+      [visible({ validTo: FUTURE })],
+      [visible({ invalidatedAt: PAST, validTo: PAST })],
+      [visible(), visible({ validTo: PAST })],
+      [visible({ invalidatedAt: PAST }), visible({ validTo: PAST })],
+    ]) {
+      const contested = list.filter(isTensionOpen).length > 0;
+      expect(isFullyArbitrated(row(list))).toBe(!contested);
     }
   });
 });

@@ -44,6 +44,9 @@ The committed scope is the **brain**. The AI-employee / work layer (named role-a
 
 ## Temporal, conflict & provenance model (T4)
 
+> **Amendment (2026-08-03, #5004) — claim identity is decided in [ADR-0037](0037-claim-identity-in-the-brain.md).** What makes two claims refer to the same subject and assert the same predicate was exact-string comparison, in three consumers, and that is now a materialized two-layer key plus a curated workspace vocabulary. **Two statements in this section are corrected there**, not merely extended: §3 item 1's *"warehouse-wins … removes any tension … gone by construction"* — cross-tier collision is **tension-only in both directions**, and warehouse-wins does nothing mechanical; and the reading that identity is uniform across sources — **identity stays source-agnostic, but *consequence* is tier-ordered**, so `supersessionCollisionJoin` gains a tier guard. Read ADR-0037 §4 before relying on either. This section's §2 (*"nothing is invalidated autonomously; the human at the review gate is the invalidation authority"*) is unchanged and is the load-bearing invariant ADR-0037 is built to keep reachable.
+
+
 **The review gate *is* the conflict-resolution mechanism** — T2's "trust over breadth" made mechanical, paying the tier-2 conflict bill T3 banked. Recency-only arbitration (the competitor's current answer, which fails exactly when an intern contradicts the CEO) is rejected.
 
 - **Full bi-temporal, invalidate-never-delete.** Supersession ≠ deletion; an `invalidated_at` column joins T3's three. Staleness is **advisory at ingest, authoritative at the gate** — a human promotion stamps `valid_to`; there is no autonomous supersession; decay only *surfaces*, never auto-demotes.

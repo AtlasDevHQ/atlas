@@ -7,7 +7,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import type { BrainFactCandidate } from "@/ui/lib/types";
 import { brainFactsSearchParams } from "./search-params";
 import { buildBrainFactsPath, hasBrainFactFilters } from "./list-query";
-import { getBrainFactColumns } from "./columns";
+import { getBrainFactColumns, type BrainFactCandidateRow } from "./columns";
 import { CandidateDetail } from "./candidate-detail";
 import { OversightPanel } from "./oversight-panel";
 import { ServerDataTable } from "@/ui/components/admin/server-data-table";
@@ -113,9 +113,9 @@ export default function BrainFactsPage() {
     z.infer<typeof BrainFactCandidateSummarySchema>
   >("/api/v1/admin/brain-facts/summary", { schema: BrainFactCandidateSummarySchema });
 
-  const columns: ColumnDef<BrainFactCandidate>[] = (() => {
+  const columns: ColumnDef<BrainFactCandidateRow>[] = (() => {
     const base = getBrainFactColumns({ showStatus: params.status !== "draft" });
-    const actionsCol: ColumnDef<BrainFactCandidate> = {
+    const actionsCol: ColumnDef<BrainFactCandidateRow> = {
       id: "actions",
       header: () => null,
       cell: ({ row }) => (
@@ -148,14 +148,50 @@ export default function BrainFactsPage() {
     error,
     refetch,
   } = useServerDataTable<
-    BrainFactCandidate,
+    BrainFactCandidateRow,
     z.infer<typeof BrainFactCandidateListResponseSchema>
   >({
     columns,
     getRowId: (row) => row.id,
     defaultPerPage: LIMIT,
     schema: BrainFactCandidateListResponseSchema,
-    select: (r) => ({ rows: r.candidates, total: r.total }),
+    // The page-level truncation flag is stamped onto every row here, where the
+    // whole validated response is in hand. `columns` is built ABOVE this call
+    // and cannot read `listResponse`, so the flags cell has no other way to
+    // learn that its rival list may be partial — and it must, or the "Conflict
+    // resolved" badge would read a capped list as an arbitration (#4995).
+    //
+    // This re-derives per render BY DESIGN, and is the one `select` in the
+    // admin app that maps rather than handing back the response's own array.
+    // The cost is row-reference stability, which the hook's Proxy memo uses to
+    // skip re-renders. Not cached on response identity — which would preserve
+    // it — because a map over at most `LIMIT` rows is not worth the cache, and
+    // the consistency that matters comes from elsewhere anyway: rows and the
+    // banner below both read `fetchState.data`, so they cannot disagree
+    // mid-refetch either way. Read the churn as intentional, not as a missing
+    // `useMemo`.
+    select: (r) => {
+      // The drift arm gets a SIGNAL, once per response rather than once per
+      // row. `isFullyArbitrated` treats a non-boolean flag as "incomplete" and
+      // suppresses the badge — the safe direction — but suppressing is exactly
+      // what a silent regression looks like from outside, and the banner
+      // fifteen lines down defaults the other way (`?? false`), so a drifted
+      // payload would otherwise render no badge, no banner, and no trace.
+      // Unreachable through the queue's own path (`tensionsTruncated` is a
+      // required `z.boolean()` and `useAdminFetch` throws on a parse failure);
+      // this is for the shape, not for a caller.
+      if (typeof r.tensionsTruncated !== "boolean") {
+        console.warn(
+          "brain-facts: `tensionsTruncated` is not a boolean — the list response drifted, so the "
+            + "\"Conflict resolved\" badge is suppressed and the truncation banner will not render",
+          { received: typeof r.tensionsTruncated },
+        );
+      }
+      return {
+        rows: r.candidates.map((c) => ({ ...c, pageTensionsTruncated: r.tensionsTruncated })),
+        total: r.total,
+      };
+    },
     buildPath: ({ offset, perPage }) =>
       buildBrainFactsPath(
         { offset, perPage },
@@ -229,6 +265,11 @@ export default function BrainFactsPage() {
   // spread evenly — a candidate can lose every hint it originated while keeping
   // the ones pointed at it. Either way an incomplete list is indistinguishable
   // from a complete one, which is why the flag exists.
+  //
+  // The cap is not the only thing that raises it: an edge row the walk could
+  // not use is dropped and also marks the page incomplete (`lib/brain/
+  // tensions.ts`). Same meaning to a reader — some conflict lists here are
+  // partial — which is why it is one flag and not two.
   const tensionsTruncated = listResponse?.tensionsTruncated ?? false;
 
   function applyFilters(next: Partial<typeof params>) {
@@ -418,9 +459,10 @@ export default function BrainFactsPage() {
               <Alert>
                 <Split className="size-4" aria-hidden />
                 <AlertDescription>
-                  This page has more conflicting claims than Atlas can show at once, so some
-                  candidates&apos; conflicts are missing here. Narrow the queue with a filter, or
-                  use a smaller page, before treating any row as conflict-free.
+                  Some candidates&apos; conflicts are missing from this page — usually more
+                  conflicting claims than Atlas can show at once, occasionally one it could not
+                  read. Narrowing the queue with a filter or using a smaller page may recover
+                  them; either way, don&apos;t treat any row here as conflict-free.
                 </AlertDescription>
               </Alert>
             )}

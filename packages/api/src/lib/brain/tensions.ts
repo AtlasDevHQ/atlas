@@ -235,7 +235,12 @@ export async function loadTensionClusters(
   const edges = edgeResult.rows as readonly TensionEdgeRow[];
   if (edges.length === 0) return { clusters, truncated: false };
 
-  const truncated = edges.length > cap;
+  // `let`, because a dropped edge below also makes this page's conflict list
+  // incomplete and readers gate on exactly that. See the null-endpoint arm.
+  // ⚠️ `usable` is sliced from the CAP verdict alone, on the next line — that
+  // later assignment must stay below it, or a dropped edge would re-slice the
+  // page and re-fire the cap warning for a truncation that never happened.
+  let truncated = edges.length > cap;
   const usable = truncated ? edges.slice(0, cap) : edges;
   if (truncated) {
     log.warn(
@@ -255,6 +260,14 @@ export async function loadTensionClusters(
       // return. A hit would make a conflict silently read as "nothing
       // contradicts this", so it is logged rather than skipped bare — with the
       // surviving endpoint, so an operator can find the row.
+      //
+      // It also marks the page TRUNCATED, which is the same thing the fan-out
+      // cap means: this page's conflict list is incomplete. Not cosmetic since
+      // #4995 — the review queue's "Conflict resolved" badge is gated on that
+      // flag, so without this a row whose only OPEN rival was the dropped one
+      // would render an affirmative "this was arbitrated" over a rival nobody
+      // ever saw. The log alone cannot reach the reader; the flag can.
+      truncated = true;
       log.warn(
         { workspaceId: ctx.workspaceId, requestId, surface, edge: { from, to } },
         `${SURFACE_LABEL[surface]}: tension edge row is missing an endpoint — the edge query shape changed; a conflict hint was dropped`,

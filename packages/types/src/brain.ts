@@ -415,8 +415,10 @@ export interface BrainFactCandidateListResponse {
   /** Grand total matching the filters, for server-side pagination. */
   readonly total: number;
   /**
-   * True when this page hit the contradiction fan-out cap, so some candidates'
-   * `tensions` are incomplete.
+   * True when this page's contradiction lists are INCOMPLETE — the fan-out cap
+   * bit, or an edge row was dropped as unusable. One flag for both because
+   * readers act on the same thing: some candidates' `tensions` cannot be
+   * trusted to be the whole story.
    *
    * Not cosmetic. A truncated contradiction list renders as "nothing further
    * conflicts with this claim", which is the single most dangerous thing this
@@ -953,8 +955,9 @@ export interface BrainSearchResponse {
    */
   readonly stores: Readonly<Record<BrainResultTier, BrainSearchStoreReport>>;
   /**
-   * True when the `in-tension-with` fan-out cap bit, so some facts' `tensions`
-   * are incomplete. See {@link BrainFactCandidateListResponse.tensionsTruncated}.
+   * True when some facts' `tensions` are incomplete — the `in-tension-with`
+   * fan-out cap bit, or an edge row was dropped as unusable.
+   * See {@link BrainFactCandidateListResponse.tensionsTruncated}.
    */
   readonly tensionsTruncated: boolean;
   /**

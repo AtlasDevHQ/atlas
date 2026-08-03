@@ -469,13 +469,22 @@ describe("loadTensionClusters — tension detection", () => {
       facts: [rival("rival-a")],
     });
 
-    const { clusters } = await load(fixture, ["fact-1"], { ctx });
+    const { clusters, truncated } = await load(fixture, ["fact-1"], { ctx });
 
     expect(ids(clusters.get("fact-1")).counterparts).toEqual(["rival-a:to"]);
     const warning = fixture.warnings.find((w) => w.message.includes("missing an endpoint"));
     expect(warning).toBeDefined();
     // The surviving endpoint is what lets an operator find the row.
     expect(warning!.payload).toMatchObject({ edge: { from: "fact-1", to: null } });
+    // ⭐ And the page is reported INCOMPLETE, which is the same thing the
+    // fan-out cap means — a rival was dropped, so this page's conflict list no
+    // longer describes everything. The log alone cannot reach a reader; only
+    // this flag can, and since #4995 a reader ACTS on it: the review queue's
+    // "Conflict resolved" badge is gated on it, so without this a row whose
+    // only open rival was the dropped one would render an affirmative "this was
+    // arbitrated" over a rival nobody ever saw. The cap is nowhere near here —
+    // two edges against this helper's cap of 10 — so nothing else sets it.
+    expect(truncated).toBe(true);
   });
 });
 

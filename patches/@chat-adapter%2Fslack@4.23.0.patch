@@ -1,0 +1,15 @@
+diff --git a/dist/index.js b/dist/index.js
+index 732fac74f5416c224d6d7d4ccf497dff7df09e8e..ab894e4462bccdb2c043527cd39ece861ce0cddc 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1784,8 +1784,8 @@ var SlackAdapter = class _SlackAdapter {
+     if (userIds.size === 0 && channelIds.size === 0) {
+       return text;
+     }
+-    if (skipSelfMention && this._botUserId) {
+-      userIds.delete(this._botUserId);
++    if (skipSelfMention && this.botUserId) {
++      userIds.delete(this.botUserId);
+     }
+     if (userIds.size === 0 && channelIds.size === 0) {
+       return text;

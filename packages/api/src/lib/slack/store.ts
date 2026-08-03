@@ -21,19 +21,29 @@
  *     }
  *
  * `botUserId` is written by Atlas from `oauth.v2.access`'s
- * `bot_user_id` and is **load-bearing for loop safety**. In
- * multi-workspace mode (no `SLACK_BOT_TOKEN` → no `defaultBotToken`:
- * SaaS always, and self-hosted BYOT too) the adapter's
+ * `bot_user_id` and is **load-bearing for loop safety AND for @-mention
+ * detection**. In multi-workspace mode (no `SLACK_BOT_TOKEN` → no
+ * `defaultBotToken`: SaaS always, and self-hosted BYOT too) the adapter's
  * `isMessageFromSelf` has three checks and only one can fire.
  * `_botId` is populated solely by `initialize()` under a
  * single-workspace `defaultBotToken`. `_botUserId` is populated there
  * AND from `config.botUserId`, which `plugins/chat/src/adapters/slack.ts`
- * does not forward — so both instance fields are null here. The
+ * does not forward — and *cannot*, because one static id can't serve N
+ * workspace installs. So both instance fields are null here. The
  * surviving check compares the inbound event's `user` against the
  * request-context `botUserId`, which the adapter sources from THIS row
  * via `resolveTokenForTeam`. Leave it unset and every message Atlas
  * posts reads back as a user message: in a subscribed thread or a DM
  * that is an unbounded reply loop, which is exactly what #4907 was.
+ *
+ * Since #4911 this row has a SECOND reader on the same request-context
+ * path. The vendored `@chat-adapter/slack` patch
+ * (`patches/@chat-adapter%2Fslack@4.23.0.patch`) makes
+ * `resolveInlineMentions` suppress the bot's own `<@id>` using that same
+ * `ctx.botUserId`, which is what lets `detectMention`'s id patterns match.
+ * Leave it unset and mention detection falls back to display-name matching
+ * alone — a bot rename then silences the workspace entirely (#4909). The
+ * two failures compound on exactly the same missing field.
  *
  * The adapter only ever *reads* this field — its sole writer is the
  * SDK's own `handleOAuthCallback`, which Atlas bypasses by running

@@ -39,10 +39,10 @@ Citations are `path/file.ts:fn()` so refactors that shift line numbers don't sil
 
 | Field | Owner | Legacy write site | New write site | Read sites | Fail-loud at read? | Status |
 |---|---|---|---|---|---|---|
-| `botToken` | chat-adapter | `packages/api/src/api/routes/slack.ts` legacy OAuth callback (route file removed in #2689) | `lib/integrations/install/slack-oauth-handler.ts:SlackOAuthInstallHandler.handleCallback()` (calls `saveInstallation`) — **sole writer**. (Corrected #4907: this row previously said `@chat-adapter/slack:setInstallation` also writes "on every event". At v4.23.0 `setInstallation` has exactly one caller, the adapter's own `handleOAuthCallback`, which Atlas bypasses.) | `lib/slack/store.ts:getInstallation()` (line 200) → `parseStoredInstallation()`; reached transitively from `lib/chat-plugin/executeQuery.ts` (interactive) and `lib/scheduler/delivery.ts` via `getBotToken()` (line 384) | ✓ — `parseStoredInstallation` warns + returns null on missing/undecryptable token; `executeQuery` throws on missing installation | ✓ verified |
-| `botUserId` | chat-adapter | adapter-only (never written by Atlas) | `lib/slack/store.ts:saveInstallation()` from `oauth.v2.access`'s `bot_user_id` (#4907) — **Atlas is the sole writer in practice**; the adapter's only writer is its own `handleOAuthCallback`, which Atlas bypasses by running `SlackOAuthInstallHandler`. Omitted from the JSONB payload when absent so the merge preserves a stored id | `@chat-adapter/slack:resolveTokenForTeam()` → request-context `botUserId` → `isMessageFromSelf()`. Atlas itself does not read it | ⚠ — silent. A missing id makes `isMessageFromSelf` return false for every self-post; `plugins/chat/src/bridge.ts:recordReplyForBreaker()` is the backstop, and install logs a warning | ✓ verified |
+| `botToken` | chat-adapter | `packages/api/src/api/routes/slack.ts` legacy OAuth callback (route file removed in #2689) | `lib/integrations/install/slack-oauth-handler.ts:SlackOAuthInstallHandler.handleCallback()` (calls `saveInstallation`) — **sole writer**. (Corrected #4907: this row previously said `@chat-adapter/slack:setInstallation` also writes "on every event". At v4.23.0 `setInstallation` has exactly one caller, the adapter's own `handleOAuthCallback`, which Atlas bypasses.) | `lib/slack/store.ts:getInstallation()` → `parseStoredInstallation()`; reached transitively from `lib/chat-plugin/executeQuery.ts` (interactive) and `lib/scheduler/delivery.ts` via `getBotToken()` | ✓ — `parseStoredInstallation` warns + returns null on missing/undecryptable token; `executeQuery` throws on missing installation | ✓ verified |
+| `botUserId` | chat-adapter | adapter-only (never written by Atlas) | `lib/slack/store.ts:saveInstallation()` from `oauth.v2.access`'s `bot_user_id` (#4907) — **Atlas is the sole writer in practice**; the adapter's only writer is its own `handleOAuthCallback`, which Atlas bypasses by running `SlackOAuthInstallHandler`. Omitted from the JSONB payload when absent so the merge preserves a stored id | `@chat-adapter/slack:resolveTokenForTeam()` → request-context `botUserId` → **two** consumers: `isMessageFromSelf()` (#4907) and, since #4911, the patched `resolveInlineMentions()` whose self-suppression is what leaves an id for `detectMention` to match. Atlas itself does not read it | ⚠ — silent, and the two failures compound. A missing id makes `isMessageFromSelf` return false for every self-post (`plugins/chat/src/bridge.ts:recordReplyForBreaker()` is the backstop) **and** degrades @-mention detection to display-name-only, so a bot rename silences that workspace (#4909's failure mode). Install logs a warning naming both | ✓ verified |
 | `teamName` | shared | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` mirrors `workspaceName` into `teamName` — **sole writer**. (Corrected #4907: previously credited `setInstallation` "from `auth.test`"; the adapter sources it from `result.team.name` in `handleOAuthCallback`, which Atlas bypasses, and `auth.test` never writes it.) | `parseStoredInstallation()` (falls back to `workspaceName`) | lenient — both fields fall back to each other; missing both yields `workspace_name: null` (acceptable for display) | ✓ verified |
-| `orgId` | **Atlas extension** | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` — **sole writer**; preserved across `setInstallation` rewrites by the pg-adapter JSONB merge | `lib/slack/store.ts:getInstallationByOrg()` (line 247); `ee/src/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver()` (resolves `team_id` → `orgId`); `lib/chat-plugin/executeQuery.ts:executeChatPluginQuery()` (refuses on null, line 192); `ee/src/proactive/user-resolver.ts:defaultVerifyWorkspace()` (boolean) | ✓ — `executeQuery` throws (interactive path); `workspace-id-resolver` warns on row-exists-but-missing with per-teamId dedup (post-#2677, proactive path); `getInstallationByOrg` returns null backed by the partial-expression index | ✓ verified |
+| `orgId` | **Atlas extension** | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` — **sole writer**; preserved across `setInstallation` rewrites by the pg-adapter JSONB merge | `lib/slack/store.ts:getInstallationByOrg()`; `ee/src/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver()` (resolves `team_id` → `orgId`); `lib/chat-plugin/executeQuery.ts:executeChatPluginQuery()` (refuses on null, line 192); `ee/src/proactive/user-resolver.ts:defaultVerifyWorkspace()` (boolean) | ✓ — `executeQuery` throws (interactive path); `workspace-id-resolver` warns on row-exists-but-missing with per-teamId dedup (post-#2677, proactive path); `getInstallationByOrg` returns null backed by the partial-expression index | ✓ verified |
 | `workspaceName` | **Atlas extension** | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` — sole writer; preserved by pg-adapter JSONB merge | `parseStoredInstallation()` (display only) | n/a (display-only; admin UI tolerates null) | ✓ verified |
 | `installedAt` | **Atlas extension** | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` — sole writer; preserved by pg-adapter JSONB merge | `parseStoredInstallation()` (falls back to row's `created_at`) | n/a (display-only) | ✓ verified |
 
@@ -97,16 +97,17 @@ stays the self-host fallback unchanged. ⚠ row to watch: any change to the shap
 overlay (e.g. nesting, or a non-string value) breaks the `{ ...process.env, ...overlay }`
 merge contract — the overlay must stay a flat `Record<string, string>`.
 
-### Adapter identity — `SlackAdapterConfig.userName` / `Chat.userName` (#4909)
+### Adapter identity — `SlackAdapterConfig.userName` / `Chat.userName` (#4909, #4911)
 
 The bot's own handle at the `@chat-adapter/slack` construction boundary. Not
-cosmetic: it is the **only** working input to `detectMention`, the fallback the
-SDK uses when `isMention` wasn't set from the event type.
+cosmetic: it is one of only two working inputs to `detectMention`, the fallback
+the SDK uses when `isMention` wasn't set from the event type.
 
 | Boundary field | Owner | Atlas wiring | Adapter behaviour without it | Status |
 |---|---|---|---|---|
 | `SlackAdapterConfig.userName` | chat-adapter | `plugins/chat/src/adapters/slack.ts` passes `DEFAULT_BOT_USER_NAME` (`config.ts`), overridable per deploy | defaults to the literal `"bot"`; replaced from `auth.test` **only** inside `initialize()`, which runs solely on the single-workspace `defaultBotToken` path | ✓ verified |
 | `Chat.userName` | chat SDK | `bridge.ts` `new Chat({ userName: DEFAULT_BOT_USER_NAME })` — same constant | — | ✓ verified |
+| `resolveInlineMentions(text, skipSelfMention)` self-suppression | chat-adapter | **vendored patch** `patches/@chat-adapter%2Fslack@4.23.0.patch` — swaps the instance field `this._botUserId` for the ctx-aware `this.botUserId` getter. Patches `dist/index.js` only; the shipped `dist/index.js.map` still describes the unpatched token, so a stack trace or debugger step through `resolveInlineMentions` reads one identifier off. Runtime-harmless | unpatched, the guard reads an instance field neither of whose writers reaches multi-workspace, so it never fires and the bot's own `<@U…>` is rewritten to its display name | ✓ verified — patched (effective only where `ctx.botUserId` is populated, see below) |
 
 **Boundary contract.** `detectMention` resolves the handle as
 `adapter.userName || chat.userName`. Because the adapter's default `"bot"` is
@@ -114,16 +115,84 @@ SDK uses when `isMention` wasn't set from the event type.
 and silently does nothing. Both must come from one constant, which is why
 `DEFAULT_BOT_USER_NAME` exists rather than two literals.
 
-The id-based patterns in `detectMention` are **not** a backstop here: the async
-parse path runs `resolveInlineMentions`, which rewrites `<@U0BOT…>` to the bot's
-display name, so no user id survives in `message.text`. (That rewrite is meant to be
-suppressed for the bot itself via `skipSelfMention`, but that guard reads the
-adapter's instance `_botUserId`, which is null in multi-workspace — see the
-`botUserId` row above.) Name matching is the only route.
+As of #4911 the id-based patterns in `detectMention` are a **real backstop for
+installs whose `chat_cache` row carries `botUserId`** — but only because of the
+vendored patch, and only for those installs. The async parse path runs
+`resolveInlineMentions`, which rewrites `<@U0BOT…>` to a display name; the
+`skipSelfMention` guard is supposed to exempt the bot itself, and upstream reads
+the instance `_botUserId` rather than the `botUserId` getter that prefers the
+per-request `ctx.botUserId` `resolveTokenForTeam` supplies. `_botUserId` has two
+writers and neither reaches us: the constructor's `config.botUserId`, which
+`plugins/chat/src/adapters/slack.ts` cannot forward because one static id cannot
+serve N workspace installs, and `auth.test` inside `initialize()`, which only runs
+on the single-workspace `defaultBotToken` path. `lib/slack/store.ts`'s header
+carries the same chain.
 
-⚠ row to watch: this is **single-workspace-safe and multi-workspace-broken** by
-default — the class that produced both #4907 and #4909. Anything that relies on
-`initialize()` having populated adapter instance state is dead in SaaS/BYOT.
+Two things make this an upstream oversight rather than a design choice: the same
+class's `isMessageFromSelf` does exactly that ctx-aware fallback, and upstream's
+own JSDoc on the parameter says `skipSelfMention` exists *"so that mention
+detection (which looks for @botUserId in the text) continues to work"* — the
+invariant the patch restores. The patch makes the one-token swap; without it, name
+matching is again the only route and any display-name drift returns us to the total
+silence of #4909.
+
+**The backstop is not universal — it rests on the field this doc already marks ⚠
+silent.** `ctx.botUserId` comes from the `chat_cache` installation row (the
+`botUserId` row in the *Slack installation row* table above), and that row can lack
+it: `lib/slack/store.ts:upsert()` spreads `botUserId` **conditionally** because it
+may be absent, and `lib/integrations/install/slack-oauth-handler.ts` warns (rather
+than refusing the install) when Slack's OAuth response omits `bot_user_id`. Any
+workspace whose row predates #4907 or hit that warn path has `ctx.botUserId`
+undefined **and** `_botUserId` null, so the guard still never fires. There the two
+failures **compound**: `isMessageFromSelf` is false for every self-post (#4907) and
+mention detection is name-only (#4909) at the same time. Those installs need a
+re-install to gain the id — the patch raises the floor, it does not reach every
+tenant.
+
+**It also rests on *whose* request context is live at dispatch time.**
+`detectMention` reads the `adapter.botUserId` getter inside the SDK's
+`dispatchToHandlers`. Under the SDK default `concurrency: "drop"` — `bridge.ts`
+passes no `concurrency`, so it inherits it — that is the originating request's
+context. Under `"queue"` or `"debounce"` the drain loop dispatches a persisted
+message from another request under the **lock holder's** context, equivalent only
+because a thread is single-team. Slack Connect shared channels are the edge to
+watch: the adapter tracks them explicitly (`is_ext_shared_channel` →
+`_externalChannels`), and one channel id can carry events from two `team_id`s with
+different bot user ids. **Adding** a `concurrency` option is therefore a change to
+this contract — and nothing enforces that: this paragraph is the only guard, no
+test fails if someone sets it.
+
+⚠ row to watch: the **patch is a standing obligation on every
+`@chat-adapter/slack` version bump, and `bun install` only half-catches it.**
+Measured on bun 1.3.13 — the repo pins `"bun": ">=1.3.13 <1.3.14"` and CI sets
+`BUN_VERSION: "1.3.13"`, so this is authoritative everywhere today and must be
+re-measured on a bun bump — there are three failure modes and bun catches one:
+
+| Bump failure mode | bun's behaviour |
+|---|---|
+| Patch file missing (e.g. an image-slimming pass drops `COPY patches patches`) | **hard error, `bun install` exits 1** |
+| `patchedDependencies` key names a version no longer installed | **silently ignored** — install succeeds, package ships unpatched |
+| Hunk context no longer matches | **applied fuzzily, no warning** |
+
+The last two are the realistic bump outcomes, and for them the one real gate is
+`plugins/chat/src/adapters/slack.test.ts` — the `multi-workspace self-mention
+suppression` block, which runs in CI via `test-others` (auto-discovered, no `if:`,
+no path filter) and fails if the shipped adapter doesn't preserve the bot's own id.
+Narrowing the hazard: `plugins/chat/package.json` pins `@chat-adapter/slack`
+**exact, no caret**, so only a deliberate bump can invalidate the patch — never
+passive drift.
+
+On any adapter bump: re-key the patch, re-run that block, and re-check whether
+upstream has fixed it (in which case drop the patch, keep the tests). A red there
+has three causes with opposite responses — the patch stopped taking effect, an
+upstream member the block reaches for was renamed, or (webhook case only) the
+installation row/token failed to resolve, which returns 200 having processed
+nothing. The block's own triage note enumerates them. Do **not** silence a red by
+deleting the patch entry or loosening an assertion.
+
+The underlying class is still **single-workspace-safe and multi-workspace-broken**
+by default — the class that produced #4907, #4909 and #4911. Anything that relies
+on `initialize()` having populated adapter instance state is dead in SaaS/BYOT.
 
 ### Durable approval-park resume delivery — `ChatPluginConfig.onBridgeReady` + `chat:resume-pending:<conversationId>` (#3750)
 

@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.4",
+    title: "Pending Changes Counter Accuracy",
+    date: "2026-08-03",
+    summary:
+      "A small fix to the admin console. The \"pending\" badge in the top bar — the one telling you how many drafts are waiting for review — now updates the moment the queue changes, instead of showing a stale number until you reload the page. It was only ever a display problem: the drafts themselves, and what publishing did to them, were always correct.",
+    highlights: [
+      "The pending count updates immediately after you publish",
+      "It updates after you reject a draft too, not just after publishing",
+      "No reload needed to see the current number",
+    ],
+  },
+  {
     version: "v0.2.3",
     title: "Company Brain: Temporal Depth and Source Breadth",
     date: "2026-08-03",

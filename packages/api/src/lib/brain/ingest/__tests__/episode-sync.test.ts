@@ -155,7 +155,14 @@ function connectorReturning(
   // that stopped threading `connector.source` and hardcoded `"slack"` pass the
   // pass-through assertion below. A member this path would never produce keeps
   // that property.
-  return { catalogId: "catalog:fixture", source: HUMAN_SOURCE, createClient: () => ({ fetchEpisodes }) };
+  return {
+    catalogId: "catalog:fixture",
+    source: HUMAN_SOURCE,
+    // `human` is not a grant-deriving class, so either arm type-checks; this
+    // suite drives the ingest engine and never the audience seam.
+    audience: { kind: "externally-synced" },
+    createClient: () => ({ fetchEpisodes }),
+  };
 }
 
 function run(connector: BrainSourceConnector) {
@@ -367,6 +374,7 @@ describe("bookkeeping", () => {
       connector: {
         catalogId: "catalog:fixture",
         source: HUMAN_SOURCE,
+        audience: { kind: "externally-synced" },
         createClient: () => {
           throw new Error("unreachable");
         },

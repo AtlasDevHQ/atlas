@@ -130,11 +130,17 @@ export interface SlackHistoryConnectorDeps {
 /** Build the Slack chat-history brain source. `deps` is test-only injection. */
 export function createSlackHistoryConnector(
   deps: SlackHistoryConnectorDeps = {},
-): BrainSourceConnector {
+): BrainSourceConnector<typeof SLACK_HISTORY_SOURCE> {
   const store: SlackInstallationReader = deps.store ?? { getInstallationByOrg, getBotToken };
   return {
     catalogId: SLACK_HISTORY_CATALOG_ID,
     source: SLACK_HISTORY_SOURCE,
+    // Slack's grants are CHANNEL-scoped, and `audience/sync.ts` reconciles them
+    // by walking channel rosters off the install — a pass parameterised by
+    // `SLACK_HISTORY_CATALOG_ID` rather than driven from the re-verifier
+    // registry. So this source deliberately registers no re-verifier, and says
+    // so rather than leaving the question open.
+    audience: { kind: "externally-synced" },
     async createClient(ctx: BrainSourceInstallContext): Promise<BrainSourceVendorClient> {
       const parsed = parseSlackHistoryConfig(ctx.config);
       if (!parsed.ok) throw new Error(parsed.error);

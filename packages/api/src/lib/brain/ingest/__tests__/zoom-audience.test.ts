@@ -16,7 +16,7 @@
  *      green.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   MAX_PARTICIPANT_PAGES,
   readMeetingRoster,
@@ -668,8 +668,25 @@ describe("rotation — this source inherits the shared attempt stamp (#4971)", (
 });
 
 describe("the re-verifier registry", () => {
+  // `_resetAudienceReverifiers` and not `_resetBrainSourceConnectors`, which is
+  // the reset every suite that registers a BRAIN SOURCE must use since #4985.
+  // The distinction is the point rather than an oversight, and the criterion is
+  // what the suite REGISTERS: these tests register bare fixture re-verifiers and
+  // never a connector, so the un-paired primitive is the right tool (the other
+  // compliant caller is `audience/__tests__/sync.test.ts`, same reason). A suite
+  // that registered a connector and then reset only this half would leave the
+  // idempotence gate (`getBrainSourceConnector(id) !== undefined`) saying
+  // "already registered" about a source whose re-verifier had just been deleted.
+  //
+  // In `beforeEach`/`afterEach`, not inline at the top and bottom of each test.
+  // The inline form is what `audience/__tests__/sync.test.ts` was burned by: a
+  // reset written after the awaits with no `finally` never runs when the body
+  // throws, so ONE real failure leaks a "zoom" re-verifier into every later test
+  // in the file and manufactures several unrelated ones.
+  beforeEach(_resetAudienceReverifiers);
+  afterEach(_resetAudienceReverifiers);
+
   it("refuses a duplicate registration for one source", () => {
-    _resetAudienceReverifiers();
     registerAudienceReverifier("zoom", async () => ZERO_REVERIFY);
     // Two re-verifiers for one source would each reconcile against their own
     // roster, and the loser's members would be revoked every cycle.
@@ -677,23 +694,19 @@ describe("the re-verifier registry", () => {
       /already registered/,
     );
     expect(listAudienceReverifierSources()).toEqual(["zoom"]);
-    _resetAudienceReverifiers();
   });
 
   it("counts a re-verifier that throws as a FAILURE, so the cycle reports degraded", async () => {
     // Swallowing it would leave the cycle looking clean while a source's
     // audiences quietly age out.
-    _resetAudienceReverifiers();
     registerAudienceReverifier("zoom", async () => {
       throw new Error("kaboom");
     });
     const out = await runRegisteredAudienceReverifiers();
     expect(out.failed).toBe(1);
-    _resetAudienceReverifiers();
   });
 
   it("sums across sources and isolates each", async () => {
-    _resetAudienceReverifiers();
     // Real source kinds, not placeholders: the registry is keyed by
     // `EpisodeSource` so a made-up slug no longer compiles — which is the point,
     // since a drifted key writes membership under a source the re-verifier's
@@ -708,7 +721,6 @@ describe("the re-verifier registry", () => {
       membersRevoked: 3,
       principalsUnresolved: 0,
     });
-    _resetAudienceReverifiers();
   });
 });
 

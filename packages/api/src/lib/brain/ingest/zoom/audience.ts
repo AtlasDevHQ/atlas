@@ -64,9 +64,9 @@ import {
   isAudienceSyncEnabled,
 } from "@atlas/api/lib/brain/audience/sync";
 import {
-  registerAudienceReverifier,
   selectReverifyCandidates,
   ZERO_REVERIFY,
+  type AudienceReverifier,
   type AudienceReverifyResult,
 } from "@atlas/api/lib/brain/audience/reverify";
 import { fetchMeetingParticipantsPage, type ZoomParticipant } from "./api";
@@ -299,7 +299,11 @@ export async function reverifyZoomMeetingAudiences(
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
   const resolveToken = deps.resolveToken;
   if (resolveToken === undefined) {
-    // Unreachable in production — `registerZoomAudienceReverifier` binds one.
+    // Unreachable in production — the connector literal in
+    // `createZoomTranscriptConnector` binds one. NOT
+    // `createZoomAudienceReverifier`, which forwards whatever deps it is handed
+    // (`resolveToken` is optional on `ZoomAudienceDeps`, and test fixtures do
+    // build it without one).
     // Loud rather than a silent no-op: a re-verifier that quietly does nothing
     // lets every meeting audience age past the staleness bound while the cycle
     // reports success, which is the exact failure this module exists to prevent.
@@ -514,11 +518,16 @@ async function reverifyWorkspace(
 }
 
 /**
- * Register the Zoom re-verifier. Called from the same wiring seam that registers
- * the connector, so a deployment can never have one without the other — an
- * ingest path that mints audiences with no re-verifier is the silent-expiry bug
- * this module exists to prevent.
+ * Build the Zoom re-verifier. It is the `audience` half of the Zoom connector
+ * value (`connector.ts`), so a deployment can never have one without the other —
+ * an ingest path that mints audiences with no re-verifier is the silent-expiry
+ * bug this module exists to prevent.
+ *
+ * Returns rather than registers (#4985): the registration is
+ * `registerBrainSourceConnector`'s single all-or-nothing write, and a second
+ * function that also wrote to the re-verifier registry would be exactly the loose
+ * half a caller can commit on its own.
  */
-export function registerZoomAudienceReverifier(deps: ZoomAudienceDeps): void {
-  registerAudienceReverifier(ZOOM_TRANSCRIPT_SOURCE, () => reverifyZoomMeetingAudiences(deps));
+export function createZoomAudienceReverifier(deps: ZoomAudienceDeps): AudienceReverifier {
+  return () => reverifyZoomMeetingAudiences(deps);
 }

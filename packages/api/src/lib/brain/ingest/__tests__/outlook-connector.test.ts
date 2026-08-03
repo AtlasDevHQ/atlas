@@ -110,7 +110,7 @@ const { OUTLOOK_MAIL_CATALOG_ID, OUTLOOK_MAIL_SOURCE } = await import(
 const { _resetBrainSourceConnectors, getBrainSourceConnector } = await import(
   "@atlas/api/lib/brain/ingest/types"
 );
-const { _resetAudienceReverifiers, listAudienceReverifierSources } = await import(
+const { listAudienceReverifierSources } = await import(
   "@atlas/api/lib/brain/audience/reverify"
 );
 type OutlookCredentialReader = import("@atlas/api/lib/brain/ingest/outlook/connector").OutlookCredentialReader;
@@ -120,12 +120,14 @@ const DAY_MS = 86_400_000;
 afterEach(() => {
   SETTING = undefined;
   LOG_CALLS.length = 0;
+  // ONE reset. It clears all three structures a registration writes — connector,
+  // catalog claim, and the re-verifier — which matters because
+  // `registerOutlookMailConnector`'s idempotence gate reads only the connector
+  // one: clearing that alone would let the gate pass on a second call while the
+  // re-verifier's duplicate CHECK throws (the commit itself cannot — see
+  // `prepareAudienceReverifier`). The totality is pinned in
+  // `episode-sync-archive.test.ts` rather than hedged against here.
   _resetBrainSourceConnectors();
-  // ⚠️ BOTH registries. `registerOutlookMailConnector`'s idempotence gate reads
-  // only the connector registry, so resetting that alone lets the gate pass on a
-  // second call while `registerAudienceReverifier` throws on the duplicate —
-  // aborting mid-registration with the connector already registered.
-  _resetAudienceReverifiers();
 });
 
 describe("getEmailBackfillWindowMs", () => {
@@ -353,8 +355,10 @@ describe("registerOutlookMailConnector", () => {
     // re-verifier mints `audience:` grants that stop granting at the staleness
     // bound a week later, silently, with every sync green.
     //
-    // MUTATION THIS CATCHES: dropping the `registerOutlookAudienceReverifier`
-    // call. Nothing else in the suite would notice.
+    // MUTATION THIS CATCHES: swapping the connector's `audience` for the
+    // `externally-synced` arm. That is a TS2322 since #4985 — the email class
+    // admits no other arm — but the assertion stays because a cast, or a widened
+    // annotation, still compiles. Nothing else in the suite would notice.
     expect(getBrainSourceConnector(OUTLOOK_MAIL_CATALOG_ID)).toBeUndefined();
     expect(listAudienceReverifierSources()).not.toContain(OUTLOOK_MAIL_SOURCE);
 

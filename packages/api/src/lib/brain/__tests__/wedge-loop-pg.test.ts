@@ -499,9 +499,12 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
    * The shim exists only because `createSlackHistoryConnector` builds its
    * client without the `api` injection point (see the module header).
    */
-  const connector: BrainSourceConnector = {
+  const connector: BrainSourceConnector<typeof SLACK_HISTORY_SOURCE> = {
     catalogId: CATALOG_ID,
     source: SLACK_HISTORY_SOURCE,
+    // Channel-scoped grants: `audience/sync.ts` reconciles them off the install,
+    // so this source registers no re-verifier.
+    audience: { kind: "externally-synced" },
     createClient: () =>
       createSlackHistoryClient({
         token: "xoxb-test",

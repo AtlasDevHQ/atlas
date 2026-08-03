@@ -34,7 +34,7 @@ import { getSettingAuto } from "@atlas/api/lib/settings";
 import { readSyncCredential } from "@atlas/api/lib/knowledge/sync-credentials";
 import { createZoomTranscriptClient } from "./client";
 import { fetchZoomAccessToken } from "./api";
-import { registerZoomAudienceReverifier } from "./audience";
+import { createZoomAudienceReverifier } from "./audience";
 import {
   ZOOM_TRANSCRIPTS_CATALOG_ID,
   ZOOM_TRANSCRIPT_SOURCE,
@@ -42,7 +42,7 @@ import {
 } from "./config";
 import {
   getBrainSourceConnector,
-  registerBrainSourceWithAudienceReverifier,
+  registerBrainSourceConnector,
   type BrainSourceConnector,
   type BrainSourceInstallContext,
   type BrainSourceVendorClient,
@@ -238,11 +238,28 @@ export interface ZoomTranscriptConnectorDeps {
 /** Build the Zoom transcript brain source. `deps` is test-only injection. */
 export function createZoomTranscriptConnector(
   deps: ZoomTranscriptConnectorDeps = {},
-): BrainSourceConnector {
+): BrainSourceConnector<typeof ZOOM_TRANSCRIPT_SOURCE> {
   const reader: ZoomCredentialReader = deps.reader ?? { readSyncCredential, fetchZoomAccessToken };
   return {
     catalogId: ZOOM_TRANSCRIPTS_CATALOG_ID,
     source: ZOOM_TRANSCRIPT_SOURCE,
+    // Transcripts are a grant-DERIVING class: a meeting's audience comes from its
+    // own participant list, so nothing but this re-verifier can refresh it and
+    // `BrainSourceAudienceFor<"zoom">` admits no other arm. Built here, beside the
+    // client, so the connector and its re-verifier share one `reader` and reach
+    // the registry as one value.
+    audience: {
+      kind: "reverified",
+      reverifier: createZoomAudienceReverifier({
+        // The install id doubles as the credential's `collection_id`, the same
+        // convention every knowledge connector uses.
+        resolveToken: async (workspaceId, installId, config) => {
+          const parsed = parseZoomTranscriptsConfig(config);
+          if (!parsed.ok) throw new Error(parsed.error);
+          return resolveZoomToken(reader, workspaceId, installId, parsed.accountId);
+        },
+      }),
+    },
     createClient(ctx: BrainSourceInstallContext): BrainSourceVendorClient {
       const parsed = parseZoomTranscriptsConfig(ctx.config);
       if (!parsed.ok) throw new Error(parsed.error);
@@ -266,27 +283,17 @@ export function createZoomTranscriptConnector(
  * — called from the boot seam that also registers install handlers, and from
  * tests.
  *
- * The pair goes through `registerBrainSourceWithAudienceReverifier` rather than
- * as two statements. Both registries throw on a duplicate, and the gate below
- * reads only the connector registry — so registering the connector first and
- * colliding on the re-verifier second would leave this source ingesting
- * transcripts whose grants nothing refreshes, permanently and silently. That
- * helper checks the re-verifier registry before it commits anything.
+ * The pair is ONE value and ONE call (#4985). Both registries throw on a
+ * duplicate, and the gate below reads only the connector registry — so a
+ * registration that committed the connector first and collided on the re-verifier
+ * second would leave this source ingesting transcripts whose grants nothing
+ * refreshes, permanently and silently, because the retry short-circuits on the
+ * connector the failed attempt left behind. `registerBrainSourceConnector` does
+ * all of its throwing before any of its writing, so that half-state has no path.
  */
 export function registerZoomTranscriptConnector(deps: ZoomTranscriptConnectorDeps = {}): void {
   if (getBrainSourceConnector(ZOOM_TRANSCRIPTS_CATALOG_ID) !== undefined) return;
-  const reader: ZoomCredentialReader = deps.reader ?? { readSyncCredential, fetchZoomAccessToken };
-  registerBrainSourceWithAudienceReverifier(createZoomTranscriptConnector({ reader }), () =>
-    registerZoomAudienceReverifier({
-      // The install id doubles as the credential's `collection_id`, the same
-      // convention every knowledge connector uses.
-      resolveToken: async (workspaceId, installId, config) => {
-        const parsed = parseZoomTranscriptsConfig(config);
-        if (!parsed.ok) throw new Error(parsed.error);
-        return resolveZoomToken(reader, workspaceId, installId, parsed.accountId);
-      },
-    }),
-  );
+  registerBrainSourceConnector(createZoomTranscriptConnector(deps));
   log.info(
     { catalogId: ZOOM_TRANSCRIPTS_CATALOG_ID },
     "Registered Zoom transcript brain source and its audience re-verifier",

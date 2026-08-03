@@ -107,37 +107,99 @@ export type AudienceReverifier = () => Promise<AudienceReverifyResult>;
 const registry = new Map<EpisodeSource, AudienceReverifier>();
 
 /**
- * Register a source's audience re-verifier. Called once per source at wiring
- * time, keyed by the stored source kind so a duplicate registration is a loud
- * error rather than a silent overwrite — two re-verifiers for one source would
- * each reconcile against their own roster, and the loser's members would be
- * revoked on every cycle.
+ * Check that `source` has no re-verifier yet, and hand back the ONLY thing that
+ * can install one.
+ *
+ * ## Why a prepare/commit pair and not a `hasAudienceReverifier` peek (#4985)
+ *
+ * A brain source and its re-verifier are two writes to two registries, and both
+ * registries throw on a duplicate. `registerBrainSourceConnector`
+ * (`ingest/types.ts`) therefore has to do ALL of its throwing before ANY of its
+ * writing: a connector committed and a re-verifier then rejected leaves a source
+ * that ingests normally for `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS` (168h by
+ * default) and then goes silently invisible when `acl.ts` suppresses the
+ * audiences nothing refreshed — a week later, in a different subsystem, with
+ * nothing pointing back at boot.
+ *
+ * The first shape of that fix exported a `hasAudienceReverifier` predicate and
+ * asked the caller to consult it first. That works and it is what #4983 shipped,
+ * but the check and the write it protects were two separate statements a future
+ * source could put back in the wrong order — or drop. Here they are ONE
+ * expression: the duplicate check is the thing that mints the commit, so a CALLER
+ * cannot reach the write without having passed the check, and deleting the call
+ * deletes both halves together.
+ *
+ * Be precise about the limits of that, in both directions:
+ *
+ *   - it is a property of the CALL SITE, not of this function's body. Deleting
+ *     the `if` below leaves the `registry.set` thunk intact and turns a duplicate
+ *     into a silent overwrite;
+ *   - it removes the ordering bug in ONE direction — no arrangement of statements
+ *     can commit the CONNECTOR and then throw on its re-verifier. The inverse is
+ *     still reachable and is exactly the PROVOCATION the suites use:
+ *     {@link registerAudienceReverifier} first, connector second, connector
+ *     refused. That leaves a re-verifier with no connector, which is loud (the
+ *     source ingests nothing and `registerStep` logs the throw) rather than the
+ *     silent week-long decay the committed-connector direction produces.
+ *
+ * Keyed by the stored source kind, so a duplicate is a loud error rather than a
+ * silent overwrite — two re-verifiers for one source would each reconcile against
+ * their own roster, and the loser's members would be revoked on every cycle.
+ *
+ * @returns a commit thunk that CANNOT throw. Call it only once the caller's own
+ *   writes are past their last failure point. Dropping it on the floor registers
+ *   nothing — the check has no side effect of its own.
+ */
+export function prepareAudienceReverifier(
+  source: EpisodeSource,
+  reverifier: AudienceReverifier,
+): () => void {
+  if (registry.has(source)) {
+    // Says nothing about a connector: `registerAudienceReverifier` shares this
+    // throw and registers no connector at all, so a message asserting one would
+    // be wrong at half its call sites. "re-verifier for source" is the token that
+    // discriminates it from the duplicate-CATALOG-ID error, which also ends in
+    // "is already registered" — `episode-sync-archive.test.ts` matches on it.
+    throw new Error(
+      `Audience re-verifier for source "${source}" is already registered — refusing, because a source and its re-verifier must be committed together, and two re-verifiers for one source would each reconcile against their own roster with the loser's members revoked every cycle`,
+    );
+  }
+  return () => {
+    registry.set(source, reverifier);
+  };
+}
+
+/**
+ * Register a source's audience re-verifier on its own.
+ *
+ * Production wiring does NOT come through here — a source declares its audience
+ * strategy on its connector and `registerBrainSourceConnector` commits both
+ * halves in one call (#4985). Two test shapes still need the un-paired write, and
+ * they are described rather than enumerated because a hard-coded caller list rots
+ * on the next PR:
+ *
+ *   - a bare fixture re-verifier with no connector behind it, for suites whose
+ *     subject is this registry or the cycle that drains it;
+ *   - the PROVOCATION — taking a source's name before a paired registration
+ *     reaches it, so the pair cannot complete and the all-or-nothing claim has
+ *     something to fail against.
+ *
+ * Deliberately NOT `_`-prefixed, though it is test-only. In this seam the `_`
+ * prefix means test-only TEARDOWN (`_resetAudienceReverifiers`,
+ * `_resetBrainSourceConnectors`, `_resetCatalogIngestClaims`); this is a
+ * constructor, and overloading the convention would make it read as one more
+ * reset. What keeps a production caller out is that there is no reason to write
+ * one — a grant-deriving source that tried would have its connector refused
+ * outright by `registerBrainSourceConnector`. For any OTHER class nothing
+ * refuses it: both halves register and a stray re-verifier just runs every
+ * cycle. See `BrainSourceAudience`'s second outcome in `ingest/types.ts`, which
+ * states why that residual is acceptable rather than closed.
  */
 export function registerAudienceReverifier(
   source: EpisodeSource,
   reverifier: AudienceReverifier,
 ): void {
-  if (registry.has(source)) {
-    throw new Error(`Audience re-verifier for source "${source}" is already registered`);
-  }
-  registry.set(source, reverifier);
-}
-
-/**
- * Is a re-verifier already registered for this source?
- *
- * Exists so a paired registration can ASK before it commits anything. A source
- * and its re-verifier are written to two different registries, and
- * {@link registerAudienceReverifier} throws on a duplicate — so a caller that
- * registers the connector first and discovers the collision second leaves the
- * connector registered and the re-verifier absent. That half-state ingests
- * content whose grants stop being re-verified, which is silent for a week and
- * then indistinguishable from the content not existing. See
- * `registerBrainSourceWithAudienceReverifier` in `ingest/types.ts`, which is the
- * only thing that should need this.
- */
-export function hasAudienceReverifier(source: EpisodeSource): boolean {
-  return registry.has(source);
+  prepareAudienceReverifier(source, reverifier)();
 }
 
 export function listAudienceReverifierSources(): EpisodeSource[] {
@@ -175,7 +237,22 @@ export async function runRegisteredAudienceReverifiers(): Promise<AudienceReveri
   return total;
 }
 
-/** Test-only: clear the registry (tests register fixtures per-suite). */
+/**
+ * Test-only: clear the re-verifier registry ALONE.
+ *
+ * ⚠️ The rule is about what the suite REGISTERS, not what it is named after: only
+ * a suite that registers no brain-source connector may call this. A suite that
+ * registers one must reset through `_resetBrainSourceConnectors`
+ * (`ingest/types.ts`), which clears this registry as well — since #4985 the two
+ * are written by one call, so tearing down one and not the other de-syncs them,
+ * and the connector registry is the one every `register*Connector` idempotence
+ * gate reads. Clearing THIS one alone leaves the gate saying "already registered"
+ * about a source whose re-verifier is gone.
+ *
+ * The compliant callers today are the suites for this registry and for the cycle
+ * that drains it (`audience/__tests__/sync.test.ts`), both of which register
+ * fixture re-verifiers only.
+ */
 export function _resetAudienceReverifiers(): void {
   registry.clear();
 }

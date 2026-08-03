@@ -881,6 +881,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     brainSyncCalls.length = 0;
@@ -904,6 +905,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     INSTALL_ROWS = [];
@@ -921,6 +923,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
     BRAIN_SYNC_STATUS = "error";

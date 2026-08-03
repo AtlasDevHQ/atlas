@@ -110,12 +110,9 @@ const { ZOOM_TRANSCRIPTS_CATALOG_ID, ZOOM_TRANSCRIPT_SOURCE } = await import(
 const { _resetBrainSourceConnectors, getBrainSourceConnector } = await import(
   "@atlas/api/lib/brain/ingest/types"
 );
-const {
-  ZERO_REVERIFY,
-  _resetAudienceReverifiers,
-  listAudienceReverifierSources,
-  registerAudienceReverifier,
-} = await import("@atlas/api/lib/brain/audience/reverify");
+const { ZERO_REVERIFY, listAudienceReverifierSources, registerAudienceReverifier } = await import(
+  "@atlas/api/lib/brain/audience/reverify"
+);
 type ZoomCredentialReader =
   import("@atlas/api/lib/brain/ingest/zoom/connector").ZoomCredentialReader;
 
@@ -124,12 +121,14 @@ const DAY_MS = 86_400_000;
 afterEach(() => {
   SETTING = undefined;
   LOG_CALLS.length = 0;
-  // `_resetBrainSourceConnectors` now clears the re-verifier registry too, so
-  // one call is enough. `_resetAudienceReverifiers` stays for the same reason
-  // the Outlook suite keeps it: this file must not depend on that coupling
-  // holding, since the coupling is itself something under test elsewhere.
+  // ONE reset, deliberately. `_resetBrainSourceConnectors` tears down everything
+  // `registerBrainSourceConnector` writes — connector, catalog claim, and the
+  // re-verifier — and that totality is pinned in `episode-sync-archive.test.ts`.
+  // A belt-and-braces `_resetAudienceReverifiers()` beside it used to hedge
+  // against the coupling breaking; it also meant this suite would have stayed
+  // green if it did, which is the wrong way round for the invariant #4985 is
+  // about.
   _resetBrainSourceConnectors();
-  _resetAudienceReverifiers();
 });
 
 describe("getTranscriptBackfillWindowMs", () => {
@@ -405,8 +404,10 @@ describe("registerZoomTranscriptConnector", () => {
     // sync green. `register.ts`'s own comment states this failure mode; nothing
     // proved it held.
     //
-    // MUTATION THIS CATCHES: dropping the `registerZoomAudienceReverifier` call.
-    // Nothing else in the suite would notice.
+    // MUTATION THIS CATCHES: swapping the connector's `audience` for the
+    // `externally-synced` arm. That is a TS2322 since #4985 — the transcript
+    // class admits no other arm — but the assertion stays because a cast, or a
+    // widened annotation, still compiles. Nothing else in the suite would notice.
     expect(getBrainSourceConnector(ZOOM_TRANSCRIPTS_CATALOG_ID)).toBeUndefined();
     expect(listAudienceReverifierSources()).not.toContain(ZOOM_TRANSCRIPT_SOURCE);
 
@@ -441,8 +442,9 @@ describe("registerZoomTranscriptConnector", () => {
     // A clean absence is fail-closed and loud (installs 500 at sync time); the
     // half state is quiet for 168h and then reads as the content not existing.
     //
-    // MUTATION THIS CATCHES: reverting to `registerBrainSourceConnector(...)`
-    // followed by `registerZoomAudienceReverifier(...)`.
+    // MUTATION THIS CATCHES: moving `registerBrainSourceConnector`'s writes above
+    // its `prepareAudienceReverifier` call — i.e. committing the connector before
+    // the re-verifier's duplicate check has run.
     registerAudienceReverifier(ZOOM_TRANSCRIPT_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
 
     expect(() => registerZoomTranscriptConnector()).toThrow(/already registered/);

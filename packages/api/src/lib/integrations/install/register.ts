@@ -214,10 +214,14 @@ let alreadyRegistered = false;
  * What it does NOT promise is that the failed vendor is cleanly absent. That is
  * the registration's own job, not this wrapper's — a step that commits to one
  * registry and then throws on a second would leave a half-wired vendor here, and
- * no catch can undo it from the outside. `registerBrainSourceWithAudienceReverifier`
- * (`brain/ingest/types.ts`) is what makes the brain pair all-or-nothing; this
- * message deliberately says "may be partially wired" rather than asserting an
- * absence it cannot verify.
+ * no catch can undo it from the outside. `registerBrainSourceConnector`
+ * (`brain/ingest/types.ts`) is what makes the brain pair all-or-nothing — it takes
+ * the connector and its audience half as ONE value and does all of its throwing
+ * above its first write. The message below still hedges — "unavailable, OR
+ * PARTIALLY WIRED" — rather than asserting an absence it cannot verify, because
+ * the ten knowledge connectors this also wraps make no such promise. (The OAuth
+ * and static-bot handlers are registered by direct unwrapped calls below and are
+ * not this function's concern at all; they are the BLAST RADIUS, not the steps.)
  */
 function registerStep(label: string, register: () => void): void {
   try {
@@ -225,7 +229,7 @@ function registerStep(label: string, register: () => void): void {
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), step: label },
-      `Install handler registration FAILED for ${label} — this integration is unavailable, or partially wired, for the lifetime of this process. Registration continues with the remaining handlers. This is a code defect (duplicate catalog id, unknown source kind, or a re-verifier registered twice), not a config problem`,
+      `Install handler registration FAILED for ${label} — this integration is unavailable, or partially wired, for the lifetime of this process. Registration continues with the remaining handlers. This is a code defect (a duplicate catalog id, an unknown source kind, a malformed connector declaration, a re-verifier registered twice, … — the err field says which), not a config problem`,
     );
   }
 }

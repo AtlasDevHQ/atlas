@@ -190,7 +190,10 @@ export function prepareAudienceReverifier(
  * constructor, and overloading the convention would make it read as one more
  * reset. What keeps a production caller out is that there is no reason to write
  * one — a grant-deriving source that tried would have its connector refused
- * outright by `registerBrainSourceConnector`.
+ * outright by `registerBrainSourceConnector`. For any OTHER class nothing
+ * refuses it: both halves register and a stray re-verifier just runs every
+ * cycle. See `BrainSourceAudience`'s second outcome in `ingest/types.ts`, which
+ * states why that residual is acceptable rather than closed.
  */
 export function registerAudienceReverifier(
   source: EpisodeSource,

@@ -277,10 +277,12 @@ export type BrainSourceAudience =
  * that is the {@link BrainSourceAudience} arm it licenses, because the two would
  * be read as the same fact and they are not. This axis constrains ONE direction:
  * a `per-object` class MUST declare the `reverified` arm. It says nothing about
- * what a `not-required` class may declare — `warehouse` is `not-required` and may
- * legitimately bring a re-verifier anyway. Naming the value after the arm would
- * assert a biconditional nothing enforces, which is the same phrase-collision
- * hazard `lib/brain/sources.ts` records for its own two axes.
+ * what a `not-required` class may declare, and nothing enforces the converse —
+ * the only instance in-repo is a test fixture. Naming the value after the arm
+ * would assert a biconditional that does not hold, an analogous spelling
+ * collision to the one `lib/brain/sources.ts` records for its own two axes
+ * (theirs is worse: literal-typed constants there are cross-axis assignable, so
+ * it is a compile-time trap and not only a reader-level one).
  */
 type AudienceGrain = "per-object" | "not-required";
 
@@ -298,7 +300,11 @@ type AudienceGrain = "per-object" | "not-required";
  * is: it has a runtime reader ({@link requiresAudienceReverifier}).
  */
 const AUDIENCE_GRAIN = Object.freeze({
-  // Channel-scoped, reconciled by the install-driven Slack walk in `audience/sync.ts`.
+  // Channel-scoped, reconciled by the install-driven Slack walk in
+  // `audience/sync.ts`. ⚠️ This map is keyed by CLASS, so a second chat VENDOR
+  // (Teams, Discord) inherits `not-required` with no walk of its own — the
+  // membership-vs-completeness hazard below, one axis over. Check it when one
+  // arrives; nothing here will.
   chat: "not-required",
   transcript: "per-object",
   email: "per-object",

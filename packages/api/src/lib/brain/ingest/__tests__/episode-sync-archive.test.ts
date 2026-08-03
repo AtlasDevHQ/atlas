@@ -158,8 +158,9 @@ describe("the brain source registry", () => {
   // `_resetBrainSourceConnectors` releases only the `brain-episodes` claims, by
   // design. One test below claims `catalog:fixture` for the OTHER target to
   // provoke a collision, and as a trailing statement that release would be
-  // skipped by a throwing assertion, leaving every later registration in this
-  // file failing with `already registered as knowledge-documents` — one real
+  // skipped by a throwing assertion, leaving every later registration of
+  // `catalog:fixture` — the rest of THIS describe; the sibling one uses other
+  // ids — failing with `already registered as knowledge-documents`, one real
   // failure manufacturing several unrelated ones. Harmless when nothing claimed.
   afterEach(() => {
     _resetBrainSourceConnectors();
@@ -252,6 +253,14 @@ describe("the brain source registry", () => {
   // ── The audience half, registered as ONE unit with the connector (#4985) ──
 
   /**
+   * A DISTINCTIVE counter, so the re-verifier can be identified by its OUTPUT and
+   * not merely by the key it landed under. `ZERO_REVERIFY` would make the
+   * declared re-verifier indistinguishable from any other — see the drain in
+   * "commits the connector AND the DECLARED re-verifier from one call".
+   */
+  const REVERIFIER_FINGERPRINT = Object.freeze({ ...ZERO_REVERIFY, membersAdded: 7 });
+
+  /**
    * A `reverified` fixture on WAREHOUSE_SOURCE, not on the fixture default.
    *
    * The key the re-verifier lands under has to be DERIVED from
@@ -263,13 +272,6 @@ describe("the brain source registry", () => {
    * in its fixture. `warehouse` is not a grant-deriving class, so it may declare
    * either arm and the runtime backstop is not what is under test here.
    */
-  /**
-   * A DISTINCTIVE counter, so the re-verifier can be identified by its output.
-   * `ZERO_REVERIFY` would make the declared re-verifier indistinguishable from
-   * any other — see the value assertion in the first test.
-   */
-  const REVERIFIER_FINGERPRINT = Object.freeze({ ...ZERO_REVERIFY, membersAdded: 7 });
-
   const reverified = (): BrainSourceConnector =>
     connector({
       source: WAREHOUSE_SOURCE,
@@ -452,8 +454,8 @@ describe("the brain source registry", () => {
     //
     // ⚠️ So this test has NO teeth under `bun test` — bun strips types and the
     // `toHaveLength(3)` below is trivially true. The gate is `bun run type`
-    // (tsgo, /ci stage 0), which compiles `src/**/*.ts` including this file. Do
-    // not "verify" it with the isolated runner and conclude it is dead weight.
+    // (tsgo, /ci stage 0), which type-checks the whole repo, this file included.
+    // Do not "verify" it with the isolated runner and conclude it is dead weight.
     //
     // @ts-expect-error zoom is transcript-class — the reverified arm is the only one
     const zoom: BrainSourceAudienceFor<typeof ZOOM_SOURCE> = { kind: "externally-synced" };
@@ -465,6 +467,29 @@ describe("the brain source registry", () => {
     const slack: BrainSourceAudienceFor<typeof SLACK_SOURCE> = { kind: "externally-synced" };
 
     expect([zoom, outlook, slack]).toHaveLength(3);
+  });
+
+  it("⭐ …and the check reaches an INLINE connector literal, not just the alias", () => {
+    // The annotations above pin the type; this pins that it still ARRIVES at the
+    // shape production writes. `registerBrainSourceConnector` infers `S` from its
+    // argument, and retyping that parameter to a bare `BrainSourceConnector` — or
+    // widening the `source` field — would leave every assertion above green while
+    // the compile-time check silently stopped applying at every real call site.
+    //
+    // Never invoked: it is compiled, which is the whole point, and calling it
+    // would just exercise the runtime backstop the sibling test already covers.
+    const unreachable = (): void => {
+      registerBrainSourceConnector({
+        catalogId: "catalog:never-registered",
+        source: ZOOM_SOURCE,
+        // @ts-expect-error zoom is transcript-class — the inline literal is checked at the CALL
+        audience: { kind: "externally-synced" },
+        createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+      });
+    };
+
+    expect(typeof unreachable).toBe("function");
+    expect(listBrainSourceCatalogIds()).toEqual([]);
   });
 
   it("⭐ _resetBrainSourceConnectors tears down the re-verifier registry too", () => {

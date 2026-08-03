@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Loader2,
@@ -27,7 +26,6 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { contentSurface, type ContentSurfaceKey } from "@/ui/lib/content-surfaces";
-import { queryKeys } from "@/ui/lib/query-keys";
 import type { ProfileError } from "@/ui/lib/types";
 import { relativeOrNull } from "./pending-changes-pill";
 
@@ -172,7 +170,6 @@ export function PublishModal({
     path: "/api/v1/admin/publish",
     method: "POST",
   });
-  const queryClient = useQueryClient();
 
   // Layers the publish just promoted that are profiled INCOMPLETELY (#3682).
   // Non-empty keeps the modal open with a warning instead of a silent success.
@@ -198,15 +195,13 @@ export function PublishModal({
   async function handlePublish() {
     const result = await mutate({ body: {} });
     if (result.ok) {
-      // The publish committed, so every draft count the app is holding is now
-      // wrong. `useModeStatus` feeds the top-bar pending pill from a TanStack
-      // cache keyed `["mode-status", apiUrl]` and nothing else invalidates it:
-      // the 30s staleTime + refetchOnWindowFocus only refresh it if the admin
-      // leaves the tab and comes back, so an admin who publishes and stays put
-      // reads a stale "N pending" until a full reload. Invalidated BEFORE the
-      // partial/refused branch below, because a partial publish moves the
-      // counts too — refused drafts stay pending, promoted ones do not.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.modeStatus.all() });
+      // The publish committed, so the top bar's draft counts are now wrong.
+      // Refreshing them is `useAdminMutation`'s job, not this handler's — it
+      // invalidates `modeStatus` on every success, so the counts move whether
+      // this publish was clean or partial (refused drafts stay pending,
+      // promoted ones do not) and a future draft-moving mutation inherits it
+      // without having to remember. See #5001 / #5002.
+      //
       // If any promoted layer is incomplete (#3682) or
       // any draft was refused (#4769), keep the modal open and show the warning
       // the API returned — an unconditional "Published successfully" would hide

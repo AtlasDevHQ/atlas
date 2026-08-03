@@ -23,6 +23,7 @@ export type {
   BrainFactWillSupersede,
   BrainFactProvenanceView,
   BrainFactTensionView,
+  BrainFactTensionVisible,
   AdminRole,
   AtlasMode,
   AuthMode,

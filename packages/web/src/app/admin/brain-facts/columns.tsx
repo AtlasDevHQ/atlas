@@ -10,9 +10,13 @@ import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { AlertTriangle, Clock, HelpCircle, Link2, ShieldAlert, Split } from "lucide-react";
+import { isTensionOpen } from "./tension-state";
 
 /**
- * Review-queue columns.
+ * Review-queue columns, and the badge vocabulary the sheet shares with them —
+ * `candidate-detail.tsx` imports these tokens so one claim cannot wear two
+ * spellings of the same state on two surfaces. The lifecycle predicate behind
+ * the "In tension" count is the same idea one file over, in `tension-state.ts`.
  *
  * The list is where a reviewer decides whether a claim is worth OPENING, so
  * every signal that could stop them approving is visible without a click:
@@ -210,6 +214,26 @@ export function getBrainFactColumns(
       header: () => "Flags",
       cell: ({ row }) => {
         const c = row.original;
+        // OPEN rivals only. A counterpart somebody already retracted or
+        // superseded is still listed in the detail sheet — it is still why this
+        // claim was contested — but it is not work, and counting it made a
+        // fully arbitrated row read as unresolved (#4961).
+        //
+        // Deliberately NARROWER than the server-side signals around it: the
+        // stats tile's "N in tension", the "In tension only" filter, and the
+        // oversight panel's per-audience column all ask edge EXISTENCE
+        // (`TENSION_EXISTS_SELECT`), i.e. "has this claim ever been contested",
+        // and all are unchanged. So the tile can read a number no row's badge
+        // corroborates, and the filter can legitimately
+        // return a row wearing no badge, for either of two reasons — every
+        // rival is settled, in which case the sheet's "Withdrawn"/"Superseded"
+        // labels explain the row; or the page's tension fan-out cap bit, in
+        // which case the row's rivals never arrived and the `tensionsTruncated`
+        // banner is the only explanation there is. The banner's "before
+        // treating any row as conflict-free" carries more weight now than when
+        // it was written: pre-#4961 a truncated row still wore a badge for
+        // whatever survived the cap, and now it may wear none at all.
+        const contested = c.tensions.filter(isTensionOpen);
         return (
           <div className="flex flex-wrap gap-1">
             {c.provenance.provisional && (
@@ -218,12 +242,12 @@ export function getBrainFactColumns(
                 {provisionalBadge.label}
               </Badge>
             )}
-            {c.tensions.length > 0 && (
+            {contested.length > 0 && (
               <Badge variant={tensionBadge.variant} className={tensionBadge.className}>
                 <Split className="mr-1 size-3" aria-hidden />
-                {c.tensions.length === 1
+                {contested.length === 1
                   ? tensionBadge.label
-                  : `${tensionBadge.label} (${c.tensions.length})`}
+                  : `${tensionBadge.label} (${contested.length})`}
               </Badge>
             )}
             {c.promotionBlock && (

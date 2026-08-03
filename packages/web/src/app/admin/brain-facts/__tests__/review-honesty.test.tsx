@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
+import type { BrainFactTensionVisible } from "@/ui/lib/types";
 
 /**
  * What the review gate must SAY, not just fetch (#4772, ADR-0036).
@@ -849,6 +850,212 @@ describe("the list shows the trust signals without a click", () => {
   });
 });
 
+/**
+ * A live tension counterpart. Overrides stamp the lifecycle axes on top.
+ *
+ * Introduced for the block below; the #4935 fixtures further down hand-roll the
+ * same object and are left alone. One of them has to be: the WITHDRAWN fixture
+ * carries `status: "draft"` as its whole PREMISE — "retraction never writes
+ * `status`, so a retracted rival still reports Draft" — and no assertion pins
+ * it, so this helper's "published" default would erase the premise while every
+ * assertion in that test stayed green. The other three already carry
+ * "published" and are left hand-rolled only for symmetry with it.
+ *
+ * Distinct `factId`s are hygiene for the sheet, which keys its cards
+ * `${edgeDirection}-${factId}` — nothing dedupes the count, which is a plain
+ * array length, so a shared id would not hide a miscount. It would produce
+ * duplicate React keys in any test that opens the sheet.
+ */
+function rival(
+  factId: string,
+  overrides: Partial<BrainFactTensionVisible> = {},
+): BrainFactTensionVisible {
+  return {
+    visible: true,
+    factId,
+    edgeDirection: "to",
+    subject: "Acme",
+    predicate: "uses",
+    object: "MySQL",
+    status: "published",
+    validFrom: null,
+    validTo: null,
+    ingestedAt: ISO,
+    invalidatedAt: null,
+    corroborationCount: 1,
+    provenance: PROVENANCE,
+    ...overrides,
+  };
+}
+
+/**
+ * The QUEUE ROW's own text.
+ *
+ * Scoped to `tbody` because the page chrome carries an "In tension only" filter
+ * button (`page.tsx`), which is an edge-existence signal this fix deliberately
+ * leaves alone. Unscoped, the button breaks the assertions in BOTH directions:
+ * the negative — the one #4961's acceptance criteria actually demand — would
+ * fail no matter what the row renders, and the positives would pass with the
+ * flags cell deleted outright. (The "N in tension" stat tile does not collide:
+ * it renders lowercase against case-sensitive `toContain`.)
+ *
+ * `querySelector` takes the FIRST tbody, which is the queue's only because the
+ * oversight panel above it — whose table has an "In tension" header — is a
+ * `Collapsible` that defaults to closed and does not `forceMount`. Every caller
+ * below renders exactly one candidate, so "the tbody" and "the row" coincide;
+ * a multi-row fixture would need an index.
+ */
+function rowText(view: { container: HTMLElement }): string {
+  return view.container.querySelector("tbody")?.textContent ?? "";
+}
+
+describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
+  test("renders NO tension count on a row whose rivals are ALL settled", async () => {
+    // THE negative, and the shipped bug: nothing deletes an `in-tension-with`
+    // edge when a human arbitrates, so a fully resolved row kept wearing "In
+    // tension (2)" — an unresolved-looking row with nothing left to resolve.
+    // One rival per axis, because the count must fall to zero on both.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          rival("fact-2", { invalidatedAt: ISO }),
+          rival("fact-3", { validTo: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    // The row rendered at all — every other assertion here is a negative, and
+    // `rowText` answers "" for a missing tbody, so without this anchor the one
+    // test #4961's acceptance criteria demand is the one that could pass
+    // vacuously if the table markup ever changed.
+    expect(text).toContain("Postgres");
+    expect(text).not.toContain("In tension");
+    // The stats tile above is UNCHANGED — it asks edge existence server-side,
+    // so it still reports this row. Asserted together with the row's silence
+    // because the divergence is deliberate and load-bearing: a later
+    // "consistency fix" deriving the tile from the rows client-side would pass
+    // every other test in this file while undoing the separation of "has ever
+    // been contested" from "has anything left to resolve".
+    expect(view.container.textContent).toContain("1 in tension");
+  });
+
+  test("still SHOWS those settled rivals in the sheet — the count changed, not the record", async () => {
+    // The over-correction this fix must not become. A rival that was withdrawn
+    // is still why the claim was contested; dropping it from the sheet would
+    // read as "nothing ever contradicted this", and the reviewer would lose the
+    // evidence that the conflict was resolved rather than absent.
+    //
+    // Overlaps "labels a WITHDRAWN rival" below, deliberately: that one pins
+    // #4935's badge, this one pins that #4961 did not reach the sheet's list at
+    // all. Same fixture, different regression — keep both.
+    const view = await renderPage([
+      candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] }),
+    ]);
+    // Both surfaces off ONE payload — the cross-surface invariant that is the
+    // whole reason `tension-state.ts` exists. Asserted here rather than in a
+    // second fixture, because "the list is quiet AND the sheet still bears the
+    // record" is a single claim, and split across two renders nothing observes
+    // it.
+    expect(rowText(view)).not.toContain("In tension");
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Conflicting claims"));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("MySQL");
+    expect(text).toContain("Withdrawn");
+  });
+
+  test("counts only the open rival when a row is PARTLY arbitrated", async () => {
+    // Three rivals, one still open. A fix that merely dropped the badge when
+    // every rival was settled would pass the negative above and fail here; so
+    // would one that kept counting the settled two.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          rival("fact-2"),
+          rival("fact-3", { invalidatedAt: ISO }),
+          rival("fact-4", { validTo: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("In tension");
+    // Singular — one open rival, so the badge carries no parenthetical at all.
+    // Stated as the pattern rather than as "not (3), not (2), not (1)", which
+    // would miss a count of four and any future "(1 of 3)" spelling.
+    expect(text).not.toMatch(/In tension \(/);
+  });
+
+  test("counts a rival retired on BOTH axes exactly once", async () => {
+    // Supersede-then-retract is reachable. The discriminating case for an
+    // implementation that subtracts per axis rather than testing per rival:
+    // `2 - withdrawn(1) - superseded(1)` is 0 and drops the badge, while every
+    // other fixture in this block yields the right number either way.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          rival("fact-2"),
+          rival("fact-3", { invalidatedAt: ISO, validTo: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("In tension");
+    expect(text).not.toMatch(/In tension \(/);
+  });
+
+  test("keeps the truncation banner when the surviving rivals are all settled", async () => {
+    // The combination this fix makes newly reachable. The fan-out cap is
+    // applied page-wide, ordered by the edges' ENDPOINT fact ids, so a row can
+    // arrive holding only SOME of its rivals; if the ones that arrived are
+    // settled, the row now renders completely quiet while open rivals sit
+    // beyond the cap. The page-level banner is the whole of what is left to
+    // warn the reviewer, so it is asserted together with the badge's absence
+    // rather than apart.
+    const view = await renderPage(
+      [candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] })],
+      { tensionsTruncated: true },
+    );
+    const text = rowText(view);
+    expect(text).toContain("Postgres");
+    expect(text).not.toContain("In tension");
+    expect(view.container.textContent).toContain("more conflicting claims than Atlas can show");
+  });
+
+  test("counts a rival whose window has not CLOSED yet", async () => {
+    // `valid_to` non-null is not retirement: `brainFactCurrentClause` is
+    // `valid_to IS NULL OR valid_to > now()`, so a future-dated stamp is a live
+    // rival whose end is merely scheduled. Suppressing the badge for it would
+    // hide an open conflict — worse than the bug being fixed.
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const view = await renderPage([
+      candidate({
+        tensions: [rival("fact-2", { validTo: future }), rival("fact-3", { validTo: future })],
+      }),
+    ]);
+    expect(rowText(view)).toContain("In tension (2)");
+  });
+
+  test("counts a rival the reviewer is not allowed to SEE", async () => {
+    // A withheld rival carries no lifecycle stamps — they are exactly what the
+    // ACL refused to hand over. Inferring "settled" from their absence would be
+    // the guess that suppresses the badge, and "there is a rival you cannot
+    // see" is precisely what should stop a reviewer approving.
+    const view = await renderPage([
+      candidate({
+        tensions: [
+          { visible: false, factId: "fact-2", edgeDirection: "to" },
+          rival("fact-3", { invalidatedAt: ISO }),
+        ],
+      }),
+    ]);
+    const text = rowText(view);
+    expect(text).toContain("In tension");
+    // The settled rival beside it is still excluded — the withheld one is the
+    // only thing holding the badge up, so the badge is singular.
+    expect(text).not.toMatch(/In tension \(/);
+  });
+});
+
 describe("a broken queue gates the publish-everything button", () => {
   test("disables Review & publish when the list failed to load", async () => {
     // Publishing is workspace-wide and independent of this ACL read, so an
@@ -965,8 +1172,9 @@ describe("truncation is admitted", () => {
     // The axes are distinct verbs and must not share a badge.
     expect(document.body.textContent).not.toContain("Superseded");
     // The strike-through, which predates #4935 but whose condition #4935
-    // widened to `withdrawn || superseded`. Unasserted, the retraction arm can
-    // be dropped while the supersession fixture keeps every test green.
+    // widened to both axes — spelled `!isTensionOpen(tension)` since #4961
+    // moved it into `tension-state.ts`. Unasserted, the retraction arm can be
+    // dropped while the supersession fixture keeps every test green.
     expect(document.querySelector(".line-through")?.textContent).toContain("MySQL");
   });
 

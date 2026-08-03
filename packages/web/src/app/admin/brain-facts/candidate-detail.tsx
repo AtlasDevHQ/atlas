@@ -11,6 +11,7 @@ import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle, Clock, ShieldAlert, Split } from "lucide-react";
 import { blockedBadge, decayBadge, provisionalBadge, statusBadge } from "./columns";
+import { isTensionOpen, isTensionSuperseded, isTensionWithdrawn } from "./tension-state";
 
 /**
  * The body of the review sheet — everything behind the trust call for one
@@ -180,21 +181,13 @@ function TensionCard({ tension }: { tension: BrainFactTensionView }) {
   }
 
   const badge = statusBadge[tension.status];
-  const withdrawn = tension.invalidatedAt !== null;
-  // A CLOSED window, not merely a stamped one. `brainFactCurrentClause` reads
-  // `valid_to IS NULL OR valid_to > now()`, so a future-dated `valid_to` — a
-  // region import (`admin-migrate.ts`) can carry one — is a LIVE fact whose
-  // end is merely scheduled. Badging that as settled would suppress a real
-  // conflict from the reviewer, the exact inverse of the bug this fixes, so
-  // the label uses the same boundary the database does.
-  //
-  // Against the CLIENT clock, accepted: within a skewed browser's offset of
-  // the supersession instant this can disagree with the server. The badge is
-  // advisory, never a gate. An unparseable stamp yields NaN, whose comparison
-  // is false, so it falls through to "live" — the recoverable direction, since
-  // over-reporting a conflict costs a second look and under-reporting hides one.
-  const validToMs = tension.validTo === null ? null : Date.parse(tension.validTo);
-  const superseded = validToMs !== null && validToMs <= Date.now();
+  // Shared with the list's "In tension" count, which counts exactly the rivals
+  // this card does NOT strike through — `tension-state.ts` carries why a closed
+  // window is not the same as a stamped one, and why the client clock is
+  // accepted here (#4935, #4961).
+  const withdrawn = isTensionWithdrawn(tension);
+  const superseded = isTensionSuperseded(tension);
+  const settled = !isTensionOpen(tension);
   return (
     <div className="rounded-md border p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
@@ -203,7 +196,7 @@ function TensionCard({ tension }: { tension: BrainFactTensionView }) {
             distinction between the two verbs; the strike carries only "this is
             no longer the current claim". */}
         <p
-          className={`text-sm ${withdrawn || superseded ? "line-through decoration-muted-foreground" : ""}`}
+          className={`text-sm ${settled ? "line-through decoration-muted-foreground" : ""}`}
         >
           <span className="font-medium">{tension.subject}</span>{" "}
           <span className="text-muted-foreground">{tension.predicate}</span>{" "}

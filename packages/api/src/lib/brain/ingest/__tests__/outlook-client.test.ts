@@ -229,6 +229,137 @@ describe("the block arm — RETRYABLE, freezes the resume point", () => {
     expect(changes.warnings?.join(" ")).toMatch(/made no forward progress/);
   });
 
+  it("⭐ names ONLY the mailbox that actually blocked as stalled (#4994)", async () => {
+    // The detector's own comment says why the gate is a per-mailbox delta; this
+    // is the pass shape that tells the two spellings apart. The direction the
+    // bug erred in was SAFE — it over-reported — which is exactly why it needs a
+    // test: nothing in the output looks wrong, and the cost is paid later, when
+    // an operator who has learned this line names innocent mailboxes stops
+    // reading the one that names a real one.
+    //
+    // ⚠️ The ORDER of `mailboxes` is load-bearing. The pass-scoped counter only
+    // leaks FORWARD, so A — the mailbox that blocks — must be walked first.
+    // Swap the two and this test passes under the bug as well as the fix.
+    //
+    // A blocks: its membership write throws, so `blockedAudience` hits 1 and A
+    // never reaches the `coveredThrough` assignment.
+    // B blocks nothing: its first page arrives with an unreadable entry, which
+    // truncates the walk with `coveredThrough` still null — incomplete, no block.
+    // (Budget exhaustion is the other route to the same gate; one is enough,
+    // they are the same two lines of state.)
+    //
+    // MUTATION THIS CATCHES: the delta gate → `skips.blockedAudience > 0`, i.e.
+    // the pass-scoped gate this replaced.
+    const vendor = createOutlookMailClient({
+      workspaceId: "ws",
+      resolveToken: async () => "tok",
+      mailboxes: ["a@contoso.com", "b@contoso.com"],
+      backfillWindowMs: 30 * 86_400_000,
+      now: () => NOW,
+      api: {
+        fetchMailbox: async (_t, mailbox) => ({
+          ok: true as const,
+          mailbox: {
+            id: mailbox === "a@contoso.com" ? "mb-a" : "mb-b",
+            userPrincipalName: mailbox,
+            mail: mailbox,
+          },
+        }),
+        fetchMailboxMessagesPage: async (_t, request) =>
+          request.mailboxId === "mb-a"
+            ? { ok: true as const, messages: [message()], nextLink: null, dropped: 0 }
+            : { ok: true as const, messages: [], nextLink: null, dropped: 1 },
+        fetchMailboxMessagesNextPage: async () => ({
+          ok: true as const,
+          messages: [],
+          nextLink: null,
+          dropped: 0,
+        }),
+      },
+      audienceDeps: {
+        resolve: async (_ws, principals) => ({
+          resolved: new Map(principals.map((p) => [p.id, `u-${p.id}`])),
+          unresolvedCount: 0,
+        }),
+        reconcile: async () => {
+          throw new Error("membership write failed");
+        },
+      },
+    });
+    const changes = await vendor.fetchEpisodes(PARAMS);
+    const warnings = changes.warnings ?? [];
+    // ⭐ THE NEGATIVE, and the reason this test exists. B made no forward
+    // progress and is reported as incomplete — it just did not BLOCK, so it is
+    // not stalled on anything.
+    expect(warnings.join(" ")).not.toMatch(/Mailbox b@contoso\.com made no forward progress/);
+    // …and the true positive in the same pass still fires, so the negative above
+    // is not passing because the detector went silent altogether.
+    expect(warnings.join(" ")).toMatch(/Mailbox a@contoso\.com made no forward progress/);
+    // "Not stalled" is not "not a problem" — B is still reported. Note which
+    // assertion carries that: `coverageIncomplete` is PASS-scoped, so A alone
+    // sets it and it would hold with B deleted from the test entirely. B's own
+    // evidence is the warning below, and it is also what stops the negative
+    // above from passing vacuously if B were never walked.
+    expect(changes.coverageIncomplete).toBe(true);
+    // `entr\w+` and not `entry`: the source picks singular/plural off the count,
+    // and this pin is about #4994, not about that branch.
+    expect(warnings.join(" ")).toMatch(/unreadable message entr\w+ in mailbox b@contoso\.com/);
+  });
+
+  it("⭐ names EVERY mailbox that blocked and stalled, not just the first", async () => {
+    // The other direction of #4994, and the one the pass-scoped gate got right
+    // by accident. Narrowing the gate to a per-mailbox delta must not narrow it
+    // to "report one stall per pass" — a fleet-wide outage (an expired secret,
+    // say, failing every membership write) is precisely when the detector is
+    // load-bearing, and it is the shape a "report the first stall" refactor
+    // would break while leaving the negative test above green.
+    //
+    // MUTATION THIS CATCHES: any gate that latches after the first stall — e.g.
+    // hoisting a `let stallReported = false` out of the mailboxes loop.
+    const vendor = createOutlookMailClient({
+      workspaceId: "ws",
+      resolveToken: async () => "tok",
+      mailboxes: ["a@contoso.com", "b@contoso.com"],
+      backfillWindowMs: 30 * 86_400_000,
+      now: () => NOW,
+      api: {
+        fetchMailbox: async (_t, mailbox) => ({
+          ok: true as const,
+          mailbox: {
+            id: mailbox === "a@contoso.com" ? "mb-a" : "mb-b",
+            userPrincipalName: mailbox,
+            mail: mailbox,
+          },
+        }),
+        fetchMailboxMessagesPage: async () => ({
+          ok: true as const,
+          messages: [message()],
+          nextLink: null,
+          dropped: 0,
+        }),
+        fetchMailboxMessagesNextPage: async () => ({
+          ok: true as const,
+          messages: [],
+          nextLink: null,
+          dropped: 0,
+        }),
+      },
+      audienceDeps: {
+        resolve: async (_ws, principals) => ({
+          resolved: new Map(principals.map((p) => [p.id, `u-${p.id}`])),
+          unresolvedCount: 0,
+        }),
+        reconcile: async () => {
+          throw new Error("membership write failed");
+        },
+      },
+    });
+    const changes = await vendor.fetchEpisodes(PARAMS);
+    const warnings = (changes.warnings ?? []).join(" ");
+    expect(warnings).toMatch(/Mailbox a@contoso\.com made no forward progress/);
+    expect(warnings).toMatch(/Mailbox b@contoso\.com made no forward progress/);
+  });
+
   it("⭐ BLOCKS a message whose grant cannot be derived — never skips past it", async () => {
     // The arm nothing reached until this test existed. `deriveEmailRecipientGrant`
     // returning null is the ONE in-band block — every other block arrives as a

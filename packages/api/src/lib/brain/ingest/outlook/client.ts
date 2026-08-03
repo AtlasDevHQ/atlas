@@ -669,12 +669,16 @@ export function createOutlookMailClient(
       //
       // What says so is the stall detector further down, which raises a
       // `log.error` AND an operator-facing warning. Two things about it are
-      // easy to assume and wrong. Its gate is a CONJUNCTION — `blockedAudience
-      // > 0`, which is PASS-scoped across every mailbox, AND this mailbox
-      // making no forward progress. And on timing: unless nothing ahead of the
-      // block advanced `coveredThrough` past the stored mark — the block being
-      // the first timestamped message walked, or everything ahead of it sharing
-      // the resume instant, which bulk mail routinely does — it fires from the
+      // easy to assume and wrong. Its gate is a CONJUNCTION — THIS mailbox
+      // blocking at least one message, AND this mailbox making no forward
+      // progress. The first conjunct is read as a DELTA on `blockedAudience`
+      // rather than off the counter itself, because `skips` is pass-scoped
+      // while the detector is per-mailbox; #4994 was the pass-scoped spelling,
+      // where one mailbox's block armed the detector for every mailbox after
+      // it. And on timing: unless nothing ahead of the block advanced
+      // `coveredThrough` past the stored mark — the block being the first
+      // timestamped message walked, or everything ahead of it sharing the
+      // resume instant, which bulk mail routinely does — it fires from the
       // SECOND consecutive stalled cycle, once the mark has converged on
       // `coveredThrough`.
       //
@@ -850,6 +854,45 @@ export function createOutlookMailClient(
       let newestIngested: string | null = null;
 
       mailboxes: for (const configured of options.mailboxes) {
+        /**
+         * `skips.blockedAudience` as it stood BEFORE this mailbox was walked, so
+         * the stall detector below can ask "did THIS mailbox block?" of a
+         * counter that is pass-scoped. First statement in the loop body, ahead
+         * even of the identity read, so any block a future edit tallies earlier
+         * than the walk still lands inside its own mailbox's delta.
+         *
+         * Read as a delta rather than tracked in a second per-mailbox counter
+         * deliberately: `skips` is the SSOT every block already tallies through,
+         * and a parallel counter would have to be incremented at every
+         * `tallyOutcome` call site (two today) — so the next arm added could
+         * forget it, which is the exact failure `tallyOutcome`'s own "one site
+         * is the point" rationale exists to prevent.
+         *
+         * ⚠️ Two properties make the delta mean what it says, and BOTH are
+         * structural rather than typed:
+         *
+         *   - `tallyOutcome` only ever increments, so nothing can walk the
+         *     counter back under a snapshot.
+         *   - Mailboxes are walked SEQUENTIALLY. Walking them concurrently
+         *     smears one mailbox's blocks into another's delta and silently
+         *     restores #4994, in a nondeterministic form far harder to
+         *     reproduce than the bug it came from. That is not the only reason,
+         *     so refactoring the delta away would not license it: the mailboxes
+         *     share one `remainingEpisodes` budget decremented across them, and
+         *     the throttle bail `break mailboxes` means nothing under
+         *     concurrency. Sequential by REQUIREMENT, as are the page and
+         *     message walks nested inside it —
+         *     those two carry the module header's contiguous-prefix invariant,
+         *     which parallelising would destroy just as thoroughly. CLAUDE.md's
+         *     "no async waterfalls" does not apply to any of the three.
+         *
+         * `skips` itself cannot quietly move: it is also the pass-level SSOT
+         * read after the loop, so an initializer pushed inside would take the
+         * aggregate log and `permanentDrops` out of scope with it — a compile
+         * error, not a silent regression, which is why it is not on the list
+         * above.
+         */
+        const blockedAudienceAtMailboxStart = skips.blockedAudience;
         // Resolve to the object id FIRST. Everything downstream — the cursor
         // key, the audience token — is keyed on it, so a mailbox whose identity
         // cannot be resolved contributes nothing rather than contributing
@@ -1064,12 +1107,39 @@ export function createOutlookMailClient(
           // fails deterministically for one message, say. Loud, distinct, and
           // naming the instant it is stuck at, because the repair is not the
           // same as for a one-off block.
-          if (
-            skips.blockedAudience > 0 &&
-            (coveredThrough === null || coveredThrough === storedMark)
-          ) {
+          //
+          // Gated on THIS MAILBOX's blocks — the DELTA, per the snapshot's own
+          // comment at the top of the `mailboxes` loop. #4994 read the
+          // pass-scoped counter here, so the first mailbox to block armed it
+          // for every mailbox walked after it, and any later one that made no
+          // forward progress (budget exhaustion, a dropped page) was named as
+          // stuck having blocked nothing. Over-reporting is the safe direction,
+          // which is exactly why it survived: this detector's whole value is
+          // precision, and one that cries wolf on innocent mailboxes teaches
+          // operators to skip the line that is supposed to be unignorable.
+          const blockedHere = skips.blockedAudience - blockedAudienceAtMailboxStart;
+          if (blockedHere > 0 && (coveredThrough === null || coveredThrough === storedMark)) {
             log.error(
-              { workspaceId: options.workspaceId, mailbox: configured, stalledAt: since },
+              // `blocked` is THIS mailbox's count, which only became derivable
+              // with the delta above — the pass-level tally at the end of the
+              // walk is a sum and cannot be decomposed per mailbox. Don't
+              // aggregate the two: the same key carries both grains.
+              //
+              // Today it is ALWAYS 1, and that is worth saying rather than
+              // leaving a reader to hunt for a `blocked: 5` that cannot exist:
+              // both block arms `break pages` the moment they tally, so a
+              // mailbox blocks at most once per pass. Emitted anyway so the
+              // line states its own grain without a join to the pass-level
+              // tally — NOT as a tripwire for a future non-halting block arm,
+              // which this line could not catch: such an arm would let later
+              // messages advance `coveredThrough`, and the second conjunct
+              // below would then suppress the whole log.
+              {
+                workspaceId: options.workspaceId,
+                mailbox: configured,
+                stalledAt: since,
+                blocked: blockedHere,
+              },
               "Outlook mailbox made NO forward progress and blocked at least one message — it is stuck at this instant and every later message in it is not being ingested. A block is retried by design, so a repeat of this line across cycles is a block that is not clearing, not a transient failure",
             );
             warnings.push(

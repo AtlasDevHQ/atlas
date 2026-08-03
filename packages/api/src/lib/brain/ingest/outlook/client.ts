@@ -315,8 +315,8 @@ export function toOutlookClientError(context: string, failure: OutlookReadError)
 }
 
 /**
- * Every PERMANENT drop reason, and the SSOT for that set — `extract.ts`'s
- * `EXTRACTION_SKIP_REASONS` shape, one directory over.
+ * Every PERMANENT drop reason, and the SSOT for that set — the shape
+ * `lib/brain/extract.ts` uses for `EXTRACTION_SKIP_REASONS`.
  *
  * The list runs this way round rather than being subtracted out of
  * {@link MessageSkips} (`Exclude<keyof MessageSkips, "blockedAudience">`) on
@@ -360,14 +360,20 @@ type PermanentSkipReason = (typeof PERMANENT_SKIP_REASONS)[number];
  *
  * `interface … extends Record<…>` permits a member that COLLIDES with an
  * inherited one as long as the declared type is identical — and `number` vs
- * `number` is identical. So adding `"blockedAudience"` to the array above
- * compiles cleanly, and the safety counter silently becomes a legal `skipped`
- * reason for `skips[outcome.reason]++` to land in. That is the one hole the move
- * off `Exclude<keyof MessageSkips, …>` opened, and it costs two lines to close.
+ * `number` is identical. So without this, adding `"blockedAudience"` to the
+ * array above compiles cleanly and the safety counter silently becomes a legal
+ * `skipped` reason for `skips[outcome.reason]++` to land in. That is the one
+ * hole the move off `Exclude<keyof MessageSkips, …>` opened.
+ *
+ * The false branch is a SENTENCE rather than `false` so the compiler error is
+ * the explanation. `_Expect` is the repo's spelling — see `admin-knowledge.ts`
+ * and `dashboards.ts`.
  */
-type AssertTrue<T extends true> = T;
-type _BlockStaysRetryable = AssertTrue<
-  "blockedAudience" extends PermanentSkipReason ? false : true
+type _Expect<T extends true> = T;
+type _BlockStaysRetryable = _Expect<
+  "blockedAudience" extends PermanentSkipReason
+    ? "blockedAudience is RETRYABLE — it must not be in PERMANENT_SKIP_REASONS"
+    : true
 >;
 
 /** Per-pass drop tally — every message seen but not stored, by reason. */
@@ -418,9 +424,11 @@ type MessageOutcome =
  * operator's log line.
  *
  * Exported for its own unit tests, like this module's other pure helpers. The
- * counters reach the outside world only through a `log.info`, so a mutation that
- * indexes the WRONG counter is invisible to the walk's end-to-end tests — and
- * the `default` arm's no-payload rule is unreachable from them entirely.
+ * PERMANENT counters reach the outside world only through the aggregate
+ * `log.info`, so a mutation that indexes the wrong one of them is invisible to
+ * the walk's end-to-end tests; the `default` arm's no-payload rule is
+ * unreachable from them entirely. (`blockedAudience` is the exception — it also
+ * gates the stall detector, which those tests do assert.)
  */
 export function tallyOutcome(
   skips: MessageSkips,
@@ -531,16 +539,20 @@ export function createOutlookMailClient(
   /**
    * One message → its episode, or nothing, plus WHY nothing.
    *
-   * Returns a {@link MessageOutcome} and mutates NOTHING. The empty cases mean
-   * opposite things and only some of them may let the resume point advance — see
-   * the module header's block-vs-skip split — so which one this is has to be
-   * stated, not inferred from an absent episode. Conflating them is how a
-   * blocked message gets skipped permanently: the pass reports itself fully
-   * covered, the mark advances past the message, and no later cycle ever looks
-   * at it again.
+   * Returns a {@link MessageOutcome} and mutates none of the CALLER's state — no
+   * counter, no warning list. (It is not side-effect-free: it writes audience
+   * membership and it logs. The scope of the claim is the caller's bookkeeping,
+   * which is what used to arrive here as two out-params.)
    *
-   * The counting and the warning both belong to {@link tallyOutcome}, one level
-   * up. This function decides, and the decision is the return value.
+   * The empty cases mean opposite things and only some of them may let the
+   * resume point advance — see the module header's block-vs-skip split — so
+   * which one this is has to be stated, not inferred from an absent episode.
+   * Conflating them is how a blocked message gets skipped permanently: the pass
+   * reports itself fully covered, the mark advances past the message, and no
+   * later cycle ever looks at it again.
+   *
+   * The counting and the outcome's warning both belong to {@link tallyOutcome},
+   * one level up. This function decides, and the decision is the return value.
    *
    * The AUDIENCE is established and WRITTEN first, before an episode exists.
    * That ordering is the block arm, and `audience.ts` carries why the two
@@ -660,10 +672,11 @@ export function createOutlookMailClient(
       // easy to assume and wrong. Its gate is a CONJUNCTION — `blockedAudience
       // > 0`, which is PASS-scoped across every mailbox, AND this mailbox
       // making no forward progress. And on timing: unless nothing ahead of the
-      // block in this pass's walk carried a timestamp (the block being the
-      // first message walked, which is the ordinary case after a clean prior
-      // pass), it fires from the SECOND consecutive stalled cycle, once the
-      // resume mark has converged on `coveredThrough`.
+      // block advanced `coveredThrough` past the stored mark — the block being
+      // the first timestamped message walked, or everything ahead of it sharing
+      // the resume instant, which bulk mail routinely does — it fires from the
+      // SECOND consecutive stalled cycle, once the mark has converged on
+      // `coveredThrough`.
       //
       // It stays a block anyway, and that is the deliberate choice rather than
       // the leftover one. Skipping would advance the resume point past a message
@@ -1134,7 +1147,11 @@ export function createOutlookMailClient(
       // `PERMANENT_SKIP_REASONS` exists to remove from the type: a second
       // RETRYABLE counter would land in the rest and be announced on the
       // permanent-drop line. Reading the array means `blockedAudience` is
-      // excluded because it is not in it, not because it was subtracted out.
+      // excluded because it is not in it, not because it was subtracted out —
+      // and it reads only the six DECLARED numeric keys, where `Object.values`
+      // reads whatever exists at runtime, so one stray non-numeric key would
+      // make the total `NaN` and suppress this line entirely rather than merely
+      // undercount it.
       const permanentDrops = PERMANENT_SKIP_REASONS.reduce(
         (total, reason) => total + skips[reason],
         0,

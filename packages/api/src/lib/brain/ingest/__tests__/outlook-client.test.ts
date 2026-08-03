@@ -213,8 +213,8 @@ describe("the block arm — RETRYABLE, freezes the resume point", () => {
     // …and the range stays uncovered, so the next cycle retries it.
     expect(changes.coverageIncomplete).toBe(true);
     expect(changes.highWaterMark).toBeNull();
-    // ⭐ THE CURSOR, which this test did not assert until round 2. It is the only
-    // observable that separates a block from a skip: `coverageIncomplete` is set
+    // ⭐ THE CURSOR. It is the observable that most directly separates a block
+    // from a skip, and the one this test was missing: `coverageIncomplete` is set
     // by a SEPARATE write (`walkIncomplete`), so it survives a mutation that
     // drops `mailboxIncomplete` in the per-message catch — and with that dropped,
     // the resume point advances past a message whose audience was never written.
@@ -427,15 +427,10 @@ describe("the cursor", () => {
     // A mailbox removed from the config would otherwise keep its watermark
     // forever.
     //
-    // ⚠️ This comment used to justify that by saying a stale mark would
-    // "silently skip everything in between". That is wrong on the merits and is
-    // corrected here rather than deleted, because `serialiseOutlookCursor`'s
-    // docstring carries the same correction and says why two contradictory
-    // accounts of one risk is how the next fix goes the wrong way: resuming from
-    // an OLDER mark OVER-reads and cannot skip, and a mark below the backfill
-    // floor hits the `historyTruncated` branch, which warns and restarts at the
-    // floor. Pruning is about not carrying dead keys, not about lost history —
-    // dropping a LIVE entry is the direction that costs history.
+    // Pruning is about not carrying dead keys, NOT about lost history: resuming
+    // from an older mark over-reads and cannot skip. `serialiseOutlookCursor`'s
+    // docstring is the account of record; this comment previously contradicted
+    // it, which is the drift that docstring warns about.
     const stale = serialiseOutlookCursor({
       [MAILBOX_ID]: "2026-07-01T00:00:00.000Z",
       removed: "2026-01-01T00:00:00.000Z",
@@ -768,7 +763,11 @@ describe("tallyOutcome — the one place an outcome becomes a number", () => {
   // `log.info` these tests do not capture, and the exhaustiveness arm is not
   // reachable from the walk at all. Every mutation named below leaves all 25
   // end-to-end tests above green.
-  const emptySkips = () => ({
+  // Return-type-annotated rather than inferred, so the literal is contextually
+  // typed and excess-property checking fires: without it, REMOVING a reason from
+  // `PERMANENT_SKIP_REASONS` leaves a stale key here that `total()` keeps
+  // counting, quietly weakening every "and nowhere else" assertion below.
+  const emptySkips = (): Parameters<typeof tallyOutcome>[0] => ({
     blockedAudience: 0,
     unattributable: 0,
     unidentifiable: 0,
@@ -777,7 +776,7 @@ describe("tallyOutcome — the one place an outcome becomes a number", () => {
     bodyUnreadable: 0,
     emptyBody: 0,
   });
-  const total = (skips: Record<string, number>) =>
+  const total = (skips: Parameters<typeof tallyOutcome>[0]) =>
     Object.values(skips).reduce((a, b) => a + b, 0);
 
   it("⭐ increments exactly the named counter, and never the safety one", () => {

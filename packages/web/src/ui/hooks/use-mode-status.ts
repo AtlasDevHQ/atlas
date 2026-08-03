@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
+import { queryKeys } from "@/ui/lib/query-keys";
 import type { ModeStatusResponse } from "@useatlas/types/mode";
 
 /**
@@ -20,7 +21,7 @@ export function useModeStatus(): {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
   const query = useQuery<ModeStatusResponse>({
-    queryKey: ["mode-status", apiUrl],
+    queryKey: queryKeys.modeStatus.forApi(apiUrl),
     queryFn: async ({ signal }) => {
       let res: Response;
       try {

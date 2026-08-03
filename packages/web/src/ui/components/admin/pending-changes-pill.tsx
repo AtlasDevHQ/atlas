@@ -39,7 +39,14 @@ export function PendingChangesPill() {
   const counts = data?.draftCounts;
   if (!counts) return null;
   const total = totalDrafts(counts);
-  if (total === 0) return null;
+  // The PILL hides at zero — but the MODAL must outlive the count reaching it.
+  // Publishing is what takes the queue to zero, and a publish can succeed with
+  // something the admin has to read first: an incomplete promoted layer
+  // (#3682) keeps this modal open with a warning and an acknowledge footer.
+  // Unmounting the whole subtree here would erase that warning at the instant
+  // it became true, leaving only a toast — so render the modal alone rather
+  // than returning null while it is open.
+  if (total === 0) return <PublishModal open={modalOpen} onOpenChange={setModalOpen} />;
 
   const segments = perSurfaceSegments(counts, data?.draftActivity ?? null);
   const plural = total === 1 ? "change" : "changes";

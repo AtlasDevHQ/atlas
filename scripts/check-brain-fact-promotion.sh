@@ -1,8 +1,8 @@
 #!/bin/bash
 # Refuse any write to `brain_facts.status`, or any MUTATION of
-# `brain_facts.visible_to` or `brain_facts.valid_to`, outside the atomic
-# publish endpoint (#4769 / #4823 / #4912, ADR-0036). Scope + blind spots
-# below.
+# `brain_facts.visible_to`, `brain_facts.valid_to`, or a fact's IDENTITY KEYS,
+# outside the atomic publish endpoint (#4769 / #4823 / #4912 / #5019,
+# ADR-0036 + ADR-0037). Scope + blind spots below.
 #
 # `brain_facts.status` is the fact class's review gate. ADR-0036 makes the gate
 # the brain's conflict-resolution mechanism, which only holds if `draft →
@@ -37,6 +37,11 @@
 #     may open a validity window (`valid_from` on an INSERT) but never close
 #     one, and an import carrying an already-closed window is a restore rather
 #     than an arbitration.
+#   - the identity keys — `subject_key`, `predicate_key`, `object_key`, and the
+#     `_cmp` comparison columns (#5019) — UPDATE **only**, on the grant's terms
+#     exactly: derived at ingest, so INSERT must stay legal; never RE-derived by
+#     a second writer, because re-keying changes what a claim collides with and
+#     the collision is what stamps `valid_to`.
 # Fixtures pin BOTH directions on every column, so "tidying" this into symmetry
 # has to fail a test first.
 #
@@ -45,6 +50,9 @@
 #   - `UPDATE [schema.]brain_facts … SET … visible_to …`
 #   - `UPDATE [schema.]brain_facts … SET … valid_to …` (#4912 — the
 #     supersession stamp; UPDATE-only like the grant, see the column notes)
+#   - `UPDATE [schema.]brain_facts … SET … subject_key / predicate_key /
+#     object_key / subject_cmp / object_cmp …` (#5019 — a re-key; UPDATE-only,
+#     with the `_cmp` arms gated ahead of #5032 adding the columns)
 #   - `INSERT INTO [schema.]brain_facts (… status …)`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … visible_to …`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
@@ -54,7 +62,7 @@
 #     both of the patterns above until it was called out.
 #   - `INSERT INTO brain_facts VALUES (…)` with NO column list — positional, so
 #     whether it sets `status` is unknowable by grep. Refused on principle:
-#     a positional insert into an 18-column table is unreviewable anyway.
+#     a positional insert into a table this wide is unreviewable anyway.
 #   - `db.update([schema.]brainFacts).set({ status … })` and
 #     `db.insert([schema.]brainFacts).values({ … status … })` — both Drizzle
 #     write-builder halves, including the `.onConflictDoUpdate({ set: { status
@@ -202,6 +210,13 @@ fi
 # Candidate files: anything naming the table in EITHER spelling — the raw-SQL
 # `brain_facts` or the Drizzle export `brainFacts`. Cheap pre-filter; the precise
 # (multi-line, comment-stripped) match happens per file below.
+# `|| true` on the next line would map grep's exit 1 (no match) and exit 2
+# (unreadable file, bad root) onto the same empty result, and the script would
+# then print "check passed" for a scan that never ran. A gate that reaches the
+# irreversible `valid_to` stamp by proxy should not fail open, so the status is
+# captured and only 1 is accepted — the same posture as the empty-search-roots
+# check above.
+set +e
 CANDIDATES=$(grep -rlE 'brain_facts|\bbrainFacts\b' "${EXISTING_ROOTS[@]}" \
   --include='*.ts' \
   --include='*.tsx' \
@@ -216,8 +231,13 @@ CANDIDATES=$(grep -rlE 'brain_facts|\bbrainFacts\b' "${EXISTING_ROOTS[@]}" \
   --exclude-dir='node_modules' \
   --exclude-dir='.next' \
   --exclude-dir='dist' \
-  --exclude-dir='__snapshots__' \
-  || true)
+  --exclude-dir='__snapshots__')
+GREP_STATUS=$?
+set -e
+if [ "$GREP_STATUS" -gt 1 ]; then
+  echo "::error::the candidate scan failed (grep exit $GREP_STATUS) — this gate did NOT run" >&2
+  exit 2
+fi
 
 # Same comment-stripping program as check-ee-imports.sh / the legacy-SQL gate.
 STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$##"'
@@ -264,6 +284,29 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # script — which migration 0183's header explicitly forecloses — is exactly the
 # shape that would otherwise slip through.
 #
+# The IDENTITY columns — `subject_key`, `predicate_key`, `object_key`, and the
+# `_cmp` comparison columns — join on the same UPDATE-only terms (#5019,
+# ADR-0037). A key is DERIVED AT INGEST exactly as a grant is, so INSERT must
+# stay legal: #5020's `INSERT_FACT_SQL` names all three and must. What must not
+# exist is a second writer that RE-KEYS an existing fact, because a key
+# determines what a claim collides with, and the collision is what the publish
+# gate stamps `valid_to` on. Re-keying outside the alias-approval seam therefore
+# reaches the irreversible column by proxy: de-merging two keys between
+# `SUPERSESSION_TARGETS_SQL`'s SELECT and `SUPERSEDE_STAMP_SQL`'s UPDATE stamps a
+# pair that no longer collides, and every as-of-now read then hides the row it
+# touched. This also converts what was legal-by-OMISSION into a recorded
+# decision: an alias approval mutates PUBLISHED rows' collision behaviour with no
+# draft stage, and that is defensible (the surfaces are untouched, so no
+# user-facing content changed) but it should be defensible on the record.
+#
+# NEITHER `_cmp` COLUMN EXISTS YET. ADR-0037 §2's column table defines both:
+# `object_cmp` proves DIFFERENCE at the object, and `subject_cmp` (#5032) is its
+# INVERTED twin — non-null and unequal means "not the same slot", suppressing
+# corroboration, tension, and supersession alike. It is not a mirror. Both are
+# gated ahead of the schema so the guard is never the thing lagging it; no
+# production code can trip either arm until #5032, so the adversarial fixtures
+# are the only thing holding them in place.
+#
 # `valid_to` (#4912) is the third gated column, UPDATE-only like the grant:
 # "a human promotion stamps `valid_to`; there is no autonomous supersession"
 # (ADR-0036 §Temporal). Its writers are `promoteBrainFacts`' supersession
@@ -275,126 +318,180 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # gated: `INSERT_FACT_SQL` names `valid_from` (a producer may know when a claim
 # began), never `valid_to`, and a future entry point importing a fact with a
 # closed validity window is a restore, not an arbitration.
-UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to)'
-ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo)'
+# ⚠️ THESE TWO ARE DECLARATIONS, NOT THE GATE. Nothing in this script reads
+# them — `statement_writes_gated_column` matches with its own inline patterns,
+# because each arm has to echo WHICH column tripped and a single alternation
+# cannot. Adding a column here and nowhere else gates nothing.
+#
+# `UPDATE_GATED_COLUMNS` is not dead, though, and that is why it stays:
+# `brain-promotion-carveout-register.test.ts` parses it as the guard's declared
+# vocabulary, requires `docs/development/content-mode.md` to name every column
+# in it, and separately cross-checks declared ⊆ enforced — so a column added
+# here and not below fails that test with a message saying exactly that.
+# `keys-not-on-the-wire.test.ts` additionally requires its own key list to be a
+# subset of this one, which is what stops a rename in #5032 from leaving that
+# guard matching a column that no longer exists.
+#
+# `ORM_UPDATE_GATED_COLUMNS` has no such reader — it is documentation of the
+# camelCase spellings and nothing more. Stated plainly because the sentence
+# above used to cover both and did not apply to it.
+UPDATE_GATED_COLUMNS='(status|(pre_widening_)?visible_to|valid_to|subject_key|predicate_key|object_key|subject_cmp|object_cmp)'
+ORM_UPDATE_GATED_COLUMNS='(status|preWideningVisibleTo|visibleTo|validTo|subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)'
 
 # Does one statement write a gated `brain_facts` column? Exit 0 = yes, and it
-# ECHOES which one — they have completely different remedies, and a message
-# that named the wrong column would send the reader to fix code they did not
-# write. When a statement trips on both, `status` is reported: it is the arm
-# with the shorter fix.
+# ECHOES which — they have completely different remedies, and a message that
+# named the wrong column would send the reader to fix code they did not write.
+#
+# EVERY matching arm is reported, space-separated, NOT the first. First-match
+# was a real defect, not a style choice: each arm asks only "does this statement
+# mention the token", the over-breadth is deliberate, and every SLOT-CONSUMER
+# statement carries `AND valid_to IS NULL` — all three require it by design, so
+# a realistic re-key does too. (Not every brain_facts statement does:
+# `INSERT_FACT_SQL` has no WHERE at all, and the promote UPDATE filters on
+# `workspace_id`, `status`, `invalidated_at` and an id list — never `valid_to`.)
+# So the realistic re-key
+#
+#   UPDATE brain_facts SET subject_key = $3
+#    WHERE workspace_id = $1 AND invalidated_at IS NULL AND valid_to IS NULL
+#
+# matched `valid_to` first and reported a supersession stamp, sending the reader
+# to fix a write they did not make while the identity advice — the part that
+# names the alias-approval seam and says INSERT is legal — was unreachable.
+# Reporting all of them costs a longer message and lets the aggregate branch
+# below do what it was always written to do.
 statement_writes_gated_column() {
   local stmt="$1"
+  local hits=""
 
-  # Raw SQL — UPDATE … SET … status / visible_to / valid_to
-  if grep -qiE "UPDATE[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
-    && grep -qiE '\bSET\b' <<<"$stmt"; then
-    if grep -qiE '\bstatus\b' <<<"$stmt"; then
-      echo status
-      return 0
-    fi
-    if grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
-      echo visible_to
-      return 0
-    fi
-    if grep -qiE '\bvalid_to\b' <<<"$stmt"; then
-      echo valid_to
-      return 0
-    fi
+  # WHICH WRITE SHAPE is this, resolved BEFORE any column is looked at.
+  #
+  # The four shapes differ in how they spell "this mutates a row"; none of them
+  # differs in WHICH columns are gated. Matching shape first means each column
+  # family is tested once per spelling instead of once per shape — the earlier
+  # form repeated the grant/valid_to/identity trio four times, so #5032's
+  # `_cmp` column would have needed the same edit in four places and a fifth
+  # family would need four more.
+  #
+  # The upsert's `DO UPDATE` half rides the mutation flag rather than getting
+  # its own block, and that is the whole reason it needs naming: it names no
+  # table after `UPDATE`, which is how it evaded the UPDATE rule when the grant
+  # arm was first written.
+  local sql_mutates=0 orm_mutates=0
+  if { grep -qiE "UPDATE[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+       && grep -qiE '\bSET\b' <<<"$stmt"; } \
+    || { grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+         && grep -qiE 'ON[[:space:]]+CONFLICT' <<<"$stmt" \
+         && grep -qiE 'DO[[:space:]]+UPDATE' <<<"$stmt"; }; then
+    sql_mutates=1
+  fi
+  if { grep -qE "\.update\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+       && grep -qE '\.set\(' <<<"$stmt"; } \
+    || { grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+         && grep -qE '\.onConflictDoUpdate\(' <<<"$stmt"; }; then
+    orm_mutates=1
   fi
 
-  # Raw SQL — INSERT INTO brain_facts … status. Covers BOTH the column-list form
-  # and `ON CONFLICT … DO UPDATE SET status`, because within one statement they
-  # are the same question. Deliberately over-broad: an INSERT that merely reads
-  # `status` in a sub-SELECT also trips this. That is the safe direction, and a
-  # legitimate case wants an allowlist entry with a rationale, not a loosening.
+  # The UPDATE-gated families, once per spelling.
+  #
+  # Deliberately over-broad, as everywhere here: a column merely MENTIONED in a
+  # WHERE clause counts. That is the safe direction, and a legitimate case wants
+  # an allowlist entry with a rationale rather than a quiet loosening.
+  if [ "$sql_mutates" -eq 1 ]; then
+    grep -qiE '\bstatus\b' <<<"$stmt" && hits="$hits status"
+    grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt" && hits="$hits visible_to"
+    grep -qiE '\bvalid_to\b' <<<"$stmt" && hits="$hits valid_to"
+    # Spelled out rather than hoisted into a shared constant, and that is not an
+    # oversight: `brain-promotion-carveout-register.test.ts` proves
+    # declared ⊆ ENFORCED by scanning this function for `\bname\b` literals, so a
+    # `${VAR}` reference here would make five gated columns read as unenforced
+    # and the cross-check would go quiet. Hoisting was tried and the register
+    # test refused it — correctly.
+    grep -qiE '\bsubject_key\b|\bpredicate_key\b|\bobject_key\b|\bsubject_cmp\b|\bobject_cmp\b' <<<"$stmt" && hits="$hits identity"
+  fi
+  if [ "$orm_mutates" -eq 1 ]; then
+    grep -qE '\bstatus\b' <<<"$stmt" && hits="$hits status"
+    grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt" && hits="$hits visible_to"
+    grep -qE '\bvalidTo\b' <<<"$stmt" && hits="$hits valid_to"
+    grep -qE '\b(subjectKey|predicateKey|objectKey|subjectCmp|objectCmp)\b' <<<"$stmt" && hits="$hits identity"
+  fi
+
+  # `status` alone is ALSO refused on a plain INSERT — the asymmetry the header
+  # explains: a writer must omit it so 0180's `draft` default applies the review
+  # gate by construction. The grant, the validity stamp, and the keys are all
+  # DERIVED AT INGEST, so an INSERT arm for them would refuse the writes the ACL
+  # and identity designs both rest on.
   if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
     && grep -qiE '\bstatus\b' <<<"$stmt"; then
-    echo status
-    return 0
-  fi
-
-  # Raw SQL — the UPSERT's UPDATE half, for the INSERT-legal columns. It needs
-  # its own arm precisely because `visible_to` and `valid_to` are INSERT-legal
-  # and UPDATE-forbidden, so neither can ride the blanket INSERT rule above the
-  # way `status` does — and `ON CONFLICT … DO UPDATE SET visible_to` names no
-  # table after `UPDATE`, which is how it evaded the UPDATE rule when this was
-  # first written. (`valid_to` is INSERT-legal only via the region import,
-  # which restores a closed window verbatim — but the ASYMMETRY is the same,
-  # and the upsert is exactly the shape an unattended ingest fiber reaches
-  # for, so it is gated here identically. #4912.)
-  # Deliberately over-broad in the same direction as everything else here: an
-  # upsert that inserts `visible_to` and DO-UPDATEs some other column trips it
-  # too, and that wants an allowlist entry with a rationale, not a loosening.
-  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
-    && grep -qiE 'ON[[:space:]]+CONFLICT' <<<"$stmt" \
-    && grep -qiE 'DO[[:space:]]+UPDATE' <<<"$stmt"; then
-    if grep -qiE "\b(pre_widening_)?visible_to\b" <<<"$stmt"; then
-      echo visible_to
-      return 0
-    fi
-    if grep -qiE '\bvalid_to\b' <<<"$stmt"; then
-      echo valid_to
-      return 0
-    fi
-  fi
-
-  # Raw SQL — a column-less positional INSERT. No gated column can appear by
-  # name, so this is refused on shape: a positional insert into an 18-column
-  # table is unreviewable regardless of what it happens to set.
-  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then
-    echo status
-    return 0
-  fi
-
-  # Drizzle write-builders, both halves. The insert half matters as much as the
-  # update half: without it the ORM and raw-SQL spellings of one write would
-  # disagree, and the ORM insert is the shape an ingest fiber reaches for.
-  if grep -qE "\.update\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
-    && grep -qE '\.set\(' <<<"$stmt"; then
-    if grep -qE '\bstatus\b' <<<"$stmt"; then
-      echo status
-      return 0
-    fi
-    if grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
-      echo visible_to
-      return 0
-    fi
-    if grep -qE '\bvalidTo\b' <<<"$stmt"; then
-      echo valid_to
-      return 0
-    fi
+    hits="$hits status"
   fi
   if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
     && grep -qE '\bstatus\b' <<<"$stmt"; then
-    echo status
-    return 0
-  fi
-  # The ORM twin of the raw upsert arm above, for the same asymmetry reason:
-  # `.insert().values({visibleTo})` is legal, `.onConflictDoUpdate` of it is not
-  # — and the same for `validTo` (#4912).
-  if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
-    && grep -qE '\.onConflictDoUpdate\(' <<<"$stmt"; then
-    if grep -qE '\b(preWideningVisibleTo|visibleTo)\b' <<<"$stmt"; then
-      echo visible_to
-      return 0
-    fi
-    if grep -qE '\bvalidTo\b' <<<"$stmt"; then
-      echo valid_to
-      return 0
-    fi
+    hits="$hits status"
   fi
 
-  return 1
+  # A column-less positional INSERT. No gated column can appear by name, so this
+  # is refused on shape: a positional insert into a table this wide is
+  # unreviewable regardless of what it happens to set. (Deliberately no column
+  # count here — `brain_facts` has grown twice since this was written and the
+  # number decayed both times.)
+  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then
+    hits="$hits status"
+  fi
+
+  # Deduplicate, preserving first-seen order. Reachable now that `status` can
+  # fire from both the mutation arm and the blanket INSERT arm in one statement
+  # (an upsert naming it does exactly that), which is why the dedupe is not
+  # cosmetic: without it the offenders line reads `(status status)`.
+  local seen="" out="" h
+  for h in $hits; do
+    case " $seen " in *" $h "*) continue ;; esac
+    seen="$seen $h"
+    out="${out:+$out }$h"
+  done
+  [ -n "$out" ] || return 1
+  echo "$out"
+}
+
+# The headline precedence, most-severe first. Parsed by the fixture suite, which
+# asserts every ordered pair — so reordering this line is a behaviour change a
+# test has to agree to.
+SEVERITY_ORDER=(visible_to identity valid_to status)
+
+# Did this arm fire? Maps a SEVERITY_ORDER entry onto its flag.
+arm_fired() {
+  case "$1" in
+    visible_to) [ "$SAW_GRANT" -eq 1 ] ;;
+    identity) [ "$SAW_IDENTITY" -eq 1 ] ;;
+    valid_to) [ "$SAW_VALIDITY" -eq 1 ] ;;
+    status) [ "$SAW_STATUS" -eq 1 ] ;;
+    *)
+      echo "::error::internal: SEVERITY_ORDER names '$1', which arm_fired does not know. Add the arm, or drop the entry." >&2
+      exit 2
+      ;;
+  esac
+}
+
+headline_for() {
+  case "$1" in
+    visible_to) echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)." ;;
+    identity) echo "::error::a company-brain fact is RE-KEYED outside the alias-approval seam (#5019)." ;;
+    valid_to) echo "::error::a company-brain fact's \`valid_to\` is stamped outside the atomic publish endpoint (#4912)." ;;
+    status) echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)." ;;
+    *)
+      echo "::error::internal: no headline for '$1' — every SEVERITY_ORDER entry needs one." >&2
+      exit 2
+      ;;
+  esac
 }
 
 OFFENDERS=""
-# Which arm(s) fired — the three columns have completely different remedies, so
+# Which arm(s) fired — the four families have completely different remedies, so
 # only the relevant advice is printed. Printing all would put a wrong fix in
 # front of every reader, and "omit the column" is actively wrong for a grant.
 SAW_STATUS=0
 SAW_GRANT=0
 SAW_VALIDITY=0
+SAW_IDENTITY=0
 if [ -n "$CANDIDATES" ]; then
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -419,13 +516,28 @@ if [ -n "$CANDIDATES" ]; then
     #   query literal is not a case this has to handle.
     while IFS= read -r stmt; do
       [ -z "$stmt" ] && continue
-      if column=$(statement_writes_gated_column "$stmt"); then
-        OFFENDERS="${OFFENDERS}${f}  (${column})"$'\n'
-        case "$column" in
-          visible_to) SAW_GRANT=1 ;;
-          valid_to) SAW_VALIDITY=1 ;;
-          *) SAW_STATUS=1 ;;
-        esac
+      if columns=$(statement_writes_gated_column "$stmt"); then
+        OFFENDERS="${OFFENDERS}${f}  (${columns})"$'\n'
+        # Every column the statement tripped, not just the first — see the note
+        # on `statement_writes_gated_column`. A re-key that mentions `valid_to`
+        # in its WHERE has to raise BOTH flags, or the reader gets the wrong
+        # remedy for the write they actually made.
+        for column in $columns; do
+          case "$column" in
+            status) SAW_STATUS=1 ;;
+            visible_to) SAW_GRANT=1 ;;
+            valid_to) SAW_VALIDITY=1 ;;
+            identity) SAW_IDENTITY=1 ;;
+            # NOT a `SAW_STATUS` fallback. An unrouted token would print "omit
+            # `status` entirely", which this script says at length is actively
+            # wrong for a grant — a silent wrong-remedy fallback, in a gate
+            # whose whole argument is that the remedy has to match the column.
+            *)
+              echo "::error::internal: statement_writes_gated_column echoed an unrouted token '$column'. Add a \`case\` arm here AND a remedy block below — a new gated column with no remedy sends every reader the wrong fix." >&2
+              exit 2
+              ;;
+          esac
+        done
         break
       fi
     done < <(eval "$STRIP_COMMENTS \"\$f\"" | tr '\n' ' ' | tr ';' '\n' \
@@ -436,15 +548,32 @@ fi
 OFFENDERS=$(echo "${OFFENDERS%$'\n'}" | grep -v '^$' || true)
 
 if [ -n "$OFFENDERS" ]; then
-  if [ $((SAW_STATUS + SAW_GRANT + SAW_VALIDITY)) -gt 1 ]; then
-    echo "::error::a company-brain fact's gated columns (\`status\` / \`visible_to\` / \`valid_to\`) are written outside the atomic publish endpoint (#4769 / #4823 / #4912)."
-  elif [ "$SAW_GRANT" -eq 1 ]; then
-    echo "::error::a company-brain fact's \`visible_to\` is MUTATED outside the atomic publish endpoint (#4823)."
-  elif [ "$SAW_VALIDITY" -eq 1 ]; then
-    echo "::error::a company-brain fact's \`valid_to\` is stamped outside the atomic publish endpoint (#4912)."
-  else
-    echo "::error::a company-brain fact's \`status\` is written outside the atomic publish endpoint (#4769)."
-  fi
+  # ONE headline, chosen by SEVERITY — and the order is DATA, not control flow.
+  #
+  # `::error::` is the single line GitHub surfaces in the Actions UI, so it has
+  # to be the most actionable thing available. Multi-arm firing is the common
+  # case, not the exception: the arms cannot tell a `SET`-list mention from a
+  # `WHERE`-clause one (deliberate over-breadth), and a slot statement naming
+  # `valid_to` in its WHERE is ordinary. Every arm that fired is still named in
+  # the offenders line and still prints its own remedy block below.
+  #
+  # An `if/elif` chain expressed this until it had been wrong TWICE in one
+  # review — `valid_to` ahead of `identity`, so a re-key was reported as a
+  # supersession stamp the author never made. A chain also lets a fixture pin
+  # only one ordered pair at a time, which is how it survived the first fix. As
+  # an array the suite loops every pair (`check-brain-fact-promotion.test.sh`).
+  #
+  # Order follows FAILURE DIRECTION: a grant write DISCLOSES; a re-key reaches
+  # the irreversible `valid_to` stamp by proxy, so it subsumes the stamp on any
+  # statement carrying both; a stamp retires a belief invisibly; a status write
+  # over-trusts a claim, which is the recoverable one.
+  for column in "${SEVERITY_ORDER[@]}"; do
+    if arm_fired "$column"; then
+      headline_for "$column"
+      break
+    fi
+  done
+
   echo ""
   echo "Offending files (with the column that tripped the gate):"
   echo "$OFFENDERS" | sed 's/^/  /'
@@ -494,6 +623,31 @@ if [ -n "$OFFENDERS" ]; then
     echo ""
   fi
 
+  if [ "$SAW_IDENTITY" -eq 1 ]; then
+    echo "\`brain_facts.subject_key\` / \`predicate_key\` / \`object_key\` (and the \`_cmp\`"
+    echo "comparison columns) are the claim's IDENTITY — \`alias(lexicalNorm(surface))\`,"
+    echo "materialized (#5019, ADR-0037). A key decides what a claim COLLIDES with, and a"
+    echo "collision is what the publish gate stamps \`valid_to\` on. So a second writer that"
+    echo "re-keys an existing fact reaches the irreversible column by proxy: de-merge two"
+    echo "keys between \`SUPERSESSION_TARGETS_SQL\`'s SELECT and \`SUPERSEDE_STAMP_SQL\`'s"
+    echo "UPDATE and the transaction retires a pair that no longer collides — invisibly,"
+    echo "because every as-of-now read hides the row it touched."
+    echo ""
+    echo "Fixes for an identity-key write — note that OMITTING the columns is NOT one:"
+    echo "  * Writing a NEW fact? Naming the keys on the INSERT is correct and required —"
+    echo "    they are derived at ingest, exactly as the grant is, so only UPDATE (and an"
+    echo "    upsert's \`DO UPDATE\` half) is refused here."
+    echo "  * Re-keying because the vocabulary changed? That is the alias-approval decide"
+    echo "    transaction, which takes the identity-mutation advisory lock and shows the"
+    echo "    reviewer a preview of the effect before they commit. Not a second writer."
+    echo "  * Re-keying corpus-wide because a vocabulary entry changed? Still the decide"
+    echo "    transaction — ADR-0037 §7 makes the drift re-key TypeScript, at request time,"
+    echo "    NOT another migration. 0187 was the one-off day-one backfill and is done."
+    echo "  * Re-deriving from the surface to undo an alias removal? Same answer — the"
+    echo "    approval seam, where the vocabulary version that authorized it is known."
+    echo ""
+  fi
+
   if [ "$SAW_GRANT" -eq 1 ]; then
     echo "\`brain_facts.visible_to\` is the fact's ACL. ADR-0036 §T5 makes it a"
     echo "per-version snapshot that may widen ONLY at the review gate — which is"
@@ -515,4 +669,4 @@ if [ -n "$OFFENDERS" ]; then
   exit 1
 fi
 
-echo "Brain-fact promotion check passed — no ungated status, visible_to, or valid_to write to brain_facts outside the atomic publish endpoint."
+echo "Brain-fact promotion check passed — no ungated status, visible_to, valid_to, or identity-key write to brain_facts outside the atomic publish endpoint."

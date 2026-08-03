@@ -114,9 +114,12 @@ export const BRAIN_FACTS_TABLE = "brain_facts" as const;
  * THE CONSEQUENCE FOR CALLERS, stated because composing the two advertised
  * seams is the obvious thing to do and is not sufficient: a CURRENT-BELIEF read
  * (#4773's `searchBrain`) must AND `invalidated_at IS NULL` itself, on top of
- * this clause and `aclVisibilityClause`. `idx_brain_facts_subject` is partial on
- * exactly that predicate, so the index is built for it. Omit it and the agent is
- * served retracted claims.
+ * this clause and `aclVisibilityClause`. Omit it and the agent is served
+ * retracted claims. (An earlier version of this note offered
+ * `idx_brain_facts_subject`'s partial predicate as evidence the index was built
+ * for that read. It was not — retrieval rides the FTS GIN index, and 0187
+ * repointed `idx_brain_facts_subject` onto the identity keys, where it is the
+ * slot index and nothing else.)
  */
 export function brainFactStatusClause(mode: AtlasMode | undefined, alias: string): string {
   return mode === "developer"

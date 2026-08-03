@@ -559,6 +559,11 @@ describe("migrateAuthTables", () => {
             // Better-Auth-gated via MANAGED_AUTH_MIGRATIONS.)
             { name: "0185_backfill_slack_bot_user_id.sql" },
             { name: "0186_brain_audience_reverify_attempt.sql" },
+            // 0187 (brain identity keys, #5019) alters `brain_facts` only —
+            // no Better Auth involvement, so it runs in every auth mode and
+            // belongs in this already-applied set for the same reason 0185 and
+            // 0186 do.
+            { name: "0187_brain_fact_identity_keys.sql" },
           ],
         };
       }

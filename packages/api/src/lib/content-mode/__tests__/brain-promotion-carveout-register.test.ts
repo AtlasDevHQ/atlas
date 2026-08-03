@@ -68,8 +68,9 @@ function allowlistEntries(): string[] {
  * The column names the UPDATE arm gates.
  *
  * The script writes them as regex alternations with an OPTIONAL prefix group
- * (`(pre_widening_)?visible_to`), so expanding that group is what turns the
- * three alternations into the four real column names. Without the expansion
+ * (`(pre_widening_)?visible_to`) — one alternation per gated column, and
+ * expanding that group is what turns them into the real column names (there is
+ * always exactly one more name than alternation). Without the expansion
  * `pre_widening_visible_to` — the column whose corruption is silent in both
  * directions — would never be required of the doc.
  *
@@ -84,7 +85,7 @@ function allowlistEntries(): string[] {
 function gatedColumns(): string[] {
   const names = new Set<string>();
   // The SQL spellings only. The doc is written in raw column names, and the
-  // ORM twin (`ORM_UPDATE_GATED_COLUMNS`) carries the same three columns in
+  // ORM twin (`ORM_UPDATE_GATED_COLUMNS`) carries the same columns in
   // camelCase — requiring those too would force `visibleTo` into English prose
   // to satisfy a guard, which is a test dictating style rather than coverage.
   const decl = /^UPDATE_GATED_COLUMNS='\(([^']+)\)'/m.exec(guardSource);

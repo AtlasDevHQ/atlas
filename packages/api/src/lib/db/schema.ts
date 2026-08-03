@@ -3267,6 +3267,38 @@ export const brainFacts = pgTable(
     subject: text("subject").notNull(),
     predicate: text("predicate").notNull(),
     object: text("object").notNull(),
+    // The identity slot — `alias(lexicalNorm(surface))` (#5019, ADR-0037,
+    // migration 0187). ADDED beside the surface columns, never rewriting them:
+    // the surface is what display, `candidates.ts`'s `ILIKE` search, and the FTS
+    // vector all read, and it is also the ONLY way back from an alias removal,
+    // since once two spellings share a key nothing in the key column tells them
+    // apart.
+    //
+    // Retrieval and identity are deliberately decoupled — `fts` below keeps
+    // reading the surface, so a vocabulary edit cannot silently re-rank
+    // `searchBrain`.
+    //
+    // NULLABLE, and for longer than one slice. `alias` is the identity function
+    // until the vocabulary lands, so 0187 fills every existing row with
+    // `identityKey(surface)` — but no INSERT site names these columns yet, so
+    // `NOT NULL` here would refuse every write.
+    //
+    // NULL carries TWO meanings, and conflating them is how the constraint
+    // plan goes wrong: "no writer has keyed this row yet" (transient, what
+    // `SET NOT NULL` exists to eliminate) and "this surface norms away to
+    // nothing" (permanent, and a legal state of a storable claim — see
+    // `identityKey`). Either way it joins nothing, which is why one column can
+    // carry both; but the second means `SET NOT NULL` needs an ingest-guard
+    // change as well as a writer. 0187's header enumerates all three
+    // prerequisites — read it there rather than trusting a one-line summary
+    // here, which is what an earlier version of this comment was.
+    //
+    // Never projected to the wire. No read surface selects a key column —
+    // `keys-not-on-the-wire.test.ts` makes that a prohibition rather than an
+    // accident of what has been written so far.
+    subjectKey: text("subject_key"),
+    predicateKey: text("predicate_key"),
+    objectKey: text("object_key"),
     // Bi-temporal, invalidate-never-delete. `validFrom`/`validTo` are VALID
     // time (when the claim held in the world); `validTo` is stamped by a HUMAN
     // promotion — there is no autonomous supersession, and staleness decay
@@ -3356,11 +3388,31 @@ export const brainFacts = pgTable(
   },
   (t) => [
     index("idx_brain_facts_status").on(t.workspaceId, t.status),
-    // The retrieval read (#4773) — PARTIAL on the live set, since almost every
-    // read wants current belief and tombstones would grow the index forever.
+    // The SLOT index — "look up the live claims occupying this subject+predicate
+    // slot", which is what the corroboration lookup, the tension-candidate scan,
+    // and the supersession collision join each ask. 0180 called it "the
+    // retrieval read (#4773)" and that was already wrong: retrieval rides
+    // `idx_brain_facts_fts` (GIN), and no other equality reader of `subject`
+    // exists — `candidates.ts` searches with a leading-wildcard `ILIKE`, which a
+    // btree cannot serve.
+    //
+    // REPOINTED onto the identity keys by 0187, not duplicated: zero net new
+    // indexes. PARTIAL on the live set for the reason 0180 gave (tombstones
+    // would grow it forever) AND now on `valid_to IS NULL` too, which all three
+    // consumers already require on the PUBLISHED/joined side — the side this
+    // index serves. (`supersedingDraftPredicate` requires only `status =
+    // 'draft' AND invalidated_at IS NULL`, so a draft carrying a restored
+    // non-null `valid_to` off a region import sits outside it; that side is a
+    // scan of one publish's draft set either way.) The index gets strictly
+    // smaller.
+    //
+    // The three consumers still compare the SURFACE columns until #5020 pivots
+    // them onto the keys, so until that PR merges they lose their
+    // `(subject, predicate)` access path. Deliberate — carrying two indexes
+    // through the cut is the thing "repoint, not add" exists to avoid.
     index("idx_brain_facts_subject")
-      .on(t.workspaceId, t.subject, t.predicate)
-      .where(sql`invalidated_at IS NULL`),
+      .on(t.workspaceId, t.subjectKey, t.predicateKey)
+      .where(sql`invalidated_at IS NULL AND valid_to IS NULL`),
     index("idx_brain_facts_valid_from").on(t.workspaceId, t.validFrom),
     index("idx_brain_facts_source_episode").on(t.sourceEpisodeId),
     index("idx_brain_facts_visible_to").using("gin", t.visibleTo),

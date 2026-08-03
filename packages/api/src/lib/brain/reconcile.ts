@@ -89,11 +89,19 @@
  * reversible; the index would be a decision M2 has to live with. Revisit it
  * when M2 settles supersession.
  *
- * Identity is BYTE-EXACT on the trimmed, resolved SPO — deliberately, so the
- * lookup is served by `idx_brain_facts_subject` and so that deciding whether
- * `Alice` and `alice` are one entity stays the ENTITY RESOLVER's job. A
- * `lower()` comparison here would silently take that decision away from the
- * seam that exists to make it.
+ * Identity is BYTE-EXACT on the trimmed, resolved SPO — deliberately, so that
+ * deciding whether `Alice` and `alice` are one entity stays the ENTITY
+ * RESOLVER's job. A `lower()` comparison here would silently take that decision
+ * away from the seam that exists to make it.
+ *
+ * ADR-0037 is replacing byte-exactness with a materialized identity key
+ * (`alias(lexicalNorm(surface))`, `lib/brain/identity.ts`), which keeps that
+ * separation — the lexical layer does nothing semantic, and everything that
+ * WOULD take a decision from the resolver is curated vocabulary with a reviewer
+ * behind it. Migration 0187 added the columns and repointed
+ * `idx_brain_facts_subject` onto them; until #5020 supplies them at
+ * `INSERT_FACT_SQL` and pivots the join arm below, this lookup still compares
+ * surfaces and no longer has an index behind it.
  *
  * The cost of byte-exactness, stated because it is easy to over-read the
  * paragraph above: dedupe is only as good as the producer's determinism. Two
@@ -391,8 +399,13 @@ const NO_BLOCKS: Readonly<Record<ReconcileBlockReason, number>> = Object.freeze(
 export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2))`;
 
 /**
- * Does a live fact already assert exactly this claim? Served by
- * `idx_brain_facts_subject` (partial on `invalidated_at IS NULL`).
+ * Does a live fact already assert exactly this claim?
+ *
+ * NOT served by an index as written. `idx_brain_facts_subject` was this
+ * statement's access path until 0187 repointed it onto the identity keys
+ * (#5019); #5020 pivots the three arms below onto `subject_key` /
+ * `predicate_key` / `object_key` and gets it back, with the tighter
+ * `valid_to IS NULL` partial predicate this statement already requires.
  *
  * Deliberately NOT filtered by review state: a claim re-observed after it was
  * published must corroborate the published fact, not mint a fresh draft

@@ -1,0 +1,263 @@
+-- 0187 — Claim identity: the slot key columns, the day-one backfill, and the
+-- repointed slot index (#5019, ADR-0037 §1 "The identity key" / §7 "Migration").
+--
+-- A brain claim's identity is `alias(lexicalNorm(surface))`. `alias` is the
+-- curated workspace vocabulary and does not exist yet, so on day one it is the
+-- identity function and every key is exactly `identityKey(surface)` —
+-- `lexicalNorm(surface)`, or NULL when that is empty (see the `NULLIF` below).
+-- That is why this migration is a pure `UPDATE` and why the slice it belongs to
+-- is expected to change no observable behaviour whatsoever.
+--
+-- Shaped on `0092_pillar_install_id_columns.sql`'s `plugin_catalog.pillar` block
+-- — the repo's `ADD COLUMN` nullable → `UPDATE` → (eventually) `SET NOT NULL`
+-- precedent. Deliberately NOT `0169_convert_notebook_conversations.sql`, which
+-- an earlier draft of this cut named: 0169 is data-only and its own header
+-- states that no DDL runs there.
+--
+-- ## The columns land NULLABLE, and `SET NOT NULL` needs #5020, #5035, AND an
+-- ingest-guard change
+--
+-- Both existing INSERT sites use an explicit column list and name none of these
+-- columns — `reconcile.ts`'s `INSERT_FACT_SQL` (owned by #5020) and
+-- `admin-migrate.ts`'s 18-column region-import INSERT (owned by #5035). A
+-- `NOT NULL` here would therefore make every brain-fact write and every region
+-- import raise a not-null violation on the first row. The two repairs that look
+-- obvious are both worse than waiting: a `DEFAULT ''` silently corrupts the
+-- corpus (every unkeyed row joins every other unkeyed row — the `NULLIF` below
+-- is the same hazard reached from the other side), and re-deriving the key at
+-- the importer contradicts ADR-0037 §8, which settles that a row-copy path
+-- carries keys VERBATIM: re-deriving fails to OVER-match, the irreversible
+-- direction, where carrying fails to under-match. Until the constraint lands, a
+-- NULL key means "no writer has keyed this row yet" and joins nothing.
+--
+-- ⚠️ THREE THINGS THE CONSTRAINT FLIP INHERITS, recorded here because whoever
+-- writes it will be reading this file and not this PR:
+--
+--   1. **It needs BOTH writers.** #5020 keys `INSERT_FACT_SQL`; #5035 carries
+--      keys verbatim on the v3 bundle. `SET NOT NULL` landing after only the
+--      first still breaks every region import — an ADR-0024 production path.
+--   2. **It needs this backfill re-run first.** No INSERT site names these
+--      columns and there is no default, so every fact written between this
+--      migration deploying and #5020's does so unkeyed. `SET NOT NULL` would
+--      then fail at boot on real data, and only where that interval was
+--      non-empty — never in CI, never in a fresh scratch schema. The `UPDATE`
+--      below is re-runnable by design (`WHERE … IS NULL`); repeat it. Two
+--      caveats on that re-run, both narrow and both real:
+--        * it is a PRE-VOCABULARY operation. This statement writes the raw
+--          `identityKey(surface)`, so once `alias` is a real table, re-running
+--          it OVERWRITES aliased keys on every row it matches. After that the
+--          drift re-key (ADR-0037 §7, inside the decide transaction, which
+--          knows the vocabulary) is the only correct rewriter.
+--        * `subject_key IS NULL` ALREADY means two things — see item 3 — since
+--          a degenerate surface is permanently NULL. Count unkeyed rows by
+--          comparing against the expression, not by testing the column.
+--   3. **It needs the ingest guard tightened, and no issue owns that yet.**
+--      `identityKey` returns NULL for a surface of only separators, and
+--      `reconcile.ts`'s `MALFORMED_CLAIM` test is `trim() === ""`, which does
+--      not strip `_` or `-` — so `-` is a STORABLE claim today whose key is
+--      permanently NULL. `SET NOT NULL` would therefore not merely fail on
+--      interval rows; it would make that ingest raise a not-null violation and
+--      fail the whole reconcile transaction. The fix belongs at the guard
+--      (refuse a candidate whose `identityKey` is NULL — a claim whose subject
+--      norms away asserts nothing), NOT at a sentinel key, which is the
+--      one-slot-for-every-placeholder hazard again. No issue owns that guard
+--      change; #5020's acceptance criteria claim the `NOT NULL` flip without
+--      it, so #5020 is where a reader will land and is the wrong place to
+--      learn this.
+--
+-- ## The backfill is unscoped by `status`, and covers every row
+--
+-- A draft and a published fact have identical identity, so there is no reason
+-- to scope — and `archived` (0180's third legal status) is not an exception.
+--
+-- Note what does NOT apply here, because an earlier draft of this header got it
+-- backwards: `scripts/check-brain-fact-promotion.sh` matches per statement on
+-- `UPDATE …brain_facts… SET …` plus any mention of `status`, and a backfill
+-- filtering on status would need an allowlist entry WITH a rationale — but its
+-- `--include` is `.ts`/`.tsx`/`.js`, so it can never scan THIS file. That rule
+-- is why the TypeScript drift re-key (ADR-0037 §7, inside the alias-approval
+-- decide transaction) must stay status-blind. Here it is a design choice with
+-- no guard behind it, which is exactly why `identity-pg.test.ts` seeds all
+-- three statuses and asserts every one of them gets keyed.
+--
+-- Tombstoned (`invalidated_at IS NOT NULL`) and superseded (`valid_to IS NOT
+-- NULL`) rows are keyed too, and that is the load-bearing half rather than
+-- completeness for its own sake. Alias REMOVAL is the one vocabulary operation
+-- that is not a rewrite — once two spellings share a key, nothing in the key
+-- column tells them apart again — so re-deriving from the retained surface form
+-- is the only way back. A corpus whose history is unkeyed has that undo working
+-- for live rows and silently broken for everything else.
+--
+-- ## `updated_at` is deliberately NOT stamped
+--
+-- Every other `UPDATE` in the brain-facts module stamps it, so this is a
+-- documented exception with no mechanical guard behind it. `updated_at` is the
+-- sort key of the publish preview (`content-mode/adapters/brain-facts.ts`'s
+-- `ORDER BY f.updated_at DESC`) and is projected on the wire by the candidates
+-- read. A workspace-wide stamp would reshuffle every reviewer's draft queue into
+-- backfill order. The principle: `updated_at` means this claim's CONTENT or
+-- REVIEW STATE moved, and a key recomputation moved neither. Staleness is
+-- unaffected — `computeDecaySignal` anchors on `last_observed_at` →
+-- `valid_from` → `ingested_at` only. Pinned by `identity-pg.test.ts`.
+--
+-- ## The FTS vector is untouched
+--
+-- `brain_facts.fts` keeps reading the SURFACE columns, not the keys (0181).
+-- Retrieval wants what people said; identity wants what they meant, and coupling
+-- them would let a vocabulary edit silently re-rank `searchBrain`. Note the two
+-- normalizations disagree on purpose: 0181's header records that the FTS parser
+-- emits `_` as a blank so `account_owner` and `account owner` already tokenize
+-- alike, which is the same unification this migration performs FOR `_` — the
+-- parallel stops there, since 0187 also unifies `-` and collapses runs while
+-- the FTS parser treats `account-owner` as a compound plus its parts. Arrived
+-- at independently, for a different consumer, and kept separate so either can
+-- move without the other.
+--
+-- ## Scale
+--
+-- Two full-table passes under the migration runner's advisory lock: the
+-- `UPDATE` rewrites every row of `brain_facts`, and the index is rebuilt (the
+-- runner wraps each file in one transaction, so CONCURRENTLY is unavailable).
+-- As of 2026-08-03 the brain substrate (0180) holds a four-figure corpus at the
+-- largest deployment the team can observe, so this is a sub-second hold — an
+-- unverifiable claim about self-hosted installs, stated with its date so a
+-- future reader knows how much to trust it. It grows linearly, and a future
+-- re-key at corpus scale is the drift path (in TypeScript, inside the
+-- alias-approval decide transaction, ADR-0037 §7), not another migration.
+
+ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS subject_key TEXT;
+ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS predicate_key TEXT;
+ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS object_key TEXT;
+
+-- The SQL twin of `lib/brain/identity.ts`'s `lexicalNorm`: case-fold, unify
+-- separators (`_`, `-`, and ASCII whitespace) into a single space, collapse
+-- runs, trim. Nothing else — no stemming, no lemmatisation, no stopword or
+-- copula stripping. The corpus carries `led_by` AND `leads`, which are INVERSE
+-- relations; any stemmer collapses them into one slot, and over-matching a join
+-- arm is what stamps `valid_to` on a belief nobody arbitrated.
+--
+-- The separator class is spelled out rather than written `[[:space:]]`, which
+-- consults the database locale above ASCII while JavaScript's `\s` does not —
+-- the two implementations have to agree on bytes, not on a collation. `-` sits
+-- last in the bracket so it reads as a literal instead of opening a range, and
+-- `btrim`'s second argument is given for the same reason (its default set is
+-- spaces only, but saying so keeps it from drifting with a default).
+--
+-- ## Why the class is built with `chr()` instead of written `'[ \t\n\v\f\r_-]+'`
+--
+-- Because escape processing is a GUC and the readable spelling silently loses
+-- to it. Under `standard_conforming_strings = off` the literal goes through
+-- old-style escape processing, which turns `\t\n\f\r` into control characters
+-- but DROPS the backslash on the unrecognized `\v` — leaving a bare `v` INSIDE
+-- the character class, so the letter `v` becomes a separator and `leaves` keys
+-- as `lea es`. Not the rare vertical-tab under-match you would guess: it
+-- shreds every key containing a `v`, corpus-wide, and disagrees with the
+-- TypeScript on a large fraction of real surfaces. Postgres emits a WARNING,
+-- not an error, and the migration runner attaches no notice listener — so it
+-- would commit silently.
+--
+-- Two repairs that do NOT work, both measured on this repo's
+-- `postgres:16-alpine` rather than reasoned about:
+--
+--   * `E'[ \t\n\v\f\r_-]+'` — the E-string drops the backslash on `\v` too.
+--   * `SET LOCAL standard_conforming_strings = on;` at the top of this file —
+--     `migrate.ts` sends the whole file as ONE simple-query message, and
+--     Postgres LEXES every statement in a message before executing any of
+--     them. The literal is already escape-processed by the time the `SET`
+--     runs. (Verified: with the GUC off at session level, a same-message `SET
+--     LOCAL … = on` still yields `lea es`; the `chr()` form yields `leaves`.)
+--
+-- `chr()` has no escapes to process, so it is correct under either setting and
+-- there is nothing left to configure wrong. `identity-pg.test.ts` runs this
+-- file with the GUC forced OFF and compares it to the TypeScript, so a revert
+-- to the readable spelling fails CI.
+--
+-- `translate()` AND NOT `lower()`, which is the surprising line here and the one
+-- most likely to be "simplified" back. `lower()` and JavaScript's
+-- `String#toLowerCase()` are not the same function, measured on this repo's own
+-- `postgres:16-alpine`: `İstanbul` (U+0130) lowers to `istanbul` here and to
+-- `i` + U+0307 there, and `ΣΊΣΥΦΟΣ` lowers with a plain final sigma here and a
+-- word-final `ς` there. Postgres's answer additionally moves with the database
+-- collation, so a key would depend on where it was computed — which is what
+-- ADR-0037 §1 rules out when it calls `lexicalNorm` "pure, total,
+-- vocabulary-free, offline". So both sides fold `A`–`Z` and nothing else, and
+-- `Café`/`CAFÉ` deliberately do not norm together — an under-match, which costs
+-- a duplicate row and is repaired by a vocabulary entry, versus keys two
+-- regions compute differently, which nothing surfaces.
+--
+-- `NULLIF(…, '')` is the twin of `identity.ts`'s `identityKey`, and it is what
+-- keeps this statement from reintroducing the `DEFAULT ''` hazard the header
+-- rejects. A surface of only separators (`___`, `-`, `  `) norms to the empty
+-- string, and a STORED `''` is the one key value that joins every other
+-- degenerate row: two unrelated placeholder claims would occupy one slot and
+-- publishing either would stamp `valid_to` on the other. Such surfaces are
+-- reachable — `reconcile.ts`'s malformed-claim guard tests `trim() === ""`, and
+-- `trim` strips whitespace but not `_` or `-`. NULL is the honest key for a
+-- surface that asserts nothing.
+--
+-- `WHERE … IS NULL` makes the statement re-runnable rather than scoping it: on
+-- day one every row matches. It is `identity-pg.test.ts`'s handle for running
+-- this file against seeded rows and comparing the result to the TypeScript
+-- function row by row, which is what pins the two implementations together.
+-- (Re-runnability does mean a row whose surface norms away is re-visited on
+-- every run. It is a no-op — three expressions over one row — and the
+-- alternative is a sentinel, which is the hazard again.)
+UPDATE brain_facts
+   SET subject_key   = NULLIF(btrim(regexp_replace(translate(subject,   'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
+       predicate_key = NULLIF(btrim(regexp_replace(translate(predicate, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
+       object_key    = NULLIF(btrim(regexp_replace(translate(object,    'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), '')
+-- Parenthesized deliberately. The three arms are all `OR`, so the group is
+-- redundant TODAY — it is here because `AND` binds tighter than `OR`, and the
+-- one edit this statement must never silently accept is a fourth arm that
+-- scopes it (`WHERE status = 'published' AND subject_key IS NULL OR …` reads as
+-- unscoped and is not). Found while mutation-testing this migration: that exact
+-- shape passed every assertion in `identity-pg.test.ts`.
+ WHERE (subject_key IS NULL
+     OR predicate_key IS NULL
+     OR object_key IS NULL);
+
+-- The slot index is REPOINTED, not duplicated — zero net new indexes.
+--
+-- 0180 created it on `(workspace_id, subject, predicate) WHERE invalidated_at
+-- IS NULL` and called it "the retrieval read (#4773)". That description was
+-- already stale: retrieval rides `idx_brain_facts_fts` (GIN), and a repo-wide
+-- grep finds no other equality reader of `subject` — `candidates.ts` searches
+-- with a leading-wildcard `ILIKE`, which a btree cannot serve. It is the SLOT
+-- index and nothing else, so moving it onto the slot's new columns costs no
+-- reader an access path it had a claim to.
+--
+-- Tightening the partial predicate is free in the same way: all three slot
+-- consumers (the corroboration lookup, the tension-candidate scan, and the
+-- supersession collision join) already require `valid_to IS NULL`, each for its
+-- own recorded reason — on the PUBLISHED/joined side, which is the side this
+-- index serves. (`supersedingDraftPredicate` requires only `status = 'draft'
+-- AND invalidated_at IS NULL`, so a draft carrying a restored non-null
+-- `valid_to` off a region import sits outside the index. That side is a scan of
+-- one publish's draft set either way.) The index gets strictly smaller.
+--
+-- ONE honest cost, and it lasts until #5020 merges — a separate PR with no
+-- enforced ordering, not a single deploy. Those three consumers still compare
+-- the SURFACE columns until #5020 pivots them onto the keys, so until then they
+-- lose their `(subject, predicate)` access path.
+--
+-- Measured, not guessed, on a 20k-row corpus against this repo's PG 16, using
+-- `CORROBORATION_LOOKUP_SQL`'s exact shape:
+--
+--   * 50 workspaces — 3 buffers / 0.04 ms → 15 buffers / 0.18 ms. The index is
+--     still USED: `workspace_id` is its leading column, so the planner seeks on
+--     the workspace prefix and filters the surfaces over that workspace's rows.
+--   * 1 workspace — the prefix buys nothing and the planner picks a seq scan.
+--
+-- So the cost is O(the workspace's live facts) in BOTH shapes, never O(the
+-- region's) — `workspace_id` is an index prefix or a scan filter, and it is
+-- never dropped. It is a plan change, never a wrong answer, and an N-1 pod
+-- during the deploy overlap sees the same thing, so the two-phase discipline
+-- that governs `DROP COLUMN` does not apply. The trade is against
+-- carrying two indexes through the cut, which is what "repoint, not add"
+-- (ADR-0037 §1's zero-net-new-indexes result) exists to avoid; it is bounded by
+-- the corpus size noted above, with that estimate's caveat.
+DROP INDEX IF EXISTS idx_brain_facts_subject;
+
+CREATE INDEX IF NOT EXISTS idx_brain_facts_subject
+  ON brain_facts (workspace_id, subject_key, predicate_key)
+  WHERE invalidated_at IS NULL AND valid_to IS NULL;

@@ -21,24 +21,107 @@ fi
 PASS=0
 FAIL=0
 
-# run_fixture <label> <expect: pass|fail> <relative-path> <file-contents>
-run_fixture() {
-  local label="$1" expect="$2" relpath="$3" contents="$4"
-  local tmp
+# _run_guard <relpath> <contents> — stage a throwaway tree holding ONE file and
+# run the guard against it. Results come back in GUARD_RC and GUARD_OUT.
+#
+# The three fixture helpers below differ only in what they ASSERT; staging the
+# tree is identical for all of them and was written out three times.
+#
+# BOTH results are globals, deliberately. Echoing the status so a caller could
+# write `rc="$(_run_guard …)"` puts the whole function in a SUBSHELL, where the
+# GUARD_OUT assignment is discarded — the message fixtures then matched against
+# an empty string and passed only because they were asserting on nothing.
+GUARD_OUT=""
+GUARD_RC=0
+_run_guard() {
+  local relpath="$1" contents="$2" tmp rc=0
   tmp="$(mktemp -d)"
   mkdir -p "$tmp/$(dirname "$relpath")"
   printf '%s\n' "$contents" > "$tmp/$relpath"
-
-  local rc=0
-  BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
+  GUARD_OUT="$(BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" 2>&1)" || rc=$?
+  # intentionally ignored: best-effort restore so `rm -rf` cannot be blocked by
+  # a fixture's own `chmod 000`; the `rm -rf` that follows reports its own
+  # failure if this did not help.
+  chmod -R u+rwX "$tmp" 2>/dev/null || true
   rm -rf "$tmp"
+  GUARD_RC="$rc"
+}
 
-  if [ "$expect" = "pass" ] && [ "$rc" -eq 0 ]; then
-    echo "  ✓ $label"; PASS=$((PASS + 1))
-  elif [ "$expect" = "fail" ] && [ "$rc" -eq 1 ]; then
+_tally() {
+  local ok="$1" label="$2" detail="$3"
+  if [ "$ok" = "1" ]; then
     echo "  ✓ $label"; PASS=$((PASS + 1))
   else
-    echo "  ✗ $label — expected $expect, got exit $rc"; FAIL=$((FAIL + 1))
+    echo "  ✗ $label — $detail"; FAIL=$((FAIL + 1))
+  fi
+}
+
+# run_fixture <label> <expect: pass|fail> <relative-path> <file-contents>
+run_fixture() {
+  local label="$1" expect="$2"
+  _run_guard "$3" "$4"
+  if { [ "$expect" = "pass" ] && [ "$GUARD_RC" -eq 0 ]; } \
+    || { [ "$expect" = "fail" ] && [ "$GUARD_RC" -eq 1 ]; }; then
+    _tally 1 "$label" ""
+  else
+    _tally 0 "$label" "expected $expect, got exit $GUARD_RC"
+  fi
+}
+
+# run_message_fixture <label> <relative-path> <file-contents> <expected-substring…>
+#
+# Exit-code fixtures cannot see WHICH advice the guard printed, and the guard
+# argues at length that naming the wrong column "would send the reader to fix
+# code they did not write". That argument was unenforced: the entire per-column
+# remediation text could be deleted and every fixture above stay green.
+#
+# The case that made this concrete: `statement_writes_gated_column` used to
+# return on the first matching arm, and every SLOT-CONSUMER statement carries
+# `AND valid_to IS NULL` — all three require it by design, so a realistic re-key
+# does too. (Not every brain_facts statement does: `INSERT_FACT_SQL` has no
+# WHERE, and the promote UPDATE never names `valid_to`.) So a re-key reported a
+# supersession stamp, and the identity advice was unreachable in the one shape
+# it exists for — and the HEADLINE, which is the line GitHub surfaces, stayed
+# wrong for a further round after the offenders line was fixed.
+run_message_fixture() {
+  local label="$1" relpath="$2" contents="$3"
+  shift 3
+  local needle
+  _run_guard "$relpath" "$contents"
+  if [ "$GUARD_RC" -ne 1 ]; then
+    _tally 0 "$label" "expected the gate to FAIL (exit 1), got exit $GUARD_RC"
+    return
+  fi
+  for needle in "$@"; do
+    if ! grep -qF -- "$needle" <<<"$GUARD_OUT"; then
+      _tally 0 "$label" "output never mentions: $needle"
+      return
+    fi
+  done
+  _tally 1 "$label" ""
+}
+
+# run_status_fixture <label> <expected-rc> <setup-fn>
+#
+# `run_fixture` only distinguishes rc 0 from rc 1, so the guard's fail-CLOSED
+# branch — "the candidate scan itself failed, this gate did NOT run", rc 2 — was
+# unexpressible and therefore unpinned. That branch is the one that stops a
+# broken scan from printing "check passed". Takes a setup callback because these
+# fixtures need a tree shape (an unreadable file, an empty tree) rather than one
+# file's contents.
+run_status_fixture() {
+  local label="$1" expect_rc="$2" setup="$3"
+  local tmp rc=0
+  tmp="$(mktemp -d)"
+  "$setup" "$tmp"
+  BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
+  # intentionally ignored: see _run_guard.
+  chmod -R u+rwX "$tmp" 2>/dev/null || true
+  rm -rf "$tmp"
+  if [ "$rc" -eq "$expect_rc" ]; then
+    _tally 1 "$label" ""
+  else
+    _tally 0 "$label" "expected exit $expect_rc, got $rc"
   fi
 }
 
@@ -182,7 +265,7 @@ run_fixture "schema-qualified UPDATE fails" fail \
 'await db.query(`UPDATE public.brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
 
 # (t) A POSITIONAL insert (no column list) → must FAIL. Grep cannot tell whether
-#     it sets status, and a positional insert into a 17-column table is
+#     it sets status, and a positional insert into a table this wide is
 #     unreviewable regardless.
 run_fixture "column-less positional INSERT fails" fail \
   "packages/api/src/lib/brain/rogue.ts" \
@@ -407,6 +490,210 @@ run_fixture "INSERT naming pre_widening_visible_to passes (restore, not a wideni
   "packages/api/src/lib/brain/import-shape.ts" \
 'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, pre_widening_visible_to, provenance, source_episode_id)
   VALUES ($1,$2,$3,$4, ARRAY(SELECT jsonb_array_elements_text($5::jsonb)), $6::jsonb, $7::uuid)`);'
+
+# ── the identity keys (#5019, ADR-0037) ──────────────────────────────────
+#
+# UPDATE-forbidden / INSERT-legal, on the grant's exact terms: a key is derived
+# at ingest, and re-keying is what changes a claim's collisions — which is what
+# the publish gate stamps `valid_to` on. Each column gets its OWN failing
+# fixture rather than one representative, because they are four independent
+# alternations in the arm and a fixture on one proves nothing about the others.
+
+run_fixture "UPDATE … SET subject_key fails (a re-key outside the approval seam)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET subject_key = $2 WHERE workspace_id = $1`);'
+
+run_fixture "UPDATE … SET predicate_key fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET predicate_key = $2 WHERE workspace_id = $1 AND predicate_key = $3`);'
+
+run_fixture "UPDATE … SET object_key fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET object_key = $2 WHERE workspace_id = $1`);'
+
+run_fixture "Drizzle .update().set({subjectKey}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ subjectKey: k }).where(eq(brainFacts.id, id));'
+
+run_fixture "Drizzle .update().set({predicateKey}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ predicateKey: k }).where(eq(brainFacts.id, id));'
+
+run_fixture "Drizzle .update().set({objectKey}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ objectKey: k }).where(eq(brainFacts.id, id));'
+
+# The upsert half, the shape that evaded the grant arm when it was first
+# written — it names no table after `UPDATE`.
+run_fixture "ON CONFLICT … DO UPDATE SET predicate_key fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET predicate_key = $4`);'
+
+run_fixture "Drizzle .insert().onConflictDoUpdate({set:{objectKey}}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { objectKey: k } });'
+
+# The `_cmp` arms are gated ahead of the column existing (#5032), so nothing in
+# the tree can hold them yet. These fixtures are the only thing that does —
+# without them the alternations could be deleted and every other test here would
+# still pass. Both spellings, because ADR-0037 §2's column table defines
+# both, and `subject_cmp` (#5032) is the INVERTED one.
+run_fixture "UPDATE … SET subject_cmp fails (gated before the column exists, #5032)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET subject_cmp = $2 WHERE workspace_id = $1`);'
+
+run_fixture "UPDATE … SET object_cmp fails (gated before the column exists, #5032)" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET object_cmp = $2 WHERE workspace_id = $1`);'
+
+# The must-PASS half. An INSERT naming the keys is #5020'"'"'s `INSERT_FACT_SQL`,
+# and gating it would refuse the write the whole identity design rests on —
+# the same line the grant draws. Names ONLY the key columns beyond the
+# structural minimum, so it cannot pass on some other column'"'"'s arm.
+run_fixture "INSERT naming the identity keys passes — derived at ingest, like the grant" pass \
+  "packages/api/src/lib/brain/reconcile-shape.ts" \
+'await db.query(`INSERT INTO brain_facts (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, provenance, source_episode_id, visible_to)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::uuid, ARRAY(SELECT jsonb_array_elements_text($10::jsonb)))`);'
+
+run_fixture "Drizzle .insert().values({subjectKey}) passes" pass \
+  "packages/api/src/lib/brain/reconcile-shape.ts" \
+'await db.insert(brainFacts).values({ subject: s, subjectKey: sk, predicateKey: pk, objectKey: ok, visibleTo: tokens });'
+
+# Reading and JOINING on a key is the entire point of materializing it — the
+# gate must not make the slot lookup itself unwritable.
+run_fixture "SELECT joining on the identity keys passes" pass \
+  "packages/api/src/lib/brain/read.ts" \
+'const rows = await db.query(`SELECT id FROM brain_facts WHERE workspace_id = $1 AND subject_key = $2 AND predicate_key = $3 AND object_key = $4 AND invalidated_at IS NULL AND valid_to IS NULL`);'
+
+# The regression that matters: retraction is the one legitimate unallowlisted
+# brain_facts UPDATE, and it must stay legitimate now that five more columns are
+# gated. Re-pinned here rather than assumed from the `valid_to` fixture above,
+# since a new arm is a new way to break it.
+run_fixture "retraction still passes with the identity keys gated" pass \
+  "packages/api/src/lib/brain/retract3.ts" \
+'await db.query(`UPDATE brain_facts AS f SET invalidated_at = now(), updated_at = now() WHERE f.id = $1 AND f.invalidated_at IS NULL`);'
+
+# A one-shot backfill under `db/migrations/scripts/*.ts` is the path the guard's
+# header specifically says it declines to exclude by directory. Nothing pinned
+# that for the identity arm.
+run_fixture "a .ts re-key under db/migrations/scripts/ fails" fail \
+  "packages/api/src/lib/db/migrations/scripts/rekey-identity.ts" \
+'await pool.query(`UPDATE brain_facts SET predicate_key = $2 WHERE workspace_id = $1 AND predicate_key = $3`);'
+
+# ── the failure MESSAGE, not just the exit code ───────────────────────────
+#
+# The realistic re-key. It carries `AND valid_to IS NULL` because all three slot
+# consumers require it, which is exactly what made first-match reporting route
+# this to the supersession advice. Both arms must be named, and the identity
+# remedy — the alias-approval seam, and INSERT being legal — must be printed.
+run_message_fixture "a re-key that also mentions valid_to reports BOTH arms, with the identity remedy" \
+  "packages/api/src/lib/brain/rekey.ts" \
+'await db.query(`UPDATE brain_facts
+   SET subject_key = $3, predicate_key = $4
+ WHERE workspace_id = $1 AND subject_key = $2
+   AND invalidated_at IS NULL AND valid_to IS NULL`);' \
+  "is RE-KEYED outside the alias-approval seam (#5019)" \
+  "(valid_to identity)" \
+  "alias-approval" \
+  "Naming the keys on the INSERT is correct and required"
+
+# ── the scan's own failure modes ─────────────────────────────────────────
+#
+# A tree with no candidate file at all must PASS (rc 0): grep exits 1, which is
+# the one benign status.
+_setup_empty() { mkdir -p "$1/packages/api/src/lib/brain"; printf 'export const X = 1;\n' > "$1/packages/api/src/lib/brain/unrelated.ts"; }
+run_status_fixture "an empty tree passes — grep exit 1 is 'no match', not 'broken'" 0 _setup_empty
+
+# An UNREADABLE candidate must fail CLOSED (rc 2), not print "check passed".
+# Without this, a permission error, a missing grep, or a bad root all render as
+# a clean scan — the exact fail-open shape CLAUDE.md forbids on a security gate.
+_setup_unreadable() {
+  mkdir -p "$1/packages/api/src/lib/brain"
+  printf 'await db.query(`SELECT id FROM brain_facts`);\n' > "$1/packages/api/src/lib/brain/read.ts"
+  chmod 000 "$1/packages/api/src/lib/brain/read.ts"
+}
+# Skipped for root, which can read anything and would see rc 0 here.
+if [ "$(id -u)" -ne 0 ]; then
+  run_status_fixture "an unreadable candidate fails CLOSED (exit 2), never 'check passed'" 2 _setup_unreadable
+else
+  echo "  ~ skipped (running as root): an unreadable candidate fails CLOSED"
+fi
+
+# ── the headline precedence, EVERY ordered pair ──────────────────────────
+#
+# The guard picks one `::error::` headline from `SEVERITY_ORDER`. That order was
+# wrong twice in one review — `valid_to` ahead of `identity`, so a re-key was
+# reported as a supersession stamp — and it survived the first fix because the
+# only fixture covering it pinned a single pair.
+#
+# TWO assertions, and the split is the point. Generating the pairs from the
+# script's own array would be self-fulfilling: reorder the array and the
+# expectations reorder with it, which is a test agreeing with the code rather
+# than checking it. So the intended order is written out HERE as the pin, the
+# script's array is required to equal it, and the pairs are then generated to
+# prove the IMPLEMENTATION (`arm_fired` / `headline_for`) matches the
+# declaration. Changing the precedence means editing both, deliberately.
+#
+# One SET list naming both columns trips both arms; the higher-precedence one
+# must own the headline.
+declare -A PRECEDENCE_COLUMN=(
+  [visible_to]="visible_to"
+  [identity]="subject_key"
+  [valid_to]="valid_to"
+  [status]="status"
+)
+declare -A PRECEDENCE_HEADLINE=(
+  [visible_to]="\`visible_to\` is MUTATED"
+  [identity]="is RE-KEYED outside the alias-approval seam"
+  [valid_to]="\`valid_to\` is stamped"
+  [status]="\`status\` is written"
+)
+
+# The pin. Failure direction, most severe first: a grant write DISCLOSES; a
+# re-key reaches the irreversible `valid_to` stamp by proxy, so it subsumes the
+# stamp wherever a statement carries both; a stamp retires a belief invisibly; a
+# status write over-trusts a claim, the recoverable one.
+EXPECTED_ORDER=(visible_to identity valid_to status)
+
+SEVERITY_ORDER_LINE="$(grep -oE '^SEVERITY_ORDER=\(([^)]*)\)' "$SCRIPT" | head -1)"
+if [ -z "$SEVERITY_ORDER_LINE" ]; then
+  echo "  ✗ check-brain-fact-promotion.sh no longer declares SEVERITY_ORDER=( … ) — re-point this parse, or every pair below is unasserted"
+  FAIL=$((FAIL + 1))
+else
+  # shellcheck disable=SC2206
+  ORDER=( ${SEVERITY_ORDER_LINE#SEVERITY_ORDER=(} )
+  ORDER[${#ORDER[@]}-1]="${ORDER[${#ORDER[@]}-1]%)}"
+  if [ "${ORDER[*]}" = "${EXPECTED_ORDER[*]}" ]; then
+    _tally 1 "SEVERITY_ORDER is (${EXPECTED_ORDER[*]})" ""
+  else
+    _tally 0 "SEVERITY_ORDER is (${EXPECTED_ORDER[*]})" \
+      "the script declares (${ORDER[*]}). The headline order is a failure-direction decision, not a formatting choice — if you mean to change it, change EXPECTED_ORDER here too and say why."
+  fi
+  for hi in "${ORDER[@]}"; do
+    for lo in "${ORDER[@]}"; do
+      [ "$hi" = "$lo" ] && continue
+      # Only assert pairs in the declared order (hi before lo).
+      hi_i=-1; lo_i=-1
+      for i in "${!ORDER[@]}"; do
+        [ "${ORDER[$i]}" = "$hi" ] && hi_i=$i
+        [ "${ORDER[$i]}" = "$lo" ] && lo_i=$i
+      done
+      [ "$hi_i" -lt "$lo_i" ] || continue
+      run_message_fixture "precedence: $hi outranks $lo in the headline" \
+        "packages/api/src/lib/brain/precedence.ts" \
+        "await db.query(\`UPDATE brain_facts SET ${PRECEDENCE_COLUMN[$hi]} = \$2, ${PRECEDENCE_COLUMN[$lo]} = \$3 WHERE workspace_id = \$1\`);" \
+        "${PRECEDENCE_HEADLINE[$hi]}"
+    done
+  done
+fi
+
+# …and a re-key that mentions nothing else gets the same headline by the
+# single-arm route, so the precedence chain is pinned from both directions.
+run_message_fixture "a bare re-key gets the identity headline alone" \
+  "packages/api/src/lib/brain/rekey2.ts" \
+'await db.query(`UPDATE brain_facts SET object_key = $2 WHERE workspace_id = $1`);' \
+  "is RE-KEYED outside the alias-approval seam (#5019)" \
+  "(identity)"
 
 echo ""
 

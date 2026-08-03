@@ -164,14 +164,34 @@ export default function BrainFactsPage() {
     // This re-derives per render BY DESIGN, and is the one `select` in the
     // admin app that maps rather than handing back the response's own array.
     // The cost is row-reference stability, which the hook's Proxy memo uses to
-    // skip re-renders; the benefit is that rows and the `tensionsTruncated`
-    // banner below read the same response object on the same render, so they
-    // cannot disagree mid-refetch. On a page of at most `LIMIT` rows that is
-    // the right trade — read the churn as intentional, not a missing `useMemo`.
-    select: (r) => ({
-      rows: r.candidates.map((c) => ({ ...c, pageTensionsTruncated: r.tensionsTruncated })),
-      total: r.total,
-    }),
+    // skip re-renders. Not cached on response identity — which would preserve
+    // it — because a map over at most `LIMIT` rows is not worth the cache, and
+    // the consistency that matters comes from elsewhere anyway: rows and the
+    // banner below both read `fetchState.data`, so they cannot disagree
+    // mid-refetch either way. Read the churn as intentional, not as a missing
+    // `useMemo`.
+    select: (r) => {
+      // The drift arm gets a SIGNAL, once per response rather than once per
+      // row. `isFullyArbitrated` treats a non-boolean flag as "incomplete" and
+      // suppresses the badge — the safe direction — but suppressing is exactly
+      // what a silent regression looks like from outside, and the banner
+      // fifteen lines down defaults the other way (`?? false`), so a drifted
+      // payload would otherwise render no badge, no banner, and no trace.
+      // Unreachable through the queue's own path (`tensionsTruncated` is a
+      // required `z.boolean()` and `useAdminFetch` throws on a parse failure);
+      // this is for the shape, not for a caller.
+      if (typeof r.tensionsTruncated !== "boolean") {
+        console.warn(
+          "brain-facts: `tensionsTruncated` is not a boolean — the list response drifted, so the "
+            + "\"Conflict resolved\" badge is suppressed and the truncation banner will not render",
+          { received: typeof r.tensionsTruncated },
+        );
+      }
+      return {
+        rows: r.candidates.map((c) => ({ ...c, pageTensionsTruncated: r.tensionsTruncated })),
+        total: r.total,
+      };
+    },
     buildPath: ({ offset, perPage }) =>
       buildBrainFactsPath(
         { offset, perPage },
@@ -439,9 +459,10 @@ export default function BrainFactsPage() {
               <Alert>
                 <Split className="size-4" aria-hidden />
                 <AlertDescription>
-                  This page has more conflicting claims than Atlas can show at once, so some
-                  candidates&apos; conflicts are missing here. Narrow the queue with a filter, or
-                  use a smaller page, before treating any row as conflict-free.
+                  Some candidates&apos; conflicts are missing from this page — usually more
+                  conflicting claims than Atlas can show at once, occasionally one it could not
+                  read. Narrowing the queue with a filter or using a smaller page may recover
+                  them; either way, don&apos;t treat any row here as conflict-free.
                 </AlertDescription>
               </Alert>
             )}

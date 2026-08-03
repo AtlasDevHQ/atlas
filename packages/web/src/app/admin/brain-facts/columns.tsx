@@ -47,6 +47,8 @@ import { isFullyArbitrated, isTensionOpen } from "./tension-state";
  * compile-time obligation into a runtime one: `TableMeta` is globally augmented
  * across every admin table, so a one-page fact has to be declared OPTIONAL
  * there, and a page that forgot to pass it would simply read `undefined`.
+ * (`useServerDataTable` does not forward a `meta` option at all today, so that
+ * route would have meant widening the shared hook first.)
  * (Which `isFullyArbitrated`'s `!== false` guard would then suppress, so it
  * fails safe either way — the objection is that the mistake is silent, not that
  * it is dangerous.) Widening the row type instead makes a missing stamp a
@@ -312,8 +314,9 @@ export function getBrainFactColumns(
         // drawn it per rival since #4935, this is its row-level equivalent.
         //
         // Mutually exclusive with the count above BY CONSTRUCTION, not by two
-        // conditions kept in step: `isFullyArbitrated` is the complement of
-        // `some(isTensionOpen)` over the same list, in the same module.
+        // conditions kept in step: `isFullyArbitrated` negates the same
+        // `some(isTensionOpen)` over the same list, in the same module. Not a
+        // complement — with no rivals, or under the cap, neither badge renders.
         //
         // ⚠️ And SILENT on a truncated page, which is the one place the two
         // badges are not symmetric — the whole ROW goes in, not `c.tensions`,
@@ -326,11 +329,10 @@ export function getBrainFactColumns(
         // cap is the long-accepted direction here; asserting a resolution that
         // is not established is not, and `TENSION_FANOUT_CAP`'s own comment
         // names it as the one thing this surface must never imply. So the row
-        // falls back to the pre-#4995 silence, and the banner explains it —
-        // approximately, on the arm where the flag was raised by a dropped edge
-        // rather than the cap: it says "more conflicting claims than Atlas can
-        // show", where the truth is "one could not be read". The reviewer is
-        // told not to trust the list either way, which is the part that matters.
+        // falls back to the pre-#4995 silence, and the banner explains it — for
+        // both causes now, since the flag stopped meaning only "the cap bit"
+        // and the copy was widened with it rather than left asserting a
+        // diagnosis one arm falsifies.
         const arbitrated = isFullyArbitrated(c);
         return (
           <div className="flex flex-wrap gap-1">

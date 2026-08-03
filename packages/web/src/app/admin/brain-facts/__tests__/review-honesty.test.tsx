@@ -903,8 +903,9 @@ function rival(
  * `querySelector` takes the FIRST tbody, which is the queue's only because the
  * oversight panel above it — whose table has an "In tension" header — is a
  * `Collapsible` that defaults to closed and does not `forceMount`. Every caller
- * below renders exactly one candidate, so "the tbody" and "the row" coincide;
- * a multi-row fixture would need an index.
+ * OF THIS HELPER renders exactly one candidate, so "the tbody" and "the row"
+ * coincide. The one multi-row fixture in the file (#4995's truncated-page test)
+ * indexes `tbody tr` itself for that reason.
  */
 function rowText(view: { container: HTMLElement }): string {
   return view.container.querySelector("tbody")?.textContent ?? "";
@@ -1019,7 +1020,7 @@ describe("the queue counts OPEN conflicts, not settled ones (#4961)", () => {
     const text = rowText(view);
     expect(text).toContain("Postgres");
     expect(text).not.toContain("In tension");
-    expect(view.container.textContent).toContain("more conflicting claims than Atlas can show");
+    expect(view.container.textContent).toContain("conflicts are missing from this page");
     // ⭐ And #4995's badge stays away too, which is the whole reason it is gated
     // on truncation. This row's ONE delivered rival is settled, so the predicate
     // says "fully arbitrated" — but open rivals may be sitting beyond the cap,
@@ -1149,7 +1150,7 @@ describe("an arbitrated row reads as RESOLVED, not as never contested (#4995)", 
     // The `select` stamp is per-row, and every other fixture in this file
     // renders ONE candidate — so a stamp that only reached row 0
     // (`(c, i) => ({ ...c, pageTensionsTruncated: i === 0 ? r.tensionsTruncated : false })`)
-    // survives the whole suite while rows 2..N of a capped page assert an
+    // survives the whole suite while rows 1..N of a capped page assert an
     // arbitration over rivals nobody saw. With a page limit of 50, row 0 is the
     // unrepresentative one.
     //
@@ -1175,21 +1176,44 @@ describe("an arbitrated row reads as RESOLVED, not as never contested (#4995)", 
     expect(rows[1]!.textContent).not.toContain("Conflict resolved");
   });
 
-  test("keeps the badge MUTED — the colour is what separates history from work", async () => {
+  test("⭐ keeps the badge MUTED — the colour is what separates history from work", async () => {
     // The badge's whole design claim, and the half no text assertion can see:
-    // swap `resolvedTensionBadge.className` for the violet `tensionBadge` one
-    // and every other test in this file still passes, while a reviewer scanning
-    // the queue for what needs deciding can no longer skip it at a glance. The
-    // sibling convention is `review-honesty.test.tsx`'s strike-through
-    // assertion, which exists for exactly this reason.
+    // render it violet and every text-based test in this file still passes,
+    // while a reviewer scanning the queue for what needs deciding can no longer
+    // skip it at a glance. The file's own precedent for pinning a purely visual
+    // signal is the sheet's `.line-through` query below.
     //
-    // Asserted against the tokens rather than the DOM: `Badge` composes the
-    // className, so a DOM match would pin shadcn's variant classes too and
-    // redden on an unrelated component change.
+    // Asserted at the RENDER SITE, not just on the token — a token assertion
+    // alone leaves the likelier mutation green, since `columns.tsx` could pass
+    // `tensionBadge.className` into the arbitrated branch without touching
+    // either constant. Queried by a single semantic class rather than the whole
+    // className, so shadcn's variant classes stay unpinned.
+    //
+    // MUTATION THIS CATCHES: rendering the resolved badge with the violet
+    // token, or recolouring `resolvedTensionBadge` itself.
+    const view = await renderPage([
+      candidate({ tensions: [rival("fact-2", { invalidatedAt: ISO })] }),
+    ]);
+    // The LAST match, not the first: the badge sits alone in its cell, so the
+    // enclosing `<td>` has the same trimmed text. `querySelectorAll` is in
+    // document order, so ancestors come first and the deepest match is the
+    // badge itself. (The icon inside it contributes no text, so it never
+    // matches.)
+    const badge = Array.from(view.container.querySelectorAll("tbody *"))
+      .filter((el) => el.textContent?.trim() === resolvedTensionBadge.label)
+      .at(-1);
+    expect(badge).toBeDefined();
+    expect(badge!.className).toContain("text-muted-foreground");
+    expect(badge!.className).not.toContain("violet");
+
+    // The token half, which the render half cannot state: the two badges are
+    // deliberately DIFFERENT hues, not incidentally so.
     expect(resolvedTensionBadge.className).not.toBe(tensionBadge.className);
-    expect(resolvedTensionBadge.className).toBe("border-muted-foreground/40 text-muted-foreground");
-    // …and it is the same muted spelling the detail sheet gives a settled
-    // rival, which is the cross-surface claim the token's docblock makes.
+    // Pins `statusBadge.archived` specifically — the same muted spelling this
+    // file already gives a retired thing. NOT a cross-surface assertion: the
+    // detail sheet's per-rival badges hard-code the identical literal rather
+    // than importing a token, so nothing here can hold them in step. The
+    // token's docblock says so too.
     expect(resolvedTensionBadge.className).toBe(statusBadge.archived.className);
   });
 
@@ -1271,7 +1295,10 @@ describe("truncation is admitted", () => {
     // candidates lose ALL of their hints — nothing in a row can show that, and
     // a silent page renders as "nothing conflicts with any of this".
     const view = await renderPage([candidate()], { tensionsTruncated: true });
-    expect(view.container.textContent).toContain("more conflicting claims than Atlas can show");
+    // Asserted on the clause that is true for BOTH causes the flag now carries
+    // — the cap, and an edge the walk could not read (#4995). The banner keeps
+    // the cap wording as the likely case, but the promise it makes is this one.
+    expect(view.container.textContent).toContain("conflicts are missing from this page");
   });
 
   test("marks a clipped episode body rather than passing a prefix off as the message", async () => {

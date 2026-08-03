@@ -155,15 +155,17 @@ export function isTensionOpen(tension: BrainFactTensionView): boolean {
  *
  * Defined HERE rather than inline in `columns.tsx` for the module's founding
  * reason: settled-vs-open gets one definition, not two. It is the exact
- * complement of the count on a COMPLETE page — `some(isTensionOpen)` and this
- * cannot both be true — so the two badges are mutually exclusive by construction
- * rather than by two conditions a later edit could drift apart. (Under the cap
- * neither renders; see the warning below.)
+ * MUTUALLY EXCLUSIVE with the count by construction — `some(isTensionOpen)` and
+ * this can never both be true — rather than by two conditions a later edit could
+ * drift apart. Not its complement, though: on an empty rival list, or under the
+ * cap, BOTH are false and the row wears nothing. Those are the two warnings
+ * below, and they are the whole safety property.
  *
- * ⚠️ **The emptiness check is the whole safety property.** `[].every(...)` is
- * `true`, so dropping the length test would badge every uncontested claim in
- * the queue as "resolved" — the exact false history this exists to prevent, and
- * the one mutation that leaves a naive test green.
+ * ⚠️ **The emptiness check is a safety property, not a tidiness one.**
+ * `![].some(...)` is `true` (as is the `every` spelling), so dropping the length
+ * test would badge every uncontested claim in the queue as "resolved" —
+ * inventing an arbitration history, and the one mutation that leaves a naive
+ * test green.
  *
  * Inherits the module's directional bias unchanged: a WITHHELD rival reads as
  * open, so a claim whose only counterpart the ACL hid is never reported as

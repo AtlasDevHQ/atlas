@@ -237,15 +237,17 @@ describe("isFullyArbitrated (#4995)", () => {
     // contradicts. Identical input, opposite answer — the flag is the only
     // difference between these two lines.
     //
-    // MUTATION THIS CATCHES: deleting the truncation guard, or spelling it
-    // `!row.pageTensionsTruncated` — which additionally fails OPEN on a flag
-    // that ever arrives absent. The first two assertions pass under that
-    // spelling; the THIRD is the one that pins it.
+    // MUTATION THIS CATCHES: deleting the truncation guard, or writing it
+    // `if (row.pageTensionsTruncated) return false;` — behaviourally identical
+    // on a real boolean, but it fails OPEN on a flag that ever arrives absent.
+    // The first two assertions below pass under that spelling; the THIRD is the
+    // one that pins it.
     expect(isFullyArbitrated(row([visible({ invalidatedAt: PAST })], true))).toBe(false);
     expect(isFullyArbitrated(row([visible({ invalidatedAt: PAST })], false))).toBe(true);
-    // A drifted payload — the flag missing entirely. `!undefined` is `true`, so
-    // the naive spelling would let a capped page assert a resolution; `!== false`
-    // suppresses it, which is this module's stated bias on every other guard.
+    // A drifted payload — the flag missing entirely, i.e. completeness UNKNOWN
+    // rather than known-capped. The truthiness spelling reads `undefined` as
+    // "not truncated" and lets the badge assert; `!== false` suppresses it,
+    // which is this module's stated bias on every other guard.
     expect(
       isFullyArbitrated({
         tensions: [visible({ invalidatedAt: PAST })],

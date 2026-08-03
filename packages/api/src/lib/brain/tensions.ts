@@ -237,6 +237,9 @@ export async function loadTensionClusters(
 
   // `let`, because a dropped edge below also makes this page's conflict list
   // incomplete and readers gate on exactly that. See the null-endpoint arm.
+  // ⚠️ `usable` is sliced from the CAP verdict alone, on the next line — that
+  // later assignment must stay below it, or a dropped edge would re-slice the
+  // page and re-fire the cap warning for a truncation that never happened.
   let truncated = edges.length > cap;
   const usable = truncated ? edges.slice(0, cap) : edges;
   if (truncated) {

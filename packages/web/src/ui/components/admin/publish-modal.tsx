@@ -27,6 +27,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { contentSurface, type ContentSurfaceKey } from "@/ui/lib/content-surfaces";
+import { queryKeys } from "@/ui/lib/query-keys";
 import type { ProfileError } from "@/ui/lib/types";
 import { relativeOrNull } from "./pending-changes-pill";
 
@@ -205,7 +206,7 @@ export function PublishModal({
       // reads a stale "N pending" until a full reload. Invalidated BEFORE the
       // partial/refused branch below, because a partial publish moves the
       // counts too — refused drafts stay pending, promoted ones do not.
-      void queryClient.invalidateQueries({ queryKey: ["mode-status"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.modeStatus.all() });
       // If any promoted layer is incomplete (#3682) or
       // any draft was refused (#4769), keep the modal open and show the warning
       // the API returned — an unconditional "Published successfully" would hide

@@ -184,4 +184,20 @@ export const queryKeys = {
   wizard: {
     connections: () => ["wizard", "connections"] as const,
   },
+
+  /**
+   * Content-mode status — resolved mode, demo state, and the per-surface DRAFT
+   * COUNTS behind the admin top bar's pending-changes pill.
+   *
+   * Two members on purpose. The query is keyed per API base (a region switch
+   * must not read another region's counts), but every writer that empties the
+   * queue wants to invalidate it without knowing which base is active — so
+   * `all()` is the prefix `forApi()` extends, and prefix matching links them.
+   * Splitting the literal across the reader and its invalidators is what let
+   * the pill go stale after a publish for as long as it did.
+   */
+  modeStatus: {
+    all: () => ["mode-status"] as const,
+    forApi: (apiUrl: string) => ["mode-status", apiUrl] as const,
+  },
 } as const;

@@ -31,9 +31,24 @@ import {
 import type { ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AtlasProvider } from "@/ui/context";
+import { queryKeys } from "@/ui/lib/query-keys";
 
+// Every export the real module provides, per the mock-all-exports rule in
+// .claude/rules/testing.md — `Toaster` is consumed by components/ui/sonner.tsx,
+// and a partial mock surfaces as a SyntaxError in an unrelated test file.
 void mock.module("sonner", () => ({
-  toast: { success: () => {}, warning: () => {}, error: () => {} },
+  toast: Object.assign(() => {}, {
+    success: () => {},
+    warning: () => {},
+    error: () => {},
+    info: () => {},
+    message: () => {},
+    loading: () => {},
+    custom: () => {},
+    dismiss: () => {},
+    promise: () => {},
+  }),
+  Toaster: () => null,
 }));
 
 import { PublishModal } from "../publish-modal";
@@ -60,6 +75,8 @@ const PREVIEW = {
   prompts: [{ id: "p1", name: "a prompt", updatedAt: null }],
   starterPrompts: [],
 };
+
+const realFetch = globalThis.fetch;
 
 /** Whatever the publish POST should answer with for a given case. */
 function stubFetch(publishBody: Record<string, unknown>): void {
@@ -111,9 +128,25 @@ async function clickPublish(): Promise<void> {
 
 afterEach(() => {
   cleanup();
+  // Restore rather than leave the stub standing — the repo pattern everywhere
+  // else, and it keeps the next test appended to this file from silently
+  // inheriting whichever publish response the last one installed.
+  globalThis.fetch = realFetch;
 });
 
 describe("PublishModal invalidates the pending-pill count", () => {
+  // The cache assertions below read the LITERAL key on purpose: sourcing it
+  // from the same factory the implementation uses would make them survive a
+  // rename that breaks the app. This test is the one place the factory is
+  // checked against the literal, so the coupling is pinned exactly once.
+  test("the key factory still produces the key the hook registers", () => {
+    expect(queryKeys.modeStatus.forApi(API_URL)).toEqual(["mode-status", API_URL]);
+    // `all()` must remain a PREFIX of `forApi()` — that is what makes a
+    // base-agnostic invalidation reach a per-base entry.
+    expect(queryKeys.modeStatus.all()).toEqual(["mode-status"]);
+  });
+
+
   test("a clean publish invalidates mode-status", async () => {
     stubFetch({ ok: true });
     const qc = renderModal();

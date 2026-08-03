@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.3",
+    title: "Company Brain: Temporal Depth and Source Breadth",
+    date: "2026-08-03",
+    summary:
+      "The Company Brain learns to handle time and disagreement, and to read from more than chat. Facts now carry a history: when a newer statement contradicts an older one, Atlas surfaces the conflict for a person to settle rather than silently picking a winner, and you can ask what the company believed as of any past date. Alongside that, the brain can now draw on Zoom meeting transcripts and Outlook mail as well as chat — each with access rules derived from who was actually in the meeting or on the email, so nobody sees a fact drawn from a conversation they weren't part of. This release also fixes web signup, which was failing for new customers.",
+    highlights: [
+      "Conflicting facts are flagged and resolved by a person — Atlas never supersedes a fact on its own",
+      "Ask what was true at a point in the past, not just what's true now",
+      "Facts that go stale without being reconfirmed lose confidence rather than quietly staying authoritative",
+      "Correct the brain in place: supersede, retract, dispute, or reaffirm a fact",
+      "New source — Zoom cloud-recording transcripts, scoped to meeting participants",
+      "New source — Outlook mail, scoped to the people on each message",
+      "Fixed: web signup failed with a connection error for anyone completing the captcha",
+    ],
+  },
+  {
     version: "v0.2.2",
     title: "Slack @-Mention Detection Fix",
     date: "2026-07-30",

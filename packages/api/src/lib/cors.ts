@@ -75,7 +75,14 @@ export function resolveCorsOrigin(): string {
 export function corsResponseHeaders(requestOrigin: string): Record<string, string> {
   const configured = resolveCorsOrigin();
   const headers: Record<string, string> = {
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    // `x-captcha-response` carries the Turnstile token the signup form mints
+    // (`web/src/app/signup/account/page.tsx` → the captcha plugin's reader in
+    // `lib/auth/server.ts`). Omitting it does NOT degrade to an uncaptcha'd
+    // signup — the browser fails the PREFLIGHT and never sends the request, so
+    // `fetch` throws a TypeError and the form reports "Unable to reach the
+    // server". The failure is invisible to anything that doesn't mint a token:
+    // same-origin local dev, and any automation where the widget never loads.
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-captcha-response",
     "Access-Control-Expose-Headers": "Retry-After, x-conversation-id, x-run-id, X-Atlas-Export-Partial, X-Atlas-Truncated, X-Atlas-Row-Count, Content-Disposition",
   };
 

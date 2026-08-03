@@ -138,6 +138,36 @@ describe("CORS middleware", () => {
     expect(allowHeaders.toLowerCase()).toContain("content-type");
   });
 
+  // Regression: the signup form attaches `x-captcha-response` when Turnstile
+  // mints a token. A browser rejects the preflight when a requested header is
+  // absent from Allow-Headers, so the signup POST is never sent at all and the
+  // page shows a network error. Asserted against the preflight the SIGNUP route
+  // serves — the header set is global, but pinning it here names the caller
+  // that regresses if someone trims the list.
+  it("preflight allows the signup captcha header", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/api/auth/sign-up/email", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "http://example.com",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "content-type,x-captcha-response",
+        },
+      }),
+    );
+
+    const allowed = (res.headers.get("Access-Control-Allow-Headers") ?? "")
+      .split(",")
+      .map((h) => h.trim().toLowerCase());
+
+    // Every header the browser asked for must be allowed, or it blocks the
+    // request. Asserted as a subset check rather than `toContain` so a future
+    // header added to the form fails here instead of in a browser.
+    for (const requested of ["content-type", "x-captcha-response"]) {
+      expect(allowed).toContain(requested);
+    }
+  });
+
   it("default (no ATLAS_CORS_ORIGIN) sets Access-Control-Allow-Origin to *", async () => {
     // The app was imported without ATLAS_CORS_ORIGIN set, so it defaults to "*"
     const res = await app.fetch(

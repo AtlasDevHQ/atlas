@@ -230,10 +230,21 @@ export interface BrainSourceInstallContext {
  * What this does NOT claim is that the re-verifier registry became unreachable.
  * `registerAudienceReverifier` still exists for the suites that test that
  * registry, and a source could in principle call it and then register a
- * connector declaring `externally-synced`. For a grant-deriving class the
- * runtime check above refuses that outright; for any other class it is a
- * re-verifier with no connector, which is loud rather than silent — the vendor's
- * own registration then throws on the duplicate and `registerStep` logs it.
+ * connector declaring `externally-synced`. Both outcomes are worth stating
+ * exactly, because they differ:
+ *
+ *   - grant-deriving class → {@link requiresAudienceReverifier} (below) refuses
+ *     the connector outright, so what is left is a re-verifier with NO connector.
+ *     Loud: the vendor's registration threw, `registerStep` logged it at `error`,
+ *     and the source ingests nothing at all;
+ *   - any other class → both register cleanly and nothing throws. A stray
+ *     re-verifier then runs every cycle for a source that declared somebody else
+ *     owns the refresh. Nothing detects that, and nothing is meant to — what the
+ *     `externally-synced` arm buys there is a DECLARATION a reviewer can check,
+ *     not a runtime guarantee.
+ *
+ * Neither is the half-state this seam exists to prevent, which is specifically a
+ * COMMITTED connector whose re-verifier was refused.
  */
 export type BrainSourceAudience =
   /**
@@ -260,12 +271,18 @@ export type BrainSourceAudience =
  *
  * `per-object` means the grant is derived from the record itself — a
  * transcript's participants, a mail's recipients — so nothing but a re-verifier
- * registered for THAT source can refresh it. `externally-synced` means something
- * else owns the refresh: chat grants are channel-scoped and reconciled by the
- * install-driven Slack walk, and warehouse/human episodes do not come from a
- * connector at all.
+ * registered for THAT source can refresh it.
+ *
+ * ⚠️ The other value is `not-required` and NOT `"externally-synced"`, even though
+ * that is the {@link BrainSourceAudience} arm it licenses, because the two would
+ * be read as the same fact and they are not. This axis constrains ONE direction:
+ * a `per-object` class MUST declare the `reverified` arm. It says nothing about
+ * what a `not-required` class may declare — `warehouse` is `not-required` and may
+ * legitimately bring a re-verifier anyway. Naming the value after the arm would
+ * assert a biconditional nothing enforces, which is the same phrase-collision
+ * hazard `lib/brain/sources.ts` records for its own two axes.
  */
-type AudienceGrain = "per-object" | "externally-synced";
+type AudienceGrain = "per-object" | "not-required";
 
 /**
  * Every episode class's audience grain — the single place the decision is made.
@@ -281,11 +298,13 @@ type AudienceGrain = "per-object" | "externally-synced";
  * is: it has a runtime reader ({@link requiresAudienceReverifier}).
  */
 const AUDIENCE_GRAIN = Object.freeze({
-  chat: "externally-synced",
+  // Channel-scoped, reconciled by the install-driven Slack walk in `audience/sync.ts`.
+  chat: "not-required",
   transcript: "per-object",
   email: "per-object",
-  warehouse: "externally-synced",
-  human: "externally-synced",
+  // Neither comes from a connector at all, so there is nothing to re-verify.
+  warehouse: "not-required",
+  human: "not-required",
 } as const) satisfies Record<EpisodeSourceClass, AudienceGrain>;
 
 /** The classes {@link AUDIENCE_GRAIN} marks `per-object`, as a type. */
@@ -304,8 +323,13 @@ type ReverifierRequiredClass = {
  * `externally-synced`, register cleanly, and mint `audience:` grants that nothing
  * refreshes — the 168h-then-invisible failure the whole seam exists to prevent,
  * entering through the one lane the type provably cannot see.
+ *
+ * Not exported: the only caller is {@link registerBrainSourceConnector}, and the
+ * check is worth more as an unavoidable step in the one write path than as a
+ * predicate a caller could consult and then not act on — which is precisely the
+ * `hasAudienceReverifier` shape #4985 replaced.
  */
-export function requiresAudienceReverifier(source: EpisodeSource): boolean {
+function requiresAudienceReverifier(source: EpisodeSource): boolean {
   return AUDIENCE_GRAIN[episodeSourceClass(source)] === "per-object";
 }
 
@@ -326,8 +350,15 @@ export function requiresAudienceReverifier(source: EpisodeSource): boolean {
 function isBrainSourceAudience(value: unknown): value is BrainSourceAudience {
   if (typeof value !== "object" || value === null) return false;
   const kind: unknown = Reflect.get(value, "kind");
-  if (kind === "externally-synced") return true;
-  return kind === "reverified" && typeof Reflect.get(value, "reverifier") === "function";
+  const reverifier: unknown = Reflect.get(value, "reverifier");
+  // A reverifier on the `externally-synced` arm is a CONTRADICTION, not an extra
+  // field to ignore — the arm declares that something else owns the refresh.
+  // In-repo it cannot happen (excess-property checking on the literal), but a
+  // plugin arrives as data where excess properties are legal, and silently
+  // dropping the function would leave that author's audiences ageing out at 168h
+  // with the declaration they wrote looking correct.
+  if (kind === "externally-synced") return reverifier === undefined;
+  return kind === "reverified" && typeof reverifier === "function";
 }
 
 /**
@@ -349,12 +380,15 @@ const NO_REVERIFIER_TO_COMMIT = (): void => {};
  * `BrainSourceConnector<typeof X_SOURCE>`, and {@link registerBrainSourceConnector}
  * infers `S` from the value it is handed, so an inline literal is checked too.
  *
- * At the default `S = EpisodeSource` the class set spans both grant-deriving and
- * not, the conditional is false, and the field widens to the union. That is what
- * the registry stores, and it is the honest answer for a connector that arrives
- * as DATA rather than as a checked type — a plugin-supplied one, compiled
- * separately, or an in-repo factory that widened its own return type back to the
- * unparameterised form.
+ * The conditional is deliberately NON-distributive — the checked type is
+ * `(typeof EPISODE_SOURCE_SPECS)[S]["class"]`, not a naked `S` — so a UNION `S`
+ * resolves its whole class set at once and only narrows when every member is
+ * grant-deriving. `<"zoom" | "outlook">` is still the `reverified` arm alone;
+ * `<"zoom" | "slack">` widens. At the default `S = EpisodeSource` the set spans
+ * both and the field is the whole union. That is what the registry stores, and it
+ * is the honest answer for a connector that arrives as DATA rather than as a
+ * checked type — a plugin-supplied one, compiled separately, or an in-repo
+ * factory that widened its own return type back to the unparameterised form.
  *
  * ⚠️ So this type is NOT the enforcement on its own, and it would be a mistake to
  * read it as one: every one of those widenings compiles, and the last is
@@ -465,9 +499,13 @@ const registry = new Map<string, BrainSourceConnector>();
  * Registration is single-threaded boot wiring, so there is no window between the
  * checks and the writes for anything else to claim the source.
  *
- * `const S` so an inline connector literal keeps its literal source kind and gets
- * {@link BrainSourceAudienceFor}'s compile-time check rather than the widened
- * union. A caller holding an already-widened `BrainSourceConnector` still passes,
+ * `S` is inferred from the value so an inline connector literal keeps its literal
+ * source kind and gets {@link BrainSourceAudienceFor}'s compile-time check rather
+ * than the widened union. The `const` modifier is belt-and-braces rather than
+ * load-bearing — the constraint is already a union of string literals, so `S`
+ * infers narrowly without it — and it is kept only so a future widening of
+ * `EpisodeSource` toward `string` cannot silently take the inference with it.
+ * A caller holding an already-widened `BrainSourceConnector` still passes,
  * and that is the lane {@link requiresAudienceReverifier} below exists for: the
  * type cannot see a plugin, a cast, or a factory that widened its own return
  * type, and all three would otherwise re-open exactly the hole this refactor
@@ -667,9 +705,9 @@ export function listBrainSourceCatalogIds(): string[] {
  * / `registerOutlookMailConnector` gate on the CONNECTOR registry alone
  * (`if (getBrainSourceConnector(id) !== undefined) return;`). Clearing one and not
  * the other lets them de-sync — a suite that resets connectors and then
- * re-registers passes the gate, reaches the re-verifier commit, and throws
- * `Audience re-verifier for source "…" is already registered`, a failure with
- * nothing to do with what the suite was testing.
+ * re-registers passes the gate, reaches the re-verifier's duplicate check, and
+ * throws `Audience re-verifier for source "…" is already registered`, a failure
+ * with nothing to do with what the suite was testing.
  *
  * So this is the reset a suite that registers a brain source calls.
  * `_resetAudienceReverifiers` is for suites whose subject is the re-verifier

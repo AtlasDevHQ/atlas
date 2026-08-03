@@ -124,7 +124,8 @@ afterEach(() => {
   // catalog claim, and the re-verifier — which matters because
   // `registerOutlookMailConnector`'s idempotence gate reads only the connector
   // one: clearing that alone would let the gate pass on a second call while the
-  // re-verifier commit throws on the duplicate. The totality is pinned in
+  // re-verifier's duplicate CHECK throws (the commit itself cannot — see
+  // `prepareAudienceReverifier`). The totality is pinned in
   // `episode-sync-archive.test.ts` rather than hedged against here.
   _resetBrainSourceConnectors();
 });

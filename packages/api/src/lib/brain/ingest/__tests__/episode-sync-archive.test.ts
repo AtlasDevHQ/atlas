@@ -41,6 +41,7 @@ import {
   ZERO_REVERIFY,
   listAudienceReverifierSources,
   registerAudienceReverifier,
+  runRegisteredAudienceReverifiers,
 } from "@atlas/api/lib/brain/audience/reverify";
 import {
   CHAT_CLASS,
@@ -152,7 +153,18 @@ describe("the episode path cannot reach the engine's archive/upsert half", () =>
 describe("the brain source registry", () => {
   // Same reason as the sibling describe below: these mutate the registry module
   // singleton, and a throwing assertion would otherwise leave it dirty.
-  afterEach(_resetBrainSourceConnectors);
+  //
+  // The knowledge-documents release is NOT covered by the first call —
+  // `_resetBrainSourceConnectors` releases only the `brain-episodes` claims, by
+  // design. One test below claims `catalog:fixture` for the OTHER target to
+  // provoke a collision, and as a trailing statement that release would be
+  // skipped by a throwing assertion, leaving every later registration in this
+  // file failing with `already registered as knowledge-documents` — one real
+  // failure manufacturing several unrelated ones. Harmless when nothing claimed.
+  afterEach(() => {
+    _resetBrainSourceConnectors();
+    _resetCatalogIngestClaims("knowledge-documents");
+  });
 
   // The fixture's SOURCE KIND is a real vocabulary member
   // (`lib/brain/sources.ts`) while its CATALOG ID stays fixture-shaped — the
@@ -251,20 +263,31 @@ describe("the brain source registry", () => {
    * in its fixture. `warehouse` is not a grant-deriving class, so it may declare
    * either arm and the runtime backstop is not what is under test here.
    */
+  /**
+   * A DISTINCTIVE counter, so the re-verifier can be identified by its output.
+   * `ZERO_REVERIFY` would make the declared re-verifier indistinguishable from
+   * any other — see the value assertion in the first test.
+   */
+  const REVERIFIER_FINGERPRINT = Object.freeze({ ...ZERO_REVERIFY, membersAdded: 7 });
+
   const reverified = (): BrainSourceConnector =>
     connector({
       source: WAREHOUSE_SOURCE,
-      audience: { kind: "reverified", reverifier: () => Promise.resolve(ZERO_REVERIFY) },
+      audience: { kind: "reverified", reverifier: () => Promise.resolve(REVERIFIER_FINGERPRINT) },
     });
 
-  it("commits the connector AND its re-verifier from one call", () => {
+  it("commits the connector AND the DECLARED re-verifier from one call", async () => {
     // The `reverified` arm is not decoration: a source that declares it must end
     // up in BOTH registries off a single `registerBrainSourceConnector`, because
     // the whole point of folding the audience strategy into the connector value
     // is that there is no second statement anyone can forget.
     //
-    // MUTATION THIS CATCHES: dropping the `commitReverifier()` call, or keying it
-    // on a literal instead of `connector.source`.
+    // MUTATION THIS CATCHES: dropping the `commitReverifier()` call; keying it on
+    // a literal instead of `connector.source`; and — only because of the VALUE
+    // assertion below — committing some other function under the right key.
+    // Asserting the key alone let that last one survive, and it is the worst of
+    // the three: a source registered, keyed correctly, and re-verified by
+    // something that does nothing is the exact 168h decay this seam prevents.
     //
     // The precondition is load-bearing, not ceremony: without it a re-verifier
     // leaked by an earlier test makes this pass for the wrong reason.
@@ -274,6 +297,9 @@ describe("the brain source registry", () => {
 
     expect(getBrainSourceConnector("catalog:fixture")).toBeDefined();
     expect(listAudienceReverifierSources()).toEqual([WAREHOUSE_SOURCE]);
+    // Drain the registry and read the fingerprint back: this is what proves the
+    // committed function is the one the connector declared.
+    expect(await runRegisteredAudienceReverifiers()).toEqual(REVERIFIER_FINGERPRINT);
   });
 
   it("registers NO re-verifier for an externally-synced source", () => {
@@ -303,12 +329,12 @@ describe("the brain source registry", () => {
     // the claim in particular has no other assertion anywhere in this file.
     registerAudienceReverifier(WAREHOUSE_SOURCE, () => Promise.resolve(ZERO_REVERIFY));
 
-    // The ACTIONABLE half of the message, not the shared prefix: the duplicate
-    // CATALOG ID error also ends in "is already registered", so `/already
-    // registered/` alone cannot tell which registry refused — and this test is
-    // meaningless unless it was the re-verifier one.
+    // Which REGISTRY refused, not the shared prefix: the duplicate CATALOG ID
+    // error also ends in "is already registered", so `/already registered/` alone
+    // cannot discriminate — and this test is meaningless unless it was the
+    // re-verifier one.
     expect(() => registerBrainSourceConnector(reverified())).toThrow(
-      /refusing to register its brain source connector too/,
+      /re-verifier for source .* is already registered/,
     );
 
     expect(getBrainSourceConnector("catalog:fixture")).toBeUndefined();
@@ -322,8 +348,9 @@ describe("the brain source registry", () => {
     // If `prepareAudienceReverifier` wrote eagerly and returned a no-op — a
     // tempting "simplification" — this collision would leave a re-verifier for a
     // source with no connector. That inverted half-state is loud rather than
-    // silent (the vendor's idempotence gate sees no connector, retries, and then
-    // throws `already registered` forever), but it is still a partial commit.
+    // silent — any later registration attempt sees no connector, walks past the
+    // idempotence gate, and throws `already registered` — but it is still a
+    // partial commit.
     //
     // MUTATION THIS CATCHES: making `prepareAudienceReverifier` commit eagerly, or
     // hoisting `commitReverifier()` above `claimCatalogIngestTarget`.
@@ -335,22 +362,25 @@ describe("the brain source registry", () => {
 
     expect(listAudienceReverifierSources()).toEqual([]);
     expect(getBrainSourceConnector("catalog:fixture")).toBeUndefined();
-    _resetCatalogIngestClaims("knowledge-documents");
+    // The knowledge-documents claim is released in `afterEach`, not here — see
+    // its comment for why a trailing release would cascade.
   });
 
   it("⭐ refuses a grant-deriving class that declares externally-synced", () => {
     // The RUNTIME backstop for the lane the type cannot see. `BrainSourceAudienceFor`
     // makes this a TS2322 at a literal-typed connector, but a plugin arrives as
-    // data, and a cast or a widened return type compiles — the cast below is
-    // standing in for all three. Without this check a transcript source would
-    // register cleanly and mint grants nothing ever refreshes.
+    // data, and a cast or a widened return type compiles. No cast is needed to
+    // express it HERE — `connector()` takes `Partial<BrainSourceConnector>` at the
+    // default `S`, where the conditional is false and both arms are legal, so the
+    // fixture's own parameter type is the widener. That is the same widening a
+    // factory reintroduces by declaring the unparameterised return type.
     //
     // MUTATION THIS CATCHES: deleting the `requiresAudienceReverifier` branch from
     // `registerBrainSourceConnector`.
     const widened = connector({
       source: ZOOM_SOURCE,
       audience: { kind: "externally-synced" },
-    } as Partial<BrainSourceConnector>);
+    });
 
     expect(() => registerBrainSourceConnector(widened)).toThrow(/MUST declare audience/);
     // …and the actionable half — what a plugin author actually reads.
@@ -379,8 +409,18 @@ describe("the brain source registry", () => {
     //
     // A `reverified` arm with no function is the subtler half: it would register
     // `undefined` and make `runRegisteredAudienceReverifiers` count that source
-    // failed on every cycle, forever.
-    for (const bad of [undefined, null, {}, { kind: "nonsense" }, { kind: "reverified" }]) {
+    // failed on every cycle, forever. The last case is the CONTRADICTION —
+    // declaring that something else owns the refresh while supplying a
+    // re-verifier — which excess-property checking blocks in-repo but a plugin's
+    // data can express; dropping the function silently would age its audiences out.
+    for (const bad of [
+      undefined,
+      null,
+      {},
+      { kind: "nonsense" },
+      { kind: "reverified" },
+      { kind: "externally-synced", reverifier: () => Promise.resolve(ZERO_REVERIFY) },
+    ]) {
       expect(() =>
         registerBrainSourceConnector(connector({ audience: bad } as Partial<BrainSourceConnector>)),
       ).toThrow(/declared no usable audience strategy/);
@@ -391,15 +431,29 @@ describe("the brain source registry", () => {
   it("⭐ a grant-deriving class cannot declare externally-synced (COMPILE time)", () => {
     // AC-5 of #4985, pinned. Everything else in this describe is a runtime
     // assertion, and the compile-time narrowing degrades SILENTLY and in the
-    // permissive direction: drop an `as const` from an `EPISODE_SOURCE_SPECS`
-    // entry, annotate that map `Record<EpisodeSource, EpisodeSourceSpec>`, revert
-    // `BrainSourceAudienceFor` to a bare `BrainSourceAudience`, or drop the
-    // `const` modifier on `registerBrainSourceConnector`'s type parameter, and the
-    // conditional goes false for EVERY source with not one test going red.
+    // permissive direction.
+    //
+    // MUTATIONS THIS CATCHES, all three verified by applying them:
+    //   - annotating `EPISODE_SOURCE_SPECS` `Record<EpisodeSource, EpisodeSourceSpec>`,
+    //     which widens `class` off the literal;
+    //   - reverting `BrainSourceAudienceFor` to a bare `BrainSourceAudience`;
+    //   - flipping `AUDIENCE_GRAIN.transcript` to `not-required`.
+    //
+    // ⚠️ Two nearby edits are NOT caught, and naming them is the point: dropping
+    // an `as const` from an `EPISODE_SOURCE_SPECS` entry does not weaken anything
+    // (its `satisfies EpisodeSourceSpec` supplies the literal contextually), and
+    // neither does dropping the `const` modifier on `registerBrainSourceConnector`'s
+    // type parameter (the constraint is already a literal union). Both were
+    // checked; neither degrades the type, so there is nothing here to catch.
     //
     // `@ts-expect-error` is the instrument — the same one `sources.test.ts` uses
     // for the sibling claim — because it inverts: when the narrowing evaporates
     // the annotation stops erroring and the unused directive becomes the failure.
+    //
+    // ⚠️ So this test has NO teeth under `bun test` — bun strips types and the
+    // `toHaveLength(3)` below is trivially true. The gate is `bun run type`
+    // (tsgo, /ci stage 0), which compiles `src/**/*.ts` including this file. Do
+    // not "verify" it with the isolated runner and conclude it is dead weight.
     //
     // @ts-expect-error zoom is transcript-class — the reverified arm is the only one
     const zoom: BrainSourceAudienceFor<typeof ZOOM_SOURCE> = { kind: "externally-synced" };

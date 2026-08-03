@@ -219,8 +219,9 @@ let alreadyRegistered = false;
  * the connector and its audience half as ONE value and does all of its throwing
  * above its first write. The message below still hedges — "unavailable, OR
  * PARTIALLY WIRED" — rather than asserting an absence it cannot verify, because
- * the knowledge connectors and OAuth handlers this also wraps make no such
- * promise.
+ * the ten knowledge connectors this also wraps make no such promise. (The OAuth
+ * and static-bot handlers are registered by direct unwrapped calls below and are
+ * not this function's concern at all; they are the BLAST RADIUS, not the steps.)
  */
 function registerStep(label: string, register: () => void): void {
   try {

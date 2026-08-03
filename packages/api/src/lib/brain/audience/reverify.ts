@@ -129,11 +129,18 @@ const registry = new Map<EpisodeSource, AudienceReverifier>();
  * cannot reach the write without having passed the check, and deleting the call
  * deletes both halves together.
  *
- * Be precise about the limit of that. It is a property of the call site, not of
- * this function's body — deleting the `if` below leaves the `registry.set` thunk
- * intact and turns a duplicate into a silent overwrite. What it buys is that the
- * ORDERING bug is gone: there is no arrangement of statements a caller can write
- * that commits one half and then throws on the other.
+ * Be precise about the limits of that, in both directions:
+ *
+ *   - it is a property of the CALL SITE, not of this function's body. Deleting
+ *     the `if` below leaves the `registry.set` thunk intact and turns a duplicate
+ *     into a silent overwrite;
+ *   - it removes the ordering bug in ONE direction — no arrangement of statements
+ *     can commit the CONNECTOR and then throw on its re-verifier. The inverse is
+ *     still reachable and is exactly the PROVOCATION the suites use:
+ *     {@link registerAudienceReverifier} first, connector second, connector
+ *     refused. That leaves a re-verifier with no connector, which is loud (the
+ *     source ingests nothing and `registerStep` logs the throw) rather than the
+ *     silent week-long decay the committed-connector direction produces.
  *
  * Keyed by the stored source kind, so a duplicate is a loud error rather than a
  * silent overwrite — two re-verifiers for one source would each reconcile against
@@ -148,8 +155,13 @@ export function prepareAudienceReverifier(
   reverifier: AudienceReverifier,
 ): () => void {
   if (registry.has(source)) {
+    // Says nothing about a connector: `registerAudienceReverifier` shares this
+    // throw and registers no connector at all, so a message asserting one would
+    // be wrong at half its call sites. "re-verifier for source" is the token that
+    // discriminates it from the duplicate-CATALOG-ID error, which also ends in
+    // "is already registered" — `episode-sync-archive.test.ts` matches on it.
     throw new Error(
-      `Audience re-verifier for source "${source}" is already registered — refusing to register its brain source connector too, because committing one without the other leaves the source ingesting content whose grants are never re-verified`,
+      `Audience re-verifier for source "${source}" is already registered — refusing, because a source and its re-verifier must be committed together, and two re-verifiers for one source would each reconcile against their own roster with the loser's members revoked every cycle`,
     );
   }
   return () => {
@@ -171,6 +183,14 @@ export function prepareAudienceReverifier(
  *   - the PROVOCATION — taking a source's name before a paired registration
  *     reaches it, so the pair cannot complete and the all-or-nothing claim has
  *     something to fail against.
+ *
+ * Deliberately NOT `_`-prefixed, though it is test-only. In this seam the `_`
+ * prefix means test-only TEARDOWN (`_resetAudienceReverifiers`,
+ * `_resetBrainSourceConnectors`, `_resetCatalogIngestClaims`); this is a
+ * constructor, and overloading the convention would make it read as one more
+ * reset. What keeps a production caller out is that there is no reason to write
+ * one — a grant-deriving source that tried would have its connector refused
+ * outright by `registerBrainSourceConnector`.
  */
 export function registerAudienceReverifier(
   source: EpisodeSource,

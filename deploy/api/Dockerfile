@@ -14,8 +14,11 @@ FROM oven/bun:1.3.13@sha256:87416c977a612a204eb54ab9f3927023c2a3c971f4f345a01da0
 FROM base AS manifests
 WORKDIR /app
 COPY package.json bun.lock* ./
-# The bun-types patch (patchedDependencies in package.json/bun.lock) must be
-# present in the build context for `bun ci` to apply it during install.
+# Both patches (patchedDependencies in package.json/bun.lock) must be present in
+# the build context for `bun ci` to apply them during install. A missing patch
+# file is a hard install error, so pruning this COPY fails the build loudly —
+# but don't: unlike `bun-types`, the `@chat-adapter/slack` patch is runtime
+# load-bearing (multi-workspace Slack @-mention detection, #4911).
 COPY patches patches
 COPY packages/api/package.json packages/api/package.json
 COPY packages/web/package.json packages/web/package.json

@@ -37,9 +37,10 @@
  * (2) serves withdrawn claims to the agent as current belief; one that skips
  * (4) serves SUPERSEDED claims — the belief a human explicitly replaced at the
  * publish gate — which on a trust-labeled surface is strictly worse.
- * None of the four is an index concern here: this read enters through
- * `idx_brain_facts_fts` (GIN) and applies all four as filters over the ranked
- * candidate set. `idx_brain_facts_subject` is NOT an access path for it —
+ * None of the four is an index concern here: whenever a query string is
+ * present this read enters through `idx_brain_facts_fts` (GIN) and applies all
+ * four as filters over the ranked candidate set (a filter-only call builds no
+ * FTS predicate at all). `idx_brain_facts_subject` is NOT an access path for it —
  * 0180's docstring called that index "the retrieval read (#4773)" and was
  * mistaken; 0187 repointed it onto the identity keys, where it serves the slot
  * consumers in `reconcile.ts` and the publish adapter and nothing on this

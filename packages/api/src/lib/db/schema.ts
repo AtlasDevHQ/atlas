@@ -3390,13 +3390,17 @@ export const brainFacts = pgTable(
     // REPOINTED onto the identity keys by 0187, not duplicated: zero net new
     // indexes. PARTIAL on the live set for the reason 0180 gave (tombstones
     // would grow it forever) AND now on `valid_to IS NULL` too, which all three
-    // consumers already require — so it is strictly smaller and no query is
-    // served worse.
+    // consumers already require on the PUBLISHED/joined side — the side this
+    // index serves. (`supersedingDraftPredicate` requires only `status =
+    // 'draft' AND invalidated_at IS NULL`, so a draft carrying a restored
+    // non-null `valid_to` off a region import sits outside it; that side is a
+    // scan of one publish's draft set either way.) The index gets strictly
+    // smaller.
     //
-    // The three consumers still join on the SURFACE columns until #5020 pivots
-    // them onto the keys, so for that one slice they fall back to a sequential
-    // scan. Deliberate — carrying two indexes through the cut is the thing
-    // "repoint, not add" exists to avoid.
+    // The three consumers still compare the SURFACE columns until #5020 pivots
+    // them onto the keys, so until that PR merges they lose their
+    // `(subject, predicate)` access path. Deliberate — carrying two indexes
+    // through the cut is the thing "repoint, not add" exists to avoid.
     index("idx_brain_facts_subject")
       .on(t.workspaceId, t.subjectKey, t.predicateKey)
       .where(sql`invalidated_at IS NULL AND valid_to IS NULL`),

@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { lexicalNorm } from "@atlas/api/lib/brain/identity";
+import { identityKey, lexicalNorm } from "@atlas/api/lib/brain/identity";
 
 describe("lexicalNorm", () => {
   describe("what it does", () => {
@@ -46,9 +46,44 @@ describe("lexicalNorm", () => {
     });
 
     it("is total — every string has a norm, including degenerate ones", () => {
+      // Totality is what gives the vocabulary's forest invariant a fixpoint to
+      // rest on. `""` is a NORM; whether it may be STORED is `identityKey`'s
+      // question, below.
       expect(lexicalNorm("")).toBe("");
       expect(lexicalNorm("___")).toBe("");
       expect(lexicalNorm("   ")).toBe("");
+    });
+  });
+
+  describe("identityKey — the storage decision", () => {
+    it("is the norm for anything that norms to something", () => {
+      expect(identityKey("Owned_By")).toBe("owned by");
+      expect(identityKey("  Reports   To  ")).toBe("reports to");
+    });
+
+    it("REFUSES the empty key, which would collide every degenerate row", () => {
+      // The hazard, concretely: with `""` stored, `"-"` and `"___"` share one
+      // slot, so two unrelated placeholder claims corroborate as one — and at
+      // `single` cardinality publishing either stamps `valid_to` on the other.
+      // That is an over-match at a join arm, the one direction this module is
+      // not allowed to be wrong in, reached from the input class the lexical
+      // layer cannot tell apart.
+      for (const degenerate of ["", "-", "___", "   ", " - _ ", "--__--"]) {
+        expect(lexicalNorm(degenerate), `${JSON.stringify(degenerate)} norms to ""`).toBe("");
+        expect(
+          identityKey(degenerate),
+          `${JSON.stringify(degenerate)} must not produce a storable key`,
+        ).toBeNull();
+      }
+    });
+
+    it("is reachable — the ingest guard does not screen these surfaces out", () => {
+      // `reconcile.ts`'s MALFORMED_CLAIM test is `surface.trim() === ""`, and
+      // `String#trim` strips whitespace but NOT `_` or `-`. So a producer
+      // emitting `-` for a missing value lands a storable claim today, which is
+      // why the arm above is a live rule rather than defence in depth.
+      expect("-".trim()).not.toBe("");
+      expect("___".trim()).not.toBe("");
     });
   });
 

@@ -62,7 +62,7 @@ A retracted draft (`invalidated_at IS NOT NULL`) is excluded from promotion, fro
 
 **Not registered, deliberately:** `brain_episodes` has no `status` column at all — episodes are append-only *evidence*, and evidence is not review-gated; only the claims drawn from it are. `brain_edges` is derived structure whose visibility follows its endpoints, content-mode-exempt for the same reason `knowledge_links` is.
 
-**Grep-provable single promotion path — nine gated columns, two asymmetries, four INSERT justifications.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
+**Grep-provable single promotion path — nine gated columns, three asymmetries, four INSERT justifications.** `scripts/check-brain-fact-promotion.sh` (in `/ci` and the `ci` workflow) refuses, outside its allowlist:
 
 - `status` on **UPDATE and INSERT** — a writer must omit it so 0180's `draft` default applies the gate by construction;
 - `visible_to` — and, on the same terms, `pre_widening_visible_to` (#4836) — on **UPDATE only**, including an upsert's `ON CONFLICT … DO UPDATE` half. An INSERT naming `visible_to` is correct and required: the grant is *derived at ingest*, so an INSERT arm would refuse the write the whole ACL design rests on;

@@ -4,9 +4,10 @@
  * ## Why this is a test and not a fact
  *
  * It is true today by ABSENCE: nothing selects `subject_key`, because the
- * columns landed an hour ago and no read surface has been touched since. That
- * is not a property — it is a coincidence with a short half-life, and nothing
- * about adding a column to a `SELECT` list makes an author stop and think.
+ * columns are newer than every read surface and none has been touched since.
+ * That is not a property — it is a coincidence with a short half-life, and
+ * nothing about adding a column to a `SELECT` list makes an author stop and
+ * think.
  *
  * `lib/brain/attribution.ts` is the precedent this follows. It could have left
  * "the caller selected the column" implicit and read a `null` as "never
@@ -23,15 +24,23 @@
  * agent, a UI, or a region bundle that can see `predicate_key` can branch on it,
  * and the moment anything downstream does, the vocabulary stops being an
  * internal join detail and becomes a compatibility surface — which is precisely
- * what makes an alias un-removable. Whether keys travel in a region bundle is
- * #5035's decision, and it is a decision, so the export projection is held here
- * too until it is made.
+ * what makes an alias un-removable. The region bundle is the one deliberate
+ * exception, and it is not this file's to grant: ADR-0037 §8 settles that keys
+ * travel VERBATIM on a v3 bundle, and #5035 implements it. Until that lands, no
+ * export projects a key, so the prohibition holds here too.
  *
  * ## What this can and cannot see
  *
  * It reads source text. A `SELECT` assembled at runtime from a variable is
  * invisible to it, exactly as `check-brain-fact-promotion.sh` says of its own
- * scan. What it does do is inline the module-level column-list constants
+ * scan. `stripComments` also blinds the rest of a line after a `//` inside a
+ * string literal (a URL), the same blind spot that guard documents. And unlike
+ * that guard it does NOT scan `create-atlas/templates/*`, deliberately: those
+ * files are generated from the sources scanned here and gated separately by
+ * `scripts/check-template-drift.sh`, so a key could only reach them by first
+ * reaching a file this scan already covers.
+ *
+ * What it does do is inline the module-level column-list constants
  * (`FACT_COLUMNS` and friends) before matching — which is where a new column
  * would actually be added, and the positive control below fails if that
  * inlining ever stops working.
@@ -80,21 +89,47 @@ const DECLARATION_SITES = new Set(["packages/api/src/lib/db/schema.ts"]);
  * day it is written rather than the day somebody remembers this file.
  */
 function readSurfaceFiles(): string[] {
-  const out = execFileSync(
-    "grep",
-    [
-      "-rlE",
-      "brain_facts|\\bbrainFacts\\b",
-      "packages/api/src",
-      "ee",
-      "--include=*.ts",
-      "--exclude=*.test.ts",
-      "--exclude-dir=__tests__",
-      "--exclude-dir=__mocks__",
-      "--exclude-dir=node_modules",
-    ],
-    { cwd: REPO, encoding: "utf8" },
-  );
+  // The same roots `check-brain-fact-promotion.sh` scans, and for the same
+  // reason it does not use a bare `src/…` suffix. An earlier cut looked only at
+  // `packages/api/src` and `ee`, which left the files that ARE the wire
+  // contract outside the scan entirely — `packages/types/src/migration.ts`
+  // (`ExportedBrainFact`, the region bundle), `packages/schemas/src/brain.ts`
+  // (the REST response schemas), `packages/types/src/brain.ts`. Adding
+  // `subjectKey` to any of those makes the decision this file says it is
+  // holding, and the SQL-only scan could not see it.
+  let out: string;
+  try {
+    out = execFileSync(
+      "grep",
+      [
+        "-rlE",
+        "brain_facts|\\bbrainFacts\\b",
+        "packages",
+        "apps",
+        "ee",
+        "examples",
+        "plugins",
+        "--include=*.ts",
+        "--include=*.tsx",
+        "--exclude=*.test.ts",
+        "--exclude=*.test.tsx",
+        "--exclude-dir=__tests__",
+        "--exclude-dir=__mocks__",
+        "--exclude-dir=__test-utils__",
+        "--exclude-dir=node_modules",
+        "--exclude-dir=dist",
+      ],
+      { cwd: REPO, encoding: "utf8" },
+    );
+  } catch {
+    // grep exits 1 on no matches, which would throw at module scope and error
+    // the file BEFORE the vacuity assertion below could produce its diagnostic.
+    // Returning empty lets that assertion be the thing that fails, with the
+    // message that explains why. (A genuine grep failure lands here too and is
+    // reported the same way — as "the scan found nothing", which is exactly
+    // what it means for this guard.)
+    out = "";
+  }
   return out.split("\n").filter(Boolean).filter((f) => !DECLARATION_SITES.has(f));
 }
 
@@ -117,7 +152,7 @@ function inlineTemplateConstants(source: string): string {
   const constants = new Map<string, string>();
   for (const [, name, body] of source.matchAll(
     /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*`([\s\S]*?)`/g,
-  ) as Iterable<RegExpMatchArray>) {
+  )) {
     constants.set(name!, body!);
   }
   let expanded = source;
@@ -141,11 +176,17 @@ function inlineTemplateConstants(source: string): string {
  * project `f.subject_key` while naming `brain_episodes` first), while a `*` is
  * only a problem when it stars `brain_facts`.
  */
-function projections(source: string): { columns: string; table: string }[] {
+function projections(source: string): { columns: string; from: string }[] {
   const prepared = inlineTemplateConstants(stripComments(source));
   return [
-    ...prepared.matchAll(/\bSELECT\b([\s\S]*?)\bFROM\s+((?:"?[\w$]+"?\.)?"?[\w$]+"?)/gi),
-  ].map((m) => ({ columns: m[1]!, table: m[2]! }));
+    // The FROM clause runs to the first clause keyword that ends it, so a JOIN
+    // list is captured too. Taking only the FIRST table was a hole in the star
+    // arm: `SELECT f.* FROM brain_episodes e JOIN brain_facts f ON …` projects
+    // every key and would have been read as a star over `brain_episodes`.
+    ...prepared.matchAll(
+      /\bSELECT\b([\s\S]*?)\bFROM\b([\s\S]*?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bUNION\b|\bRETURNING\b|\bSELECT\b|`|$)/gi,
+    ),
+  ].map((m) => ({ columns: m[1]!, from: m[2]! }));
 }
 
 /**
@@ -157,7 +198,7 @@ function projections(source: string): { columns: string; table: string }[] {
  * guard that cries wolf on the existing tree gets deleted rather than fixed.
  */
 const STAR_PROJECTION = /(^|[\s,(])(?:"?[\w$]+"?\.)?\*(?!\s*\))/;
-const IS_BRAIN_FACTS = /^(?:"?[\w$]+"?\.)?"?brain_facts"?$/i;
+const READS_BRAIN_FACTS = /(?:^|[\s,(])(?:"?[\w$]+"?\.)?"?brain_facts"?\b/i;
 
 const FILES = readSurfaceFiles();
 
@@ -210,11 +251,39 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
     ].join("\n");
     expect(projections(plantedViaConstant).some((s) => KEY_RE.test(s.columns))).toBe(true);
 
+    // EVERY column in the list, not one representative. The `_cmp` arms in
+    // particular cannot be exercised by the real tree — those columns ship in
+    // #5032 — so without this loop `subject_cmp` and `object_cmp` could be
+    // deleted from KEY_COLUMNS and every assertion in this file stays green.
+    for (const column of KEY_COLUMNS) {
+      const one = `const Q = \`SELECT f.id, f.${column} FROM brain_facts f\`;`;
+      expect(
+        projections(one).some((s) => KEY_RE.test(s.columns)),
+        `the matcher does not detect a projected \`${column}\` — that arm is decoration`,
+      ).toBe(true);
+    }
+    for (const column of ORM_KEY_COLUMNS) {
+      expect(
+        ORM_KEY_RE.test(`db.select({ k: brainFacts.${column} })`),
+        `the ORM matcher does not detect \`${column}\``,
+      ).toBe(true);
+    }
+
     // A star behind a long column list — the shape that defeated the first cut.
     const plantedStar = `const Q = \`SELECT f.*, ${"f.col, ".repeat(60)}f.id FROM brain_facts f\`;`;
     expect(
       projections(plantedStar).some(
-        (s) => IS_BRAIN_FACTS.test(s.table) && STAR_PROJECTION.test(s.columns),
+        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
+      ),
+    ).toBe(true);
+
+    // …a star over brain_facts reached through a JOIN, where the FIRST table is
+    // something else. This is the shape the first cut could not see.
+    const plantedJoinStar =
+      "const Q = `SELECT f.* FROM brain_episodes e JOIN brain_facts f ON f.source_episode_id = e.id WHERE e.id = $1`;";
+    expect(
+      projections(plantedJoinStar).some(
+        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
       ),
     ).toBe(true);
 
@@ -222,7 +291,7 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
     const plantedOtherStar = "const Q = `SELECT * FROM brain_episodes e`;";
     expect(
       projections(plantedOtherStar).some(
-        (s) => IS_BRAIN_FACTS.test(s.table) && STAR_PROJECTION.test(s.columns),
+        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
       ),
     ).toBe(false);
 
@@ -231,7 +300,7 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
     const aggregate = "const Q = `SELECT COUNT(*)::int AS n FROM brain_facts`;";
     expect(
       projections(aggregate).some(
-        (s) => IS_BRAIN_FACTS.test(s.table) && STAR_PROJECTION.test(s.columns),
+        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
       ),
     ).toBe(false);
   });
@@ -255,7 +324,7 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
     // true.
     for (const file of FILES) {
       for (const span of projections(readFileSync(join(REPO, file), "utf8"))) {
-        if (!IS_BRAIN_FACTS.test(span.table)) continue;
+        if (!READS_BRAIN_FACTS.test(span.from)) continue;
         expect(
           STAR_PROJECTION.test(span.columns) ? span.columns.trim() : undefined,
           `${file} selects every column of brain_facts with a star, which projects the identity keys without ever naming them — so the assertion above cannot see it. Name the columns.`,
@@ -269,12 +338,19 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
     // reads are raw SQL, so there is no legitimate `brainFacts.subjectKey` in a
     // read surface today, and a `.select({…})` projection would not sit inside
     // a `SELECT … FROM` span for the arm above to find.
+    //
+    // It therefore ALSO fires on a fact-shaped TYPE that grows a key field —
+    // `lib/brain/types.ts`'s `BrainFact`, `packages/types`' wire types, the
+    // response schemas. That is deliberate and not a false positive: a key on a
+    // consumer-facing row shape is the leak, whatever produced it. The only
+    // file exempt is the Drizzle mirror, which declares the columns and is
+    // named in DECLARATION_SITES.
     for (const file of FILES) {
       const source = stripComments(readFileSync(join(REPO, file), "utf8"));
       const hit = ORM_KEY_RE.exec(source);
       expect(
         hit?.[1],
-        `${file} references \`brainFacts.${hit?.[1]}\` through the ORM. Brain reads are raw SQL; a Drizzle projection of a key would slip past the SELECT-span scan in this file.`,
+        `${file} names \`${hit?.[1]}\`. Brain reads are raw SQL, so an ORM projection — or a fact-shaped TYPE that grows a key field — would slip past the SELECT-span scan above. A key belongs on the row in the database and nowhere a consumer can branch on it; the only exemption is the Drizzle mirror in DECLARATION_SITES.`,
       ).toBeUndefined();
     }
   });

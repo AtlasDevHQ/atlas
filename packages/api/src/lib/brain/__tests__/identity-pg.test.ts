@@ -52,7 +52,8 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
-import { lexicalNorm } from "@atlas/api/lib/brain/identity";
+import { identityKey, lexicalNorm } from "@atlas/api/lib/brain/identity";
+import type { BrainFactStatus } from "@atlas/api/lib/brain/types";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -106,6 +107,15 @@ const SURFACES = [
   "CAFÉ",
   "İstanbul",
   "ΣΊΣΥΦΟΣ",
+  // Degenerate: every one of these norms to the empty string, and a STORED `''`
+  // would be the `DEFAULT ''` hazard the migration header rejects, reached from
+  // the other side — every such row in one slot. They are here to pin that both
+  // implementations answer NULL, and that they agree about which surfaces are
+  // degenerate.
+  "___",
+  "-",
+  "  ",
+  " - _ ",
 ] as const;
 
 interface FactRow {
@@ -116,7 +126,7 @@ interface FactRow {
   readonly subject_key: string | null;
   readonly predicate_key: string | null;
   readonly object_key: string | null;
-  readonly status: string;
+  readonly status: BrainFactStatus;
   readonly invalidated_at: Date | null;
   readonly valid_to: Date | null;
   readonly updated_at: Date;
@@ -149,12 +159,27 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
     );
     const episodeId = rows[0]!.id;
 
-    // Four lifecycle states across the corpus, cycled so each state carries a
-    // spread of surfaces rather than one shape. `tombstoned` and `superseded`
-    // are the states the backfill is most likely to be quietly scoped away
-    // from; `draft` and `published` are what a status-aware backfill would
-    // split.
-    const states = ["draft", "published", "tombstoned", "superseded"] as const;
+    // Cycled across the corpus so each state carries a spread of surfaces
+    // rather than one shape. `tombstoned` and `superseded` are the states a
+    // backfill is most likely to be quietly scoped away from.
+    //
+    // The 2×2-ish product of (review status × lifecycle nullability), spelled
+    // out rather than derived by ternary from a stringly state name. `archived`
+    // is 0180's third legal status and its ABSENCE was the gap: a backfill
+    // scoped `WHERE status <> 'archived'` — the most natural scoping mistake,
+    // "skip the dead ones" — passed every assertion in this file without it.
+    const states = [
+      { label: "draft", status: "draft", invalidatedAt: null, validTo: null },
+      { label: "published", status: "published", invalidatedAt: null, validTo: null },
+      { label: "archived", status: "archived", invalidatedAt: null, validTo: null },
+      { label: "tombstoned", status: "draft", invalidatedAt: new Date(), validTo: null },
+      { label: "superseded", status: "published", invalidatedAt: null, validTo: new Date() },
+    ] as const satisfies readonly {
+      label: string;
+      status: BrainFactStatus;
+      invalidatedAt: Date | null;
+      validTo: Date | null;
+    }[];
     for (const [i, surface] of SURFACES.entries()) {
       const state = states[i % states.length]!;
       await pool.query(
@@ -171,9 +196,9 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
           SURFACES[(i + 2) % SURFACES.length]!,
           episodeId,
           JSON.stringify({ source: "slack", actor: "U1" }),
-          state === "tombstoned" ? "draft" : state === "superseded" ? "published" : state,
-          state === "tombstoned" ? new Date() : null,
-          state === "superseded" ? new Date() : null,
+          state.status,
+          state.invalidatedAt,
+          state.validTo,
         ],
       );
     }
@@ -181,8 +206,13 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
 
   afterAll(async () => {
     if (pool) {
-      await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
-      await pool.end();
+      // `finally`, so a failed DROP cannot leak the pool — an open handle is
+      // the shape behind a suite that hangs instead of failing.
+      try {
+        await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+      } finally {
+        await pool.end();
+      }
     }
   });
 
@@ -220,24 +250,31 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
         "the corpus is empty — every assertion in this file would pass vacuously",
       ).toBe(SURFACES.length);
 
-      // Non-vacuity: at least some keys must DIFFER from their surface, or
-      // "SQL agrees with TypeScript" is satisfied by both being the identity
-      // function and the whole normalization could be deleted.
-      const normalized = rows.filter((r) => r.subject_key !== r.subject);
-      expect(
-        normalized.length,
-        "no seeded surface normalizes to anything other than itself — the corpus cannot falsify the normalization",
-      ).toBeGreaterThan(0);
+      // Non-vacuity, per POSITION: "SQL agrees with TypeScript" is satisfied by
+      // both being the identity function, so each of the three expressions has
+      // to be shown to actually change something. Checked separately because
+      // they are three separate expressions in the migration and a corpus that
+      // exercised only the subject would leave two of them unpinned.
+      for (const [label, changed] of [
+        ["subject", rows.filter((r) => r.subject_key !== r.subject)],
+        ["predicate", rows.filter((r) => r.predicate_key !== r.predicate)],
+        ["object", rows.filter((r) => r.object_key !== r.object)],
+      ] as const) {
+        expect(
+          changed.length,
+          `no seeded ${label} normalizes to anything other than itself — the corpus cannot falsify that expression`,
+        ).toBeGreaterThan(0);
+      }
 
       for (const row of rows) {
         expect(row.subject_key, `subject_key for ${JSON.stringify(row.subject)}`).toBe(
-          lexicalNorm(row.subject),
+          identityKey(row.subject),
         );
         expect(row.predicate_key, `predicate_key for ${JSON.stringify(row.predicate)}`).toBe(
-          lexicalNorm(row.predicate),
+          identityKey(row.predicate),
         );
         expect(row.object_key, `object_key for ${JSON.stringify(row.object)}`).toBe(
-          lexicalNorm(row.object),
+          identityKey(row.object),
         );
       }
     },
@@ -281,72 +318,121 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
       // absent and the test would report success over live drafts alone.
       const tombstoned = rows.filter((r) => r.invalidated_at !== null);
       const superseded = rows.filter((r) => r.valid_to !== null);
-      const drafts = rows.filter((r) => r.status === "draft");
-      const published = rows.filter((r) => r.status === "published");
       expect(tombstoned.length, "no tombstoned row in the fixture").toBeGreaterThan(0);
       expect(superseded.length, "no superseded row in the fixture").toBeGreaterThan(0);
-      expect(drafts.length, "no draft row in the fixture").toBeGreaterThan(0);
-      expect(published.length, "no published row in the fixture").toBeGreaterThan(0);
+      // All THREE legal statuses (0180's CHECK), not just the two obvious ones.
+      // Without `archived` here, `WHERE status <> 'archived'` — the natural
+      // "skip the dead ones" scoping mistake — is unfalsifiable.
+      for (const status of ["draft", "published", "archived"] as const) {
+        expect(
+          rows.filter((r) => r.status === status).length,
+          `no ${status} row in the fixture — a backfill scoped away from ${status} would pass this file`,
+        ).toBeGreaterThan(0);
+      }
 
       for (const row of rows) {
+        // "Covered" means "the backfill visited it", which for a surface that
+        // norms away is NULL rather than a key — the `identityKey` contract.
+        // Comparing against it (rather than asserting non-null) keeps this
+        // assertion honest for the degenerate rows while still failing for a
+        // row the backfill skipped, since those rows have non-degenerate
+        // surfaces and would come back NULL against a non-null expectation.
         expect(
-          row.subject_key === null || row.predicate_key === null || row.object_key === null,
-          `row ${row.id} (status=${row.status}, invalidated=${row.invalidated_at !== null}, superseded=${row.valid_to !== null}) has an unkeyed position — an unkeyed tombstone breaks the re-derive-from-surface undo after an alias removal`,
-        ).toBe(false);
+          [row.subject_key, row.predicate_key, row.object_key],
+          `row ${row.id} (status=${row.status}, invalidated=${row.invalidated_at !== null}, superseded=${row.valid_to !== null}) was not keyed as the backfill defines it — an unkeyed tombstone breaks the re-derive-from-surface undo after an alias removal`,
+        ).toEqual([
+          identityKey(row.subject),
+          identityKey(row.predicate),
+          identityKey(row.object),
+        ]);
       }
+
+      // …and the skipped-row failure mode has to be REACHABLE, so at least one
+      // row must have a key the assertion above would miss if it were absent.
+      expect(
+        rows.filter((r) => r.subject_key !== null).length,
+        "every seeded surface is degenerate — the coverage assertion cannot detect a skipped row",
+      ).toBeGreaterThan(0);
     },
     PG_TEST_TIMEOUT_MS,
   );
 
   it(
-    "leaves the surface columns byte-identical",
+    "changes NOTHING on any row except the three key columns",
     async () => {
-      const before = await allFacts();
-      await rerunBackfill();
-      const after = await allFacts();
-
-      expect(after.map((r) => [r.subject, r.predicate, r.object])).toEqual(
-        before.map((r) => [r.subject, r.predicate, r.object]),
-      );
-    },
-    PG_TEST_TIMEOUT_MS,
-  );
-
-  // ══════════════════════════════════════════════════════════════════
-  // 3. `updated_at` is not stamped
-  // ══════════════════════════════════════════════════════════════════
-
-  it(
-    "does not stamp `updated_at` — the publish preview's sort key stays put",
-    async () => {
-      // Spread the timestamps first, so "unchanged" is a real claim rather than
-      // one satisfied by every row already sharing a value.
+      // Deliberately a whole-row compare rather than a list of columns worth
+      // checking. An earlier cut asserted the surface triple and `updated_at`
+      // and nothing else, which left these mutations of the `SET` list passing
+      // the entire file:
+      //
+      //   SET …keys…, valid_to = now()          ← the IRREVERSIBLE column
+      //   SET …keys…, visible_to = ARRAY['org'] ← the DISCLOSING one
+      //   SET …keys…, invalidated_at = now()
+      //
+      // None can be caught by `check-brain-fact-promotion.sh` either: it is the
+      // guard that would refuse them in TypeScript, and its `--include` cannot
+      // scan a `.sql` file. So this is the only thing standing between a
+      // migration and a silent corpus-wide write to the column whose damage
+      // every as-of-now read hides.
+      //
+      // Spread `updated_at` first, so "unchanged" is a real claim rather than
+      // one satisfied by every row already sharing a value. It sorts the publish
+      // preview; a workspace-wide stamp reshuffles every reviewer's queue into
+      // backfill order.
       await pool.query(
         `UPDATE brain_facts SET updated_at = now() - (random() * interval '30 days')
           WHERE workspace_id = $1`,
         [WS],
       );
-      const before = await allFacts();
-      const distinct = new Set(before.map((r) => r.updated_at.toISOString()));
+
+      const KEYS = new Set(["subject_key", "predicate_key", "object_key"]);
+      const snapshot = async (): Promise<Map<string, Record<string, unknown>>> => {
+        const { rows } = await pool.query<Record<string, unknown>>(
+          `SELECT * FROM brain_facts WHERE workspace_id = $1 ORDER BY id`,
+          [WS],
+        );
+        return new Map(
+          rows.map((r) => [
+            String(r.id),
+            Object.fromEntries(
+              Object.entries(r)
+                .filter(([col]) => !KEYS.has(col))
+                .map(([col, v]) => [col, v instanceof Date ? v.toISOString() : v]),
+            ),
+          ]),
+        );
+      };
+
+      const before = await snapshot();
+      // Non-vacuity for the `updated_at` half specifically: with one shared
+      // timestamp a reshuffle would be undetectable.
+      const stamps = new Set([...before.values()].map((r) => r.updated_at));
       expect(
-        distinct.size,
-        "every row shares one `updated_at` — a reshuffle would be undetectable",
+        stamps.size,
+        "every row shares one `updated_at` — a workspace-wide stamp would be undetectable",
       ).toBeGreaterThan(1);
+      // …and the compare has to actually cover `valid_to`, which is the column
+      // this test exists for. A projection that silently stopped returning it
+      // would make the assertion below vacuous on the one axis that matters.
+      for (const column of ["valid_to", "visible_to", "status", "invalidated_at", "updated_at"]) {
+        expect(
+          [...before.values()][0],
+          `the row snapshot does not carry \`${column}\` — this compare cannot see a write to it`,
+        ).toHaveProperty(column);
+      }
 
       await rerunBackfill();
-      const after = await allFacts();
+      const after = await snapshot();
 
-      const byId = new Map(before.map((r) => [r.id, r.updated_at.toISOString()]));
-      for (const row of after) {
-        const was = byId.get(row.id);
-        // A row that exists after and not before would mean the migration
-        // INSERTED something, which is a different bug wearing this one's
-        // clothes — and `toBe(undefined)` would have quietly passed for it.
-        expect(was, `row ${row.id} did not exist before the backfill`).toBeDefined();
+      expect(
+        [...after.keys()].sort(),
+        "the backfill inserted or deleted rows",
+      ).toEqual([...before.keys()].sort());
+      for (const [id, row] of after) {
         expect(
-          row.updated_at.toISOString(),
-          `row ${row.id}'s \`updated_at\` moved. A key recomputation moved neither the claim's content nor its review state, and \`brainFactPreviewSql\` sorts the reviewer's queue by this column — a workspace-wide stamp reshuffles it into backfill order`,
-        ).toBe(was!);
+          row,
+          `row ${id} changed a column outside the three keys. A key recomputation moved neither the claim's content nor its review state — and \`valid_to\` in particular is the stamp no autonomous writer may make`,
+        ).toEqual(before.get(id)!);
       }
     },
     PG_TEST_TIMEOUT_MS,
@@ -396,26 +482,51 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
 
       const slot = rows.find((r) => r.indexname === "idx_brain_facts_subject");
       expect(slot, "idx_brain_facts_subject is gone").toBeDefined();
-      expect(slot!.indexdef).toContain("subject_key");
-      expect(slot!.indexdef).toContain("predicate_key");
+      // The whole tuple, in order. `toContain("subject_key")` +
+      // `toContain("predicate_key")` is satisfied by
+      // `(subject_key, workspace_id, predicate_key)`, which is a different,
+      // workspace-blind-leading access path.
+      expect(slot!.indexdef).toContain("(workspace_id, subject_key, predicate_key)");
       expect(slot!.indexdef).toContain("invalidated_at IS NULL");
       expect(slot!.indexdef).toContain("valid_to IS NULL");
-
-      // Zero net new indexes: exactly ONE index mentions the keys, and no index
-      // still leads on the surface columns. A second key index would be the
-      // easy, wrong way to keep the surface consumers fast through the cut.
-      const keyed = rows.filter((r) => /\bsubject_key\b/.test(r.indexdef));
+      // NOT unique. A `CREATE UNIQUE INDEX` satisfies every assertion above and
+      // makes TENSION STRUCTURALLY IMPOSSIBLE — two live claims in one
+      // subject+predicate slot IS a tension edge (ADR-0036), and a unique index
+      // refuses the second at ingest. On a small corpus the CREATE succeeds and
+      // the loss only shows up in production. ADR-0037 §1 defers the unique
+      // constraint past #5035 deliberately.
       expect(
-        keyed.map((r) => r.indexname),
-        "more than one index on the identity keys — the slot index was ADDED, not repointed",
-      ).toEqual(["idx_brain_facts_subject"]);
+        slot!.indexdef,
+        "the slot index is UNIQUE — that refuses the second live claim in a slot, which is exactly what a tension edge is",
+      ).not.toContain("UNIQUE");
 
+      // Zero net new indexes, measured as a TOTAL rather than inferred from the
+      // keyed subset: an added `(workspace_id, object_key)` — the plausible
+      // "keep the surface consumers fast through the cut" hedge this repoint
+      // exists to avoid — matches neither filter below.
+      expect(
+        rows.map((r) => r.indexname).sort(),
+        "the index set on brain_facts changed. 0187 repoints one index and adds none; if you meant to add one, ADR-0037 §1's zero-net-new-indexes result is what you are trading away",
+      ).toEqual([
+        "brain_facts_pkey",
+        "idx_brain_facts_fts",
+        "idx_brain_facts_source_episode",
+        "idx_brain_facts_status",
+        "idx_brain_facts_subject",
+        "idx_brain_facts_valid_from",
+        "idx_brain_facts_visible_to",
+        "uq_brain_facts_workspace_id",
+      ]);
+
+      // No index anywhere still leads on the SURFACE subject — matched loosely
+      // (any position, with or without workspace_id in front) so the old index
+      // cannot survive under a different shape.
       const surfaceIndexed = rows.filter((r) =>
-        /\(\s*workspace_id\s*,\s*subject\s*[,)]/.test(r.indexdef),
+        /\(([^)]*,)?\s*subject\s*[,)]/.test(r.indexdef),
       );
       expect(
         surfaceIndexed.map((r) => r.indexname),
-        "an index still leads on the surface `subject` column — the old one survived the repoint",
+        "an index still keys on the surface `subject` column — the old one survived the repoint",
       ).toEqual([]);
     },
     PG_TEST_TIMEOUT_MS,
@@ -424,8 +535,14 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
   it(
     "leaves the key columns NULLABLE — `SET NOT NULL` belongs to #5020",
     async () => {
-      const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
-        `SELECT column_name, is_nullable FROM information_schema.columns
+      const { rows } = await pool.query<{
+        column_name: string;
+        is_nullable: string;
+        data_type: string;
+        collation_name: string | null;
+      }>(
+        `SELECT column_name, is_nullable, data_type, collation_name
+           FROM information_schema.columns
           WHERE table_schema = $1 AND table_name = 'brain_facts'
             AND column_name IN ('subject_key', 'predicate_key', 'object_key')
           ORDER BY column_name`,
@@ -437,6 +554,20 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
         "subject_key",
       ]);
       for (const row of rows) {
+        // Plain `text`, database-default collation. The entire ASCII-fold
+        // argument rests on `subject_key = $1` being a BYTE comparison: a
+        // `citext` column, or an explicit non-deterministic collation, makes it
+        // case-insensitive or locale-dependent and restores exactly the
+        // region-to-region divergence `identity.ts` refuses `lower()` to avoid
+        // — silently, and where no other test looks.
+        expect(
+          row.data_type,
+          `${row.column_name} is not plain \`text\`. Identity comparison must be byte-exact; a citext or collated column reintroduces the locale dependence the ASCII fold exists to remove`,
+        ).toBe("text");
+        expect(
+          row.collation_name,
+          `${row.column_name} carries an explicit collation. Key equality has to be byte-exact and identical in every region`,
+        ).toBeNull();
         expect(
           row.is_nullable,
           `${row.column_name} is NOT NULL. Neither INSERT site names these columns yet — \`INSERT_FACT_SQL\` (#5020) and the region import's 18-column INSERT (#5035) — so the constraint refuses every brain-fact write and every region import until its writer lands. Flip it in #5020, with the writer, not here`,

@@ -262,7 +262,11 @@ describe("runMigrations", () => {
     //   stamp the non-Slack re-verifiers order their scan on, so an audience
     //   that fails every cycle rotates out of the front instead of holding a
     //   slot forever and starving everything behind it, #4971) = 187.
-    expect(count).toBe(187);
+    //   Plus 0187 (brain_fact_identity_keys — the three nullable identity-key
+    //   columns, the day-one backfill that fills them from the retained
+    //   surface form, and the repoint of `idx_brain_facts_subject` onto them,
+    //   #5019 / ADR-0037) = 188.
+    expect(count).toBe(188);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -478,6 +482,7 @@ describe("runMigrations", () => {
         "0184_scim_provider_seal_ownerless.sql",
         "0185_backfill_slack_bot_user_id.sql",
         "0186_brain_audience_reverify_attempt.sql",
+        "0187_brain_fact_identity_keys.sql",
       ],
     });
 

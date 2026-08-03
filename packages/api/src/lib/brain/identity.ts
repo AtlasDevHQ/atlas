@@ -32,10 +32,14 @@
  * ## Determinism, and why the character classes are spelled out
  *
  * Pure, total, offline: no model, no network, no clock, no randomness, no
- * locale. The only input is the string. That is load-bearing rather than
- * tidy — the day-one backfill (migration 0187) is a SECOND implementation of
- * this function in SQL, and a region import re-deriving a key in another region
- * has to land on the same bytes.
+ * locale — ADR-0037 §1's own words. The only input is the string. That is
+ * load-bearing rather than tidy, for one concrete reason: the day-one backfill
+ * (migration 0187) is a SECOND implementation of this function, written in SQL,
+ * and two implementations that disagree on any input are two functions.
+ *
+ * (Not for a re-derive-on-import reason — ADR-0037 §8 settles that a row-copy
+ * path carries keys VERBATIM and never re-derives, precisely because
+ * re-deriving fails to over-match, which is the irreversible direction.)
  *
  * So the separator set is written out — `[ \t\n\v\f\r_-]` — rather than as
  * `\s` or `[[:space:]]`. Those two classes are NOT the same set: JavaScript's
@@ -58,10 +62,10 @@
  *   - `ΣΊΣΥΦΟΣ` → JavaScript is context-sensitive and lowers the WORD-FINAL
  *     sigma to `ς`; `lower()` yields `σ` in both positions.
  *
- * Postgres's own answer is collation-dependent on top of that, which §8's
- * determinism pin — reproducible in any region, in a migration, or by hand —
- * forbids outright. So the fold is `A`–`Z` only, in both implementations, and
- * every character above ASCII passes through unchanged.
+ * Postgres's own answer is collation-dependent on top of that, so a key would
+ * depend on WHERE it was computed — which is what §1's "pure, total,
+ * vocabulary-free, offline" rules out. So the fold is `A`–`Z` only, in both
+ * implementations, and every character above ASCII passes through unchanged.
  *
  * The cost is real and worth stating: `Café` and `CAFÉ` do not norm together,
  * nor do `МОСКВА` and `москва`. That is an UNDER-match — a duplicate row, a
@@ -83,6 +87,11 @@
  */
 const SEPARATOR_RUN = /[ \t\n\v\f\r_-]+/g;
 
+// The `/g` flags above and below are for `String#replace`, which resets
+// `lastIndex` on every call. Do not reach for `.test()` or `.exec()` on these —
+// those DO carry state across calls, and a stateful matcher on a function whose
+// whole contract is determinism is a footgun worth naming.
+
 /** Leading/trailing space, after the collapse above has left at most one each. */
 const EDGE_SPACE = /^ +| +$/g;
 
@@ -98,15 +107,49 @@ const foldAscii = (c: string): string => String.fromCharCode(c.charCodeAt(0) + 3
 /**
  * The lexical layer of a claim's identity key.
  *
- * Total: every string has a norm. A surface made only of separators norms to
- * the empty string, and every such surface shares that one key — a degenerate
- * input (`subject`/`predicate`/`object` are extracted verb phrases and entity
- * names) noted here so the empty result is read as defined behaviour rather
- * than as a bug when it turns up in a fixture.
+ * TOTAL — every string has a norm, including the empty one. Totality is not a
+ * convenience: the vocabulary's forest invariant rests on `f(f(x)) === f(x)`,
+ * and a partial function has no fixpoint to reason about. A surface made only
+ * of separators norms to `""`.
+ *
+ * `""` is a norm. It is NOT a key — see {@link identityKey}.
  */
 export function lexicalNorm(surface: string): string {
   return surface
     .replace(ASCII_UPPER, foldAscii)
     .replace(SEPARATOR_RUN, " ")
     .replace(EDGE_SPACE, "");
+}
+
+/**
+ * The stored identity key: the norm, or `null` when the norm is empty.
+ *
+ * ## Why the empty norm must not be stored
+ *
+ * Migration 0187's header rejects a `DEFAULT ''` on these columns because
+ * "every unkeyed row joins every other unkeyed row". `lexicalNorm` reaches that
+ * same value by a different road — `"___"`, `"-"`, `"  "` all norm to `""` —
+ * and the ingest guard does not stop them: `reconcile.ts`'s `MALFORMED_CLAIM`
+ * test is `surface.trim() === ""`, and `String#trim` strips whitespace but not
+ * `_` or `-`. So a producer emitting `-` for a missing value lands a storable
+ * claim today, and under a stored `""` key every such claim would occupy ONE
+ * slot: two unrelated placeholder facts corroborate as one, and at `single`
+ * cardinality publishing either stamps `valid_to` on the other.
+ *
+ * That is the module's own forbidden direction — an over-match at a join arm,
+ * reached from the one input class the lexical layer cannot distinguish. `null`
+ * is what the schema already documents as "no writer has keyed this row, joins
+ * nothing", and it is the honest answer for a surface that asserts nothing.
+ *
+ * Migration 0187 mirrors this with `NULLIF(…, '')`; the two are pinned against
+ * each other row by row in `identity-pg.test.ts`.
+ *
+ * Kept SEPARATE from `lexicalNorm` rather than folded into it, because the two
+ * answer different questions: `lexicalNorm` is the pure normalization the
+ * vocabulary composes over (and must stay total to have a fixpoint), while this
+ * is the storage decision. #5020 calls this one at the INSERT site.
+ */
+export function identityKey(surface: string): string | null {
+  const norm = lexicalNorm(surface);
+  return norm === "" ? null : norm;
 }

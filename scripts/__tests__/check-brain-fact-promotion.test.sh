@@ -42,6 +42,41 @@ run_fixture() {
   fi
 }
 
+# run_message_fixture <label> <relative-path> <file-contents> <expected-substring…>
+#
+# Exit-code fixtures cannot see WHICH advice the guard printed, and the guard
+# argues at length that naming the wrong column "would send the reader to fix
+# code they did not write". That argument was unenforced: the entire per-column
+# remediation text could be deleted and all the fixtures above stay green.
+#
+# The case that made this concrete: `statement_writes_gated_column` used to
+# return on the first matching arm, and every brain_facts statement in this repo
+# carries `AND valid_to IS NULL` — so a re-key reported a supersession stamp and
+# the identity advice was unreachable in the one shape it exists for.
+run_message_fixture() {
+  local label="$1" relpath="$2" contents="$3"
+  shift 3
+  local tmp out rc=0
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/$(dirname "$relpath")"
+  printf '%s\n' "$contents" > "$tmp/$relpath"
+  out="$(BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" 2>&1)" || rc=$?
+  rm -rf "$tmp"
+
+  if [ "$rc" -ne 1 ]; then
+    echo "  ✗ $label — expected the gate to FAIL (exit 1), got exit $rc"; FAIL=$((FAIL + 1))
+    return
+  fi
+  local needle
+  for needle in "$@"; do
+    if ! grep -qF -- "$needle" <<<"$out"; then
+      echo "  ✗ $label — output never mentions: $needle"; FAIL=$((FAIL + 1))
+      return
+    fi
+  done
+  echo "  ✓ $label"; PASS=$((PASS + 1))
+}
+
 echo "check-brain-fact-promotion adversarial fixtures:"
 
 # (a) The canonical rogue promotion → must FAIL.
@@ -483,12 +518,43 @@ run_fixture "SELECT joining on the identity keys passes" pass \
 'const rows = await db.query(`SELECT id FROM brain_facts WHERE workspace_id = $1 AND subject_key = $2 AND predicate_key = $3 AND object_key = $4 AND invalidated_at IS NULL AND valid_to IS NULL`);'
 
 # The regression that matters: retraction is the one legitimate unallowlisted
-# brain_facts UPDATE, and it must stay legitimate now that four more columns are
+# brain_facts UPDATE, and it must stay legitimate now that five more columns are
 # gated. Re-pinned here rather than assumed from the `valid_to` fixture above,
 # since a new arm is a new way to break it.
 run_fixture "retraction still passes with the identity keys gated" pass \
   "packages/api/src/lib/brain/retract3.ts" \
 'await db.query(`UPDATE brain_facts AS f SET invalidated_at = now(), updated_at = now() WHERE f.id = $1 AND f.invalidated_at IS NULL`);'
+
+# A one-shot backfill under `db/migrations/scripts/*.ts` is the path the guard's
+# header specifically says it declines to exclude by directory. Nothing pinned
+# that for the identity arm.
+run_fixture "a .ts re-key under db/migrations/scripts/ fails" fail \
+  "packages/api/src/lib/db/migrations/scripts/rekey-identity.ts" \
+'await pool.query(`UPDATE brain_facts SET predicate_key = $2 WHERE workspace_id = $1 AND predicate_key = $3`);'
+
+# ── the failure MESSAGE, not just the exit code ───────────────────────────
+#
+# The realistic re-key. It carries `AND valid_to IS NULL` because all three slot
+# consumers require it, which is exactly what made first-match reporting route
+# this to the supersession advice. Both arms must be named, and the identity
+# remedy — the alias-approval seam, and INSERT being legal — must be printed.
+run_message_fixture "a re-key that also mentions valid_to reports BOTH arms, with the identity remedy" \
+  "packages/api/src/lib/brain/rekey.ts" \
+'await db.query(`UPDATE brain_facts
+   SET subject_key = $3, predicate_key = $4
+ WHERE workspace_id = $1 AND subject_key = $2
+   AND invalidated_at IS NULL AND valid_to IS NULL`);' \
+  "(valid_to identity)" \
+  "alias-approval" \
+  "Naming the keys on the INSERT is correct and required"
+
+# …and a re-key that mentions nothing else still gets the identity headline
+# rather than the multi-arm one, so the routing is pinned in both directions.
+run_message_fixture "a bare re-key gets the identity headline alone" \
+  "packages/api/src/lib/brain/rekey2.ts" \
+'await db.query(`UPDATE brain_facts SET object_key = $2 WHERE workspace_id = $1`);' \
+  "is RE-KEYED outside the alias-approval seam (#5019)" \
+  "(identity)"
 
 echo ""
 

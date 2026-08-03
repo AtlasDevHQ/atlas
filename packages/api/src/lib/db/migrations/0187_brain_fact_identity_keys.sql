@@ -238,11 +238,21 @@ UPDATE brain_facts
 -- ONE honest cost, and it lasts until #5020 merges — a separate PR with no
 -- enforced ordering, not a single deploy. Those three consumers still compare
 -- the SURFACE columns until #5020 pivots them onto the keys, so until then they
--- lose their `(subject, predicate)` access path. Whether the planner then picks
--- a sequential scan or an index scan over `(workspace_id, …)` and filters is
--- its call — either way it is a plan change, never a wrong answer, and an N-1
--- pod during the deploy overlap sees the same thing, so the two-phase
--- discipline that governs `DROP COLUMN` does not apply. The trade is against
+-- lose their `(subject, predicate)` access path.
+--
+-- Measured, not guessed, on a 20k-row corpus against this repo's PG 16, using
+-- `CORROBORATION_LOOKUP_SQL`'s exact shape:
+--
+--   * 50 workspaces — 3 buffers / 0.04 ms → 15 buffers / 0.18 ms. The index is
+--     still USED: `workspace_id` is its leading column, so the planner seeks on
+--     the workspace prefix and filters the surfaces over that workspace's rows.
+--   * 1 workspace — the prefix buys nothing and the planner picks a seq scan.
+--
+-- So the cost is O(the workspace's live facts) in BOTH shapes, never O(the
+-- region's) — `workspace_id` is an index prefix or a scan filter, and it is
+-- never dropped. It is a plan change, never a wrong answer, and an N-1 pod
+-- during the deploy overlap sees the same thing, so the two-phase discipline
+-- that governs `DROP COLUMN` does not apply. The trade is against
 -- carrying two indexes through the cut, which is what "repoint, not add"
 -- (ADR-0037 §1's zero-net-new-indexes result) exists to avoid; it is bounded by
 -- the corpus size noted above, with that estimate's caveat.

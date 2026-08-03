@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { identityKey, lexicalNorm } from "@atlas/api/lib/brain/identity";
-import { DEGENERATE_SURFACES } from "./identity-fixtures";
+import { DEGENERATE_SURFACES, PAIRED_SURFACES } from "./identity-fixtures";
 
 describe("lexicalNorm", () => {
   describe("what it does", () => {
@@ -90,12 +90,13 @@ describe("lexicalNorm", () => {
 
   describe("what it must NOT do", () => {
     it("keeps `led_by` and `leads` apart — they are INVERSE relations", () => {
+      const [ledBy, leads] = PAIRED_SURFACES.inverseRelations;
       // The single most important negative in this file. Any stemmer collapses
       // these into one slot, and the slot is a JOIN arm: publishing "Alice
       // leads Platform" would then stamp `valid_to` on "Platform led_by Alice".
-      expect(lexicalNorm("led_by")).not.toBe(lexicalNorm("leads"));
-      expect(lexicalNorm("led_by")).toBe("led by");
-      expect(lexicalNorm("leads")).toBe("leads");
+      expect(lexicalNorm(ledBy)).not.toBe(lexicalNorm(leads));
+      expect(lexicalNorm(ledBy)).toBe("led by");
+      expect(lexicalNorm(leads)).toBe("leads");
     });
 
     it("keeps `is owned by` and `owns` apart — no copula or stopword stripping", () => {
@@ -107,7 +108,8 @@ describe("lexicalNorm", () => {
       // `is priced at` → `priced at` is safe for THAT predicate and unsafe as a
       // general rule: the same rule collapses `is owned by` into `owns`. Pinned
       // so nobody "finishes the job" here with a regex.
-      expect(lexicalNorm("is priced at")).not.toBe(lexicalNorm("priced at"));
+      const [withCopula, without] = PAIRED_SURFACES.copulaPair;
+      expect(lexicalNorm(withCopula)).not.toBe(lexicalNorm(without));
     });
 
     it("does not stem, singularize, or lemmatise", () => {
@@ -123,10 +125,16 @@ describe("lexicalNorm", () => {
       // corroboration, both recoverable, and both repairable by a vocabulary
       // entry. See `identity-pg.test.ts` for the half that runs the real
       // migration over these same characters.
+      // Driven off the shared list, so a surface cannot be dropped from the pg
+      // pairing while staying pinned here.
       expect(lexicalNorm("CAFÉ")).toBe("cafÉ");
-      expect(lexicalNorm("İstanbul")).toBe("İstanbul");
-      expect(lexicalNorm("ΣΊΣΥΦΟΣ")).toBe("ΣΊΣΥΦΟΣ");
-      expect(lexicalNorm("МОСКВА")).toBe("МОСКВА");
+      for (const surface of PAIRED_SURFACES.caseFold) {
+        expect(
+          lexicalNorm(surface).toLowerCase() === lexicalNorm(surface) &&
+            surface.toLowerCase() !== surface,
+          `${JSON.stringify(surface)} was case-folded above ASCII — Postgres would disagree`,
+        ).toBe(false);
+      }
     });
 
     it("does not treat non-ASCII spaces as separators", () => {
@@ -135,8 +143,9 @@ describe("lexicalNorm", () => {
       // an ordinary character in the key. Written as an ESCAPE on purpose: a
       // literal NBSP in the source is indistinguishable from a space on sight,
       // and this assertion is worthless if it is silently testing a space.
-      expect(lexicalNorm("owned\u00a0by")).toBe("owned\u00a0by");
-      expect(lexicalNorm("owned\u00a0by")).not.toBe("owned by");
+      const [nbsp] = PAIRED_SURFACES.nonAsciiSpace;
+      expect(lexicalNorm(nbsp)).toBe(nbsp);
+      expect(lexicalNorm(nbsp)).not.toBe("owned by");
     });
 
     it("does not touch the interior of a token", () => {

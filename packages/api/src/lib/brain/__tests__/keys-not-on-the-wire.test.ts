@@ -242,6 +242,16 @@ function projections(source: string): { columns: string; from: string }[] {
 const STAR_PROJECTION = /(^|[\s,(])(?:"?[\w$]+"?\.)?\*(?!\s*\))/;
 const READS_BRAIN_FACTS = /(?:^|[\s,(])(?:"?[\w$]+"?\.)?"?brain_facts"?\b/i;
 
+/** Does this source project an identity key anywhere? */
+const projectsKey = (source: string): boolean =>
+  projections(source).some((p) => KEY_RE.test(p.columns));
+
+/** Does this source star-project `brain_facts`? */
+const starsBrainFacts = (source: string): boolean =>
+  projections(source).some(
+    (p) => READS_BRAIN_FACTS.test(p.from) && STAR_PROJECTION.test(p.columns),
+  );
+
 const FILES = readSurfaceFiles();
 
 describe("the identity keys are never projected to the wire (#5019)", () => {
@@ -285,28 +295,18 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
   });
 
   it("would catch a key column, or a star, if one were projected", () => {
-    // And the matchers themselves, proven on synthetic spans before they are
-    // trusted on real ones. The star arm needs this most: its first cut carried
-    // a fixed-width window between `*` and `FROM`, and the real region-export
-    // projection is wider than the window — so it read green over a planted
-    // `SELECT f.*`.
-    const planted = `const Q = \`SELECT f.id, f.subject, f.subject_key FROM brain_facts f\`;`;
-    expect(projections(planted).some((s) => KEY_RE.test(s.columns))).toBe(true);
+    // The matchers, proven on synthetic sources before they are trusted on real
+    // ones. The star arm needs this most: its first cut carried a fixed-width
+    // window between `*` and `FROM`, and the real region-export projection is
+    // wider than the window — so it read green over a planted `SELECT f.*`.
 
-    const plantedViaConstant = [
-      "const COLS = `f.id, f.predicate_key`;",
-      "const Q = `SELECT ${COLS} FROM brain_facts f`;",
-    ].join("\n");
-    expect(projections(plantedViaConstant).some((s) => KEY_RE.test(s.columns))).toBe(true);
-
-    // EVERY column in the list, not one representative. The `_cmp` arms in
-    // particular cannot be exercised by the real tree — those columns ship in
-    // #5032 — so without this loop `subject_cmp` and `object_cmp` could be
-    // deleted from KEY_COLUMNS and every assertion in this file stays green.
+    // EVERY column, not one representative. The `_cmp` arms in particular
+    // cannot be exercised by the real tree — those columns ship in #5032 — so
+    // without this loop `subject_cmp` and `object_cmp` could be deleted from
+    // KEY_COLUMNS and every assertion in this file would stay green.
     for (const column of KEY_COLUMNS) {
-      const one = `const Q = \`SELECT f.id, f.${column} FROM brain_facts f\`;`;
       expect(
-        projections(one).some((s) => KEY_RE.test(s.columns)),
+        projectsKey(`const Q = \`SELECT f.id, f.${column} FROM brain_facts f\`;`),
         `the matcher does not detect a projected \`${column}\` — that arm is decoration`,
       ).toBe(true);
     }
@@ -317,48 +317,44 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
       ).toBe(true);
     }
 
-    // A key smuggled out through RETURNING rather than SELECT.
-    const plantedReturning =
-      "const Q = `INSERT INTO brain_facts (workspace_id, subject) VALUES ($1,$2) RETURNING id, subject_key`;";
+    // …through a column-list constant, which is where a column would really be
+    // added (`search.ts` builds its projection that way).
     expect(
-      projections(plantedReturning).some((s) => KEY_RE.test(s.columns)),
-      "a key projected through RETURNING is invisible — that is the clause #5020 will touch",
+      projectsKey(
+        ["const COLS = `f.id, f.predicate_key`;", "const Q = `SELECT ${COLS} FROM brain_facts f`;"].join(
+          "\n",
+        ),
+      ),
+    ).toBe(true);
+
+    // …and through RETURNING rather than SELECT — the clause #5020 will touch,
+    // since `INSERT_FACT_SQL` already ends `RETURNING id`.
+    expect(
+      projectsKey(
+        "const Q = `INSERT INTO brain_facts (workspace_id, subject) VALUES ($1,$2) RETURNING id, subject_key`;",
+      ),
+      "a key projected through RETURNING is invisible",
     ).toBe(true);
 
     // A star behind a long column list — the shape that defeated the first cut.
-    const plantedStar = `const Q = \`SELECT f.*, ${"f.col, ".repeat(60)}f.id FROM brain_facts f\`;`;
     expect(
-      projections(plantedStar).some(
-        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
-      ),
+      starsBrainFacts(`const Q = \`SELECT f.*, ${"f.col, ".repeat(60)}f.id FROM brain_facts f\`;`),
     ).toBe(true);
 
     // …a star over brain_facts reached through a JOIN, where the FIRST table is
-    // something else. This is the shape the first cut could not see.
-    const plantedJoinStar =
-      "const Q = `SELECT f.* FROM brain_episodes e JOIN brain_facts f ON f.source_episode_id = e.id WHERE e.id = $1`;";
+    // something else. This is the shape the FROM-clause capture exists for.
     expect(
-      projections(plantedJoinStar).some(
-        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
+      starsBrainFacts(
+        "const Q = `SELECT f.* FROM brain_episodes e JOIN brain_facts f ON f.source_episode_id = e.id WHERE e.id = $1`;",
       ),
     ).toBe(true);
 
-    // …and a star over a DIFFERENT table is not this file's business.
-    const plantedOtherStar = "const Q = `SELECT * FROM brain_episodes e`;";
-    expect(
-      projections(plantedOtherStar).some(
-        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
-      ),
-    ).toBe(false);
+    // …a star over a DIFFERENT table is not this file's business.
+    expect(starsBrainFacts("const Q = `SELECT * FROM brain_episodes e`;")).toBe(false);
 
-    // …and an aggregate's star is not a projection. The publish adapter's
-    // draft count is exactly this shape, and it tripped the first cut.
-    const aggregate = "const Q = `SELECT COUNT(*)::int AS n FROM brain_facts`;";
-    expect(
-      projections(aggregate).some(
-        (s) => READS_BRAIN_FACTS.test(s.from) && STAR_PROJECTION.test(s.columns),
-      ),
-    ).toBe(false);
+    // …and an aggregate's star is not a projection. The publish adapter's draft
+    // count is exactly this shape, and it tripped the first cut.
+    expect(starsBrainFacts("const Q = `SELECT COUNT(*)::int AS n FROM brain_facts`;")).toBe(false);
   });
 
   it("projects no identity key from any read surface", () => {
@@ -371,6 +367,29 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
           `${file} projects \`${hit?.[1]}\`. Identity is a join detail: retrieval reads the SURFACE so a vocabulary edit cannot re-rank it, and a key on the wire re-couples the two through the consumer instead. Anything downstream that can branch on a key makes an alias un-removable. If this is a region bundle, ADR-0037 §8 already settles that keys travel verbatim — that is #5035's to implement, not this projection's to assume ahead of it.`,
         ).toBeUndefined();
       }
+    }
+  });
+
+  it("gates exactly the columns the promotion guard declares", () => {
+    // KEY_COLUMNS is a hand-written list, and the same family is spelled out
+    // independently in `check-brain-fact-promotion.sh`, `schema.ts`, and
+    // `docs/development/content-mode.md`. The carve-out register already pins
+    // doc ⊇ declared and declared ⊆ enforced; nothing linked THIS list to any
+    // of them, so a rename in #5032 would leave it gating a column that no
+    // longer exists — silently, because the positive control above plants the
+    // same literal it scans for and would stay green.
+    const guard = readFileSync(join(REPO, "scripts", "check-brain-fact-promotion.sh"), "utf8");
+    const decl = /^UPDATE_GATED_COLUMNS='\(([^']+)\)'/m.exec(guard);
+    expect(
+      decl,
+      "check-brain-fact-promotion.sh no longer declares UPDATE_GATED_COLUMNS='(…)' — re-point this parse",
+    ).not.toBeNull();
+    const declared = new Set(decl![1]!.split("|"));
+    for (const column of KEY_COLUMNS) {
+      expect(
+        declared.has(column),
+        `\`${column}\` is gated here but not declared in check-brain-fact-promotion.sh's UPDATE_GATED_COLUMNS. Either it was renamed and this list is now dead, or the guard lost an arm — the two lists describe one column family and must not drift.`,
+      ).toBe(true);
     }
   });
 

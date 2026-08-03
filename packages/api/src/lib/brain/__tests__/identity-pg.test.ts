@@ -55,8 +55,8 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
-import { identityKey, lexicalNorm } from "@atlas/api/lib/brain/identity";
-import { DEGENERATE_SURFACES } from "./identity-fixtures";
+import { identityKey } from "@atlas/api/lib/brain/identity";
+import { ALL_PAIRED_SURFACES, DEGENERATE_SURFACES } from "./identity-fixtures";
 import type { BrainFactStatus } from "@atlas/api/lib/brain/types";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -86,19 +86,15 @@ const MIGRATION = join(
  * other.
  */
 const SURFACES = [
+  // Surfaces this file alone exercises — shapes, separators, and the worked
+  // example from 0187's `chr()` section (`leaves` keys as `lea es` under the
+  // readable class spelling with the GUC off).
   "is owned by",
   "owned_by",
   "OWNED-BY",
   "  Reports   To  ",
-  // Both live in the corpus and are INVERSE relations. They must NOT collapse.
-  "led_by",
-  "leads",
-  // The worked example in 0187's `chr()` section: under the readable class
-  // spelling with the GUC off, this keys as `lea es`.
   "leaves",
   "escalates_to",
-  "is priced at",
-  "priced at",
   "Acme Corp",
   "ACME\tCORP",
   "line\nbreak",
@@ -111,26 +107,16 @@ const SURFACES = [
   "499 USD",
   "naïve-Test_Case",
   "Café",
-  "CAFÉ",
-  "İstanbul",
-  "ΣΊΣΥΦΟΣ",
-  // Every uppercase letter. The SQL fold is a hand-typed 26-character pair
-  // repeated three times, and the TypeScript side is structural
-  // (`/[A-Z]/` + `charCode + 32`) — so this pairing is the ONLY thing that can
-  // catch a transposition or a dropped letter in those literals, and it could
-  // previously see just 16 of the 26.
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-  "GHIJKL-QVXZ_ghijkl",
-  // U+00A0. The single most load-bearing consequence of spelling the separator
-  // class out instead of writing `\s` or `[[:space:]]`: a non-breaking space is
-  // NOT a separator and survives into the key. Asserted in `identity.test.ts`
-  // for the TypeScript; this is the half that pins Postgres agreeing.
-  "owned\u00a0by",
-  // Degenerate: every one of these norms to the empty string, and a STORED `''`
-  // would be the `DEFAULT ''` hazard the migration header rejects, reached from
-  // the other side — every such row in one slot. They are here to pin that both
-  // implementations answer NULL, and that they agree about which surfaces are
-  // degenerate.
+  // The CROSS-IMPLEMENTATION set — the inverse-relation pair, #5000's copula
+  // pair, the case-fold counter-examples, U+00A0, and the full alphabet. Shared
+  // with `identity.test.ts` rather than restated: these are exactly the entries
+  // where a surface pinned on one implementation and silently absent from the
+  // other would leave the decision it stands for unchecked.
+  ...ALL_PAIRED_SURFACES,
+  // Degenerate: each norms to the empty string, and a STORED `''` would be the
+  // `DEFAULT ''` hazard the migration header rejects, reached from the other
+  // side. Here to pin that both implementations answer NULL, and that they
+  // agree about WHICH surfaces are degenerate.
   ...DEGENERATE_SURFACES,
 ] as const;
 
@@ -232,6 +218,26 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
     }
   });
 
+  /**
+   * Every row's three keys equal `identityKey` of its surface.
+   *
+   * One helper rather than three spellings of the same compare: the claim is
+   * identical in the pairing test, the coverage test, and the legacy-GUC test,
+   * and only the CONTEXT and the non-vacuity guards around it differ.
+   */
+  function expectKeysMatch(rows: readonly FactRow[], context: string): void {
+    for (const row of rows) {
+      expect(
+        [row.subject_key, row.predicate_key, row.object_key],
+        `keys for ${JSON.stringify([row.subject, row.predicate, row.object])}${context}`,
+      ).toEqual([
+        identityKey(row.subject),
+        identityKey(row.predicate),
+        identityKey(row.object),
+      ]);
+    }
+  }
+
   /** Null the keys, then run the REAL migration file over the seeded corpus. */
   async function rerunBackfill(): Promise<void> {
     await pool.query(
@@ -240,8 +246,15 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
     await pool.query(migrationSql);
   }
 
-  async function allFacts(): Promise<FactRow[]> {
-    const { rows } = await pool.query<FactRow>(
+  /**
+   * The projection every assertion in this file reads.
+   *
+   * Takes a client so the legacy-`standard_conforming_strings` test can run the
+   * same SELECT on its own pool — a copy there could drift from this one, and
+   * it is the projection the key comparisons are made against.
+   */
+  async function allFacts(client: Pool = pool): Promise<FactRow[]> {
+    const { rows } = await client.query<FactRow>(
       `SELECT id::text AS id, subject, predicate, object,
               subject_key, predicate_key, object_key,
               status, invalidated_at, valid_to, updated_at
@@ -282,17 +295,7 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
         ).toBeGreaterThan(0);
       }
 
-      for (const row of rows) {
-        expect(row.subject_key, `subject_key for ${JSON.stringify(row.subject)}`).toBe(
-          identityKey(row.subject),
-        );
-        expect(row.predicate_key, `predicate_key for ${JSON.stringify(row.predicate)}`).toBe(
-          identityKey(row.predicate),
-        );
-        expect(row.object_key, `object_key for ${JSON.stringify(row.object)}`).toBe(
-          identityKey(row.object),
-        );
-      }
+      expectKeysMatch(rows, "");
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -346,22 +349,16 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
         ).toBeGreaterThan(0);
       }
 
-      for (const row of rows) {
-        // "Covered" means "the backfill visited it", which for a surface that
-        // norms away is NULL rather than a key — the `identityKey` contract.
-        // Comparing against it (rather than asserting non-null) keeps this
-        // assertion honest for the degenerate rows while still failing for a
-        // row the backfill skipped, since those rows have non-degenerate
-        // surfaces and would come back NULL against a non-null expectation.
-        expect(
-          [row.subject_key, row.predicate_key, row.object_key],
-          `row ${row.id} (status=${row.status}, invalidated=${row.invalidated_at !== null}, superseded=${row.valid_to !== null}) was not keyed as the backfill defines it — an unkeyed tombstone breaks the re-derive-from-surface undo after an alias removal`,
-        ).toEqual([
-          identityKey(row.subject),
-          identityKey(row.predicate),
-          identityKey(row.object),
-        ]);
-      }
+      // "Covered" means "the backfill visited it", which for a surface that
+      // norms away is NULL rather than a key — the `identityKey` contract.
+      // Comparing against it (rather than asserting non-null) keeps this honest
+      // for the degenerate rows while still failing for a row the backfill
+      // skipped, since those rows have non-degenerate surfaces and would come
+      // back NULL against a non-null expectation.
+      expectKeysMatch(
+        rows,
+        " — an unkeyed tombstone or superseded row breaks the re-derive-from-surface undo after an alias removal",
+      );
 
       // …and the skipped-row failure mode has to be REACHABLE, so at least one
       // row must have a key the assertion above would miss if it were absent.
@@ -545,34 +542,18 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
           `UPDATE brain_facts SET subject_key = NULL, predicate_key = NULL, object_key = NULL`,
         );
         await legacy.query(migrationSql);
-        const { rows } = await legacy.query<FactRow>(
-          `SELECT id::text AS id, subject, predicate, object,
-                  subject_key, predicate_key, object_key,
-                  status, invalidated_at, valid_to, updated_at
-             FROM brain_facts WHERE workspace_id = $1 ORDER BY subject, predicate`,
-          [WS],
-        );
+        const rows = await allFacts(legacy);
         expect(rows.length, "the corpus is empty under the legacy session").toBe(
           SURFACES.length,
         );
-        // ALL THREE columns. The character class is a hand-typed literal
-        // repeated three times in the migration, and under the DEFAULT GUC the
-        // readable spelling is correct — so reverting only the `predicate_key`
-        // or `object_key` class passes every other test in this file, and a
-        // subject-only loop here would let it through too.
-        //
-        // The corpus carries `leaves`, `vertical\vtab`, `GHIJKL-QVXZ_ghijkl`
-        // and a full alphabet, so a `v`-shredding class cannot hide.
-        for (const row of rows) {
-          expect(
-            [row.subject_key, row.predicate_key, row.object_key],
-            `keys for ${JSON.stringify([row.subject, row.predicate, row.object])} under standard_conforming_strings=off`,
-          ).toEqual([
-            identityKey(row.subject),
-            identityKey(row.predicate),
-            identityKey(row.object),
-          ]);
-        }
+        // ALL THREE columns — which is what `expectKeysMatch` gives for free.
+        // The character class is a hand-typed literal repeated three times in
+        // the migration, and under the DEFAULT GUC the readable spelling is
+        // correct, so reverting only the `object_key` class passes every other
+        // test in this file. The corpus carries `leaves`, `vertical\vtab`,
+        // `GHIJKL-QVXZ_ghijkl` and a full alphabet, so a `v`-shredding class
+        // cannot hide.
+        expectKeysMatch(rows, " under standard_conforming_strings=off");
       } finally {
         await legacy.end();
       }

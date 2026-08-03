@@ -21,24 +21,50 @@ fi
 PASS=0
 FAIL=0
 
-# run_fixture <label> <expect: pass|fail> <relative-path> <file-contents>
-run_fixture() {
-  local label="$1" expect="$2" relpath="$3" contents="$4"
-  local tmp
+# _run_guard <relpath> <contents> — stage a throwaway tree holding ONE file and
+# run the guard against it. Results come back in GUARD_RC and GUARD_OUT.
+#
+# The three fixture helpers below differ only in what they ASSERT; staging the
+# tree is identical for all of them and was written out three times.
+#
+# BOTH results are globals, deliberately. Echoing the status so a caller could
+# write `rc="$(_run_guard …)"` puts the whole function in a SUBSHELL, where the
+# GUARD_OUT assignment is discarded — the message fixtures then matched against
+# an empty string and passed only because they were asserting on nothing.
+GUARD_OUT=""
+GUARD_RC=0
+_run_guard() {
+  local relpath="$1" contents="$2" tmp rc=0
   tmp="$(mktemp -d)"
   mkdir -p "$tmp/$(dirname "$relpath")"
   printf '%s\n' "$contents" > "$tmp/$relpath"
-
-  local rc=0
-  BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
+  GUARD_OUT="$(BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" 2>&1)" || rc=$?
+  # intentionally ignored: best-effort restore so `rm -rf` cannot be blocked by
+  # a fixture's own `chmod 000`; the `rm -rf` that follows reports its own
+  # failure if this did not help.
+  chmod -R u+rwX "$tmp" 2>/dev/null || true
   rm -rf "$tmp"
+  GUARD_RC="$rc"
+}
 
-  if [ "$expect" = "pass" ] && [ "$rc" -eq 0 ]; then
-    echo "  ✓ $label"; PASS=$((PASS + 1))
-  elif [ "$expect" = "fail" ] && [ "$rc" -eq 1 ]; then
+_tally() {
+  local ok="$1" label="$2" detail="$3"
+  if [ "$ok" = "1" ]; then
     echo "  ✓ $label"; PASS=$((PASS + 1))
   else
-    echo "  ✗ $label — expected $expect, got exit $rc"; FAIL=$((FAIL + 1))
+    echo "  ✗ $label — $detail"; FAIL=$((FAIL + 1))
+  fi
+}
+
+# run_fixture <label> <expect: pass|fail> <relative-path> <file-contents>
+run_fixture() {
+  local label="$1" expect="$2"
+  _run_guard "$3" "$4"
+  if { [ "$expect" = "pass" ] && [ "$GUARD_RC" -eq 0 ]; } \
+    || { [ "$expect" = "fail" ] && [ "$GUARD_RC" -eq 1 ]; }; then
+    _tally 1 "$label" ""
+  else
+    _tally 0 "$label" "expected $expect, got exit $GUARD_RC"
   fi
 }
 
@@ -47,38 +73,32 @@ run_fixture() {
 # Exit-code fixtures cannot see WHICH advice the guard printed, and the guard
 # argues at length that naming the wrong column "would send the reader to fix
 # code they did not write". That argument was unenforced: the entire per-column
-# remediation text could be deleted and all the fixtures above stay green.
+# remediation text could be deleted and every fixture above stay green.
 #
 # The case that made this concrete: `statement_writes_gated_column` used to
 # return on the first matching arm, and every SLOT-CONSUMER statement carries
 # `AND valid_to IS NULL` — all three require it by design, so a realistic re-key
 # does too. (Not every brain_facts statement does: `INSERT_FACT_SQL` has no
 # WHERE, and the promote UPDATE never names `valid_to`.) So a re-key reported a
-# supersession stamp and the identity advice was unreachable in the one shape it
-# exists for — and the HEADLINE, which is the line GitHub surfaces, stayed wrong
-# for a further round after the offenders line was fixed.
+# supersession stamp, and the identity advice was unreachable in the one shape
+# it exists for — and the HEADLINE, which is the line GitHub surfaces, stayed
+# wrong for a further round after the offenders line was fixed.
 run_message_fixture() {
   local label="$1" relpath="$2" contents="$3"
   shift 3
-  local tmp out rc=0
-  tmp="$(mktemp -d)"
-  mkdir -p "$tmp/$(dirname "$relpath")"
-  printf '%s\n' "$contents" > "$tmp/$relpath"
-  out="$(BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" 2>&1)" || rc=$?
-  rm -rf "$tmp"
-
-  if [ "$rc" -ne 1 ]; then
-    echo "  ✗ $label — expected the gate to FAIL (exit 1), got exit $rc"; FAIL=$((FAIL + 1))
+  local needle
+  _run_guard "$relpath" "$contents"
+  if [ "$GUARD_RC" -ne 1 ]; then
+    _tally 0 "$label" "expected the gate to FAIL (exit 1), got exit $GUARD_RC"
     return
   fi
-  local needle
   for needle in "$@"; do
-    if ! grep -qF -- "$needle" <<<"$out"; then
-      echo "  ✗ $label — output never mentions: $needle"; FAIL=$((FAIL + 1))
+    if ! grep -qF -- "$needle" <<<"$GUARD_OUT"; then
+      _tally 0 "$label" "output never mentions: $needle"
       return
     fi
   done
-  echo "  ✓ $label"; PASS=$((PASS + 1))
+  _tally 1 "$label" ""
 }
 
 # run_status_fixture <label> <expected-rc> <setup-fn>
@@ -86,22 +106,22 @@ run_message_fixture() {
 # `run_fixture` only distinguishes rc 0 from rc 1, so the guard's fail-CLOSED
 # branch — "the candidate scan itself failed, this gate did NOT run", rc 2 — was
 # unexpressible and therefore unpinned. That branch is the one that stops a
-# broken scan from printing "check passed".
+# broken scan from printing "check passed". Takes a setup callback because these
+# fixtures need a tree shape (an unreadable file, an empty tree) rather than one
+# file's contents.
 run_status_fixture() {
   local label="$1" expect_rc="$2" setup="$3"
   local tmp rc=0
   tmp="$(mktemp -d)"
   "$setup" "$tmp"
   BRAIN_PROMOTION_ROOT="$tmp" bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
-  # intentionally ignored: best-effort restore so `rm -rf` cannot be blocked by
-  # a fixture's own `chmod 000`; a failure here is followed by the `rm -rf`
-  # which reports its own problem.
+  # intentionally ignored: see _run_guard.
   chmod -R u+rwX "$tmp" 2>/dev/null || true
   rm -rf "$tmp"
   if [ "$rc" -eq "$expect_rc" ]; then
-    echo "  ✓ $label"; PASS=$((PASS + 1))
+    _tally 1 "$label" ""
   else
-    echo "  ✗ $label — expected exit $expect_rc, got $rc"; FAIL=$((FAIL + 1))
+    _tally 0 "$label" "expected exit $expect_rc, got $rc"
   fi
 }
 
@@ -597,6 +617,74 @@ if [ "$(id -u)" -ne 0 ]; then
   run_status_fixture "an unreadable candidate fails CLOSED (exit 2), never 'check passed'" 2 _setup_unreadable
 else
   echo "  ~ skipped (running as root): an unreadable candidate fails CLOSED"
+fi
+
+# ── the headline precedence, EVERY ordered pair ──────────────────────────
+#
+# The guard picks one `::error::` headline from `SEVERITY_ORDER`. That order was
+# wrong twice in one review — `valid_to` ahead of `identity`, so a re-key was
+# reported as a supersession stamp — and it survived the first fix because the
+# only fixture covering it pinned a single pair.
+#
+# TWO assertions, and the split is the point. Generating the pairs from the
+# script's own array would be self-fulfilling: reorder the array and the
+# expectations reorder with it, which is a test agreeing with the code rather
+# than checking it. So the intended order is written out HERE as the pin, the
+# script's array is required to equal it, and the pairs are then generated to
+# prove the IMPLEMENTATION (`arm_fired` / `headline_for`) matches the
+# declaration. Changing the precedence means editing both, deliberately.
+#
+# One SET list naming both columns trips both arms; the higher-precedence one
+# must own the headline.
+declare -A PRECEDENCE_COLUMN=(
+  [visible_to]="visible_to"
+  [identity]="subject_key"
+  [valid_to]="valid_to"
+  [status]="status"
+)
+declare -A PRECEDENCE_HEADLINE=(
+  [visible_to]="\`visible_to\` is MUTATED"
+  [identity]="is RE-KEYED outside the alias-approval seam"
+  [valid_to]="\`valid_to\` is stamped"
+  [status]="\`status\` is written"
+)
+
+# The pin. Failure direction, most severe first: a grant write DISCLOSES; a
+# re-key reaches the irreversible `valid_to` stamp by proxy, so it subsumes the
+# stamp wherever a statement carries both; a stamp retires a belief invisibly; a
+# status write over-trusts a claim, the recoverable one.
+EXPECTED_ORDER=(visible_to identity valid_to status)
+
+SEVERITY_ORDER_LINE="$(grep -oE '^SEVERITY_ORDER=\(([^)]*)\)' "$SCRIPT" | head -1)"
+if [ -z "$SEVERITY_ORDER_LINE" ]; then
+  echo "  ✗ check-brain-fact-promotion.sh no longer declares SEVERITY_ORDER=( … ) — re-point this parse, or every pair below is unasserted"
+  FAIL=$((FAIL + 1))
+else
+  # shellcheck disable=SC2206
+  ORDER=( ${SEVERITY_ORDER_LINE#SEVERITY_ORDER=(} )
+  ORDER[${#ORDER[@]}-1]="${ORDER[${#ORDER[@]}-1]%)}"
+  if [ "${ORDER[*]}" = "${EXPECTED_ORDER[*]}" ]; then
+    _tally 1 "SEVERITY_ORDER is (${EXPECTED_ORDER[*]})" ""
+  else
+    _tally 0 "SEVERITY_ORDER is (${EXPECTED_ORDER[*]})" \
+      "the script declares (${ORDER[*]}). The headline order is a failure-direction decision, not a formatting choice — if you mean to change it, change EXPECTED_ORDER here too and say why."
+  fi
+  for hi in "${ORDER[@]}"; do
+    for lo in "${ORDER[@]}"; do
+      [ "$hi" = "$lo" ] && continue
+      # Only assert pairs in the declared order (hi before lo).
+      hi_i=-1; lo_i=-1
+      for i in "${!ORDER[@]}"; do
+        [ "${ORDER[$i]}" = "$hi" ] && hi_i=$i
+        [ "${ORDER[$i]}" = "$lo" ] && lo_i=$i
+      done
+      [ "$hi_i" -lt "$lo_i" ] || continue
+      run_message_fixture "precedence: $hi outranks $lo in the headline" \
+        "packages/api/src/lib/brain/precedence.ts" \
+        "await db.query(\`UPDATE brain_facts SET ${PRECEDENCE_COLUMN[$hi]} = \$2, ${PRECEDENCE_COLUMN[$lo]} = \$3 WHERE workspace_id = \$1\`);" \
+        "${PRECEDENCE_HEADLINE[$hi]}"
+    done
+  done
 fi
 
 # …and a re-key that mentions nothing else gets the same headline by the

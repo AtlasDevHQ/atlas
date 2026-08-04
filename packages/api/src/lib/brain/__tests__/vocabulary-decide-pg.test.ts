@@ -68,11 +68,11 @@
  * | `lexicalNorm` dropped from the supplied direction | 1 |
  * | the approval STAMPS the proposed direction instead of the resolved one | 1 |
  * | the EDGE is written in the proposed direction instead of the resolved one | 2 |
- * | `approverEntitled`'s entity-position owner/admin bar dropped | 2 |
+ * | `approverEntitled`'s entity-position owner/admin bar dropped | 3 |
  * | `approverEntitled` made owner/admin at EVERY position | 2 |
  * | the `unresolved`-origin arm admitted | 1 |
  * | the `unauthenticated-local` arm dropped (the local operator locked out) | 1 |
- * | the workspace-mismatch guard dropped | 1 |
+ * | the workspace-mismatch guard dropped | 2 |
  * | the machine-may-not-reject backstop dropped | 1 |
  * | the local operator recorded as a machine | 1 |
  * | the human approver never recorded (`approved_by`/`reviewed_by` always NULL) | 4 |
@@ -97,7 +97,10 @@
  * | the admin route hands over an inline identity vocabulary | 2 |
  * | `recordedApprover` collapses every human onto the local-operator sentinel | 3 |
  * | the machine-may-not-reject refusal downgraded to `not-entitled` | 1 |
- * 49 mutations, 49 caught, zero survivors. NINE rows, in five groups, need
+ * | the entitlement bar scoped to the APPROVE verb only | 1 |
+ * | the workspace-mismatch guard scoped to the APPROVE verb only | 1 |
+ *
+ * 51 mutations, 51 caught, zero survivors. TWELVE rows, in five groups, need
  * reading with care rather than at face value:
  *
  * **The ordered-identity row** is NOT caught by the headline producer test:
@@ -129,8 +132,12 @@
  * entitlement bar), so leaving it unreachable-and-untested would have left an
  * entitlement bypass behind a constraint nobody re-checks.
  *
- * **The last six rows are the PR's other half** — the four call sites that used
- * to name `identityVocabulary`, plus the two ways to revert one. Before these
+ * **The six `identityVocabulary` rows are the PR's other half** — the four call
+ * sites that used to name it, plus the two ways to revert one (a reverted
+ * import, and an inline identity vocabulary at the call site). Named by their
+ * content rather than by position, because they are not contiguous in the table
+ * and an earlier version of this line said "the last six rows", which points at
+ * a different set. Before these
  * landed, reverting ANY of them left every suite in this repo green: every
  * fixture workspace had an empty vocabulary, so the loaded answer and the empty
  * one were byte-identical and no assertion could tell them apart. The ingest
@@ -879,7 +886,7 @@ describeIfPg("the alias decision seam (#5023)", () => {
   // ── 6. Two authority postures, not one ──────────────────────────────────
 
   it("a member may NOT approve an entity-position edge", async () => {
-    // ADR-0037 §6(d): an entity edge's evidence is a warehouse row, and the
+    // T11 §3(d) (#5016): an entity edge's evidence is a warehouse row, and the
     // brain's grant grammar has no arm for warehouse RLS — so the entitlement
     // is the owner/admin one, the only one the brain has. The content differs in
     // kind too: `project atlas → nova` IS the confidential bit.
@@ -931,7 +938,7 @@ describeIfPg("the alias decision seam (#5023)", () => {
     // deletes. A predicate alias is proposed from evidence inside the brain's
     // own ACL'd corpus and its content is a verb phrase that discloses nothing
     // an approver could not guess, so its bar is genuinely lower. Collapsing the
-    // two is what ADR-0037 §6(d) withdraws T5's claim in order to prevent.
+    // two is what T11 §3(d) (#5016) withdraws T5's claim in order to prevent.
     const id = await queue(proposal({ fromNorm: "is priced at", toNorm: "priced at" }));
     expect(await approveAs(id, member())).toEqual({ kind: "approved", id });
     expect((await loadClaimVocabulary(pool, WS)).predicate("is priced at")).toBe("priced at");
@@ -1431,6 +1438,44 @@ describeIfPg("the alias decision seam (#5023)", () => {
     expect(await storedEdges()).toHaveLength(1);
   });
 
+  it("a member may NOT reject an owner-approved entity edge", async () => {
+    // The graver verb, and the one nothing pinned: every other `rejectAs` in
+    // this file passes `owner()`, so scoping either authority guard to
+    // `decision === "approved"` — a one-token edit, and the natural shape of a
+    // refactor that hoists the reject dispatch above the preamble — shipped
+    // green.
+    //
+    // What it lets through is worse than the approval case the seam spends two
+    // blocks arguing about: a member drops an edge an owner approved,
+    // recomputes the workspace closure, and burns the pair's only slot into
+    // PERMANENT rejection memory, and the outcome reads as a success.
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(id, owner());
+
+    expect(await rejectAs(id, member())).toMatchObject({
+      kind: "refused",
+      refusal: "not-entitled",
+    });
+    // The decision the member could not undo is intact, in both relations.
+    expect(await statusOf(id)).toBe("approved");
+    expect(await storedEdges()).toHaveLength(1);
+  });
+
+  it("an approver from another workspace may not reject either", async () => {
+    // The workspace guard's twin, on the same verb. The proposal is loaded from
+    // the REQUEST's workspace, so a foreign owner's `ctx` never has to match
+    // unless the guard makes it — and this is a cross-tenant destructive write.
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(id, owner());
+
+    expect(await rejectAs(id, owner(OTHER_WS))).toMatchObject({
+      kind: "refused",
+      refusal: "workspace-mismatch",
+    });
+    expect(await statusOf(id)).toBe("approved");
+    expect(await storedEdges()).toHaveLength(1);
+  });
+
   it("a HUMAN may reject the same row (the control)", async () => {
     const id = await queue(warehouseEdge("project atlas", "nova"));
     await approveAs(id, owner());
@@ -1711,11 +1756,17 @@ describeIfPg("the alias decision seam (#5023)", () => {
   });
 
   it("no production consumer of a ClaimVocabulary names `identityVocabulary`", () => {
-    // A source-level tripwire, and it earns its place because the BEHAVIOURAL
-    // test above covers only one of the four sites. Reverting any of the other
-    // three to `identityVocabulary` leaves every suite in this repo green — the
-    // fixture workspaces have empty vocabularies, so the two answers are
-    // byte-identical and no assertion can tell them apart.
+    // A source-level tripwire, kept as the CHEAP BACKSTOP rather than as the
+    // coverage — that claim was true when it was written and is not any more.
+    // All four sites are now covered behaviourally: ingest by the two-spellings-
+    // one-slot test above, and both `correctFact` entry points by asserting the
+    // vocabulary the caller handed over (`correct-fact-tool.test.ts`,
+    // `admin-brain-facts.test.ts`, whose mocked pools return a real alias row).
+    //
+    // What this still buys is a FIFTH site: a new consumer that names the empty
+    // vocabulary has no behavioural test of its own yet, and the fixture
+    // workspaces have empty vocabularies, so the loaded answer and the empty one
+    // are byte-identical and nothing else would notice.
     //
     // Backstopped: each file is proven to still CONSUME a vocabulary before it
     // is asserted not to name the empty one, so a rename or a deletion fails

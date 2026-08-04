@@ -977,9 +977,11 @@ export async function decideAliasProposal(
 
   try {
     return await withTransaction(async (tx) => {
-      // LOCK FIRST — before any proposal row is read or written. The region
-      // importer takes this same lock before its insert loop, so locking after
-      // a row touch would invert the order against it and deadlock (40P01).
+      // LOCK FIRST — before any proposal row is read or written, so the row
+      // read and the claim that follows it are one atomic decision. See the
+      // module header for what this does and does NOT buy; in particular it is
+      // not what avoids a 40P01 against the region importer, which never reads
+      // this table.
       await lockVocabulary(tx, workspaceId);
 
       const row = await loadProposal(tx, workspaceId, id);
@@ -1122,7 +1124,10 @@ function entitlementMessage(position: SlotPosition, ctx: BrainPrincipalContext):
     );
   }
   return (
-    `Approving an alias at the ${position} position needs the owner or admin entitlement; this ` +
+    // "Deciding", not "approving": this refusal is returned for a REJECTION too
+    // — which on an approved row is a removal, the graver verb of the two — and
+    // the string ships to #5025's 403 body.
+    `Deciding an alias at the ${position} position needs the owner or admin entitlement; this ` +
     `reader is "${ctx.role ?? "no org role"}". Subject and object edges are entity edges, and an ` +
     "entity edge's evidence is a warehouse row — a grant the brain's ACL grammar has no arm for " +
     "(T11 §3(d), #5016). Predicate edges carry the lower bar because their evidence lives " +

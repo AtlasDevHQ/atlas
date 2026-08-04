@@ -28,7 +28,7 @@
  * it does with a lookup result once it has one.
  *
  * *Does this pair of claims collide?* is answered in
- * `identity-consumers-pg.test.ts`, where fourteen claim pairs are read by all
+ * `identity-consumers-pg.test.ts`, where thirteen claim pairs are read by all
  * three consumers — corroboration, the rival scan, and the publish gate's
  * collision join — against a real schema. The lexical backstop at the bottom of this file
  * is the cheap tripwire for a repoint, not the proof.
@@ -81,7 +81,7 @@ import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 // `scriptRivals` — as a premise about the world, and then asserts what the
 // STAGE does about it. Which claims actually share a slot is a question about
 // SQL against a real schema, and it lives in `identity-consumers-pg.test.ts`,
-// where fourteen claim pairs are read by all three consumers.
+// where thirteen claim pairs are read by all three consumers.
 //
 // The two edge inserts still model their `NOT EXISTS` guards. That is a
 // deliberate line, not an oversight: those guards compare opaque uuids for
@@ -1238,6 +1238,15 @@ describe("no autonomous supersession (#4912)", () => {
     const tagList = COMPARABLE_TAGS.map((tag) => `'${tag}'`).join(", ");
     for (const sql of [CORROBORATION_LOOKUP_SQL, TENSION_CANDIDATES_SQL]) {
       expect(sql).toContain(tagList);
+      // …and the separator arms beside it. `split_part` returns the WHOLE
+      // string when there is no separator, so a bare tag name passes the
+      // membership test — `'money'` read as provably different from
+      // `'money:USD:499'` until these landed. Pinned HERE because their only
+      // behavioural falsifier is in `object-cmp-pg.test.ts`, which SKIPS
+      // without `TEST_DATABASE_URL`: deleting them is otherwise green on a
+      // default local run, which is this block's whole reason to exist.
+      expect(sql).toContain("strpos(object_cmp, ':') > 0");
+      expect(sql).toContain("strpos($5, ':') > 0");
     }
     // …and the self-exclusion, whose BIND is asserted above but whose presence
     // in the statement nothing else here can see. Without it every `single` fact

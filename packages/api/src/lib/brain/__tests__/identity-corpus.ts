@@ -89,7 +89,7 @@ export interface Claim {
    * does not need it, which is the conservative default a producer gets.
    *
    * Present on the corpus because a declaration is the only way a bare `499`
-   * ever becomes comparable, and because the SIDES of a pair may declare
+   * ever becomes comparable AS MONEY (on its own it parses to `number:499`), and because the SIDES of a pair may declare
    * differently: that is what produces a cross-TYPE comparison, the one shape
    * the `split_part` tag arm exists for and the only shape that falsifies it.
    */

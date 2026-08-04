@@ -929,6 +929,15 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(SUPERSESSION_TARGETS_SQL).toContain(
       "split_part(p.object_cmp, ':', 1) = split_part(d.object_cmp, ':', 1)",
     );
+    // …the known-tag membership arm, and the separator arms beside it. This is
+    // the statement that actually stamps `valid_to`, and both arms guard the
+    // same class: a value no reader can interpret must never read as *provably
+    // different*. `split_part` returns the whole string for a separator-less
+    // value, so the membership test alone lets a bare tag name through —
+    // measured on PG 16 before the `strpos` arms landed.
+    expect(SUPERSESSION_TARGETS_SQL).toContain("split_part(p.object_cmp, ':', 1) IN ('money',");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("strpos(p.object_cmp, ':') > 0");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("strpos(d.object_cmp, ':') > 0");
 
     // And the grouping. Every arm of the difference test is `AND`-ed, so the
     // parentheses are redundant TODAY — they are what stops a later `OR` arm

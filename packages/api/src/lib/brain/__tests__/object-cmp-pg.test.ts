@@ -44,7 +44,7 @@
  *
  * | Mutation | Dies on |
  * |---|---|
- * | `INSERT_FACT_SQL` binds the object SURFACE into `object_cmp` | 2 |
+ * | `INSERT_FACT_SQL` binds the object SURFACE into `object_cmp` | 1 — the fresh-write control, and only it: the pre-store test never inserts, and the two-tier join is 0 either way |
  * | `comparableDifferentSql` loses its `split_part` tag EQUALITY arm | 2 — `cross-type`, `date-vs-instant` |
  * | `comparableDifferentSql` loses its known-tag `IN` arm | 1 — the unknown-tag pair |
  * | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | 1 — the same test, via the BARE-TAG fixtures |

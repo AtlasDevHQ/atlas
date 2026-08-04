@@ -70,6 +70,31 @@
 -- over-match 0187 rejects `DEFAULT ''` for, arriving at the position where its
 -- consequence is a `valid_to` stamp rather than a missed join.
 --
+-- ## No CHECK constraint, and it is DEFERRED rather than decided against
+--
+-- The column is a bare `TEXT`, so nothing at the database stops a malformed
+-- value — `'entity'` with no payload, `'entity:'` with an empty one, `'foo:1'`
+-- with a head this module does not know. Every such value is unreachable
+-- today: `INSERT_FACT_SQL` is the sole writer and `comparableValue` always
+-- emits `<known tag>:<non-empty payload>`.
+--
+-- It stops being unreachable at #5035, which makes the region importer a
+-- SECOND writer whose whole job is deciding which tags to carry and which to
+-- null. The reading arms currently enumerate the malformed shapes defensively
+-- (`comparableDifferentSql` carries a known-tag membership test AND a
+-- `strpos(v, ':') > 0` arm on both operands, each closing a measured hole), and
+-- that enumeration is the wrong long-term shape: `comparableSameSql` has no
+-- equivalent, so two byte-identical truncated values still corroborate.
+--
+--   CHECK (object_cmp IS NULL OR object_cmp ~ '^(money|number|date|time|bool|entity):.+')
+--
+-- would close the class at the column and turn an importer bug into a failed
+-- INSERT instead of a silent `valid_to` stamp. NOT added here: it belongs with
+-- the writer it constrains, the tag vocabulary would then be spelled a fifth
+-- time in a place no test generates it from, and a constraint landing ahead of
+-- #5035 could reject a bundle that issue has not yet been written against.
+-- Recorded so it is a deferral with a named owner rather than an omission.
+--
 -- ## No index, and this is pinned rather than merely omitted
 --
 -- The `object_key = … OR (object_cmp …)` disjunction is btree-hostile and will

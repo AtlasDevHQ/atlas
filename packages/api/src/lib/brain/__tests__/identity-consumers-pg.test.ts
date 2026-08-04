@@ -41,7 +41,7 @@
  * assertions in the identity slice now live in the slower, WSL2-flakier lane,
  * and a `--affected` run over `lib/brain/` no longer covers them without
  * `TEST_DATABASE_URL`. The one-corpus design bounds that rather than removing
- * it — fourteen pairs, three consumers, not three suites.
+ * it — thirteen pairs, three consumers, not three suites.
  *
  * ## Every prohibition has a positive control, in its own `test()`
  *

@@ -910,10 +910,16 @@ export async function reconcileFacts(
     // grep, nothing in the review queue, no failed write.
     //
     // ⚠️ Gated on `"declaration-rejected"`, NOT on `comparable === null`. That
-    // wider condition fires on every honest abstain in a declared slot — a
-    // `price` column's `N/A` rows, and the deliberate use of `{kind:"number"}`
-    // to REFUSE a coincidence, which `object-cmp.ts` documents as intended.
-    // One warn per claim, forever, burying the signal this line exists for.
+    // wider condition fires on every honest abstain in a declared slot — every
+    // `N/A` row of a declared `price` column — which is one warn per claim,
+    // forever, burying the signal this line exists for.
+    //
+    // It DOES still fire on a surface that parses as the WRONG type in a
+    // declared slot (`2026-08-04` where `{kind:"number"}` was declared), which
+    // `object-cmp.ts` documents as an intended use of the payload-less
+    // declarations. That is deliberate and bounded: it is the only signal an
+    // operator would ever get that a row in their number slot is a date, and it
+    // cannot reach the unparseable majority.
     //
     // Warned rather than blocked, for the malformed-claim guard's reason: the
     // claim itself is fine and a reviewer can still see it. Only its

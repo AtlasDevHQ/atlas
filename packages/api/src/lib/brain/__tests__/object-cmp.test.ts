@@ -34,34 +34,41 @@
  *
  * | Mutation | Dies on |
  * |---|---|
- * | `DECIMAL_RE` loses its anchors (`^…$`) | 20 |
- * | `parseSurface` returns `{tag:"number", payload: trimmed}` for any unmatched surface — the raw-surface collapse | 11 |
+ * | `DECIMAL_RE` loses its anchors (`^…$`) | 22 |
+ * | `parseSurface` returns `{tag:"number", payload: trimmed}` for any unmatched surface — the raw-surface collapse | 13 |
  * | `canonicalCurrency` loses its upper-case fold | 4 |
- * | `canonicalCurrency` drops the `ISO_4217` membership test (back to any three letters) | 3 |
+ * | `canonicalCurrency` drops the `ISO_4217` membership test (back to any three letters) | 4 |
  * | `canonicalInstant` loses its calendar round-trip | 2 |
  * | `canonicalDate` loses its calendar round-trip | 2 |
  * | `canonicalDecimal` loses its trailing-zero trim | 2 |
- * | a declaration OVERRIDES the surface instead of narrowing it | 2 |
+ * | a declaration OVERRIDES the surface instead of narrowing it | 3 |
+ * | `comparableValueWithReason` collapses `declaration-rejected` into `abstained` | 2 |
  * | `MONEY_RE` back to `\s+` (a newline separates the tokens) | 1 |
  * | `canonicalDecimal` loses its `-0` fold | 1 |
  * | `comparableTag` loses its `boundary === -1` arm (`moneys` reads as `money`) | 1 |
  * | `comparableValue` prefers the surface parse over `entityId` | 1 |
- * | `comparableDifferentSql` loses its `split_part` tag arm | **1, and it is LEXICAL** — see below |
+ * | `comparableDifferentSql` loses its `split_part` tag equality arm | **1, and it is LEXICAL** — see below |
  * | `comparableDifferentSql` loses its known-tag `IN` arm | **0 here** — see below |
+ * | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | **0 here** — see below |
  *
- * ⚠️ **Two arms have no behavioural falsifier in this file, and neither can
+ * ⚠️ **Regenerated in ONE pass on the final tree, and four rows had gone
+ * stale** — 20→22, 11→13, 3→4, 2→3 — because a later review round appended
+ * tests to this file and edited the prose above the table without re-running
+ * it. That is exactly the failure the ROADMAP records against slice B, twice.
+ * The remedy is mechanical: regenerate the whole table, never edit a row.
+ *
+ * ⚠️ **Three SQL arms have no behavioural falsifier in this file, and none can
  * have one.** {@link agree} is the TypeScript twin; deleting a SQL arm does not
- * touch it, so the only thing that dies here is the SQL-arms assertion at the
- * bottom. Both are covered elsewhere, and both are worth knowing about:
+ * touch it, so the only thing that can die here is the SQL-arms assertion at the
+ * bottom. All three are covered elsewhere:
  *
- *   - the **`split_part` tag arm** — `identity-consumers-pg.test.ts`'s
+ *   - the **`split_part` tag equality arm** — `identity-consumers-pg.test.ts`'s
  *     `cross-type-rival` (1) and `object-cmp-pg.test.ts`'s per-row parity tests
- *     (2, via `cross-type` and `date-vs-instant`). An earlier version of this
- *     line called the first the only one in the repo; the parity suite landed
- *     in the same review round and falsified it.
- *   - the **known-tag `IN` arm** — `object-cmp-pg.test.ts`'s unknown-tag pair.
- *     That test was written BECAUSE the mutation measured zero deaths across the
- *     whole suite: nothing can produce an unknown tag today, so the arm guards a
+ *     (2, via `cross-type` and `date-vs-instant`).
+ *   - the **known-tag `IN` arm** and the **`strpos` separator arms** —
+ *     `object-cmp-pg.test.ts`'s unknown-tag test (1 each). Both were written
+ *     BECAUSE the mutations measured zero deaths across the whole suite: nothing
+ *     can produce an unknown or separator-less tag today, so they guard a
  *     population that only exists once #5035 makes the region importer a second
  *     writer of this column. Unreachable is not the same as unnecessary, and an
  *     unfalsifiable guard is one somebody deletes.

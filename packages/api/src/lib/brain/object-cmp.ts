@@ -15,7 +15,7 @@
  * - **different** — both `object_cmp` non-null, same tag, unequal
  * - **unknown** — everything else → **tension only, never a stamp**
  *
- * ⚠️ Three corrections to the table ADR-0037 §2 states, both of which matter to
+ * ⚠️ Three corrections to the table ADR-0037 §2 states, all of which matter to
  * anyone reading the arms below. First, `object_key` is **nullable on disk** —
  * 0187 landed all three keys nullable and `SET NOT NULL` still has unmet
  * prerequisites (#5035, #5047), while a surface that norms away is permanently
@@ -532,17 +532,23 @@ export interface ComparableInput {
  * `null` is the same VERDICT for two very different facts about the world, and
  * only one of them is actionable:
  *
- *   - `"abstained"` — the surface names nothing comparable (`Enterprise tier`,
- *     `$499`) and no declaration rescued it. The COMMON case, permanent, and
- *     nothing anyone should be told about. It includes the deliberate use of a
- *     payload-less declaration to REFUSE a coincidence — `{kind:"number"}` over
- *     a slot whose surfaces are sometimes dates, which
- *     {@link applyDeclaration} documents as intended.
+ *   - `"abstained"` — the surface names nothing comparable AT ALL
+ *     (`Enterprise tier`, `$499`, `N/A`) and no declaration rescued it. The
+ *     COMMON case, permanent, and nothing anyone should be told about.
  *   - `"declaration-rejected"` — the producer declared something the surface
  *     contradicts, or a currency this module cannot canonicalize. A broken
  *     producer: `objectType` exists solely to make an ambiguous surface
  *     comparable, so a rejected declaration silently switches supersession off
  *     for that producer's whole slot population with no other symptom.
+ *
+ *     ⚠️ This ALSO covers the deliberate use of a payload-less declaration to
+ *     REFUSE a coincidence — `{kind:"number"}` over a slot whose surfaces are
+ *     sometimes dates, which {@link applyDeclaration} documents as intended. It
+ *     is kept here rather than moved to `abstained` because the resulting log
+ *     is the only thing that would ever tell an operator a row in their NUMBER
+ *     slot is a date, and it is bounded in a way the `N/A` case is not: it
+ *     fires only on surfaces that parse as the WRONG type, never on the
+ *     unparseable majority. Pinned by `object-cmp.test.ts`.
  *
  * Split because a warn on the first is noise per claim and buries the second.
  * `reconcile.ts` is the only caller that needs it; #5035 will want it too.
@@ -825,3 +831,17 @@ export function objectNotSameSql(keyA: string, keyB: string, cmpA: string, cmpB:
 export function comparableSameSql(a: string, b: string): string {
   return `${a} = ${b}`;
 }
+
+// ⚠️ AND it carries no WELL-FORMEDNESS arm either, unlike its difference twin —
+// which is a known asymmetry with a named owner, not an oversight. Two
+// byte-identical malformed values (`'entity'` on both sides, from a truncating
+// writer) compare EQUAL here and corroborate, merging two claims into one row
+// with no reviewer: T2's silent-merge direction, mirroring the stamp direction
+// the `strpos` arms close in `comparableDifferentSql`.
+//
+// Not fixed by adding a third arm here. Enumerating malformed shapes in two SQL
+// builders is the wrong shape for the class, and migration 0191's header
+// records the right one — a `CHECK` on the column, which makes every reader
+// safe against any second writer and is sequenced with #5035, the issue that
+// creates one. Unreachable from `comparableValue`, which is the only writer
+// until then.

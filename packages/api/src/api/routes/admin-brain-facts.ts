@@ -85,7 +85,7 @@ import {
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
-import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 
 const DEFAULT_LIMIT = 50;
 
@@ -509,13 +509,23 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       // The `retract` correction verb — the SAME code path `/correct` runs
       // (#4915): tombstone + correction episode + dependent re-review flags,
       // in one transaction. One retract semantics, not two.
+      // The workspace's real vocabulary since #5023. `correctFact` reads it at
+      // BOTH of its key sites — the supersede guard's slot comparison and the
+      // replacement claim it hands to reconcile — so it has to be the same
+      // function the ingest path used, or the guard refuses a different set than
+      // the corpus considers identical. A load failure propagates: there is no
+      // degraded answer, and answering with the empty vocabulary would key the
+      // replacement under a different identity function than every other row in
+      // the workspace.
       const outcome = yield* Effect.tryPromise({
-        // `identityVocabulary` named out loud because the field is required
-        // (`identity.ts`, "`alias` is REQUIRED"). No production path loads a real
-        // vocabulary yet; #5023's decide seam is what changes this line, and the
-        // compiler is what stops it being missed.
-        try: () =>
-          correctFact({ ctx, factId, verb: "retract", requestId, vocabulary: identityVocabulary }),
+        try: async () =>
+          correctFact({
+            ctx,
+            factId,
+            verb: "retract",
+            requestId,
+            vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
+          }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -596,7 +606,7 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
 
       const ctx = yield* reviewerContext(mode, user, orgId, requestId);
       const outcome: CorrectionOutcome = yield* Effect.tryPromise({
-        try: () =>
+        try: async () =>
           correctFact({
             ctx,
             factId,
@@ -608,8 +618,8 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
               ? { object: body.replacement.object, validFrom: replacementValidFrom }
               : undefined,
             requestId,
-            // See the `retract` call above — required, empty until #5023.
-            vocabulary: identityVocabulary,
+            // See the `retract` call above — the same load, for the same reason.
+            vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
           }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });

@@ -830,23 +830,30 @@ export async function correctFact(
         // be honoured literally. Equal to the stored key while the vocabulary
         // is deterministic AND unchanged since the target was ingested.
         //
-        // ⚠️ That second condition stops being free the moment a call site loads
-        // a REAL vocabulary, which is #5023 — not #5022. Today no production
-        // path does: `loadClaimVocabulary` has no caller, and every caller of
-        // this module (`admin-brain-facts.ts`, `lib/tools/correct-fact.ts`)
-        // plus the ingest path in `extract.ts` names `identityVocabulary`,
-        // which cannot move. Once one
-        // does, a target ingested before an approval and corrected after it is
-        // re-derived under a DIFFERENT vocabulary than keyed it. The comparison then widens or narrows relative to the stored
-        // slot — it can refuse a supersession the corpus considers distinct, or
-        // permit one it considers identical.
+        // ⚠️ THAT SECOND CONDITION IS NO LONGER FREE. #5022 left it vacuous —
+        // `loadClaimVocabulary` had no caller and every path named
+        // `identityVocabulary`, which cannot move — and #5023 ended that: the
+        // ingest path (`extract.ts`) and all three callers of this module
+        // (`admin-brain-facts.ts` ×2, `lib/tools/correct-fact.ts`) now load the
+        // workspace's real vocabulary. So a target ingested BEFORE an alias
+        // approval and corrected AFTER it is re-derived under a different
+        // vocabulary than keyed it, and the comparison widens or narrows
+        // relative to the stored slot — it can refuse a supersession the corpus
+        // considers distinct, or permit one it considers identical.
         //
-        // Left as a known residual rather than repaired here, because the repair
-        // is not local: ADR-0037 §7's drift re-key rewrites the affected rows
-        // inside the approval's own decide transaction, which is #5023's, and
-        // §8 explicitly declines a per-row vocabulary version stamp that would
-        // let this site detect the skew on its own. The exposure is bounded to
-        // the window between an approval and that re-key.
+        // Still not repaired HERE, and the repair is still not local. Two issues
+        // own the two halves: ADR-0037 §7's drift re-key rewrites the affected
+        // rows inside the approval's own decide transaction (#5024), which
+        // closes the skew at the source, and #5037 makes this site inherit the
+        // target's stored keys instead of re-deriving them, which closes it at
+        // the read. §8 explicitly declines a per-row vocabulary version stamp
+        // that would let this site detect the skew on its own.
+        //
+        // The exposure is bounded to the window between an approval and that
+        // re-key — a window that is currently unbounded, because #5024 has not
+        // landed. Recorded plainly: this is the one place #5023 made a dormant
+        // residual live, and it did so knowingly, because the alternative was
+        // leaving the vocabulary unreadable by anything.
         if (
           replacement !== null &&
           slotKey(replacement.object, vocabulary.object) ===

@@ -277,7 +277,12 @@ describe("runMigrations", () => {
     //   transitive closure `alias` reads, so removing an edge is a
     //   recomputation that restores what it was hiding rather than a
     //   destructive write, #5022 / ADR-0037 §6) = 190.
-    expect(count).toBe(190);
+    //   Plus 0190 (brain_vocabulary_proposal — the alias queue and its
+    //   permanent rejection memory: one row per workspace/position/UNORDERED
+    //   pair for all time, so `approved → rejected` (a removal) is what stops a
+    //   producer re-emitting the edge a human just removed, #5023 /
+    //   ADR-0037 §6) = 191.
+    expect(count).toBe(191);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -496,6 +501,7 @@ describe("runMigrations", () => {
         "0187_brain_fact_identity_keys.sql",
         "0188_rekey_unkeyed_brain_facts.sql",
         "0189_brain_vocabulary.sql",
+        "0190_brain_vocabulary_proposal.sql",
       ],
     });
 

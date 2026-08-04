@@ -207,6 +207,13 @@ export const CLEANUP_TABLE_RULES = {
   // right, and the tripwire test pins the shape so it stays a decision rather
   // than a re-discovery.
   brain_vocabulary_target: { kind: "expression", predicate: "workspace_id = $1" },
+  // The alias queue and its rejection memory (#5023). Column-scoped and phase-
+  // indifferent: no FK points at it in either direction, so unlike the closure
+  // above there is no ordering obligation to encode. The rows it deletes are
+  // NOT all re-derivable — bundle-scope.ts records that the `rejected` half is
+  // a human decision this classification loses at a cutover, and names #5036 as
+  // where it starts travelling.
+  brain_vocabulary_proposal: { kind: "column", column: "workspace_id" },
   // Scheduling state for the audience re-verifiers (#4971) — "this audience has
   // had its turn", read by nothing but the scan's ORDER BY. Workspace-scoped and
   // therefore deletable by column, like the membership table it sits beside, but

@@ -46,7 +46,7 @@ import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
-import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 
 const log = createLogger("correct-fact");
 
@@ -213,9 +213,13 @@ export const correctFactTool = tool({
           ? { object: input.replacement.object, validFrom: replacementValidFrom }
           : undefined,
         requestId,
-        // Required and empty until #5023 wires the loader — `identity.ts`,
-        // "`alias` is REQUIRED", is why this is spelled rather than defaulted.
-        vocabulary: identityVocabulary,
+        // The workspace's real vocabulary since #5023, loaded from `ctx` rather
+        // than from this tool's own `workspaceId` so the identity function and
+        // the reader identity provably come from one resolution. A load failure
+        // propagates — `identity.ts`, "a throwing alias is NOT caught": there is
+        // no safe degraded answer, and the empty vocabulary would key the
+        // replacement under a different function than the ingest path used.
+        vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
       });
     } catch (err) {
       if (err instanceof BrainReaderIdentityError) {

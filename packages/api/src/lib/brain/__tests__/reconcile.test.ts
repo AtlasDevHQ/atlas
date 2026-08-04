@@ -7,7 +7,8 @@
  * cannot make legible: which failure BLOCKS, which failure FLAGS, and exactly
  * what a reviewer ends up holding. The storage-level claims (the CHECKs, the
  * real transaction rollback, two overlapping reconciles racing for one claim,
- * cross-tenant scoping) live in the `-pg` sibling.
+ * cross-tenant scoping) live in the `-pg` siblings — `extract-reconcile-pg` for
+ * the stage, and `identity-consumers-pg` for claim identity (see below).
  *
  * The block-vs-flag asymmetry is the reason this file exists at all. Both
  * directions are failure modes with names:
@@ -15,6 +16,28 @@
  *     nobody can attribute, reaching the review queue as if it were fine);
  *   - a QUALITY failure that blocks is a silent fact-dropper.
  * So every failure class gets a test on the arm it is supposed to take.
+ *
+ * ## ⚠️ What a green run here does NOT mean (#5021, ADR-0037 §9)
+ *
+ * It does not mean claim identity works. This file cannot see identity and no
+ * longer pretends to: the store below dispatches on each SQL constant's string
+ * IDENTITY and reads its binds POSITIONALLY, so it cannot tell which COLUMNS a
+ * statement names, and it stopped deciding which stored fact shares a slot with
+ * an incoming candidate. What survives here is the half that is genuinely
+ * unit-visible — **which values the stage BINDS to the key positions**, and what
+ * it does with a lookup result once it has one.
+ *
+ * *Does this pair of claims collide?* is answered in
+ * `identity-consumers-pg.test.ts`, where eight claim pairs are read by all three
+ * consumers — corroboration, the rival scan, and the publish gate's collision
+ * join — against a real schema. The lexical backstop at the bottom of this file
+ * is the cheap tripwire for a repoint, not the proof.
+ *
+ * That narrowing is the intended outcome and not a regression. Before it, every
+ * BEHAVIOURAL test here stayed green against a `reconcile.ts` whose lookups had
+ * been repointed at the surface columns — only the backstop, which greps the
+ * statement text, caught it. That is the exact defect the identity slice exists
+ * to fix.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -37,8 +60,34 @@ import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 
 // ---------------------------------------------------------------------------
-// A store that answers exactly the six statements the stage issues
+// A store that RECORDS the six statements the stage issues — and answers no
+// identity question it cannot prove (#5021, the map's T7 §4)
 // ---------------------------------------------------------------------------
+//
+// This fake used to decide, in TypeScript, which stored fact was in the same
+// slot as an incoming candidate. That made the file a green light for a property
+// it could not see: it dispatches on each SQL constant's string IDENTITY and
+// reads the binds POSITIONALLY, so it cannot tell which COLUMNS a statement
+// names. Repointing `CORROBORATION_LOOKUP_SQL` back at the surface columns left
+// every BEHAVIOURAL test here passing — verified by mutation, and the defect
+// #5021 exists to retire. (The lexical backstop at the bottom of the file greps
+// the statement text and does catch that one; it is a tripwire, not a proof.)
+//
+// So the two lookups no longer answer. What the store keeps is what it can
+// honestly prove: the statement was issued, in this order, with these binds.
+// A test that needs a lookup to HIT declares that — `corroborateWith`,
+// `scriptRivals` — as a premise about the world, and then asserts what the
+// STAGE does about it. Which claims actually share a slot is a question about
+// SQL against a real schema, and it lives in `identity-consumers-pg.test.ts`,
+// where eight claim pairs are read by all three consumers.
+//
+// The two edge inserts still model their `NOT EXISTS` guards. That is a
+// deliberate line, not an oversight: those guards compare opaque uuids for
+// exact equality, with no normalization and no identity layer anywhere in them,
+// so a JS reimplementation cannot masquerade as identity coverage the way the
+// slot lookups did. The PROVENANCE edge's guard is pinned against a real schema
+// in `extract-reconcile-pg.test.ts` ("re-running over an already-extracted
+// window is a no-op"); the tension edge's dedupe arm is not pinned anywhere.
 
 interface StoredFact {
   id: string;
@@ -47,12 +96,12 @@ interface StoredFact {
   predicate: string;
   object: string;
   /**
-   * What the stage bound to the key columns (#5020). Stored SEPARATELY from the
-   * surfaces and matched on by the two lookups below, because that separation
-   * IS the behaviour under test: a fake that re-derived a key from the stored
-   * surface could not tell a stage that keys its rows from one that does not.
+   * What the stage bound to the key columns (#5020) — a RECORDING, read back by
+   * the tests below, never matched on. Kept separate from the surfaces because
+   * a fake that re-derived a key from the stored surface could not tell a stage
+   * that keys its rows from one that does not.
    */
-  slot: { subject: string | null; predicate: string | null; object: string | null };
+  slot: SlotBinds;
   provenance: Record<string, unknown>;
   visibleTo: string[];
   cardinality: string;
@@ -60,15 +109,18 @@ interface StoredFact {
   extractedAt: string | null;
 }
 
+interface SlotBinds {
+  readonly subject: string | null;
+  readonly predicate: string | null;
+  readonly object: string | null;
+}
+
 /**
  * Three consecutive key binds, read positionally — `null` stays `null` rather
  * than becoming `"null"` through `String()`, which is the whole distinction
  * these tests are about.
  */
-function keyParams(
-  params: readonly unknown[],
-  from: number,
-): { subject: string | null; predicate: string | null; object: string | null } {
+function keyParams(params: readonly unknown[], from: number): SlotBinds {
   const at = (i: number): string | null => {
     const v = params[from + i];
     return v === null || v === undefined ? null : String(v);
@@ -76,11 +128,38 @@ function keyParams(
   return { subject: at(0), predicate: at(1), object: at(2) };
 }
 
-/** Postgres `=`: UNKNOWN (→ not a match) whenever either side is NULL. */
-const sqlEq = (a: string | null, b: string | null): boolean => a !== null && b !== null && a === b;
+/**
+ * The six statements the stage issues, as a CLOSED domain.
+ *
+ * The accessors below take a name from this record rather than a raw SQL string.
+ * That is not ceremony: the tension block asserts that a statement was NOT
+ * issued (`bindsFor("tensionScan")` against a captured baseline), and with a
+ * `string` parameter, passing `INSERT_TENSION_EDGE_SQL` where
+ * `TENSION_CANDIDATES_SQL` was meant —
+ * one word apart, both imported here — type-checks and passes vacuously. That is
+ * the same "green against a property it cannot see" failure this whole file was
+ * rewritten to retire, and it would have been reintroduced at the accessor.
+ *
+ * `keyOffset` lives here too, because the position at which a statement's three
+ * key binds start is a property OF the statement, not of each call site. Restated
+ * at each call site it is one more chance, per site, to read the adjacent
+ * binds instead — and the store itself reads it for the INSERT recording below.
+ */
+const STATEMENTS = {
+  lock: { sql: RECONCILE_LOCK_SQL },
+  corroboration: { sql: CORROBORATION_LOOKUP_SQL, keyOffset: 1 },
+  insertFact: { sql: INSERT_FACT_SQL, keyOffset: 10 },
+  provenanceEdge: { sql: INSERT_PROVENANCE_EDGE_SQL },
+  tensionScan: { sql: TENSION_CANDIDATES_SQL, keyOffset: 1 },
+  tensionEdge: { sql: INSERT_TENSION_EDGE_SQL },
+} as const;
 
-/** Postgres `<>`: likewise UNKNOWN against a NULL, never "different". */
-const sqlNe = (a: string | null, b: string | null): boolean => a !== null && b !== null && a !== b;
+type StatementName = keyof typeof STATEMENTS;
+
+/** The three statements that carry slot keys — the only ones `keyBindsFor` accepts. */
+type KeyedStatementName = {
+  [K in StatementName]: (typeof STATEMENTS)[K] extends { keyOffset: number } ? K : never;
+}[StatementName];
 
 interface StoredEdge {
   workspaceId: string;
@@ -90,13 +169,67 @@ interface StoredEdge {
   toEpisodeId: string | null;
 }
 
+interface RecordedCall {
+  readonly sql: string;
+  readonly params: readonly unknown[];
+}
+
 class FakeBrainStore {
+  /** Every statement the stage issued, in order, with its binds. THE recording. */
+  readonly calls: RecordedCall[] = [];
   readonly facts: StoredFact[] = [];
   readonly edges: StoredEdge[] = [];
   /** Full `pg_advisory_xact_lock` params — the namespace matters as much as the key. */
   readonly locks: unknown[][] = [];
   transactions = 0;
+  /**
+   * The id `CORROBORATION_LOOKUP_SQL` returns, or `null` for no hit.
+   *
+   * A PREMISE the test states, not a conclusion the fake reaches: "suppose the
+   * lookup finds this row". Whether it would is `identity-consumers-pg`'s
+   * question.
+   *
+   * ⚠️ STICKY for the store's lifetime — every later reconcile against the same
+   * store corroborates too. Set it through {@link corroborateWith}, which is
+   * also what stops a phantom id naming a fact that was never written.
+   */
+  private corroborationHit: string | null = null;
+  /** Likewise for `TENSION_CANDIDATES_SQL`; set through {@link scriptRivals}. */
+  private rivalIds: readonly string[] = [];
   private seq = 0;
+
+  /**
+   * "Suppose the corroboration lookup comes back with this row."
+   *
+   * Takes the RECORDED fact rather than a bare id, so a premise can only name a
+   * row the stage actually wrote — a phantom id would have the stage attach a
+   * provenance edge to a fact that does not exist, and the fake would happily
+   * record it.
+   */
+  corroborateWith(fact: StoredFact | undefined): void {
+    if (fact === undefined) throw new Error("corroborateWith: no such fact was recorded");
+    this.corroborationHit = fact.id;
+  }
+
+  /** "Suppose the rival scan comes back with these rows." */
+  scriptRivals(first: StoredFact | undefined, ...rest: (StoredFact | undefined)[]): void {
+    this.rivalIds = [first, ...rest].map((fact) => {
+      if (fact === undefined) throw new Error("scriptRivals: no such fact was recorded");
+      return fact.id;
+    });
+  }
+
+  /** The binds of every call to one statement, in order. */
+  bindsFor(name: StatementName): readonly (readonly unknown[])[] {
+    const { sql } = STATEMENTS[name];
+    return this.calls.filter((c) => c.sql === sql).map((c) => c.params);
+  }
+
+  /** The slot keys the stage bound to one statement's key positions. */
+  keyBindsFor(name: KeyedStatementName): readonly SlotBinds[] {
+    const statement = STATEMENTS[name];
+    return this.bindsFor(name).map((params) => keyParams(params, statement.keyOffset));
+  }
 
   /** A runner shaped like the real one, so "did anything open a tx?" is testable. */
   readonly runner: ReconcileTransactionRunner = async <T>(
@@ -110,28 +243,16 @@ class FakeBrainStore {
     sql: string,
     params: unknown[],
   ): Promise<{ rows: readonly unknown[] }> {
+    this.calls.push({ sql, params });
     switch (sql) {
-      case RECONCILE_LOCK_SQL: {
+      case STATEMENTS.lock.sql: {
         this.locks.push(params);
         return { rows: [] };
       }
-      case CORROBORATION_LOOKUP_SQL: {
-        const [workspaceId] = params.map(String);
-        const slot = keyParams(params, 1);
-        const hit = this.facts.find(
-          (f) =>
-            f.workspaceId === workspaceId &&
-            // `=` against a NULL bind is UNKNOWN in Postgres, so a candidate
-            // whose surface norms away matches nothing — deliberately, since a
-            // NULL-safe comparison would make every degenerate claim
-            // corroborate every other one. Modelled, not assumed away.
-            sqlEq(f.slot.subject, slot.subject) &&
-            sqlEq(f.slot.predicate, slot.predicate) &&
-            sqlEq(f.slot.object, slot.object),
-        );
-        return { rows: hit ? [{ id: hit.id }] : [] };
+      case STATEMENTS.corroboration.sql: {
+        return { rows: this.corroborationHit === null ? [] : [{ id: this.corroborationHit }] };
       }
-      case INSERT_FACT_SQL: {
+      case STATEMENTS.insertFact.sql: {
         const id = `fact-${++this.seq}`;
         this.facts.push({
           id,
@@ -144,11 +265,11 @@ class FakeBrainStore {
           provenance: JSON.parse(String(params[7])) as Record<string, unknown>,
           visibleTo: JSON.parse(String(params[8])) as string[],
           cardinality: String(params[9]),
-          slot: keyParams(params, 10),
+          slot: keyParams(params, STATEMENTS.insertFact.keyOffset),
         });
         return { rows: [{ id }] };
       }
-      case INSERT_PROVENANCE_EDGE_SQL: {
+      case STATEMENTS.provenanceEdge.sql: {
         const [workspaceId, fromFactId, toEpisodeId] = params.map(String);
         const exists = this.edges.some(
           (e) =>
@@ -167,23 +288,15 @@ class FakeBrainStore {
         });
         return { rows: [{ id: `edge-${++this.seq}` }] };
       }
-      case TENSION_CANDIDATES_SQL: {
-        const workspaceId = String(params[0]);
-        const slot = keyParams(params, 1);
+      case STATEMENTS.tensionScan.sql: {
+        // `id <> $5` is the ONE arm still applied here, and it is not identity:
+        // it is the statement refusing to return the row the stage just wrote,
+        // compared by uuid. Modelling it keeps a scripted rival list from
+        // producing a self-edge the real query cannot produce.
         const selfId = String(params[4]);
-        const rivals = this.facts.filter(
-          (f) =>
-            f.workspaceId === workspaceId &&
-            sqlEq(f.slot.subject, slot.subject) &&
-            sqlEq(f.slot.predicate, slot.predicate) &&
-            // `<>` is UNKNOWN against NULL on either side too — a NULL object
-            // key abstains OUT of tension rather than into it.
-            sqlNe(f.slot.object, slot.object) &&
-            f.id !== selfId,
-        );
-        return { rows: rivals.map((f) => ({ id: f.id })) };
+        return { rows: this.rivalIds.filter((id) => id !== selfId).map((id) => ({ id })) };
       }
-      case INSERT_TENSION_EDGE_SQL: {
+      case STATEMENTS.tensionEdge.sql: {
         const [workspaceId, fromFactId, toFactId] = params.map(String);
         const exists = this.edges.some(
           (e) =>
@@ -430,6 +543,9 @@ describe("flag: entity resolution", () => {
     const store = new FakeBrainStore();
     const report = await run(store);
     expect(report.provisional).toBe(0);
+    // The row has to EXIST for its missing flag to mean anything — a stage that
+    // wrote nothing also has no provisional fact.
+    expect(store.facts).toHaveLength(1);
     expect(store.facts[0]?.provenance.provisional).toBeUndefined();
   });
 
@@ -450,9 +566,17 @@ describe("flag: entity resolution", () => {
 // ---------------------------------------------------------------------------
 
 describe("corroboration", () => {
-  test("re-observing a claim strengthens it instead of duplicating it", async () => {
+  // Every test here states the lookup's answer as a PREMISE — "suppose the
+  // corroboration lookup comes back with this row" — and asserts what the stage
+  // then does. Whether a given pair of claims SHOULD produce that hit is a
+  // question about SQL columns against a real schema, and it is asked over one
+  // eight-pair corpus in `identity-consumers-pg.test.ts`.
+
+  test("a lookup hit strengthens the existing belief instead of duplicating it", async () => {
     const store = new FakeBrainStore();
     await run(store);
+    store.corroborateWith(store.facts[0]);
+
     const second = await run(store, {
       episode: episode({ id: "ep-2", sourceId: "C01:1719000900.000200" }),
     });
@@ -466,12 +590,29 @@ describe("corroboration", () => {
     expect(store.edges.filter((e) => e.edgeType === "provenance")).toHaveLength(2);
   });
 
+  test("a lookup MISS mints a fresh draft rather than silently dropping the claim", async () => {
+    // The other arm, and the one that makes the test above mean something: with
+    // no hit the stage must still write. A `corroborated` that fell through to
+    // nothing would lose the claim entirely.
+    const store = new FakeBrainStore();
+    await run(store);
+
+    const second = await run(store, { episode: episode({ id: "ep-2" }) });
+
+    expect(second.created).toBe(1);
+    expect(second.corroborated).toBe(0);
+    expect(store.facts).toHaveLength(2);
+  });
+
   test("re-running the SAME episode adds no second evidence edge", async () => {
     // This is what makes `extract.ts`'s work-then-stamp ordering safe: a crash
     // between the reconcile commit and the queue stamp costs a repeated model
-    // call and nothing else.
+    // call and nothing else. The guard is `INSERT … NOT EXISTS` on
+    // `(workspace, fact, episode)` — uuid equality, no identity layer in it.
     const store = new FakeBrainStore();
     await run(store);
+    store.corroborateWith(store.facts[0]);
+
     const again = await run(store);
 
     expect(again.corroborated).toBe(1);
@@ -485,10 +626,24 @@ describe("corroboration", () => {
     // evidence, not a promotion to a wider audience.
     const store = new FakeBrainStore();
     await run(store, { episode: episode({ visibleTo: ["audience:chat-channel:slack:C1"] }) });
+    store.corroborateWith(store.facts[0]);
+
     await run(store, { episode: episode({ id: "ep-2", visibleTo: ["org"] }) });
 
     expect(store.facts).toHaveLength(1);
     expect(store.facts[0]?.visibleTo).toEqual(["audience:chat-channel:slack:C1"]);
+  });
+
+  test("the lookup's first bind is the episode's workspace", async () => {
+    // `workspace_id = $1`. Dropping it from the statement turns a dedupe into a
+    // cross-tenant read — tenant B's re-observation attaching a provenance edge
+    // to tenant A's fact — and this file can only prove the PARAMETER is passed.
+    // That the SQL text still names the column is
+    // `extract-reconcile-pg.test.ts`'s ("keeps corroboration inside the tenant").
+    const store = new FakeBrainStore();
+    await run(store, { episode: episode({ workspaceId: "ws-other" }) });
+
+    expect(store.bindsFor("corroboration").map((p) => p[0])).toEqual(["ws-other"]);
   });
 });
 
@@ -497,18 +652,18 @@ describe("corroboration", () => {
 // ---------------------------------------------------------------------------
 
 describe("advisory contradiction edges", () => {
-  test("a single-cardinality predicate with a rival object earns an in-tension-with edge", async () => {
+  const single = { subject: "Ada", predicate: "reports to", predicateCardinality: "single" } as const;
+
+  test("a rival the scan returns earns an in-tension-with edge", async () => {
+    // Premise: the scan comes back with a rival. WHICH rows it would come back
+    // with is `identity-consumers-pg`'s `rival-through-phrasing` case.
     const store = new FakeBrainStore();
-    await run(store, {
-      candidates: [
-        candidate({ subject: "Ada", predicate: "reports to", object: "Grace", predicateCardinality: "single" }),
-      ],
-    });
+    await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
+    store.scriptRivals(store.facts[0]);
+
     const second = await run(store, {
       episode: episode({ id: "ep-2" }),
-      candidates: [
-        candidate({ subject: "Ada", predicate: "reports to", object: "Alan", predicateCardinality: "single" }),
-      ],
+      candidates: [candidate({ ...single, object: "Alan" })],
     });
 
     expect(second.outcomes[0]).toMatchObject({ kind: "created", tensionEdges: 1 });
@@ -518,15 +673,49 @@ describe("advisory contradiction edges", () => {
     expect(store.edges.filter((e) => e.edgeType === "in-tension-with")).toHaveLength(1);
   });
 
-  test("multi-cardinality values coexist with no tension edge", async () => {
+  test("a non-single predicate never even ISSUES the rival scan", async () => {
+    // Stronger than "no edge appeared", and it is the arm a scripted store can
+    // still prove outright: the stage does not reach the statement at all, so no
+    // rival list could produce an edge however the scan behaved. Scripted with a
+    // REAL rival standing by, so the refusal is the cardinality gate rather than
+    // an empty world.
     const store = new FakeBrainStore();
-    await run(store, { candidates: [candidate({ subject: "Ada", predicate: "knows", object: "Ada-lang" })] });
+    await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
+    store.scriptRivals(store.facts[0]);
+    const scansAfterSetup = store.bindsFor("tensionScan").length;
+
     await run(store, {
       episode: episode({ id: "ep-2" }),
-      candidates: [candidate({ subject: "Ada", predicate: "knows", object: "Fortran" })],
+      candidates: [
+        candidate({ subject: "Ada", predicate: "reports to", object: "Alan", predicateCardinality: "multi" }),
+      ],
     });
 
+    expect(store.bindsFor("tensionScan")).toHaveLength(scansAfterSetup);
     expect(store.edges.filter((e) => e.edgeType === "in-tension-with")).toHaveLength(0);
+  });
+
+  test("an empty rival scan writes no edge", async () => {
+    // The prohibition's positive control is the first test in this block: with
+    // the scan issued and coming back empty, the stage must write nothing.
+    const store = new FakeBrainStore();
+    await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
+
+    expect(store.bindsFor("tensionScan")).toHaveLength(1);
+    expect(store.edges.filter((e) => e.edgeType === "in-tension-with")).toHaveLength(0);
+  });
+
+  test("the scan binds the row just written as its own self-exclusion", async () => {
+    // `id <> $5`. Without it every `single` fact earns a self-edge the moment it
+    // lands, and the review queue fills with claims contradicting themselves.
+    // The BIND is what this file can prove; that the statement still spells the
+    // arm is the lexical backstop at the bottom.
+    const store = new FakeBrainStore();
+    await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
+
+    const binds = store.bindsFor("tensionScan");
+    expect(binds, "the rival scan was never issued").toHaveLength(1);
+    expect(binds[0]![4]).toBe(store.facts[0]!.id);
   });
 
   test("cardinality defaults to the conservative arm", async () => {
@@ -651,41 +840,66 @@ describe("the draft candidate", () => {
     ).rejects.toThrow("edge insert failed");
   });
 
-  test("identity is the slot key — a phrasing variant corroborates instead of forking (#5020)", async () => {
-    // The behaviour #5020 buys — pinned here at the level this file can reach.
-    // `Ships On` / `ships_on` differ in case AND separator, which is the whole
-    // of `lexicalNorm`, so this fails if the stage stops keying its binds.
+  test("the stage keys its binds off the surfaces — every slot, every statement (#5020)", async () => {
+    // The bind half of claim identity, which IS unit-visible: swapping
+    // `item.keys.*` back to the surface fields turns this red. `Deploy_Window` /
+    // `Ships  On` differ from their norms in case AND separator, which is the
+    // whole of `lexicalNorm`.
     //
-    // What it CANNOT catch, stated because the assertion looks stronger than it
-    // is: the store dispatches on SQL IDENTITY and reads the binds positionally,
-    // so it cannot see which COLUMNS the statement names. Repointing
-    // `CORROBORATION_LOOKUP_SQL` back at the surface columns leaves this green.
-    // What it DOES hold is the bind half — swapping `item.keys.*` back to the
-    // surface fields turns this file red. The COLUMN half is
-    // `extract-reconcile-pg.test.ts`'s (it runs the real strings against the
-    // real schema), with a cheap lexical backstop in the SQL-shape test below
-    // so a revert does not need `TEST_DATABASE_URL` to be caught.
+    // The COLUMN half — that the two lookups still NAME the key columns — this
+    // file structurally cannot see (see the header). It is proven in
+    // `identity-consumers-pg.test.ts` against a real schema, with the lexical
+    // tripwire at the bottom of this file as the cheap local backstop.
     const store = new FakeBrainStore();
-    await run(store, { candidates: [candidate({ predicate: "Ships On" })] });
-    const second = await run(store, {
-      episode: episode({ id: "ep-2" }),
-      candidates: [candidate({ predicate: "ships_on" })],
+    await run(store, {
+      candidates: [
+        // `single`, so the rival scan is REACHED — at `multi` the stage skips it
+        // and this test would silently assert two of the three statements.
+        candidate({
+          subject: "Deploy_Window",
+          predicate: "Ships  On",
+          object: "Thursdays",
+          predicateCardinality: "single",
+        }),
+      ],
     });
 
-    expect(second.corroborated).toBe(1);
-    expect(store.facts).toHaveLength(1);
+    const keyed = { subject: "deploy window", predicate: "ships on", object: "thursdays" };
+    // All three statements that carry keys agree, and each is asserted: an
+    // INSERT keyed correctly beside a lookup keyed off the raw surface would
+    // write rows nothing can ever find.
+    expect(store.keyBindsFor("insertFact")[0]).toEqual(keyed);
+    expect(store.keyBindsFor("corroboration")[0]).toEqual(keyed);
+    expect(store.keyBindsFor("tensionScan")[0]).toEqual(keyed);
     // The RETAINED surface is untouched — identity moved, the record of what
-    // the producer actually said did not. The fact keeps the FIRST phrasing;
-    // the second episode arrives as evidence.
-    expect(store.facts[0]).toMatchObject({ predicate: "Ships On" });
-    expect(store.facts[0]!.slot).toMatchObject({ predicate: "ships on" });
+    // the producer actually said did not.
+    expect(store.facts[0]).toMatchObject({ subject: "Deploy_Window", predicate: "Ships  On" });
   });
 
-  test("the workspace's vocabulary reaches every slot, and a throwing one abstains", async () => {
-    // The `alias` seam, end to end through the stage. Without this the whole
-    // threading is unfalsifiable: the default IS `identityAlias`, so dropping
-    // `request.alias` — or dropping the second argument at the three `slotKey`
-    // calls — changes nothing observable and leaves the suite green.
+  test("keys are derived AFTER entity resolution, off the surface actually stored", async () => {
+    // A key must describe the row that was written. Deriving it from the raw
+    // candidate would key a fact under a name that appears nowhere in it — and
+    // every resolved fact would then be unreachable by its own identity.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ subject: "deploy-01" })],
+      resolveEntity: (surface, { role }) =>
+        role === "subject" ? { canonical: "The Deploy Box" } : { canonical: surface },
+    });
+
+    expect(store.facts[0]?.subject).toBe("The Deploy Box");
+    expect(store.keyBindsFor("insertFact")[0]).toMatchObject({ subject: "the deploy box" });
+  });
+
+  test("the workspace's vocabulary reaches every slot", async () => {
+    // The `alias` seam, through the stage. Without this the whole threading is
+    // unfalsifiable: the default IS `identityAlias`, so dropping `request.alias`
+    // — or dropping the second argument at the three `slotKey` calls — changes
+    // nothing observable and leaves the suite green.
+    //
+    // #5000's pair, closed by an ENTRY rather than by a normalization rule,
+    // which is the whole reason the seam exists (ADR-0037 §6 / #5016). That the
+    // pair does NOT collide without one is the corpus's `copula-pair` entry.
     const store = new FakeBrainStore();
     const vocabulary = (norm: string): string =>
       norm === "is priced at" ? "priced at" : norm;
@@ -694,18 +908,13 @@ describe("the draft candidate", () => {
       alias: vocabulary,
       candidates: [candidate({ predicate: "Is_Priced At" })],
     });
-    const second = await run(store, {
-      alias: vocabulary,
-      episode: episode({ id: "ep-2" }),
-      candidates: [candidate({ predicate: "priced at" })],
-    });
 
-    // #5000's pair, closed by an ENTRY rather than by a normalization rule —
-    // which is the whole reason the seam exists.
-    expect(second.corroborated).toBe(1);
-    expect(store.facts).toHaveLength(1);
+    // The aliased slot is what both the INSERT and the lookup carry…
+    expect(store.keyBindsFor("insertFact")[0]).toMatchObject({ predicate: "priced at" });
+    expect(store.keyBindsFor("corroboration")[0]).toMatchObject({ predicate: "priced at" });
+    // …the PREDICATE slot, not only the entity-resolved sides…
     expect(store.facts[0]?.slot).toMatchObject({ predicate: "priced at" });
-    // …and it is the PREDICATE slot, not only the entity-resolved sides.
+    // …and the surface the producer emitted is still what the row records.
     expect(store.facts[0]?.predicate).toBe("Is_Priced At");
   });
 
@@ -729,75 +938,41 @@ describe("the draft candidate", () => {
     expect(store.transactions).toBe(0);
   });
 
-  test("the lexical layer takes no decision the entity resolver owns", async () => {
-    // The line the keys must not cross. `deploy-01` and `the deploy box` are
-    // the SAME machine and different strings; unifying them is a per-workspace
-    // decision with a seam built for it, not a normalization rule applied
-    // globally with no reviewer. Same for `is priced at` / `priced at`, which
-    // ADR-0037 §6 settles as a vocabulary ENTRY (#5016) rather than a rule.
+  test("the STORED surface is trimmed, so padding never reaches the corpus", async () => {
+    // `reconcile.ts` trims the candidate surfaces before it resolves or keys
+    // them, and the trimmed form is what lands in the row. Pinned here because
+    // the identity corpus deliberately CANNOT cover it: a space-padded pair is
+    // normalized by this trim no matter what `lexicalNorm` does, which is why
+    // `separator-edges` uses `_`/`-` instead. Deleting `.trim()` outright is
+    // caught by the MALFORMED_CLAIM test above; storing the untrimmed surface
+    // beside a trimmed key is caught only here.
     const store = new FakeBrainStore();
-    await run(store, { candidates: [candidate({ subject: "deploy-01", predicate: "is priced at" })] });
-    await run(store, {
-      episode: episode({ id: "ep-2" }),
-      candidates: [candidate({ subject: "the deploy box", predicate: "is priced at" })],
-    });
-    await run(store, {
-      episode: episode({ id: "ep-3" }),
-      candidates: [candidate({ subject: "deploy-01", predicate: "priced at" })],
-    });
+    await run(store, { candidates: [candidate({ subject: "  deploy window  ", object: " Thursdays " })] });
 
-    expect(store.facts).toHaveLength(3);
+    expect(store.facts).toHaveLength(1);
+    expect(store.facts[0]).toMatchObject({ subject: "deploy window", object: "Thursdays" });
   });
 
-  test("a surface that norms away is keyed NULL and corroborates nothing", async () => {
+  test("a surface that norms away is bound as NULL, never as an empty string", async () => {
     // `-` survives the MALFORMED_CLAIM guard (`trim()` strips whitespace, not
     // `_` or `-`), so it is a storable claim whose key is permanently NULL.
-    // Two such claims must NOT share a slot: a stored `''` — or a NULL-safe
-    // comparison — would make every placeholder corroborate every other one and,
-    // at `single` cardinality, publishing either would stamp `valid_to` on the
-    // other. Under-matching costs a duplicate row instead.
+    // A bound `""` would file every placeholder in the corpus under ONE slot:
+    // two unrelated claims corroborate as one and, at `single` cardinality,
+    // publishing either stamps `valid_to` on the other. `null` joins nothing,
+    // which is the honest answer for a surface that asserts nothing.
+    //
+    // The bind is what this file can see. That two such rows then fail to
+    // corroborate each other is `extract-reconcile-pg.test.ts`'s.
     const store = new FakeBrainStore();
     await run(store, { candidates: [candidate({ object: "-" })] });
-    const second = await run(store, {
-      episode: episode({ id: "ep-2" }),
-      candidates: [candidate({ object: "___" })],
-    });
 
-    expect(second.corroborated).toBe(0);
-    expect(store.facts).toHaveLength(2);
-    for (const fact of store.facts) {
-      expect(fact.slot.object).toBeNull();
-    }
-    // …and each degenerate surface is still stored VERBATIM, so the reviewer can
+    expect(store.keyBindsFor("insertFact")[0]?.object).toBeNull();
+    expect(store.keyBindsFor("corroboration")[0]?.object).toBeNull();
+    // …and the degenerate surface is still stored VERBATIM, so the reviewer can
     // see what the producer emitted and repair it. Asserted on `object` — the
     // column that actually carries one; the subject is the shared default and
     // would prove nothing.
-    expect(store.facts.map((f) => f.object)).toEqual(["-", "___"]);
-  });
-
-  test("surrounding whitespace is trimmed, so it never forks a claim", async () => {
-    const store = new FakeBrainStore();
-    await run(store);
-    const second = await run(store, {
-      episode: episode({ id: "ep-2" }),
-      candidates: [candidate({ subject: "  deploy window  ", object: " Thursdays " })],
-    });
-
-    expect(second.corroborated).toBe(1);
-    expect(store.facts).toHaveLength(1);
-  });
-
-  test("corroboration is scoped to the workspace", async () => {
-    const store = new FakeBrainStore();
-    await run(store);
-    const other = await run(store, {
-      episode: episode({ id: "ep-2", workspaceId: "ws-other" }),
-    });
-
-    // Same claim, different tenant — a corroboration across that line would be
-    // a cross-tenant read dressed as a dedupe.
-    expect(other.created).toBe(1);
-    expect(store.facts).toHaveLength(2);
+    expect(store.facts[0]?.object).toBe("-");
   });
 
   test("no candidates is a no-op, not an empty transaction", async () => {
@@ -852,12 +1027,15 @@ describe("no autonomous supersession (#4912)", () => {
   });
 
   test("both lookups match on the SLOT KEYS and on no surface column (#5020)", () => {
-    // The lexical backstop for the pivot. The fake store above dispatches on
+    // The lexical backstop for the pivot, and after #5021 it is the ONLY thing
+    // in this file that looks at a column name. The store above dispatches on
     // each statement's string IDENTITY and reads its binds positionally, so
     // repointing either statement at the surface columns leaves every other test
     // in this file green — and the real proof lives in
-    // `extract-reconcile-pg.test.ts`, which SKIPS without `TEST_DATABASE_URL`.
-    // Without these assertions the revert is green on a default local run.
+    // `identity-consumers-pg.test.ts` (three consumers over one corpus) and
+    // `extract-reconcile-pg.test.ts`, both of which SKIP without
+    // `TEST_DATABASE_URL`. Without these assertions the revert is green on a
+    // default local run.
     expect(CORROBORATION_LOOKUP_SQL).toContain("subject_key = $2");
     expect(CORROBORATION_LOOKUP_SQL).toContain("predicate_key = $3");
     expect(CORROBORATION_LOOKUP_SQL).toContain("object_key = $4");
@@ -865,6 +1043,10 @@ describe("no autonomous supersession (#4912)", () => {
     expect(TENSION_CANDIDATES_SQL).toContain("predicate_key = $3");
     // `<>`, never `=`: a rival asserts a DIFFERENT value in the same slot.
     expect(TENSION_CANDIDATES_SQL).toContain("object_key <> $4");
+    // …and the self-exclusion, whose BIND is asserted above but whose presence
+    // in the statement nothing else here can see. Without it every `single` fact
+    // is its own rival the moment it lands.
+    expect(TENSION_CANDIDATES_SQL).toContain("id <> $5");
     // …and no surviving surface comparison in either. An AND-ed surface arm
     // beside a key arm reads as pivoted and is not.
     for (const [name, sql] of [

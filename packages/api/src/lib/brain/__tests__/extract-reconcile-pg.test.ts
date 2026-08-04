@@ -371,62 +371,24 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect((await facts())[0]).toMatchObject({ subject: "The Deploy Box" });
   });
 
-  it("⭐ corroborates across a phrasing difference — the slot, not the spelling", async () => {
-    // THE behaviour this slice buys, end to end. Byte-exactness minted a second
-    // draft here and the reviewer got two rows asserting one thing; the keys
-    // make the second observation strengthen the first.
-    const first = await insertEpisode({ sourceId: "C01:key-2" });
-    const second = await insertEpisode({ sourceId: "C01:key-3" });
-
-    // Every one of the three arms varies, so each is load-bearing here —
-    // mutation-checked one at a time.
-    await reconcileFacts({
-      episode: first,
-      candidates: [candidate({ subject: "deploy_window", predicate: "ships_on", object: "Thursdays" })],
-      producer: "p",
-      extractedAt: new Date(),
-    });
-    const report = await reconcileFacts({
-      episode: second,
-      candidates: [candidate({ subject: "Deploy Window", predicate: "Ships On", object: "thursdays" })],
-      producer: "p",
-      extractedAt: new Date(),
-    });
-
-    expect(report.corroborated).toBe(1);
-    const stored = await facts();
-    expect(stored).toHaveLength(1);
-    // The FIRST phrasing is what the corpus keeps; the second episode arrives
-    // as evidence on the row that already exists.
-    expect(stored[0]).toMatchObject({ subject: "deploy_window" });
-    expect((await edges()).filter((e) => e.edge_type === "provenance")).toHaveLength(2);
-  });
-
-  it("does NOT unify what the vocabulary owns — `is priced at` is not `priced at`", async () => {
-    // The refusal the lexical layer is built around. Collapsing these is a
-    // curated entry with a reviewer behind it (ADR-0037 §6 / #5016), because the same rule
-    // applied generally folds `is owned by` into `owns` — and `led_by`/`leads`,
-    // which are INVERSE relations, into one slot whose join arm stamps
-    // `valid_to`.
-    const first = await insertEpisode({ sourceId: "C01:key-4" });
-    const second = await insertEpisode({ sourceId: "C01:key-5" });
-
-    await reconcileFacts({
-      episode: first,
-      candidates: [candidate({ predicate: "is priced at" })],
-      producer: "p",
-      extractedAt: new Date(),
-    });
-    const report = await reconcileFacts({
-      episode: second,
-      candidates: [candidate({ predicate: "priced at" })],
-      producer: "p",
-      extractedAt: new Date(),
-    });
-
-    expect(report.corroborated).toBe(0);
-    expect(await facts()).toHaveLength(2);
-  });
+  // The three collide/don't-collide cases that used to sit here — a phrasing
+  // variant corroborating, `is priced at` NOT unifying with `priced at`, and a
+  // phrasing-hidden rival earning a tension edge — moved to
+  // `identity-consumers-pg.test.ts` (#5021). They are now asserted over ONE
+  // corpus read by all three consumers, alongside the supersession join, which
+  // is what stops the three drifting into disagreeing about what collides. A
+  // second set of pairs making the same claims here is the drift shape itself.
+  //
+  // What stays below is what that corpus cannot express: a row whose key is
+  // NULL, and a rival whose OBJECT key is NULL. Both need a surface that norms
+  // away, which is a property of one claim rather than a relation between two.
+  //
+  // The other two-claim cases elsewhere in this file (`corroborates a
+  // re-observed claim`, `records an advisory in-tension-with edge`, the
+  // published/retracted/cross-tenant ones) are NOT duplicates of the corpus and
+  // were deliberately kept: each varies a STAGE property — status, grant,
+  // tombstone, tenant — over one fixed claim, rather than varying the claim.
+  // Identity is the corpus's axis; those are this file's.
 
   it("keys a surface that norms away as NULL, and NULL corroborates nothing", async () => {
     // `-` and `___` survive the MALFORMED_CLAIM guard (`trim` strips whitespace,
@@ -465,52 +427,6 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       expect(slot.object_key).toBeNull();
       expect(slot.subject_key).toBe("deploy window");
     }
-  });
-
-  it("flags a tension the phrasing used to hide — the rival scan is the slot too", async () => {
-    // The first row of #5020's consumer table. Two `single`-cardinality claims
-    // about one slot, spelled differently: on the surface columns the rival scan
-    // matched nothing, so the second claim landed with no `in-tension-with` edge
-    // and the reviewer saw two uncontested facts where there was a genuine
-    // contradiction. Mutation-checked — reverting the SUBJECT or PREDICATE arm
-    // of `TENSION_CANDIDATES_SQL` to the surfaces turns this red. The OBJECT arm
-    // needs a degenerate rival to distinguish it, which is the next case: here
-    // `Grace` and `Alan` differ on the surface and on the key alike.
-    const first = await insertEpisode({ sourceId: "C01:key-8" });
-    const second = await insertEpisode({ sourceId: "C01:key-9" });
-
-    await reconcileFacts({
-      episode: first,
-      candidates: [
-        candidate({
-          subject: "Ada",
-          predicate: "Reports_To",
-          object: "Grace",
-          predicateCardinality: "single",
-        }),
-      ],
-      producer: "p",
-      extractedAt: new Date(),
-    });
-    const report = await reconcileFacts({
-      episode: second,
-      candidates: [
-        candidate({
-          subject: "ada",
-          predicate: "reports to",
-          object: "Alan",
-          predicateCardinality: "single",
-        }),
-      ],
-      producer: "p",
-      extractedAt: new Date(),
-    });
-
-    // Two beliefs — the objects genuinely differ — and now they are visibly in
-    // tension. Advisory only: nothing was superseded or invalidated.
-    expect(report.outcomes[0]).toMatchObject({ kind: "created", tensionEdges: 1 });
-    expect(await facts()).toHaveLength(2);
-    expect((await edges()).filter((e) => e.edge_type === "in-tension-with")).toHaveLength(1);
   });
 
   it("a rival with NO object identity is not a rival — the object arm's falsifier", async () => {
@@ -963,8 +879,11 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // lookup, and the stamp. Dropping `workspace_id =` from the first turns a
     // dedupe into a cross-tenant read — tenant B's re-observation attaches a
     // provenance edge to tenant A's fact, and A's fact then cites evidence A
-    // cannot see. The unit suite's fake implements the filter in TypeScript, so
-    // it proves the parameter is PASSED and says nothing about the SQL text.
+    // cannot see. The unit suite can only prove the PARAMETER is passed
+    // (`reconcile.test.ts`, "the lookup's first bind is the episode's
+    // workspace") — since #5021 its fake answers the lookup from a scripted
+    // premise and implements no filter at all. That the SQL TEXT still names
+    // the column is this test's.
     const mine = await insertEpisode({ sourceId: "C01:tenant-a" });
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes

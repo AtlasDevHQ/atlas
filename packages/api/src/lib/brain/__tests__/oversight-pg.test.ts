@@ -37,6 +37,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import {
   OVERSIGHT_BUCKETS_SQL,
   OVERSIGHT_DISTINCT_TOKENS_SQL,
@@ -108,21 +109,41 @@ describeIfPg("brain fact oversight aggregate (real Postgres)", () => {
     return rows[0]!.id;
   }
 
+  /**
+   * All three surfaces are PARAMETERS, and the row is keyed the way an ingested
+   * one is (#5021).
+   *
+   * The predicate and object used to be SQL literals here — `'uses'` and
+   * `'Snowflake'` inside the statement — so two rows this seeder produced could
+   * not differ in those slots even if an author wanted them to.
+   *
+   * ⚠️ **Parity, not coverage.** No test in this file compares two rows'
+   * identity today, and `oversight.ts`'s bucket aggregate reads no `*_key`
+   * column — so nothing here exercises either the new parameters or the keys.
+   * They exist so that a future case CAN vary a slot, and so this seeder cannot
+   * re-introduce the trap the map's T7 §1 names it for. `slotKey` derives the
+   * keys through the same function `reconcile.ts` binds, rather than
+   * hand-written beside the surface where the two could quietly disagree.
+   */
   async function seedFact(opts: {
     workspaceId: string;
     episodeId: string;
     subject: string;
+    predicate?: string;
+    object?: string;
     visibleTo?: readonly (string | null)[];
     status?: "draft" | "published";
     provenance?: string;
     retracted?: boolean;
   }): Promise<string> {
+    const predicate = opts.predicate ?? "uses";
+    const object = opts.object ?? "Snowflake";
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance, status, visible_to,
-          invalidated_at)
-       VALUES ($1, $2, 'uses', 'Snowflake', $3, $4::jsonb, $5, $6::text[],
-               CASE WHEN $7 THEN now() ELSE NULL END)
+          invalidated_at, subject_key, predicate_key, object_key)
+       VALUES ($1, $2, $8, $9, $3, $4::jsonb, $5, $6::text[],
+               CASE WHEN $7 THEN now() ELSE NULL END, $10, $11, $12)
        RETURNING id`,
       [
         opts.workspaceId,
@@ -132,6 +153,11 @@ describeIfPg("brain fact oversight aggregate (real Postgres)", () => {
         opts.status ?? "draft",
         opts.visibleTo ?? ["org"],
         opts.retracted ?? false,
+        predicate,
+        object,
+        slotKey(opts.subject, identityAlias),
+        slotKey(predicate, identityAlias),
+        slotKey(object, identityAlias),
       ],
     );
     return rows[0]!.id;

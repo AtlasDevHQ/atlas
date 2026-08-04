@@ -14,7 +14,11 @@ import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/intern
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
 import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
 import { SLOT_POSITIONS, isSlotPosition, lexicalNorm, type SlotPosition } from "@atlas/api/lib/brain/identity";
-import { recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
+import {
+  VOCABULARY_LOCK_NAMESPACE,
+  VOCABULARY_LOCK_SQL,
+  recomputeEffectiveTargets,
+} from "@atlas/api/lib/brain/vocabulary";
 import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -1343,18 +1347,31 @@ export async function importBundle(
   //      beats silent and not; refusing the edge instead is #5036's job, and
   //      doing it here would be implementing the merge this PR scopes out.
   //
-  // ON THE WORKSPACE LOCK: this block is a vocabulary MUTATION, and
-  // `vocabulary.ts` states that no two of those interleave in a workspace. It
-  // holds here because `recomputeEffectiveTargets` below TAKES that lock itself,
-  // and the rebuild is what decides the committed closure — whichever writer
-  // recomputes second does so with both edge sets visible and produces a closure
-  // of the union. An explicit second acquisition before the insert loop was
-  // written and then removed: it narrows the window in which another writer sees
-  // a partially-inserted bundle, but that window is invisible anyway (the rows
-  // are uncommitted), and no mutation could falsify it — the recompute's own
-  // lock blocks in exactly the same place. A guard nothing can falsify reads as
-  // protection without being any.
+  // ⚠️ THE LOCK IS TAKEN BEFORE THE INSERT LOOP, AND THE ORDER IS THE POINT.
+  //
+  // `approveAliasEdge` acquires the advisory lock FIRST and then touches rows.
+  // An importer that inserts first and reaches the lock only inside
+  // `recomputeEffectiveTargets` acquires the same two resources in the opposite
+  // order, so two writers sharing a `from_norm` close a cycle: the approver
+  // holds the advisory lock and blocks on the importer's uncommitted row, while
+  // the importer blocks on the advisory lock. Postgres resolves it with `40P01
+  // deadlock detected`, and the victim — sometimes the entire region import — is
+  // whichever transaction it picks.
+  //
+  // This is recorded at length because the acquisition was REMOVED once, on the
+  // reasoning that `recomputeEffectiveTargets` takes the same lock so an earlier
+  // acquisition was redundant. That reasoning is wrong in the way lock-ordering
+  // arguments usually are: the later lock does not block in the same PLACE, and
+  // the displacement IS the bug. Measured — with the removal, an approver and an
+  // import over the same norm deadlock; with it restored, they serialize and the
+  // approver gets its typed `already-aliased` refusal.
+  //
+  // Re-taking it inside `recomputeEffectiveTargets` costs nothing:
+  // `pg_advisory_xact_lock` is re-entrant within a transaction.
   const vocabularyEdges = bundle.brainVocabularyEdges ?? [];
+  if (vocabularyEdges.length > 0) {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+  }
 
   const vocabularyPositionsTouched = new Set<SlotPosition>();
   for (const edge of vocabularyEdges) {
@@ -1366,19 +1383,22 @@ export async function importBundle(
       [orgId, edge.slotPosition, edge.fromNorm, edge.toNorm, edge.approvedBy ?? null, edge.approvedAt],
     );
 
-    // The touched set is marked UNCONDITIONALLY, before the count is consulted.
-    // `recomputeEffectiveTargets` is idempotent and total for a position, so
-    // rebuilding one the bundle merely mentioned costs a query and nothing else
-    // — whereas gating it on `rowCount` makes the rebuild depend on the one
-    // value whose absence means "did this land?" is unknowable. An executor that
-    // omits `rowCount` would otherwise commit an edge with NO closure row, which
-    // is precisely the half-rebuilt state `loadClaimVocabulary` refuses to load.
-    vocabularyPositionsTouched.add(edge.slotPosition);
+    // `!== 0`, deliberately NOT `(rowCount ?? 0) !== 0`: an ABSENT `rowCount` is
+    // UNKNOWN and must rebuild, while a reported `0` is a definite conflict that
+    // needs none. Gating the rebuild on a `?? 0` would make it depend on the one
+    // value whose absence means "did this land?" is unanswerable, and an
+    // executor that omits it would then commit an edge with NO closure row —
+    // precisely the half-rebuilt state `loadClaimVocabulary` refuses to load.
+    //
+    // The COUNTER below takes the opposite default on purpose: unknown counts as
+    // skipped, because `skipped > 0` is the only signal that a curated decision
+    // was dropped and a counter should under-claim rather than over-claim.
+    // No `as SlotPosition` here: `validateBundle` narrowed it through
+    // `isSlotPosition`, and a cast would suppress exactly the compile error that
+    // drift between the wire union and `SlotPosition` should produce. That is
+    // the call site `identity.ts`'s `_SlotPositionsCoverTheWire` pin names.
+    if (inserted.rowCount !== 0) vocabularyPositionsTouched.add(edge.slotPosition);
 
-    // `?? 0` rather than `=== 0`: an unknown `rowCount` counts as SKIPPED, the
-    // conservative direction for a COUNTER whose `> 0` is the only signal that a
-    // curated decision was dropped. (Safe to be conservative here only because
-    // the rebuild above no longer depends on it.)
     if ((inserted.rowCount ?? 0) === 0) {
       result.brainVocabularyEdges.skipped++;
       continue;

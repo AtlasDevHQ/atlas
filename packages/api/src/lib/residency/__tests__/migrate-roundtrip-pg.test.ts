@@ -610,14 +610,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
   it(
     "blocks on the workspace vocabulary lock while an approval is open (#5022)",
     async () => {
-      // The importer's advisory lock had ZERO kills until this test: deleting
-      // the whole `VOCABULARY_LOCK_SQL` block left both suites green. It is not
-      // decoration — the interleaving is real and worse than a lost update.
-      // Two concurrent full-position recomputes on disjoint snapshots each
-      // DELETE a closure that is empty from their own view and each INSERT their
-      // own half, committing a closure of neither. Nothing revisits it, and the
-      // completeness check in `loadClaimVocabulary` cannot see it either,
-      // because every edge still has a row — just the wrong one.
+      // Two vocabulary writers over DISJOINT norms: they must serialize on the
+      // workspace lock and end with a closure of the union, not of either half.
+      // What this pins is the serialization; the test below pins the LOCK ORDER,
+      // which is the property that actually bites.
       const LOCK_ORG = "org-migrate-vocab-lock";
       const holder = await pool.connect();
       const importer = await pool.connect();
@@ -648,6 +644,8 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0 });
         await importer.query("COMMIT");
       } catch (err) {
+        // intentionally ignored: the assertion failure below is the real
+        // outcome; a rollback error on an already-dead connection would mask it
         await holder.query("ROLLBACK").catch(() => {});
         await importer.query("ROLLBACK").catch(() => {});
         throw err;
@@ -667,6 +665,93 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         { norm: "a", effective_target: "b" },
         { norm: "c", effective_target: "d" },
       ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not deadlock against a concurrent approval of the SAME norm (#5022)",
+    async () => {
+      // The regression test for a defect this PR shipped and then removed: the
+      // importer's advisory lock was deleted as "redundant, since
+      // `recomputeEffectiveTargets` takes it anyway". It is not redundant.
+      //
+      // `approveAliasEdge` takes the advisory lock and THEN inserts. An importer
+      // that inserts first and reaches the lock only at recompute time acquires
+      // the same two resources in the opposite order, and the cycle needs a
+      // precise interleaving:
+      //
+      //   1. the importer inserts the contended row (taking its row lock) and
+      //      keeps working;
+      //   2. the approver takes the ADVISORY lock, then blocks on that row;
+      //   3. the importer finishes and asks for the advisory lock → cycle.
+      //
+      // So the fixture puts the contended norm FIRST in the bundle and pads it
+      // with enough filler edges that step 2 lands inside the loop. An earlier
+      // version of this test had the approver insert first, which cannot
+      // deadlock — the approver then waits on nothing, so there is no cycle, and
+      // the test passed against the broken code. The padding is the test.
+      const DEADLOCK_ORG = "org-migrate-vocab-deadlock";
+      const PADDING = 400;
+
+      const bundle = vocabularyOnlyBundle("shared", "source side");
+      for (let i = 0; i < PADDING; i++) {
+        bundle.brainVocabularyEdges.push({
+          slotPosition: "predicate" as const,
+          fromNorm: `filler ${i}`,
+          toNorm: `filler target ${i}`,
+          approvedBy: "source-admin",
+          approvedAt: "2026-06-01T00:00:00Z",
+        });
+      }
+
+      const approver = await pool.connect();
+      const importer = await pool.connect();
+      const failures: string[] = [];
+      try {
+        await importer.query("BEGIN");
+        const importing = importBundle(importer, bundle, DEADLOCK_ORG).catch((err: unknown) => {
+          failures.push(`import: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        });
+
+        // Long enough for the importer to have written the contended row and be
+        // partway through the padding.
+        await new Promise((r) => setTimeout(r, 60));
+
+        await approver.query("BEGIN");
+        const approving = approveAliasEdge(approver, DEADLOCK_ORG, {
+          position: "predicate",
+          fromNorm: "shared",
+          toNorm: "target side",
+          approvedBy: "target-admin",
+        }).catch((err: unknown) => {
+          failures.push(`approve: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        });
+
+        // The importer is awaited and COMMITTED first, and the order matters
+        // for the test itself: with the lock correctly held, the approver waits
+        // on it until the importer's transaction ENDS, so awaiting the approver
+        // before committing the importer would hang on a dependency the test
+        // created rather than on anything under test.
+        await importing;
+        await importer.query("COMMIT").catch(() => {});
+        await approving;
+        await approver.query("COMMIT").catch(() => {});
+      } finally {
+        approver.release();
+        importer.release();
+      }
+
+      // The whole assertion. Either writer may win, and the loser may be refused
+      // — those are ordinary outcomes. What must never happen is Postgres
+      // breaking a lock cycle for us, because the victim is picked arbitrarily
+      // and is sometimes the entire region import.
+      expect(
+        failures.filter((f) => /deadlock/i.test(f)),
+        `lock-order inversion between importBundle and approveAliasEdge: ${failures.join(" | ")}`,
+      ).toEqual([]);
     },
     PG_TEST_TIMEOUT_MS,
   );

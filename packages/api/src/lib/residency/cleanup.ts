@@ -24,7 +24,9 @@
  *
  * `CLEANUP_TABLE_RULES` below maps each in-scope table to its org-scoping
  * predicate (most tables carry `org_id`/`workspace_id` directly; a few scope
- * through a parent table or, for `chat_cache`, a JSONB expression). The
+ * through a parent table, and two use an `expression` — `chat_cache` because it
+ * has no org column at all, `brain_vocabulary_target` because it needs the
+ * earlier phase). The
  * tripwire test (`__tests__/cleanup.test.ts`) asserts the rule set equals the
  * registry-derived scope exactly AND validates every referenced column
  * against the Drizzle schema — so a new table cannot silently miss cleanup,

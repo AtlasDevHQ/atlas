@@ -159,8 +159,9 @@ export const VOCABULARY_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2
  *
  * Scoped to `classid`, `objid` AND `objsubid = 2` — all three. `classid` alone
  * would let a session-level lock in THIS namespace for a DIFFERENT workspace
- * make the probe pass, which stopped being hypothetical the moment
- * {@link VOCABULARY_LOCK_NAMESPACE} was exported for the region importer to use.
+ * make the probe pass — and this namespace has more than one holder, since
+ * {@link VOCABULARY_LOCK_NAMESPACE} is exported and the region importer takes
+ * it before its own insert loop.
  * `objid` is the `hashtext` of the workspace id, so the probe asks the exact
  * question the caller needs answered: is MY lock, on MY workspace, still held?
  *
@@ -216,9 +217,10 @@ async function lockWorkspaceVocabulary(
   if (!Number.isFinite(lockCount)) {
     log.error({ workspaceId, operation }, "Vocabulary lock probe returned no usable count");
     throw new Error(
-      `${operation} could not verify the vocabulary advisory lock (workspace ${workspaceId}): the ` +
-        "probe returned no usable row, so this executor is not a Postgres client. Refusing rather " +
-        "than assuming the lock is held.",
+      `${operation} could not verify the vocabulary advisory lock (workspace ${workspaceId}): ` +
+        `the probe returned ${probe === undefined ? "no row" : `a row whose \`n\` is a ${typeof probe.n}`}` +
+        ", so this executor is not answering as a Postgres client. Refusing rather than assuming " +
+        "the lock is held.",
     );
   }
   // `< 1`, deliberately NOT `=== 0`. This is the deny point, and a deny point
@@ -297,10 +299,16 @@ export type AliasApprovalRefusal =
 
 /**
  * Named once and used in BOTH arms below, so the split cannot silently un-split.
- * As two free-standing `"already-aliased"` literals, renaming the union member
- * (or typo-ing either) would make `Exclude` remove nothing, readmitting the arm
- * WITHOUT its required `existingTarget` — with no compile error anywhere. As an
- * `Extract`, a typo resolves to `never` and the constructor stops compiling.
+ *
+ * The gain is narrower than it first looks, and worth stating precisely rather
+ * than overclaiming: renaming the union member is caught EITHER way, because
+ * excess-property checking rejects `existingTarget` against the arm that no
+ * longer declares it. What the alias adds is cover for a typo confined to the
+ * `Exclude` literal alone — which readmits `already-aliased` without its
+ * required field and, in a codebase with no consumer reading it yet, is silent.
+ * `Extract` makes that typo resolve to `never` and the constructor stops
+ * compiling. One line, so worth it; not the compile-time guarantee an earlier
+ * version of this comment claimed.
  */
 type AlreadyAliased = Extract<AliasApprovalRefusal, "already-aliased">;
 
@@ -346,15 +354,22 @@ export type AliasApprovalResult =
 export class VocabularyClosureError extends Error {
   readonly position: SlotPosition;
   readonly norm: string;
-  readonly effectiveTarget: string;
+  /**
+   * The target the norm resolved to, or `null` when the norm had NO closure row
+   * at all — the half-rebuilt case {@link loadClaimVocabulary} refuses. Both are
+   * "this workspace's vocabulary is corrupt", so both carry the same type: a
+   * seam that branched correctly on one and fell through to "database
+   * unreachable" on the other would defeat the reason the class exists.
+   */
+  readonly effectiveTarget: string | null;
 
   constructor(
     message: string,
-    details: { position: SlotPosition; norm: string; effectiveTarget: string },
+    details: { position: string; norm: string; effectiveTarget: string | null },
   ) {
     super(message);
     this.name = "VocabularyClosureError";
-    this.position = details.position;
+    this.position = details.position as SlotPosition;
     this.norm = details.norm;
     this.effectiveTarget = details.effectiveTarget;
   }
@@ -684,7 +699,6 @@ export async function recomputeEffectiveTargets(
       { position, norm: row.norm, effectiveTarget: row.effective_target },
     );
   }
-
 }
 
 /**
@@ -772,12 +786,13 @@ export async function loadClaimVocabulary(
         { workspaceId, position: row.slot_position, norm: row.norm },
         "Vocabulary closure is incomplete — refusing to key an episode against a partial vocabulary",
       );
-      throw new Error(
+      throw new VocabularyClosureError(
         `Vocabulary closure is incomplete at the ${row.slot_position} position for workspace ` +
           `${workspaceId}: "${row.norm}" is an approved edge with no closure row. Every approved ` +
           "edge contributes exactly one, so the position was left half-rebuilt. Run " +
           "recomputeEffectiveTargets for it inside a transaction before ingest resumes — keying " +
           "against a partial closure under-matches corpus-wide and is not visible at rest.",
+        { position: row.slot_position, norm: row.norm, effectiveTarget: null },
       );
     }
     let entries = byPosition.get(row.slot_position);

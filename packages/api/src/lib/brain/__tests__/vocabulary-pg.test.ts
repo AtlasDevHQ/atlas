@@ -44,16 +44,17 @@
  *
  * ## MUTATIONS THIS CATCHES
  *
- * Run one at a time. Every count was MEASURED, and re-measured after each round
- * of the #5051 review panel — round 2 caught two rows that had been carried
- * forward rather than re-run, which is why the provenance matters more than the
- * numbers.
+ * Every count below was measured against THIS tree, one mutation at a time, in
+ * a single run. Not carried forward — rounds 2 and 3 of the #5051 panel each
+ * caught rows that had been, which is why the whole table is now regenerated
+ * rather than edited. 33 mutations, 33 caught.
  *
  * | Mutation | Tests it kills |
  * |---|---|
- * | the closure JOIN neutered, so `alias` answers from edges alone | 18 |
- * | the recompute's recursive term dropped (closure is depth-1 only) | 12 |
- * | `ORDER BY norm, depth DESC` → `depth ASC` (the closure keeps the first hop, not the root) | 12 |
+ * | `alias` answers from the edges alone (LEFT JOIN dropped, `to_norm` selected) | 8 |
+ * | the closure join predicate made unsatisfiable (every `effective_target` NULL) | 18 |
+ * | the recompute's recursive term dropped (closure is depth-1 only) | 13 |
+ * | `ORDER BY norm, depth DESC` → `depth ASC` (the closure keeps the first hop, not the root) | 13 |
  * | `removeAliasEdge` drops its final `recomputeEffectiveTargets` | 2 |
  * | the at-most-one-parent read dropped (the PK still refuses — by THROWING) | 2 |
  * | the cycle walk dropped | 3 |
@@ -61,52 +62,51 @@
  * | `lexicalNorm` dropped from `approveAliasEdge`'s endpoints | 3 |
  * | `lexicalNorm` dropped from `removeAliasEdge`'s argument | 1 |
  * | the self-edge arm dropped (`ck_..._not_self` still refuses — by throwing) | 1 |
- * | the degenerate-norm arm dropped (`ck_..._norms_present` still refuses — by throwing) | 1 |
- * | `loadClaimVocabulary` merges the three positions into one map | 7 |
+ * | the degenerate-norm arm dropped (`ck_..._norms_present` still refuses) | 1 |
+ * | `loadClaimVocabulary` reads one position's map for all three | 7 |
  * | `loadClaimVocabulary` loses its `workspace_id` filter | 1 |
  * | the convergence check dropped from `recomputeEffectiveTargets` | 1 |
  * | the completeness check dropped from `loadClaimVocabulary` | 1 |
  * | `VocabularyClosureError` downgraded to a bare `Error` | 1 |
  * | `existingTarget` reports the closure ROOT instead of the raw approved parent | 1 |
  * | the transaction-contract probe dropped | 1 |
- * | the probe's polarity loosened from `< 1` back to an equality test | 1 |
  * | the advisory lock keyed on a CONSTANT instead of the workspace | 25 |
  *
- * Two rows are COMPOUND and say so here rather than in the prose below, because
- * a table is what a future maintainer trusts: dropping the lock STATEMENT (as
- * opposed to re-keying it) also blinds the probe that reads it, so its kills are
- * mostly the probe firing — the constant-key row is the one that isolates
- * workspace scoping. And neutering the closure JOIN also removes the
- * completeness check's input, so 18 overstates what a pure "reads the edges"
- * mutation would kill.
+ * TWO rows are compound, and it is stated here rather than only in prose. The
+ * unsatisfiable-join row (18) also removes the completeness check's input, so it
+ * is not a clean "reads the edges" mutation — the 8-kill row above it is.
+ * Re-keying the lock to a constant (25) also blinds the probe, because the probe
+ * became `objid`-scoped; nothing in this table isolates workspace scoping
+ * cleanly, and the different-workspaces control is what does.
  *
- * Note the shape shared by FIVE rows — the PK row, `not_self`, `norms_present`,
- * `existingTarget`, and the probe polarity: the SCHEMA also refuses, or the code
+ * FOUR rows share a shape worth naming — the PK row, `not_self`,
+ * `norms_present`, and `existingTarget`: the SCHEMA also refuses, or the code
  * still answers plausibly, so deleting the TypeScript guard does not make the
  * write succeed. It turns a typed refusal into a raw constraint violation, or a
- * correct repair hint into a wrong one, or a deny point into a permissive one.
- * A version of these tests written as `expect(await storedEdges()).toHaveLength(1)`
- * would pass under all five — which is how three were nearly missed, and how
- * `existingTarget` actually was until the panel measured it.
+ * correct repair hint into a wrong one. A version of these tests written as
+ * `expect(await storedEdges()).toHaveLength(1)` would pass under all four —
+ * which is how three were nearly missed, and how `existingTarget` actually was
+ * until the panel measured it.
  *
- * ## Sibling files, same slice
+ * NOT in the table, deliberately: loosening the probe's polarity from `< 1` back
+ * to `=== 0` kills NOTHING, and cannot. `lockCount` is `count(*)::int` past a
+ * `Number.isFinite` guard, so the two are equivalent over the whole reachable
+ * domain. The `< 1` spelling is defensive style, not a tested property, and a
+ * row claiming otherwise was removed rather than left as a fabricated
+ * measurement.
  *
- * The vocabulary's CONSUMERS are falsified where they live, and these counts
- * were measured the same way. `reconcile.test.ts`: a subject↔predicate swap (2),
- * an object↔subject swap (1). `correction.test.ts`: the supersede guard reading
- * the wrong position (2), `applySupersede` dropping the vocabulary on the way
- * into reconcile (1). `admin-migrate.test.ts` + `migrate-roundtrip-pg.test.ts`:
- * the import's re-norm refusal (2), its `slotPosition` arm (1), its empty-norm
- * arm (1), its omitted-`approvedBy` arm (1), a nulled `approved_by` (2), a
- * restamped `approved_at` (2), and a skipped closure rebuild (4).
+ * ## Sibling files, same slice — also measured in that run
  *
- * ## One thing NOT falsifiable here, stated rather than implied
- *
- * The importer taking the workspace lock BEFORE its insert loop was removed
- * rather than tested: `recomputeEffectiveTargets` takes the same lock, so
- * dropping the earlier acquisition changed no observable behaviour and no
- * mutation could kill it. See `admin-migrate.ts` for the reasoning — a guard
- * nothing can falsify reads as protection without being any.
+ * `reconcile.test.ts`: the subject slot reading the predicate lookup (2), the
+ * object slot reading the subject lookup (1). `correction.test.ts`: the
+ * supersede guard reading the wrong position (2), `applySupersede` dropping the
+ * vocabulary on the way into reconcile (1). `admin-migrate.test.ts` +
+ * `migrate-roundtrip-pg.test.ts`: the importer's advisory lock dropped — the
+ * lock-order inversion that deadlocks against a concurrent approval (1), the
+ * import's re-norm refusal (2), its `slotPosition` arm (1), its empty-norm arm
+ * (1), its omitted-`approvedBy` arm (1), a nulled `approved_by` (2), a restamped
+ * `approved_at` (2), a skipped closure rebuild (5), and the rebuild re-gated on
+ * `rowCount ?? 0` (1).
  *
  * Opt in locally with the same scratch database as its sibling brain suites —
  * every one of them creates and drops its OWN schema, so they share it safely:
@@ -604,8 +604,13 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
     const closureError = raised as VocabularyClosureError;
     expect(closureError.message).toMatch(/did not converge/);
     expect(closureError.position).toBe("predicate");
-    expect(closureError.norm).toBeTruthy();
-    expect(closureError.effectiveTarget).toBeTruthy();
+    // Pinned against the fixture's own node set, and pinned as DISTINCT. A
+    // `toBeTruthy` pair survives a constructor that passes one value into both
+    // fields, or swaps them — which is the mistake a three-field error object
+    // invites.
+    expect(["a", "b", "c"]).toContain(closureError.norm);
+    expect(["a", "b", "c"]).toContain(closureError.effectiveTarget ?? "");
+    expect(closureError.norm).not.toBe(closureError.effectiveTarget);
 
     // The transaction rolled back, so no partial closure was committed — the
     // rebuild is DELETE-then-INSERT, and a half-applied one would leave the
@@ -686,6 +691,8 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
       expect(await blocked).toMatchObject({ ok: false, refusal: "would-cycle" });
       await second.query("COMMIT");
     } catch (err) {
+      // intentionally ignored: the assertion failure is rethrown below; a
+      // rollback error on an already-dead connection would mask the real one
       await first.query("ROLLBACK").catch(() => {});
       await second.query("ROLLBACK").catch(() => {});
       throw err;
@@ -716,6 +723,7 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
       await first.query("COMMIT");
       await second.query("COMMIT");
     } catch (err) {
+      // intentionally ignored: as above — the outer error is the real failure
       await first.query("ROLLBACK").catch(() => {});
       await second.query("ROLLBACK").catch(() => {});
       throw err;
@@ -748,32 +756,42 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
     );
   });
 
-  it("loads cleanly while another transaction is mid-approval (no read skew)", async () => {
+  it("loads cleanly when an approval COMMITS mid-load (no read skew)", async () => {
     // The regression the count-based check introduced, pinned so it cannot come
-    // back. An approval is held open in another transaction — uncommitted, so
-    // invisible to the loader — while the load runs. A two-statement check could
-    // see a different edge set than closure set; a single LEFT JOIN cannot,
-    // because both facts come from one snapshot by construction.
+    // back — and the first cut of this test could NOT pin it. It held an
+    // approval OPEN in another transaction, which is invisible to every
+    // statement, so the counts agreed and the defective two-statement
+    // implementation passed. Measured: reverting the loader to that version left
+    // this file at 31 pass / 1 fail, and the failure was a different test.
+    //
+    // Read skew needs a COMMIT *between* the loader's statements. The wrapping
+    // executor below is what creates one: it runs each query for real, and after
+    // the FIRST it commits an ordinary approval on another connection. Against
+    // the shipped single-statement LEFT JOIN that commit lands after the whole
+    // read and changes nothing; against a two-statement version it lands between
+    // them and the counts disagree.
     await seedCompressedChain();
-    const holder = await pool.connect();
-    try {
-      await holder.query("BEGIN");
-      expect(
-        (await approveAliasEdge(holder, WS, edge("predicate", "costs", "unit price"))).ok,
-      ).toBe(true);
 
-      const vocabulary = await loadClaimVocabulary(pool, WS);
-      expect(vocabulary.predicate("is priced at")).toBe("unit price");
-      expect(vocabulary.predicate("costs")).toBe("costs");
-      await holder.query("COMMIT");
-    } catch (err) {
-      await holder.query("ROLLBACK").catch(() => {});
-      throw err;
-    } finally {
-      holder.release();
-    }
+    let interleaved = false;
+    const interleaving: VocabularyExecutor = {
+      query: async (sql, params) => {
+        const out = await pool.query(sql, params as unknown[]);
+        if (!interleaved) {
+          interleaved = true;
+          await inTx((tx) => approveAliasEdge(tx, WS, edge("predicate", "costs", "unit price")));
+        }
+        return out;
+      },
+    };
 
-    // …and once it commits, the new edge is visible with its closure intact.
+    const vocabulary = await loadClaimVocabulary(interleaving, WS);
+    // The hook must actually have fired, or this proves nothing.
+    expect(interleaved).toBe(true);
+    expect(vocabulary.predicate("is priced at")).toBe("unit price");
+    // The interleaved approval committed after the read, so it is legitimately
+    // absent from THIS snapshot…
+    expect(vocabulary.predicate("costs")).toBe("costs");
+    // …and present in the next one.
     expect((await loadClaimVocabulary(pool, WS)).predicate("costs")).toBe("unit price");
   }, 20_000);
 

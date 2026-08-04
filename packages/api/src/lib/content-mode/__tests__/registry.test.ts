@@ -14,6 +14,7 @@
 
 import { describe, it, expect } from "bun:test";
 import { Effect, Layer } from "effect";
+import { IDENTITY_MUTATION_LOCK_NAMESPACE } from "@atlas/api/lib/brain/identity";
 import type { ModeDraftCounts, PublishPromotedCounts } from "@useatlas/types/mode";
 import { CONTENT_MODE_TABLES } from "../tables";
 import type { InferDraftCounts, InferPromotedCounts } from "../infer";
@@ -563,7 +564,10 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // 3. query_suggestions   → UPDATE (1 SQL)
     // 4. knowledge_documents → UPDATE (1 SQL)  [#4206]
     // 5. semantic_entities   → applyTombstones (2 SQL) + promoteDraftEntities (2 SQL)
-    // 6. brain_facts         → SELECT drafts FOR UPDATE + SELECT evidence grants
+    // 6. brain_facts         → SET LOCAL lock_timeout + identity-mutation
+    //                          advisory lock + SET LOCAL lock_timeout = DEFAULT
+    //                          (3 SQL) [#5024] + SELECT drafts
+    //                          FOR UPDATE + SELECT evidence grants
     //                          + UPDATE promotable (3 SQL) [#4769, #4823]
     const { client, calls } = makeMockPoolClient([
       { rowCount: 3 }, // connections
@@ -576,6 +580,13 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       // semantic_entities.promoteDraftEntities:
       { rowCount: 1 }, //                                        DELETE superseded published
       { rows: [{ id: "e3" }, { id: "e4" }, { id: "e5" }], rowCount: 3 }, // UPDATE promote
+      // brain_facts (#5024): the lock bound, then the lock itself. Both return
+      // nothing and nothing reads them — they are here because this double
+      // answers in ORDER, so an unqueued statement silently consumes the next
+      // response and shifts every assertion below by one.
+      { rows: [] }, //                                           SET LOCAL lock_timeout
+      { rows: [] }, //                                           pg_advisory_xact_lock
+      { rows: [] }, //                                           SET LOCAL lock_timeout = DEFAULT
       // brain_facts (#4769): one compliant draft, one with an unusable grant.
       // The adapter classifies in TS (one grant grammar, no SQL restatement),
       // so the refusal shows up as a shorter id list on the UPDATE below.
@@ -641,7 +652,10 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(reports[5].refused?.map((r) => r.rowId)).toEqual(["f-ungranted"]);
     expect(reports[5].widened).toEqual([]);
 
-    expect(calls).toHaveLength(11);
+    // 14 since #5024: the eleven above plus the lock bound, the
+    // identity-mutation lock the brain phase takes before it reads, and the
+    // reset that keeps the bound off every later statement in the transaction.
+    expect(calls).toHaveLength(14);
     expect(calls[0].sql).toContain("UPDATE workspace_plugins");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
@@ -651,21 +665,35 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(calls[5].sql).toContain("draft_delete");
     expect(calls[6].sql).toMatch(/DELETE FROM semantic_entities/);
     expect(calls[7].sql).toContain("UPDATE semantic_entities");
-    // brain_facts: read the drafts under a lock, read the grants of the
-    // episodes behind them (#4823), then promote by explicit id.
-    expect(calls[8].sql).toMatch(/FROM brain_facts/);
-    expect(calls[8].sql).toMatch(/FOR UPDATE/i);
-    expect(calls[9].sql).toContain("brain_edges");
-    expect(calls[10].sql).toContain("UPDATE brain_facts");
+    // brain_facts: bound the wait, take the identity-mutation lock (#5024),
+    // read the drafts under a row lock, read the grants of the episodes behind
+    // them (#4823), then promote by explicit id.
+    expect(calls[8].sql).toContain("SET LOCAL lock_timeout = '");
+    expect(calls[9].sql).toContain("pg_advisory_xact_lock");
+    // Reset BEFORE the drafts are read: `SET LOCAL` reverts at COMMIT, so an
+    // un-reset bound would govern the `FOR UPDATE` below — which exists to WAIT
+    // for a concurrent publish — and everything after it in the transaction.
+    expect(calls[10].sql).toContain("SET LOCAL lock_timeout = DEFAULT");
+    expect(calls[11].sql).toMatch(/FROM brain_facts/);
+    expect(calls[11].sql).toMatch(/FOR UPDATE/i);
+    expect(calls[12].sql).toContain("brain_edges");
+    expect(calls[13].sql).toContain("UPDATE brain_facts");
 
     // Every phase is org-scoped on $1. The brain promote additionally binds the
     // promotable id list on $2 — the refusal is enforced by which rows we ask
     // Postgres to touch, so that second param is the gate, not a filter. The
     // evidence lookup binds the SAME list, so a refused row's episodes cannot
     // widen anything either.
-    for (const c of calls.slice(0, 9)) expect(c.params).toEqual(["org-1"]);
-    expect(calls[9].params).toEqual(["org-1", ["f-ok"]]);
-    expect(calls[10].params).toEqual(["org-1", ["f-ok"]]);
+    // The THREE #5024 lock statements are excluded by INDEX rather than by a
+    // predicate: the bound and its reset bind nothing, and the lock binds
+    // `[namespace, org]`, so none is org-scoped on `$1` and a blanket loop would
+    // fail on all three. Their own params are asserted immediately after.
+    for (const c of [...calls.slice(0, 8), calls[11]]) expect(c.params).toEqual(["org-1"]);
+    expect(calls[8].params).toEqual([]);
+    expect(calls[9].params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, "org-1"]);
+    expect(calls[10].params).toEqual([]);
+    expect(calls[12].params).toEqual(["org-1", ["f-ok"]]);
+    expect(calls[13].params).toEqual(["org-1", ["f-ok"]]);
   });
 
   it("invokes simple and exotic adapters in tuple order with a non-failing exotic (test tuple)", async () => {

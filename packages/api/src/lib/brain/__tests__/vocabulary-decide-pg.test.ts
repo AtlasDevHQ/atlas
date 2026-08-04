@@ -194,12 +194,17 @@ import {
   decideAliasProposal,
   proposeAliasEdge,
   proposeAliasEdges,
+  REKEY_DRIFTED_FACTS_SQL,
   type AliasDecideDeps,
   type AliasProposalInput,
 } from "@atlas/api/lib/brain/vocabulary-decide";
 import { VOCABULARY_LOCK_NAMESPACE } from "@atlas/api/lib/brain/vocabulary";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import type { SlotPosition } from "@atlas/api/lib/brain/identity";
+import {
+  IDENTITY_MUTATION_LOCK_NAMESPACE,
+  SLOT_POSITIONS,
+  type SlotPosition,
+} from "@atlas/api/lib/brain/identity";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -234,6 +239,180 @@ describe("the alias proposal queue carries no ACL arm (#5023, ADR-0037 §6)", ()
     expect(columns).toContain("workspace_id");
     expect(columns).not.toContain("visible_to");
     expect(columns).not.toContain("pre_widening_visible_to");
+  });
+});
+
+/**
+ * The allowlist's cost, gated — and deliberately OUTSIDE the Postgres gate.
+ *
+ * `check-brain-fact-promotion.sh` delegates this cost to "a COLUMN-SCOPED
+ * assertion in `vocabulary-decide-pg.test.ts`", and a backstop that only runs
+ * where `TEST_DATABASE_URL` is set is absent from the local `--affected` loop —
+ * exactly where a new gated write would first appear. It reads two files off
+ * disk and needs no database.
+ */
+describe("the decide seam's allowlist carve-out is column-scoped (#5024)", () => {
+  it("the allowlisted decide seam writes the identity keys and NO other gated column", () => {
+    // ## This assertion REPLACED a stronger one, deliberately (#5024)
+    //
+    // Until #5024 this test asserted `vocabulary-decide.ts` did not name
+    // `brain_facts` in code AT ALL. That was the right gate for the window in
+    // which the allowlist entry was a pre-registration, and it could not survive
+    // the write it was pre-registering: #5024's drift re-key names the table by
+    // construction. Retired on purpose rather than deleted quietly, and narrowed
+    // rather than dropped — the cost it guarded is unchanged.
+    //
+    // The cost: `check-brain-fact-promotion.sh` allowlists a FILE, not a column,
+    // so the seam is exempt for `status`, `visible_to` and `valid_to` too —
+    // columns it has no business writing. The script records that and the
+    // register repeats it, but a recorded cost is a policy, not a gate. THIS is
+    // the gate: the seam may name the three identity keys and nothing else.
+    //
+    // Weaker than its predecessor and stated plainly: absence-of-a-table-name
+    // needs no list to stay correct, where this one is only as good as the list
+    // below. The list is `check-brain-fact-promotion.sh`'s own gated set, and a
+    // new gated column added there without a line here is a real gap — which is
+    // why the guard script is READ rather than paraphrased.
+    const source = readFileSync(join(import.meta.dir, "..", "vocabulary-decide.ts"), "utf8");
+    const code = source
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("*") && !line.trimStart().startsWith("//"))
+      .join("\n");
+    // Non-vacuous on both sides: the stripper must have left real code behind,
+    // AND the re-key must still be in it. Without the second line this test
+    // passes loudest at the moment the re-key is deleted.
+    expect(code).toContain("brain_vocabulary_proposal");
+    expect(code).toContain("UPDATE brain_facts");
+
+    // EXACTLY ONE `UPDATE brain_facts` in the source, and it is the re-key
+    // template. The generated statements are asserted below; this half is what
+    // catches a SECOND `brain_facts` writer appearing in the file, which the
+    // column assertions cannot see because they only ever read the one constant
+    // they are handed.
+    expect(
+      [...code.matchAll(/UPDATE\s+brain_facts\b/g)],
+      "vocabulary-decide.ts has more than one `UPDATE brain_facts` statement. The allowlist entry " +
+        "in check-brain-fact-promotion.sh argues for ONE — the drift re-key — so a second writer " +
+        "needs its own argument, not an inherited one.",
+    ).toHaveLength(1);
+
+    // …and no OTHER write shape at all. The column assertions below only ever
+    // read `UPDATE` statements, and the retired tripwire ("names no
+    // `brain_facts`") covered these by construction: an `INSERT INTO
+    // brain_facts`, a `DELETE FROM brain_facts`, or an `ON CONFLICT DO UPDATE`
+    // upsert appearing in this file is invisible to both this test and the shell
+    // guard, which cannot fire on an allowlisted file.
+    expect(
+      code,
+      "vocabulary-decide.ts gained an INSERT or DELETE against `brain_facts`. The allowlist entry " +
+        "argues for ONE re-key UPDATE; another write shape needs its own argument.",
+    ).not.toMatch(/(INSERT\s+INTO|DELETE\s+FROM)\s+brain_facts\b/);
+
+    // The gated set, read from the guard rather than restated, so a column added
+    // there cannot be silently missing here.
+    const guard = readFileSync(
+      join(import.meta.dir, "..", "..", "..", "..", "..", "..", "scripts", "check-brain-fact-promotion.sh"),
+      "utf8",
+    );
+    // PARSED out of the guard, not restated beside it. The earlier hand-written
+    // list said it was "read rather than paraphrased" while doing the opposite:
+    // `expect(guard).toContain(column)` only detects a column being REMOVED from
+    // the guard, never one being ADDED — which is the gap the comment claimed to
+    // close. It had already opened: `subject_cmp` and `object_cmp` are gated
+    // today and were both missing from the list, so a re-key that wrote either
+    // would have passed here while the shell guard cannot fire on an allowlisted
+    // file.
+    // Anchored at line start, and greedy to the LAST `)'`.
+    //
+    // Neither is load-bearing against the guard AS IT STANDS — measured: the
+    // lazy variant captures the same text (the only `)` followed by `'` is the
+    // line terminator, since `(pre_widening_)` is followed by `?`), and the
+    // unanchored variant also captures the same text because
+    // `UPDATE_GATED_COLUMNS=` appears before `ORM_UPDATE_GATED_COLUMNS=` and
+    // `exec` takes the leftmost match. Both spellings are kept because the
+    // anchor WOULD matter the day the ORM line moves above this one, and the
+    // `required` names below are what turns a silently-wrong capture into a
+    // failure. Said conditionally rather than as war stories: an earlier draft
+    // of this comment claimed both hazards were live, and neither is.
+    const gated = /^UPDATE_GATED_COLUMNS='\((.*)\)'/m.exec(guard)?.[1];
+    expect(gated, "check-brain-fact-promotion.sh no longer defines UPDATE_GATED_COLUMNS").toBeDefined();
+    // `(pre_widening_)?visible_to` expands to both spellings; every other
+    // alternative is a literal column name.
+    const gatedColumns = (gated ?? "")
+      .split("|")
+      .flatMap((alt) =>
+        alt === "(pre_widening_)?visible_to" ? ["visible_to", "pre_widening_visible_to"] : [alt],
+      );
+    const identityKeys: readonly string[] = SLOT_POSITIONS.map((p) => `${p}_key`);
+    // The keys are what the allowlist entry argues for; everything else the
+    // guard gates is what it must NOT be read as licensing.
+    const forbidden = gatedColumns.filter((c) => !identityKeys.includes(c));
+    // Non-vacuous, and pinned against the two that were missing before: a parse
+    // that silently produced an empty or tiny list would make the loop below
+    // assert nothing at all.
+    for (const required of ["status", "valid_to", "subject_cmp", "object_cmp"]) {
+      expect(forbidden, `the parsed gated set is missing \`${required}\``).toContain(required);
+    }
+    expect(forbidden.length).toBeGreaterThanOrEqual(6);
+
+    // The GENERATED statements, not the source: the template writes `${key}`, so
+    // the column names exist only after interpolation and a source-level grep
+    // for them would pass while writing anything at all.
+    for (const position of SLOT_POSITIONS) {
+      const statement = REKEY_DRIFTED_FACTS_SQL[position];
+      // Everything between `SET` and the statement's OWN `WHERE`, and neither
+      // boundary can be found positionally. The assignment embeds a closure
+      // subquery, so `indexOf("WHERE ")` lands inside it (clause cut short — the
+      // forbidden check would then pass by truncation rather than by absence)
+      // and `lastIndexOf("WHERE ")` lands inside the second copy in the
+      // `IS DISTINCT FROM` guard (clause overruns into the WHERE — the scoping
+      // is gone). The statement's own `WHERE` is the only one on the `f` alias;
+      // the subqueries are all on `t`.
+      const setAt = statement.indexOf("SET ");
+      const whereAt = statement.indexOf("WHERE f.");
+      expect(setAt).toBeGreaterThanOrEqual(0);
+      expect(whereAt).toBeGreaterThan(setAt);
+      // Unambiguous: exactly one `WHERE` on the updated alias, so the slice above
+      // is the whole SET clause and nothing else.
+      expect([...statement.matchAll(/WHERE f\./g)]).toHaveLength(1);
+      const written = statement.slice(setAt, whereAt);
+
+      expect(written, `the ${position} re-key no longer writes \`${position}_key\``).toContain(
+        `${position}_key =`,
+      );
+      // Its OWN column and no other position's — a copy-paste that left every
+      // statement writing `subject_key` would otherwise pass the line above.
+      for (const other of SLOT_POSITIONS.filter((p) => p !== position)) {
+        expect(
+          new RegExp(`\\b${other}_key\\s*=`).test(written),
+          `the ${position} re-key writes \`${other}_key\` — one position's approval must never ` +
+            "re-key another's (ADR-0037 §6: a position-agnostic vocabulary COMPELS cross-position " +
+            "composition).",
+        ).toBe(false);
+      }
+      for (const column of forbidden) {
+        expect(
+          new RegExp(`\\b${column}\\s*=`).test(written),
+          `the ${position} re-key writes \`brain_facts.${column}\`. The allowlist entry in ` +
+            "check-brain-fact-promotion.sh exempts the FILE, so the guard cannot fire on it — and " +
+            "the entry's argument covers the identity keys ONLY. A gated column beyond those " +
+            "three is a NEW carve-out and needs its own argument, not an inherited one.",
+        ).toBe(false);
+      }
+      // `updated_at` is not gated by the guard, so it is not in `forbidden` — but
+      // it is the line ADR-0037 §7 singles out and the one a future tidy-up puts
+      // back, because every other UPDATE in the brain's write path stamps it.
+      // Behaviourally pinned in `vocabulary-rekey-pg.test.ts`; pinned here too,
+      // because that suite needs a live Postgres and this one catches it in the
+      // diff.
+      expect(
+        /\bupdated_at\s*=/.test(written),
+        `the ${position} re-key stamps \`updated_at\`. It sorts the publish preview ` +
+          "(`brainFactPreviewSql`), so a workspace-wide re-key stamping it reshuffles every " +
+          "reviewer's draft queue into re-key order. A key recomputation moves neither the " +
+          "claim's content nor its review state.",
+      ).toBe(false);
+    }
   });
 });
 
@@ -999,9 +1178,10 @@ describeIfPg("the alias decision seam (#5023)", () => {
   it("no row is ever left in `applying`", async () => {
     // `applying` is unobservable by construction today — claim, apply and stamp
     // share one transaction — and this is what pins that rather than assuming
-    // it. It is also the assertion that starts failing the day #5024 moves the
-    // re-key out of the transaction, which is when the compensation machinery
-    // `decide.ts` carries becomes load-bearing here too.
+    // it. It is also the assertion that starts failing the day the drift re-key
+    // moves OUT of that transaction, which is when the compensation machinery
+    // `decide.ts` carries becomes load-bearing here too. #5024 landed the re-key
+    // and deliberately kept it inside, so the property still holds unqualified.
     const ok = await queue(proposal({ fromNorm: "is priced at", toNorm: "priced at" }));
     await approveAs(ok, owner());
     const refused = await queue(proposal({ fromNorm: "is priced at", toNorm: "list price" }));
@@ -1191,9 +1371,20 @@ describeIfPg("the alias decision seam (#5023)", () => {
       return { runner, statements };
     }
 
+    /**
+     * The vocabulary lock is the first statement that TOUCHES anything.
+     *
+     * `SET LOCAL lock_timeout` is skipped — it reads nothing, writes nothing and
+     * locks nothing. Matched on the FULL prefix rather than on `SET LOCAL`,
+     * because `SET LOCAL role` / `search_path` / `default_transaction_isolation`
+     * emphatically do not share that property and this assertion is named "before
+     * any row is touched".
+     */
+    const isBound = (sql: string): boolean => sql.startsWith("SET LOCAL lock_timeout");
     const expectLockedFirst = (statements: { sql: string; params: unknown[] }[]) => {
-      expect(statements[0]?.sql).toContain("pg_advisory_xact_lock");
-      expect(statements[0]?.params).toEqual([VOCABULARY_LOCK_NAMESPACE, WS]);
+      const touching = statements.filter((s) => !isBound(s.sql));
+      expect(touching[0]?.sql).toContain("pg_advisory_xact_lock");
+      expect(touching[0]?.params).toEqual([VOCABULARY_LOCK_NAMESPACE, WS]);
     };
 
     it("propose locks first", async () => {
@@ -1223,9 +1414,89 @@ describeIfPg("the alias decision seam (#5023)", () => {
       );
       expect(decided).toEqual({ kind: "approved", id });
       expectLockedFirst(statements);
-      // …and the very next statement is the proposal READ, so "locks first" is
-      // an ordering claim rather than "a lock appears somewhere".
-      expect(statements[1]?.sql).toContain("SELECT");
+      // TWO locks since #5024, in the fixed order 5022 → 5024, and only then the
+      // proposal READ. "Locks first" is an ordering claim rather than "a lock
+      // appears somewhere", and the ORDER between the two is the part a
+      // redundancy argument gets wrong — #5022's review produced a real 40P01
+      // from exactly that reasoning.
+      //
+      // Asserted directly rather than provoked, for the reason the recorder's
+      // own header gives: no single-process test can reliably race two
+      // transactions into a cycle, and one that cannot form a cycle passes
+      // against a broken implementation. Stated plainly because it is a real
+      // limit — nothing here would notice if publish stopped taking 5024
+      // altogether. `content-mode/adapters/__tests__/brain-facts.test.ts` carries
+      // that half (the mutation table credits it for rows 16–18);
+      // `vocabulary-rekey-pg.test.ts` never calls `promoteBrainFacts` at all.
+      const touching = statements.filter((s) => !isBound(s.sql));
+      expect(touching[1]?.sql).toContain("pg_advisory_xact_lock");
+      expect(touching[1]?.params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, WS]);
+      expect(touching[2]?.sql).toContain("SELECT");
+
+      // The BOUND brackets the 5024 acquisition and NOTHING ELSE — set
+      // immediately before it, reset immediately after.
+      //
+      // Both halves are load-bearing and the first cut got both wrong. Set too
+      // early it also bounds 5022, which producers contend on one batch
+      // iteration at a time, so a batch that used to wait would throw. Left
+      // un-reset it bounds every row lock the workspace-wide re-key takes below,
+      // because `SET LOCAL` reverts at COMMIT rather than at the next statement.
+      const sqls = statements.map((s) => s.sql);
+      const boundAt = sqls.findIndex((s) => s.startsWith("SET LOCAL lock_timeout = '"));
+      const resetAt = sqls.findIndex((s) => s.startsWith("SET LOCAL lock_timeout = DEFAULT"));
+      const vocabLockAt = sqls.findIndex(
+        (s, i) =>
+          s.includes("pg_advisory_xact_lock") &&
+          statements[i]?.params?.[0] === VOCABULARY_LOCK_NAMESPACE,
+      );
+      const identityLockAt = sqls.findIndex(
+        (s, i) =>
+          s.includes("pg_advisory_xact_lock") &&
+          statements[i]?.params?.[0] === IDENTITY_MUTATION_LOCK_NAMESPACE,
+      );
+      expect(boundAt, "the decide transaction takes no lock_timeout bound").toBeGreaterThanOrEqual(0);
+      expect(resetAt, "the lock_timeout bound is never reset — it leaks to the whole transaction").toBeGreaterThanOrEqual(0);
+      // 5022 is taken BEFORE the bound, so it stays unbounded.
+      expect(vocabLockAt).toBeLessThan(boundAt);
+      // …and the bound brackets 5024 exactly.
+      expect(boundAt).toBeLessThan(identityLockAt);
+      // ADJACENT, not merely later. `toBeLessThan` is satisfied by a reset
+      // anywhere further down the transaction, so it pins the reset's existence
+      // and its left edge while leaving the right edge open — and the right edge
+      // is the property. Measured: moving the reset to after `rekeyDriftedFacts`
+      // left both -pg suites fully green under the weaker assertion.
+      expect(
+        resetAt,
+        "the bound is not reset immediately after the acquisition — every statement in between runs under it",
+      ).toBe(identityLockAt + 1);
+    });
+
+    it("the two lock namespaces are distinct — one lock taken twice is not two locks", async () => {
+      // Without this, `lockIdentityMutation` taking 5022 twice satisfies every
+      // positional assertion above while serializing nothing new.
+      expect(IDENTITY_MUTATION_LOCK_NAMESPACE).not.toBe(VOCABULARY_LOCK_NAMESPACE);
+    });
+
+    it("propose takes the vocabulary lock ONLY — it writes no brain_facts row", async () => {
+      // The identity lock serializes against PUBLISH, and propose has nothing to
+      // serialize: it queues a row and never re-keys. Taking it here would wedge
+      // every publish in the workspace behind a producer's batch loop, which is
+      // the cost `brain-facts.ts` refuses at length ("Refuse the row, never the
+      // workspace").
+      const { runner, statements } = recordingRunner();
+      const outcome = await proposeAliasEdge(
+        WS,
+        proposal({ fromNorm: "owned by", toNorm: "owns" }),
+        { withTransaction: runner },
+      );
+      expect(outcome.kind).toBe("queued");
+      const locks = statements.filter((s) => s.sql.includes("pg_advisory_xact_lock"));
+      expect(locks).toHaveLength(1);
+      expect(locks[0]?.params).toEqual([VOCABULARY_LOCK_NAMESPACE, WS]);
+      // No bound either — propose has no publish to be queued behind, and a
+      // `SET LOCAL` here would only make the vocabulary lock (which producers DO
+      // contend on, one batch iteration at a time) fail instead of wait.
+      expect(statements.some((s) => s.sql.startsWith("SET LOCAL lock_timeout"))).toBe(false);
     });
   });
 
@@ -1535,8 +1806,9 @@ describeIfPg("the alias decision seam (#5023)", () => {
   it("a row mid-decision is not rejectable", async () => {
     // `applying` is unobservable through the seam (claim, apply and stamp share
     // one transaction), so the state is written by hand here — which is the
-    // only way to reach the arm at all, and worth having because #5024 is what
-    // makes it observable for real.
+    // only way to reach the arm at all, and worth having because moving the
+    // re-key out of the decide transaction is what would make it observable for
+    // real. #5024 landed the re-key and kept it inside, so that day has not come.
     const id = await queue(proposal({ fromNorm: "led by", toNorm: "leads" }));
     await pool.query(
       "UPDATE brain_vocabulary_proposal SET status = 'applying', claimed_at = now() WHERE id = $1",
@@ -1725,35 +1997,6 @@ describeIfPg("the alias decision seam (#5023)", () => {
 
   // ── 19. No call site has quietly reverted to the empty vocabulary ───────
 
-  it("the allowlisted decide seam writes no gated brain_facts column yet", () => {
-    // `check-brain-fact-promotion.sh` allowlists `vocabulary-decide.ts` as a
-    // PRE-REGISTRATION for #5024's drift re-key, and an allowlist entry exempts
-    // a FILE — so the seam is also exempt for `status`, `visible_to` and
-    // `valid_to`, columns it has no business writing. The script records that
-    // cost and the register repeats it, but a recorded cost is a policy, not a
-    // gate. This is the gate for the window before #5024 lands: the seam must
-    // not name the table at all outside prose.
-    //
-    // It is STRONGER than the import tripwire below, because what it looks for
-    // is the absence of a table name rather than the absence of one spelling.
-    const source = readFileSync(
-      join(import.meta.dir, "..", "vocabulary-decide.ts"),
-      "utf8",
-    );
-    const code = source
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("*") && !line.trimStart().startsWith("//"))
-      .join("\n");
-    // Non-vacuous: the stripper must have left real code behind.
-    expect(code).toContain("brain_vocabulary_proposal");
-    expect(
-      /brain_facts|\bbrainFacts\b/.test(code),
-      "vocabulary-decide.ts now names `brain_facts` in code. It is allowlisted in " +
-        "check-brain-fact-promotion.sh as a pre-registration for #5024's drift re-key, which means " +
-        "the guard cannot fire on it — so the write needs the argument the allowlist entry only " +
-        "promised, and this tripwire retires with it.",
-    ).toBe(false);
-  });
 
   it("no production consumer of a ClaimVocabulary names `identityVocabulary`", () => {
     // A source-level tripwire, kept as the CHEAP BACKSTOP rather than as the

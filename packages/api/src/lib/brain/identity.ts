@@ -411,3 +411,256 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
   if (norm === null) return null;
   return identityKey(alias(norm));
 }
+
+// ---------------------------------------------------------------------------
+// The SQL twin (#5024)
+// ---------------------------------------------------------------------------
+
+/**
+ * {@link lexicalNorm}, as a SQL expression over an arbitrary column expression.
+ *
+ * ## Why this exists, and why it lives HERE rather than beside its caller
+ *
+ * The header above calls migration 0187 "a SECOND implementation of this
+ * function, written in SQL", and names the consequence: *two implementations
+ * that disagree on any input are two functions*. #5024's drift re-key needs the
+ * same normalization a THIRD time — it recomputes a key from the retained
+ * surface inside the decide transaction — and a third hand-written copy is how
+ * a set of three becomes a set of two-that-agree-and-one-that-does-not.
+ *
+ * So the expression is generated once, here, beside the TypeScript it must
+ * match. 0187 cannot import it (a `.sql` migration is frozen the moment it
+ * ships, and rewriting an applied migration is worse than duplicating a
+ * string), so the pinning is what carries the guarantee instead. Both proofs
+ * live in `vocabulary-rekey-pg.test.ts`:
+ *
+ *   - it runs this expression and {@link lexicalNorm} over one corpus row by
+ *     row, including the two measured Unicode counter-examples below and a real
+ *     U+000B; and
+ *   - it asserts this expression is textually what 0187's `UPDATE` already
+ *     contains, WHITESPACE-COLLAPSED — 0187 column-aligns its arguments
+ *     (`translate(subject,   '…`), so a raw substring test holds for
+ *     `predicate` and fails for the other two.
+ *
+ * (`identity-pg.test.ts` is the separate, older pinning of 0187 against
+ * `lexicalNorm`, row by row over its own corpus. It does not reference this
+ * function at all — do not read it as covering the SQL twin.)
+ *
+ * Not a database dependency, despite the name — this module imports no runtime
+ * value (only a type, erased at compile time) and still holds only the pure
+ * lexical layer. It emits a string.
+ *
+ * ## The spelling is 0187's, character for character, and every choice is load-bearing
+ *
+ *   - `translate()` and NOT `lower()` — the fold is `A`–`Z` only. See the
+ *     header's two measured counter-examples (U+0130, word-final sigma);
+ *     `lower()` is collation-dependent, so a key would depend on WHERE it was
+ *     computed.
+ *   - The separator class is built with `chr()` rather than written
+ *     `'[ \t\n\v\f\r_-]+'`. Under `standard_conforming_strings = off` the
+ *     readable spelling drops the `\v` escape and shreds every key containing a
+ *     `v` (`leaves` → `lea es`), and a `SET LOCAL` at the top of a file does not
+ *     fix it — the runner sends the file as one simple-query message and
+ *     Postgres lexes the whole message before executing any of it. `chr()` has
+ *     no escapes to process and is therefore correct under either setting.
+ *   - `btrim(…, ' ')` is the twin of `EDGE_SPACE`, applied AFTER the collapse
+ *     has left at most one space at each end.
+ *   - `-` sits LAST inside the bracket so it reads as a literal rather than
+ *     opening a range, exactly as {@link SEPARATOR_RUN} does.
+ *
+ * This is `lexicalNorm` alone — TOTAL, and `''` is a legal answer. The
+ * `NULLIF(…, '')` that turns a norm into a stored KEY is
+ * {@link identityKeySql}, kept separate for the reason {@link identityKey} is.
+ *
+ * @param columnExpr a SQL expression yielding text. Interpolated verbatim, so
+ *   callers pass an identifier or expression they control — the same contract
+ *   `brainFactStatusClause` and `supersessionCollisionJoin` carry.
+ */
+export function lexicalNormSql(columnExpr: string): string {
+  return (
+    `btrim(regexp_replace(translate(${columnExpr}, ` +
+    `'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), ` +
+    `'[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' ')`
+  );
+}
+
+/**
+ * {@link identityKey} as a SQL expression — the norm, or NULL when it is empty.
+ *
+ * The storage decision, split from the normalization for the reason
+ * {@link identityKey} gives: a stored `''` is the ONE key value that joins every
+ * other degenerate row, so two unrelated placeholder claims would occupy one
+ * slot and publishing either would stamp `valid_to` on the other.
+ */
+export function identityKeySql(columnExpr: string): string {
+  return `NULLIF(${lexicalNormSql(columnExpr)}, '')`;
+}
+
+// ---------------------------------------------------------------------------
+// The identity-mutation advisory lock (#5024, ADR-0037 §7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Advisory-lock namespace for IDENTITY mutation — this issue's number, the
+ * convention `RECONCILE_LOCK_NAMESPACE` (4771) set and `VOCABULARY_LOCK_NAMESPACE`
+ * (5022) followed.
+ *
+ * ## What it serializes, and why neither existing namespace could do it
+ *
+ * Two writers decide what a claim COLLIDES with, and until #5024 nothing
+ * serialized them:
+ *
+ *   - The **drift re-key** (`lib/brain/vocabulary-decide.ts`) rewrites a
+ *     position's keys workspace-wide when an alias is approved or removed.
+ *   - The **publish gate** (`lib/content-mode/adapters/brain-facts.ts`) reads
+ *     collision pairs with `SUPERSESSION_TARGETS_SQL` and then stamps `valid_to`
+ *     on the published side. The published rows are NOT covered by
+ *     `DRAFT_FACTS_SQL`'s `FOR UPDATE`, which locks drafts.
+ *
+ * Alias ADDITION only creates collisions, which is safe — a pair that starts
+ * colliding mid-publish is simply not stamped this time round. Alias REMOVAL
+ * de-merges keys, and a removal landing between that SELECT and that UPDATE
+ * stamps `valid_to` on a pair that no longer collides: a belief retired by an
+ * arbitration that no longer holds, invisibly, since every as-of-now read then
+ * hides the row it touched.
+ *
+ * **NOT `RECONCILE_LOCK_NAMESPACE` (4771).** Reusing it would serialize publish
+ * against the extraction fiber, and `brain-facts.ts` argues at length that
+ * publish must never be wedged by ingest — *"Refuse the row, never the
+ * workspace"*. Reconcile does not take this one either: a row inserted
+ * mid-approval gets the pre- or post-approval key, which is an under-match and
+ * recoverable, where blocking ingest on a human-paced approval is not.
+ *
+ * **NOT `VOCABULARY_LOCK_NAMESPACE` (5022).** That one is held by the region
+ * importer for its whole edge-insert loop, and publish has no business waiting
+ * behind a migration. The two are taken TOGETHER, in one fixed order, by the one
+ * caller that mutates both relations — see below.
+ *
+ * ## Lock ORDER, which is the part a redundancy argument gets wrong
+ *
+ * The decide transaction takes **5022 then 5024**. Publish takes **5024 only**.
+ * No wait-for cycle can form: nothing that holds 5024 ever asks for 5022.
+ *
+ * The region importer is the exception worth stating precisely, because the
+ * obvious summary is wrong: it INSERTs `brain_facts` (and conversations,
+ * entities, episodes) **before** it takes 5022, and takes 5022 only when the
+ * bundle carries vocabulary edges at all. So "every actor locks before it
+ * touches rows" is FALSE. What actually keeps it safe is narrower: the importer
+ * only ever INSERTs into `brain_facts`, and an uncommitted INSERT blocks no
+ * UPDATE, so the re-key never waits on it. **An importer that ever UPDATEs an
+ * existing fact row before taking 5022 closes the cycle** — that is the change
+ * to watch for, not a reordering of the locks here.
+ *
+ * That ordering is not incidental and it is not free to change. #5022's review
+ * found a real `40P01 deadlock detected` produced by removing a lock that
+ * "looked redundant because the later call takes it anyway" — the question a
+ * redundancy argument about locks has to answer is *"does the later lock block
+ * in the same place?"*, and outcome-equivalence is not an answer. If a future
+ * caller takes 5024 before 5022, the cycle is immediate and it will kill region
+ * imports intermittently rather than loudly.
+ */
+export const IDENTITY_MUTATION_LOCK_NAMESPACE = 5024;
+
+/**
+ * Taken on the WORKSPACE, matching `VOCABULARY_LOCK_SQL`.
+ *
+ * `pg_advisory_xact_lock`, so it releases at COMMIT and a caller cannot leak it
+ * — which also means it does nothing at all outside an explicit transaction.
+ * Both call sites are inside one; `vocabulary.ts`'s `VOCABULARY_LOCK_HELD_SQL`
+ * is the shape to copy if a third ever needs proof rather than discipline.
+ */
+export const IDENTITY_MUTATION_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2))`;
+
+/**
+ * The bound that makes the wait above FAIL rather than hang.
+ *
+ * `pg_advisory_xact_lock` does not error on contention — it waits, forever. So
+ * the `catch` around it never runs for the one failure that matters, and a
+ * publish request that lands while a decide transaction holds this namespace
+ * hangs with no log line, no `requestId` and no response: precisely the
+ * undebuggable shape CLAUDE.md's error rules exist to prevent, and one that no
+ * test can see because every lock test asserts that blocking is CORRECT.
+ *
+ * The exposure is real rather than theoretical now that the decide transaction
+ * holds this lock across a deliberately-unindexed workspace-wide scan.
+ *
+ * ## It MUST be reset, and that is the whole subtlety
+ *
+ * `SET LOCAL` reverts at COMMIT, not at the next statement — so a bound set and
+ * left in place governs **every subsequent lock wait in the transaction**, which
+ * at both call sites is a lot more than the acquisition it was written for:
+ *
+ *   - on the publish path, the promote UPDATEs and the supersede stamp, which
+ *     contend for `brain_facts` row locks with `reconcile.ts` and
+ *     `correction.ts` — both of which take namespace 4771, NOT this one, so the
+ *     advisory lock does not serialize them; and, because `runPublishPhases` is
+ *     not the last thing in `admin-publish.ts`'s transaction, the phase-4
+ *     connection-archive loop's `FOR UPDATE` on `workspace_plugins`.
+ *   - on the decide path, the proposal claim and every row lock the
+ *     workspace-wide re-key takes.
+ *
+ * Note what is NOT in that list, because an earlier draft led with it and it was
+ * wrong: `DRAFT_FACTS_SQL`'s `FOR UPDATE`. Publisher-versus-publisher contention
+ * there is already impossible — this namespace is taken and held before the
+ * drafts are read, so a second publisher parks on the advisory lock and never
+ * reaches the row lock. It stays out of the list; the two entries above carry
+ * the argument on their own. (5022 is likewise absent from the decide entry: it
+ * is taken BEFORE the bound.)
+ *
+ * Turning those waits into failures is a behaviour change nobody asked for: a
+ * publish that used to block for eleven seconds and commit would instead roll
+ * back everything already promoted, under a generic message, on a class that is
+ * transient. So {@link IDENTITY_MUTATION_LOCK_RESET_SQL} is issued immediately
+ * after the acquisition and the pair is what callers use. Getting this wrong is
+ * exactly what happened on the first cut, and both reviewers caught it.
+ *
+ * `residency/cleanup.ts:432` uses the un-reset shape, and the difference is why
+ * it is not precedent here: there the `SET LOCAL` is the first statement of a
+ * transaction that same function owns end to end, so transaction-wide scope IS
+ * the intent. Here it is issued mid-transaction by one phase of a multi-phase
+ * transaction owned by another module.
+ *
+ * On timeout Postgres raises `55P03 lock_not_available`. The PUBLISH caller
+ * turns that into a typed refusal naming the contending operation and telling
+ * the caller to retry; the decide caller lets it propagate untyped for now, and
+ * #5025 — which is what gives that path an HTTP route to answer — is where it
+ * gets a message. Said plainly because the symmetric claim reads true and is not.
+ *
+ * 10s bounds the wait against the DECIDE transaction's deliberately-unindexed
+ * workspace-wide re-key scan — a machine-paced duration, not the human's
+ * deliberation, which happens before the request. Far shorter than a proxy's
+ * idle timeout, so the failure surfaces as our message rather than as a dropped
+ * connection.
+ */
+export const IDENTITY_MUTATION_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '10s'`;
+
+/**
+ * Undo {@link IDENTITY_MUTATION_LOCK_TIMEOUT_SQL} — issued immediately after the
+ * acquisition so the bound covers that statement and nothing else.
+ *
+ * `DEFAULT` rather than `'0'`: it restores the RESET VALUE — compiled-in,
+ * `postgresql.conf`, `ALTER DATABASE`, `ALTER ROLE` — rather than asserting "no
+ * timeout", which would silently override a `lock_timeout` an operator set on
+ * purpose. Measured against this repo's PG 16: with `ALTER ROLE … SET
+ * lock_timeout='45s'`, `DEFAULT` restores `45s`.
+ *
+ * ⚠️ A SESSION-level `SET lock_timeout` would NOT survive it — `DEFAULT` resets
+ * to the reset value, not to the session value, so the rest of the transaction
+ * would run at the server default instead. No pool in `lib/db/internal.ts` sets
+ * one today (no `connect` hook anywhere in `packages/api`), which is the only
+ * reason this spelling is safe. Revisit here before adding one.
+ */
+export const IDENTITY_MUTATION_LOCK_RESET_SQL = `SET LOCAL lock_timeout = DEFAULT`;
+
+/** Postgres' SQLSTATE for a `lock_timeout` expiry. */
+export const LOCK_NOT_AVAILABLE = "55P03";
+
+/** Whether an unknown error is a `lock_timeout` expiry rather than a real fault. */
+export function isLockTimeout(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === LOCK_NOT_AVAILABLE
+  );
+}

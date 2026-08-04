@@ -138,7 +138,9 @@
 #     the correction transaction — the correction's author IS the reviewer,
 #     and the row is still screened through `classifyFactForPromotion` first),
 #     and it stamps `valid_to` by executing the publish adapter's own
-#     `SUPERSEDE_STAMP_SQL` rather than spelling a second stamp. Every write
+#     `SUPERSEDE_STAMP_EXPLICIT_SQL` — since #5024 the human-arbitration half
+#     of the adapter's own `supersedeStampSql` builder, so both warrants still
+#     share one SET clause — rather than spelling a second stamp. Every write
 #     is actor-attributed and recorded as an immutable human-authored
 #     correction episode in the same transaction; the TARGET read/write is
 #     ACL-gated on the actor's own visibility, while the retraction's
@@ -149,28 +151,40 @@
 #
 #   packages/api/src/lib/brain/vocabulary-decide.ts
 #     The alias decide transaction (#5023, ADR-0037 §6/§7) — the IDENTITY arm's
-#     sanctioned writer, and the only entry here that is a PRE-REGISTRATION:
-#     this file writes no gated column today, and is not even a scan candidate
-#     (it names `brain_facts` only in prose, and comments are stripped before
-#     matching). The rationale is recorded now rather than
-#     when the write lands, for the reason the two `_cmp` arms are gated ahead
-#     of their schema — the guard must never be the thing lagging, and a
-#     carve-out argued at the moment its writer arrives is one argued under
-#     deadline.
-#     WHY it is the right home: a key decides what a claim collides with, and an
-#     alias approval changes that for existing rows. §7 puts the drift re-key
-#     inside this transaction — TypeScript at request time, NOT another
-#     migration (0187, re-run by 0188, was the day-one backfill) — because
-#     the re-key is triggered BY the approval and needs the same workspace
-#     advisory lock the edge write takes. It is the one place the vocabulary
-#     version that authorized the re-key is known. #5024 lands that write.
+#     sanctioned writer. This entry was a PRE-REGISTRATION until #5024; the
+#     write it reserved has now landed, so what follows is the argument the
+#     entry only promised.
+#     WHAT IT WRITES: `subject_key` / `predicate_key` / `object_key`, and only
+#     those three, through ONE statement per position (`REKEY_DRIFTED_FACTS_SQL`)
+#     — ADR-0037 §7's drift re-key.
+#     WHY IT IS THE RIGHT HOME, and why this is not a second promotion path: a
+#     key decides what a claim COLLIDES with, and an alias approval or removal
+#     changes that for rows already in the corpus. §7 puts the re-key inside
+#     this transaction — TypeScript at request time, NOT another migration
+#     (0187, re-run by 0188, was the day-one backfill) — because the re-key is
+#     triggered BY the decision, needs the same workspace advisory lock the edge
+#     write takes, and is the one place the vocabulary version that authorized
+#     it is known. A migration cannot be any of those three things. The write is
+#     a RECOMPUTATION of a derived column under a vocabulary a human just
+#     approved: it moves no claim's content and no claim's review state, which
+#     is also why it does not touch `updated_at`.
+#     WHY IT IS SAFE FOR THE GATE'S PURPOSE: the identity keys are gated on
+#     UPDATE because "re-keying changes what a claim collides with and the
+#     collision is what stamps `valid_to`" (see the column notes above). #5024
+#     closes that consequence rather than inheriting it — the same slice puts
+#     publish and this seam under one advisory namespace
+#     (`IDENTITY_MUTATION_LOCK_NAMESPACE`, `lib/brain/identity.ts`) and makes
+#     `SUPERSEDE_STAMP_SQL` re-check the collision join, so a re-key can no
+#     longer land between the publish gate's unlocked SELECT and its stamp.
 #     COST, stated because this list has no per-column granularity: an entry
 #     exempts a FILE, so this also exempts the seam for `status`, `visible_to`
-#     and `valid_to` — columns it has no business writing. What holds that in
-#     place is the module's own scope (it writes `brain_vocabulary_*`, never
-#     `brain_facts`) plus the register in docs/development/content-mode.md; if
-#     #5024 needs one of the other three, that is a NEW argument rather than an
-#     inherited one.
+#     and `valid_to` — columns it has no business writing and does not write.
+#     What holds that in place is the register in docs/development/content-mode.md
+#     plus a COLUMN-SCOPED assertion in `vocabulary-decide-pg.test.ts`, which
+#     replaced the "names no `brain_facts` at all" tripwire this entry used to
+#     rely on. That tripwire could not survive #5024 by construction, and it was
+#     retired deliberately rather than deleted quietly — the replacement is
+#     narrower but is the one that still bites.
 #
 # Comments are stripped before matching so an explanatory comment in a source
 # file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in

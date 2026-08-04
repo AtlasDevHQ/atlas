@@ -6,7 +6,7 @@
  * `reconcile.test.ts`, and for the same reason: what needs pinning here is
  * WHICH statement each verb runs and which it must never run, and a string
  * dispatch makes "supersede executed the publish adapter's own
- * `SUPERSEDE_STAMP_SQL`" a literal identity check rather than a paraphrase.
+ * `SUPERSEDE_STAMP_EXPLICIT_SQL`" a literal identity check rather than a paraphrase.
  * The statements-parse-and-do-that half lives in `candidates-pg.test.ts` §7.
  *
  * The load-bearing claims, each with a test on the arm it must take:
@@ -56,7 +56,7 @@ import {
 import {
   brainFactCurrentClause,
   INSERT_SUPERSEDES_EDGES_SQL,
-  SUPERSEDE_STAMP_SQL,
+  SUPERSEDE_STAMP_EXPLICIT_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
   identityAlias,
@@ -294,7 +294,7 @@ class FakeCorrectionStore {
     }
 
     // ── The publish adapter's #4912 statements, executed verbatim ───────
-    if (sql === SUPERSEDE_STAMP_SQL) {
+    if (sql === SUPERSEDE_STAMP_EXPLICIT_SQL) {
       const ids = params[1] as string[];
       const stamped: { id: string }[] = [];
       for (const fact of this.facts) {
@@ -513,7 +513,7 @@ describe("retract", () => {
 
     // One transaction; nothing supersession- or promotion-shaped ran.
     expect(store.transactions).toBe(1);
-    expect(store.executed).not.toContain(SUPERSEDE_STAMP_SQL);
+    expect(store.executed).not.toContain(SUPERSEDE_STAMP_EXPLICIT_SQL);
     expect(store.executed).not.toContain(PROMOTE_CORRECTION_FACT_SQL);
   });
 
@@ -800,7 +800,7 @@ describe("retract", () => {
     // actually holds that line.
     //
     // `content-mode/adapters/brain-facts.ts` is here because the match above is
-    // deliberately over-broad in the guard's direction: `SUPERSEDE_STAMP_SQL`
+    // deliberately over-broad in the guard's direction: `SUPERSEDE_STAMP_EXPLICIT_SQL`
     // READS the tombstone as a predicate (`invalidated_at IS NULL`) and sets
     // `valid_to`. Narrowing the rule to "assignment only" would buy that one
     // file back at the cost of the property this whole test exists for — the
@@ -831,7 +831,7 @@ describe("retract", () => {
     // narrows an already-bounded set rather than standing alone — and the SET
     // list of the two statements that actually matter is pinned directly, here
     // for `RETRACT_FACT_SQL` and in `adapters/__tests__/brain-facts.test.ts`
-    // for `SUPERSEDE_STAMP_SQL`.
+    // for `SUPERSEDE_STAMP_EXPLICIT_SQL`.
     //
     // `correction.ts` is NOT exempted wholesale, and that distinction is the
     // difference between "this MODULE is the only writer" and "this STATEMENT
@@ -936,7 +936,7 @@ describe("supersede", () => {
     // acceptance criteria ask for. If correction ever grew its own stamp
     // spelling, these identity checks (and the fake's exact-match dispatch,
     // which would throw on an unknown statement) both fail.
-    expect(store.executed).toContain(SUPERSEDE_STAMP_SQL);
+    expect(store.executed).toContain(SUPERSEDE_STAMP_EXPLICIT_SQL);
     expect(store.executed).toContain(INSERT_SUPERSEDES_EDGES_SQL);
 
     const oldFact = store.fact("old");
@@ -1164,7 +1164,7 @@ describe("supersede", () => {
     // "Restates what the fact already says" has to mean what the rest of the
     // system means by the same claim, and since #5020 that is the slot key.
     // Left byte-exact, this guard would pass `Bob` → `bob` through to
-    // `SUPERSEDE_STAMP_SQL`: a published belief closed and replaced by a
+    // `SUPERSEDE_STAMP_EXPLICIT_SQL`: a published belief closed and replaced by a
     // successor in the IDENTICAL slot, with a `supersedes` edge recording an
     // arbitration that settled nothing — the irreversible direction, reached
     // through a spelling difference.
@@ -1289,7 +1289,7 @@ describe("re-authority and pin", () => {
       expect(fact.invalidatedAt).toBeNull();
       expect(fact.validTo).toBeNull();
       expect(store.executed).not.toContain(RETRACT_FACT_SQL);
-      expect(store.executed).not.toContain(SUPERSEDE_STAMP_SQL);
+      expect(store.executed).not.toContain(SUPERSEDE_STAMP_EXPLICIT_SQL);
       expect(store.executed).not.toContain(PROMOTE_CORRECTION_FACT_SQL);
     });
 
@@ -1380,7 +1380,7 @@ describe("re-authority and pin", () => {
   // The vouch gate's whole justification is that it and the reads agree about
   // which facts are current, and that only holds while the predicate is the
   // reads' OWN clause rather than a second spelling of it. Identity, not
-  // paraphrase — the same treatment `SUPERSEDE_STAMP_SQL` gets in this suite,
+  // paraphrase — the same treatment `SUPERSEDE_STAMP_EXPLICIT_SQL` gets in this suite,
   // and for the same reason: a hand-written `valid_to > now()` here would
   // desynchronize the day that clause gains a grace window, and no boundary
   // fixture would notice, because a moved boundary moves the fixture too.

@@ -169,7 +169,7 @@ export interface GrantWidening {
  * The publish gate is one of exactly TWO allowlisted `valid_to` STAMPERS, not
  * the only one — `correct_fact`'s supersede verb (#4915,
  * `lib/brain/correction.ts`) is the other, and it imports the adapter's own
- * `SUPERSEDE_STAMP_SQL` so the two arbitration paths cannot drift. (A third
+ * `SUPERSEDE_STAMP_EXPLICIT_SQL` so the two arbitration paths cannot drift. (A third
  * file, `admin-migrate.ts`, writes the column by INSERT: a region import
  * restoring an already-closed window verbatim, a restore rather than a new
  * arbitration — see `adapters/brain-facts.ts`'s allowlist note.) Both stampers

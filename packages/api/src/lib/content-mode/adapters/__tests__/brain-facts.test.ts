@@ -15,18 +15,47 @@ import { describe, expect, it } from "bun:test";
 import { Effect } from "effect";
 import {
   BRAIN_FACTS_TABLE,
+  SUPERSEDE_STAMP_EXPLICIT_SQL,
   SUPERSEDE_STAMP_SQL,
   SUPERSESSION_TARGETS_SQL,
   brainFactStatusClause,
   brainFactsCountSql,
   promoteBrainFacts,
+  supersedingDraftPredicate,
+  supersessionCollisionPredicate,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
+  IDENTITY_MUTATION_LOCK_NAMESPACE,
+  IDENTITY_MUTATION_LOCK_RESET_SQL,
+  IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
+} from "@atlas/api/lib/brain/identity";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { PublishPhaseError, type ModeTxClient } from "@atlas/api/lib/content-mode/port";
 
 interface Call {
   readonly sql: string;
   readonly params: readonly unknown[];
+}
+
+/** One `pg_advisory_xact_lock` call, with how many statements preceded it. */
+interface LockCall {
+  readonly params: readonly unknown[];
+  readonly precededCalls: number;
+}
+
+/**
+ * One `SET LOCAL lock_timeout`, with its position on BOTH axes.
+ *
+ * `precededCalls` is not redundant with `precededLocks`, and the gap between
+ * them is where a real defect hid: with only the lock count, a reset displaced
+ * to AFTER the drafts read still satisfies "it came after the lock" — which is
+ * the presence of the reset, not the property. The property is that no
+ * table-touching statement runs while the bound is in force.
+ */
+interface BoundCall {
+  readonly precededLocks: number;
+  readonly precededCalls: number;
 }
 
 /**
@@ -46,11 +75,49 @@ function txWithDrafts(
     readonly supersessions?: readonly unknown[];
     /** Overrides which old ids the stamp UPDATE confirms; defaults to all asked. */
     readonly stampConfirms?: readonly string[];
+    /** Make the identity-mutation lock raise `55P03`, as the bound's expiry does. */
+    readonly lockTimesOut?: boolean;
   } = {},
-): { tx: ModeTxClient; calls: Call[] } {
+): {
+  tx: ModeTxClient;
+  calls: Call[];
+  locks: LockCall[];
+  bounds: BoundCall[];
+  resets: BoundCall[];
+} {
   const calls: Call[] = [];
+  const locks: LockCall[] = [];
+  const bounds: BoundCall[] = [];
+  const resets: BoundCall[] = [];
   const tx: ModeTxClient = {
     query: async (sql, params = []) => {
+      // The identity-mutation advisory lock (#5024) is recorded SEPARATELY, and
+      // that is a deliberate shape rather than a convenience. It is not a
+      // statement about a table: it has no `workspace_id = $1` and no
+      // `invalidated_at IS NULL`, so folding it into `calls` would force every
+      // "…on every statement" loop in this file to grow an exemption — and an
+      // exemption in a loop is where the next statement that should have been
+      // checked quietly stops being.
+      //
+      // `precededCalls` is the index it was taken at, which is what makes the
+      // ORDER assertable rather than merely its presence. Answered with an empty
+      // result because `pg_advisory_xact_lock` returns void and nothing reads it.
+      if (sql === IDENTITY_MUTATION_LOCK_TIMEOUT_SQL) {
+        bounds.push({ precededLocks: locks.length, precededCalls: calls.length });
+        return { rows: [] };
+      }
+      if (sql === IDENTITY_MUTATION_LOCK_RESET_SQL) {
+        resets.push({ precededLocks: locks.length, precededCalls: calls.length });
+        return { rows: [] };
+      }
+      if (sql === IDENTITY_MUTATION_LOCK_SQL) {
+        locks.push({ params, precededCalls: calls.length });
+        // Injected contention: `pg_advisory_xact_lock` never errors on its own,
+        // so the only way to reach the `55P03` branch is to make the DRIVER
+        // raise what Postgres would raise when the bound expires.
+        if (opts.lockTimesOut) throw Object.assign(new Error("canceling statement due to lock timeout"), { code: "55P03" });
+        return { rows: [] };
+      }
       calls.push({ sql, params });
       if (/^\s*UPDATE/i.test(sql)) {
         if (opts.failOnUpdate) throw new Error("update exploded");
@@ -87,7 +154,7 @@ function txWithDrafts(
       throw new Error(`unrecognised statement in the tx double: ${sql}`);
     },
   };
-  return { tx, calls };
+  return { tx, calls, locks, bounds, resets };
 }
 
 /** The UPDATE statements the adapter issued, in order. */
@@ -206,6 +273,134 @@ describe("promoteBrainFacts", () => {
     const { tx, calls } = txWithDrafts([draft("a")]);
     await run(promoteBrainFacts(tx, "ws-1"));
     expect(calls[0].sql).toMatch(/FOR UPDATE/i);
+  });
+
+  it("takes the identity-mutation lock BEFORE reading the drafts (#5024)", async () => {
+    // `FOR UPDATE` above locks DRAFTS. The published rivals this phase stamps
+    // `valid_to` on are not covered by it, so what serializes this phase against
+    // an alias decision is the advisory lock — and it has to be held before the
+    // collision set is read, not merely before it is written. A lock taken after
+    // the read it protects is not a lock.
+    const { tx, calls, locks } = txWithDrafts([draft("a")]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(locks).toHaveLength(1);
+    // ZERO statements preceded it — the strongest form of "before the drafts are
+    // read", and it does not weaken if a statement is added ahead of the SELECT.
+    expect(locks[0].precededCalls).toBe(0);
+    expect(locks[0].params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, "ws-1"]);
+    // Non-vacuous: the phase really did go on to read something.
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("bounds the lock wait BEFORE taking it — an unbounded wait hangs publish with no requestId", async () => {
+    // `pg_advisory_xact_lock` does not error on contention, it waits forever, so
+    // the `catch` around it never runs for the failure that matters. Without the
+    // bound a publish landing during an alias re-key hangs until the proxy kills
+    // it: no log line, no `requestId`, no response — and `admin-publish.ts`'s
+    // 500 path is never reached to report any of it.
+    //
+    // ORDER is the whole property. A `SET LOCAL lock_timeout` issued after the
+    // acquisition it is meant to bound bounds nothing.
+    const { tx, locks, bounds } = txWithDrafts([draft("a")]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(bounds, "publish takes the identity lock with no lock_timeout bound").toHaveLength(1);
+    expect(bounds[0].precededLocks).toBe(0);
+    expect(locks).toHaveLength(1);
+  });
+
+  it("RESETS the bound immediately — `SET LOCAL` reverts at COMMIT, not at the next statement", async () => {
+    // The half the first cut of this fix missed, and it is a behaviour change in
+    // the wrong direction: left set, the 10s bound governs `DRAFT_FACTS_SQL`'s
+    // `FOR UPDATE` (which exists to WAIT for a concurrent publish), the promote
+    // UPDATEs, and `admin-publish.ts`'s phase-4 archive loop, which runs after
+    // `runPublishPhases` returns. A publish that used to block for eleven
+    // seconds and commit would instead roll back every row it had promoted.
+    const { tx, resets, locks } = txWithDrafts([draft("a")]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(resets, "the lock_timeout bound is never reset — it leaks to the whole transaction").toHaveLength(1);
+    // AFTER the acquisition…
+    expect(resets[0].precededLocks).toBe(1);
+    // …and BEFORE any statement that touches a table. This second axis is the
+    // one that matters, and its absence was a real hole: with `precededLocks`
+    // alone, a reset displaced to after `DRAFT_FACTS_SQL` — leaking the bound
+    // over the drafts read, both promote UPDATEs and the supersede stamp, which
+    // is the exact harm the reset exists to prevent — passed this whole file.
+    // Measured, not reasoned: the displacement was applied and all 54 tests
+    // here stayed green.
+    expect(
+      resets[0].precededCalls,
+      "the bound is reset only after a table statement has already run under it",
+    ).toBe(0);
+    expect(locks).toHaveLength(1);
+  });
+
+  it("names the contending operation when the bound expires, instead of relaying a bare 55P03", async () => {
+    // The classification branch had no coverage at all: `isLockTimeout` reading
+    // `code` off an `unknown`, and the retry-guidance message, both shipped
+    // untested. A wrapped cause (so `code` sits one level down) or a typo'd
+    // SQLSTATE would silently revert to the raw-error outcome the branch exists
+    // to prevent.
+    const { tx } = txWithDrafts([draft("a")], { lockTimesOut: true });
+
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
+
+    expect(exit._tag).toBe("Left");
+    if (exit._tag !== "Left") return;
+    expect(exit.left).toBeInstanceOf(PublishPhaseError);
+    // Names WHAT is contending and that nothing was changed — the "actionable,
+    // context-specific message + retry guidance" CLAUDE.md asks for, rather than
+    // "canceling statement due to lock timeout".
+    const message = String(exit.left.cause);
+    expect(message).toContain("alias approval or removal is re-keying");
+    expect(message).toContain("Nothing was changed");
+    expect(message).toContain("Retry");
+  });
+
+  it("does NOT swallow a non-timeout lock failure into the retry message", async () => {
+    // The positive control's mirror: `isLockTimeout` must be a classification,
+    // not a catch-all. A connection failure at the same statement is not
+    // retryable and must not be dressed up as one.
+    const { tx } = txWithDrafts([draft("a")], {});
+    const failing: ModeTxClient = {
+      query: async (sql, params) => {
+        if (sql === IDENTITY_MUTATION_LOCK_SQL) throw new Error("connection terminated unexpectedly");
+        return tx.query(sql, params);
+      },
+    };
+
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(failing, "ws-1")));
+
+    expect(exit._tag).toBe("Left");
+    if (exit._tag !== "Left") return;
+    // The RAW cause travels, unwrapped — so an operator sees the real fault
+    // rather than a retry suggestion that will never succeed.
+    const message = String(exit.left.cause);
+    expect(message).toContain("connection terminated");
+    expect(message).not.toContain("Retry in a few seconds");
+  });
+
+  it("takes the identity-mutation lock even when there is nothing to promote", async () => {
+    // The positive control's mirror, and it is not pedantry: the natural
+    // "optimization" is to lock only once there is work, which reintroduces
+    // exactly the window the lock closes — the decision about whether there is
+    // work is itself made from a read of the collision set.
+    const { tx, locks } = txWithDrafts([]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+    expect(locks).toHaveLength(1);
+    expect(locks[0].precededCalls).toBe(0);
+  });
+
+  it("uses a namespace that is neither reconcile's nor the vocabulary's", () => {
+    // 4771 would serialize publish against the extraction fiber, which this
+    // module refuses at length ("Refuse the row, never the workspace"). 5022 is
+    // held by the region importer for its whole edge-insert loop. Both are
+    // spelled as literals rather than imported, so a rename cannot make this
+    // test agree with a regression by construction.
+    expect(IDENTITY_MUTATION_LOCK_NAMESPACE).not.toBe(4771);
+    expect(IDENTITY_MUTATION_LOCK_NAMESPACE).not.toBe(5022);
   });
 
   it("scopes every statement to the workspace", async () => {
@@ -503,7 +698,14 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     const targets = calls.find((c) => c.sql.includes("superseded_id"));
     expect(targets?.params).toEqual(["ws-1", ["new-1"]]);
     const stamp = calls.find((c) => c.sql.includes("valid_to = now()"));
-    expect(stamp?.params).toEqual(["ws-1", ["old-1"]]);
+    // THREE binds since #5024: the workspace, the ids to stamp, and — `$3` — the
+    // same promotable-`single` draft list the targets SELECT was given, so the
+    // stamp re-asks the question that produced `$2` instead of trusting it
+    // across the window an alias removal can land in. `$3` MUST equal the
+    // targets SELECT's `$2`; a stamp that re-checked against a different set
+    // would be a second spelling of "what collides".
+    expect(stamp?.params).toEqual(["ws-1", ["old-1"], ["new-1"]]);
+    expect(stamp?.params[2]).toEqual(targets?.params[1]);
     const edge = calls.find((c) => /^\s*INSERT/i.test(c.sql));
     expect(edge?.sql).toContain("'supersedes'");
     expect(JSON.parse(String(edge?.params[1]))).toEqual([{ newId: "new-1", oldId: "old-1" }]);
@@ -746,6 +948,45 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(SUPERSEDE_STAMP_SQL).toContain("status = 'published'");
     expect(SUPERSEDE_STAMP_SQL).toContain("invalidated_at IS NULL");
     expect(SUPERSEDE_STAMP_SQL).toContain("valid_to IS NULL");
+  });
+
+  it("the collision stamp is the explicit stamp PLUS one predicate — one spelling of the valid_to write", () => {
+    // #4912 requires ONE spelling of the `valid_to` write; #5024 needed publish
+    // to re-check the collision and `correct_fact` not to, because a human
+    // correction has no colliding draft and never did. Both come out of one
+    // builder, and this is what says so: the explicit statement is the collision
+    // statement with the `EXISTS` arm removed, character for character.
+    //
+    // Comparing the STRINGS rather than asserting each carries the same
+    // predicates — a checklist would pass while the two SET clauses drifted, and
+    // the SET clause is the write.
+    const exists = SUPERSEDE_STAMP_SQL.indexOf("     AND EXISTS (");
+    expect(exists).toBeGreaterThan(0);
+    const withoutRecheck =
+      SUPERSEDE_STAMP_SQL.slice(0, exists) +
+      SUPERSEDE_STAMP_SQL.slice(SUPERSEDE_STAMP_SQL.indexOf("   RETURNING"));
+    expect(withoutRecheck).toBe(SUPERSEDE_STAMP_EXPLICIT_SQL);
+
+    // The explicit arm has no `$3`, so `correction.ts` binding two params is not
+    // an under-supply that Postgres would reject.
+    expect(SUPERSEDE_STAMP_EXPLICIT_SQL).not.toContain("$3");
+    expect(SUPERSEDE_STAMP_SQL).toContain("$3::uuid[]");
+  });
+
+  it("the collision re-check uses the SAME arms as the targets SELECT, and drops only the draft-side one", () => {
+    // The re-check must not be a paraphrase — `supersessionCollisionPredicate`
+    // is the one place the arms are written, and this proves the stamp got them
+    // from there rather than restating them.
+    const recheck = SUPERSEDE_STAMP_SQL.slice(SUPERSEDE_STAMP_SQL.indexOf("AND EXISTS ("));
+    expect(recheck).toContain(supersessionCollisionPredicate("d", "p"));
+
+    // …and that it deliberately does NOT carry the draft-side predicate. The
+    // stamp runs AFTER the promote UPDATEs, so every id in `$3` is `published`
+    // by then and `d.status = 'draft'` would match zero rows — silently
+    // disabling the whole guard while looking stricter than the alternative.
+    // This is the assertion that would have caught it.
+    expect(recheck).not.toContain(supersedingDraftPredicate("d"));
+    expect(recheck).not.toContain("d.status = 'draft'");
   });
 });
 

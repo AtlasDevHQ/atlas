@@ -48,6 +48,13 @@ import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isUnknownArray, logGrantAnomalies } from "@atlas/api/lib/brain/acl";
 import {
+  IDENTITY_MUTATION_LOCK_NAMESPACE,
+  IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_RESET_SQL,
+  IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
+  isLockTimeout,
+} from "@atlas/api/lib/brain/identity";
+import {
   classifyFactForPromotion,
   isJsonObject,
   widenGrantFromEvidence,
@@ -390,7 +397,26 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
  */
 export function supersessionCollisionJoin(d: string, p: string): string {
   return `JOIN brain_facts ${p}
-      ON ${p}.workspace_id = ${d}.workspace_id
+      ON ${supersessionCollisionPredicate(d, p)}`;
+}
+
+/**
+ * The same collision, as a bare predicate rather than a JOIN's `ON` clause.
+ *
+ * Extracted by #5024 because the stamp now re-checks the collision from inside
+ * an `EXISTS`, where a `JOIN` cannot go — and the docstring above already
+ * forbids the alternative in as many words: *two spellings of "what collides" is
+ * a disclosure that lists one set while the transaction stamps another*. There
+ * were three statements that had to agree; there are four now, and they agree
+ * because there is still exactly one place the arms are written.
+ *
+ * {@link supersessionCollisionJoin} is the only reason this is not simply
+ * inlined everywhere: three of the four callers want the `JOIN` spelling, and
+ * building the `JOIN` from the predicate keeps that convenience without letting
+ * it become a second copy.
+ */
+export function supersessionCollisionPredicate(d: string, p: string): string {
+  return `${p}.workspace_id = ${d}.workspace_id
      AND ${p}.subject_key = ${d}.subject_key
      AND ${p}.predicate_key = ${d}.predicate_key
      AND ${p}.object_key <> ${d}.object_key
@@ -442,15 +468,21 @@ export const SUPERSESSION_TARGETS_SQL = `
 
 /**
  * Stamp the end of a superseded fact's validity — the ONE spelling of the
- * `valid_to` write (#4912), executed by exactly two allowlisted callers: this
- * adapter (a human promotion, inside the publish transaction) and
- * `correct_fact`'s supersede verb (#4915, `lib/brain/correction.ts` — a human
- * correction, inside the correction transaction, importing THIS constant so
- * the two arbitration paths cannot drift). Nothing autonomous ever writes it,
- * and `check-brain-fact-promotion.sh` refuses UPDATE-shape writes to the
- * column outside its allowlist (this file, `correction.ts`, plus
+ * `valid_to` write (#4912), executed by exactly two allowlisted callers, each
+ * with its own ARBITRATION: this adapter (a human promotion, inside the publish
+ * transaction — {@link SUPERSEDE_STAMP_SQL}) and `correct_fact`'s supersede verb
+ * (#4915, `lib/brain/correction.ts` — a human correction, inside the correction
+ * transaction — {@link SUPERSEDE_STAMP_EXPLICIT_SQL}). Nothing autonomous ever
+ * writes it, and `check-brain-fact-promotion.sh` refuses UPDATE-shape writes to
+ * the column outside its allowlist (this file, `correction.ts`, plus
  * `admin-migrate.ts` — the region import restores an already-closed window
  * verbatim, a restore rather than a new arbitration).
+ *
+ * ONE builder, so the SET clause and the three target predicates are written
+ * once and the two callers cannot drift. #5024 split the constants rather than
+ * the statement: until then `correction.ts` imported the publish gate's string
+ * verbatim, which stopped being possible the moment publish grew a predicate
+ * that is FALSE for every human correction.
  *
  * Every predicate is re-checked even though the targets SELECT just evaluated
  * them: the published rows are NOT covered by `DRAFT_FACTS_SQL`'s `FOR
@@ -461,16 +493,139 @@ export const SUPERSESSION_TARGETS_SQL = `
  * superseded, so the `supersedes` edges and the report can never claim a
  * stamp that did not happen.
  */
-export const SUPERSEDE_STAMP_SQL = `
-  UPDATE brain_facts
+function supersedeStampSql(arbitration: "collision" | "explicit"): string {
+  // The collision arm is a THIRD conjunct on top of the two the explicit arm
+  // already carries, never a replacement for either — so "the explicit statement
+  // is the collision statement minus one predicate" is true by construction, and
+  // `brain-facts.test.ts` pins it by comparing the two strings.
+  //
+  // NOTE what the EXISTS deliberately does NOT carry:
+  // `supersedingDraftPredicate("d")`. This statement runs AFTER the promote
+  // UPDATEs — `SUPERSESSION_TARGETS_SQL`'s header explains why the TARGETS read
+  // must precede them — so by stamp time every id in `$3` is `published` and the
+  // draft-side predicate would match zero rows, silently disabling the whole
+  // guard. Draft-ness is historical here and `$3` is what records it: the list
+  // is built from `promotable` filtered to `single`, so membership already means
+  // "was a promotable draft when this transaction began". What the re-check
+  // re-asks is the part an alias decision can still have changed underneath it —
+  // the SLOT.
+  //
+  // An exhaustive SWITCH, not `arbitration === "explicit" ? "" : recheck`. The
+  // ternary's open `else` means a third arm — and the docstring below names
+  // #5033's tier guard as one that is coming — silently inherits the collision
+  // re-check instead of failing to compile.
+  const collisionRecheck = ((): string => {
+    switch (arbitration) {
+      case "explicit":
+        return "";
+      case "collision":
+        return `
+     AND EXISTS (
+       SELECT 1
+         FROM brain_facts d
+        WHERE d.workspace_id = $1
+          AND d.id = ANY($3::uuid[])
+          AND ${supersessionCollisionPredicate("d", "p")})`;
+      default: {
+        // THROWS rather than returning `exhaustive`. At runtime that spelling
+        // returns the argument itself and splices it into the statement text —
+        // of the two available forms the fix first picked the one whose failure
+        // mode is "unvalidated string into SQL". Every other exhaustive default
+        // in this codebase throws.
+        const exhaustive: never = arbitration;
+        throw new Error(`supersedeStampSql: unhandled arbitration ${JSON.stringify(exhaustive)}`);
+      }
+    }
+  })();
+  return `
+  UPDATE brain_facts p
      SET valid_to = now(), updated_at = now()
-   WHERE workspace_id = $1
-     AND id = ANY($2::uuid[])
-     AND status = 'published'
-     AND invalidated_at IS NULL
-     AND valid_to IS NULL
-   RETURNING id::text AS id
+   WHERE p.workspace_id = $1
+     AND p.id = ANY($2::uuid[])
+     AND p.status = 'published'
+     AND p.invalidated_at IS NULL
+     AND p.valid_to IS NULL${collisionRecheck}
+   RETURNING p.id::text AS id
 `;
+}
+
+/**
+ * The publish gate's stamp — the collision arbitration, RE-CHECKED (#5024).
+ *
+ * `$3` is the same promotable-`single` draft id list `SUPERSESSION_TARGETS_SQL`
+ * was given, so the statement re-asks the exact question that produced `$2`
+ * rather than trusting the answer.
+ *
+ * ## Why re-checking is not redundant with the lock, and both are kept
+ *
+ * #5024 also puts publish and alias approval under one advisory namespace
+ * (`IDENTITY_MUTATION_LOCK_NAMESPACE`), which is what actually makes the
+ * read-then-write serial. This predicate is the OTHER half of the pattern
+ * `DRAFT_FACTS_SQL` argues for at length: *the guard makes the UPDATE correct
+ * standalone, and the lock makes the read-then-write actually serial rather than
+ * correct-by-coincidence of the guard.* A future refactor that drops the lock
+ * cannot silently turn this into a stamp on a pair that no longer collides.
+ *
+ * The race it closes: alias ADDITION only creates collisions, so a pair that
+ * starts colliding mid-publish is simply not stamped this round — safe. Alias
+ * REMOVAL de-merges keys, and landing between the targets SELECT and this UPDATE
+ * would stamp `valid_to` on a pair that no longer collides. That retires a
+ * belief no arbitration supports, and every as-of-now read then hides the row it
+ * touched, so the damage is invisible in both directions.
+ *
+ * Degrades to stamping FEWER rows, never more — and the caller already warns on
+ * the shortfall, because `RETURNING` is how it learns which pairs actually
+ * superseded. The `supersedes` edges and the report can never claim a stamp that
+ * did not happen.
+ *
+ * ## It re-checks per TARGET, not per PAIR — recorded, not overlooked
+ *
+ * The `EXISTS` asks *"does ANY draft in `$3` still collide with this published
+ * row?"*. With two same-slot `single` drafts in one batch and one rival — a case
+ * `SUPERSESSION_TARGETS_SQL`'s header discusses as real — a de-merge that breaks
+ * one pair while leaving the other still stamps the rival, and the `supersedes`
+ * edge recorded for the broken pair claims an arbitration that no longer holds.
+ *
+ * Accepted, because the failure directions are not comparable: that is a stamp
+ * that happened with the WRONG attribution, where what this guard exists to
+ * prevent is a stamp that should not have happened at all — a belief retired
+ * with no live collision, invisible to every as-of-now read. Closing the
+ * attribution half needs the caller's one-array `oldIds` shape to become
+ * per-pair, which is a change to `promoteBrainFacts`'s report contract rather
+ * than to this statement.
+ *
+ * The outer `p.status` / `p.invalidated_at` / `p.valid_to` predicates are kept
+ * even though {@link supersessionCollisionPredicate} repeats all three. They are
+ * not duplication for its own sake: the shared builder is about to grow arms
+ * that narrow it further (#5033's tier guard), and this statement must keep
+ * refusing to stamp a tombstoned or already-superseded row on its own terms
+ * whatever happens to the collision rule.
+ */
+export const SUPERSEDE_STAMP_SQL = supersedeStampSql("collision");
+
+/**
+ * `correct_fact`'s supersede verb (#4915) — the EXPLICIT arbitration.
+ *
+ * Split out by #5024 rather than given the collision re-check, because a human
+ * correction has no colliding draft and never did. Its superseding row is the
+ * replacement `correctFact` installs, which is `published` (not `draft`, so
+ * {@link supersedingDraftPredicate} excludes it) and which supersedes whatever
+ * the human named regardless of `predicate_cardinality` — the reviewer IS the
+ * arbitration. Applying the publish gate's predicate here would stamp nothing
+ * and trip `correction.ts`'s own zero-rows throw on every correction.
+ *
+ * ONE spelling of the `valid_to` write survives that split, which is #4912's
+ * actual requirement: both constants come out of {@link supersedeStampSql}, so
+ * the SET clause and the three target predicates cannot drift between the two
+ * arbitrations. What differs is the WARRANT, and naming the two warrants is
+ * strictly more honest than one statement whose guard a caller switches off with
+ * a NULL parameter — a guard nothing can falsify reads as protection without
+ * being any.
+ *
+ * Still gated: `check-brain-fact-promotion.sh` refuses `valid_to` UPDATEs
+ * outside its allowlist, and `correction.ts` is on it for this write.
+ */
+export const SUPERSEDE_STAMP_EXPLICIT_SQL = supersedeStampSql("explicit");
 
 /**
  * The arbitration record, new → old (#4912): `supersedes` is the M2 edge the
@@ -737,6 +892,81 @@ export function promoteBrainFacts(
   orgId: string,
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> {
   return Effect.gen(function* () {
+    // IDENTITY LOCK FIRST — before the drafts are read, because what this phase
+    // reads is a set of COLLISIONS and an alias decision is what changes them
+    // (#5024, ADR-0037 §7). `DRAFT_FACTS_SQL`'s `FOR UPDATE` locks drafts only;
+    // the published rivals this phase stamps `valid_to` on are unlocked, so
+    // until now a concurrent alias REMOVAL could de-merge a pair between the
+    // targets SELECT and the stamp and retire a belief whose collision no longer
+    // held.
+    //
+    // Namespace 5024, deliberately NOT reconcile's 4771: this file's own
+    // argument is that publish must never be wedged by ingest ("Refuse the row,
+    // never the workspace"), and sharing a namespace with the extraction fiber
+    // is exactly that. `lib/brain/identity.ts` carries the full lock-order note;
+    // the short version is that publish takes 5024 and nothing else, so nothing
+    // it holds can participate in a cycle.
+    //
+    // Taken here rather than in `admin-publish.ts` so the MCP publish seam and
+    // every other `runPublishPhases` caller inherits it — a lock a route has to
+    // remember is a lock one route will forget.
+    //
+    // BOUNDED. `pg_advisory_xact_lock` never errors on contention — it waits,
+    // forever — so an unbounded acquisition here is a publish request that hangs
+    // with no log line and no `requestId`, which is the one outcome
+    // `admin-publish.ts`'s 500 path cannot report because it is never reached.
+    // `SET LOCAL` reverts at COMMIT and cannot leak onto the pooled connection.
+    yield* Effect.tryPromise({
+      try: () => tx.query(IDENTITY_MUTATION_LOCK_TIMEOUT_SQL),
+      catch: (cause) =>
+        new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+    });
+    yield* Effect.tryPromise({
+      try: () =>
+        tx.query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, orgId]),
+      catch: (cause) => {
+        // Named rather than passed through as a raw `55P03`: this is the one
+        // failure in the phase that is TRANSIENT and worth retrying, and an
+        // operator reading "lock_not_available" has no way to know an alias
+        // decision is what they are queued behind. Logged as well as returned —
+        // the returned message is the caller's copy, not a server-side record.
+        if (isLockTimeout(cause)) {
+          log.warn(
+            { workspaceId: orgId, namespace: IDENTITY_MUTATION_LOCK_NAMESPACE },
+            "brain publish: timed out taking the identity-mutation lock — an alias approval or removal is re-keying this workspace",
+          );
+          return new PublishPhaseError({
+            table: BRAIN_FACTS_TABLE,
+            phase: "promote",
+            cause: new Error(
+              "Publish could not start: an alias approval or removal is re-keying this workspace's " +
+                "facts, and publish must not read the collision set while that is in flight. " +
+                "Nothing was changed. Retry in a few seconds.",
+            ),
+          });
+        }
+        return new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause });
+      },
+    });
+    // RESET, immediately, and BEFORE the drafts are read. `SET LOCAL` reverts at
+    // COMMIT, not at the next statement, so leaving it set bounds every later
+    // lock wait in this transaction: the promote UPDATEs and the supersede
+    // stamp, which contend for `brain_facts` rows with `reconcile.ts` and
+    // `correction.ts` (namespace 4771 — NOT serialized by the lock above), and
+    // `admin-publish.ts`'s phase-4 archive loop, which runs after
+    // `runPublishPhases` returns. A publish that used to block and commit would
+    // instead roll back everything already promoted, on a transient class, under
+    // a generic message.
+    //
+    // Not `DRAFT_FACTS_SQL`'s `FOR UPDATE`: a second publisher parks on the
+    // advisory lock above and never reaches that row lock. Named because an
+    // earlier draft of this comment led with it and it is unreachable.
+    yield* Effect.tryPromise({
+      try: () => tx.query(IDENTITY_MUTATION_LOCK_RESET_SQL),
+      catch: (cause) =>
+        new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+    });
+
     const drafts = yield* Effect.tryPromise({
       try: () => tx.query(DRAFT_FACTS_SQL, [orgId]),
       catch: (cause) =>
@@ -951,7 +1181,11 @@ export function promoteBrainFacts(
       if (supersessionPairs.length > 0) {
         const oldIds = [...new Set(supersessionPairs.map((pair) => pair.oldId))];
         const stampResult = yield* Effect.tryPromise({
-          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds]),
+          // `singleIds` a SECOND time, and not a convenience: it is the same
+          // list `SUPERSESSION_TARGETS_SQL` was given, so the stamp re-asks the
+          // exact question that produced `oldIds` instead of trusting the answer
+          // across the window an alias removal can land in (#5024).
+          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds, singleIds]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });
@@ -994,7 +1228,12 @@ export function promoteBrainFacts(
               stamped: stamped.size,
               missing: oldIds.filter((id) => !stamped.has(id)).slice(0, LOGGED_ID_SAMPLE_CAP),
             },
-            "brain publish: some supersession targets were not stamped — retracted or already superseded since the collision check; the will-supersede disclosure may have over-listed",
+            // THREE causes since #5024, and naming only the first two sends an
+            // operator hunting for a retraction that never happened. The third
+            // is the one this slice added on purpose: the stamp re-checks the
+            // collision, so an alias REMOVAL that de-merged the pair leaves it
+            // unstamped. That is the guard working, not a fault.
+            "brain publish: some supersession targets were not stamped — retracted, already superseded, or DE-MERGED by an alias removal since the collision check (the stamp re-checks the collision, #5024); the will-supersede disclosure may have over-listed, and no belief was retired without a live collision",
           );
         }
         const stampedPairs = supersessionPairs.filter((pair) => stamped.has(pair.oldId));

@@ -34,7 +34,7 @@
  *     unified here).
  *   - **supersede** — stamps the target's `valid_to` and records the
  *     `supersedes` edge by executing the SAME statements the publish gate runs
- *     (`SUPERSEDE_STAMP_SQL` / `INSERT_SUPERSEDES_EDGES_SQL`, #4912) —
+ *     (`SUPERSEDE_STAMP_EXPLICIT_SQL` / `INSERT_SUPERSEDES_EDGES_SQL`, #4912) —
  *     imported, not restated, so the two human arbitration paths cannot drift.
  *     The replacement claim enters through `reconcileFacts` as the second
  *     IMPLEMENTED producer (`correction`) on the seam ADR-0036 designs for
@@ -166,7 +166,7 @@ import {
 import {
   brainFactCurrentClause,
   INSERT_SUPERSEDES_EDGES_SQL,
-  SUPERSEDE_STAMP_SQL,
+  SUPERSEDE_STAMP_EXPLICIT_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { classifyFactForPromotion, isJsonObject, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
 import {
@@ -402,7 +402,7 @@ export type CorrectionOutcome =
  * clock-SOURCE skew, which is the part that can be eliminated.)
  *
  * It is `NOT brainFactCurrentClause(…)`, IMPORTED rather than restated, for
- * the reason `SUPERSEDE_STAMP_SQL` is imported one screen up: the whole
+ * the reason `SUPERSEDE_STAMP_EXPLICIT_SQL` is imported one screen up: the whole
  * justification for computing this in Postgres is that the vouch refusal and
  * the reads it reasons about cannot disagree about which facts are current,
  * and a second hand-written spelling of `valid_to > now()` is exactly how they
@@ -802,7 +802,7 @@ export async function correctFact(
         // the system means by the same claim, and since #5020 that is
         // `alias(lexicalNorm(surface))`: `Bob` and `bob` are ONE object slot.
         // Left byte-exact, this guard would pass such a replacement through to
-        // `SUPERSEDE_STAMP_SQL` — closing a published belief and standing up a
+        // `SUPERSEDE_STAMP_EXPLICIT_SQL` — closing a published belief and standing up a
         // successor in the identical slot, with a `supersedes` edge recording
         // an arbitration that settled nothing. That is the irreversible
         // direction reached through a spelling difference, which is exactly
@@ -849,11 +849,32 @@ export async function correctFact(
         // the read. §8 explicitly declines a per-row vocabulary version stamp
         // that would let this site detect the skew on its own.
         //
-        // The exposure is bounded to the window between an approval and that
-        // re-key — a window that is currently unbounded, because #5024 has not
-        // landed. Recorded plainly: this is the one place #5023 made a dormant
-        // residual live, and it did so knowingly, because the alternative was
-        // leaving the vocabulary unreadable by anything.
+        // ✅ THE SOURCE HALF LANDED (#5024). The exposure is the window between
+        // an approval and the re-key of the rows it affects, and that window is
+        // no longer unbounded — it is now the decide TRANSACTION. The re-key
+        // runs inside it, against every row in the workspace at the approved
+        // position including tombstoned and superseded ones, so no committed
+        // state produced BY THIS SEAM has an approved edge disagreeing with the
+        // corpus. Scoped deliberately: the region import commits approved edges
+        // with no re-key at all — `admin-migrate.ts` inserts
+        // `brain_vocabulary_edge`, rebuilds the closure, and lands its facts
+        // UNKEYED by design — so after an import the two disagree by
+        // construction until #5035 carries keys verbatim. A
+        // correction either reads keys written under the pre-approval vocabulary
+        // and re-derives under the same one, or reads post-approval keys and
+        // re-derives under that one. Both are self-consistent.
+        //
+        // What survives, and why #5037 is still open: this site re-derives from
+        // the SURFACE, so it agrees with the stored key only while `lexicalNorm`
+        // and the vocabulary are the two things the ingest path used. The
+        // vocabulary is now pinned by the paragraph above; the re-derivation
+        // itself is not, and a target whose key was CARRIED verbatim by a region
+        // import (#5035) never went through this workspace's `slotKey` at all.
+        // Closing that is #5037's job — inherit, do not re-derive.
+        //
+        // Recorded plainly: this is the one place #5023 made a dormant residual
+        // live, and it did so knowingly, because the alternative was leaving the
+        // vocabulary unreadable by anything.
         if (
           replacement !== null &&
           slotKey(replacement.object, vocabulary.object) ===
@@ -1437,14 +1458,14 @@ async function applySupersede(
   // resolves. Any OTHER live rival still earns its advisory edge, which is
   // correct — the human arbitrated this pair, not the whole field. A failure
   // later in the verb rolls the stamp back with everything else.
-  const stampResult = await tx.query(SUPERSEDE_STAMP_SQL, [workspaceId, [target.id]]);
+  const stampResult = await tx.query(SUPERSEDE_STAMP_EXPLICIT_SQL, [workspaceId, [target.id]]);
   const stampedId = firstId(stampResult.rows);
   if (stampedId === null) {
     // The target is row-locked and was pre-checked published/current in this
     // transaction, so an empty RETURNING is drift — and committing would
     // record a supersession that never stamped.
     throw new Error(
-      `brain correction: supersede stamped no row for fact ${target.id} — the target checks and SUPERSEDE_STAMP_SQL disagree`,
+      `brain correction: supersede stamped no row for fact ${target.id} — the target checks and SUPERSEDE_STAMP_EXPLICIT_SQL disagree`,
     );
   }
 

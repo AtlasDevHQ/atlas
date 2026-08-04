@@ -37,14 +37,21 @@
  * never commits, a crash rolls the decision back whole, and there is no
  * compensation path because there is nothing to compensate.
  *
- * The condition under which the cost returns is worth naming, because #5024 is
+ * The condition under which the cost returns is worth naming, because #5024 was
  * where it would: ADR-0037 §7 puts the drift re-key — a sequential rewrite of
- * every affected `brain_facts` row — inside this transaction. If that rewrite
- * is ever moved OUT of it to keep the transaction short, `applying` becomes
- * observable, `claimed_at` becomes a takeover token, and every paragraph of
- * `decide.ts`'s compensation machinery becomes load-bearing here too. The
- * column exists so that change is a code change rather than a migration on a
- * hot table.
+ * every affected `brain_facts` row — inside this transaction. **#5024 landed it
+ * there and did not move it**, so the guarantee above still holds unqualified:
+ * `applying` never commits, no row is ever observed in it, and `claimed_at` is
+ * a token nothing can take over. See {@link rekeyDriftedFacts} for why that was
+ * the choice rather than the default.
+ *
+ * If that rewrite is ever moved OUT of this transaction to keep it short,
+ * `applying` becomes observable, `claimed_at` becomes a real takeover token, and
+ * every paragraph of `decide.ts`'s compensation machinery becomes load-bearing
+ * here too — along with the `applying`-is-unreachable assertion in
+ * `vocabulary-decide-pg.test.ts`, which would flip from a property to a bug. The
+ * column exists so that change is a code change rather than a migration on a hot
+ * table.
  *
  * ## Two authority postures, and collapsing them is the mistake to avoid
  *
@@ -116,28 +123,58 @@
  * claim → apply → stamp against the region importer's EDGE writes on the same
  * workspace, since both take this namespace.
  *
- * What it does NOT buy, stated because an earlier version of this block claimed
- * it and the claim does not survive reading: it is not what avoids a 40P01
- * against that importer. The rows this module would hold under a lock-second
- * ordering are `brain_vocabulary_proposal` rows, and the importer never reads
- * that table at all (bundle-scope classifies it `stays`) — so there is no
- * second orderable resource and no wait-for cycle can form. The importer's real
- * deadlock hazard is one layer down, against `approveAliasEdge`, which takes
- * this lock itself before touching a row; `migrate-roundtrip-pg.test.ts` carries
- * THAT pair (#5022) and would not fail if this seam's ordering regressed.
+ * What it did NOT buy before #5024, stated because an earlier version of this
+ * block claimed it and the claim did not survive reading: it was not what
+ * avoided a 40P01 against that importer. The rows this module held under a
+ * lock-second ordering were `brain_vocabulary_proposal` rows, and the importer
+ * never reads that table at all (bundle-scope classifies it `stays`) — so there
+ * was no second orderable resource and no wait-for cycle could form. The
+ * importer's real deadlock hazard was one layer down, against `approveAliasEdge`,
+ * which takes this lock itself before touching a row;
+ * `migrate-roundtrip-pg.test.ts` carries THAT pair (#5022).
  *
- * The inversion becomes reachable at #5024, when ADR-0037 §7's drift re-key puts
- * a `brain_facts` rewrite — a table the importer DOES write — inside this
- * transaction. Locking first now is what makes that a no-op rather than a
- * re-discovery. This module's own ordering assertions are in
- * `vocabulary-decide-pg.test.ts`, and they assert an INVARIANT, not a deadlock.
+ * **A second orderable resource exists now.** ADR-0037 §7's drift re-key
+ * rewrites `brain_facts` — a table the importer DOES write — inside this
+ * transaction. Locking first is what keeps a future re-discovery a no-op.
+ *
+ * Be precise about what that is worth today, because the tempting stronger claim
+ * is false: **no interleaving falsifies the order.** Every actor takes its
+ * advisory locks before it UPDATEs a row, and the importer only INSERTs
+ * `brain_facts` (an uncommitted INSERT blocks no UPDATE), so no wait-for cycle
+ * is reachable for either ordering. The inverted order is a LATENT hazard —
+ * reachable the moment the importer UPDATEs an existing fact row before taking
+ * 5022. It is pinned as an INVARIANT in `vocabulary-decide-pg.test.ts` ("decide
+ * locks first"), and `vocabulary-rekey-pg.test.ts` only exercises the
+ * decide-vs-concurrent-writer pair for absence of 40P01.
+ *
+ * ## The SECOND namespace, and why publish needs one at all (#5024)
+ *
+ * {@link lockIdentityMutation} takes {@link IDENTITY_MUTATION_LOCK_NAMESPACE}
+ * (5024) immediately after the vocabulary lock, in that fixed order. The publish
+ * gate takes 5024 and nothing else; the region importer takes 5022 and nothing
+ * else. Nothing that holds 5024 ever asks for 5022, so no cycle can form.
+ *
+ * It exists because the publish gate READ collision pairs unlocked and stamped
+ * `valid_to` afterwards, so a REMOVAL landing in that window retired a belief
+ * whose collision no longer held. Publish takes 5024 before its first read now,
+ * which is what closed it. `lib/brain/identity.ts` carries the full
+ * argument, including why neither 4771 nor 5022 could serve.
  */
 
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import { isSlotPosition, lexicalNorm, type SlotPosition } from "@atlas/api/lib/brain/identity";
+import {
+  IDENTITY_MUTATION_LOCK_NAMESPACE,
+  IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_RESET_SQL,
+  IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
+  identityKeySql,
+  isSlotPosition,
+  lexicalNorm,
+  type SlotPosition,
+} from "@atlas/api/lib/brain/identity";
 import {
   VOCABULARY_LOCK_NAMESPACE,
   VOCABULARY_LOCK_SQL,
@@ -978,11 +1015,18 @@ export async function decideAliasProposal(
   try {
     return await withTransaction(async (tx) => {
       // LOCK FIRST — before any proposal row is read or written, so the row
-      // read and the claim that follows it are one atomic decision. See the
-      // module header for what this does and does NOT buy; in particular it is
-      // not what avoids a 40P01 against the region importer, which never reads
-      // this table.
-      await lockVocabulary(tx, workspaceId);
+      // read and the claim that follows it are one atomic decision.
+      //
+      // BOTH namespaces since #5024, in the fixed order 5022 → 5024. The
+      // vocabulary lock is what makes the check-then-write pairs atomic; the
+      // identity lock is what serializes the drift re-key below against the
+      // publish gate's SELECT-then-STAMP — which took no advisory lock at all
+      // until #5024 put it on this same namespace. The module header's note
+      // that this seam's lock is "not what avoids a 40P01 against the region
+      // importer" is now HALF stale and the surviving half matters: the re-key
+      // writes `brain_facts`, which the importer does write, so the ordering
+      // here is what keeps that a no-op — see the header.
+      await lockIdentityMutation(tx, workspaceId);
 
       const row = await loadProposal(tx, workspaceId, id);
       if (row === undefined) return { kind: "not_decidable", id };
@@ -1069,11 +1113,259 @@ export async function decideAliasProposal(
 // ---------------------------------------------------------------------------
 
 /**
- * Take the workspace vocabulary lock. See the module header for what it buys —
- * and for the 40P01-against-the-importer story it deliberately does NOT claim.
+ * Take the workspace vocabulary lock. See the module header for what it buys,
+ * and for the precise (narrow) form of the 40P01-against-the-importer claim —
+ * a second orderable resource now exists, but no interleaving falsifies the
+ * ordering, so it is pinned as an invariant rather than provoked.
  */
 async function lockVocabulary(tx: VocabularyExecutor, workspaceId: string): Promise<void> {
   await tx.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, workspaceId]);
+}
+
+/**
+ * Take the IDENTITY-mutation lock — 5022 first, then 5024, always in that order.
+ *
+ * Spelled as one function taking both rather than two calls a caller sequences,
+ * because the ORDER is the whole guarantee and a caller that could get it wrong
+ * eventually will. See {@link IDENTITY_MUTATION_LOCK_NAMESPACE} for the cycle
+ * this shape rules out, and #5022's review for the one it actually produced.
+ *
+ * Taken UNCONDITIONALLY, before the proposal row is read — including on paths
+ * that go on to refuse. A lock taken only where the write happens is a lock
+ * taken after the read that decides whether to write, which is the ordering the
+ * publish gate already demonstrates the cost of. It is cheap to be wrong about
+ * here: alias decisions are human-paced and per-workspace.
+ */
+async function lockIdentityMutation(tx: VocabularyExecutor, workspaceId: string): Promise<void> {
+  // 5022 FIRST, and deliberately UNBOUNDED. Producers contend on the vocabulary
+  // lock one batch iteration at a time (`proposeAliasEdges` is sequential for
+  // exactly that reason), and a bound here would make batch B's decide THROW
+  // where it used to wait — killing a whole producer run mid-flight. The propose
+  // path takes no bound at all on the same argument, and its test says so.
+  await lockVocabulary(tx, workspaceId);
+
+  // 5024 BOUNDED, and reset immediately. `pg_advisory_xact_lock` waits forever
+  // rather than erroring, so an unbounded acquisition of the namespace publish
+  // also holds is a request that hangs with no signal — and #5025's route builds
+  // one of these from an HTTP request.
+  //
+  // The reset is not tidiness: `SET LOCAL` reverts at COMMIT, not at the next
+  // statement, so leaving it set would bound the proposal claim and every row
+  // lock the workspace-wide re-key takes below — turning waits that are correct
+  // into failures. The first cut of this fix did exactly that. It must be
+  // ADJACENT to the acquisition, not merely somewhere after it; the suite
+  // asserts `resetAt === identityLockAt + 1` for that reason.
+  await tx.query(IDENTITY_MUTATION_LOCK_TIMEOUT_SQL);
+  await tx.query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, workspaceId]);
+  await tx.query(IDENTITY_MUTATION_LOCK_RESET_SQL);
+}
+
+/**
+ * The `brain_facts` surface and key columns at one slot position.
+ *
+ * The value type is a MAPPED type rather than `{ surface: string; key: string }`,
+ * so `object: { surface: "subject", key: "object_key" }` — the cross-position
+ * slip ADR-0037 §6 calls unrecoverable — does not compile, and neither does a
+ * misspelled key column. The looser spelling left both to a `-pg` suite.
+ */
+type SlotColumns = {
+  readonly [P in SlotPosition]: { readonly surface: P; readonly key: `${P}_key` };
+};
+const SLOT_COLUMNS: SlotColumns = {
+  subject: { surface: "subject", key: "subject_key" },
+  predicate: { surface: "predicate", key: "predicate_key" },
+  object: { surface: "object", key: "object_key" },
+};
+
+/**
+ * ADR-0037 §7's DRIFT RE-KEY — one statement per {@link SlotPosition}, built once.
+ *
+ * ## What it computes
+ *
+ * Exactly `slotKey(surface, alias)` (`lib/brain/identity.ts`), transcribed into
+ * SQL against the CURRENT closure:
+ * `identityKey(alias(identityKey(surface)))`, where `alias(n)` is
+ * `COALESCE(closure[n], n)`. The outer `identityKeySql` is the re-norm `slotKey`
+ * applies to the vocabulary's answer, and it is not optional — an entry authored
+ * as `is priced at → "Priced At"` (an admin typing the canonical DISPLAY form,
+ * the likeliest authoring mistake now that this is a reviewed data table) would
+ * otherwise write a key that joins nothing, workspace-wide and silently.
+ *
+ * A surface that norms away yields NULL from the inner `identityKeySql`, so the
+ * closure lookup matches no row (`norm = NULL` is never true), the COALESCE
+ * stays NULL and the key stays NULL. That is `slotKey`'s "the alias is never
+ * consulted for a claim that asserts nothing", reached by the same road.
+ *
+ * ## Re-derived from the SURFACE, not rewritten from the stored key
+ *
+ * A `WHERE predicate_key = <old> SET predicate_key = <new>` rewrite is the
+ * obvious shape and it is WRONG in the undo direction, which is the direction
+ * the vocabulary's whole reversibility argument rests on (ADR-0037 §6).
+ *
+ * Approval is well-defined key-to-key: adding `a → b` moves exactly the rows
+ * keyed `a` onto `b`. Removal is not. Dropping `a`'s parent makes `a` a root
+ * again, so of the rows keyed `R`, those whose norm chains through `a` become
+ * `a` and the rest stay `R` — and the key column cannot tell the two
+ * populations apart, because sharing a key is precisely what it records. Only
+ * the retained surface can. One statement that recomputes therefore serves both
+ * verbs; two statements would be two spellings of the identity function, which
+ * is what #5000 was.
+ *
+ * This is the ONE sanctioned re-derivation, and it does not contradict §8's
+ * *"row-copy paths carry keys verbatim, never re-derive"*. That rule is about
+ * copying a row into a workspace whose vocabulary is a DIFFERENT function, where
+ * re-deriving fails to over-match — the irreversible direction. Here the
+ * vocabulary is this workspace's own, and its change is the trigger. (One edge
+ * the rule does touch: a key carried verbatim by a region import (#5035) is
+ * re-derived by the next approval in the target region, under the target's
+ * vocabulary. That is #5036's merge-on-import question, not this statement's —
+ * flagged rather than silently absorbed.)
+ *
+ * ## Scope: EVERY row, and no index
+ *
+ * No `status`, `invalidated_at` or `valid_to` filter. #5019 repointed
+ * `idx_brain_facts_subject` onto `(workspace_id, subject_key, predicate_key)
+ * WHERE invalidated_at IS NULL AND valid_to IS NULL`, and the tombstoned and
+ * superseded rows that partial index excludes must still be re-keyed — a row
+ * left on a stale key is a row whose surface and key disagree forever, and the
+ * next removal's re-derive-from-surface undo would move it somewhere neither
+ * vocabulary ever put it.
+ *
+ * It is a SEQUENTIAL scan and that is the accepted plan, not an oversight:
+ * there is no equality on `workspace_id`'s trailing key columns to seek on, PG
+ * 16 has no skip scan, and §7's zero-net-new-indexes result is worth more than
+ * one workspace-scoped scan on a rare, human-gated act. Do not add an index
+ * here.
+ *
+ * ## `updated_at` IS NOT TOUCHED
+ *
+ * Every other `UPDATE` in the brain's write path stamps it, so this is the line
+ * a future tidy-up puts back. It is projected on the wire (`candidates.ts`) and
+ * it is the sort key of the publish preview (`brainFactPreviewSql`), so stamping
+ * it here reshuffles every reviewer's draft queue into re-key order. The
+ * principle: *`updated_at` means this claim's content or review state moved; a
+ * key recomputation moved neither.* Asserted in `vocabulary-rekey-pg.test.ts`,
+ * because nothing else pins it.
+ *
+ * `IS DISTINCT FROM` restricts the WRITE to rows whose key actually moves —
+ * NULL-safe on both sides, unlike `<>`. Every row is still EVALUATED, which is
+ * what the paragraph above requires; what this avoids is a dead tuple per row
+ * per approval on a table the review queue reads constantly. It also makes the
+ * `UPDATE`'s row count mean "rows re-keyed", which is the number worth logging.
+ */
+function rekeyDriftedFactsSql(position: SlotPosition): string {
+  const { surface, key } = SLOT_COLUMNS[position];
+  const norm = identityKeySql(`f.${surface}`);
+  const aliased = `COALESCE((SELECT t.effective_target
+                               FROM brain_vocabulary_target t
+                              WHERE t.workspace_id = f.workspace_id
+                                AND t.slot_position = '${position}'
+                                AND t.norm = ${norm}), ${norm})`;
+  return `UPDATE brain_facts f
+            SET ${key} = ${identityKeySql(aliased)}
+          WHERE f.workspace_id = $1
+            AND f.${key} IS DISTINCT FROM ${identityKeySql(aliased)}
+      RETURNING f.id::text AS id`;
+}
+
+export const REKEY_DRIFTED_FACTS_SQL: Readonly<Record<SlotPosition, string>> = Object.freeze({
+  // Spelled as three keys rather than built with `Object.fromEntries`, which
+  // needed two casts — `Object.keys(...) as SlotPosition[]` and
+  // `as Record<SlotPosition, string>`. The second is the dangerous one: it tells
+  // the compiler the record is TOTAL, so a `.filter()` slipped into the chain
+  // ("only re-key the predicate arm") yields `undefined` at the lookup below,
+  // typed `string`, handed straight to `tx.query`. Here a missing position is
+  // "Property 'object' is missing" and a fourth `SlotPosition` is a compile
+  // error at this definition.
+  subject: rekeyDriftedFactsSql("subject"),
+  predicate: rekeyDriftedFactsSql("predicate"),
+  object: rekeyDriftedFactsSql("object"),
+});
+/**
+ * Run the drift re-key for one position, INSIDE the decide transaction.
+ *
+ * ## Why it stays in this transaction, stated rather than discovered
+ *
+ * The module header names the condition under which this seam inherits
+ * `decide.ts`'s compensation cost: *if the re-key is ever moved OUT of this
+ * transaction to keep it short, `applying` becomes observable, `claimed_at`
+ * becomes a takeover token, and every paragraph of `decide.ts`'s compensation
+ * machinery becomes load-bearing here too.*
+ *
+ * #5024 does not move it. ADR-0037 §7 puts the re-key inside the decide
+ * transaction, and the reason is not brevity: an approved edge whose rows were
+ * not re-keyed is a committed lie about what the corpus collides on, and there
+ * is no bounded window in which that is acceptable — `correction.ts`'s
+ * re-derive site reads the keys and would disagree with them for the length of
+ * it. So the guarantee this slice keeps is the one #5023 shipped: `applying`
+ * never commits, no row is ever observed in it, and `claimed_at` stays a
+ * token nothing can take over.
+ *
+ * The price is a workspace-scoped sequential scan holding two advisory locks
+ * inside a human-gated request. Paid knowingly: alias decisions are rare and
+ * per-workspace, and the alternative trades a bounded latency for an unbounded
+ * correctness window.
+ */
+async function rekeyDriftedFacts(
+  tx: VocabularyExecutor,
+  workspaceId: string,
+  position: SlotPosition,
+  proposalId: string,
+): Promise<void> {
+  let rows: readonly unknown[];
+  try {
+    // REFUSED, not defaulted. `VocabularyExecutor` is deliberately satisfiable
+    // by any `{ query }`, and the earlier `?? []` turned an executor that is not
+    // answering as a Postgres client into the line "Drift re-key complete —
+    // existing facts now carry the keys this vocabulary decides" with
+    // `rekeyed: 0`: a success message for a statement whose result was never
+    // observed, which is the exact shape this slice exists to eliminate.
+    // `vocabulary.ts`'s lock probe makes the same call for the same reason
+    // ("Refusing rather than assuming the lock is held").
+    const result = await tx.query(REKEY_DRIFTED_FACTS_SQL[position], [workspaceId]);
+    if (!Array.isArray(result.rows)) {
+      throw new Error(
+        `rekeyDriftedFacts: the executor returned no usable \`rows\` for the ${position} re-key ` +
+          `(workspace ${workspaceId}, proposal ${proposalId}). The statement's result was never ` +
+          "observed, so whether the corpus was re-keyed is unknown — refusing rather than " +
+          "committing an approval that may not have moved a single key.",
+      );
+    }
+    rows = result.rows;
+  } catch (err) {
+    // LOGGED before it propagates. `decideAliasProposal`'s outer catch narrows
+    // on `AliasApplyRefusedError` and re-throws everything else WITHOUT a log
+    // line, so without this the workspace, the proposal and the position — all
+    // in scope right here — are gone by the time the error surfaces. The classes
+    // that arrive here are all operationally distinct and all look identical
+    // from the route: `40P01` deadlock, `55P03` lock timeout, `57014` statement
+    // cancellation on the scan, `42P01` on a partially-migrated region.
+    log.error(
+      {
+        workspaceId,
+        proposalId,
+        position,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "Drift re-key failed — the alias decision is rolling back whole, so no key moved and no edge was applied",
+    );
+    throw err;
+  }
+  // COUNTED from `RETURNING`, not from `pg`'s `rowCount`. `VocabularyExecutor`
+  // and `ReconcileExecutor` both declare `{ rows }` and `withBrainTransaction`'s
+  // wrapper projects exactly that, so `rowCount` does not survive the seam at
+  // all — reading it yields `undefined` and logs a re-key that moved thousands
+  // of rows as having moved none. `RETURNING` is only as expensive as the rows
+  // that actually changed, which the `IS DISTINCT FROM` guard already narrows.
+  //
+  // Nothing branches on the number. An approval whose re-key moved zero rows is
+  // the ordinary case — the workspace may have no facts at that slot yet — and
+  // treating it as a failure would refuse the first alias a workspace approves.
+  // It is the operator's only signal that the re-key ran and how wide it reached.
+  log.info(
+    { workspaceId, proposalId, position, rekeyed: rows.length },
+    "Drift re-key complete — existing facts now carry the keys this vocabulary decides",
+  );
 }
 
 /**
@@ -1247,10 +1539,21 @@ async function approveProposal(
     throw new AliasApplyRefusedError(row.id, applied.refusal, applied.message);
   }
 
+  // RE-KEY. ADR-0037 §7, and it runs AFTER the closure is rebuilt and BEFORE
+  // the stamp: the statement reads `brain_vocabulary_target`, so running it
+  // before `approveAliasEdge` would recompute against the vocabulary this
+  // decision is replacing and write the keys it was supposed to move away from
+  // — a no-op that looks exactly like a successful re-key.
+  await rekeyDriftedFacts(tx, workspaceId, row.slot_position, row.id);
+
   // STAMP. Conditional on the claim token, so a decision that somehow outlived
   // its claim can never stamp over a takeover's. Unreachable today (the claim
   // and the stamp share a transaction under a workspace lock) and kept because
-  // #5024 is what makes it reachable — see the module header.
+  // kept FOR the day the re-key moves OUT of this transaction, which is when it
+  // becomes reachable — see the module header. #5024 landed the re-key and
+  // deliberately kept it INSIDE, so it stays unreachable today; the stamp is
+  // what makes that future change a code change rather than a migration on a
+  // hot table.
   const stamped = await tx.query(
     `UPDATE brain_vocabulary_proposal
         SET status = 'approved',
@@ -1341,6 +1644,16 @@ async function rejectProposal(
           "to stamp a removal that removed nothing.",
       );
     }
+
+    // The UNDO half of the drift re-key, and the reason the statement recomputes
+    // from the surface rather than rewriting key-to-key. `removeAliasEdge` has
+    // already cleared and rebuilt the position's closure, so recomputing now
+    // lands every row on the target the POST-removal vocabulary decides:
+    // `is priced at` goes back to `price` while a row whose surface was always
+    // `unit price` stays there — a distinction the key column alone cannot make,
+    // because sharing a key is exactly what it records. See
+    // {@link REKEY_DRIFTED_FACTS_SQL}.
+    await rekeyDriftedFacts(tx, workspaceId, row.slot_position, row.id);
   }
 
   const rejected = await tx.query(

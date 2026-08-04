@@ -266,7 +266,12 @@ describe("runMigrations", () => {
     //   columns, the day-one backfill that fills them from the retained
     //   surface form, and the repoint of `idx_brain_facts_subject` onto them,
     //   #5019 / ADR-0037) = 188.
-    expect(count).toBe(188);
+    //   Plus 0188 (rekey_unkeyed_brain_facts — repeats 0187's backfill, which
+    //   is re-runnable by design, because #5020 is the deploy that pivots the
+    //   three slot consumers onto the keys: rows written in the 0187→#5020
+    //   window are unkeyed and would silently stop corroborating, earning
+    //   tension edges, and being supersedable at publish) = 189.
+    expect(count).toBe(189);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -483,6 +488,7 @@ describe("runMigrations", () => {
         "0185_backfill_slack_bot_user_id.sql",
         "0186_brain_audience_reverify_attempt.sql",
         "0187_brain_fact_identity_keys.sql",
+        "0188_rekey_unkeyed_brain_facts.sql",
       ],
     });
 
@@ -1386,5 +1392,65 @@ describe("0127_plan_tier_locked.sql", () => {
     expect(internalSrc).toMatch(
       /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0127_plan_tier_locked\.sql"/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0188_rekey_unkeyed_brain_facts.sql
+// ---------------------------------------------------------------------------
+
+describe("0188_rekey_unkeyed_brain_facts.sql", () => {
+  /** Comments and blank lines stripped — the executable statement only. */
+  function statementOf(file: string): string {
+    const src = fs.readFileSync(path.join(MIGRATIONS_DIR, file), "utf-8");
+    return src
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n")
+      .trim();
+  }
+
+  it("re-runs 0187's backfill statement CHARACTER-FOR-CHARACTER", () => {
+    // 0188 is a second copy of a hand-written SQL reimplementation of
+    // `lexicalNorm`, and its own header stakes the file on the two being one
+    // statement. Nothing else checks that: `identity-pg.test.ts` reads 0187 by
+    // name and never touches 0188, and `migrate-pg.test.ts` runs 0188 against
+    // an EMPTY `brain_facts`, so it proves only that the file parses.
+    //
+    // Every failure mode the header names is invisible without this: a
+    // `lower()` creeping back in (which disagrees with `String#toLowerCase()`
+    // above ASCII and moves with the database collation), a dropped `chr(11)`,
+    // a lost `NULLIF` (which reintroduces the `DEFAULT ''` hazard from the
+    // other side), a stray `updated_at = now()` (which reshuffles every
+    // reviewer's draft queue into backfill order), or the scoping mutation the
+    // header calls out by name — `WHERE status = 'published' AND subject_key IS
+    // NULL OR …`, which mutation-testing found passing every assertion in
+    // `identity-pg.test.ts`.
+    //
+    // A TEXT comparison on purpose. A behavioural pairing would pass on two
+    // expressions that agree only over the corpus it happens to seed, and the
+    // property that matters here is narrower and stronger: these are the same
+    // statement, so 0187's row-by-row pairing against the TypeScript covers
+    // both.
+    const declarations = statementOf("0187_brain_fact_identity_keys.sql");
+    const backfill = declarations.slice(declarations.indexOf("UPDATE brain_facts"));
+    const rerun = statementOf("0188_rekey_unkeyed_brain_facts.sql");
+
+    expect(
+      backfill.startsWith(rerun),
+      "0188's statement is no longer 0187's backfill verbatim. Both are hand-written SQL twins of `lexicalNorm`, and two copies that drift are two functions — one keying the corpus at boot and the other having keyed it at 0187. Re-sync them, or delete 0188 if the repeat is no longer wanted.",
+    ).toBe(true);
+  });
+
+  it("is the WHOLE of 0188 — nothing else rides along", () => {
+    // 0187 additionally drops and recreates `idx_brain_facts_subject`; 0188
+    // must not, and must not have acquired any other statement. `;` is the
+    // runner's own segmentation, so counting them is counting statements.
+    const rerun = statementOf("0188_rekey_unkeyed_brain_facts.sql");
+    expect(rerun.split(";").filter((s) => s.trim() !== "")).toHaveLength(1);
+    expect(rerun).not.toMatch(/\b(CREATE|DROP|ALTER)\b/i);
+    // …and it is not scoped. The header's parenthesised WHERE exists for this.
+    expect(rerun).not.toMatch(/\bstatus\b/i);
+    expect(rerun).not.toMatch(/\bupdated_at\b/i);
   });
 });

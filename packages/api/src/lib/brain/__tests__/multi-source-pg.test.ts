@@ -11,7 +11,8 @@
  * at once, which is the one thing a per-connector suite cannot pose:
  *
  *   1. **Cross-class corroboration.** `CORROBORATION_LOOKUP_SQL` matches on
- *      workspace+subject+predicate+object and is deliberately blind to source,
+ *      the workspace plus the three SLOT KEYS (#5020) and is deliberately blind
+ *      to source,
  *      so a claim said in a meeting and repeated in a mail must strengthen ONE
  *      row rather than mint two. This is the first time that lookup sees two
  *      genuinely different classes, and the failure mode is silent: two rows
@@ -529,10 +530,13 @@ type Candidate = {
  * The claim asserted in BOTH classes — ONE object, referenced twice.
  *
  * Deliberately a shared constant rather than two literals: corroboration matches
- * on subject+predicate+object exactly, so two hand-spelled copies would drift on
- * the first edit and the file's flagship assertion would silently become "two
- * unrelated facts were created", which is also what a BROKEN corroboration looks
- * like. One binding makes the two observations the same claim by construction.
+ * on the three slot keys, so two hand-spelled copies would drift on the first
+ * edit and the file's flagship assertion would silently become "two unrelated
+ * facts were created", which is also what a BROKEN corroboration looks like. One
+ * binding makes the two observations the same claim by construction. (Since
+ * #5020 a drift confined to case or separators would still corroborate, so the
+ * shared constant guards a narrower class than it once did — but a reworded
+ * subject is still the failure it was, and that is the likelier edit.)
  */
 const CORROBORATED_CLAIM: Candidate = {
   subject: "Q3 revenue target",
@@ -1683,8 +1687,9 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
 
       // ---- 7. the human gate arbitrates ACROSS classes ---------------------
       // Advisory tension is not arbitration; a reviewer publishing IS. The gate
-      // picks by the supersession collision — subject+predicate+`single` — and
-      // is blind to class, which is the property this step pins.
+      // picks by the supersession collision — the (subject, predicate) SLOT
+      // plus `single` on both sides — and is blind to class, which is the
+      // property this step pins.
       const gate = await publish();
       expect(gate.promoted).toBe(1);
       expect(gate.refused).toEqual([]);

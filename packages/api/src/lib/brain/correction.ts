@@ -154,6 +154,7 @@ import {
   isUnknownArray,
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
+import { identityAlias, slotKey, type AliasLookup } from "@atlas/api/lib/brain/identity";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
   INSERT_PROVENANCE_EDGE_SQL,
@@ -328,6 +329,19 @@ export interface CorrectionDeps {
    * which is where that is enforced, because the type cannot say it.
    */
   readonly auditWriteTimeoutMs?: number;
+  /**
+   * The workspace's identity vocabulary (ADR-0037 §6 / #5016), threaded for
+   * `reconcileFacts`' reason and used at BOTH of this module's key sites: the
+   * supersede guard's slot comparison, and the replacement claim it hands to
+   * reconcile. Defaults to `identityAlias`, which is the whole vocabulary
+   * today.
+   *
+   * Both sites have to use the SAME lookup the ingest path used, or the guard
+   * refuses a different set than the corpus considers identical and the
+   * replacement lands keyed under a different identity function than every
+   * other row in the workspace. Neither is visible at rest.
+   */
+  readonly alias?: AliasLookup;
 }
 
 /** What became of one correction request. */
@@ -622,6 +636,7 @@ export async function correctFact(
   const { ctx, factId, verb, requestId } = request;
   const now = deps.now ?? (() => new Date());
   const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  const alias = deps.alias ?? identityAlias;
   const newCorrectionId = deps.newCorrectionId ?? randomUUID;
 
   // ── Authority ─────────────────────────────────────────────────────────
@@ -775,7 +790,43 @@ export async function correctFact(
               "no current belief to supersede. Correct the CURRENT fact for this subject and predicate instead.",
           );
         }
-        if (replacement !== null && replacement.object === target.object) {
+        // Compared on the SLOT KEY, not byte-exactly (#5020, ADR-0037 §1).
+        // "Restates what the fact already says" has to mean what the rest of
+        // the system means by the same claim, and since #5020 that is
+        // `alias(lexicalNorm(surface))`: `Bob` and `bob` are ONE object slot.
+        // Left byte-exact, this guard would pass such a replacement through to
+        // `SUPERSEDE_STAMP_SQL` — closing a published belief and standing up a
+        // successor in the identical slot, with a `supersedes` edge recording
+        // an arbitration that settled nothing. That is the irreversible
+        // direction reached through a spelling difference, which is exactly
+        // what the guard exists to prevent.
+        //
+        // Two NULL keys count as identical, which is the same conservative
+        // arm: neither surface asserts anything, so there is no belief to
+        // retire and refusing costs a `valid_to` stamp nobody could justify.
+        // (Note this is a comparison, never a WRITE — the keys are derived at
+        // ingest and `check-brain-fact-promotion.sh` gates only UPDATEs.)
+        //
+        // ONE case it deliberately does NOT cover: a degenerate replacement
+        // against a REAL target (`-` superseding `bob`) is `null !== "bob"`, so
+        // it passes here and installs a successor with no identity — a row that
+        // can never corroborate, contradict, or be superseded. It needs no
+        // refusal of its own: the `MALFORMED_CLAIM` tightening that 0187's
+        // header item 3 requires for `SET NOT NULL` blocks exactly this
+        // candidate at the ingest seam, and the replacement below goes through
+        // that seam, so the block rolls this verb's stamp back with it. Adding
+        // a second refusal here would be a second spelling of that guard.
+        //
+        // The keys are RE-DERIVED from the surfaces rather than read: the
+        // target read cannot project a key (`keys-not-on-the-wire.test.ts`), so
+        // this is the one place ADR-0037 §8's "carry, never re-derive" cannot
+        // be honoured literally. Equal to the stored key while `alias` is
+        // deterministic and unchanged since the target was ingested; #5016 has
+        // to revisit it when the vocabulary becomes versioned.
+        if (
+          replacement !== null &&
+          slotKey(replacement.object, alias) === slotKey(target.object, alias)
+        ) {
           throw new CorrectionRefusedError(
             CORRECTION_REFUSAL_REASONS.replacementIdentical,
             `The replacement restates what the fact already says ("${target.object}"), so there is nothing ` +
@@ -882,6 +933,7 @@ export async function correctFact(
             actor,
             correctionSourceId,
             grantTokens: target.grantTokens,
+            alias,
           });
         case "re-authority":
           return applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "reAuthority", actor);
@@ -1324,6 +1376,8 @@ interface SupersedeInputs {
   readonly actor: string;
   readonly correctionSourceId: string;
   readonly grantTokens: readonly string[];
+  /** The workspace's vocabulary, so the replacement keys the way ingest does. */
+  readonly alias: AliasLookup;
 }
 
 async function applySupersede(
@@ -1337,9 +1391,14 @@ async function applySupersede(
 ): Promise<BrainFactCorrectionResponse> {
   // #4912's stamp FIRST, via the publish gate's own statement — before the
   // replacement reconciles. The ordering is load-bearing: reconcile's tension
-  // pass flags every LIVE same-subject/predicate rival of a new single-
-  // cardinality claim, and the target is exactly such a rival until its
-  // window closes. Stamping first means the belief being retired is already
+  // pass flags every LIVE rival in the same SLOT (`subject_key`,
+  // `predicate_key` since #5020) of a new single-cardinality claim, and the
+  // target is exactly such a rival until its window closes — more surely than
+  // before, since the replacement inherits the target's own subject and
+  // predicate SURFACES below and therefore keys into the target's slot — by
+  // construction for a KEYED target, and vacuously for an unkeyed one, whose
+  // slot is `(NULL, NULL)` and joins nothing either way. Stamping first means
+  // the belief being retired is already
   // settled history when the pass runs (`TENSION_CANDIDATES_SQL` filters
   // `valid_to IS NULL`), so this verb cannot mint a permanent
   // `in-tension-with` edge recording a conflict the same transaction
@@ -1380,6 +1439,7 @@ async function applySupersede(
           predicateCardinality: target.cardinality,
         },
       ],
+      alias: inputs.alias,
       producer: "correction",
       // An authored claim is not extracted from anything.
       extractedAt: null,

@@ -58,6 +58,7 @@ import {
   INSERT_SUPERSEDES_EDGES_SQL,
   SUPERSEDE_STAMP_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 
@@ -93,6 +94,14 @@ interface StoredFact {
   subject: string;
   predicate: string;
   object: string;
+  /**
+   * The materialized identity (#5020) — what reconcile's two lookups match on.
+   * A seeded fact stands for a row already in the corpus, so `seedFact` keys it
+   * the way the ingest path would; the reconcile INSERT arm records the keys it
+   * was actually BOUND, which is what would catch a stage that stopped
+   * supplying them.
+   */
+  slot: { subject: string | null; predicate: string | null; object: string | null };
   /** Set only by the reconcile insert; seeded facts default to null. */
   validFrom?: string | null;
   status: string;
@@ -105,6 +114,22 @@ interface StoredFact {
   /** Simulates the ACL predicate: a hidden fact never comes back. */
   hidden?: boolean;
 }
+
+/** Three consecutive key binds, read positionally — `null` survives as `null`. */
+function slotParams(
+  params: readonly unknown[],
+  from: number,
+): { subject: string | null; predicate: string | null; object: string | null } {
+  const at = (i: number): string | null => {
+    const v = params[from + i];
+    return v === null || v === undefined ? null : String(v);
+  };
+  return { subject: at(0), predicate: at(1), object: at(2) };
+}
+
+/** Postgres `=` / `<>`: both UNKNOWN — never a match — when either side is NULL. */
+const sqlEq = (a: string | null, b: string | null): boolean => a !== null && b !== null && a === b;
+const sqlNe = (a: string | null, b: string | null): boolean => a !== null && b !== null && a !== b;
 
 interface StoredEpisode {
   id: string;
@@ -140,7 +165,7 @@ class FakeCorrectionStore {
   };
 
   seedFact(partial: Partial<StoredFact> & { id: string }): StoredFact {
-    const fact: StoredFact = {
+    const base = {
       subject: "Billing",
       predicate: "is owned by",
       object: "Ana",
@@ -152,6 +177,19 @@ class FakeCorrectionStore {
       invalidatedAt: null,
       sourceEpisodeId: "ep-src",
       ...partial,
+    };
+    const fact: StoredFact = {
+      // Keyed through the SAME function the ingest path calls, so a seeded row
+      // stands for a real corpus row rather than for a hand-written key that
+      // happens to agree with one. An explicit `slot` in `partial` still wins —
+      // that is how a test seeds the unkeyed rows a region import leaves
+      // behind (#5035).
+      slot: {
+        subject: slotKey(base.subject, identityAlias),
+        predicate: slotKey(base.predicate, identityAlias),
+        object: slotKey(base.object, identityAlias),
+      },
+      ...base,
     };
     this.facts.push(fact);
     return fact;
@@ -283,12 +321,12 @@ class FakeCorrectionStore {
     // ── reconcile's statements (the supersede replacement path) ─────────
     if (sql === RECONCILE_LOCK_SQL) return { rows: [] };
     if (sql === CORROBORATION_LOOKUP_SQL) {
-      const [, subject, predicate, object] = params;
+      const slot = slotParams(params, 1);
       const existing = this.facts.find(
         (f) =>
-          f.subject === subject &&
-          f.predicate === predicate &&
-          f.object === object &&
+          sqlEq(f.slot.subject, slot.subject) &&
+          sqlEq(f.slot.predicate, slot.predicate) &&
+          sqlEq(f.slot.object, slot.object) &&
           f.invalidatedAt === null &&
           f.validTo === null,
       );
@@ -301,6 +339,7 @@ class FakeCorrectionStore {
         subject: String(params[1]),
         predicate: String(params[2]),
         object: String(params[3]),
+        slot: slotParams(params, 10),
         validFrom: params[4] === null ? null : String(params[4]),
         status: "draft",
         cardinality: String(params[9]),
@@ -335,12 +374,13 @@ class FakeCorrectionStore {
     // replacement BEFORE stamping the target, the target would show up here
     // and the supersede test's no-tension-edge assertion would fail.
     if (sql === TENSION_CANDIDATES_SQL) {
-      const [, subject, predicate, object, selfId] = params;
+      const slot = slotParams(params, 1);
+      const selfId = params[4];
       const rivals = this.facts.filter(
         (f) =>
-          f.subject === subject &&
-          f.predicate === predicate &&
-          f.object !== object &&
+          sqlEq(f.slot.subject, slot.subject) &&
+          sqlEq(f.slot.predicate, slot.predicate) &&
+          sqlNe(f.slot.object, slot.object) &&
           f.id !== selfId &&
           f.invalidatedAt === null &&
           f.validTo === null,
@@ -1021,6 +1061,72 @@ describe("supersede", () => {
       reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
     });
     expect(store.episodes).toHaveLength(0);
+  });
+
+  test("refuses a replacement that restates the object in a DIFFERENT SPELLING (#5020)", async () => {
+    // "Restates what the fact already says" has to mean what the rest of the
+    // system means by the same claim, and since #5020 that is the slot key.
+    // Left byte-exact, this guard would pass `Bob` → `bob` through to
+    // `SUPERSEDE_STAMP_SQL`: a published belief closed and replaced by a
+    // successor in the IDENTICAL slot, with a `supersedes` edge recording an
+    // arbitration that settled nothing — the irreversible direction, reached
+    // through a spelling difference.
+    // Case, edge whitespace, and — on a multi-token object — the separator
+    // class. NOT `A_N-A`: interior separators norm to spaces, so that is
+    // `a n a` and a genuinely different slot, which is the line the lexical
+    // layer is drawing.
+    for (const [target, restatement] of [
+      ["Ana", "ana"],
+      ["Ana", "  ANA  "],
+      ["Deploy Box", "deploy_box"],
+      ["Deploy Box", "DEPLOY-BOX"],
+    ] as const) {
+      const store = new FakeCorrectionStore();
+      store.seedFact({ id: "old", object: target });
+      const outcome = await run(store, {
+        factId: "old",
+        verb: "supersede",
+        replacement: { object: restatement },
+      });
+      expect(outcome, `${JSON.stringify(restatement)} was accepted as a new claim`).toMatchObject({
+        kind: "refused",
+        reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+      });
+      // Refused BEFORE any write — no correction episode, and no stamp.
+      expect(store.episodes).toHaveLength(0);
+      expect(store.fact("old").validTo).toBeNull();
+    }
+  });
+
+  test("still accepts a replacement that lands in a genuinely different slot", async () => {
+    // The positive control for the arm above: the guard must not have become a
+    // blanket refusal. `Bo` is not a spelling of `Ana`.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana" });
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+    expect(outcome.kind).toBe("corrected");
+  });
+
+  test("refuses when BOTH objects norm away — there is no belief to retire", async () => {
+    // Two surfaces with no identity are not two claims; `slotKey` returns null
+    // for each, and the conservative arm is the one that does not stamp
+    // `valid_to` on a row that asserts nothing.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "-" });
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "___" },
+    });
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+    });
+    expect(store.fact("old").validTo).toBeNull();
   });
 
   test("refuses a draft target with a pointer to retract instead", async () => {

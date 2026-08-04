@@ -269,10 +269,15 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
   /**
    * Reconcile ONE claim off every stored episode — the shape extraction takes
    * when both copies of a duplicated message reach the extractor. Byte-identical
-   * candidates on purpose: `reconcile.ts` identifies a claim byte-exactly on the
-   * trimmed, resolved SPO, so identical input is what makes the SECOND pass a
-   * corroboration of the first rather than a second fact. That is precisely the
-   * path a duplicate episode would travel.
+   * candidates on purpose: `reconcile.ts` identifies a claim by the SLOT KEY of
+   * the trimmed, resolved SPO (`alias(lexicalNorm(surface))` since #5020), and
+   * identical input is the case that is guaranteed to land in one slot — so the
+   * SECOND pass is a corroboration of the first rather than a second fact. That
+   * is precisely the path a duplicate episode would travel. Byte-identical is
+   * now sufficient rather than necessary for ANY surface that has a key — a
+   * surface that norms away (`-`) keys NULL on both passes and corroborates
+   * with nothing, byte-identical or not — which only makes this fixture a
+   * stricter test of the dedupe than it needs to be.
    */
   async function extractSameClaimFromEveryEpisode(): Promise<void> {
     for (const row of await episodes()) {

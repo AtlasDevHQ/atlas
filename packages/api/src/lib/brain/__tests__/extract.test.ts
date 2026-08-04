@@ -221,10 +221,15 @@ describe("llmFactExtractor", () => {
     { subject: "deploy window", predicate: "is", object: "Thursdays", cardinality: "multi" },
   ];
 
-  test("pins temperature to 0 — the dedupe it feeds is byte-exact", async () => {
+  test("pins temperature to 0 — the dedupe it feeds is lexical, not semantic", async () => {
     // Not a quality preference: the reconcile stage collapses a re-extraction
-    // only when the model reproduces its own output verbatim, and re-extraction
-    // after a crash is the whole idempotence story.
+    // only when the model reproduces its own output closely enough to land in
+    // the same SLOT, and re-extraction after a crash is the whole idempotence
+    // story. Since #5020 that slot is `alias(lexicalNorm(surface))`, so a
+    // re-phrasing that differs only in case or separators now collapses too —
+    // the same determinism argument at a coarser grain. It is still nowhere
+    // near enough to cover "is" vs "is on", which is why the temperature is
+    // pinned rather than relied upon to matter less.
     const { model, calls } = modelReturning(oneFact);
     await llmFactExtractor({ episode, body: "hello", model, modelId: "m" });
     expect(calls[0]?.temperature).toBe(0);

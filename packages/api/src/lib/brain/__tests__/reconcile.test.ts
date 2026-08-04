@@ -46,12 +46,41 @@ interface StoredFact {
   subject: string;
   predicate: string;
   object: string;
+  /**
+   * What the stage bound to the key columns (#5020). Stored SEPARATELY from the
+   * surfaces and matched on by the two lookups below, because that separation
+   * IS the behaviour under test: a fake that re-derived a key from the stored
+   * surface could not tell a stage that keys its rows from one that does not.
+   */
+  slot: { subject: string | null; predicate: string | null; object: string | null };
   provenance: Record<string, unknown>;
   visibleTo: string[];
   cardinality: string;
   validFrom: string | null;
   extractedAt: string | null;
 }
+
+/**
+ * Three consecutive key binds, read positionally — `null` stays `null` rather
+ * than becoming `"null"` through `String()`, which is the whole distinction
+ * these tests are about.
+ */
+function keyParams(
+  params: readonly unknown[],
+  from: number,
+): { subject: string | null; predicate: string | null; object: string | null } {
+  const at = (i: number): string | null => {
+    const v = params[from + i];
+    return v === null || v === undefined ? null : String(v);
+  };
+  return { subject: at(0), predicate: at(1), object: at(2) };
+}
+
+/** Postgres `=`: UNKNOWN (→ not a match) whenever either side is NULL. */
+const sqlEq = (a: string | null, b: string | null): boolean => a !== null && b !== null && a === b;
+
+/** Postgres `<>`: likewise UNKNOWN against a NULL, never "different". */
+const sqlNe = (a: string | null, b: string | null): boolean => a !== null && b !== null && a !== b;
 
 interface StoredEdge {
   workspaceId: string;
@@ -87,13 +116,18 @@ class FakeBrainStore {
         return { rows: [] };
       }
       case CORROBORATION_LOOKUP_SQL: {
-        const [workspaceId, subject, predicate, object] = params.map(String);
+        const [workspaceId] = params.map(String);
+        const slot = keyParams(params, 1);
         const hit = this.facts.find(
           (f) =>
             f.workspaceId === workspaceId &&
-            f.subject === subject &&
-            f.predicate === predicate &&
-            f.object === object,
+            // `=` against a NULL bind is UNKNOWN in Postgres, so a candidate
+            // whose surface norms away matches nothing — deliberately, since a
+            // NULL-safe comparison would make every degenerate claim
+            // corroborate every other one. Modelled, not assumed away.
+            sqlEq(f.slot.subject, slot.subject) &&
+            sqlEq(f.slot.predicate, slot.predicate) &&
+            sqlEq(f.slot.object, slot.object),
         );
         return { rows: hit ? [{ id: hit.id }] : [] };
       }
@@ -110,6 +144,7 @@ class FakeBrainStore {
           provenance: JSON.parse(String(params[7])) as Record<string, unknown>,
           visibleTo: JSON.parse(String(params[8])) as string[],
           cardinality: String(params[9]),
+          slot: keyParams(params, 10),
         });
         return { rows: [{ id }] };
       }
@@ -133,13 +168,17 @@ class FakeBrainStore {
         return { rows: [{ id: `edge-${++this.seq}` }] };
       }
       case TENSION_CANDIDATES_SQL: {
-        const [workspaceId, subject, predicate, object, selfId] = params.map(String);
+        const workspaceId = String(params[0]);
+        const slot = keyParams(params, 1);
+        const selfId = String(params[4]);
         const rivals = this.facts.filter(
           (f) =>
             f.workspaceId === workspaceId &&
-            f.subject === subject &&
-            f.predicate === predicate &&
-            f.object !== object &&
+            sqlEq(f.slot.subject, slot.subject) &&
+            sqlEq(f.slot.predicate, slot.predicate) &&
+            // `<>` is UNKNOWN against NULL on either side too — a NULL object
+            // key abstains OUT of tension rather than into it.
+            sqlNe(f.slot.object, slot.object) &&
             f.id !== selfId,
         );
         return { rows: rivals.map((f) => ({ id: f.id })) };
@@ -612,18 +651,128 @@ describe("the draft candidate", () => {
     ).rejects.toThrow("edge insert failed");
   });
 
-  test("identity is byte-exact — canonicalizing is the resolver's job, not this stage's", async () => {
+  test("identity is the slot key — a phrasing variant corroborates instead of forking (#5020)", async () => {
+    // The behaviour #5020 buys — pinned here at the level this file can reach.
+    // `Ships On` / `ships_on` differ in case AND separator, which is the whole
+    // of `lexicalNorm`, so this fails if the stage stops keying its binds.
+    //
+    // What it CANNOT catch, stated because the assertion looks stronger than it
+    // is: the store dispatches on SQL IDENTITY and reads the binds positionally,
+    // so it cannot see which COLUMNS the statement names. Repointing
+    // `CORROBORATION_LOOKUP_SQL` back at the surface columns leaves this green.
+    // What it DOES hold is the bind half — swapping `item.keys.*` back to the
+    // surface fields turns this file red. The COLUMN half is
+    // `extract-reconcile-pg.test.ts`'s (it runs the real strings against the
+    // real schema), with a cheap lexical backstop in the SQL-shape test below
+    // so a revert does not need `TEST_DATABASE_URL` to be caught.
     const store = new FakeBrainStore();
-    await run(store, { candidates: [candidate({ subject: "Alice" })] });
-    await run(store, {
+    await run(store, { candidates: [candidate({ predicate: "Ships On" })] });
+    const second = await run(store, {
       episode: episode({ id: "ep-2" }),
-      candidates: [candidate({ subject: "alice" })],
+      candidates: [candidate({ predicate: "ships_on" })],
     });
 
-    // Two facts, not one. A `lower()` comparison here would quietly take the
-    // "are these the same entity?" decision away from the seam that exists to
-    // make it — and make it globally, for every workspace, with no reviewer.
+    expect(second.corroborated).toBe(1);
+    expect(store.facts).toHaveLength(1);
+    // The RETAINED surface is untouched — identity moved, the record of what
+    // the producer actually said did not. The fact keeps the FIRST phrasing;
+    // the second episode arrives as evidence.
+    expect(store.facts[0]).toMatchObject({ predicate: "Ships On" });
+    expect(store.facts[0]!.slot).toMatchObject({ predicate: "ships on" });
+  });
+
+  test("the workspace's vocabulary reaches every slot, and a throwing one abstains", async () => {
+    // The `alias` seam, end to end through the stage. Without this the whole
+    // threading is unfalsifiable: the default IS `identityAlias`, so dropping
+    // `request.alias` — or dropping the second argument at the three `slotKey`
+    // calls — changes nothing observable and leaves the suite green.
+    const store = new FakeBrainStore();
+    const vocabulary = (norm: string): string =>
+      norm === "is priced at" ? "priced at" : norm;
+
+    await run(store, {
+      alias: vocabulary,
+      candidates: [candidate({ predicate: "Is_Priced At" })],
+    });
+    const second = await run(store, {
+      alias: vocabulary,
+      episode: episode({ id: "ep-2" }),
+      candidates: [candidate({ predicate: "priced at" })],
+    });
+
+    // #5000's pair, closed by an ENTRY rather than by a normalization rule —
+    // which is the whole reason the seam exists.
+    expect(second.corroborated).toBe(1);
+    expect(store.facts).toHaveLength(1);
+    expect(store.facts[0]?.slot).toMatchObject({ predicate: "priced at" });
+    // …and it is the PREDICATE slot, not only the entity-resolved sides.
+    expect(store.facts[0]?.predicate).toBe("Is_Priced At");
+  });
+
+  test("a throwing vocabulary aborts the episode — it never degrades to the un-aliased norm", async () => {
+    // `identity.ts` documents this as a deliberate asymmetry with `tryResolve`,
+    // which catches a throwing ENTITY resolver and flags the candidate
+    // provisional. There is no safe degraded answer for a failed vocabulary
+    // lookup: falling back to the un-aliased norm keys the row into the slot
+    // the vocabulary exists to move it out of, and nothing surfaces it
+    // afterwards. Pinned because the behaviour is true only by ABSENCE of a
+    // catch, and wrapping it in `tryResolve`'s shape is the obvious refactor.
+    const store = new FakeBrainStore();
+    const boom = (): string => {
+      throw new Error("vocabulary unavailable");
+    };
+
+    await expect(run(store, { alias: boom })).rejects.toThrow("vocabulary unavailable");
+    // Nothing written, and no transaction opened — the keys are computed in the
+    // preparation loop, above the transaction.
+    expect(store.facts).toHaveLength(0);
+    expect(store.transactions).toBe(0);
+  });
+
+  test("the lexical layer takes no decision the entity resolver owns", async () => {
+    // The line the keys must not cross. `deploy-01` and `the deploy box` are
+    // the SAME machine and different strings; unifying them is a per-workspace
+    // decision with a seam built for it, not a normalization rule applied
+    // globally with no reviewer. Same for `is priced at` / `priced at`, which
+    // ADR-0037 §6 settles as a vocabulary ENTRY (#5016) rather than a rule.
+    const store = new FakeBrainStore();
+    await run(store, { candidates: [candidate({ subject: "deploy-01", predicate: "is priced at" })] });
+    await run(store, {
+      episode: episode({ id: "ep-2" }),
+      candidates: [candidate({ subject: "the deploy box", predicate: "is priced at" })],
+    });
+    await run(store, {
+      episode: episode({ id: "ep-3" }),
+      candidates: [candidate({ subject: "deploy-01", predicate: "priced at" })],
+    });
+
+    expect(store.facts).toHaveLength(3);
+  });
+
+  test("a surface that norms away is keyed NULL and corroborates nothing", async () => {
+    // `-` survives the MALFORMED_CLAIM guard (`trim()` strips whitespace, not
+    // `_` or `-`), so it is a storable claim whose key is permanently NULL.
+    // Two such claims must NOT share a slot: a stored `''` — or a NULL-safe
+    // comparison — would make every placeholder corroborate every other one and,
+    // at `single` cardinality, publishing either would stamp `valid_to` on the
+    // other. Under-matching costs a duplicate row instead.
+    const store = new FakeBrainStore();
+    await run(store, { candidates: [candidate({ object: "-" })] });
+    const second = await run(store, {
+      episode: episode({ id: "ep-2" }),
+      candidates: [candidate({ object: "___" })],
+    });
+
+    expect(second.corroborated).toBe(0);
     expect(store.facts).toHaveLength(2);
+    for (const fact of store.facts) {
+      expect(fact.slot.object).toBeNull();
+    }
+    // …and each degenerate surface is still stored VERBATIM, so the reviewer can
+    // see what the producer emitted and repair it. Asserted on `object` — the
+    // column that actually carries one; the subject is the shared default and
+    // would prove nothing.
+    expect(store.facts.map((f) => f.object)).toEqual(["-", "___"]);
   });
 
   test("surrounding whitespace is trimmed, so it never forks a claim", async () => {
@@ -700,5 +849,37 @@ describe("no autonomous supersession (#4912)", () => {
 
   test("tension edges target only CURRENT rivals — settled history is not a contradiction", () => {
     expect(TENSION_CANDIDATES_SQL).toContain("valid_to IS NULL");
+  });
+
+  test("both lookups match on the SLOT KEYS and on no surface column (#5020)", () => {
+    // The lexical backstop for the pivot. The fake store above dispatches on
+    // each statement's string IDENTITY and reads its binds positionally, so
+    // repointing either statement at the surface columns leaves every other test
+    // in this file green — and the real proof lives in
+    // `extract-reconcile-pg.test.ts`, which SKIPS without `TEST_DATABASE_URL`.
+    // Without these assertions the revert is green on a default local run.
+    expect(CORROBORATION_LOOKUP_SQL).toContain("subject_key = $2");
+    expect(CORROBORATION_LOOKUP_SQL).toContain("predicate_key = $3");
+    expect(CORROBORATION_LOOKUP_SQL).toContain("object_key = $4");
+    expect(TENSION_CANDIDATES_SQL).toContain("subject_key = $2");
+    expect(TENSION_CANDIDATES_SQL).toContain("predicate_key = $3");
+    // `<>`, never `=`: a rival asserts a DIFFERENT value in the same slot.
+    expect(TENSION_CANDIDATES_SQL).toContain("object_key <> $4");
+    // …and no surviving surface comparison in either. An AND-ed surface arm
+    // beside a key arm reads as pivoted and is not.
+    for (const [name, sql] of [
+      ["CORROBORATION_LOOKUP_SQL", CORROBORATION_LOOKUP_SQL],
+      ["TENSION_CANDIDATES_SQL", TENSION_CANDIDATES_SQL],
+    ] as const) {
+      for (const column of ["subject", "predicate", "object"]) {
+        expect(
+          new RegExp(`\\b${column}\\b(?!_key)\\s*(=|<>)`).test(sql),
+          `${name} still compares the ${column} SURFACE — identity is the materialized key (ADR-0037 §1)`,
+        ).toBe(false);
+      }
+    }
+    // The write half: the INSERT must name all three, or every row it lands is
+    // unkeyed and inert in the two statements above.
+    expect(INSERT_FACT_SQL).toContain("subject_key, predicate_key, object_key");
   });
 });

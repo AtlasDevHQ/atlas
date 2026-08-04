@@ -43,6 +43,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { CORRECTION_REFUSAL_REASONS, correctFact } from "@atlas/api/lib/brain/correction";
@@ -179,8 +180,10 @@ describeIfPg("correction audit row (real Postgres)", () => {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, predicate_cardinality)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'published', ARRAY['org'], 'single')
+          status, visible_to, predicate_cardinality,
+          subject_key, predicate_key, object_key)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'published', ARRAY['org'], 'single',
+               $7, $8, $9)
        RETURNING id`,
       [
         WS,
@@ -189,6 +192,15 @@ describeIfPg("correction audit row (real Postgres)", () => {
         opts.object,
         episodeId,
         JSON.stringify({ source: "slack", actor: "U1" }),
+        // Keyed like an ingested row (#5020). These tests assert audit-row
+        // SHAPE, so they pass either way today — but `correct_fact`'s supersede
+        // verb runs the pivoted corroboration and tension lookups, and an
+        // unkeyed seed is a corpus state the ingest path cannot produce. The
+        // next assertion anyone adds here about corroboration or tension edges
+        // would be silently vacuous against it.
+        slotKey(opts.subject, identityAlias),
+        slotKey(opts.predicate, identityAlias),
+        slotKey(opts.object, identityAlias),
       ],
     );
     const factId = rows[0]?.id;

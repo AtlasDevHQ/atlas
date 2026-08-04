@@ -1,0 +1,124 @@
+-- 0188 — Re-run 0187's identity-key backfill, because #5020 is the deploy that
+-- makes an unkeyed row start MATTERING (ADR-0037 §1, §7).
+--
+-- 0187's header says the backfill "is re-runnable by design (`WHERE … IS NULL`);
+-- repeat it", and assigns that repeat to whoever flips `SET NOT NULL`. This file
+-- moves it one step earlier, to the PR that pivots the three slot consumers onto
+-- the key columns, because that is where the need actually arises:
+--
+--   * Between 0187 deploying and #5020 deploying — two separate PRs with no
+--     enforced ordering — `INSERT_FACT_SQL` named none of these columns and
+--     there is no column default, so every fact written in that window is
+--     unkeyed. Nothing repaired them, and nothing would have until the
+--     constraint flip.
+--   * As of #5020 those rows silently drop OUT of all three slot consumers:
+--     `CORROBORATION_LOOKUP_SQL` (a re-observation forks a duplicate draft
+--     instead of strengthening them), `TENSION_CANDIDATES_SQL` (no advisory
+--     edge), and `supersessionCollisionJoin` (they can neither supersede nor be
+--     superseded, so a publish leaves two current `single` values standing and
+--     the will-supersede disclosure shows nothing to disclose).
+--
+-- `=` and `<>` are both UNKNOWN against NULL, so that exclusion is fail-CLOSED
+-- and every one of those outcomes is an under-match — the recoverable direction,
+-- and the one this cut is allowed to be wrong in. It is still a working path
+-- becoming a quietly-degraded one at a deploy boundary, for rows nobody can see
+-- are affected, which is what this file exists to close.
+--
+-- ## Why a migration and not the drift re-key
+--
+-- `check-brain-fact-promotion.sh`'s identity remedy block says of a corpus-wide
+-- re-key: "Still the decide transaction — ADR-0037 §7 makes the drift re-key
+-- TypeScript, at request time, NOT another migration. 0187 was the one-off
+-- day-one backfill and is done." That
+-- rule is about RE-keying — rewriting a key because the VOCABULARY moved, which
+-- needs the reviewer, the vocabulary version, and the preview the decide
+-- transaction has and a migration does not. This statement keys rows that have
+-- no key at all, from the retained surface form, with no vocabulary involved. It
+-- is the same operation 0187 performed, on the rows 0187 could not see because
+-- they did not exist yet.
+--
+-- ## Two properties that make repeating it safe, both from 0187's header
+--
+--   1. **Re-runnable, and a no-op where there is nothing to do.** `WHERE … IS
+--      NULL` matches nothing once every row has all three keys, which is every
+--      fresh install and every CI run. It does NOT match nothing forever: a row
+--      whose SURFACE norms away keys to NULL permanently and legally, so it
+--      re-matches on every run — and note what that means, because it is the
+--      one non-obvious consequence here: such a row has its OTHER two key
+--      columns REWRITTEN each time. Harmless while `alias` is the identity
+--      function; after that it is the same overwrite hazard as item 2, on rows
+--      item 2 would otherwise read as safe.
+--   2. **PRE-VOCABULARY.** 0187's caveat is that re-running it once `alias` is a
+--      real table OVERWRITES aliased keys, because it writes the raw
+--      `identityKey`. `alias` is still the identity function (slice B, ADR-0037
+--      §6 / #5016, has not landed), so there is nothing to overwrite. That
+--      holds until #5016 lands, and it is the reason this repeat is spelled as
+--      a migration rather than left for the constraint flip: once the
+--      vocabulary exists, the drift re-key inside the decide transaction is the
+--      only correct rewriter and a file like this one becomes wrong.
+--
+-- ## What this does NOT fix
+--
+--   * **Region imports.** `admin-migrate.ts`'s 18-column INSERT still names no
+--     key column (ADR-0024), so every fact a v2 bundle lands after this
+--     migration runs is unkeyed again. #5035 carries keys verbatim on the v3
+--     bundle and is the fix; until it merges, imported facts are inert in all
+--     three consumers. A backfill cannot own this — it runs at boot, and the
+--     import runs whenever an admin triggers it.
+--   * **A rolling deploy's own overlap.** This runs at boot on the NEW
+--     instance and is recorded in `__atlas_migrations`, so it never runs again —
+--     while the N-1 instance is still draining and its extraction fiber is
+--     still writing facts through an `INSERT_FACT_SQL` that names no key
+--     column. Those rows are unkeyed permanently, by the same mechanism this
+--     file exists to repair. A migration structurally cannot close a window
+--     that ends after it commits; the `SET NOT NULL` flip's own backfill re-run
+--     is what sweeps the residue.
+--   * **Surfaces that norm away.** `-`, `___`, and `  ` key to NULL
+--     permanently and legally (`identityKey`'s `NULLIF` twin, and the ⚠️ on
+--     `identityKey` itself). They are re-visited by every run of this statement
+--     and stay NULL — a no-op, three expressions over one row. Which is why
+--     "count the unkeyed rows" means comparing against the EXPRESSION, never
+--     testing the column, exactly as 0187's header says.
+--
+-- Scale: one full-table `UPDATE` under the migration runner's advisory lock,
+-- with 0187's estimate and its caveat — a four-figure corpus at the largest
+-- deployment the team could observe as of 2026-08-03, so sub-second, growing
+-- linearly. On a corpus that deployed 0187 and #5020 together it touches zero
+-- rows and only pays the scan.
+
+-- Character-for-character 0187's expression, and it has to stay that way: it is
+-- the SQL twin of `lib/brain/identity.ts`'s `lexicalNorm`, and every reason
+-- 0187's header gives for the shape holds here unchanged — `chr()` instead of a
+-- backslash class (escape processing is a GUC, and `\v` silently degrades to a
+-- literal `v`, shredding every key containing one), `translate()` instead of
+-- `lower()` (`lower()` disagrees with `String#toLowerCase()` on U+0130 and on
+-- word-final sigma, and moves with the database collation), and `NULLIF(…, '')`
+-- instead of a stored empty string (which would make every degenerate row join
+-- every other one). `identity-pg.test.ts` pins 0187's copy against the
+-- TypeScript row by row and does NOT run this file. What pins THIS copy is
+-- `db/__tests__/migrate.test.ts`'s byte-identity assertion against 0187's
+-- statement — deliberately a text comparison rather than a second behavioural
+-- suite, because the property that matters is "these two are the same
+-- statement", and a behavioural test would pass on two expressions that agree
+-- only on the corpus it happens to seed. `migrate-pg.test.ts` additionally
+-- proves the file PARSES and runs, but it runs against an empty `brain_facts`,
+-- so it sees nothing about the expression.
+UPDATE brain_facts
+   SET subject_key   = NULLIF(btrim(regexp_replace(translate(subject,   'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
+       predicate_key = NULLIF(btrim(regexp_replace(translate(predicate, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
+       object_key    = NULLIF(btrim(regexp_replace(translate(object,    'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), '')
+-- Parenthesized for 0187's reason, which is worth restating rather than
+-- cross-referencing: the arms are all `OR`, so the group is redundant TODAY and
+-- `AND` binds tighter, so a fourth arm that scopes the statement
+-- (`WHERE status = 'published' AND subject_key IS NULL OR …`) READS as unscoped
+-- and is not. Mutation-testing 0187 found that exact shape passing every
+-- assertion in `identity-pg.test.ts`.
+--
+-- `updated_at` is deliberately NOT stamped, same as 0187: it is the publish
+-- preview's sort key and is projected on the wire by the candidates read, so a
+-- workspace-wide stamp would reshuffle every reviewer's draft queue into
+-- backfill order. A key recomputation moved neither the claim's content nor its
+-- review state.
+ WHERE (subject_key IS NULL
+     OR predicate_key IS NULL
+     OR object_key IS NULL);

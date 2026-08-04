@@ -509,14 +509,12 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       // The `retract` correction verb — the SAME code path `/correct` runs
       // (#4915): tombstone + correction episode + dependent re-review flags,
       // in one transaction. One retract semantics, not two.
-      // The workspace's real vocabulary since #5023. `correctFact` reads it at
-      // BOTH of its key sites — the supersede guard's slot comparison and the
-      // replacement claim it hands to reconcile — so it has to be the same
-      // function the ingest path used, or the guard refuses a different set than
-      // the corpus considers identical. A load failure propagates: there is no
-      // degraded answer, and answering with the empty vocabulary would key the
-      // replacement under a different identity function than every other row in
-      // the workspace.
+
+      // The workspace's real vocabulary since #5023. REQUIRED on every verb,
+      // and read by `supersede` alone — so on THIS path the load satisfies the
+      // field and does no work. Stated rather than left to look like an
+      // oversight; the argument for why it must be the real one lives on the
+      // `/correct` call site below, which is where it is read.
       const outcome = yield* Effect.tryPromise({
         try: async () =>
           correctFact({
@@ -618,7 +616,14 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
               ? { object: body.replacement.object, validFrom: replacementValidFrom }
               : undefined,
             requestId,
-            // See the `retract` call above — the same load, for the same reason.
+            // `correctFact` reads this at BOTH of the `supersede` verb's key
+            // sites — the guard's slot comparison and the replacement claim it
+            // hands to reconcile — so it has to be the same function the ingest
+            // path used, or the guard refuses a different set than the corpus
+            // considers identical and the replacement lands keyed under a
+            // different identity function than every other row in the
+            // workspace. A load failure propagates: there is no degraded
+            // answer, and the empty vocabulary is not a safe one.
             vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
           }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),

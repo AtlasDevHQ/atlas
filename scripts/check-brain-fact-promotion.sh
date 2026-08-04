@@ -151,7 +151,8 @@
 #     The alias decide transaction (#5023, ADR-0037 §6/§7) — the IDENTITY arm's
 #     sanctioned writer, and the only entry here that is a PRE-REGISTRATION:
 #     this file writes no gated column today, and is not even a scan candidate
-#     (it names no `brain_facts`). The rationale is recorded now rather than
+#     (it names `brain_facts` only in prose, and comments are stripped before
+#     matching). The rationale is recorded now rather than
 #     when the write lands, for the reason the two `_cmp` arms are gated ahead
 #     of their schema — the guard must never be the thing lagging, and a
 #     carve-out argued at the moment its writer arrives is one argued under
@@ -159,7 +160,7 @@
 #     WHY it is the right home: a key decides what a claim collides with, and an
 #     alias approval changes that for existing rows. §7 puts the drift re-key
 #     inside this transaction — TypeScript at request time, NOT another
-#     migration (0187 was the one-off day-one backfill and is done) — because
+#     migration (0187, re-run by 0188, was the day-one backfill) — because
 #     the re-key is triggered BY the approval and needs the same workspace
 #     advisory lock the edge write takes. It is the one place the vocabulary
 #     version that authorized the re-key is known. #5024 lands that write.

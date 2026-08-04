@@ -1020,9 +1020,17 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
   // Loaded HERE rather than before the model call, and the gap is the reason: a
   // vocabulary read minutes before `reconcile` would be a staler snapshot than
   // one read immediately before it, and reconcile's corroboration lookup joins
-  // against keys other writers materialized in the meantime. The cost of the
-  // ordering is one wasted model call when the load fails, which the failure
-  // ledger caps.
+  // against keys other writers materialized in the meantime.
+  //
+  // The cost of that ordering is one wasted model call per failing episode, and
+  // the failure ledger does NOT cap it the way it caps a poison episode: a
+  // `VocabularyClosureError` is workspace-scoped and deterministic, so it fails
+  // every episode of that workspace, and the drain's backing-off exclusion —
+  // whose whole purpose is to let the head advance — hands the next tick a fresh
+  // batch. The spend therefore scales with the workspace's unextracted backlog,
+  // not with `QUARANTINE_AFTER_FAILURES`. Accepted as the honest cost of the
+  // fresher snapshot, and stated because "the ledger caps it" is the thing a
+  // reader would otherwise assume.
   //
   // NOT caught. `vocabulary.ts` refuses to answer against a partial closure, and
   // degrading to `identityVocabulary` here would key the whole episode into the

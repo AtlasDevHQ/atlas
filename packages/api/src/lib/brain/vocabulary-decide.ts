@@ -248,6 +248,28 @@ export type AliasApprover =
   /** A human, carried as the brain's own principal context. */
   | { readonly kind: "human"; readonly ctx: BrainPrincipalContext };
 
+/**
+ * The recorded approver, or `null` for the machine path.
+ *
+ * `ctx.userId` alone would be WRONG on a self-hosted no-auth deployment. There
+ * `unauthenticated-local` is the only origin there is — {@link approverEntitled}
+ * admits it deliberately, on `correctFact`'s reasoning — and its `userId` is
+ * `null`, so every human approval would land `approved_by = NULL`: the value
+ * migration 0189 defines as "auto-approved, no human", at the column it calls
+ * the one an audit of a workspace-wide re-key reads first. A human re-key would
+ * be indistinguishable from a machine one, permanently.
+ *
+ * `correction.ts` solved this already and the sentinel is copied from it rather
+ * than invented: that deployment declared it has no ids to record, so the class
+ * is recorded instead of an id.
+ */
+const LOCAL_OPERATOR_ACTOR = "local-operator";
+
+function recordedApprover(approver: AliasApprover): string | null {
+  if (approver.kind === "auto") return null;
+  return approver.ctx.userId ?? LOCAL_OPERATOR_ACTOR;
+}
+
 /** The direction a human sets on an undirected proposal at approval time. */
 export interface AliasDirection {
   readonly fromNorm: string;
@@ -284,8 +306,14 @@ export type AliasDecisionOutcome =
    */
   | { readonly kind: "rejected"; readonly id: string; readonly removedEdge: boolean }
   /**
-   * No row in a decidable state: absent, another workspace's, or already
-   * `rejected`. Reported truthfully — never retried into a second apply.
+   * No row in a decidable state. Four causes, and the seam does not distinguish
+   * them on purpose (each is "nothing for you to decide"): the row is absent,
+   * it belongs to another workspace, it is already `rejected`, or the verb has
+   * no transition from its current status — an approve on an `approved` row
+   * (the claim is conditional on `pending`, and an approved pair's only
+   * remaining transition is removal) and a reject on an `applying` one.
+   *
+   * Reported truthfully — never retried into a second apply.
    */
   | { readonly kind: "not_decidable"; readonly id: string }
   /** Refused; the transaction rolled back and the row is untouched. */
@@ -416,12 +444,28 @@ function approverEntitled(position: SlotPosition, ctx: BrainPrincipalContext): b
 
 /** The stored shape of a proposal row this module reads back. */
 interface ProposalRow {
-  id: string;
-  slot_position: string;
-  from_norm: string;
-  to_norm: string;
-  directed: boolean;
-  source_class: string;
+  readonly id: string;
+  /**
+   * NARROWED, not asserted — and the asymmetry with `source_class` below is the
+   * point rather than an inconsistency.
+   *
+   * This column decides the ENTITLEMENT bar, and `approverEntitled` fails OPEN
+   * on a value it does not recognise: `isEntityPosition` answers `false` for
+   * anything outside `subject | object`, so an unknown position would take the
+   * PREDICATE arm and clear the bar for any authenticated member — the exact
+   * owner/admin gate ADR-0037 §6 puts in front of entity edges, bypassed. An
+   * unreadable authority input is refused rather than assumed.
+   *
+   * `source_class` decides ELIGIBILITY, and that gate already fails CLOSED on an
+   * unrecognised value (`isAliasSourceClass` at the eligibility check). Left a
+   * `string` deliberately, so a deployment reading a row written by a newer
+   * enum queues it for a human instead of refusing to decide it at all.
+   */
+  readonly slot_position: SlotPosition;
+  readonly from_norm: string;
+  readonly to_norm: string;
+  readonly directed: boolean;
+  readonly source_class: string;
   /**
    * Narrowed to `NaN` when the executor hands back something that is not a
    * number, NOT defaulted to the shipped threshold. An unreadable confidence
@@ -434,18 +478,50 @@ interface ProposalRow {
    * {@link VocabularyExecutor} — which this module's own seam advertises as a
    * legal shape — for the reason `lockWorkspaceVocabulary` guards `{ rows: [] }`.
    */
-  confidence: number;
-  status: string;
+  readonly confidence: number;
+  readonly status: string;
 }
 
 const PROPOSAL_COLUMNS =
   "id, slot_position, from_norm, to_norm, directed, source_class, confidence, status";
 
-/** Narrow one raw row, so no read site dereferences the driver's shape. */
-function toProposalRow(raw: unknown): ProposalRow | undefined {
+/**
+ * Narrow one raw row.
+ *
+ * Two columns are checked and the rest are asserted, which is a weaker claim
+ * than "nothing dereferences the driver's shape" — so it is stated rather than
+ * implied. The two are the ones whose WRONG value is silently permissive:
+ * `slot_position` decides the entitlement bar and fails open, `confidence`
+ * decides eligibility and every NaN comparison is false. The remainder
+ * (`from_norm`, `to_norm`, `status`, `directed`, `id`) are guarded structurally
+ * by migration 0190's NOT NULLs and CHECKs, and a wrong value there produces a
+ * visibly wrong answer rather than a quietly permissive one.
+ *
+ * @throws when `slot_position` is not a position this deployment knows. A row
+ *   written outside this seam — a hand-written INSERT, a restore onto a
+ *   deployment whose CHECK was dropped — is a corrupt vocabulary, not a
+ *   decision to make on a guess.
+ */
+function toProposalRow(raw: unknown, workspaceId: string): ProposalRow | undefined {
   if (raw === undefined || raw === null) return undefined;
-  const row = raw as ProposalRow & { confidence?: unknown };
-  return { ...row, confidence: typeof row.confidence === "number" ? row.confidence : Number.NaN };
+  const row = raw as ProposalRow & { slot_position?: unknown; confidence?: unknown };
+  if (!isSlotPosition(row.slot_position)) {
+    log.error(
+      { workspaceId, proposalId: row.id, slotPosition: row.slot_position },
+      "Alias proposal carries a slot_position this deployment does not know — refusing to decide it",
+    );
+    throw new Error(
+      `Alias proposal ${row.id} carries slot_position "${String(row.slot_position)}" (workspace ` +
+        `${workspaceId}), which is not subject, predicate or object. The position decides which ` +
+        "entitlement an approver needs, and an unknown one would take the lower bar — so the row is " +
+        "refused rather than decided. It was written outside this seam.",
+    );
+  }
+  return {
+    ...row,
+    slot_position: row.slot_position,
+    confidence: typeof row.confidence === "number" ? row.confidence : Number.NaN,
+  };
 }
 
 /**
@@ -571,7 +647,11 @@ export async function proposeAliasEdge(
 
 /** What one producer run did. Surfaced so a re-run's suppression is visible. */
 export interface AliasProducerCounters {
-  /** Queued for a human. */
+  /**
+   * Left for a human to decide. Includes an eligible row whose auto-approval
+   * the vocabulary refused — that row IS queued, and counting it only under
+   * `refused` would make this number stop meaning "rows awaiting review".
+   */
   queued: number;
   /** Queued AND decided in the same run, through the decide seam. */
   autoApproved: number;
@@ -585,7 +665,11 @@ export interface AliasProducerCounters {
    * reports zero here is one whose removals did not stick.
    */
   rejected: number;
-  /** Malformed, or refused by the decide seam after an eligible queue. */
+  /**
+   * Malformed at propose time (never queued), or eligible and refused by the
+   * decide seam (queued, and also counted under `queued`). The two do not sum
+   * to the batch size for that reason.
+   */
   refused: number;
 }
 
@@ -595,10 +679,11 @@ export interface AliasProducerCounters {
  *
  * Shaped on `scheduler.ts`'s amendment loop deliberately — propose, branch on
  * the outcome, and route `autoApprove` through the decide seam rather than
- * stamping at insert. The counters are #4507's *"with the count surfaced"*: a
- * producer that re-runs after a human removed an edge must be able to SAY that
- * it was suppressed, or the suppression is invisible and the next operator
- * debugging a missing alias has nothing to read.
+ * stamping at insert. The counters are #5023's *"with the count surfaced"*,
+ * adopting #4507's rejection memory: a producer that re-runs after a human
+ * removed an edge must be able to SAY that it was suppressed, or the
+ * suppression is invisible and the next operator debugging a missing alias has
+ * nothing to read.
  *
  * Sequential, not `Promise.all`. Every iteration takes the same workspace
  * advisory lock, so a parallel batch would serialize on it anyway while holding
@@ -619,7 +704,16 @@ export async function proposeAliasEdges(
     refused: 0,
   };
 
+  // Every iteration COMMITS on its own — `proposeAliasEdge` opens its own
+  // transaction, and an eligible row's approval opens another. So a throw part
+  // way through leaves real rows behind, and the counters describing them are
+  // the only record of which. Logged before the error propagates, or the caller
+  // sees a raw failure and a `rejected: 0` it has no way to read as "unknown"
+  // rather than "nothing was suppressed".
+  let processed = 0;
+  try {
   for (const input of inputs) {
+    processed++;
     const outcome = await proposeAliasEdge(workspaceId, input, deps);
     switch (outcome.kind) {
       case "already_pending":
@@ -655,20 +749,38 @@ export async function proposeAliasEdges(
         if (decided.kind === "approved") {
           counters.autoApproved++;
         } else {
-          // The row stays `pending` and a human can still decide it — which is
-          // why this counts as refused rather than failing the batch. Logged at
-          // warn because an auto-approve that the vocabulary refused (a cycle,
-          // an existing parent) is a producer emitting edges that contradict
-          // the store, and that is worth seeing.
+          // BOTH counters. The row is still queued for a human — so `queued`
+          // must count it, or a producer's `queued` stops meaning "rows I left
+          // for review", which is the number the field promises. `refused` is
+          // what says the auto-approval was attempted and did not land.
+          //
+          // Logged at warn because an auto-approve the vocabulary refused (a
+          // cycle, an existing parent) is a producer emitting edges that
+          // contradict the store, and that is worth seeing.
           log.warn(
             { workspaceId, producer, proposalId: outcome.id, outcome: decided.kind },
             "Alias auto-approval did not land — the proposal stays queued for a human",
           );
+          counters.queued++;
           counters.refused++;
         }
         break;
       }
     }
+  }
+  } catch (err) {
+    log.error(
+      {
+        workspaceId,
+        producer,
+        ...counters,
+        processed,
+        total: inputs.length,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "Alias producer batch aborted mid-flight — every proposal counted above is already committed",
+    );
+    throw err;
   }
 
   log.info({ workspaceId, producer, ...counters }, "Alias producer batch complete");
@@ -679,18 +791,43 @@ export async function proposeAliasEdges(
 // Decide
 // ---------------------------------------------------------------------------
 
-export interface AliasDecisionRequest {
-  readonly id: string;
-  readonly workspaceId: string;
-  readonly decision: "approved" | "rejected";
-  readonly approver: AliasApprover;
-  /**
-   * The direction a human sets. REQUIRED when the proposal is undirected,
-   * optional (and checked for agreement) when it is not. Meaningless on a
-   * rejection, and ignored there.
-   */
-  readonly direction?: AliasDirection;
-}
+/**
+ * A decision, split by verb — and the split is a guard rather than tidiness.
+ *
+ * `rejected` takes a HUMAN approver only. A machine may approve (that is the
+ * whole auto-approve split) but must never reject, because on an `approved` row
+ * rejection is a REMOVAL: it drops an edge a human approved, recomputes the
+ * closure, and writes permanent rejection memory that no producer can undo. A
+ * machine undoing a human decision and making it unrepeatable is the exact
+ * inversion this seam exists to prevent, and under one flat shape
+ * `{ decision: "rejected", approver: { kind: "auto" } }` typechecked and ran.
+ *
+ * `direction` is likewise on the approve arm only — it is meaningless on a
+ * rejection, and a field that is representable-and-ignored is a field a caller
+ * will eventually believe in.
+ *
+ * The type is the primary guard; {@link decideAliasProposal} re-checks both at
+ * runtime, because #5025's route will build one of these out of a parsed HTTP
+ * body where the compiler is not in the room.
+ */
+export type AliasDecisionRequest =
+  | {
+      readonly id: string;
+      readonly workspaceId: string;
+      readonly decision: "approved";
+      readonly approver: AliasApprover;
+      /**
+       * The direction a human sets. REQUIRED when the proposal is undirected,
+       * optional (and checked for agreement) when it is not.
+       */
+      readonly direction?: AliasDirection;
+    }
+  | {
+      readonly id: string;
+      readonly workspaceId: string;
+      readonly decision: "rejected";
+      readonly approver: Extract<AliasApprover, { kind: "human" }>;
+    };
 
 /**
  * Decide one alias proposal — the single seam for `pending → approved` and for
@@ -721,8 +858,29 @@ export async function decideAliasProposal(
   request: AliasDecisionRequest,
   deps: AliasDecideDeps = {},
 ): Promise<AliasDecisionOutcome> {
-  const { id, workspaceId, decision, approver, direction } = request;
+  const { id, workspaceId, decision, approver } = request;
+  const direction = request.decision === "approved" ? request.direction : undefined;
   const withTransaction = deps.withTransaction ?? withBrainTransaction;
+
+  // The runtime half of the union above. A machine may approve and must never
+  // reject — see {@link AliasDecisionRequest}. Refused before the transaction
+  // opens, like the workspace check below, because it is a request nobody with
+  // the authority to make it would send.
+  if (decision === "rejected" && approver.kind !== "human") {
+    log.error(
+      { workspaceId, proposalId: id },
+      "Alias decision refused — a machine actor attempted a rejection, which on an approved row is a removal",
+    );
+    return {
+      kind: "refused",
+      id,
+      refusal: "not-entitled",
+      message:
+        `Proposal ${id} cannot be rejected by a machine actor. A rejection on an approved row is a ` +
+        "REMOVAL — it drops an edge a human approved and writes permanent rejection memory no " +
+        "producer can undo. Auto-approval is the only machine authority this seam grants.",
+    };
+  }
 
   if (approver.kind === "human" && approver.ctx.workspaceId !== workspaceId) {
     // Refused before the transaction opens: this is a scope escalation attempt,
@@ -751,9 +909,23 @@ export async function decideAliasProposal(
       const row = await loadProposal(tx, workspaceId, id);
       if (row === undefined) return { kind: "not_decidable", id };
 
-      const position = row.slot_position as SlotPosition;
+      const position = row.slot_position;
 
       if (approver.kind === "human" && !approverEntitled(position, approver.ctx)) {
+        // Logged, because this is an authorization denial on a write that
+        // re-keys a corpus. The refusal message travels out in the return
+        // value, which is the caller's copy — not a server-side record anyone
+        // can query when asking who keeps trying to approve entity edges.
+        log.warn(
+          {
+            workspaceId,
+            proposalId: id,
+            position,
+            origin: approver.ctx.origin,
+            role: approver.ctx.role,
+          },
+          "Alias approval refused — the reader does not clear this position's entitlement bar",
+        );
         return {
           kind: "refused",
           id,
@@ -800,6 +972,14 @@ export async function decideAliasProposal(
     // propagates, because those are not decisions and a caller must be able to
     // tell them apart.
     if (err instanceof AliasApplyRefusedError) {
+      // An `already-aliased` or `would-cycle` refusal means a caller is
+      // proposing edges that contradict the committed vocabulary. Worth a
+      // server-side line on the HUMAN path too — `proposeAliasEdges` logs it,
+      // but only for the batch arm.
+      log.warn(
+        { workspaceId, proposalId: id, refusal: err.refusal, approver: approver.kind },
+        `Alias approval refused by the vocabulary — ${err.refusalMessage}`,
+      );
       return { kind: "refused", id, refusal: err.refusal, message: err.refusalMessage };
     }
     throw err;
@@ -837,7 +1017,7 @@ async function findProposalByPair(
         AND pair_low = LEAST($3::text, $4::text) AND pair_high = GREATEST($3::text, $4::text)`,
     [workspaceId, position, fromNorm, toNorm],
   );
-  return toProposalRow(rows[0]);
+  return toProposalRow(rows[0], workspaceId);
 }
 
 /** One proposal by id, scoped to its workspace. */
@@ -852,7 +1032,7 @@ async function loadProposal(
       WHERE workspace_id = $1 AND id = $2`,
     [workspaceId, id],
   );
-  return toProposalRow(rows[0]);
+  return toProposalRow(rows[0], workspaceId);
 }
 
 function entitlementMessage(position: SlotPosition, ctx: BrainPrincipalContext): string {
@@ -964,10 +1144,10 @@ async function approveProposal(
   // "the one column an audit of a workspace-wide re-key reads first", and a
   // 'system' sentinel there would be indistinguishable from a user id.
   const applied = await approveAliasEdge(tx, workspaceId, {
-    position: row.slot_position as SlotPosition,
+    position: row.slot_position,
     fromNorm: direction.fromNorm,
     toNorm: direction.toNorm,
-    approvedBy: approver.kind === "auto" ? null : approver.ctx.userId,
+    approvedBy: recordedApprover(approver),
   });
 
   if (!applied.ok) {
@@ -997,7 +1177,7 @@ async function approveProposal(
       row.id,
       direction.fromNorm,
       direction.toNorm,
-      approver.kind === "auto" ? null : approver.ctx.userId,
+      recordedApprover(approver),
       claim.claimed_at,
     ],
   );
@@ -1047,7 +1227,7 @@ async function rejectProposal(
     const removed = await removeAliasEdge(
       tx,
       workspaceId,
-      row.slot_position as SlotPosition,
+      row.slot_position,
       row.from_norm,
     );
     if (!removed) {
@@ -1080,7 +1260,7 @@ async function rejectProposal(
     [
       workspaceId,
       row.id,
-      approver.kind === "auto" ? null : approver.ctx.userId,
+      recordedApprover(approver),
       row.status,
     ],
   );

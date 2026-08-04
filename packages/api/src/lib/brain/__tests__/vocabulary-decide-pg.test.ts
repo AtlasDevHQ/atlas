@@ -49,31 +49,48 @@
  * | Mutation | Tests it kills |
  * |---|---|
  * | rejection memory dropped (`rejected` falls through to the insert) | 4 |
- * | rejection-memory identity made ORDERED (`from_norm`/`to_norm` instead of the pair) | 2 |
- * | rejection memory read AFTER the `approved` arm | 4 |
- * | removal stops writing `rejected` (edge dropped, row left `approved`) | 4 |
- * | `removeAliasEdge` dropped from the reject arm (status flips, edge survives) | 3 |
- * | the pending-dedup arm dropped (a second propose inserts a second row) | 2 |
+ * | rejection-memory identity made ORDERED | 2 |
+ * | the `rejected` arm reports `already_pending` instead of refusing | 4 |
+ * | removal stops writing `rejected` (edge dropped, row left `approved`) | 6 |
+ * | `removeAliasEdge` dropped from the reject arm | 4 |
+ * | the removal's did-nothing THROW downgraded to a silent stamp | 1 |
+ * | the pending-dedup arm dropped | 3 |
  * | `autoApproveEligible`'s entity-position conjunct dropped | 1 |
- * | `autoApproveEligible`'s source-class conjunct dropped | 2 |
- * | `autoApproveEligible`'s threshold conjunct dropped | 2 |
+ * | `autoApproveEligible`'s source-class conjunct dropped | 3 |
+ * | `autoApproveEligible`'s threshold conjunct dropped | 5 |
+ * | the threshold's 0–1 range guard dropped | 1 |
+ * | the knob read platform-wide (`workspaceId` dropped from both reads) | 1 |
  * | the `warehouse_key`-at-predicate refusal dropped | 1 |
  * | the auto arm's re-check at decide time dropped | 1 |
- * | `direction-required` dropped (an undirected proposal approves in stored order) | 1 |
+ * | `direction-required` dropped | 1 |
  * | `direction-not-in-pair` dropped | 1 |
- * | `direction-conflict` dropped (a directed proposal is flipped) | 1 |
+ * | `direction-conflict` dropped | 1 |
+ * | `lexicalNorm` dropped from the supplied direction | 1 |
  * | the approval STAMPS the proposed direction instead of the resolved one | 1 |
- * | the EDGE is written in the proposed direction instead of the resolved one | 1 |
+ * | the EDGE is written in the proposed direction instead of the resolved one | 2 |
  * | `approverEntitled`'s entity-position owner/admin bar dropped | 1 |
- * | `approverEntitled` made owner/admin at EVERY position (the postures collapse) | 1 |
+ * | `approverEntitled` made owner/admin at EVERY position | 2 |
  * | the `unresolved`-origin arm admitted | 1 |
+ * | the `unauthenticated-local` arm dropped (the local operator locked out) | 1 |
  * | the workspace-mismatch guard dropped | 1 |
- * | the apply refusal RETURNED instead of thrown (claim commits, row stuck `applying`) | 3 |
+ * | the machine-may-not-reject backstop dropped | 1 |
+ * | the local operator recorded as a machine (`ctx.userId` alone) | 1 |
+ * | the human approver never recorded (`approved_by`/`reviewed_by` always NULL) | 4 |
+ * | the apply refusal RETURNED instead of thrown | 4 |
+ * | the catch broadened — every error becomes a refusal | 3 |
  * | the claim's `status = 'pending'` predicate dropped | 1 |
- * | the vocabulary lock taken AFTER the proposal read (the 40P01 inversion) | 1 |
- *
- * 23 mutations, 23 caught, zero survivors — and three rows need reading with
- * care rather than at face value:
+ * | the `applying`-not-rejectable arm dropped | 2 |
+ * | the vocabulary lock taken AFTER the proposal read | 1 |
+ * | the lock taken in the WRONG namespace | 2 |
+ * | the lock keyed on a CONSTANT instead of the workspace | 2 |
+ * | `slot_position` asserted instead of narrowed | 1 |
+ * | the eligible-but-refused row stops counting as `queued` | 1 |
+ * | `deduped` and `refused` swapped | 1 |
+ * | the ingest path reverts to `identityVocabulary` | 2 |
+ * | the correctFact TOOL reverts to `identityVocabulary` | 1 |
+ * | the admin route reverts to `identityVocabulary` | 1 |
+ * 41 mutations, 41 caught, zero survivors — and four rows need reading with
+ * care rather than at face value.
  *
  * The ordered-identity mutation is NOT caught by the headline producer test:
  * that one re-emits the pair in the same order it was removed in, so an ordered
@@ -88,15 +105,34 @@
  * conjunct refuses first and the mutation survives, which is what the first cut
  * of that test did.
  *
- * The lock-order row is caught STRUCTURALLY, by asserting the first statement of
- * each transaction, because the failure it prevents is a deadlock against the
- * region importer that no single-process test can provoke.
+ * The lock rows are caught STRUCTURALLY, by recording each transaction's first
+ * statement AND ITS PARAMS. The text alone could not tell a correctly-keyed
+ * lock from one in the wrong namespace or on a constant key — which is the
+ * failure that matters, since a wrong namespace stops being mutually exclusive
+ * with `approveAliasEdge` and the region importer. The ordering row is separate
+ * again, and structural for a different reason: the deadlock it guards against
+ * is not one a single-process test can provoke.
+ *
+ * `slot_position` asserted instead of narrowed is reachable only by DROPPING
+ * 0190's CHECK, which its test does — the same move `vocabulary-pg.test.ts`
+ * makes to write a cyclic pair the primitives refuse to. Simulating a row
+ * written outside this seam is the whole point: the mutation's failure
+ * direction is permissive, so leaving it unreachable-and-untested would have
+ * been leaving an entitlement bypass behind a constraint nobody re-checks.
+ *
+ * The last three rows are the PR's other half — the four call sites that used
+ * to name `identityVocabulary`. Reverting any of them left every suite in this
+ * repo green before these landed, because every fixture workspace had an empty
+ * vocabulary and the two answers were byte-identical. The ingest revert is
+ * caught behaviourally (two spellings, one slot); the other two are caught by
+ * the import tripwire, which is weaker and says so.
  *
  * NOT in the table, deliberately: loosening the eligibility threshold from
  * `!(confidence >= t)` to `confidence < t` kills NOTHING, and cannot. The two
  * differ only on NaN, which propose refuses outright and the stored column
  * cannot hold (Postgres orders NaN above every value, so 0190's `confidence <=
- * 1` CHECK rejects it). The spelling is defensive style, not a tested property,
+ * 1` CHECK rejects it — unlike the position CHECK, dropping it does not make
+ * the value storable). The spelling is defensive style, not a tested property,
  * and a row claiming otherwise would be a fabricated measurement.
  *
  * Opt in locally with the same scratch database as its sibling brain suites —
@@ -105,6 +141,9 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { Effect } from "effect";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
@@ -117,13 +156,19 @@ import {
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
 import {
+  runBrainExtractionCycle,
+  type FactExtractor,
+  type ResolvedExtractionModel,
+} from "@atlas/api/lib/brain/extract";
+import {
+  ALIAS_SOURCE_CLASSES,
   decideAliasProposal,
   proposeAliasEdge,
   proposeAliasEdges,
   type AliasDecideDeps,
   type AliasProposalInput,
-  type AliasSourceClass,
 } from "@atlas/api/lib/brain/vocabulary-decide";
+import { VOCABULARY_LOCK_NAMESPACE } from "@atlas/api/lib/brain/vocabulary";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import type { SlotPosition } from "@atlas/api/lib/brain/identity";
 
@@ -187,6 +232,11 @@ describeIfPg("the alias decision seam (#5023)", () => {
     }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
     _resetPool(pool);
+    // Also here, not only in `afterEach`: otherwise the FIRST test in the file
+    // runs under whatever the ambient environment holds, and a developer with
+    // either knob exported would see a different suite than CI does.
+    delete process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD;
+    delete process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES;
   }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -204,6 +254,9 @@ describeIfPg("the alias decision seam (#5023)", () => {
     await pool.query("DELETE FROM brain_vocabulary_target");
     await pool.query("DELETE FROM brain_vocabulary_edge");
     await pool.query("DELETE FROM brain_vocabulary_proposal");
+    await pool.query("DELETE FROM brain_edges");
+    await pool.query("DELETE FROM brain_facts");
+    await pool.query("DELETE FROM brain_episodes");
     delete process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD;
     delete process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES;
   });
@@ -732,8 +785,19 @@ describeIfPg("the alias decision seam (#5023)", () => {
     ]);
     expect((await loadClaimVocabulary(pool, WS)).predicate("is priced at")).toBe("priced at");
 
-    // The row records the direction it set, and keeps its pair identity across
-    // the swap — so the pair is still one row, not two.
+  });
+
+  it("the approved row RECORDS the direction the approval set", async () => {
+    // Split from the edge assertion above rather than bundled with it: the two
+    // are separate mutations (the edge written in the proposed direction, and
+    // the row stamped with it), and in one body the first failure hides the
+    // second. The row also keeps its pair identity across the swap — one row,
+    // not two — which is what makes a re-proposal converge rather than queue.
+    const id = await queue(
+      proposal({ fromNorm: "priced at", toNorm: "is priced at", directed: false }),
+    );
+    await approveAs(id, owner(), { fromNorm: "is priced at", toNorm: "priced at" });
+
     expect(await proposalRows()).toEqual([
       expect.objectContaining({
         from_norm: "is priced at",
@@ -953,16 +1017,27 @@ describeIfPg("the alias decision seam (#5023)", () => {
     await pool.query("DELETE FROM brain_vocabulary_proposal WHERE workspace_id = $1", [OTHER_WS]);
   });
 
-  it("refuses a degenerate norm, a self-edge, and an out-of-range confidence", async () => {
-    // Three malformed shapes, refused before the queue. Each is paired by the
-    // control immediately below rather than by an arm of this body — a refusal
-    // that fired on everything would satisfy all three at once.
-    expect(await proposeAliasEdge(WS, proposal({ fromNorm: "___", toNorm: "price" }), {})).toMatchObject(
-      { kind: "refused", refusal: "degenerate-norm" },
-    );
+  // Three malformed shapes, each in its OWN test() — the file's own rule, and
+  // the first cut of this section broke it: bundled into one body, a broken
+  // `degenerate-norm` arm hid whether the other two ran at all.
+
+  it("refuses a degenerate norm", async () => {
+    expect(
+      await proposeAliasEdge(WS, proposal({ fromNorm: "___", toNorm: "price" }), {}),
+    ).toMatchObject({ kind: "refused", refusal: "degenerate-norm" });
+    expect(await proposalRows()).toHaveLength(0);
+  });
+
+  it("refuses a self-edge across two spellings that norm together", async () => {
+    // Both sides spelled off normal form, so a one-sided normalization cannot
+    // reach the same conclusion by accident.
     expect(
       await proposeAliasEdge(WS, proposal({ fromNorm: "Priced At", toNorm: "priced  at" }), {}),
     ).toMatchObject({ kind: "refused", refusal: "self-edge" });
+    expect(await proposalRows()).toHaveLength(0);
+  });
+
+  it("refuses a confidence outside 0–1", async () => {
     expect(
       await proposeAliasEdge(WS, proposal({ fromNorm: "a", toNorm: "b", confidence: 1.5 }), {}),
     ).toMatchObject({ kind: "refused", refusal: "confidence-out-of-range" });
@@ -1003,19 +1078,33 @@ describeIfPg("the alias decision seam (#5023)", () => {
      * that kills "lock after the read" without depending on two concurrent
      * transactions racing the way the test hopes.
      */
-    function recordingRunner(): { runner: ReconcileTransactionRunner; statements: string[] } {
-      const statements: string[] = [];
+    function recordingRunner(): {
+      runner: ReconcileTransactionRunner;
+      statements: { sql: string; params: unknown[] }[];
+    } {
+      const statements: { sql: string; params: unknown[] }[] = [];
       const runner: ReconcileTransactionRunner = (fn) =>
         withBrainTransaction((tx) =>
           fn({
             query: (sql: string, params?: unknown[]) => {
-              statements.push(sql.trim().split("\n")[0]!.trim());
+              // PARAMS too, not only the statement text. Recording the SQL alone
+              // was the first cut and it could not tell a correctly-keyed lock
+              // from one taken in the wrong NAMESPACE or on a constant key —
+              // and a wrong namespace is precisely the failure this test exists
+              // to prevent, because it stops being mutually exclusive with
+              // `approveAliasEdge` and the region importer.
+              statements.push({ sql: sql.trim().split("\n")[0]!.trim(), params: params ?? [] });
               return tx.query(sql, params);
             },
           } satisfies VocabularyExecutor),
         );
       return { runner, statements };
     }
+
+    const expectLockedFirst = (statements: { sql: string; params: unknown[] }[]) => {
+      expect(statements[0]?.sql).toContain("pg_advisory_xact_lock");
+      expect(statements[0]?.params).toEqual([VOCABULARY_LOCK_NAMESPACE, WS]);
+    };
 
     it("propose locks first", async () => {
       const { runner, statements } = recordingRunner();
@@ -1027,43 +1116,481 @@ describeIfPg("the alias decision seam (#5023)", () => {
       );
       // Non-vacuous: the recorder must have wrapped a call that really ran.
       expect(outcome.kind).toBe("queued");
-      expect(statements[0]).toContain("pg_advisory_xact_lock");
+      expectLockedFirst(statements);
     });
 
     it("decide locks first", async () => {
-      const id = await queue(proposal({ fromNorm: "is priced at", toNorm: "priced at" }));
+      const id = await queue(proposal({ fromNorm: "led by", toNorm: "leads" }));
       const { runner, statements } = recordingRunner();
-      const outcome = await approveAs(id, owner());
-      void outcome;
-      // Re-run through the recorder on a fresh proposal — the approval above
-      // consumed this one, so the recorded pass is its own decision rather than
-      // a replay.
-      const second = await queue(proposal({ fromNorm: "led by", toNorm: "leads" }));
       const decided = await decideAliasProposal(
         {
-          id: second,
+          id,
           workspaceId: WS,
           decision: "approved",
           approver: { kind: "human", ctx: owner() },
         },
         { withTransaction: runner },
       );
-      expect(decided).toEqual({ kind: "approved", id: second });
-      expect(statements[0]).toContain("pg_advisory_xact_lock");
+      expect(decided).toEqual({ kind: "approved", id });
+      expectLockedFirst(statements);
       // …and the very next statement is the proposal READ, so "locks first" is
       // an ordering claim rather than "a lock appears somewhere".
-      expect(statements[1]).toContain("SELECT");
+      expect(statements[1]?.sql).toContain("SELECT");
     });
+  });
+
+  // ── 10. The knob's range guard, and that it is workspace-scoped ─────────
+
+  it("an out-of-range threshold DISABLES rather than defaulting to the shipped one", async () => {
+    // A garbled knob must never be more permissive than the operator who
+    // garbled it intended. `-1` is the dangerous direction: without the range
+    // guard it clears every confidence, so every warehouse-derived entity edge
+    // in the workspace auto-approves on a typo.
+    process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD = "-1";
+    expect(
+      await proposeAliasEdge(WS, { ...warehouseEdge("project atlas", "nova"), confidence: 0 }, {}),
+    ).toMatchObject({ kind: "queued", autoApprove: false });
+  });
+
+  it("a threshold above 1 disables too, rather than silently never matching", async () => {
+    process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD = "2";
+    expect(await proposeAliasEdge(WS, warehouseEdge("project atlas", "nova"), {})).toMatchObject({
+      kind: "queued",
+      autoApprove: false,
+    });
+  });
+
+  it("an unparseable threshold disables", async () => {
+    process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD = "yes please";
+    expect(await proposeAliasEdge(WS, warehouseEdge("project atlas", "nova"), {})).toMatchObject({
+      kind: "queued",
+      autoApprove: false,
+    });
+  });
+
+  it("an in-range threshold at the boundary still approves (the control)", async () => {
+    // Without this the three prohibitions above are satisfied by a range guard
+    // that rejects everything — including the shipped `1`.
+    process.env.ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD = "1";
+    expect(await proposeAliasEdge(WS, warehouseEdge("project atlas", "nova"), {})).toMatchObject({
+      kind: "queued",
+      autoApprove: true,
+    });
+  });
+
+  it("the knob is read for THIS workspace, not platform-wide", async () => {
+    // Both keys are `scope: "workspace"`, and the whole point of that scope is
+    // the per-workspace DB override the admin settings page writes (#3392). The
+    // env tier this suite otherwise uses is workspace-agnostic, so dropping the
+    // `orgId` argument from `getSettingAuto` changes nothing there and survives
+    // every other test in this file. A DB override is the only tier that can
+    // tell the two apart, so this writes one.
+    await pool.query(
+      `INSERT INTO settings (key, value, org_id, updated_by) VALUES ($1, $2, $3, 'test')`,
+      ["ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES", "extractor", WS],
+    );
+    const { loadSettings } = await import("@atlas/api/lib/settings");
+    await loadSettings();
+
+    // WS resolves through its own override — `warehouse_key` is no longer
+    // eligible there…
+    expect(await proposeAliasEdge(WS, warehouseEdge("project atlas", "nova"), {})).toMatchObject({
+      kind: "queued",
+      autoApprove: false,
+    });
+    // …while a workspace with no override still gets the shipped default. Same
+    // process, same call, different workspace: the only thing that can produce
+    // both answers is the workspace argument actually reaching the read.
+    expect(
+      await proposeAliasEdge(OTHER_WS, warehouseEdge("project atlas", "nova"), {}),
+    ).toMatchObject({ kind: "queued", autoApprove: true });
+
+    await pool.query("DELETE FROM settings WHERE org_id = $1", [WS]);
+    await loadSettings();
+    await pool.query("DELETE FROM brain_vocabulary_proposal WHERE workspace_id = $1", [OTHER_WS]);
+  });
+
+  // ── 11. Errors are not decisions ────────────────────────────────────────
+
+  it("a transaction failure PROPAGATES rather than becoming a refusal", async () => {
+    // The catch in `decideAliasProposal` owns exactly one class — the vocabulary
+    // refusal it throws itself, to reach the ROLLBACK. Everything else is not a
+    // decision, and a caller has to be able to tell "this workspace's vocabulary
+    // is corrupt" and "the database is unreachable" from "the reviewer may not
+    // do that". Broadening the catch is a one-word edit and nothing else here
+    // would notice it.
+    const id = await queue(proposal({ fromNorm: "is priced at", toNorm: "priced at" }));
+    const boom = new Error("connection terminated unexpectedly");
+    await expect(
+      decideAliasProposal(
+        {
+          id,
+          workspaceId: WS,
+          decision: "approved",
+          approver: { kind: "human", ctx: owner() },
+        },
+        {
+          withTransaction: () => {
+            throw boom;
+          },
+        },
+      ),
+    ).rejects.toThrow("connection terminated unexpectedly");
+    expect(await statusOf(id)).toBe("pending");
+  });
+
+  it("a removal that removes nothing THROWS rather than stamping a rejection", async () => {
+    // The proposal says `approved` and the edge is gone — a vocabulary written
+    // outside this seam (a hand-written DELETE, a restore). Stamping `rejected`
+    // would tell the operator a removal ran when none did, and would ALSO burn
+    // the pair's only slot into rejection memory on the strength of it.
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(id, owner());
+    await pool.query("DELETE FROM brain_vocabulary_target WHERE workspace_id = $1", [WS]);
+    await pool.query("DELETE FROM brain_vocabulary_edge WHERE workspace_id = $1", [WS]);
+
+    await expect(rejectAs(id, owner())).rejects.toThrow(/no approved edge/);
+    // Rolled back: still approved, so an operator can repair the store and
+    // retry rather than finding the pair permanently rejected.
+    expect(await statusOf(id)).toBe("approved");
+  });
+
+  // ── 12. Attribution — who did it, at every column an audit reads ────────
+
+  it("records the human approver on the edge and on the proposal", async () => {
+    // Migration 0189 calls `approved_by` "the one column an audit of a
+    // workspace-wide re-key reads first". The auto path's NULL is asserted
+    // above; this is the half that says a HUMAN re-key does not read as a
+    // machine one.
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(id, owner());
+
+    const { rows } = await pool.query<{ approved_by: string | null }>(
+      "SELECT approved_by FROM brain_vocabulary_edge WHERE workspace_id = $1",
+      [WS],
+    );
+    expect(rows).toEqual([{ approved_by: "user-owner" }]);
+    expect((await proposalRows())[0]?.reviewed_by).toBe("user-owner");
+  });
+
+  it("records the remover on a removal", async () => {
+    // A removal with no recorded remover is the same audit hole one verb later,
+    // and `rejectProposal` writes `reviewed_by` on its own statement.
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(id, owner());
+    await rejectAs(id, owner());
+    expect((await proposalRows())[0]?.reviewed_by).toBe("user-owner");
+  });
+
+  it("the local operator is recorded as a human, not as a machine", async () => {
+    // On a self-hosted no-auth deployment `unauthenticated-local` is the ONLY
+    // origin, and its `userId` is null — so `ctx.userId` alone would write
+    // `approved_by = NULL`, which 0189 defines as "auto-approved, no human".
+    // Every human re-key on every such deployment would be indistinguishable
+    // from a machine one, permanently. `correction.ts` already carries this
+    // sentinel; this is the same decision at the same kind of column.
+    const local: BrainPrincipalContext = {
+      origin: "unauthenticated-local",
+      workspaceId: WS,
+      userId: null,
+      role: null,
+      audienceIds: [],
+    };
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    expect(await approveAs(id, local)).toEqual({ kind: "approved", id });
+
+    const { rows } = await pool.query<{ approved_by: string | null }>(
+      "SELECT approved_by FROM brain_vocabulary_edge WHERE workspace_id = $1",
+      [WS],
+    );
+    expect(rows).toEqual([{ approved_by: "local-operator" }]);
+  });
+
+  // ── 13. A machine may approve and must never reject ─────────────────────
+
+  it("the auto approver may not REJECT — on an approved row that is a removal", async () => {
+    // The inversion this seam exists to prevent: a machine undoing a human
+    // decision and, through rejection memory, making it unrepeatable. The type
+    // forbids it; this proves the runtime does too, because #5025's route will
+    // build a request out of a parsed HTTP body where the compiler is not in
+    // the room.
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(id, owner());
+
+    const decided = await decideAliasProposal(
+      // The cast is the point of the test — it stands in for the untyped
+      // request a route would hand in.
+      {
+        id,
+        workspaceId: WS,
+        decision: "rejected",
+        approver: { kind: "auto", producer: PRODUCER },
+      } as unknown as Parameters<typeof decideAliasProposal>[0],
+    );
+    expect(decided).toMatchObject({ kind: "refused", refusal: "not-entitled" });
+    expect(await statusOf(id)).toBe("approved");
+    expect(await storedEdges()).toHaveLength(1);
+  });
+
+  it("a HUMAN may reject the same row (the control)", async () => {
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(id, owner());
+    expect(await rejectAs(id, owner())).toMatchObject({ kind: "rejected", removedEdge: true });
+  });
+
+  // ── 14. Producer counters ───────────────────────────────────────────────
+
+  it("counts a queued proposal, a dedup, and a malformed refusal separately", async () => {
+    // Three counters nothing else asserts. Swapping any pair of increments is a
+    // one-token edit that every other test in this file survives, and the
+    // counters are the producer's only report of what a run did.
+    const first = await runProducer([
+      proposal({ fromNorm: "is priced at", toNorm: "priced at" }),
+      proposal({ fromNorm: "___", toNorm: "price" }),
+    ]);
+    expect(first).toMatchObject({ queued: 1, refused: 1, deduped: 0 });
+
+    const second = await runProducer([proposal({ fromNorm: "is priced at", toNorm: "priced at" })]);
+    expect(second).toMatchObject({ deduped: 1, queued: 0, refused: 0 });
+  });
+
+  it("an eligible proposal the vocabulary refuses counts as BOTH queued and refused", async () => {
+    // It really is queued — a human can still decide it — so a `queued` that
+    // excluded it would stop meaning "rows awaiting review". And `refused` is
+    // what says the auto-approval was attempted and did not land, which is the
+    // signal that a producer is emitting edges contradicting the store.
+    const held = await queue(warehouseEdge("project atlas", "nova"));
+    await approveAs(held, owner());
+
+    // A second parent for `project atlas` — `approveAliasEdge` refuses
+    // `already-aliased`, so the auto-approval cannot land.
+    const counters = await runProducer([warehouseEdge("project atlas", "nova corp")]);
+    expect(counters).toMatchObject({ queued: 1, refused: 1, autoApproved: 0 });
+    const stillPending = (await proposalRows()).filter((r) => r.status === "pending");
+    expect(stillPending).toHaveLength(1);
+  });
+
+  // ── 15. The decide path re-norms the direction it is handed ─────────────
+
+  it("re-norms a supplied direction, so a display form still approves", async () => {
+    // #5025's UI renders the canonical DISPLAY form and will send it back. Every
+    // other direction in this file is already normed, so dropping `lexicalNorm`
+    // from `resolveDirection` changes nothing in them — and the failure it lets
+    // through is every human approval refusing `direction-not-in-pair`.
+    const id = await queue(
+      proposal({ fromNorm: "priced at", toNorm: "is priced at", directed: false }),
+    );
+    expect(
+      await approveAs(id, owner(), { fromNorm: "Is  Priced-At", toNorm: "Priced At" }),
+    ).toEqual({ kind: "approved", id });
+    expect((await loadClaimVocabulary(pool, WS)).predicate("is priced at")).toBe("priced at");
+  });
+
+  // ── 16. An `applying` row is not rejectable ─────────────────────────────
+
+  it("a row mid-decision is not rejectable", async () => {
+    // `applying` is unobservable through the seam (claim, apply and stamp share
+    // one transaction), so the state is written by hand here — which is the
+    // only way to reach the arm at all, and worth having because #5024 is what
+    // makes it observable for real.
+    const id = await queue(proposal({ fromNorm: "led by", toNorm: "leads" }));
+    await pool.query(
+      "UPDATE brain_vocabulary_proposal SET status = 'applying', claimed_at = now() WHERE id = $1",
+      [id],
+    );
+    expect(await rejectAs(id, owner())).toEqual({ kind: "not_decidable", id });
+    expect(await statusOf(id)).toBe("applying");
+  });
+
+  // ── 16b. A position the deployment does not know is refused, not decided ─
+
+  it("refuses a proposal whose slot_position is outside the enum", async () => {
+    // The CHECK makes this unreachable through this seam, so the constraint is
+    // DROPPED for the duration — the same move `vocabulary-pg.test.ts` makes to
+    // write a cyclic pair the primitives refuse to. The state being simulated is
+    // one the module names out loud: a row written outside this seam, by a
+    // hand-written INSERT or a restore onto a deployment whose CHECK is gone.
+    //
+    // Worth reaching for, because the failure direction is PERMISSIVE:
+    // `approverEntitled` answers `isEntityPosition(...) === false` for an
+    // unknown position and hands it the PREDICATE bar, so a member would clear
+    // the owner/admin gate ADR-0037 §6 puts in front of entity edges. An
+    // unreadable authority input has to be refused, not assumed.
+    await pool.query(
+      "ALTER TABLE brain_vocabulary_proposal DROP CONSTRAINT ck_brain_vocabulary_proposal_slot_position",
+    );
+    try {
+      await pool.query(
+        `INSERT INTO brain_vocabulary_proposal
+           (id, workspace_id, slot_position, from_norm, to_norm, directed, source_class,
+            confidence, status, proposed_by)
+         VALUES ('corrupt-1', $1, 'qualifier', 'a', 'b', TRUE, 'human', 1, 'pending', 'restore')`,
+        [WS],
+      );
+
+      await expect(approveAs("corrupt-1", member())).rejects.toThrow(/not subject, predicate or object/);
+      // Refused before any write, including the claim — the row is exactly as
+      // the restore left it.
+      expect(await statusOf("corrupt-1")).toBe("pending");
+      expect(await storedEdges()).toEqual([]);
+    } finally {
+      await pool.query("DELETE FROM brain_vocabulary_proposal WHERE id = 'corrupt-1'");
+      await pool.query(
+        `ALTER TABLE brain_vocabulary_proposal ADD CONSTRAINT ck_brain_vocabulary_proposal_slot_position
+           CHECK (slot_position IN ('subject', 'predicate', 'object'))`,
+      );
+    }
+  });
+
+  it("a known position on the same shape decides normally (the control)", async () => {
+    // Without this, a `toProposalRow` that threw on every row would satisfy the
+    // prohibition above — and nothing would be decidable at all.
+    const id = await queue(proposal({ fromNorm: "is priced at", toNorm: "priced at" }));
+    expect(await approveAs(id, member())).toEqual({ kind: "approved", id });
+  });
+
+  // ── 17. The vocabulary is WIRED into ingest ─────────────────────────────
+
+  describe("the approved vocabulary reaches the ingest path", () => {
+    const FAKE_MODEL = {
+      model: "fake-model" as unknown as ResolvedExtractionModel["model"],
+      modelId: "fake-model",
+    } satisfies ResolvedExtractionModel;
+
+    async function insertEpisode(sourceId: string): Promise<void> {
+      await pool.query(
+        `INSERT INTO brain_episodes
+           (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
+         VALUES ($1, 'slack', $2, 'U123', 'the widget is priced at nine dollars',
+                 '2026-06-21T09:00:00.000Z'::timestamptz, ARRAY['org']::text[])`,
+        [WS, sourceId],
+      );
+    }
+
+    it("two spellings of one predicate land in ONE slot once the alias is approved", async () => {
+      // THE test for #5023's other half. `extract.ts` is the ingest path, and
+      // until this slice it named `identityVocabulary` — so reverting that one
+      // line left every suite green, because every fixture workspace had an
+      // empty vocabulary and the two answers were byte-identical.
+      //
+      // Here they are not: the workspace has an APPROVED alias, so the loaded
+      // vocabulary answers `priced at` for both spellings and the identity one
+      // answers each with itself. One fact plus a corroboration, or two facts —
+      // and nothing but the production default decides which.
+      const id = await queue(proposal({ fromNorm: "is priced at", toNorm: "priced at" }));
+      await approveAs(id, owner());
+
+      await insertEpisode(`C01:${Date.now()}.a`);
+      await insertEpisode(`C01:${Date.now()}.b`);
+
+      let call = 0;
+      const extract: FactExtractor = () => {
+        call++;
+        return Promise.resolve([
+          {
+            subject: "widget",
+            predicate: call === 1 ? "is priced at" : "priced at",
+            object: "nine dollars",
+          },
+        ]);
+      };
+
+      const result = await Effect.runPromise(
+        // NO `loadVocabulary` dep — the production default is what is under
+        // test. Injecting one here would test the seam and not the wiring.
+        runBrainExtractionCycle({ extract, resolveModel: async () => FAKE_MODEL }),
+      );
+
+      expect(result).toMatchObject({ status: "success", inspected: 2, extracted: 2 });
+      expect(result.factsCreated).toBe(1);
+      expect(result.factsCorroborated).toBe(1);
+
+      const { rows } = await pool.query<{ n: string }>(
+        "SELECT count(*)::text AS n FROM brain_facts WHERE workspace_id = $1",
+        [WS],
+      );
+      expect(rows[0]?.n).toBe("1");
+    });
+
+    it("the same two spellings stay TWO facts without the alias (the control)", async () => {
+      // The control that makes the test above non-vacuous: if the two predicates
+      // corroborated anyway — a stemmer, a looser join — the assertion would say
+      // nothing about the vocabulary at all.
+      await insertEpisode(`C01:${Date.now()}.c`);
+      await insertEpisode(`C01:${Date.now()}.d`);
+
+      let call = 0;
+      const extract: FactExtractor = () => {
+        call++;
+        return Promise.resolve([
+          {
+            subject: "widget",
+            predicate: call === 1 ? "is priced at" : "priced at",
+            object: "nine dollars",
+          },
+        ]);
+      };
+
+      const result = await Effect.runPromise(
+        runBrainExtractionCycle({ extract, resolveModel: async () => FAKE_MODEL }),
+      );
+      expect(result.factsCreated).toBe(2);
+      expect(result.factsCorroborated).toBe(0);
+    });
+  });
+
+  // ── 18. No call site has quietly reverted to the empty vocabulary ───────
+
+  it("no production consumer of a ClaimVocabulary names `identityVocabulary`", () => {
+    // A source-level tripwire, and it earns its place because the BEHAVIOURAL
+    // test above covers only one of the four sites. Reverting any of the other
+    // three to `identityVocabulary` leaves every suite in this repo green — the
+    // fixture workspaces have empty vocabularies, so the two answers are
+    // byte-identical and no assertion can tell them apart.
+    //
+    // Backstopped: each file is proven to still CONSUME a vocabulary before it
+    // is asserted not to name the empty one, so a rename or a deletion fails
+    // here loudly instead of passing vacuously.
+    const consumers = [
+      "lib/brain/extract.ts",
+      "lib/tools/correct-fact.ts",
+      "api/routes/admin-brain-facts.ts",
+    ];
+    const root = join(import.meta.dir, "..", "..", "..");
+    for (const relative of consumers) {
+      const source = readFileSync(join(root, relative), "utf8");
+      expect(
+        source.includes("loadWorkspaceVocabulary"),
+        `${relative} no longer loads a vocabulary at all — re-point this guard, or it asserts nothing`,
+      ).toBe(true);
+      // Matched on the IMPORT rather than on any mention, and that is not
+      // laxity: a bare `includes("identityVocabulary")` fires on the prose in
+      // `extract.ts` that explains why a load failure is NOT degraded to the
+      // empty vocabulary — a comment worth keeping, and a guard that forces its
+      // deletion is a guard that makes the codebase worse. The import is what a
+      // real revert needs (`identity.ts` says so: "every such site is `grep
+      // identityVocabulary` and every new one is a compile error"), and a site
+      // cannot reach the value without one.
+      expect(
+        /import\s[^;]*\bidentityVocabulary\b[^;]*from/s.test(source),
+        `${relative} imports \`identityVocabulary\`. Since #5023 every production consumer loads ` +
+          "the workspace's real vocabulary; the empty one keys rows under a DIFFERENT identity " +
+          "function than the ingest path, which is an under-match spread corpus-wide, invisible at " +
+          "rest, and unfixable without a re-key.",
+      ).toBe(false);
+    }
   });
 
   // ── 10. The source-class vocabulary is closed ───────────────────────────
 
   it("every declared source class is accepted by the propose path", async () => {
-    // The enum and the CHECK constraint are two lists that must stay one. A
-    // class added to the TypeScript union and not to migration 0190 would fail
-    // here with a constraint violation rather than in production.
-    const classes: readonly AliasSourceClass[] = ["warehouse_key", "extractor", "seam", "human"];
-    for (const [i, sourceClass] of classes.entries()) {
+    // The enum and migration 0190's CHECK are two lists that must stay one, and
+    // this iterates the EXPORTED value rather than a hand-written copy. That is
+    // the whole guard: a copy is still a valid `AliasSourceClass[]` after a
+    // fifth member lands, so the new class is never exercised and the first
+    // production insert is what discovers the CHECK does not know it. Iterating
+    // the system's own list is what makes the drift fail here instead.
+    for (const [i, sourceClass] of ALIAS_SOURCE_CLASSES.entries()) {
       const outcome = await proposeAliasEdge(
         WS,
         {

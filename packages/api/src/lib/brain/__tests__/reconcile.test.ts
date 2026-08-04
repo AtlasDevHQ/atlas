@@ -28,9 +28,9 @@
  * it does with a lookup result once it has one.
  *
  * *Does this pair of claims collide?* is answered in
- * `identity-consumers-pg.test.ts`, where eight claim pairs are read by all three
- * consumers — corroboration, the rival scan, and the publish gate's collision
- * join — against a real schema. The lexical backstop at the bottom of this file
+ * `identity-consumers-pg.test.ts`, where fourteen claim pairs are read by all
+ * three consumers — corroboration, the rival scan, and the publish gate's
+ * collision join — against a real schema. The lexical backstop at the bottom of this file
  * is the cheap tripwire for a repoint, not the proof.
  *
  * That narrowing is the intended outcome and not a regression. Before it, every
@@ -57,6 +57,7 @@ import {
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { COMPARABLE_TAGS } from "@atlas/api/lib/brain/object-cmp";
 import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 
@@ -80,7 +81,7 @@ import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 // `scriptRivals` — as a premise about the world, and then asserts what the
 // STAGE does about it. Which claims actually share a slot is a question about
 // SQL against a real schema, and it lives in `identity-consumers-pg.test.ts`,
-// where eight claim pairs are read by all three consumers.
+// where fourteen claim pairs are read by all three consumers.
 //
 // The two edge inserts still model their `NOT EXISTS` guards. That is a
 // deliberate line, not an oversight: those guards compare opaque uuids for
@@ -151,8 +152,8 @@ function keyParams(params: readonly unknown[], from: number): SlotBinds {
  * the same "green against a property it cannot see" failure this whole file was
  * rewritten to retire, and it would have been reintroduced at the accessor.
  *
- * `keyOffset` lives here too, because the position at which a statement's three
- * key binds start is a property OF the statement, not of each call site. Restated
+ * `keyOffset` lives here too, because the position at which a statement's four
+ * agreement binds start is a property OF the statement, not of each call site. Restated
  * at each call site it is one more chance, per site, to read the adjacent
  * binds instead — and the store itself reads it for the INSERT recording below.
  */
@@ -300,11 +301,19 @@ class FakeBrainStore {
         return { rows: [{ id: `edge-${++this.seq}` }] };
       }
       case STATEMENTS.tensionScan.sql: {
-        // `id <> $5` is the ONE arm still applied here, and it is not identity:
+        // `id <> $6` is the ONE arm still applied here, and it is not identity:
         // it is the statement refusing to return the row the stage just wrote,
         // compared by uuid. Modelling it keeps a scripted rival list from
         // producing a self-edge the real query cannot produce.
-        const selfId = String(params[4]);
+        //
+        // ⚠️ Index 5, and it was 4 until #5030 widened `agreementBinds` — a stale
+        // index here does not fail, it silently STOPS modelling the arm: the
+        // filter compares rival ids against `"money:USD:499"`, matches nothing,
+        // and the fake starts returning a self-rival the real statement cannot.
+        // The renumbering assertion further down caught its own index and left
+        // this one; that is the shape `agreementBinds`'s docstring warns about,
+        // reproduced inside the harness that is supposed to catch it.
+        const selfId = String(params[5]);
         return { rows: this.rivalIds.filter((id) => id !== selfId).map((id) => ({ id })) };
       }
       case STATEMENTS.tensionEdge.sql: {
@@ -736,6 +745,32 @@ describe("advisory contradiction edges", () => {
     const binds = store.bindsFor("tensionScan");
     expect(binds, "the rival scan was never issued").toHaveLength(1);
     expect(binds[0]![5]).toBe(store.facts[0]!.id);
+  });
+
+  test("…and the fake HONOURS that exclusion, so no self-edge is ever observed", async () => {
+    // The bind assertion above proves the stage passes the right id; it says
+    // nothing about whether the fake's `id <> $6` model reads it at the right
+    // index. Nothing did, and the model had silently stopped working: after
+    // #5030 widened `agreementBinds` it compared rival ids against the
+    // COMPARABLE VALUE, matched nothing, and would have handed the stage a
+    // self-rival the real statement cannot return.
+    //
+    // A fake that lies in the permissive direction is worse than no fake — the
+    // next author to debug a self-edge would be debugging the harness. So the
+    // one arm it still models gets its own falsifier: script the just-written
+    // fact as its own rival and assert no edge is wired.
+    const store = new FakeBrainStore();
+    await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
+    const written = store.facts[0]!;
+
+    const selfRival = new FakeBrainStore();
+    selfRival.scriptRivals(written);
+    await run(selfRival, { candidates: [candidate({ ...single, object: "Grace" })] });
+
+    expect(
+      selfRival.edges.filter((e) => e.edgeType === "in-tension-with"),
+      "the stage wired an in-tension-with edge from a fact to ITSELF — the fake's `id <> $6` exclusion is reading the wrong bind index",
+    ).toHaveLength(0);
   });
 
   test("cardinality defaults to the conservative arm", async () => {
@@ -1196,16 +1231,24 @@ describe("no autonomous supersession (#4912)", () => {
     expect(CORROBORATION_LOOKUP_SQL).toContain("object_cmp <> $5");
     expect(TENSION_CANDIDATES_SQL).toContain("object_cmp <> $5");
     // …and the known-tag membership arm, which keeps the SQL from calling two
-    // values with an unrecognized head *different*. Generated from
-    // COMPARABLE_TAGS, so this asserts the generation ran, not the list.
+    // values with an unrecognized head *different*. The expectation is BUILT
+    // from `COMPARABLE_TAGS` rather than hand-spelled: that array's docstring
+    // says the SQL list is generated from it precisely so there is one list and
+    // not three, and a hand-written copy here would be the third.
+    const tagList = COMPARABLE_TAGS.map((tag) => `'${tag}'`).join(", ");
     for (const sql of [CORROBORATION_LOOKUP_SQL, TENSION_CANDIDATES_SQL]) {
-      expect(sql).toContain("'money', 'number', 'date', 'time', 'bool', 'entity'");
+      expect(sql).toContain(tagList);
     }
     // …and the self-exclusion, whose BIND is asserted above but whose presence
     // in the statement nothing else here can see. Without it every `single` fact
     // is its own rival the moment it lands. `$6` since #5030 widened the
     // agreement spread ahead of it.
     expect(TENSION_CANDIDATES_SQL).toContain("id <> $6");
+    // …and the cap, the last placeholder after the spread. `agreementBinds`'s
+    // docstring names this assertion as part of what enforces the renumbering,
+    // so it has to exist: widening the tuple again without renumbering pushes
+    // the cap past the end of the bind list and pg raises at runtime, not here.
+    expect(TENSION_CANDIDATES_SQL).toContain("LIMIT $7");
     // …and no surviving surface comparison in either. An AND-ed surface arm
     // beside a key arm reads as pivoted and is not.
     for (const [name, sql] of [

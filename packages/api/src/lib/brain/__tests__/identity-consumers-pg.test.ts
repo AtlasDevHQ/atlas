@@ -41,7 +41,7 @@
  * assertions in the identity slice now live in the slower, WSL2-flakier lane,
  * and a `--affected` run over `lib/brain/` no longer covers them without
  * `TEST_DATABASE_URL`. The one-corpus design bounds that rather than removing
- * it — eight pairs, three consumers, not three suites.
+ * it — fourteen pairs, three consumers, not three suites.
  *
  * ## Every prohibition has a positive control, in its own `test()`
  *
@@ -78,6 +78,7 @@
  * | `CORROBORATION_LOOKUP_SQL`'s `object_key = $4` arm neutralized | 6 — via both key-equal `same-claim` pairs |
  * | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 — via `same-through-value` |
  * | `objectSameSql` loses its difference VETO | 3 — via `sign-flip-rival` |
+ * | `objectNotSameSql` loses its `OR comparableDifferentSql(…)` disjunct | 1 — `sign-flip-rival`, consumer 2 |
  * | `supersessionCollisionPredicate` back on `object_key <> object_key` | 3 — `rival-through-phrasing`, `cross-type-rival`, `sign-flip-rival` |
  * | `lexicalNorm` loses its edge trim | 3 — via `separator-edges` |
  * | `identityAlias` given a global rule (`/^is /` stripped) | 3 — all three PROHIBITIONS, via `copula-pair` |
@@ -86,12 +87,18 @@
  * | `supersessionCollisionJoin` repointed at the surface columns | 1 — via `priced-rival` |
  * | `subject_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `subject-differs` |
  * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `predicate-differs` |
- * | `comparableDifferentSql` loses its `split_part` tag arm | **1 — `cross-type-rival`, and it is the only test in the repo that catches this** |
+ * | `comparableDifferentSql` loses its `split_part` tag arm | 1 — `cross-type-rival` (`object-cmp-pg.test.ts`'s parity tests catch it too, at the SQL level) |
  * | `objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)` | **1 — `rival-through-phrasing`** |
  *
  * ⚠️ **EVERY count above was re-measured on this tree, one mutation at a time,
  * and several MOVED** — the case fold 8→9, both tension-repoint rows 1→2, the
- * tension-edge direction 1→5, because #5030 added four corpus entries. Said
+ * tension-edge direction 1→5, because #5030 added five corpus entries.
+ *
+ * The `objectNotSameSql` disjunct row is the least obvious arm in the slice and
+ * the one a reader would delete as redundant: it is what carries a key-equal,
+ * provably-different pair into TENSION after the veto has kept it out of
+ * corroboration. Without it `sign-flip-rival` mints a second row and then earns
+ * no edge — worse than either verdict alone. Said
  * explicitly, and the numbers regenerated in one pass rather than edited row by
  * row, because slice B's table carried numbers forward twice under a header
  * claiming they had been re-measured.
@@ -125,12 +132,15 @@
  * scan's `object_key <> $4` arm is NOT falsifiable from this corpus. The shape
  * that would catch it is `subject =, predicate =, object =` presented as TWO
  * rows, and `reconcileFacts` cannot produce that — corroboration collapses it
- * first. That arm's real-schema owner is `promotion-pg.test.ts`, which seeds
- * both rows directly. Do not consolidate that suite into this one.
+ * first.
  *
- * (Since #5030 the COLLISION join has no `object_key` arm at all — it reads
- * `object_cmp` and requires positive evidence of difference. The sentence above
- * used to cover both joins and now covers only the rival scan.)
+ * ⚠️ It has NO real-schema owner anywhere, and an earlier version of this
+ * sentence named `promotion-pg.test.ts` — which owned it only through the
+ * COLLISION join, and #5030 deleted that join's `object_key` arm entirely.
+ * `promotion-pg.test.ts` does not reference `TENSION_CANDIDATES_SQL` at all.
+ * What bounds the gap: since #5030 the arm is a DISJUNCT, so deleting it
+ * NARROWS rather than widens, and `unproven-rival` catches that direction. A
+ * TRUE-substitution — the widening one — is still unowned.
  *
  * Two entries — `inverse-relations` and `entity-alias` — are not falsified by
  * any mutation above, and that is stated rather than hidden: no rule reachable

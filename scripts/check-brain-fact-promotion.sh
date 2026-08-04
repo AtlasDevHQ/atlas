@@ -340,13 +340,18 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # draft stage, and that is defensible (the surfaces are untouched, so no
 # user-facing content changed) but it should be defensible on the record.
 #
-# ONLY `subject_cmp` DOES NOT EXIST YET (`object_cmp` landed in #5030 / migration 0191, and `INSERT_FACT_SQL` writes it). ADR-0037 §2's column table defines both:
-# `object_cmp` proves DIFFERENCE at the object, and `subject_cmp` (#5032) is its
-# INVERTED twin — non-null and unequal means "not the same slot", suppressing
-# corroboration, tension, and supersession alike. It is not a mirror. Both are
-# gated ahead of the schema so the guard is never the thing lagging it; no
-# production code can trip either arm until #5032, so the adversarial fixtures
-# are the only thing holding them in place.
+# ONLY `subject_cmp` DOES NOT EXIST YET. ADR-0037 §2's column table defines
+# both: `object_cmp` proves DIFFERENCE at the object, and `subject_cmp` (#5032)
+# is its INVERTED twin — non-null and unequal means "not the same slot",
+# suppressing corroboration, tension, and supersession alike. It is not a
+# mirror.
+#
+# `object_cmp` is LIVE since #5030: migration 0191 adds it and
+# `INSERT_FACT_SQL` names it — legal, because this gate is UPDATE-only and the
+# value is derived at ingest exactly as the grant is. `subject_cmp` is still
+# gated ahead of its schema so the guard is never the thing lagging it, and no
+# production code can trip THAT arm until #5032, which makes its adversarial
+# fixture the only thing holding it in place.
 #
 # `valid_to` (#4912) is the third gated column, UPDATE-only like the grant:
 # "a human promotion stamps `valid_to`; there is no autonomous supersession"

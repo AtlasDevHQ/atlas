@@ -3305,7 +3305,8 @@ export const brainFacts = pgTable(
     // 0191). A typed canonical value, tagged (`money:USD:499`, `number:499`,
     // `entity:01J…`), parsed FAIL-CLOSED by `lib/brain/object-cmp.ts`.
     //
-    //   same      — object_key equal, OR both object_cmp non-null and equal
+    //   same      — (object_key equal OR both object_cmp non-null and equal)
+    //               AND not provably different (`objectSameSql`'s veto)
     //   different — both object_cmp non-null, same tag, unequal
     //   unknown   — everything else → tension only, never a `valid_to` stamp
     //

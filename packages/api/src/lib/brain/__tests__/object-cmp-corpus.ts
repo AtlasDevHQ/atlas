@@ -21,8 +21,8 @@ import { comparableTag, comparableValue } from "@atlas/api/lib/brain/object-cmp"
 /**
  * The three-valued agreement, in TypeScript.
  *
- * ⚠️ This is a SECOND implementation of what {@link comparableSameSql} and
- * {@link comparableDifferentSql} express in SQL, and a second implementation is
+ * ⚠️ This is a SECOND implementation of what `comparableSameSql` and
+ * `comparableDifferentSql` (in `lib/brain/object-cmp.ts`) express in SQL, and a second implementation is
  * normally exactly what this subsystem forbids. It is admissible here for one
  * reason and under one condition: it is a TEST ORACLE, never imported by
  * production code, and `object-cmp-pg.test.ts` runs the real SQL against the
@@ -71,8 +71,7 @@ export interface AgreementCase {
  * values. Writing the canonical form beside the surface would pin the parser
  * against itself and pass against any implementation, including one that
  * returns its input. Same rule `identity-corpus.ts` states for the slot layer.
- */
-/**
+ *
  * ANNOTATED rather than `as const satisfies`, unlike `identity-corpus.ts`.
  *
  * `as const` narrows every entry to its own literal shape, so `c.a.declared` is
@@ -119,7 +118,7 @@ export const AGREEMENT_CORPUS: readonly AgreementCase[] = [
   },
   {
     id: "cross-type",
-    why: "A bare number against declared money. Unequal as strings, and NOT different: nothing proves the bare `499` is not 499 dollars. The only row in the repo that kills the `split_part` tag arm.",
+    why: "A bare number against declared money. Unequal as strings, and NOT different: nothing proves the bare `499` is not 499 dollars. The row in THIS corpus that reaches the `split_part` tag arm most directly; `date-vs-instant` kills it too, and `identity-corpus.ts`'s `cross-type-rival` kills it at the consumer level.",
     a: { surface: "499" },
     b: { surface: "499", declared: { kind: "money", currency: "USD" } },
     verdict: "unknown",

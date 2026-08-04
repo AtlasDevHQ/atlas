@@ -6,7 +6,8 @@
 -- `date:2026-08-04`, `time:…Z`, `bool:true`, `entity:01J…`), parsed fail-closed
 -- by `lib/brain/object-cmp.ts` and NULL wherever the parse is not certain.
 --
---   same      — object_key equal, OR both object_cmp non-null and equal
+--   same      — (object_key equal OR both object_cmp non-null and equal)
+--               AND not provably different — the veto in `objectSameSql`
 --   different — both object_cmp non-null, same tag, unequal
 --   unknown   — everything else → tension only, never a stamp
 --

@@ -55,7 +55,10 @@
  * bottom. Both are covered elsewhere, and both are worth knowing about:
  *
  *   - the **`split_part` tag arm** — `identity-consumers-pg.test.ts`'s
- *     `cross-type-rival`, measured, and the only test in the repo that kills it.
+ *     `cross-type-rival` (1) and `object-cmp-pg.test.ts`'s per-row parity tests
+ *     (2, via `cross-type` and `date-vs-instant`). An earlier version of this
+ *     line called the first the only one in the repo; the parity suite landed
+ *     in the same review round and falsified it.
  *   - the **known-tag `IN` arm** — `object-cmp-pg.test.ts`'s unknown-tag pair.
  *     That test was written BECAUSE the mutation measured zero deaths across the
  *     whole suite: nothing can produce an unknown tag today, so the arm guards a
@@ -76,6 +79,7 @@ import {
   comparableSameSql,
   comparableTag,
   comparableValue,
+  comparableValueWithReason,
   type DeclaredObjectType,
 } from "@atlas/api/lib/brain/object-cmp";
 // The corpus and the agreement oracle live in a non-`.test.ts` sibling so this
@@ -562,5 +566,113 @@ describe("the SQL arms", () => {
     // placeholders on the other, and the same builder for both.
     expect(comparableSameSql("a.x", "b.y")).toContain("a.x = b.y");
     expect(comparableDifferentSql("a.x", "b.y")).toContain("a.x <> b.y");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reason code — what separates an honest abstain from a broken producer
+// ---------------------------------------------------------------------------
+
+describe("comparableValueWithReason distinguishes the two nulls (#5030)", () => {
+  // `null` is one VERDICT for two very different facts about the world, and
+  // `reconcile.ts` warns on exactly one of them. Getting this split wrong is
+  // not a correctness bug — it is a log that fires per claim on the common case
+  // and buries the signal it exists for.
+
+  test("an honest abstain is NOT a declaration defect", () => {
+    // The surface named nothing comparable to begin with, so the declaration
+    // never had a value to lose. This is `price` columns with `N/A` rows, and
+    // it is the majority of every declared slot.
+    for (const declared of [
+      { kind: "money", currency: "USD" },
+      { kind: "number" },
+      { kind: "date" },
+    ] as const) {
+      expect(
+        comparableValueWithReason({ surface: "Enterprise tier", declared }).reason,
+        `\`${declared.kind}\` over an unparseable surface reported a defect`,
+      ).toBe("abstained");
+    }
+  });
+
+  test("⚠️ a WRONG-TYPE surface in a declared slot does report a defect, and that is deliberate", () => {
+    // `{kind: "number"}` over a date-shaped surface is the case
+    // `applyDeclaration` documents as the payload-less declarations' purpose —
+    // refusing a coincidence so a `date:` value nothing in that slot will ever
+    // compare against does not get stored. So the declaration is working, and
+    // it still reports `declaration-rejected`.
+    //
+    // Kept, rather than reclassified to `abstained`, because the log this feeds
+    // is the only thing that would ever tell an operator a row in their NUMBER
+    // slot is a date. It is bounded in a way the `N/A` case is not: it fires
+    // only on surfaces that parse as the WRONG type, never on the unparseable
+    // majority — which is the whole reason the two are split at all.
+    expect(
+      comparableValueWithReason({ surface: "2026-08-04", declared: { kind: "number" } }),
+    ).toEqual({ value: null, reason: "declaration-rejected" });
+    // …while the unparseable row beside it in the same slot stays quiet.
+    expect(
+      comparableValueWithReason({ surface: "N/A", declared: { kind: "number" } }).reason,
+    ).toBe("abstained");
+  });
+
+  test("…and a CONTRADICTED declaration is", () => {
+    // The surface parses as something real and the declaration disagrees. One
+    // of the two is wrong, nothing here knows which, and an operator can act.
+    expect(
+      comparableValueWithReason({
+        surface: "599 EUR",
+        declared: { kind: "money", currency: "USD" },
+      }).reason,
+    ).toBe("declaration-rejected");
+    expect(
+      comparableValueWithReason({ surface: "499 USD", declared: { kind: "number" } }).reason,
+    ).toBe("declaration-rejected");
+  });
+
+  test("…and an uncanonicalizable CURRENCY is, even over a surface that would abstain anyway", () => {
+    // Static misconfiguration: wrong on every claim in the slot, not a property
+    // of this surface. Reported regardless, because it is the single most
+    // actionable thing this seam can say — and because gating it on the surface
+    // would hide it behind exactly the rows that abstain.
+    expect(
+      comparableValueWithReason({
+        surface: "Enterprise tier",
+        declared: { kind: "money", currency: "US Dollars" },
+      }).reason,
+    ).toBe("declaration-rejected");
+    expect(
+      comparableValueWithReason({ surface: "499", declared: { kind: "money", currency: "ZZZ" } })
+        .reason,
+    ).toBe("declaration-rejected");
+  });
+
+  test("a successful parse reports `resolved`, declared or not", () => {
+    // THE positive control. Every assertion above is satisfied by an
+    // implementation that never returns `resolved` at all.
+    expect(comparableValueWithReason({ surface: "499 USD" })).toEqual({
+      value: "money:USD:499",
+      reason: "resolved",
+    });
+    expect(
+      comparableValueWithReason({ surface: "499", declared: { kind: "money", currency: "USD" } }),
+    ).toEqual({ value: "money:USD:499", reason: "resolved" });
+    expect(comparableValueWithReason({ surface: "x", entityId: "01J" })).toEqual({
+      value: "entity:01J",
+      reason: "resolved",
+    });
+  });
+
+  test("`comparableValue` is exactly this function's value half", () => {
+    // Two entry points, one implementation — the delegation is what stops the
+    // reason code drifting from the value it explains.
+    for (const input of [
+      { surface: "499 USD" },
+      { surface: "Enterprise tier" },
+      { surface: "599 EUR", declared: { kind: "money", currency: "USD" } as const },
+      { surface: "x", entityId: "01J" },
+    ]) {
+      expect(comparableValue(input)).toBe(comparableValueWithReason(input).value);
+    }
   });
 });

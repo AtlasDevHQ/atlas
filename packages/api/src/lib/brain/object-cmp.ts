@@ -10,11 +10,12 @@
  * | `object_key` | *aspirationally no* | *sameness* — `alias(lexicalNorm(surface))` |
  * | `object_cmp` | **yes, permanently** | *difference* — a typed canonical value, parsed fail-closed |
  *
- * - **same** — `object_key` equal, **or** both `object_cmp` non-null and equal
+ * - **same** — (`object_key` equal **or** both `object_cmp` non-null and equal)
+ *   **and not provably different** — see {@link objectSameSql} for the veto
  * - **different** — both `object_cmp` non-null, same tag, unequal
  * - **unknown** — everything else → **tension only, never a stamp**
  *
- * ⚠️ Two corrections to the table ADR-0037 §2 states, both of which matter to
+ * ⚠️ Three corrections to the table ADR-0037 §2 states, both of which matter to
  * anyone reading the arms below. First, `object_key` is **nullable on disk** —
  * 0187 landed all three keys nullable and `SET NOT NULL` still has unmet
  * prerequisites (#5035, #5047), while a surface that norms away is permanently
@@ -22,7 +23,11 @@
  * `object_key = $4` as total is exactly wrong. Second, the `same` rule carries
  * no tag clause: equal strings already share a tag, since the tag is a prefix,
  * and stating the tautology invites someone to "restore symmetry" by adding a
- * real tag arm to {@link comparableSameSql}, where it does not belong.
+ * real tag arm to {@link comparableSameSql}, where it does not belong. Third,
+ * and load-bearing: `same` carries a VETO. The two are not disjoint without it —
+ * `lexicalNorm` strips a leading `-`, so `-499` and `499` key identically while
+ * their comparable values prove they disagree, and the key arm alone merges a
+ * margin with its own negation. {@link objectSameSql} is where that lives.
  *
  * A single nullable column compared two ways fails quietly in BOTH directions
  * (T3 §4): made total, `$499` vs `499 USD` reads *different* and publish stamps
@@ -423,8 +428,9 @@ type SurfaceParse =
   | { readonly tag: "money"; readonly payload: string; readonly currency: string }
   /**
    * Everything else. A two-member union rather than one shape with an optional
-   * `currency`, which admits `{ tag: "bool", currency: "USD" }` — inert today
-   * because the one reader fails closed, and free to remove.
+   * `currency`. That alternative admits `{ tag: "bool", currency: "USD" }` —
+   * inert, because the one reader fails closed on it — and the union costs
+   * three lines, so the illegal state is simply removed.
    */
   | { readonly tag: Exclude<ComparableTag, "money">; readonly payload: string };
 
@@ -508,21 +514,75 @@ function parseSurface(surface: string): SurfaceParse | null {
  *   - declared nothing, surface `$499` → `null`. The pinned case (ADR-0037 §2):
  *     `$` names no currency, and there is no declaration to supply one.
  */
-export function comparableValue(input: {
+export function comparableValue(input: ComparableInput): ComparableValue {
+  return comparableValueWithReason(input).value;
+}
+
+/** {@link comparableValueWithReason}'s inputs — see {@link comparableValue}. */
+export interface ComparableInput {
   readonly surface: string;
   readonly declared?: DeclaredObjectType | undefined;
   readonly entityId?: string | undefined;
-}): ComparableValue {
+}
+
+/**
+ * WHY the value is what it is — the distinction {@link comparableValue}'s single
+ * `null` cannot carry.
+ *
+ * `null` is the same VERDICT for two very different facts about the world, and
+ * only one of them is actionable:
+ *
+ *   - `"abstained"` — the surface names nothing comparable (`Enterprise tier`,
+ *     `$499`) and no declaration rescued it. The COMMON case, permanent, and
+ *     nothing anyone should be told about. It includes the deliberate use of a
+ *     payload-less declaration to REFUSE a coincidence — `{kind:"number"}` over
+ *     a slot whose surfaces are sometimes dates, which
+ *     {@link applyDeclaration} documents as intended.
+ *   - `"declaration-rejected"` — the producer declared something the surface
+ *     contradicts, or a currency this module cannot canonicalize. A broken
+ *     producer: `objectType` exists solely to make an ambiguous surface
+ *     comparable, so a rejected declaration silently switches supersession off
+ *     for that producer's whole slot population with no other symptom.
+ *
+ * Split because a warn on the first is noise per claim and buries the second.
+ * `reconcile.ts` is the only caller that needs it; #5035 will want it too.
+ */
+export type ComparableReason = "resolved" | "abstained" | "declaration-rejected";
+
+export interface ComparableOutcome {
+  readonly value: ComparableValue;
+  readonly reason: ComparableReason;
+}
+
+export function comparableValueWithReason(input: ComparableInput): ComparableOutcome {
   const { surface, declared, entityId } = input;
 
   if (entityId !== undefined && entityId.trim() !== "") {
-    return tagged(ENTITY_TAG, entityId.trim());
+    return { value: tagged(ENTITY_TAG, entityId.trim()), reason: "resolved" };
   }
 
   const parsed = parseSurface(surface);
-  if (declared === undefined) return parsed === null ? null : tagged(parsed.tag, parsed.payload);
+  if (declared === undefined) {
+    return parsed === null
+      ? { value: null, reason: "abstained" }
+      : { value: tagged(parsed.tag, parsed.payload), reason: "resolved" };
+  }
 
-  return applyDeclaration(surface, parsed, declared);
+  const value = applyDeclaration(surface, parsed, declared);
+  if (value !== null) return { value, reason: "resolved" };
+
+  // A currency this module cannot canonicalize is a producer defect on EVERY
+  // claim in the slot, not a property of this surface — so it is reported even
+  // when the surface would have abstained anyway. It is also the single most
+  // actionable thing here: it is static misconfiguration, and it is why the
+  // remediation sentence in `reconcile.ts` talks about ISO-4217 codes.
+  if (declared.kind === "money" && canonicalCurrency(declared.currency) === null) {
+    return { value: null, reason: "declaration-rejected" };
+  }
+  // Otherwise: the surface named nothing to begin with, so the declaration is
+  // not what lost the value — it never had one to lose. Only a declaration that
+  // contradicted a REAL parse is a defect.
+  return { value: null, reason: parsed === null ? "abstained" : "declaration-rejected" };
 }
 
 /**
@@ -589,12 +649,14 @@ function applyDeclaration(
  * instant is `time:2026-08-04T08:00:00.000Z` and money is `money:USD:499`.
  *
  * Agrees with the SQL side — `split_part(…, ':', 1)` plus the `IN (…known
- * tags…)` membership arm in {@link comparableDifferentSql} — on every value
- * this module PRODUCES, which is what `object-cmp-pg.test.ts` checks row by
- * row. The two are not the same function on other inputs and are not meant to
- * be: `split_part` returns the whole string for a separator-less value, and it
- * is the membership arm rather than this function that keeps such a value out
- * of the difference test.
+ * tags…)` and `strpos(…) > 0` arms in {@link comparableDifferentSql} — on every
+ * value this module PRODUCES, which is what `object-cmp-pg.test.ts` checks with
+ * one fixture per tag. The two are not the same function on other inputs and
+ * are not meant to be: `split_part` returns the whole STRING for a
+ * separator-less value, so the membership arm alone does NOT reproduce this
+ * function's `-1` behaviour — a bare tag name (`'money'`) passes it. That is
+ * what the separate `strpos` arm is for, and its docstring records the measured
+ * failure it closes.
  *
  * This function has no production consumer. It exists for the agreement oracle
  * in `object-cmp-corpus.ts`, and from #5035 for the null-at-import decision,
@@ -638,7 +700,22 @@ export function comparableTag(value: string): ComparableTag | null {
  * theoretical one.
  *
  * `split_part(v, ':', 1)` takes the FIRST field only, so a payload containing
- * `:` (every `time:` value, every `money:` value) is unaffected. It agrees with
+ * `:` (every `time:` value, every `money:` value) is unaffected.
+ *
+ * ⚠️ **The `strpos(…) > 0` arms are NOT redundant with the membership test, and
+ * their absence was a live defect.** `split_part` returns the WHOLE STRING when
+ * there is no separator — so the six bare tag names (`'money'`, `'entity'`, …)
+ * pass the membership test and read as *provably different* from every real
+ * value of their own type. Measured on this repo's PG 16: `'money'` vs
+ * `'money:USD:499'` returned TRUE. `comparableTag` says `null` for those same
+ * strings (its `boundary === -1` arm), so the two readers disagreed exactly
+ * where the disagreement costs a `valid_to` stamp.
+ *
+ * Unreachable from `comparableValue`, which always emits a separator — and that
+ * is precisely the point: #5035 makes the region importer a SECOND writer of
+ * this column, and an importer that nulls a store-local id by writing the
+ * discriminator alone, or any truncation that drops a payload, produces exactly
+ * `'entity'`. It agrees with
  * {@link comparableTag} on bytes rather than on a shared parser, which is the
  * same two-implementations-must-agree shape migration 0187 records for
  * `lexicalNorm` — and `object-cmp-pg.test.ts` compares them row by row for the
@@ -664,7 +741,9 @@ export function comparableTag(value: string): ComparableTag | null {
 export function comparableDifferentSql(a: string, b: string): string {
   return `(${a} <> ${b}
       AND split_part(${a}, '${TAG_SEPARATOR}', 1) = split_part(${b}, '${TAG_SEPARATOR}', 1)
-      AND split_part(${a}, '${TAG_SEPARATOR}', 1) IN (${KNOWN_TAGS_SQL}))`;
+      AND split_part(${a}, '${TAG_SEPARATOR}', 1) IN (${KNOWN_TAGS_SQL})
+      AND strpos(${a}, '${TAG_SEPARATOR}') > 0
+      AND strpos(${b}, '${TAG_SEPARATOR}') > 0)`;
 }
 
 
@@ -722,7 +801,8 @@ export function objectNotSameSql(keyA: string, keyB: string, cmpA: string, cmpB:
   // and they are written anyway. `x = y IS NOT TRUE` reads as `x = (y IS NOT
   // TRUE)` to most people, which is a different and wrong expression, and the
   // cost of being wrong here is deleting the whole abstain band. Migration
-  // 0187's `WHERE` clause carries redundant parens for the mirror-image reason.
+  // 0187's `WHERE` carries redundant parens too, though for a different reason:
+  // future-arm protection, not readability under a precedence rule.
   return `((${keyA} <> ${keyB} OR ${comparableDifferentSql(cmpA, cmpB)})
       AND (${comparableSameSql(cmpA, cmpB)}) IS NOT TRUE)`;
 }

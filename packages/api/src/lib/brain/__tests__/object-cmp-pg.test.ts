@@ -45,10 +45,12 @@
  * | Mutation | Dies on |
  * |---|---|
  * | `INSERT_FACT_SQL` binds the object SURFACE into `object_cmp` | 2 |
- * | 0191 grows an `UPDATE brain_facts SET object_cmp = object` backfill | 1 — the lexical check |
- * | `objectSameSql` loses its difference VETO | 1 — the disjointness sweep |
- * | `comparableDifferentSql` loses its known-tag `IN` arm | 1 — the unknown-tag pair, **and this file is the only one** |
+ * | `comparableDifferentSql` loses its `split_part` tag EQUALITY arm | 2 — `cross-type`, `date-vs-instant` |
+ * | `comparableDifferentSql` loses its known-tag `IN` arm | 1 — the unknown-tag pair |
+ * | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | 1 — the same test, via the BARE-TAG fixtures |
  * | `agree` loses its `tagA !== null` arm (the oracle's half of the same rule) | 1 — the same test |
+ * | `objectSameSql` loses its difference VETO | 1 — `sign-flip` |
+ * | 0191 grows an `UPDATE brain_facts SET object_cmp = object` backfill | 1 — the lexical check |
  *
  * ⚠️ **The migration backfill dies on the LEXICAL check and nothing else, and
  * that is a limit rather than a redundancy.** These suites run migrations into
@@ -389,19 +391,25 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
 
   // ── the two tag readers agree ───────────────────────────────────────────
 
-  it(
-    "the SQL arms and the `agree` oracle return the same verdict on every corpus row",
-    async () => {
-      // ⚠️ THE test `object-cmp-corpus.ts` licenses itself on. `agree` is a
-      // SECOND implementation of `comparableSameSql` / `comparableDifferentSql`,
-      // which this subsystem otherwise forbids outright; it is admissible only
-      // because this suite holds the two to the same answers over the same rows.
-      // Without it the oracle is unvalidated and every verdict assertion in the
-      // fast lane is a claim about the oracle rather than about the system.
-      //
-      // The corpus rows carry SURFACES; both sides are parsed by the real
-      // `comparableValue`, and only the COMPARISON is done twice.
-      for (const c of AGREEMENT_CORPUS) {
+  // ⚠️ ONE `it()` PER CORPUS ROW, not one sweep over all of them. The fast lane
+  // registers a test per row for the same reason: in a long proof the first
+  // failure hides the rest, so a single loop reports "1 death" no matter how
+  // many rows a real regression touches — and that number then lands in the
+  // mutation table as if it meant something. Same argument that split
+  // `promotion-pg.test.ts`'s abstain control into its own block.
+  //
+  // These are THE tests that license `object-cmp-corpus.ts`'s oracle. `agree` is
+  // a SECOND implementation of `comparableSameSql` / `comparableDifferentSql`,
+  // which this subsystem otherwise forbids outright; it is admissible only
+  // because these hold the two to the same answers over the same rows. Without
+  // them the oracle is unvalidated and every verdict assertion in the fast lane
+  // is a claim about the oracle rather than about the system.
+  for (const c of AGREEMENT_CORPUS) {
+    it(
+      `SQL agrees with the oracle and the corpus: ${c.id}`,
+      async () => {
+        // The rows carry SURFACES; both sides are parsed by the real
+        // `comparableValue` and only the COMPARISON is done twice.
         const a = comparableValue({ surface: c.a.surface, declared: c.a.declared });
         const b = comparableValue({ surface: c.b.surface, declared: c.b.declared });
         const { rows } = await pool.query<{ same: boolean | null; different: boolean | null }>(
@@ -409,42 +417,43 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
                   (${comparableDifferentSql("$1::text", "$2::text")}) AS different`,
           [a, b],
         );
-        // Read back through the same three-valued reduction the consumers use:
-        // corroboration fires on `same`, supersession on `different`, and the
-        // band between them reaches tension alone. `IS TRUE`, so a NULL from
-        // either arm reads as "not proven" exactly as a WHERE clause treats it.
+        // Read back through the three-valued reduction the consumers use:
+        // corroboration fires on `same`, supersession on `different`, the band
+        // between reaches tension alone. `=== true`, so a NULL from either arm
+        // reads as "not proven" exactly as a WHERE clause treats it.
         const sqlVerdict =
           rows[0]!.same === true ? "same" : rows[0]!.different === true ? "different" : "unknown";
         expect(
           sqlVerdict,
           `Postgres and the \`agree\` oracle disagree on \`${c.id}\` (${JSON.stringify(a)} vs ${JSON.stringify(b)}). The oracle is what every verdict assertion in the fast lane is written against, so a divergence means that whole suite is testing something the database does not do.`,
         ).toBe(agree(a, b));
-        expect(sqlVerdict, `${c.id}: the corpus verdict itself`).toBe(c.verdict);
-      }
-    },
-    PG_TEST_TIMEOUT_MS,
-  );
+        expect(sqlVerdict, `${c.id}: ${c.why}`).toBe(c.verdict);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+  }
 
-  it(
-    "…and `objectSameSql` never agrees with `comparableDifferentSql` — the VETO, including the key arm",
-    async () => {
-      // ⚠️ The disjointness the difference VETO exists to create, and the ONLY
-      // assertion that involves the KEY arm — which is where the overlap lives.
-      // The cmp arms are trivially disjoint (`=` and `<>` on one pair), so a
-      // disjointness test written over `comparableSameSql` alone is a tautology.
-      // `objectSameSql` is what corroboration actually runs, and its key arm is
-      // what fires `same` on `-499` / `499`: `lexicalNorm` strips a leading `-`,
-      // so those two key IDENTICALLY while their comparable values prove they
-      // disagree. Without the veto both verdicts hold, corroboration merges a
-      // margin with its own negation, and the second claim never gets a row.
-      //
-      // Its own `it()` because the parity assertion above compares a REDUCTION
-      // that resolves `same` first — it stays green while `different` is also
-      // quietly true.
-      //
-      // Keys come from `identityKey`, which is what `slotKey` computes under the
-      // empty vocabulary every corpus row is parsed against.
-      for (const c of AGREEMENT_CORPUS) {
+  for (const c of AGREEMENT_CORPUS) {
+    it(
+      `\`objectSameSql\` never agrees with \`comparableDifferentSql\` — the VETO: ${c.id}`,
+      async () => {
+        // ⚠️ The disjointness the difference VETO exists to create, and the ONLY
+        // assertions that involve the KEY arm — which is where the overlap
+        // lives. The cmp arms are trivially disjoint (`=` and `<>` on one pair),
+        // so a disjointness test over `comparableSameSql` alone is a tautology.
+        // `objectSameSql` is what corroboration actually runs, and its key arm
+        // is what fires `same` on `-499` / `499`: `lexicalNorm` strips a leading
+        // `-`, so those two key IDENTICALLY while their comparable values prove
+        // they disagree. Without the veto both verdicts hold, corroboration
+        // merges a margin with its own negation, and the second claim never
+        // gets a row.
+        //
+        // Separate from the parity block above, which compares a REDUCTION that
+        // resolves `same` first — it stays green while `different` is also
+        // quietly true.
+        //
+        // Keys come from `identityKey`, which is what `slotKey` computes under
+        // the empty vocabulary every corpus row is parsed against.
         const a = comparableValue({ surface: c.a.surface, declared: c.a.declared });
         const b = comparableValue({ surface: c.b.surface, declared: c.b.declared });
         const { rows } = await pool.query<{ same: boolean | null; different: boolean | null }>(
@@ -456,10 +465,10 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
           rows[0]!.same === true && rows[0]!.different === true,
           `\`${c.id}\` is BOTH provably same and provably different — the veto in \`objectSameSql\` is gone, so corroboration merges a pair the publish gate would supersede`,
         ).toBe(false);
-      }
-    },
-    PG_TEST_TIMEOUT_MS,
-  );
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+  }
 
   it(
     "…and the veto is not a blanket refusal — a key-equal pair with no proven difference still corroborates",
@@ -482,8 +491,9 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
   it(
     "an UNKNOWN-tag pair is `unknown`, not different — the membership arm (#5035's writer)",
     async () => {
-      // ⚠️ The only test in the repo that falsifies `comparableDifferentSql`'s
-      // `IN (…known tags…)` arm. MEASURED: deleting that arm killed ZERO tests
+      // ⚠️ The only BEHAVIOURAL falsifier of `comparableDifferentSql`'s
+      // `IN (…known tags…)` and `strpos(…) > 0` arms (`reconcile.test.ts` pins
+      // the generated tag list lexically). MEASURED: deleting that arm killed ZERO tests
       // before this one existed, because nothing in the corpus can reach it —
       // `comparableValue` cannot produce an unknown tag, and `INSERT_FACT_SQL`
       // is the column's only writer today.
@@ -499,6 +509,17 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
         ["foo:1", "foo:2"],
         ["moneys:1", "moneys:2"],
         ["Money:1", "Money:2"],
+        // ⚠️ The BARE TAG NAMES, and they are the shape that actually failed.
+        // `split_part('money', ':', 1)` returns the whole string `'money'`,
+        // which IS in the known-tag list — so before the `strpos` arm these
+        // read as *provably different* from every real value of their own type,
+        // measured on PG 16. The three fixtures above all carry a separator and
+        // so dodge the one shape the membership arm cannot handle alone; that
+        // is the fixtures-agree-by-construction trap, inside the test written
+        // to close it.
+        ["money", "money:USD:499"],
+        ["entity", "entity:01JABC"],
+        ["number", "number:499"],
       ]) {
         const { rows } = await pool.query<{ different: boolean | null }>(
           `SELECT (${comparableDifferentSql("$1::text", "$2::text")}) AS different`,

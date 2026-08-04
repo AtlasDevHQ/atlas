@@ -218,7 +218,7 @@ import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
 // *provably same* is spelled — the two statements below negate each other and
 // must do so against one definition, not two.
 import {
-  comparableValue,
+  comparableValueWithReason,
   objectNotSameSql,
   objectSameSql,
   type ComparableValue,
@@ -897,40 +897,44 @@ export async function reconcileFacts(
     // parse — `ReconcileRequest.resolveEntity` is an injectable seam, so that is
     // a statement about the default and not about every deployment;
     // #5031 is what makes the first arm live.
-    const comparable = comparableValue({
+    const { value: comparable, reason: comparableReason } = comparableValueWithReason({
       surface: storedObject,
       declared: candidate.objectType,
       entityId: resolvedObject?.entityId,
     });
-    // A declaration that produced NOTHING is an operator-actionable defect, and
-    // `comparableValue` cannot say so — it returns the same `null` for an honest
-    // abstain (`Enterprise tier` has no comparable value and never will) as for
-    // a broken producer (a currency it cannot canonicalize, or one that
-    // contradicts the surface). Those are the same VERDICT and very different
-    // facts about the world.
+    // A REJECTED declaration is an operator-actionable defect, and the reason
+    // code is what separates it from the abstain it otherwise looks identical
+    // to. `objectType` exists solely to make an ambiguous surface comparable,
+    // so a rejected one silently switches supersession off for that producer's
+    // whole slot population — and the only symptom is an absence: nothing to
+    // grep, nothing in the review queue, no failed write.
     //
-    // `objectType` exists for exactly one purpose: to make an otherwise
-    // ambiguous surface comparable. So a rejected declaration means supersession
-    // silently stops firing for that producer's whole slot population, and the
-    // only symptom is an absence — nothing to grep, nothing in the review queue,
-    // no failed write. This is the same shape `tryResolve` already takes for a
-    // throwing resolver: degrade to abstain, but SAY SO.
+    // ⚠️ Gated on `"declaration-rejected"`, NOT on `comparable === null`. That
+    // wider condition fires on every honest abstain in a declared slot — a
+    // `price` column's `N/A` rows, and the deliberate use of `{kind:"number"}`
+    // to REFUSE a coincidence, which `object-cmp.ts` documents as intended.
+    // One warn per claim, forever, burying the signal this line exists for.
     //
     // Warned rather than blocked, for the malformed-claim guard's reason: the
     // claim itself is fine and a reviewer can still see it. Only its
     // comparability is lost.
-    if (candidate.objectType !== undefined && comparable === null) {
+    if (comparableReason === "declaration-rejected") {
       log.warn(
         {
           workspaceId: episode.workspaceId,
           episodeId: episode.id,
           producer,
+          // The predicate, which IS a claim surface — logged deliberately,
+          // because a slot is what an operator needs to find the producer and
+          // this file already logs surfaces on the same terms elsewhere. The
+          // OBJECT is not: it is the value the claim asserts, and naming the
+          // slot is enough to locate a misconfigured producer without it.
           predicate,
-          declaredKind: candidate.objectType.kind,
-          // The surface is NOT logged — it is claim content, and the slot plus
-          // the declared kind are what an operator needs to find the producer.
+          declaredKind: candidate.objectType?.kind,
         },
-        "brain reconcile: a producer declared an object type that yielded no comparable value — the claim landed as `unknown` and will never supersede. Check the declared currency (ISO-4217 alphabetic only) and that it agrees with the surface; a declaration may supply what the surface lacks but never contradict it",
+        candidate.objectType?.kind === "money"
+          ? "brain reconcile: a producer declared money but the declaration was rejected — the claim landed as `unknown` and will never supersede. Either the declared currency is not an ISO-4217 alphabetic code, or the surface names a DIFFERENT currency; a declaration may supply what the surface lacks but never contradict it"
+          : "brain reconcile: a producer declared an object type the surface contradicts — the claim landed as `unknown` and will never supersede. The surface parses as something else, and a declaration may supply what the surface lacks but never override what it states",
       );
     }
     prepared.push({

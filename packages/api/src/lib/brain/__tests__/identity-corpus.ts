@@ -343,8 +343,9 @@ export const IDENTITY_CORPUS = [
     id: "cross-type-rival",
     relation: "unproven-rival",
     why:
-      "⚠️ THE falsifier for the `split_part` tag arm, and the only one in the repo at the " +
-      "SQL level. One producer declares its `price` column USD; the other reads a bare " +
+      "⚠️ THE falsifier for the `split_part` tag arm at the CONSUMER level — it catches the " +
+      "arm through the publish gate, where `object-cmp-pg.test.ts`'s per-row parity tests " +
+      "catch it against the bare SQL. One producer declares its `price` column USD; the other reads a bare " +
       "number off the same slot and declares nothing. `number:599` and `money:USD:499` are " +
       "unequal STRINGS, so a difference arm spelled `<>` alone calls them different and " +
       "publish stamps `valid_to` — but nothing proves the bare number is not dollars. " +

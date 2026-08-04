@@ -2,12 +2,13 @@
  * The drift re-key, the identity-mutation lock, and the supersede stamp's
  * collision re-check (#5024, ADR-0037 §7).
  *
- * Everything here needs a real Postgres; two of the four groups turn on what
- * happens BETWEEN two statements, and one of those needs a second connection.
- * That is not a preference — a transaction double cannot be wrong about an
- * interleaving it does not have. (Group 3 deliberately uses ONE connection; see
- * `targetsThenStamp` for why that is the right shape for a standalone-correctness
- * claim, and for what it consequently cannot prove.)
+ * Almost everything here needs a real Postgres, and two of the four groups need
+ * a SECOND connection: a transaction double cannot be wrong about an
+ * interleaving it does not have. Group 3's driving transaction deliberately
+ * takes no advisory lock, which is what makes it a test of the statement's
+ * standalone correctness rather than of the lock — see `targetsThenStamp`.
+ *
+ * Two assertions need no database at all; each says so where it sits.
  *
  * ## What each group falsifies
  *
@@ -33,17 +34,17 @@
  *
  * ## Mutation table
  *
- * Twenty-three mutations, all twenty-three caught. Regenerated in ONE pass
- * against the final tree rather than edited row by row — #5022's review found
- * numbers carried forward under a header claiming they had been re-measured,
- * twice. The harness applies each mutation, runs all three suites, records the
- * first failing test, and reverts; the "first test to die" column is that
- * recorded name, not an author's guess about which test ought to have caught it.
+ * Twenty-five mutations, all twenty-five caught. Regenerated in ONE pass against
+ * the final tree rather than edited row by row — #5022's review found numbers
+ * carried forward under a header claiming they had been re-measured, twice. The
+ * harness applies each mutation, runs all three suites, records the first
+ * failing test, and reverts; the "first test to die" column is that recorded
+ * name, not an author's guess about which test ought to have caught it.
  *
  * Three suites are in scope: this one, `vocabulary-decide-pg.test.ts` (the lock
- * ORDER and the column-scoped allowlist assertion), and
+ * bracket and the column-scoped allowlist assertion), and
  * `content-mode/adapters/__tests__/brain-facts.test.ts` (the publish lock, its
- * timeout bound, and the two stamp arbitrations).
+ * bound and reset, the `55P03` classification, and the two stamp arbitrations).
  *
  * | # | Mutation | First test to die |
  * |---|---|---|
@@ -52,67 +53,78 @@
  * | 3 | re-key gains `AND f.invalidated_at IS NULL` | covers TOMBSTONED rows — the partial index excludes them, the re-key must not |
  * | 4 | re-key gains `AND f.valid_to IS NULL` | covers SUPERSEDED rows — same exclusion, same requirement |
  * | 5 | re-key gains `, updated_at = now()` | does NOT stamp `updated_at` — it sorts the reviewer's queue, and a re-key moved nothing |
- * | 6 | re-key's workspace scope weakened to `OR TRUE` | the allowlisted decide seam writes the identity keys and NO other gated column |
+ * | 6 | re-key's workspace scope weakened to `OR TRUE` | is workspace-scoped — a foreign row with a STALE key stays stale |
  * | 7 | every position uses the `subject` columns | an approval re-keys an existing fact onto the target the new vocabulary decides |
  * | 8 | outer `identityKeySql` dropped from the assignment | re-norms the vocabulary's answer rather than trusting it |
  * | 9 | closure subquery's position pinned to `'predicate'` | re-keys at the SUBJECT position, reading that position's closure only |
  * | 10 | closure subquery's position filter DELETED | reads ONLY its own position's closure when one norm is aliased at two positions |
- * | 11 | `COALESCE(closure, norm)` → the closure alone | …and does NOT move a row the approval says nothing about (the control) |
- * | 12 | `row.slot_position` → hardcoded `"predicate"` at both call sites | re-keys at the SUBJECT position, reading that position's closure only |
+ * | 11 | `COALESCE(closure, norm)` -> the closure alone | …and does NOT move a row the approval says nothing about (the control) |
+ * | 12 | `row.slot_position` -> hardcoded `"predicate"` (both call sites) | re-keys at the SUBJECT position, reading that position's closure only |
  * | 13 | `EXISTS` arm removed from the collision stamp | stamps the rival when the collision still holds (the positive control) |
- * | 14 | `EXISTS` arm's `$3` → `$2` | stamps the rival when the collision still holds (the positive control) |
- * | 15 | collision predicate → `TRUE` inside the `EXISTS` | does NOT stamp when the collision was de-merged between the SELECT and the UPDATE |
+ * | 14 | `EXISTS` arm's `$3` -> `$2` | stamps the rival when the collision still holds (the positive control) |
+ * | 15 | collision predicate -> `TRUE` inside the `EXISTS` | does NOT stamp when the collision was de-merged between the SELECT and the UPDATE |
  * | 16 | publish's identity-lock call deleted | takes the identity-mutation lock BEFORE reading the drafts (#5024) |
  * | 17 | publish's `SET LOCAL lock_timeout` deleted | bounds the lock wait BEFORE taking it — an unbounded wait hangs publish with no requestId |
- * | 18 | publish's namespace → `VOCABULARY_LOCK_NAMESPACE` (5022) | takes the identity-mutation lock BEFORE reading the drafts (#5024) |
- * | 19 | `lockIdentityMutation` order flipped (5024 before 5022) | decide locks first |
- * | 20 | `lockIdentityMutation`'s bound moved AFTER the locks | decide locks first |
- * | 21 | `lexicalNormSql`'s `translate()` → `lower()` | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
- * | 22 | `chr(11)` dropped from the separator class | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
- * | 23 | `identityKeySql`'s `NULLIF(…, '')` dropped | a re-keyed POSITION whose surface norms away reaches NULL, never the empty string |
+ * | 18 | publish's lock_timeout RESET deleted (bound leaks to the txn) | RESETS the bound immediately — `SET LOCAL` reverts at COMMIT, not at the next statement |
+ * | 19 | publish's namespace -> 5022 | takes the identity-mutation lock BEFORE reading the drafts (#5024) |
+ * | 20 | `isLockTimeout` always false (55P03 relayed raw) | names the contending operation when the bound expires, instead of relaying a bare 55P03 |
+ * | 21 | decide's lock order flipped (5024 before 5022) | decide locks first |
+ * | 22 | decide's lock_timeout RESET deleted (bound leaks past 5024) | decide locks first |
+ * | 23 | `lexicalNormSql`'s `translate()` -> `lower()` | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
+ * | 24 | `chr(11)` dropped from the separator class | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
+ * | 25 | `identityKeySql`'s `NULLIF(..., '')` dropped | a re-keyed POSITION whose surface norms away reaches NULL, never the empty string |
  *
- * ## What the passes found, which is the part worth carrying
+ * ## Three rounds, and what each one caught that the previous missed
  *
  * **Round 1 (19 mutations) left ONE survivor: dropping the outer
  * `identityKeySql`.** Every closure row this suite wrote went through
  * `approveAliasEdge`, which re-norms both endpoints — so the outer re-norm was a
- * no-op on every fixture and could be deleted with all 18 other mutations still
- * dying. The defence is real and reachable from outside the seam (0189's CHECKs
- * do not constrain `effective_target` to being a norm, and the region import
- * rebuilds that table), so the fix was a test that writes the two relations
- * DIRECTLY. Generalization worth keeping: **a fixture built entirely through the
- * sanctioned seam cannot falsify the guards that exist for writers which bypass
- * it.**
+ * no-op on every fixture. The defence is reachable from outside the seam (0189's
+ * CHECKs do not constrain `effective_target` to being a norm, and the region
+ * import rebuilds that table), so the fix was a test that writes the two
+ * relations DIRECTLY. **A fixture built entirely through the sanctioned seam
+ * cannot falsify the guards that exist for writers which bypass it.**
  *
- * **Round 2 was the review panel, and it found a worse hole the mutation table
- * had not probed at all.** Every `approve()` in this file was at the `predicate`
- * position, so `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed
- * all 100 tests across this suite and `vocabulary-decide-pg`. That is subject
- * and object approvals re-keying NOTHING: two thirds of the feature dead, with a
- * success line in the log. Rows 10 and 12 exist because of it, and the fixtures
- * they need (one norm aliased at TWO positions) are the only shape that
- * distinguishes a position-scoped closure lookup from an unscoped one.
+ * **Round 2 was a review panel, and it found a hole the table had not probed at
+ * all.** Every `approve()` in this file was at the `predicate` position, so
+ * `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed all 102
+ * tests across this suite and `vocabulary-decide-pg`. That is subject and object
+ * approvals re-keying NOTHING, with a success line in the log. Rows 10 and 12
+ * exist because of it. **A mutation table only covers the mutations someone
+ * thought to write, and a suite whose fixtures all share one value of a
+ * parameter cannot probe that parameter at all.**
  *
- * The transferable lesson is about the table rather than the code: **a mutation
- * table only covers the mutations someone thought to write, and a suite whose
- * fixtures all share one value of a parameter cannot probe that parameter at
- * all.**
+ * **Round 3 was a second panel over round 2's fixes, and it caught two of them.**
+ * Row 6 did not reproduce: with two identical unaliased rows, weakening the
+ * statement's own `WHERE f.workspace_id = $1` changed nothing, because the
+ * closure subquery carries `t.workspace_id = f.workspace_id` of its own. The row
+ * had been dying on an unrelated string anchor in another suite — a measured
+ * kill for the wrong reason, which is the failure mode this table's whole
+ * regeneration discipline exists to catch, appearing inside the discipline. The
+ * test now uses a foreign row whose stored key DISAGREES with its own
+ * workspace's closure, which is the only shape an unscoped statement moves.
  *
- * ## What this suite does NOT cover, stated so the 23 are not over-read
+ * And the `SET LOCAL lock_timeout` added in round 2 was never reset, so it
+ * governed every later lock wait in both transactions — `DRAFT_FACTS_SQL`'s
+ * `FOR UPDATE` (which exists to WAIT), the re-key's row locks, and
+ * `admin-publish.ts`'s phase-4 archive loop. **A fix that turns a wait into a
+ * failure is a behaviour change, not a hardening.** Rows 18 and 22 pin the reset.
+ *
+ * ## What this suite does NOT cover, stated so the 25 are not over-read
  *
  * The 5022 → 5024 ORDER is asserted as an invariant in
- * `vocabulary-decide-pg.test.ts` (row 19), not provoked as a deadlock. No
- * wait-for cycle is reachable for either ordering today: every actor takes its
- * advisory locks before it UPDATEs a row, and the region importer — which does
- * INSERT `brain_facts` before taking 5022 — only ever INSERTs, and an
- * uncommitted INSERT blocks no UPDATE. The inverted order is a latent hazard
- * that becomes real the moment the importer UPDATEs an existing fact row. #5022's
- * review is explicit that an interleaving which cannot form a cycle passes
- * against a broken implementation, so claiming otherwise would be the same
- * mistake one slice later.
+ * `vocabulary-decide-pg.test.ts` (row 21), not provoked as a deadlock. No
+ * wait-for cycle is reachable for either ordering today: publish and the decide
+ * seam take their advisory locks before they UPDATE, and the region importer —
+ * which INSERTs `brain_facts` well before it takes 5022 — only ever INSERTs, and
+ * an uncommitted INSERT blocks no UPDATE. The inverted order becomes real the
+ * moment the importer UPDATEs an existing fact row. #5022's review is explicit
+ * that an interleaving which cannot form a cycle passes against a broken
+ * implementation, so claiming otherwise would be the same mistake one slice
+ * later.
  *
  * WHICH code paths take the namespace is likewise not pinned here — nothing in
- * this file calls `promoteBrainFacts`. Rows 16–18 are all caught in
+ * this file calls `promoteBrainFacts`. Rows 16–20 all die in
  * `content-mode/adapters/__tests__/brain-facts.test.ts`.
  */
 
@@ -514,21 +526,38 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     expect(row.predicate_key).toBe("widget");
   });
 
-  it("is workspace-scoped", async () => {
+  it("is workspace-scoped — a foreign row with a STALE key stays stale", async () => {
+    // ⭐ Rebuilt after the review panel MEASURED the obvious version failing to
+    // falsify anything. With two identical unaliased rows, weakening the
+    // statement's `WHERE f.workspace_id = $1` to `OR TRUE` changed nothing: the
+    // closure subquery carries `t.workspace_id = f.workspace_id` of its own, so
+    // a foreign row still resolves `COALESCE(closure, norm)` to its own norm,
+    // `IS DISTINCT FROM` is false, and the row is a no-op either way. The
+    // mutation-table row that claimed to catch it was dying on an unrelated
+    // string anchor in a different suite.
+    //
+    // What makes the scope observable is a foreign row whose stored key
+    // DISAGREES with its own workspace's closure. An unscoped re-key repairs it
+    // — visibly — where a scoped one cannot see it at all.
     const mine = await land(WS, { subject: "widget", predicate: "is priced at", object: "nine" });
-    const theirs = await land(OTHER_WS, {
-      subject: "widget",
-      predicate: "is priced at",
-      object: "nine",
-    });
+    const theirs = await land(OTHER_WS, { subject: "widget", predicate: "ships on", object: "fri" });
+
+    // Give the OTHER workspace a real vocabulary, then put its row's key back to
+    // the pre-approval value by hand. Only a cross-tenant statement can move it.
+    await approve("ships on", "delivery date", "predicate", OTHER_WS);
+    expect((await readFact(theirs)).predicate_key).toBe("delivery date");
+    await pool.query("UPDATE brain_facts SET predicate_key = 'ships on' WHERE id = $1::uuid", [
+      theirs,
+    ]);
 
     await approve("is priced at", "priced at");
 
     expect((await readFact(mine)).predicate_key).toBe("priced at");
     expect(
       (await readFact(theirs)).predicate_key,
-      "the re-key crossed a workspace boundary — one tenant's alias decision re-keyed another's corpus",
-    ).toBe("is priced at");
+      "the re-key crossed a workspace boundary — one tenant's alias decision recomputed another " +
+        "tenant's keys. Scoped, this row is invisible to the statement and keeps its stale key.",
+    ).toBe("ships on");
   });
 
   it("a re-keyed POSITION whose surface norms away reaches NULL, never the empty string", async () => {
@@ -787,17 +816,24 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
         "SELECT pg_backend_pid()::int AS pid",
       );
       const waiterPid = pidRows[0]!.pid;
-      const blocked = waiter.query(IDENTITY_MUTATION_LOCK_SQL, [
-        IDENTITY_MUTATION_LOCK_NAMESPACE,
-        WS,
-      ]);
+      // `.catch` attached at creation, not at the await. On the failure path
+      // below `waiter` is DESTROYED while this query is still pending, and an
+      // unattached rejection surfaces as "Unhandled error between tests" —
+      // attributable to whichever test runs next rather than to the assertion
+      // that actually broke.
+      let blockedRejection: unknown;
+      const blocked = waiter
+        .query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, WS])
+        .catch((err: unknown) => {
+          blockedRejection = err;
+        });
 
       // Wait for the waiter to actually be registered as blocked rather than
       // sleeping a fixed interval and hoping.
       const observer = await pool.connect();
       try {
         // Scoped to the WAITER's own backend pid, not just the namespace.
-        // `promoteBrainFacts` now takes 5024 in five other `-pg` suites against
+        // `promoteBrainFacts` now takes 5024 in six other `-pg` suites against
         // the same `TEST_DATABASE_URL`, so an unscoped count is a cross-suite
         // flake waiting to happen — and it would fail in the direction that
         // looks like a real defect.
@@ -822,6 +858,8 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
 
       await holder.query("COMMIT");
       await blocked; // resolves once the lock is released — hangs the test if not
+      // The happy path must not have swallowed a real error into the handler.
+      expect(blockedRejection).toBeUndefined();
       await waiter.query("COMMIT");
     } finally {
       // `release(true)` DESTROYS rather than returns to the pool. node-postgres
@@ -845,13 +883,17 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     // form a cycle passes against a broken implementation.
     //
     // Applying that lesson honestly here says this test does NOT falsify the
-    // 5022 → 5024 order, and it is not written as though it does. Every actor
-    // in the system takes its advisory locks BEFORE it touches rows: the
-    // importer takes 5022 then writes, publish takes 5024 then writes, and the
-    // decide seam takes both then re-keys. With no actor holding rows while
-    // asking for a lock, no wait-for cycle exists for either ordering — so the
-    // inverted order is a latent hazard rather than a reachable one today, and
-    // it is pinned as an INVARIANT in `vocabulary-decide-pg.test.ts` instead.
+    // 5022 → 5024 order, and it is not written as though it does.
+    //
+    // Publish takes 5024 then writes, and the decide seam takes both then
+    // re-keys. The region importer does NOT fit that summary — it INSERTs
+    // `brain_facts` in `admin-migrate.ts` well before it takes 5022, and takes
+    // 5022 only when the bundle carries vocabulary edges at all. What keeps it
+    // safe is narrower than "everyone locks first": it only ever INSERTs, and an
+    // uncommitted INSERT blocks no UPDATE, so the re-key never waits on it. No
+    // wait-for cycle exists for either ordering today, which makes the inverted
+    // order a latent hazard rather than a reachable one — pinned as an INVARIANT
+    // in `vocabulary-decide-pg.test.ts` instead.
     //
     // What this test IS: the regression guard for the shape that DID bite in
     // #5022 — a `brain_facts` writer running concurrently with a decide
@@ -865,7 +907,12 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        // The importer's own ordering: the vocabulary lock, THEN rows.
+        // The importer's EDGE-write ordering — the lock, THEN rows — which is
+        // what it does once it has edges to write. Deliberately not a
+        // reproduction of its FACT path: that INSERTs before it locks, and an
+        // uncommitted INSERT would not contend with the re-key at all, which is
+        // the point of the paragraph above. This fixture UPDATEs so the pair
+        // genuinely contends.
         await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, WS]);
         await client.query(
           `UPDATE brain_facts SET status = 'published'
@@ -941,12 +988,12 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
   });
 
   it("`identityKeySql` is textually what migration 0187 already contains", () => {
-    // ⭐ The second of the two proofs `identity.ts`'s docstring claims. It did
-    // not exist until the review panel checked — and as first worded it could
-    // not have: 0187 column-ALIGNS its arguments (`translate(subject,   '…`,
-    // three spaces; `translate(object,    '…`, four), so a raw `includes` is
-    // true for `predicate` and false for the other two. Whitespace-collapsed it
-    // holds for all three.
+    // The second of the two proofs `identity.ts`'s docstring names.
+    //
+    // WHITESPACE-COLLAPSED, and that is not cosmetic: 0187 column-ALIGNS its
+    // arguments (`translate(subject,   '…`, three spaces; `translate(object,
+    // '…`, four), so a raw `includes` holds for `predicate` and fails for the
+    // other two.
     //
     // What this buys that the row-by-row corpus run does not: the corpus proves
     // `lexicalNormSql ≡ lexicalNorm` TODAY. This proves the generated expression
@@ -954,9 +1001,12 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     // so editing `lexicalNormSql` without a migration cannot silently re-key
     // half a corpus under a function the other half never saw.
     //
-    // No Postgres needed, so it sits outside the `-pg` gate would be better —
-    // but `describeIfPg` wraps the file; see the ungated block at the top for
-    // the assertions that genuinely cannot afford to skip.
+    // Needs no Postgres, and left inside the `-pg` gate deliberately — unlike
+    // the allowlist assertion, which `check-brain-fact-promotion.sh` DELEGATES
+    // to and which therefore has to run in the local `--affected` loop, where a
+    // new gated write first appears. This one guards a divergence reachable only
+    // through a deliberate edit to `lexicalNormSql`, and CI sets
+    // `TEST_DATABASE_URL`.
     const migration = readFileSync(
       join(import.meta.dir, "..", "..", "db", "migrations", "0187_brain_fact_identity_keys.sql"),
       "utf8",

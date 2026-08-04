@@ -26,6 +26,7 @@ import {
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
+  IDENTITY_MUTATION_LOCK_RESET_SQL,
   IDENTITY_MUTATION_LOCK_SQL,
   IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
 } from "@atlas/api/lib/brain/identity";
@@ -65,11 +66,20 @@ function txWithDrafts(
     readonly supersessions?: readonly unknown[];
     /** Overrides which old ids the stamp UPDATE confirms; defaults to all asked. */
     readonly stampConfirms?: readonly string[];
+    /** Make the identity-mutation lock raise `55P03`, as the bound's expiry does. */
+    readonly lockTimesOut?: boolean;
   } = {},
-): { tx: ModeTxClient; calls: Call[]; locks: LockCall[]; bounds: BoundCall[] } {
+): {
+  tx: ModeTxClient;
+  calls: Call[];
+  locks: LockCall[];
+  bounds: BoundCall[];
+  resets: BoundCall[];
+} {
   const calls: Call[] = [];
   const locks: LockCall[] = [];
   const bounds: BoundCall[] = [];
+  const resets: BoundCall[] = [];
   const tx: ModeTxClient = {
     query: async (sql, params = []) => {
       // The identity-mutation advisory lock (#5024) is recorded SEPARATELY, and
@@ -87,8 +97,16 @@ function txWithDrafts(
         bounds.push({ precededLocks: locks.length });
         return { rows: [] };
       }
+      if (sql === IDENTITY_MUTATION_LOCK_RESET_SQL) {
+        resets.push({ precededLocks: locks.length });
+        return { rows: [] };
+      }
       if (sql === IDENTITY_MUTATION_LOCK_SQL) {
         locks.push({ params, precededCalls: calls.length });
+        // Injected contention: `pg_advisory_xact_lock` never errors on its own,
+        // so the only way to reach the `55P03` branch is to make the DRIVER
+        // raise what Postgres would raise when the bound expires.
+        if (opts.lockTimesOut) throw Object.assign(new Error("canceling statement due to lock timeout"), { code: "55P03" });
         return { rows: [] };
       }
       calls.push({ sql, params });
@@ -127,7 +145,7 @@ function txWithDrafts(
       throw new Error(`unrecognised statement in the tx double: ${sql}`);
     },
   };
-  return { tx, calls, locks, bounds };
+  return { tx, calls, locks, bounds, resets };
 }
 
 /** The UPDATE statements the adapter issued, in order. */
@@ -281,6 +299,68 @@ describe("promoteBrainFacts", () => {
     expect(bounds, "publish takes the identity lock with no lock_timeout bound").toHaveLength(1);
     expect(bounds[0].precededLocks).toBe(0);
     expect(locks).toHaveLength(1);
+  });
+
+  it("RESETS the bound immediately — `SET LOCAL` reverts at COMMIT, not at the next statement", async () => {
+    // The half the first cut of this fix missed, and it is a behaviour change in
+    // the wrong direction: left set, the 10s bound governs `DRAFT_FACTS_SQL`'s
+    // `FOR UPDATE` (which exists to WAIT for a concurrent publish), the promote
+    // UPDATEs, and `admin-publish.ts`'s phase-4 archive loop, which runs after
+    // `runPublishPhases` returns. A publish that used to block for eleven
+    // seconds and commit would instead roll back every row it had promoted.
+    const { tx, resets, locks } = txWithDrafts([draft("a")]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(resets, "the lock_timeout bound is never reset — it leaks to the whole transaction").toHaveLength(1);
+    // AFTER the acquisition, so the bracket is `set → lock → reset` and covers
+    // exactly one statement.
+    expect(resets[0].precededLocks).toBe(1);
+    expect(locks).toHaveLength(1);
+  });
+
+  it("names the contending operation when the bound expires, instead of relaying a bare 55P03", async () => {
+    // The classification branch had no coverage at all: `isLockTimeout` reading
+    // `code` off an `unknown`, and the retry-guidance message, both shipped
+    // untested. A wrapped cause (so `code` sits one level down) or a typo'd
+    // SQLSTATE would silently revert to the raw-error outcome the branch exists
+    // to prevent.
+    const { tx } = txWithDrafts([draft("a")], { lockTimesOut: true });
+
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
+
+    expect(exit._tag).toBe("Left");
+    if (exit._tag !== "Left") return;
+    expect(exit.left).toBeInstanceOf(PublishPhaseError);
+    // Names WHAT is contending and that nothing was changed — the "actionable,
+    // context-specific message + retry guidance" CLAUDE.md asks for, rather than
+    // "canceling statement due to lock timeout".
+    const message = String(exit.left.cause);
+    expect(message).toContain("alias approval or removal is re-keying");
+    expect(message).toContain("Nothing was changed");
+    expect(message).toContain("Retry");
+  });
+
+  it("does NOT swallow a non-timeout lock failure into the retry message", async () => {
+    // The positive control's mirror: `isLockTimeout` must be a classification,
+    // not a catch-all. A connection failure at the same statement is not
+    // retryable and must not be dressed up as one.
+    const { tx } = txWithDrafts([draft("a")], {});
+    const failing: ModeTxClient = {
+      query: async (sql, params) => {
+        if (sql === IDENTITY_MUTATION_LOCK_SQL) throw new Error("connection terminated unexpectedly");
+        return tx.query(sql, params);
+      },
+    };
+
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(failing, "ws-1")));
+
+    expect(exit._tag).toBe("Left");
+    if (exit._tag !== "Left") return;
+    // The RAW cause travels, unwrapped — so an operator sees the real fault
+    // rather than a retry suggestion that will never succeed.
+    const message = String(exit.left.cause);
+    expect(message).toContain("connection terminated");
+    expect(message).not.toContain("Retry in a few seconds");
   });
 
   it("takes the identity-mutation lock even when there is nothing to promote", async () => {

@@ -50,6 +50,7 @@ import { isUnknownArray, logGrantAnomalies } from "@atlas/api/lib/brain/acl";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
   IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_RESET_SQL,
   IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
   isLockTimeout,
 } from "@atlas/api/lib/brain/identity";
@@ -526,8 +527,13 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
           AND d.id = ANY($3::uuid[])
           AND ${supersessionCollisionPredicate("d", "p")})`;
       default: {
+        // THROWS rather than returning `exhaustive`. At runtime that spelling
+        // returns the argument itself and splices it into the statement text —
+        // of the two available forms the fix first picked the one whose failure
+        // mode is "unvalidated string into SQL". Every other exhaustive default
+        // in this codebase throws.
         const exhaustive: never = arbitration;
-        return exhaustive;
+        throw new Error(`supersedeStampSql: unhandled arbitration ${JSON.stringify(exhaustive)}`);
       }
     }
   })();
@@ -941,6 +947,18 @@ export function promoteBrainFacts(
         }
         return new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause });
       },
+    });
+    // RESET, immediately. `SET LOCAL` reverts at COMMIT, not at the next
+    // statement, so leaving it set bounds every later lock wait in this
+    // transaction — `DRAFT_FACTS_SQL`'s `FOR UPDATE` (which exists to WAIT for a
+    // concurrent publish), the promote UPDATEs, and `admin-publish.ts`'s phase-4
+    // archive loop, which runs after `runPublishPhases` returns. A publish that
+    // used to block and commit would instead roll back everything already
+    // promoted, on a transient class, under a generic message.
+    yield* Effect.tryPromise({
+      try: () => tx.query(IDENTITY_MUTATION_LOCK_RESET_SQL),
+      catch: (cause) =>
+        new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
     });
 
     const drafts = yield* Effect.tryPromise({

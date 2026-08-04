@@ -443,8 +443,8 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
  *     `predicate` and fails for the other two.
  *
  * (`identity-pg.test.ts` is the separate, older pinning of 0187 against
- * `lexicalNorm`. It does not mention this function; naming it here was wrong
- * and the review panel caught it.)
+ * `lexicalNorm`, row by row over its own corpus. It does not reference this
+ * function at all — do not read it as covering the SQL twin.)
  *
  * Not a database dependency, despite the name — this module imports no runtime
  * value (only a type, erased at compile time) and still holds only the pure
@@ -584,15 +584,57 @@ export const IDENTITY_MUTATION_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hash
  * The exposure is real rather than theoretical now that the decide transaction
  * holds this lock across a deliberately-unindexed workspace-wide scan.
  *
- * `SET LOCAL`, so it reverts at COMMIT and cannot leak onto a pooled
- * connection — the shape `residency/cleanup.ts` already uses. On timeout
- * Postgres raises `55P03 lock_not_available`, which both callers turn into a
- * typed refusal naming the contending operation and telling the caller to
- * retry. 10s is chosen to be far longer than any human-paced alias decision on
- * a workspace of realistic size and far shorter than a proxy's idle timeout, so
- * the failure surfaces as our message rather than as a dropped connection.
+ * ## It MUST be reset, and that is the whole subtlety
+ *
+ * `SET LOCAL` reverts at COMMIT, not at the next statement — so a bound set and
+ * left in place governs **every subsequent lock wait in the transaction**, which
+ * at both call sites is a lot more than the acquisition it was written for:
+ *
+ *   - on the publish path, `DRAFT_FACTS_SQL`'s `FOR UPDATE` (whose own docstring
+ *     says it exists to serialize two concurrent publishes and therefore WANTS
+ *     to wait), the promote UPDATEs, the supersede stamp, and — because
+ *     `runPublishPhases` is not the last thing in `admin-publish.ts`'s
+ *     transaction — the phase-4 connection-archive loop's `FOR UPDATE` on
+ *     `workspace_plugins`;
+ *   - on the decide path, the vocabulary lock (5022), the proposal claim, and
+ *     every row lock the workspace-wide re-key takes.
+ *
+ * Turning those waits into failures is a behaviour change nobody asked for: a
+ * publish that used to block for eleven seconds and commit would instead roll
+ * back everything already promoted, under a generic message, on a class that is
+ * transient. So {@link IDENTITY_MUTATION_LOCK_RESET_SQL} is issued immediately
+ * after the acquisition and the pair is what callers use. Getting this wrong is
+ * exactly what happened on the first cut, and both reviewers caught it.
+ *
+ * `residency/cleanup.ts:432` uses the un-reset shape, and the difference is why
+ * it is not precedent here: there the `SET LOCAL` is the first statement of a
+ * transaction that same function owns end to end, so transaction-wide scope IS
+ * the intent. Here it is issued mid-transaction by one phase of a multi-phase
+ * transaction owned by another module.
+ *
+ * On timeout Postgres raises `55P03 lock_not_available`. The PUBLISH caller
+ * turns that into a typed refusal naming the contending operation and telling
+ * the caller to retry; the decide caller lets it propagate untyped for now, and
+ * #5025 — which is what gives that path an HTTP route to answer — is where it
+ * gets a message. Said plainly because the symmetric claim reads true and is not.
+ *
+ * 10s bounds the wait against the DECIDE transaction's deliberately-unindexed
+ * workspace-wide re-key scan — a machine-paced duration, not the human's
+ * deliberation, which happens before the request. Far shorter than a proxy's
+ * idle timeout, so the failure surfaces as our message rather than as a dropped
+ * connection.
  */
 export const IDENTITY_MUTATION_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '10s'`;
+
+/**
+ * Undo {@link IDENTITY_MUTATION_LOCK_TIMEOUT_SQL} — issued immediately after the
+ * acquisition so the bound covers that statement and nothing else.
+ *
+ * `DEFAULT` rather than `'0'`: it restores whatever the deployment configured
+ * rather than asserting "no timeout", which would silently override a
+ * server-level `lock_timeout` an operator set on purpose.
+ */
+export const IDENTITY_MUTATION_LOCK_RESET_SQL = `SET LOCAL lock_timeout = DEFAULT`;
 
 /** Postgres' SQLSTATE for a `lock_timeout` expiry. */
 export const LOCK_NOT_AVAILABLE = "55P03";

@@ -322,13 +322,18 @@ describe("the decide seam's allowlist carve-out is column-scoped (#5024)", () =>
     // today and were both missing from the list, so a re-key that wrote either
     // would have passed here while the shell guard cannot fire on an allowlisted
     // file.
-    // Anchored at line start and greedy to the LAST `)'`, and both matter:
-    // unanchored it matches `ORM_UPDATE_GATED_COLUMNS` (the camelCase Drizzle
-    // list, which would silently make every assertion below compare the wrong
-    // spellings), and non-greedy it stops inside the nested
-    // `(pre_widening_)` group and truncates the set to two entries. Both were
-    // real: the first shipped and failed loudly, which is why the four
-    // `required` names below exist.
+    // Anchored at line start, and greedy to the LAST `)'`.
+    //
+    // Neither is load-bearing against the guard AS IT STANDS — measured: the
+    // lazy variant captures the same text (the only `)` followed by `'` is the
+    // line terminator, since `(pre_widening_)` is followed by `?`), and the
+    // unanchored variant also captures the same text because
+    // `UPDATE_GATED_COLUMNS=` appears before `ORM_UPDATE_GATED_COLUMNS=` and
+    // `exec` takes the leftmost match. Both spellings are kept because the
+    // anchor WOULD matter the day the ORM line moves above this one, and the
+    // `required` names below are what turns a silently-wrong capture into a
+    // failure. Said conditionally rather than as war stories: an earlier draft
+    // of this comment claimed both hazards were live, and neither is.
     const gated = /^UPDATE_GATED_COLUMNS='\((.*)\)'/m.exec(guard)?.[1];
     expect(gated, "check-brain-fact-promotion.sh no longer defines UPDATE_GATED_COLUMNS").toBeDefined();
     // `(pre_widening_)?visible_to` expands to both spellings; every other
@@ -1369,13 +1374,15 @@ describeIfPg("the alias decision seam (#5023)", () => {
     /**
      * The vocabulary lock is the first statement that TOUCHES anything.
      *
-     * `SET LOCAL lock_timeout` may precede it and does on the decide path — it
-     * reads nothing, writes nothing and locks nothing, so it does not weaken
-     * "locks before any row is touched". It is skipped by NAME rather than by
-     * index so the assertion keeps meaning the same thing if the bound moves.
+     * `SET LOCAL lock_timeout` is skipped — it reads nothing, writes nothing and
+     * locks nothing. Matched on the FULL prefix rather than on `SET LOCAL`,
+     * because `SET LOCAL role` / `search_path` / `default_transaction_isolation`
+     * emphatically do not share that property and this assertion is named "before
+     * any row is touched".
      */
+    const isBound = (sql: string): boolean => sql.startsWith("SET LOCAL lock_timeout");
     const expectLockedFirst = (statements: { sql: string; params: unknown[] }[]) => {
-      const touching = statements.filter((s) => !s.sql.startsWith("SET LOCAL"));
+      const touching = statements.filter((s) => !isBound(s.sql));
       expect(touching[0]?.sql).toContain("pg_advisory_xact_lock");
       expect(touching[0]?.params).toEqual([VOCABULARY_LOCK_NAMESPACE, WS]);
     };
@@ -1419,20 +1426,41 @@ describeIfPg("the alias decision seam (#5023)", () => {
       // against a broken implementation. Stated plainly because it is a real
       // limit — nothing here would notice if publish stopped taking 5024
       // altogether. `content-mode/adapters/__tests__/brain-facts.test.ts` carries
-      // that half (the mutation table credits it for rows 14 and 15);
+      // that half (the mutation table credits it for rows 16–18);
       // `vocabulary-rekey-pg.test.ts` never calls `promoteBrainFacts` at all.
-      const touching = statements.filter((s) => !s.sql.startsWith("SET LOCAL"));
+      const touching = statements.filter((s) => !isBound(s.sql));
       expect(touching[1]?.sql).toContain("pg_advisory_xact_lock");
       expect(touching[1]?.params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, WS]);
       expect(touching[2]?.sql).toContain("SELECT");
 
-      // …and the BOUND precedes both locks, because a `SET LOCAL lock_timeout`
-      // issued after the acquisition it is meant to bound is not a bound at all
-      // — `pg_advisory_xact_lock` would already have waited forever.
-      const timeoutAt = statements.findIndex((s) => s.sql.startsWith("SET LOCAL lock_timeout"));
-      const firstLockAt = statements.findIndex((s) => s.sql.includes("pg_advisory_xact_lock"));
-      expect(timeoutAt, "the decide transaction takes no lock_timeout bound").toBeGreaterThanOrEqual(0);
-      expect(timeoutAt).toBeLessThan(firstLockAt);
+      // The BOUND brackets the 5024 acquisition and NOTHING ELSE — set
+      // immediately before it, reset immediately after.
+      //
+      // Both halves are load-bearing and the first cut got both wrong. Set too
+      // early it also bounds 5022, which producers contend on one batch
+      // iteration at a time, so a batch that used to wait would throw. Left
+      // un-reset it bounds every row lock the workspace-wide re-key takes below,
+      // because `SET LOCAL` reverts at COMMIT rather than at the next statement.
+      const sqls = statements.map((s) => s.sql);
+      const boundAt = sqls.findIndex((s) => s.startsWith("SET LOCAL lock_timeout = '"));
+      const resetAt = sqls.findIndex((s) => s.startsWith("SET LOCAL lock_timeout = DEFAULT"));
+      const vocabLockAt = sqls.findIndex(
+        (s, i) =>
+          s.includes("pg_advisory_xact_lock") &&
+          statements[i]?.params?.[0] === VOCABULARY_LOCK_NAMESPACE,
+      );
+      const identityLockAt = sqls.findIndex(
+        (s, i) =>
+          s.includes("pg_advisory_xact_lock") &&
+          statements[i]?.params?.[0] === IDENTITY_MUTATION_LOCK_NAMESPACE,
+      );
+      expect(boundAt, "the decide transaction takes no lock_timeout bound").toBeGreaterThanOrEqual(0);
+      expect(resetAt, "the lock_timeout bound is never reset — it leaks to the whole transaction").toBeGreaterThanOrEqual(0);
+      // 5022 is taken BEFORE the bound, so it stays unbounded.
+      expect(vocabLockAt).toBeLessThan(boundAt);
+      // …and the bound brackets 5024 exactly.
+      expect(boundAt).toBeLessThan(identityLockAt);
+      expect(identityLockAt).toBeLessThan(resetAt);
     });
 
     it("the two lock namespaces are distinct — one lock taken twice is not two locks", async () => {

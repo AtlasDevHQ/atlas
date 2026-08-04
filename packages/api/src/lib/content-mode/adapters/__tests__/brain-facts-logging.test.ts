@@ -55,9 +55,11 @@ const { promoteBrainFacts } = await import("@atlas/api/lib/content-mode/adapters
 // static import is hoisted above the `mock.module` call above, and while
 // `identity.ts` happens not to pull the logger today, "happens not to" is the
 // property that changes silently.
-const { IDENTITY_MUTATION_LOCK_SQL, IDENTITY_MUTATION_LOCK_TIMEOUT_SQL } = await import(
-  "@atlas/api/lib/brain/identity",
-);
+const {
+  IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
+  IDENTITY_MUTATION_LOCK_RESET_SQL,
+} = await import("@atlas/api/lib/brain/identity");
 const { PublishPhaseError } = await import("@atlas/api/lib/content-mode/port");
 type ModeTxClient = import("@atlas/api/lib/content-mode/port").ModeTxClient;
 
@@ -92,7 +94,11 @@ function tx(
       // The identity-mutation advisory lock (#5024) — void, and nothing here
       // reads it. The sibling double records it; this one does not need to,
       // since every assertion in this file is about log output.
-      if (sql === IDENTITY_MUTATION_LOCK_SQL || sql === IDENTITY_MUTATION_LOCK_TIMEOUT_SQL) {
+      if (
+        sql === IDENTITY_MUTATION_LOCK_SQL ||
+        sql === IDENTITY_MUTATION_LOCK_TIMEOUT_SQL ||
+        sql === IDENTITY_MUTATION_LOCK_RESET_SQL
+      ) {
         return { rows: [] };
       }
       if (/^\s*UPDATE/i.test(sql)) {

@@ -154,9 +154,10 @@
  * gate takes 5024 and nothing else; the region importer takes 5022 and nothing
  * else. Nothing that holds 5024 ever asks for 5022, so no cycle can form.
  *
- * It exists because the publish gate reads collision pairs UNLOCKED and stamps
- * `valid_to` afterwards, and a REMOVAL landing in that window retires a belief
- * whose collision no longer holds. `lib/brain/identity.ts` carries the full
+ * It exists because the publish gate READ collision pairs unlocked and stamped
+ * `valid_to` afterwards, so a REMOVAL landing in that window retired a belief
+ * whose collision no longer held. Publish takes 5024 before its first read now,
+ * which is what closed it. `lib/brain/identity.ts` carries the full
  * argument, including why neither 4771 nor 5022 could serve.
  */
 
@@ -167,6 +168,7 @@ import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
   IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_RESET_SQL,
   IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
   identityKeySql,
   isSlotPosition,
@@ -1135,13 +1137,25 @@ async function lockVocabulary(tx: VocabularyExecutor, workspaceId: string): Prom
  * here: alias decisions are human-paced and per-workspace.
  */
 async function lockIdentityMutation(tx: VocabularyExecutor, workspaceId: string): Promise<void> {
-  // BOUNDED, for `promoteBrainFacts`'s reason inverted: #5025's route builds one
-  // of these from an HTTP request, and `pg_advisory_xact_lock` waits forever
-  // rather than erroring — so an unbounded acquisition is a human-facing request
-  // that hangs with no signal. `SET LOCAL` reverts at COMMIT.
-  await tx.query(IDENTITY_MUTATION_LOCK_TIMEOUT_SQL);
+  // 5022 FIRST, and deliberately UNBOUNDED. Producers contend on the vocabulary
+  // lock one batch iteration at a time (`proposeAliasEdges` is sequential for
+  // exactly that reason), and a bound here would make batch B's decide THROW
+  // where it used to wait — killing a whole producer run mid-flight. The propose
+  // path takes no bound at all on the same argument, and its test says so.
   await lockVocabulary(tx, workspaceId);
+
+  // 5024 BOUNDED, and reset immediately. `pg_advisory_xact_lock` waits forever
+  // rather than erroring, so an unbounded acquisition of the namespace publish
+  // also holds is a request that hangs with no signal — and #5025's route builds
+  // one of these from an HTTP request.
+  //
+  // The reset is not tidiness: `SET LOCAL` reverts at COMMIT, not at the next
+  // statement, so leaving it set would bound the proposal claim and every row
+  // lock the workspace-wide re-key takes below — turning waits that are correct
+  // into failures. The first cut of this fix did exactly that.
+  await tx.query(IDENTITY_MUTATION_LOCK_TIMEOUT_SQL);
   await tx.query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, workspaceId]);
+  await tx.query(IDENTITY_MUTATION_LOCK_RESET_SQL);
 }
 
 /**
@@ -1298,11 +1312,24 @@ async function rekeyDriftedFacts(
 ): Promise<void> {
   let rows: readonly unknown[];
   try {
-    // `rows ?? []`, because `VocabularyExecutor` is deliberately satisfiable by
-    // any `{ query }` — a hand-written double returning `{}` would otherwise
-    // throw a bare TypeError out of the one function whose job is the
-    // observability line, rolling back a real approval over a logging concern.
-    rows = (await tx.query(REKEY_DRIFTED_FACTS_SQL[position], [workspaceId])).rows ?? [];
+    // REFUSED, not defaulted. `VocabularyExecutor` is deliberately satisfiable
+    // by any `{ query }`, and the earlier `?? []` turned an executor that is not
+    // answering as a Postgres client into the line "Drift re-key complete —
+    // existing facts now carry the keys this vocabulary decides" with
+    // `rekeyed: 0`: a success message for a statement whose result was never
+    // observed, which is the exact shape this slice exists to eliminate.
+    // `vocabulary.ts`'s lock probe makes the same call for the same reason
+    // ("Refusing rather than assuming the lock is held").
+    const result = await tx.query(REKEY_DRIFTED_FACTS_SQL[position], [workspaceId]);
+    if (!Array.isArray(result.rows)) {
+      throw new Error(
+        `rekeyDriftedFacts: the executor returned no usable \`rows\` for the ${position} re-key ` +
+          `(workspace ${workspaceId}, proposal ${proposalId}). The statement's result was never ` +
+          "observed, so whether the corpus was re-keyed is unknown — refusing rather than " +
+          "committing an approval that may not have moved a single key.",
+      );
+    }
+    rows = result.rows;
   } catch (err) {
     // LOGGED before it propagates. `decideAliasProposal`'s outer catch narrows
     // on `AliasApplyRefusedError` and re-throws everything else WITHOUT a log
@@ -1520,10 +1547,11 @@ async function approveProposal(
   // STAMP. Conditional on the claim token, so a decision that somehow outlived
   // its claim can never stamp over a takeover's. Unreachable today (the claim
   // and the stamp share a transaction under a workspace lock) and kept because
-  // the day the re-key moves OUT of this transaction — see the module header.
-  // #5024 landed the re-key and deliberately kept it INSIDE, so this stays
-  // unreachable; the stamp is what makes that a code change rather than a
-  // migration on a hot table.
+  // kept FOR the day the re-key moves OUT of this transaction, which is when it
+  // becomes reachable — see the module header. #5024 landed the re-key and
+  // deliberately kept it INSIDE, so it stays unreachable today; the stamp is
+  // what makes that future change a code change rather than a migration on a
+  // hot table.
   const stamped = await tx.query(
     `UPDATE brain_vocabulary_proposal
         SET status = 'approved',

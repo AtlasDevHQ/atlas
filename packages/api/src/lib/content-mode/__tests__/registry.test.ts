@@ -565,7 +565,8 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // 4. knowledge_documents → UPDATE (1 SQL)  [#4206]
     // 5. semantic_entities   → applyTombstones (2 SQL) + promoteDraftEntities (2 SQL)
     // 6. brain_facts         → SET LOCAL lock_timeout + identity-mutation
-    //                          advisory lock (2 SQL) [#5024] + SELECT drafts
+    //                          advisory lock + SET LOCAL lock_timeout = DEFAULT
+    //                          (3 SQL) [#5024] + SELECT drafts
     //                          FOR UPDATE + SELECT evidence grants
     //                          + UPDATE promotable (3 SQL) [#4769, #4823]
     const { client, calls } = makeMockPoolClient([
@@ -585,6 +586,7 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       // response and shifts every assertion below by one.
       { rows: [] }, //                                           SET LOCAL lock_timeout
       { rows: [] }, //                                           pg_advisory_xact_lock
+      { rows: [] }, //                                           SET LOCAL lock_timeout = DEFAULT
       // brain_facts (#4769): one compliant draft, one with an unusable grant.
       // The adapter classifies in TS (one grant grammar, no SQL restatement),
       // so the refusal shows up as a shorter id list on the UPDATE below.
@@ -650,9 +652,10 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(reports[5].refused?.map((r) => r.rowId)).toEqual(["f-ungranted"]);
     expect(reports[5].widened).toEqual([]);
 
-    // 13 since #5024: the eleven above plus the lock bound and the
-    // identity-mutation lock the brain phase now takes before it reads.
-    expect(calls).toHaveLength(13);
+    // 14 since #5024: the eleven above plus the lock bound, the
+    // identity-mutation lock the brain phase takes before it reads, and the
+    // reset that keeps the bound off every later statement in the transaction.
+    expect(calls).toHaveLength(14);
     expect(calls[0].sql).toContain("UPDATE workspace_plugins");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
@@ -665,12 +668,16 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // brain_facts: bound the wait, take the identity-mutation lock (#5024),
     // read the drafts under a row lock, read the grants of the episodes behind
     // them (#4823), then promote by explicit id.
-    expect(calls[8].sql).toContain("SET LOCAL lock_timeout");
+    expect(calls[8].sql).toContain("SET LOCAL lock_timeout = '");
     expect(calls[9].sql).toContain("pg_advisory_xact_lock");
-    expect(calls[10].sql).toMatch(/FROM brain_facts/);
-    expect(calls[10].sql).toMatch(/FOR UPDATE/i);
-    expect(calls[11].sql).toContain("brain_edges");
-    expect(calls[12].sql).toContain("UPDATE brain_facts");
+    // Reset BEFORE the drafts are read: `SET LOCAL` reverts at COMMIT, so an
+    // un-reset bound would govern the `FOR UPDATE` below — which exists to WAIT
+    // for a concurrent publish — and everything after it in the transaction.
+    expect(calls[10].sql).toContain("SET LOCAL lock_timeout = DEFAULT");
+    expect(calls[11].sql).toMatch(/FROM brain_facts/);
+    expect(calls[11].sql).toMatch(/FOR UPDATE/i);
+    expect(calls[12].sql).toContain("brain_edges");
+    expect(calls[13].sql).toContain("UPDATE brain_facts");
 
     // Every phase is org-scoped on $1. The brain promote additionally binds the
     // promotable id list on $2 — the refusal is enforced by which rows we ask
@@ -681,11 +688,12 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // predicate: the bound binds nothing and the lock binds `[namespace, org]`,
     // so neither is org-scoped on `$1` and a blanket loop would fail on both.
     // Their own params are asserted immediately after.
-    for (const c of [...calls.slice(0, 8), calls[10]]) expect(c.params).toEqual(["org-1"]);
+    for (const c of [...calls.slice(0, 8), calls[11]]) expect(c.params).toEqual(["org-1"]);
     expect(calls[8].params).toEqual([]);
     expect(calls[9].params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, "org-1"]);
-    expect(calls[11].params).toEqual(["org-1", ["f-ok"]]);
+    expect(calls[10].params).toEqual([]);
     expect(calls[12].params).toEqual(["org-1", ["f-ok"]]);
+    expect(calls[13].params).toEqual(["org-1", ["f-ok"]]);
   });
 
   it("invokes simple and exotic adapters in tuple order with a non-failing exotic (test tuple)", async () => {

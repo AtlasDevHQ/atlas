@@ -57,6 +57,7 @@ const RECONCILED_SECTIONS = [
   "brainFacts",
   "brainEdges",
   "factAudienceMembers",
+  "brainVocabularyEdges",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 /**

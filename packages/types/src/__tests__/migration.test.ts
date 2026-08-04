@@ -186,6 +186,7 @@ describe("migration types", () => {
       brainFacts: { imported: 8, skipped: 2 },
       brainEdges: { imported: 5, skipped: 0 },
       factAudienceMembers: { imported: 3, skipped: 1 },
+      brainVocabularyEdges: { imported: 2, skipped: 1 },
     };
 
     expect(result.conversations.imported + result.conversations.skipped).toBe(7);

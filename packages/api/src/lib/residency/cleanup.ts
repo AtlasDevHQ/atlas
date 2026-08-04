@@ -181,8 +181,24 @@ export const CLEANUP_TABLE_RULES = {
   brain_episodes: { kind: "column", column: "workspace_id" },
   brain_edges: { kind: "column", column: "workspace_id" },
   fact_audience_member: { kind: "column", column: "workspace_id" },
+  // The curated identity vocabulary's approved edges (#5022, ADR-0037 §6).
+  // Column-scoped, and safe in the column phase only because its one dependant
+  // — `brain_vocabulary_target`, a RESTRICT FK — is deleted in the earlier
+  // phase; see its rule below.
+  brain_vocabulary_edge: { kind: "column", column: "workspace_id" },
 
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
+  // The vocabulary's derived closure (#5022). `expression` rather than
+  // `column`, and the predicate IS just the column — the kind is chosen for its
+  // PHASE, exactly as `brain_facts` above is `parent`-scoped for phase rather
+  // than for scoping. `fk_brain_vocabulary_target_edge` is RESTRICT, so these
+  // rows must be gone before the column phase reaches `brain_vocabulary_edge`,
+  // or the whole sweep fails outright on any workspace that has approved an
+  // alias. Demoting it to `{ kind: "column", column: "workspace_id" }` would
+  // currently happen to work — declaration order puts it ahead of the edge
+  // table — which is an invisible property of literal ordering rather than a
+  // decision; the tripwire test pins this shape so it stays one.
+  brain_vocabulary_target: { kind: "expression", predicate: "workspace_id = $1" },
   // Scheduling state for the audience re-verifiers (#4971) — "this audience has
   // had its turn", read by nothing but the scan's ORDER BY. Workspace-scoped and
   // therefore deletable by column, like the membership table it sits beside, but

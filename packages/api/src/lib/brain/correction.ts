@@ -154,7 +154,7 @@ import {
   isUnknownArray,
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
-import { identityAlias, slotKey, type AliasLookup } from "@atlas/api/lib/brain/identity";
+import { identityVocabulary, slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
   INSERT_PROVENANCE_EDGE_SQL,
@@ -330,18 +330,21 @@ export interface CorrectionDeps {
    */
   readonly auditWriteTimeoutMs?: number;
   /**
-   * The workspace's identity vocabulary (ADR-0037 §6 / #5016), threaded for
+   * The workspace's identity vocabulary (ADR-0037 §6, #5022), threaded for
    * `reconcileFacts`' reason and used at BOTH of this module's key sites: the
    * supersede guard's slot comparison, and the replacement claim it hands to
-   * reconcile. Defaults to `identityAlias`, which is the whole vocabulary
-   * today.
+   * reconcile. Defaults to `identityVocabulary` — no approved alias.
    *
-   * Both sites have to use the SAME lookup the ingest path used, or the guard
-   * refuses a different set than the corpus considers identical and the
+   * Both sites have to use the SAME vocabulary the ingest path used, or the
+   * guard refuses a different set than the corpus considers identical and the
    * replacement lands keyed under a different identity function than every
    * other row in the workspace. Neither is visible at rest.
+   *
+   * POSITION-SCOPED since #5022: the guard below compares OBJECTS, so it reads
+   * `vocabulary.object` and cannot silently pick up a predicate-position
+   * approval.
    */
-  readonly alias?: AliasLookup;
+  readonly vocabulary?: ClaimVocabulary;
 }
 
 /** What became of one correction request. */
@@ -636,7 +639,7 @@ export async function correctFact(
   const { ctx, factId, verb, requestId } = request;
   const now = deps.now ?? (() => new Date());
   const withTransaction = deps.withTransaction ?? withBrainTransaction;
-  const alias = deps.alias ?? identityAlias;
+  const vocabulary = deps.vocabulary ?? identityVocabulary;
   const newCorrectionId = deps.newCorrectionId ?? randomUUID;
 
   // ── Authority ─────────────────────────────────────────────────────────
@@ -820,12 +823,27 @@ export async function correctFact(
         // The keys are RE-DERIVED from the surfaces rather than read: the
         // target read cannot project a key (`keys-not-on-the-wire.test.ts`), so
         // this is the one place ADR-0037 §8's "carry, never re-derive" cannot
-        // be honoured literally. Equal to the stored key while `alias` is
-        // deterministic and unchanged since the target was ingested; #5016 has
-        // to revisit it when the vocabulary becomes versioned.
+        // be honoured literally. Equal to the stored key while the vocabulary
+        // is deterministic AND unchanged since the target was ingested.
+        //
+        // ⚠️ That second condition stopped being free at #5022. Until then
+        // `alias` was the identity function and could not move; it is now a data
+        // table an approval mutates, so a target ingested before an approval and
+        // corrected after it is re-derived under a DIFFERENT vocabulary than
+        // keyed it. The comparison then widens or narrows relative to the stored
+        // slot — it can refuse a supersession the corpus considers distinct, or
+        // permit one it considers identical.
+        //
+        // Left as a known residual rather than repaired here, because the repair
+        // is not local: ADR-0037 §7's drift re-key rewrites the affected rows
+        // inside the approval's own decide transaction, which is #5023's, and
+        // §8 explicitly declines a per-row vocabulary version stamp that would
+        // let this site detect the skew on its own. The exposure is bounded to
+        // the window between an approval and that re-key.
         if (
           replacement !== null &&
-          slotKey(replacement.object, alias) === slotKey(target.object, alias)
+          slotKey(replacement.object, vocabulary.object) ===
+            slotKey(target.object, vocabulary.object)
         ) {
           throw new CorrectionRefusedError(
             CORRECTION_REFUSAL_REASONS.replacementIdentical,
@@ -933,7 +951,7 @@ export async function correctFact(
             actor,
             correctionSourceId,
             grantTokens: target.grantTokens,
-            alias,
+            vocabulary,
           });
         case "re-authority":
           return applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "reAuthority", actor);
@@ -1377,7 +1395,7 @@ interface SupersedeInputs {
   readonly correctionSourceId: string;
   readonly grantTokens: readonly string[];
   /** The workspace's vocabulary, so the replacement keys the way ingest does. */
-  readonly alias: AliasLookup;
+  readonly vocabulary: ClaimVocabulary;
 }
 
 async function applySupersede(
@@ -1439,7 +1457,7 @@ async function applySupersede(
           predicateCardinality: target.cardinality,
         },
       ],
-      alias: inputs.alias,
+      vocabulary: inputs.vocabulary,
       producer: "correction",
       // An authored claim is not extracted from anything.
       extractedAt: null,

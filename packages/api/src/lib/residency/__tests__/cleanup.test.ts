@@ -320,6 +320,37 @@ describe("cleanup scope tripwire (#4458 ↔ #4460 lockstep)", () => {
     expect(columnsOf("brain_facts")).toContain("workspace_id");
   });
 
+  it("the vocabulary closure is expression-scoped for PHASE, not for scoping (#5022)", () => {
+    // Same shape as the brain_facts pin above, one table over.
+    // `brain_vocabulary_target` carries its own workspace_id, so a `column`
+    // rule would scope it correctly — and would still be a bug:
+    // `fk_brain_vocabulary_target_edge` is RESTRICT, so the closure rows must
+    // be gone before the column phase reaches `brain_vocabulary_edge`, or the
+    // sweep fails on every workspace that has approved an alias.
+    //
+    // `parent` is unavailable here rather than merely unchosen — that rule
+    // shape emits `SELECT id FROM <parent>`, and the edge table's key is
+    // (workspace_id, slot_position, from_norm) with no `id` column at all.
+    expect(CLEANUP_TABLE_RULES.brain_vocabulary_target).toEqual({
+      kind: "expression",
+      predicate: "workspace_id = $1",
+    });
+    // Non-vacuous in both directions: the column really exists (so the
+    // expression rule is a deliberate choice, not the only option), and the
+    // parent it must precede really is column-scoped.
+    expect(columnsOf("brain_vocabulary_target")).toContain("workspace_id");
+    expect(columnsOf("brain_vocabulary_edge")).not.toContain("id");
+    expect(CLEANUP_TABLE_RULES.brain_vocabulary_edge).toEqual({
+      kind: "column",
+      column: "workspace_id",
+    });
+    // The ordering itself, not merely the kinds that imply it.
+    const statements = buildCleanupStatements();
+    const indexOf = (table: string) => statements.findIndex((s) => s.table === table);
+    expect(indexOf("brain_vocabulary_target")).toBeGreaterThanOrEqual(0);
+    expect(indexOf("brain_vocabulary_target")).toBeLessThan(indexOf("brain_vocabulary_edge"));
+  });
+
   it("every parent-scoped delete precedes its parent table's delete", () => {
     // The general form of the rule above: a parent rule's subquery needs the
     // parent rows to still exist, and (for RESTRICT FKs) the child rows must

@@ -56,6 +56,7 @@ import {
   type ReconcileExecutor,
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 
@@ -892,20 +893,22 @@ describe("the draft candidate", () => {
   });
 
   test("the workspace's vocabulary reaches every slot", async () => {
-    // The `alias` seam, through the stage. Without this the whole threading is
-    // unfalsifiable: the default IS `identityAlias`, so dropping `request.alias`
-    // — or dropping the second argument at the three `slotKey` calls — changes
-    // nothing observable and leaves the suite green.
+    // The vocabulary seam, through the stage. Without this the whole threading
+    // is unfalsifiable: the default IS the empty vocabulary, so dropping
+    // `request.vocabulary` — or dropping the second argument at the three
+    // `slotKey` calls — changes nothing observable and leaves the suite green.
     //
     // #5000's pair, closed by an ENTRY rather than by a normalization rule,
     // which is the whole reason the seam exists (ADR-0037 §6 / #5016). That the
     // pair does NOT collide without one is the corpus's `copula-pair` entry.
     const store = new FakeBrainStore();
-    const vocabulary = (norm: string): string =>
-      norm === "is priced at" ? "priced at" : norm;
+    const vocabulary = {
+      ...identityVocabulary,
+      predicate: (norm: string): string => (norm === "is priced at" ? "priced at" : norm),
+    };
 
     await run(store, {
-      alias: vocabulary,
+      vocabulary,
       candidates: [candidate({ predicate: "Is_Priced At" })],
     });
 
@@ -916,6 +919,37 @@ describe("the draft candidate", () => {
     expect(store.facts[0]?.slot).toMatchObject({ predicate: "priced at" });
     // …and the surface the producer emitted is still what the row records.
     expect(store.facts[0]?.predicate).toBe("Is_Priced At");
+  });
+
+  test("a predicate-position vocabulary does not reach the subject or object slots", async () => {
+    // ADR-0037 §6's position-scoping, at the CALL SITE rather than in the store
+    // (`vocabulary-pg.test.ts` holds the schema half). The bug this prohibits is
+    // the shape #5020 shipped: one bare `AliasLookup` threaded through all three
+    // `slotKey` calls, under which a PREDICATE approval re-keys SUBJECTS
+    // workspace-wide — silently, and in the direction nothing undoes.
+    //
+    // The rule is a bare common noun, which is T4 §2's actual population:
+    // warehouse predicates are `price`, `owner`, `status`, `tier`, `region`,
+    // exactly the norms most likely to also be subject or object surfaces. Here
+    // the same word `owner` sits at all three positions of one claim, so a
+    // vocabulary applied to the wrong slot is visible in the wrong slot's key.
+    const store = new FakeBrainStore();
+    const vocabulary = {
+      ...identityVocabulary,
+      predicate: (norm: string): string => (norm === "owner" ? "account owner" : norm),
+    };
+
+    await run(store, {
+      vocabulary,
+      candidates: [candidate({ subject: "Owner", predicate: "owner", object: "owner" })],
+    });
+
+    const keys = store.keyBindsFor("insertFact")[0];
+    expect(keys).toMatchObject({ predicate: "account owner" });
+    // The prohibition. Both of these are `"account owner"` under a
+    // position-agnostic vocabulary, and the surfaces are spelled off normal form
+    // on the subject side so a broken fold cannot be what makes them pass.
+    expect(keys).toMatchObject({ subject: "owner", object: "owner" });
   });
 
   test("a throwing vocabulary aborts the episode — it never degrades to the un-aliased norm", async () => {
@@ -931,7 +965,9 @@ describe("the draft candidate", () => {
       throw new Error("vocabulary unavailable");
     };
 
-    await expect(run(store, { alias: boom })).rejects.toThrow("vocabulary unavailable");
+    await expect(
+      run(store, { vocabulary: { ...identityVocabulary, predicate: boom } }),
+    ).rejects.toThrow("vocabulary unavailable");
     // Nothing written, and no transaction opened — the keys are computed in the
     // preparation loop, above the transaction.
     expect(store.facts).toHaveLength(0);

@@ -25,6 +25,7 @@ import {
   type InternalPool,
 } from "@atlas/api/lib/db/internal";
 import { exportWorkspaceBundle } from "../export";
+import { recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import { importBundle } from "../../../api/routes/admin-migrate";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
 import type { ImportResult } from "@useatlas/types";
@@ -195,6 +196,20 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
        VALUES ($1, 'eng', 'user-1', 'slack')`,
       [SOURCE_ORG],
     );
+
+    // ── The curated identity vocabulary (#5022, ADR-0037 §6/§8) ──
+    // A COMPRESSED chain, which is the only shape that can tell "the closure
+    // was recomputed" from "the closure was copied": the bundle carries no
+    // closure section at all, so `is priced at` can only land on `unit price`
+    // in the target if the importer walked the two edges itself. A flat
+    // one-edge vocabulary would round-trip identically under both designs.
+    await pool.query(
+      `INSERT INTO brain_vocabulary_edge (workspace_id, slot_position, from_norm, to_norm, approved_by)
+       VALUES ($1, 'predicate', 'is priced at', 'priced at', 'user-1'),
+              ($1, 'predicate', 'priced at', 'unit price', NULL)`,
+      [SOURCE_ORG],
+    );
+    await recomputeEffectiveTargets(pool, SOURCE_ORG, "predicate");
   }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -249,6 +264,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainFacts: 2, // the live claim AND the superseded/tombstoned one
         brainEdges: 2,
         factAudienceMembers: 1,
+        // The approved edges only. There is no `brainVocabularyTargets` count
+        // because the derived closure does not ride the bundle — §8 has the
+        // import recompute it, and the assertion below is what proves it did.
+        brainVocabularyEdges: 2,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would
@@ -284,6 +303,24 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(result.brainFacts).toEqual({ imported: 2, skipped: 0 });
       expect(result.brainEdges).toEqual({ imported: 2, skipped: 0 });
       expect(result.factAudienceMembers).toEqual({ imported: 1, skipped: 0 });
+      expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0 });
+
+      // The vocabulary's closure is REBUILT in the target, not carried. Nothing
+      // in the bundle says `is priced at` resolves to `unit price` — the export
+      // ships two edges and no closure — so this row exists only if the importer
+      // walked the compressed chain itself. A copy-the-closure importer would
+      // leave the target with an EMPTY `brain_vocabulary_target`, and every
+      // claim keyed there would silently key onto the un-aliased norm.
+      const targetClosure = await pool.query<{ norm: string; effective_target: string }>(
+        `SELECT norm, effective_target FROM brain_vocabulary_target
+          WHERE workspace_id = $1 AND slot_position = 'predicate'
+          ORDER BY norm`,
+        [TARGET_ORG],
+      );
+      expect(targetClosure.rows).toEqual([
+        { norm: "is priced at", effective_target: "unit price" },
+        { norm: "priced at", effective_target: "unit price" },
+      ]);
 
       // The brain survives the hop INTACT — not just row counts, but every
       // property that makes a fact trustworthy. A migration that moved the
@@ -472,6 +509,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainFacts: { imported: 0, skipped: 2 },
         brainEdges: { imported: 0, skipped: 2 },
         factAudienceMembers: { imported: 0, skipped: 1 },
+        // Skipped on the at-most-one-parent key. A re-import must never apply
+        // an arriving edge over a target-region decision — that is the rewrite
+        // ADR-0037 §6 forbids, reached through the import door.
+        brainVocabularyEdges: { imported: 0, skipped: 2 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a

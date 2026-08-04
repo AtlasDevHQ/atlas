@@ -271,7 +271,13 @@ describe("runMigrations", () => {
     //   three slot consumers onto the keys: rows written in the 0187→#5020
     //   window are unkeyed and would silently stop corroborating, earning
     //   tension edges, and being supersedable at publish) = 189.
-    expect(count).toBe(189);
+    //   Plus 0189 (brain_vocabulary — the curated identity vocabulary as TWO
+    //   relations: `brain_vocabulary_edge` holds the human's approved alias
+    //   decisions at-most-one-parent, and `brain_vocabulary_target` holds the
+    //   transitive closure `alias` reads, so removing an edge is a
+    //   recomputation that restores what it was hiding rather than a
+    //   destructive write, #5022 / ADR-0037 §6) = 190.
+    expect(count).toBe(190);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -489,6 +495,7 @@ describe("runMigrations", () => {
         "0186_brain_audience_reverify_attempt.sql",
         "0187_brain_fact_identity_keys.sql",
         "0188_rekey_unkeyed_brain_facts.sql",
+        "0189_brain_vocabulary.sql",
       ],
     });
 

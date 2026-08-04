@@ -55,6 +55,8 @@ export interface ExportManifest {
     brainFacts?: number;
     brainEdges?: number;
     factAudienceMembers?: number;
+    /** The curated identity vocabulary's approved edges (#5022, ADR-0037 §6). */
+    brainVocabularyEdges?: number;
   };
 }
 
@@ -430,6 +432,41 @@ export interface ExportedFactAudienceMember {
   createdAt: string;
 }
 
+/** The claim slot an alias edge governs (ADR-0037 §6). */
+export type ExportedVocabularySlotPosition = "subject" | "predicate" | "object";
+
+/**
+ * An approved alias edge — the curated identity vocabulary's durable half
+ * (#5022, ADR-0037 §6/§8).
+ *
+ * The human's decision, and the reason the vocabulary moves at all: the keys on
+ * every exported fact are `alias(lexicalNorm(surface))`, so a workspace that
+ * arrived without its vocabulary would keep keys nothing in the target region
+ * can explain or undo. `stays` would delete these at source after the grace
+ * period (#4458), destroying curated decisions and stranding the keys in one
+ * move.
+ *
+ * POSITION-SCOPED, and the position travels with the edge. Dropping it would
+ * collapse three independent forests into one at the import, which is the exact
+ * shape ADR-0037 §6 rules out: a predicate approval re-keying subjects.
+ *
+ * Both norms are LEXICAL NORMS, not surfaces. Not a key column — no read
+ * surface may project `subject_key`/`predicate_key`/`object_key`
+ * (`keys-not-on-the-wire.test.ts`), and this is the vocabulary that PRODUCES
+ * them, which ADR-0037 §8 exports by name.
+ */
+export interface ExportedBrainVocabularyEdge {
+  slotPosition: ExportedVocabularySlotPosition;
+  /** The norm aliased away. */
+  fromNorm: string;
+  /** The norm it was approved onto. */
+  toNorm: string;
+  /** The approver, or `null` for an auto-approved warehouse-derived edge. */
+  approvedBy: string | null;
+  approvedAt: string;
+}
+
+
 // ---------------------------------------------------------------------------
 // Full bundle
 // ---------------------------------------------------------------------------
@@ -459,6 +496,17 @@ export interface ExportBundle {
   brainEpisodes?: ExportedBrainEpisode[];
   brainEdges?: ExportedBrainEdge[];
   factAudienceMembers?: ExportedFactAudienceMember[];
+  /**
+   * The curated identity vocabulary's APPROVED EDGES (#5022, ADR-0037 §6/§8).
+   * Same optional-on-the-wire shape as the sections above.
+   *
+   * The derived closure (`brain_vocabulary_target`) has no section here on
+   * purpose: §8 has the import union the approved edges and RECOMPUTE the
+   * closure, so carrying it would ship a relation the importer must ignore —
+   * a source closure restored into a destination that already holds a
+   * vocabulary is a closure of neither.
+   */
+  brainVocabularyEdges?: ExportedBrainVocabularyEdge[];
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +532,12 @@ export interface ImportResult {
   brainFacts: { imported: number; skipped: number };
   brainEdges: { imported: number; skipped: number };
   factAudienceMembers: { imported: number; skipped: number };
+  /**
+   * The curated identity vocabulary (#5022). Counted on the EDGES — the
+   * decisions — because the closure is recomputed rather than imported, so a
+   * count of its rows would report work the bundle did not carry.
+   */
+  brainVocabularyEdges: { imported: number; skipped: number };
 }
 
 // ---------------------------------------------------------------------------

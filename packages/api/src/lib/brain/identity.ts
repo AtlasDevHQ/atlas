@@ -6,10 +6,14 @@
  *   key = alias( lexicalNorm( surface ) )
  *
  * This module owns the INNER one, and since #5020 it also owns the composition
- * ({@link slotKey}). `alias` — the curated, versioned workspace vocabulary
- * (ADR-0037 §6 / #5016) — does not exist yet, and until it does it is the
- * identity function, so every key produced today is exactly {@link identityKey}
- * of the surface: `lexicalNorm(surface)`, or `null` where that is empty.
+ * ({@link slotKey}). `alias` — the curated workspace vocabulary (ADR-0037 §6 /
+ * #5016) — is a data table since #5022, and lives in `lib/brain/vocabulary.ts`;
+ * this module keeps only its TYPE ({@link ClaimVocabulary}) and its empty case
+ * ({@link identityVocabulary}), so the pure lexical layer has no database
+ * dependency and the composition stays in one place.
+ *
+ * A workspace that has approved no alias still keys exactly {@link identityKey}
+ * of the surface — `lexicalNorm(surface)`, or `null` where that is empty.
  *
  * That made #5019 — the columns and the backfill — a slice with no observable
  * behaviour at all. It does NOT make #5020 one: materializing these keys and
@@ -175,16 +179,22 @@ export function identityKey(surface: string): string | null {
 }
 
 /**
- * The OUTER layer of `key = alias(lexicalNorm(surface))` — the curated,
- * versioned workspace vocabulary, as a seam.
+ * The OUTER layer of `key = alias(lexicalNorm(surface))` — the curated
+ * workspace vocabulary at ONE claim slot, as a seam.
  *
- * Empty today, and {@link identityAlias} is the whole implementation. The seam
- * exists now rather than with the vocabulary itself (ADR-0037 §6 / #5016) for
- * the same reason `reconcile.ts`'s
- * `EntityResolver` seam predates any entity store: what this slice pins is the
- * SHAPE — a norm goes in, a norm comes out, and the composition happens in ONE
- * place — so slice B adds a vocabulary rather than moving the call site under
- * live data.
+ * Backed by data since #5022: `lib/brain/vocabulary.ts` builds one of these per
+ * position out of `brain_vocabulary_target`, the transitive closure of the
+ * workspace's approved alias edges. {@link identityAlias} remains the empty
+ * vocabulary — the answer for a workspace that has approved nothing, and the
+ * one every non-ingest call site names out loud.
+ *
+ * The seam predated its data (#5020) for the same reason `reconcile.ts`'s
+ * `EntityResolver` seam predates any entity store: what that slice pinned is
+ * the SHAPE — a norm goes in, a norm comes out, and the composition happens in
+ * ONE place. What it could not pin is that a vocabulary is POSITION-scoped, so
+ * #5022 wrapped three of these in {@link ClaimVocabulary} rather than leaving a
+ * bare lookup on the request. See there for why that is a correctness
+ * requirement and not a tidier signature.
  *
  * Takes the NORM, not the surface: the vocabulary maps normalized spellings to
  * a chosen one (`is priced at` → `priced at`), so a lookup keyed on raw surfaces
@@ -223,8 +233,61 @@ export function identityKey(surface: string): string | null {
  */
 export type AliasLookup = (norm: string) => string;
 
-/** The day-one vocabulary: every norm is its own alias. */
+/** The EMPTY vocabulary: every norm is its own alias. */
 export const identityAlias: AliasLookup = (norm) => norm;
+
+/**
+ * A claim's three slots. The vocabulary is scoped by these, and so is
+ * everything downstream of it.
+ */
+export const SLOT_POSITIONS = ["subject", "predicate", "object"] as const;
+export type SlotPosition = (typeof SLOT_POSITIONS)[number];
+
+/**
+ * The workspace's vocabulary — one {@link AliasLookup} per claim slot.
+ *
+ * ## Why this is not a single lookup, which is the shape #5020 left behind
+ *
+ * #5020 hung a bare `AliasLookup` on `ReconcileRequest` and expected slice B to
+ * drop a data-backed function into it without editing anything. That would have
+ * threaded ONE vocabulary through all three `slotKey` calls, and ADR-0037 §6
+ * rules that out: a position-agnostic vocabulary does not merely PERMIT
+ * cross-position composition, it COMPELS it. `owned by → platform` plus
+ * `platform → platform team` puts two edges in one chain, the closure composes
+ * them, and a PREDICATE approval has re-keyed SUBJECTS workspace-wide —
+ * silently, and in the direction nothing can undo, since once two spellings
+ * share a key nothing in the key column tells them apart.
+ *
+ * A record rather than a `(position) => AliasLookup` function so the call sites
+ * read `vocabulary.subject` / `.predicate` / `.object` beside the surface they
+ * are keying. That is the property worth buying: applying the predicate
+ * vocabulary to a subject stops being a plausible slip and becomes a visibly
+ * wrong line. The store (`lib/brain/vocabulary.ts`) enforces the same split in
+ * the schema, so neither layer relies on the other to hold it.
+ *
+ * ## Loaded once, per workspace, above the loop
+ *
+ * `AliasLookup` is synchronous, so a DB-backed vocabulary has to be materialized
+ * before the per-candidate work starts — which is also what makes it a
+ * consistent snapshot for the whole episode rather than three reads that could
+ * straddle an approval.
+ */
+export type ClaimVocabulary = Readonly<Record<SlotPosition, AliasLookup>>;
+
+/**
+ * The empty vocabulary at every position — a workspace that has approved no
+ * alias, and the explicit choice every non-ingest call site makes.
+ *
+ * Named rather than defaulted, for {@link slotKey}'s reason: a site that
+ * silently fell back to this would key its rows under a DIFFERENT identity
+ * function than the ingest path, spreading an under-match corpus-wide that is
+ * invisible at rest and unfixable without a re-key.
+ */
+export const identityVocabulary: ClaimVocabulary = {
+  subject: identityAlias,
+  predicate: identityAlias,
+  object: identityAlias,
+};
 
 /**
  * A claim slot's stored key — `alias(lexicalNorm(surface))`, or `null`.

@@ -53429,6 +53429,9 @@
                           },
                           "factAudienceMembers": {
                             "type": "number"
+                          },
+                          "brainVocabularyEdges": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -53488,6 +53491,10 @@
                     "items": {}
                   },
                   "factAudienceMembers": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "brainVocabularyEdges": {
                     "type": "array",
                     "items": {}
                   }
@@ -53690,6 +53697,21 @@
                         "imported",
                         "skipped"
                       ]
+                    },
+                    "brainVocabularyEdges": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
                     }
                   },
                   "required": [
@@ -53704,7 +53726,8 @@
                     "brainEpisodes",
                     "brainFacts",
                     "brainEdges",
-                    "factAudienceMembers"
+                    "factAudienceMembers",
+                    "brainVocabularyEdges"
                   ]
                 }
               }

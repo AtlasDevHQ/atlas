@@ -6,7 +6,7 @@
 -- `date:2026-08-04`, `time:…Z`, `bool:true`, `entity:01J…`), parsed fail-closed
 -- by `lib/brain/object-cmp.ts` and NULL wherever the parse is not certain.
 --
---   same      — object_key equal, OR both object_cmp non-null, same tag, equal
+--   same      — object_key equal, OR both object_cmp non-null and equal
 --   different — both object_cmp non-null, same tag, unequal
 --   unknown   — everything else → tension only, never a stamp
 --
@@ -38,9 +38,15 @@
 --     CORROBORATION or a tension edge — the recoverable direction. This column
 --     is on the irreversible one.
 --
--- So existing rows keep NULL permanently — `unknown`, tension-only — until a new
--- observation reconciles the claim and `INSERT_FACT_SQL` writes a value on the
--- fresh row. That is the accepted cost recorded in #5030 and in the ADR: the
+-- So existing rows keep NULL permanently — `unknown`, tension-only — until the
+-- claim lands in a FRESH ROW, which is a narrower escape hatch than it sounds
+-- and is stated exactly because the obvious reading is wrong: a re-observation
+-- of the same claim CORROBORATES onto the legacy row and leaves the NULL in
+-- place (corroboration writes nothing to the fact — pinned by
+-- `object-cmp-pg.test.ts`). The row gains a comparable value only if its
+-- `object_key` changes — a re-key, or a differently-spelled surface. A producer
+-- that STARTS declaring `objectType` on an already-stored claim never gives that
+-- row one. That is the accepted cost recorded in #5030 and in the ADR: the
 -- corpus becomes permanently two-tier, and nothing on a row says which tier it
 -- is in. Do not add a marker column to fix that — the marker would be a filter
 -- that has been fooled the moment the corpus turns over.
@@ -84,8 +90,10 @@
 --
 -- ## Scale
 --
--- One catalog write. `ADD COLUMN` with no default and no backfill does not
--- rewrite the table on PG 11+, so this holds the migration runner's advisory
+-- Two catalog writes (the column and its comment). `ADD COLUMN` with no
+-- default has NEVER rewritten the table — PG 11's change was about `ADD COLUMN
+-- … DEFAULT`, and citing a version here makes the safety look newer than it is.
+-- So this holds the migration runner's advisory
 -- lock for the length of an `ALTER TABLE` and nothing more — the one operational
 -- difference from 0187, which took two full-table passes.
 

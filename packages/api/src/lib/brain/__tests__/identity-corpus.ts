@@ -190,6 +190,7 @@ export interface ClaimPair {
  * | `rival-through-phrasing` | = | = | ≠ | unknown |
  * | `priced-rival`           | = | = | ≠ | different |
  * | `declared-rival`         | = | = | ≠ | different |
+ * | `sign-flip-rival`        | = | = | **=** | different |
  * | `cross-type-rival`       | = | = | ≠ | unknown |
  * | `subject-differs`        | ≠ | = | ≠ | different |
  * | `predicate-differs`      | = | ≠ | ≠ | different |
@@ -296,10 +297,15 @@ export const IDENTITY_CORPUS = [
     why:
       "The same contradiction reached through a producer DECLARATION rather than through " +
       "the surface. Bare `499` and `599` parse to plain numbers; declaring both USD money " +
-      "makes them comparable AS PRICES. Separated from the entry above because it is the " +
-      "only thing in the `-pg` lane that proves `objectType` is threaded all the way from " +
-      "`FactCandidate` to the stored column — the unit suite proves the parser honours a " +
-      "declaration, and would stay green if `reconcile.ts` never passed one.",
+      "makes them comparable AS PRICES.\n" +
+      "  ⚠️ **This entry falsifies no mutation of its own, and saying so is the point.** An " +
+      "earlier `why` claimed it was what proved `objectType` reaches the stored column; that " +
+      "was measured and is FALSE — drop the declaration and both sides parse as " +
+      "`number:499`/`number:599`, same tag, unequal, so all three verdicts are unchanged. " +
+      "The real threading falsifier at the `-pg` level is `cross-type-rival` below, and in " +
+      "the fast lane it is `reconcile.test.ts`'s comparable-bind control. This entry earns " +
+      "its place as the DECLARED spelling of a `proven-rival` — a shape a reader will " +
+      "otherwise assume is untested — not as a mutation killer.",
     a: {
       subject: "starter tier",
       predicate: "priced at",
@@ -312,6 +318,26 @@ export const IDENTITY_CORPUS = [
       object: "599",
       objectType: { kind: "money", currency: "USD" },
     },
+  },
+  {
+    id: "sign-flip-rival",
+    relation: "proven-rival",
+    why:
+      "⚠️ THE entry that falsifies the difference VETO, and the only shape in the corpus " +
+      "where `same` and `different` would BOTH hold. `lexicalNorm` treats `-` as a " +
+      "separator and trims it, so `-499` and `499` key IDENTICALLY (`499`) while their " +
+      "comparable values are `number:-499` and `number:499` — same tag, unequal, provably " +
+      "different.\n" +
+      "  Under ADR-0037 §2's rule as literally written, corroboration's key arm fires " +
+      "`same`: the two rows merge, the second claim never gets a row, Atlas records one " +
+      "more piece of evidence for the OPPOSITE-signed belief, and the rival scan never " +
+      "runs. That is T2's *corroboration merges two distinct beliefs into one row — " +
+      "silent, unattended, no human in the loop*, reached through the arm nobody changed. " +
+      "So proven difference vetoes sameness, and the pair lands here.\n" +
+      "  A signed number is exactly what a warehouse producer emits for a margin, a delta " +
+      "or a variance — the producer `objectType` exists to serve. Not a contrived surface.",
+    a: { subject: "q3 forecast", predicate: "variance", object: "-499" },
+    b: { subject: "q3 forecast", predicate: "variance", object: "499" },
   },
   {
     id: "cross-type-rival",
@@ -387,7 +413,7 @@ export const IDENTITY_CORPUS = [
       "exists, the honest answer is two claims. " +
       "NOT the live #5000 rows: those are `499 a month` vs `599 a month`, whose objects " +
       "DISAGREE (ADR-0037 §4's correction to the record) — that instance is a contradiction, " +
-      "and would be a `rival-claim` here once an alias entry unified the predicates.",
+      "and would be an `unproven-rival` here once an alias entry unified the predicates — `499 a month` is three tokens and the money grammar takes exactly two, so both sides abstain.",
     a: { subject: "Business tier", predicate: "is priced at", object: "$499" },
     b: { subject: "Business tier", predicate: "priced at", object: "$499" },
   },

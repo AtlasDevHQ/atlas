@@ -52,7 +52,7 @@
 #     supersession stamp; UPDATE-only like the grant, see the column notes)
 #   - `UPDATE [schema.]brain_facts … SET … subject_key / predicate_key /
 #     object_key / subject_cmp / object_cmp …` (#5019 — a re-key; UPDATE-only,
-#     with the `_cmp` arms gated ahead of #5032 adding the columns)
+#     with `object_cmp` live since #5030 and `subject_cmp` gated ahead of #5032 adding it)
 #   - `INSERT INTO [schema.]brain_facts (… status …)`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … visible_to …`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
@@ -340,7 +340,7 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # draft stage, and that is defensible (the surfaces are untouched, so no
 # user-facing content changed) but it should be defensible on the record.
 #
-# NEITHER `_cmp` COLUMN EXISTS YET. ADR-0037 §2's column table defines both:
+# ONLY `subject_cmp` DOES NOT EXIST YET (`object_cmp` landed in #5030 / migration 0191, and `INSERT_FACT_SQL` writes it). ADR-0037 §2's column table defines both:
 # `object_cmp` proves DIFFERENCE at the object, and `subject_cmp` (#5032) is its
 # INVERTED twin — non-null and unequal means "not the same slot", suppressing
 # corroboration, tension, and supersession alike. It is not a mirror. Both are

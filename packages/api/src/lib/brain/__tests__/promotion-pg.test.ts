@@ -1786,31 +1786,48 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         expect((await factState(old)).valid_to).toBeNull();
         expect((await factState(draft)).valid_to).toBeNull();
         expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
 
-        // THE positive control, and it has to be here rather than borrowed from
-        // a neighbour: the prohibition above is satisfied by a publish gate that
-        // supersedes nothing at all. Same two surfaces, same slot — the ONLY
-        // difference is that a store resolved them, so the difference is now
-        // evidence instead of an inference.
-        const ws2 = "ws-5030-abstain-control";
-        const ep2 = await seedEpisode(ws2, "abstain-control");
-        const old2 = await seedFact({
-          workspaceId: ws2,
-          episodeId: ep2,
+    it(
+      "…and DOES stamp once a store resolved the same two surfaces — the positive control (#5030)",
+      async () => {
+        // Its own `it()`, sharing nothing with the prohibition above. In a long
+        // proof the first failure hides the rest, so a control living in the
+        // prohibition's body never runs on the one run where it matters — and
+        // then "supersession over-fires" and "supersession is broken entirely"
+        // are indistinguishable, which is the single distinction this pair
+        // exists to make.
+        //
+        // Same two surfaces, same slot, same cardinality as `ws-5030-abstain`.
+        // The ONLY difference is that a store resolved them, so the difference
+        // is evidence instead of an inference from two strings failing to match.
+        const ws = "ws-5030-abstain-control";
+        const ep = await seedEpisode(ws, "abstain-control");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
           subject: "alice",
           object: "bob",
           status: "published",
-          entityId: "ent:bob",
         });
         await seedFact({
-          workspaceId: ws2,
-          episodeId: ep2,
+          workspaceId: ws,
+          episodeId: ep,
           subject: "alice",
           object: "carol",
-          entityId: "ent:carol",
         });
-        expect((await publish(ws2)).superseded).toHaveLength(1);
-        expect((await factState(old2)).valid_to).not.toBeNull();
+
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        expect(await loadSupersessionPreview(pool, reader)).toMatchObject({ total: 1 });
+        expect((await publish(ws)).superseded).toHaveLength(1);
+        expect((await factState(old)).valid_to).not.toBeNull();
       },
       PG_TEST_TIMEOUT_MS,
     );

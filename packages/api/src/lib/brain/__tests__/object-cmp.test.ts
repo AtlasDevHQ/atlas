@@ -34,31 +34,38 @@
  *
  * | Mutation | Dies on |
  * |---|---|
- * | `parseSurface` returns `{tag:"number", payload: trimmed}` for any unmatched surface — the raw-surface collapse | 9 |
- * | `DECIMAL_RE` loses its anchors (`^…$`) | 17 |
- * | `MONEY_RE` accepts a leading `$` as a currency | 1 |
- * | `CURRENCY_RE` widened to `[A-Za-z]+` (accepts `dollars`) | 3 |
- * | `DECIMAL_RE` admits `,` | 1 |
+ * | `DECIMAL_RE` loses its anchors (`^…$`) | 20 |
+ * | `parseSurface` returns `{tag:"number", payload: trimmed}` for any unmatched surface — the raw-surface collapse | 11 |
+ * | `canonicalCurrency` loses its upper-case fold | 4 |
+ * | `canonicalCurrency` drops the `ISO_4217` membership test (back to any three letters) | 3 |
+ * | `canonicalInstant` loses its calendar round-trip | 2 |
+ * | `canonicalDate` loses its calendar round-trip | 2 |
  * | `canonicalDecimal` loses its trailing-zero trim | 2 |
- * | `canonicalDecimal` loses its `-0` fold | 1 |
- * | `canonicalDate`'s round-trip check deleted (`2026-02-31` rolls to March 3) | 1 |
- * | `canonicalInstant` returns the raw string instead of `toISOString()` | 2 |
- * | `canonicalBool` accepts `yes`/`no` | 1 |
- * | `canonicalCurrency` loses its upper-case fold | 3 |
- * | `comparableTag` loses its `boundary === -1` arm (`moneys` reads as `money`) | 1 |
  * | a declaration OVERRIDES the surface instead of narrowing it | 2 |
+ * | `MONEY_RE` back to `\s+` (a newline separates the tokens) | 1 |
+ * | `canonicalDecimal` loses its `-0` fold | 1 |
+ * | `comparableTag` loses its `boundary === -1` arm (`moneys` reads as `money`) | 1 |
  * | `comparableValue` prefers the surface parse over `entityId` | 1 |
  * | `comparableDifferentSql` loses its `split_part` tag arm | **1, and it is LEXICAL** — see below |
+ * | `comparableDifferentSql` loses its known-tag `IN` arm | **0 here** — see below |
  *
- * ⚠️ **The tag arm has no behavioural falsifier in this file, and cannot have
- * one.** {@link agree} is the TypeScript twin; deleting the SQL arm does not
+ * ⚠️ **Two arms have no behavioural falsifier in this file, and neither can
+ * have one.** {@link agree} is the TypeScript twin; deleting a SQL arm does not
  * touch it, so the only thing that dies here is the SQL-arms assertion at the
- * bottom. The behavioural proof is `identity-consumers-pg.test.ts`'s
- * `cross-type-rival` corpus entry — measured, and the ONLY test in the repo
- * that kills that mutation. Do not delete either one on the grounds that the
- * other covers it: one pins the string, the other pins what Postgres does with
- * it, and the arm matters because `number:499` and `money:USD:499` are unequal
- * strings that nothing proves are different values.
+ * bottom. Both are covered elsewhere, and both are worth knowing about:
+ *
+ *   - the **`split_part` tag arm** — `identity-consumers-pg.test.ts`'s
+ *     `cross-type-rival`, measured, and the only test in the repo that kills it.
+ *   - the **known-tag `IN` arm** — `object-cmp-pg.test.ts`'s unknown-tag pair.
+ *     That test was written BECAUSE the mutation measured zero deaths across the
+ *     whole suite: nothing can produce an unknown tag today, so the arm guards a
+ *     population that only exists once #5035 makes the region importer a second
+ *     writer of this column. Unreachable is not the same as unnecessary, and an
+ *     unfalsifiable guard is one somebody deletes.
+ *
+ * Do not delete either the lexical or the behavioural half on the grounds that
+ * the other covers it: one pins the string, the other pins what Postgres does
+ * with it.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -71,148 +78,15 @@ import {
   comparableValue,
   type DeclaredObjectType,
 } from "@atlas/api/lib/brain/object-cmp";
+// The corpus and the agreement oracle live in a non-`.test.ts` sibling so this
+// suite and `object-cmp-pg.test.ts` can share them without the isolated runner
+// executing either one twice — `identity-corpus.ts`'s arrangement exactly.
+import { AGREEMENT_CORPUS, agree } from "./object-cmp-corpus";
 
 /** The parse, with the two optional inputs defaulted away. */
 function parse(surface: string, declared?: DeclaredObjectType, entityId?: string): string | null {
   return comparableValue({ surface, declared, entityId });
 }
-
-// ---------------------------------------------------------------------------
-// The TypeScript twin of the two SQL builders
-// ---------------------------------------------------------------------------
-
-/**
- * The three-valued agreement, in TypeScript.
- *
- * ⚠️ This is a SECOND implementation of what {@link comparableSameSql} and
- * {@link comparableDifferentSql} express in SQL, and a second implementation is
- * normally exactly what this subsystem forbids. It is admissible here for one
- * reason and under one condition: it is a TEST ORACLE, never imported by
- * production code, and `object-cmp-pg.test.ts` runs the real SQL against the
- * real column and compares it to this function row by row over the same corpus.
- * If the two ever disagree, that suite fails — which is the same
- * two-implementations-must-agree-on-bytes shape migration 0187 records for
- * `lexicalNorm`.
- *
- * Without it this file could only assert string equality, which is not the
- * property: `unknown` is a verdict, and `null === null` being `true` in
- * JavaScript is precisely the confusion the three-valued type exists to
- * prevent.
- */
-type Agreement = "same" | "different" | "unknown";
-
-function agree(a: string | null, b: string | null): Agreement {
-  if (a === null || b === null) return "unknown";
-  if (a === b) return "same";
-  return comparableTag(a) === comparableTag(b) ? "different" : "unknown";
-}
-
-// ---------------------------------------------------------------------------
-// The shared agreement corpus
-// ---------------------------------------------------------------------------
-
-interface AgreementCase {
-  readonly id: string;
-  readonly why: string;
-  readonly a: { readonly surface: string; readonly declared?: DeclaredObjectType };
-  readonly b: { readonly surface: string; readonly declared?: DeclaredObjectType };
-  readonly verdict: Agreement;
-}
-
-/**
- * Two claims' objects and the verdict a human says they earn.
- *
- * Written as SURFACES and a claim about meaning — never as expected canonical
- * values. Writing the canonical form beside the surface would pin the parser
- * against itself and pass against any implementation, including one that
- * returns its input. Same rule `identity-corpus.ts` states for the slot layer.
- */
-export const AGREEMENT_CORPUS = [
-  {
-    id: "money-spelling",
-    why: "One price, two idioms. The pinned case from ADR-0037 §2 — under exact string equality the draft supersedes the published fact over a word order.",
-    a: { surface: "499 USD" },
-    b: { surface: "USD 499" },
-    verdict: "same",
-  },
-  {
-    id: "money-precision",
-    why: "A warehouse column renders `499.00` and a human types `499`. Same money. A canonicalizer that kept trailing zeros calls these different and stamps `valid_to`.",
-    a: { surface: "499.00 USD" },
-    b: { surface: "499 usd" },
-    verdict: "same",
-  },
-  {
-    id: "money-disagrees",
-    why: "#5000's live rows, in the shape that actually contradicts: two prices, same currency, genuinely different. THE positive control for supersession — without a row like this the whole `different` verdict is unexercised and a parser returning null always passes.",
-    a: { surface: "499 USD" },
-    b: { surface: "599 USD" },
-    verdict: "different",
-  },
-  {
-    id: "money-currency-disagrees",
-    why: "499 dollars and 499 euros are different prices. The currency is part of the value, not a unit annotation on it — dropping it from the canonical form makes these `same`.",
-    a: { surface: "499 USD" },
-    b: { surface: "499 EUR" },
-    verdict: "different",
-  },
-  {
-    id: "money-symbol",
-    why: "⚠️ THE pinned refusal. `$` spans USD/CAD/AUD, so `$499` names no currency and `$499` vs `599 USD` cannot be shown to differ. It abstains into tension, where a human reads both surfaces — instead of into a stamp.",
-    a: { surface: "$499" },
-    b: { surface: "599 USD" },
-    verdict: "unknown",
-  },
-  {
-    id: "cross-type",
-    why: "A bare number against declared money. Unequal as strings, and NOT different: nothing proves the bare `499` is not 499 dollars. The only row in the repo that kills the `split_part` tag arm.",
-    a: { surface: "499" },
-    b: { surface: "499", declared: { kind: "money", currency: "USD" } },
-    verdict: "unknown",
-  },
-  {
-    id: "declared-rescues",
-    why: "The feature's whole reason to exist: a warehouse producer knows its `price` column is USD and the bare number never will. Two declared prices become comparable — and disagree.",
-    a: { surface: "499", declared: { kind: "money", currency: "USD" } },
-    b: { surface: "599", declared: { kind: "money", currency: "USD" } },
-    verdict: "different",
-  },
-  {
-    id: "declaration-contradicted",
-    why: "A producer declares USD and the surface says EUR. One of the two is wrong and nothing here knows which, so the pair abstains rather than picking the producer — the coin flip whose losing face is irreversible.",
-    a: { surface: "599 EUR", declared: { kind: "money", currency: "USD" } },
-    b: { surface: "499 USD" },
-    verdict: "unknown",
-  },
-  {
-    id: "entity-surfaces",
-    why: "The common case, and the accepted cost: with no entity store `Grace` and `Alan` have no comparable value, so a manager change is tension-only and never supersedes. `passthroughEntityResolver` behaving honestly — it genuinely cannot prove two people are different people.",
-    a: { surface: "Grace" },
-    b: { surface: "Alan" },
-    verdict: "unknown",
-  },
-  {
-    id: "instant-zones",
-    why: "One instant, two zone spellings. Without the UTC canonicalization publish stamps `valid_to` over a time-zone conversion.",
-    a: { surface: "2026-08-04T10:00:00+02:00" },
-    b: { surface: "2026-08-04T08:00:00Z" },
-    verdict: "same",
-  },
-  {
-    id: "date-vs-instant",
-    why: "A DAY and a POINT are not the same kind of thing, so they get separate tags and abstain rather than reading as different. `date` and `time` sharing a tag would make a daily-granularity producer supersede an instant-granularity one on every observation.",
-    a: { surface: "2026-08-04" },
-    b: { surface: "2026-08-04T00:00:00Z" },
-    verdict: "unknown",
-  },
-  {
-    id: "bool-disagrees",
-    why: "The smallest possible `different`. Present because the money rows are the only other ones, and a tag arm that special-cased money would pass without it.",
-    a: { surface: "true" },
-    b: { surface: "FALSE" },
-    verdict: "different",
-  },
-] as const satisfies readonly AgreementCase[];
 
 const VERDICTS_PRESENT = ["same", "different", "unknown"] as const;
 
@@ -282,6 +156,81 @@ describe("the parser fails closed — the refusals", () => {
     }
   });
 
+  test("refuses a THREE-LETTER token that is not an ISO-4217 code", () => {
+    // ⚠️ The block above cannot see this: every fixture there is four letters
+    // or more, so all of them are satisfied by a length check alone and none of
+    // them says anything about the three-letter band. The parser shipped with
+    // `/^[A-Za-z]{3}$/` — "an ISO-4217 code" in the docstring, "any three
+    // letters" in the code — and these were the measured result:
+    //
+    //   499 net -> money:NET:499     12 mos -> money:MOS:12
+    //   10 kgs  -> money:KGS:10      1 yrs  -> money:YRS:1
+    //
+    // `money:MOS:12` and `money:YRS:1` share the `money` tag (the currency is in
+    // the PAYLOAD) and compare unequal, so one contract length reads as provably
+    // different from the same contract length stated in the other unit, and
+    // publish stamps `valid_to`. Every one of these is an ordinary surface for a
+    // warehouse producer reading a units column.
+    for (const surface of [
+      "499 net",
+      "12 mos",
+      "1 yrs",
+      "50 pcs",
+      "5 min",
+      "30 day",
+      "3 Jan",
+      "499 ZZZ",
+      "5 Pro",
+    ]) {
+      expect(parse(surface), `\`${surface}\` named a currency`).toBeNull();
+    }
+    // …and the consequence, which is the whole reason the refusal matters.
+    expect(agree(parse("499 net"), parse("499 USD"))).toBe("unknown");
+    expect(agree(parse("12 mos"), parse("1 yrs"))).toBe("unknown");
+  });
+
+  test("⚠️ a unit that IS a currency code is still read as money — the residual, recorded", () => {
+    // `KGS` is the Kyrgyzstani som AND the obvious abbreviation for kilograms;
+    // `TRY`, `MOP`, `SEK`, `MAD` collide with English words the same way. No
+    // list can separate them, because the surface genuinely does not say which
+    // it means — so this is a LIMIT of the design, not a defect to fix, and it
+    // is asserted rather than left for someone to discover.
+    expect(parse("10 kgs")).toBe("money:KGS:10");
+
+    // Why it is tolerable, and the test that says so: the reading is wrong
+    // about the TYPE and right about the VERDICT. Two weights in the same unit
+    // still compare as two quantities in one unit, so `different` is the honest
+    // answer either way and the supersession it licenses is the one a reviewer
+    // would make.
+    expect(agree(parse("10 kgs"), parse("5 kgs"))).toBe("different");
+    // And the dangerous shape — one quantity, two units — is still refused,
+    // because a unit pair that is BOTH ISO codes is not reachable from any
+    // vocabulary a producer actually uses.
+    expect(agree(parse("10 kgs"), parse("10000 gms"))).toBe("unknown");
+  });
+
+  test("refuses a declared currency that is not an ISO-4217 code either", () => {
+    // The same rule on the declaration path. A producer cannot route around the
+    // list by declaring what the surface may not say.
+    for (const currency of ["abc", "ZZZ", "MOS", "NET"]) {
+      expect(
+        parse("499", { kind: "money", currency }),
+        `declared currency \`${currency}\` was accepted`,
+      ).toBeNull();
+    }
+  });
+
+  test("refuses money split across a NEWLINE", () => {
+    // `MONEY_RE` used `\s+`, which matches a newline — measured: `"499\nUSD"`
+    // parsed as `money:USD:499`. A claim whose object spans two lines is not a
+    // price; it is a producer emitting something this module has no business
+    // canonicalizing.
+    expect(parse("499\nUSD")).toBeNull();
+    expect(parse("USD\n499")).toBeNull();
+    // …and the tab spelling, which IS legitimate whitespace inside one line.
+    expect(parse("499\tUSD")).toBe("money:USD:499");
+  });
+
   test("refuses `,` outright rather than guessing thousands-vs-decimal", () => {
     // `1,499` is one thousand four hundred ninety-nine in en-US and one-and-a-bit
     // across most of Europe. Either reading is a guess about locale landing in a
@@ -324,9 +273,41 @@ describe("the parser fails closed — the refusals", () => {
       "2026-02-31",
       "2026-13-01",
       "2026-00-10",
+      // ⚠️ The SAME impossible days in the INSTANT spelling. The bare-date arm
+      // had the round-trip guard and the instant arm did not, so these parsed —
+      // measured: `2026-02-31T10:00:00Z` → `time:2026-03-03T10:00:00.000Z`,
+      // `2026-04-31T00:00:00Z` → `time:2026-05-01T00:00:00.000Z`. `new Date`
+      // does not reject an impossible calendar day inside a well-formed
+      // timestamp; it rolls forward.
+      "2026-02-31T10:00:00Z",
+      "2026-04-31T00:00:00Z",
+      "2026-02-30T10:00:00+00:00",
+      "2026-13-01T00:00:00Z",
     ]) {
       expect(parse(surface), `\`${surface}\` parsed`).toBeNull();
     }
+  });
+
+  test("…and a rolled instant does not become EQUAL to the real day it lands on", () => {
+    // Both irreversible directions of the bug above, stated as consequences
+    // rather than as a refusal — because a reader tempted to "just let `Date`
+    // normalize it" needs to see what normalizing costs.
+    //
+    // False `same`: the garbage instant and a genuine March 3 canonicalize to
+    // one string, so they corroborate and the real observation is discarded
+    // into a row recording the nonsense surface.
+    expect(agree(parse("2026-02-31T10:00:00Z"), parse("2026-03-03T10:00:00Z"))).toBe("unknown");
+    // False `different`: the same garbage against its own neighbouring day is
+    // same-tag and unequal — provably different — so publish stamps `valid_to`
+    // from an input that names no instant at all.
+    expect(agree(parse("2026-02-31T10:00:00Z"), parse("2026-03-01T10:00:00Z"))).toBe("unknown");
+  });
+
+  test("…and still accepts `24:00:00`, which IS the next midnight", () => {
+    // The guard constrains Y-M-D only. Rolling a 24:00 instant forward is
+    // correct — it is ISO-legal and genuinely names midnight of the next day —
+    // so a guard that refused it would be over-broad.
+    expect(parse("2026-08-04T24:00:00Z")).toBe("time:2026-08-05T00:00:00.000Z");
   });
 
   test("…and parses a strict ISO date and a zoned instant", () => {
@@ -439,6 +420,10 @@ describe("a declaration narrows; it never overrides", () => {
     expect(parse("499", { kind: "number" })).toBe("number:499");
     expect(parse("2026-08-04", { kind: "date" })).toBe("date:2026-08-04");
     expect(parse("true", { kind: "bool" })).toBe("bool:true");
+    // The `time` arm, which shares a switch case with the three above and had
+    // no fixture at all — arm-coverage discipline, not suspicion.
+    expect(parse("2026-08-04T08:00:00Z", { kind: "time" })).toBe("time:2026-08-04T08:00:00.000Z");
+    expect(parse("2026-08-04", { kind: "time" })).toBeNull();
   });
 
   test("cannot make an unparseable surface parse", () => {

@@ -114,19 +114,29 @@ interface SlotBinds {
   readonly subject: string | null;
   readonly predicate: string | null;
   readonly object: string | null;
+  /**
+   * The comparable value (#5030) — the fourth member of `agreementBinds`.
+   *
+   * Read here rather than left to the `-pg` lane because that lane SKIPS
+   * without `TEST_DATABASE_URL`, which is the default local run. Without this
+   * field, `agreementBinds` returning `[…keys, null]`, or `reconcile.ts`
+   * dropping `declared: candidate.objectType`, is invisible to `bun run test`
+   * and dies only where nobody looks.
+   */
+  readonly comparable: string | null;
 }
 
 /**
- * Three consecutive key binds, read positionally — `null` stays `null` rather
- * than becoming `"null"` through `String()`, which is the whole distinction
- * these tests are about.
+ * The four consecutive agreement binds, read positionally — `null` stays `null`
+ * rather than becoming `"null"` through `String()`, which is the whole
+ * distinction these tests are about.
  */
 function keyParams(params: readonly unknown[], from: number): SlotBinds {
   const at = (i: number): string | null => {
     const v = params[from + i];
     return v === null || v === undefined ? null : String(v);
   };
-  return { subject: at(0), predicate: at(1), object: at(2) };
+  return { subject: at(0), predicate: at(1), object: at(2), comparable: at(3) };
 }
 
 /**
@@ -875,16 +885,53 @@ describe("the draft candidate", () => {
       ],
     });
 
-    const keyed = { subject: "deploy window", predicate: "ships on", object: "thursdays" };
-    // All three statements that carry keys agree, and each is asserted: an
-    // INSERT keyed correctly beside a lookup keyed off the raw surface would
-    // write rows nothing can ever find.
+    const keyed = {
+      subject: "deploy window",
+      predicate: "ships on",
+      object: "thursdays",
+      // `Thursdays` names no comparable value, which is the COMMON case and the
+      // whole abstain band — so the fourth bind is `null` here, and the test
+      // below is the one that proves it can be non-null.
+      comparable: null,
+    };
+    // All four agreement binds, on all three statements that carry them, and
+    // each is asserted: an INSERT keyed correctly beside a lookup keyed off the
+    // raw surface would write rows nothing can ever find.
     expect(store.keyBindsFor("insertFact")[0]).toEqual(keyed);
     expect(store.keyBindsFor("corroboration")[0]).toEqual(keyed);
     expect(store.keyBindsFor("tensionScan")[0]).toEqual(keyed);
     // The RETAINED surface is untouched — identity moved, the record of what
     // the producer actually said did not.
     expect(store.facts[0]).toMatchObject({ subject: "Deploy_Window", predicate: "Ships  On" });
+  });
+
+  test("…and the comparable value is bound too, on all three (#5030)", async () => {
+    // THE positive control for the `comparable: null` above, which is satisfied
+    // by an `agreementBinds` that always yields `null` — i.e. by the stage never
+    // computing a comparable value at all. It also proves `objectType` is
+    // threaded from `FactCandidate` all the way to the bind: without the
+    // declaration `499` parses to `number:499`, so the assertion is specific to
+    // the declaration having been passed through.
+    //
+    // In the FAST lane deliberately. The `-pg` suites skip without
+    // `TEST_DATABASE_URL`, so leaving this to them means a dropped declaration
+    // is green on a default local run.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [
+        candidate({
+          object: "499",
+          objectType: { kind: "money", currency: "USD" },
+          predicateCardinality: "single",
+        }),
+      ],
+    });
+
+    for (const name of ["insertFact", "corroboration", "tensionScan"] as const) {
+      expect(store.keyBindsFor(name)[0]?.comparable, `${name} bound no comparable value`).toBe(
+        "money:USD:499",
+      );
+    }
   });
 
   test("keys are derived AFTER entity resolution, off the surface actually stored", async () => {
@@ -990,6 +1037,11 @@ describe("the draft candidate", () => {
       subject: "owner (person)",
       predicate: "account owner",
       object: "owner (value)",
+      // `Owner` names no comparable value. Asserted rather than omitted: the
+      // vocabulary is a KEY-layer rewrite and must not reach the cmp position,
+      // and an `objectSameSql` fed an aliased value there would compare the
+      // vocabulary's output against a parser's.
+      comparable: null,
     });
   });
 
@@ -1120,20 +1172,35 @@ describe("no autonomous supersession (#4912)", () => {
     expect(TENSION_CANDIDATES_SQL).toContain("predicate_key = $3");
     // `<>`, never `=`: a rival asserts a DIFFERENT value in the same slot.
     expect(TENSION_CANDIDATES_SQL).toContain("object_key <> $4");
-    // The object arm is TWO arms since #5030, and the two statements take
-    // opposite halves of one definition — corroboration fires on *provably
-    // same*, the rival scan on everything that is NOT provably same. Pinned
+    // The object arm is a whole three-valued test since #5030, and the two
+    // statements take opposite halves of ONE definition — corroboration fires on
+    // *provably same*, the rival scan on everything that is not. Pinned
     // lexically because the fake dispatches on statement identity and reads
-    // binds positionally, so dropping either arm leaves every behavioural test
-    // in this file green.
+    // binds positionally, so dropping any arm leaves every behavioural test in
+    // this file green.
     //
-    // ⚠️ The two spellings are deliberately NOT interchangeable. `IS NOT TRUE`
-    // is what carries the abstain band: plain `NOT (object_cmp = $5)` is NULL
-    // whenever either side is unparseable, a WHERE clause treats NULL as false,
-    // and the whole `unknown` population — the reason three-valued agreement
-    // exists — would silently stop earning tension edges.
+    // ⚠️ `IS NOT TRUE`, never `NOT (…)`, in BOTH statements. Both wrap an
+    // expression that is NULL for the whole abstain band, and a WHERE clause
+    // treats NULL as false — so the readable spelling deletes corroboration for
+    // every unparseable object (in the veto) and deletes the abstain band from
+    // tension entirely (in the rival scan). Two different disasters, one typo.
     expect(CORROBORATION_LOOKUP_SQL).toContain("(object_key = $4 OR object_cmp = $5)");
+    expect(CORROBORATION_LOOKUP_SQL).toContain("IS NOT TRUE");
     expect(TENSION_CANDIDATES_SQL).toContain("(object_cmp = $5) IS NOT TRUE");
+    expect(CORROBORATION_LOOKUP_SQL).not.toContain("NOT (");
+    expect(TENSION_CANDIDATES_SQL).not.toContain("NOT (");
+    // The VETO, and the arm that carries a key-equal-but-provably-different pair
+    // into tension. `lexicalNorm` strips a leading `-`, so `-499` and `499` key
+    // identically while their comparable values disagree; without these two the
+    // pair corroborates into the opposite-signed belief and earns no edge.
+    expect(CORROBORATION_LOOKUP_SQL).toContain("object_cmp <> $5");
+    expect(TENSION_CANDIDATES_SQL).toContain("object_cmp <> $5");
+    // …and the known-tag membership arm, which keeps the SQL from calling two
+    // values with an unrecognized head *different*. Generated from
+    // COMPARABLE_TAGS, so this asserts the generation ran, not the list.
+    for (const sql of [CORROBORATION_LOOKUP_SQL, TENSION_CANDIDATES_SQL]) {
+      expect(sql).toContain("'money', 'number', 'date', 'time', 'bool', 'entity'");
+    }
     // …and the self-exclusion, whose BIND is asserted above but whose presence
     // in the statement nothing else here can see. Without it every `single` fact
     // is its own rival the moment it lands. `$6` since #5030 widened the

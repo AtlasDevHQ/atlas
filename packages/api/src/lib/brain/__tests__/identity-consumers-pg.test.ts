@@ -71,23 +71,42 @@
  *
  * | Mutation | Dies on |
  * |---|---|
- * | `CORROBORATION_LOOKUP_SQL` repointed at the surface columns | 6 — all three consumers, via both `same-claim` pairs |
- * | `TENSION_CANDIDATES_SQL` repointed at the surface columns | consumer 2's control, via `rival-through-phrasing` |
- * | `supersessionCollisionJoin` repointed at the surface columns | consumer 3's control, via `rival-through-phrasing` |
- * | the corroboration call site binds raw surfaces instead of `item.keys.*` | 6 here — **and 3 in `reconcile.test.ts`**, which is the bind half it can still see |
- * | the tension call site binds raw surfaces | consumer 2's control |
- * | `subject_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `subject-differs` — consumer 2 and consumer 3 respectively |
+ * | `lexicalNorm` loses its ASCII case fold | 9 |
+ * | `CORROBORATION_LOOKUP_SQL` repointed at the surface columns | 6 |
+ * | the corroboration call site binds raw surfaces instead of `item.keys.*` | 6 — **and 3 in `reconcile.test.ts`**, which is the bind half it can still see |
+ * | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 5 — the edge DIRECTION is what the review queue renders |
+ * | `CORROBORATION_LOOKUP_SQL`'s `object_key = $4` arm neutralized | 6 — via both key-equal `same-claim` pairs |
+ * | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 — via `same-through-value` |
+ * | `objectSameSql` loses its difference VETO | 3 — via `sign-flip-rival` |
+ * | `supersessionCollisionPredicate` back on `object_key <> object_key` | 3 — `rival-through-phrasing`, `cross-type-rival`, `sign-flip-rival` |
+ * | `lexicalNorm` loses its edge trim | 3 — via `separator-edges` |
+ * | `identityAlias` given a global rule (`/^is /` stripped) | 3 — all three PROHIBITIONS, via `copula-pair` |
+ * | `TENSION_CANDIDATES_SQL` repointed at the surface columns | 2 |
+ * | the tension call site binds raw surfaces | 2 |
+ * | `supersessionCollisionJoin` repointed at the surface columns | 1 — via `priced-rival` |
+ * | `subject_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `subject-differs` |
  * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `predicate-differs` |
- *
- * …and the #5030 rows, measured the same way:
- *
- * | Mutation | Dies on |
- * |---|---|
- * | `supersessionCollisionPredicate` back on `object_key <> object_key` | 2 — `rival-through-phrasing` and `cross-type-rival`, both consumer-3 prohibitions |
  * | `comparableDifferentSql` loses its `split_part` tag arm | **1 — `cross-type-rival`, and it is the only test in the repo that catches this** |
- * | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 — all three consumers, via `same-through-value` |
- * | `CORROBORATION_LOOKUP_SQL`'s `object_key = $4` arm neutralized | 6 — all three consumers, via both key-equal `same-claim` pairs |
- * | `TENSION_CANDIDATES_SQL`'s `IS NOT TRUE` weakened to `NOT (…)` | 1 — `rival-through-phrasing`, consumer 2's abstain-band control |
+ * | `objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)` | **1 — `rival-through-phrasing`** |
+ *
+ * ⚠️ **EVERY count above was re-measured on this tree, one mutation at a time,
+ * and several MOVED** — the case fold 8→9, both tension-repoint rows 1→2, the
+ * tension-edge direction 1→5, because #5030 added four corpus entries. Said
+ * explicitly, and the numbers regenerated in one pass rather than edited row by
+ * row, because slice B's table carried numbers forward twice under a header
+ * claiming they had been re-measured.
+ *
+ * Three rows widen what collides rather than narrowing it — `identityAlias`,
+ * which widens the KEY FUNCTION, and the two key-arm mutations, which widen the
+ * JOINS. All three are caught EXCLUSIVELY by prohibitions, because
+ * `copula-pair`, `subject-differs` and `predicate-differs` are all
+ * `different-claim` entries. Delete either half of the corpus and a whole
+ * direction of failure stops being visible.
+ *
+ * The two STATEMENT-repoint rows for the rival scan and the collision join
+ * survived until BOTH sides of `rival-through-phrasing` were spelled off normal
+ * form. A pair with one already-normalized side is blind to either the statement
+ * repoint or the call-site bind, depending which side is clean.
  *
  * The last row is the one worth pausing on. `NOT (object_cmp = $5)` reads as
  * the same thing and is NULL whenever either side is unparseable; a WHERE
@@ -101,23 +120,6 @@
  * lexical assertion in `reconcile.test.ts`. `same-through-value` is what
  * reaches that arm alone. Both arms of a disjunction need an entry that
  * exercises each in isolation, or one of them is decoration.
- * | `identityAlias` given a global rule (`/^is /` stripped) | 3 — all three PROHIBITIONS, via `copula-pair` |
- * | `lexicalNorm` loses its edge trim | 3 — all three consumers, via `separator-edges` |
- * | `lexicalNorm` loses its ASCII case fold | 8, across all three consumers |
- * | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | consumer 2's control — the edge direction is what the review queue renders |
- *
- * Three rows widen what collides rather than narrowing it — `identityAlias`,
- * which widens the KEY FUNCTION, and the two arm mutations, which widen the
- * JOINS. All three are caught EXCLUSIVELY by prohibitions, because
- * `copula-pair`, `subject-differs` and `predicate-differs` are all
- * `different-claim` entries. Every other row is caught by a positive control.
- * Delete either half and a whole direction of failure stops being visible.
- *
- * The two STATEMENT-repoint rows for the rival scan and the collision join
- * survived until BOTH sides of `rival-through-phrasing` were spelled off normal
- * form. A pair with one already-normalized side is blind to either the statement
- * repoint or the call-site bind, depending which side is clean — see that
- * entry's `why`.
  *
  * NOT in the table, and stated because its absence is load-bearing: the rival
  * scan's `object_key <> $4` arm is NOT falsifiable from this corpus. The shape

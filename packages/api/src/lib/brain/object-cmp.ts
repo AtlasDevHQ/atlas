@@ -7,12 +7,22 @@
  *
  * | Column | Null | Proves |
  * |---|---|---|
- * | `object_key` | no | *sameness* — `alias(lexicalNorm(surface))` |
- * | `object_cmp` | **yes** | *difference* — a typed canonical value, parsed fail-closed |
+ * | `object_key` | *aspirationally no* | *sameness* — `alias(lexicalNorm(surface))` |
+ * | `object_cmp` | **yes, permanently** | *difference* — a typed canonical value, parsed fail-closed |
  *
- * - **same** — `object_key` equal, **or** both `object_cmp` non-null, same tag, equal
+ * - **same** — `object_key` equal, **or** both `object_cmp` non-null and equal
  * - **different** — both `object_cmp` non-null, same tag, unequal
  * - **unknown** — everything else → **tension only, never a stamp**
+ *
+ * ⚠️ Two corrections to the table ADR-0037 §2 states, both of which matter to
+ * anyone reading the arms below. First, `object_key` is **nullable on disk** —
+ * 0187 landed all three keys nullable and `SET NOT NULL` still has unmet
+ * prerequisites (#5035, #5047), while a surface that norms away is permanently
+ * NULL by design. Every consumer's NULL handling depends on that, so reading
+ * `object_key = $4` as total is exactly wrong. Second, the `same` rule carries
+ * no tag clause: equal strings already share a tag, since the tag is a prefix,
+ * and stating the tautology invites someone to "restore symmetry" by adding a
+ * real tag arm to {@link comparableSameSql}, where it does not belong.
  *
  * A single nullable column compared two ways fails quietly in BOTH directions
  * (T3 §4): made total, `$499` vs `499 USD` reads *different* and publish stamps
@@ -78,9 +88,11 @@
 /**
  * The tag vocabulary — the closed set of things whose equality is decidable.
  *
- * An array rather than a bare union so a new type is a compile error in every
- * `Record<ComparableTag, …>` below, and so the SQL-side arms have one list to
- * read. Adding an arm here is a claim that two canonical values of that type can
+ * An array rather than a bare union so the SQL-side membership arm
+ * ({@link KNOWN_TAGS_SQL}) and the test enumeration are GENERATED from it rather
+ * than re-spelled — one list, not three. (There is no `Record<ComparableTag, …>`
+ * in the tree; an earlier version of this comment claimed one as the reason and
+ * it was never true.) Adding an arm here is a claim that two canonical values of that type can
  * be compared for equality with `=` and never be wrong.
  */
 export const COMPARABLE_TAGS = [
@@ -108,6 +120,14 @@ export const COMPARABLE_TAGS = [
 
 export type ComparableTag = (typeof COMPARABLE_TAGS)[number];
 
+/**
+ * The tag vocabulary as a SQL `IN` list, generated from {@link COMPARABLE_TAGS}
+ * so a new tag is still declared in exactly one place.
+ *
+ * Safe to interpolate: every member is a literal in that array, not input.
+ */
+const KNOWN_TAGS_SQL = COMPARABLE_TAGS.map((tag) => `'${tag}'`).join(", ");
+
 /** {@link COMPARABLE_TAGS}'s entity arm, named once so #5035 imports it rather than a literal. */
 export const ENTITY_TAG = "entity" satisfies ComparableTag;
 
@@ -133,15 +153,32 @@ export const TAG_SEPARATOR = ":";
  * saying which currency rescues nothing, since the ambiguity was never about
  * whether `$499` is money.
  */
+export type DeclarableTag = Exclude<ComparableTag, typeof ENTITY_TAG>;
+
 export type DeclaredObjectType =
   | { readonly kind: "money"; readonly currency: string }
-  | { readonly kind: "number" }
-  | { readonly kind: "date" }
-  | { readonly kind: "time" }
-  | { readonly kind: "bool" };
+  | { readonly kind: Exclude<DeclarableTag, "money"> };
+
+/**
+ * A tagged canonical value — `<tag>:<payload>`, with `tag` from
+ * {@link COMPARABLE_TAGS}.
+ *
+ * A template-literal type rather than a bare `string`, and it costs nothing at
+ * runtime. `PreparedCandidate` in `reconcile.ts` carries this beside
+ * `object: string` and spreads both into `unknown[]` bind arrays, so
+ * `agreementBinds(keys, item.object)` would type-check perfectly and bind a raw
+ * SURFACE into a column whose comparisons stamp `valid_to`. Under this type it
+ * does not compile.
+ *
+ * It does NOT stop a hand-written `"money:garbage"` literal. That would need a
+ * brand plus a `parseStoredComparable` entry point for values read back OUT of
+ * the column — which #5035 will need anyway, and is the right time to add it.
+ * The template literal is the part that is free today.
+ */
+export type TaggedComparable = `${ComparableTag}${typeof TAG_SEPARATOR}${string}`;
 
 /** A parsed, tagged, canonical value — or `null`, meaning *unknown*. */
-export type ComparableValue = string | null;
+export type ComparableValue = TaggedComparable | null;
 
 // ---------------------------------------------------------------------------
 // The grammars. Every one is anchored, and that is not a style choice
@@ -167,11 +204,74 @@ export type ComparableValue = string | null;
  */
 const DECIMAL_RE = /^-?\d+(?:\.\d+)?$/;
 
-/** ISO-4217 alphabetic. Three letters, and the ONLY way to name a currency here. */
-const CURRENCY_RE = /^[A-Za-z]{3}$/;
+/**
+ * ISO-4217 alphabetic codes — a SET, not a shape test, and the distinction is
+ * the whole safety argument.
+ *
+ * `/^[A-Za-z]{3}$/` looks like "an ISO-4217 code" and is really "any three
+ * letters", i.e. an accept-everything rule with 17,576 entries. Measured on the
+ * shape test before this list existed: `499 net` → `money:NET:499`, `12 mos` →
+ * `money:MOS:12`, `1 yrs` → `money:YRS:1`, `10 kgs` → `money:KGS:10`. The
+ * currency lives in the PAYLOAD, not the tag, so `money:MOS:12` and
+ * `money:YRS:1` share the `money` tag, compare unequal, and read as **provably
+ * different** — one belief stated two ways, stamped `valid_to`. That is the
+ * exact counterfeit-difference this column exists to prevent, re-entering
+ * through the arm meant to prevent it. `12 mos` is not an exotic surface for a
+ * warehouse producer reading a units column.
+ *
+ * ⚠️ **This is not the symbol allowlist the module header refuses, and the
+ * difference is the failure DIRECTION.** A missing symbol there would have made
+ * an ambiguous surface parse — a stamp. A missing code here makes a
+ * well-formed surface abstain — a missed supersession, recoverable, repaired by
+ * adding the code. Refusing a list is only correct when being wrong costs the
+ * irreversible direction.
+ *
+ * The list is ISO-4217's active alphabetic codes. It moves slowly, and it is
+ * fine for it to lag: an unlisted currency abstains.
+ *
+ * ⚠️ **The residual, which no list can remove.** Some codes ARE ordinary
+ * three-letter English abbreviations — `KGS` is the Kyrgyzstani som and the
+ * obvious short form of kilograms; `TRY`, `MOP`, `SEK`, `MAD` collide the same
+ * way. `10 kgs` therefore reads as `money:KGS:10`, and the surface genuinely
+ * does not say which was meant. It is tolerable because the reading is wrong
+ * about the TYPE and right about the VERDICT: two weights in one unit still
+ * compare as two quantities in one unit, so `different` is the answer a
+ * reviewer would give either way. The dangerous shape — one quantity, two units
+ * (`12 mos` / `1 yrs`) — needs BOTH tokens to be ISO codes, which no producer
+ * vocabulary reaches. Pinned by a test rather than left to be rediscovered.
+ */
+const ISO_4217 = new Set([
+  "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN",
+  "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BRL",
+  "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF", "CLP", "CNY",
+  "COP", "CRC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP",
+  "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD",
+  "GNF", "GTQ", "GYD", "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR",
+  "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF",
+  "KPW", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL",
+  "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR",
+  "MVR", "MWK", "MXN", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR",
+  "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR",
+  "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD",
+  "SHP", "SLE", "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB",
+  "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX",
+  "USD", "UYU", "UZS", "VED", "VES", "VND", "VUV", "WST", "XAF", "XCD",
+  "XOF", "XPF", "YER", "ZAR", "ZMW", "ZWG",
+]);
 
-/** `499 USD` or `USD 499`. Exactly two whitespace-separated tokens, either order. */
-const MONEY_RE = /^(\S+)\s+(\S+)$/;
+/** The SHAPE a currency token must have before {@link ISO_4217} is consulted. */
+const CURRENCY_SHAPE_RE = /^[A-Za-z]{3}$/;
+
+/**
+ * `499 USD` or `USD 499`. Exactly two tokens, either order.
+ *
+ * Separated by SPACES OR TABS, never `\s`. `\s` matches a newline, so a
+ * multi-line object surface with a number on one line and a three-letter token
+ * on the next parsed as money — measured: `"499\nUSD"` → `money:USD:499`. A
+ * claim spanning two lines is not a price; it is a producer emitting something
+ * this module has no business canonicalizing.
+ */
+const MONEY_RE = /^(\S+)[ \t]+(\S+)$/;
 
 /** A calendar date. Strict `YYYY-MM-DD` — `08/04/2026` is D/M or M/D and is refused. */
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -186,7 +286,8 @@ const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
  * the same kind of thing, and giving them separate tags is what stops
  * `2026-08-04` and `2026-08-04T00:00:00Z` reading as *different*.
  */
-const INSTANT_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})$/;
+const INSTANT_RE =
+  /^(\d{4})-(\d{2})-(\d{2})[Tt]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})$/;
 
 // ---------------------------------------------------------------------------
 // The canonicalizers
@@ -249,7 +350,30 @@ function canonicalDate(raw: string): string | null {
  * stamp `valid_to` over a time-zone conversion.
  */
 function canonicalInstant(raw: string): string | null {
-  if (!INSTANT_RE.test(raw)) return null;
+  const match = INSTANT_RE.exec(raw);
+  if (match === null) return null;
+  const [, year = "", month = "", day = ""] = match;
+  // ⚠️ The SAME calendar round-trip {@link canonicalDate} performs, and its
+  // absence here was a live defect rather than a theoretical one. `new Date`
+  // does NOT return `Invalid Date` for an impossible calendar day inside a
+  // well-formed timestamp — it rolls forward, measured on this repo's runtime:
+  //
+  //   2026-02-31T10:00:00Z      -> 2026-03-03T10:00:00.000Z
+  //   2026-04-31T00:00:00Z      -> 2026-05-01T00:00:00.000Z
+  //   2026-02-30T10:00:00+00:00 -> 2026-03-02T10:00:00.000Z
+  //
+  // Both irreversible directions are reachable from that. A rolled instant is
+  // byte-identical to the real day it lands on, so the two CORROBORATE and the
+  // real observation is discarded into a row recording the nonsense surface.
+  // And a rolled instant against a genuine neighbouring day is same-tag and
+  // unequal — *provably different* — so publish stamps `valid_to` on a belief
+  // nobody arbitrated, from an input that names no instant at all.
+  //
+  // Delegated to `canonicalDate` rather than re-derived, so the two arms cannot
+  // disagree about which days exist. Only Y-M-D is constrained: `24:00:00` is
+  // ISO-legal and genuinely the next midnight, and rolling THAT forward is
+  // correct.
+  if (canonicalDate(`${year}-${month}-${day}`) === null) return null;
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
@@ -270,7 +394,12 @@ function canonicalBool(raw: string): string | null {
 
 /** A currency code, upper-cased so `usd` and `USD` are one currency. */
 function canonicalCurrency(raw: string): string | null {
-  return CURRENCY_RE.test(raw) ? raw.toUpperCase() : null;
+  if (!CURRENCY_SHAPE_RE.test(raw)) return null;
+  const upper = raw.toUpperCase();
+  // Membership, not shape — see {@link ISO_4217}. Without this arm every
+  // three-letter unit token (`mos`, `yrs`, `kgs`, `net`, `min`) names a
+  // currency, and two spellings of one quantity read as provably different.
+  return ISO_4217.has(upper) ? upper : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +407,7 @@ function canonicalCurrency(raw: string): string | null {
 // ---------------------------------------------------------------------------
 
 /** `<tag>:<payload>`, the one place the wire format is written. */
-function tagged(tag: ComparableTag, payload: string): string {
+function tagged(tag: ComparableTag, payload: string): TaggedComparable {
   return `${tag}${TAG_SEPARATOR}${payload}`;
 }
 
@@ -289,12 +418,15 @@ function tagged(tag: ComparableTag, payload: string): string {
  * the amount separately: a declaration may supply a currency the surface lacks,
  * but it may never CONTRADICT one the surface states.
  */
-interface SurfaceParse {
-  readonly tag: ComparableTag;
-  readonly payload: string;
-  /** Set only on the `money` arm, and only when the SURFACE named the currency. */
-  readonly currency?: string;
-}
+type SurfaceParse =
+  /** The `money` arm — the only one carrying a currency, and it always does. */
+  | { readonly tag: "money"; readonly payload: string; readonly currency: string }
+  /**
+   * Everything else. A two-member union rather than one shape with an optional
+   * `currency`, which admits `{ tag: "bool", currency: "USD" }` — inert today
+   * because the one reader fails closed, and free to remove.
+   */
+  | { readonly tag: Exclude<ComparableTag, "money">; readonly payload: string };
 
 /**
  * Read a surface on its own terms.
@@ -326,8 +458,10 @@ function parseSurface(surface: string): SurfaceParse | null {
   if (money !== null) {
     const [, left = "", right = ""] = money;
     // Either order — `499 USD` and `USD 499` are both idiomatic and both
-    // unambiguous. Both tokens parsing as the same kind is impossible (a
-    // three-letter code is not a decimal), so there is nothing to disambiguate.
+    // unambiguous. A SINGLE token cannot parse as both a decimal and an ISO
+    // code, so the `??` never picks the wrong one. When BOTH tokens are the
+    // same kind (`USD EUR`, `499 500`) the other lookup returns null and the
+    // arm abstains — which is the safety, not an impossibility.
     const amount = canonicalDecimal(left) ?? canonicalDecimal(right);
     const currency = canonicalCurrency(left) ?? canonicalCurrency(right);
     if (amount !== null && currency !== null) {
@@ -453,8 +587,19 @@ function applyDeclaration(
  *
  * `split` on the FIRST separator only, because payloads contain them: an
  * instant is `time:2026-08-04T08:00:00.000Z` and money is `money:USD:499`.
- * The SQL twin below is `split_part(…, ':', 1)`, which has the same behaviour
- * for the same reason.
+ *
+ * Agrees with the SQL side — `split_part(…, ':', 1)` plus the `IN (…known
+ * tags…)` membership arm in {@link comparableDifferentSql} — on every value
+ * this module PRODUCES, which is what `object-cmp-pg.test.ts` checks row by
+ * row. The two are not the same function on other inputs and are not meant to
+ * be: `split_part` returns the whole string for a separator-less value, and it
+ * is the membership arm rather than this function that keeps such a value out
+ * of the difference test.
+ *
+ * This function has no production consumer. It exists for the agreement oracle
+ * in `object-cmp-corpus.ts`, and from #5035 for the null-at-import decision,
+ * where a mis-tag means a store-local id travels verbatim as counterfeit
+ * evidence of difference.
  */
 export function comparableTag(value: string): ComparableTag | null {
   const boundary = value.indexOf(TAG_SEPARATOR);
@@ -504,11 +649,13 @@ export function comparableTag(value: string): ComparableTag | null {
  * direction this arm must fail in: no proof of difference means no `valid_to`
  * stamp, which is the recoverable outcome.
  *
- * PARENTHESIZED. The arms are all `AND` so the group is redundant today — it is
- * here because callers splice this into `AND` chains that already contain `OR`
- * groups, and `AND` binds tighter. Migration 0187's `WHERE` clause carries the
- * same parenthesization for the same reason, and its header records that the
- * unparenthesized shape passed every assertion in the suite.
+ * PARENTHESIZED, and the reason is a FUTURE arm rather than a present caller:
+ * every arm here is `AND`, so spliced into an `AND` chain the parens buy nothing
+ * — precisely because `AND` binds tighter. What they stop is an `OR` arm added
+ * INSIDE this builder later (a restored `object_key` fallback is the obvious
+ * one) binding looser than the conjunction and re-widening the whole join.
+ * Migration 0187's `WHERE` carries redundant parens for the mirror-image case:
+ * all-`OR` arms guarded against a later `AND`.
  *
  * `a` / `b` are interpolated; callers pass column expressions or bind
  * placeholders they control — same contract as `supersessionCollisionPredicate`
@@ -516,7 +663,68 @@ export function comparableTag(value: string): ComparableTag | null {
  */
 export function comparableDifferentSql(a: string, b: string): string {
   return `(${a} <> ${b}
-      AND split_part(${a}, '${TAG_SEPARATOR}', 1) = split_part(${b}, '${TAG_SEPARATOR}', 1))`;
+      AND split_part(${a}, '${TAG_SEPARATOR}', 1) = split_part(${b}, '${TAG_SEPARATOR}', 1)
+      AND split_part(${a}, '${TAG_SEPARATOR}', 1) IN (${KNOWN_TAGS_SQL}))`;
+}
+
+
+/**
+ * *Provably the same* at the object position — the full two-arm test, with the
+ * difference veto that keeps the two verdicts disjoint.
+ *
+ * ⚠️ **`same` and `different` as ADR-0037 §2 states them are NOT disjoint, and
+ * the overlap is reachable.** `lexicalNorm` treats `-` as a separator and trims
+ * it, so `-499` and `499` key IDENTICALLY (`499`) while their comparable values
+ * are `number:-499` and `number:499` — same tag, unequal, provably different.
+ * Under the rule as written the key arm fires `same`, corroboration merges the
+ * two rows, and the second claim never gets a row at all: Atlas records one more
+ * piece of evidence for the OPPOSITE-signed belief, the tension scan never runs,
+ * and no reviewer ever sees it. That is T2's *"corroboration merges two distinct
+ * beliefs into one row — silent, unattended, no human in the loop"*, arriving
+ * through the arm nobody changed. A signed number is exactly the object a
+ * warehouse producer emits for a margin or a delta, which is the producer
+ * `objectType` exists to serve.
+ *
+ * So proven difference VETOES sameness. The three verdicts are then disjoint by
+ * construction rather than by assumption, and the pair falls to `different` —
+ * a fresh row, a tension edge, and a supersession the reviewer can see coming.
+ *
+ * `IS NOT TRUE` on the veto, never `NOT (…)`: the veto is NULL for the whole
+ * abstain band, and `NOT NULL` is NULL, which a `WHERE` treats as false. The
+ * readable spelling would delete corroboration for every unparseable object in
+ * the corpus.
+ */
+export function objectSameSql(keyA: string, keyB: string, cmpA: string, cmpB: string): string {
+  return `((${keyA} = ${keyB} OR ${comparableSameSql(cmpA, cmpB)})
+      AND (${comparableDifferentSql(cmpA, cmpB)}) IS NOT TRUE)`;
+}
+
+/**
+ * *Not provably the same* at the object position — what the advisory rival scan
+ * asks, and where the whole `unknown` band lands.
+ *
+ * NOT spelled as `objectSameSql(…) IS NOT TRUE`, and the difference is
+ * deliberate: that spelling would make a NULL-keyed row (a surface of only
+ * separators) earn a tension edge, reversing the documented abstention
+ * `TENSION_CANDIDATES_SQL` has carried since #5020 — an advisory edge from a
+ * real claim to a placeholder that asserts nothing.
+ *
+ * Instead: the keys differ **or** the values prove they differ, and the values
+ * do not prove they are the same. The second disjunct is what carries the
+ * `-499` / `499` case above into tension once the veto has kept it out of
+ * corroboration; without it that pair would mint a second row and then earn no
+ * edge, which is worse than either verdict alone.
+ */
+export function objectNotSameSql(keyA: string, keyB: string, cmpA: string, cmpB: string): string {
+  // The inner parens around the equality are REDUNDANT under PostgreSQL's
+  // precedence table — comparison binds tighter than `IS`, verified on this
+  // repo's PG 16 (`NULL = 'x' IS NOT TRUE` → t, `'a' = 'a' IS NOT TRUE` → f) —
+  // and they are written anyway. `x = y IS NOT TRUE` reads as `x = (y IS NOT
+  // TRUE)` to most people, which is a different and wrong expression, and the
+  // cost of being wrong here is deleting the whole abstain band. Migration
+  // 0187's `WHERE` clause carries redundant parens for the mirror-image reason.
+  return `((${keyA} <> ${keyB} OR ${comparableDifferentSql(cmpA, cmpB)})
+      AND (${comparableSameSql(cmpA, cmpB)}) IS NOT TRUE)`;
 }
 
 /**

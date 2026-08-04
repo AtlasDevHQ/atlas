@@ -123,16 +123,29 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
    */
   async function publish(workspaceId: string) {
     const client = await pool.connect();
+    /** Set only when ROLLBACK itself failed — passing it to `release` destroys the client. */
+    let destroyReason: Error | undefined;
     try {
       await client.query("BEGIN");
       const report = await Effect.runPromise(promoteBrainFacts(client, workspaceId));
       await client.query("COMMIT");
       return report;
     } catch (err) {
-      await client.query("ROLLBACK");
+      // The ROLLBACK must not REPLACE the failure the test was about, and a
+      // client with an open transaction must not return to the pool for the
+      // next test to inherit — passing a reason to `release` destroys it
+      // instead. Same shape as `identity-consumers-pg.test.ts`'s helper (#5021).
+      await client.query("ROLLBACK").catch((cause: unknown) => {
+        destroyReason = cause instanceof Error ? cause : new Error(String(cause));
+        console.warn(
+          `publish(${workspaceId}): ROLLBACK failed after "${
+            err instanceof Error ? err.message : String(err)
+          }" — destroying the connection: ${destroyReason.message}`,
+        );
+      });
       throw err;
     } finally {
-      client.release();
+      client.release(destroyReason);
     }
   }
 
@@ -1242,6 +1255,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       predicate?: string;
       cardinality?: "single" | "multi";
       status?: "draft" | "published";
+      /** Defaults to org-wide; override for the ACL-withholding cases. */
+      visibleTo?: readonly string[];
       /**
        * Land the row UNKEYED — all three key columns NULL — which is what a
        * region import produces today (`admin-migrate.ts`'s 18-column INSERT
@@ -1265,7 +1280,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
            (workspace_id, subject, predicate, object, source_episode_id,
             provenance, status, visible_to, predicate_cardinality,
             subject_key, predicate_key, object_key)
-         VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, $6, '{org}', $7,
+         VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, $6, $11::text[], $7,
                  $8, $9, $10)
          RETURNING id`,
         [
@@ -1279,6 +1294,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           opts.unkeyed === true ? null : slotKey(opts.subject, identityAlias),
           opts.unkeyed === true ? null : slotKey(predicate, identityAlias),
           opts.unkeyed === true ? null : slotKey(opts.object, identityAlias),
+          opts.visibleTo ?? ["org"],
         ],
       );
       return rows[0]!.id;
@@ -1786,22 +1802,18 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         const ws = "ws-4912-withheld";
         const privateEp = await seedEpisode(ws, "withheld-private", [SUPERSEDE_PRIVATE_GRANT]);
         // The incumbent lives in a private channel; the draft is org-wide.
-        await pool.query(
-          `INSERT INTO brain_facts
-             (workspace_id, subject, predicate, object, source_episode_id,
-              provenance, status, visible_to, predicate_cardinality,
-              subject_key, predicate_key, object_key)
-           VALUES ($1, 'alice', 'manager', 'bob', $2, '{"actor":"t"}'::jsonb,
-                   'published', $3::text[], 'single', $4, $5, $6)`,
-          [
-            ws,
-            privateEp,
-            [SUPERSEDE_PRIVATE_GRANT],
-            slotKey("alice", identityAlias),
-            slotKey("manager", identityAlias),
-            slotKey("bob", identityAlias),
-          ],
-        );
+        // Through `seedFact` like every other row here (#5021): a second inline
+        // INSERT spelling the SPO as SQL literals is a second definition of what
+        // this corpus contains, and the pair below only collides if the two
+        // agree — which nothing would have checked.
+        await seedFact({
+          workspaceId: ws,
+          episodeId: privateEp,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+          visibleTo: [SUPERSEDE_PRIVATE_GRANT],
+        });
         await seedFact({
           workspaceId: ws,
           episodeId: privateEp,

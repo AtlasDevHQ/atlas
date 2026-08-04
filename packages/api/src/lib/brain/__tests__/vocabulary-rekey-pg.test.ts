@@ -41,10 +41,18 @@
  * failing test, and reverts; the "first test to die" column is that recorded
  * name, not an author's guess about which test ought to have caught it.
  *
- * Three suites are in scope: this one, `vocabulary-decide-pg.test.ts` (the lock
- * bracket and the column-scoped allowlist assertion), and
- * `content-mode/adapters/__tests__/brain-facts.test.ts` (the publish lock, its
- * bound and reset, the `55P03` classification, and the two stamp arbitrations).
+ * Three suites are in the harness's scope: this one,
+ * `vocabulary-decide-pg.test.ts` (the lock bracket and the column-scoped
+ * allowlist assertion), and `content-mode/adapters/__tests__/brain-facts.test.ts`
+ * (the publish lock, its bound and reset, the `55P03` classification, and the
+ * two stamp arbitrations).
+ *
+ * `content-mode/__tests__/registry.test.ts` is deliberately NOT in that scope
+ * and is worth naming: it pins the brain phase's whole statement PLAN by index,
+ * so it fails on any statement added, removed or MOVED. That makes it a real
+ * fourth backstop — but a table measured over it would credit kills to a plan
+ * assertion rather than to a test of the property, which is exactly the
+ * attribution problem round 3 caught in row 6.
  *
  * | # | Mutation | First test to die |
  * |---|---|---|
@@ -87,8 +95,9 @@
  *
  * **Round 2 was a review panel, and it found a hole the table had not probed at
  * all.** Every `approve()` in this file was at the `predicate` position, so
- * `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed all 102
- * tests across this suite and `vocabulary-decide-pg`. That is subject and object
+ * `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed all 100
+ * tests across this suite and `vocabulary-decide-pg` (18 + 82, counted at the
+ * tree that carried the bug — not at HEAD, where it is 104). That is subject and object
  * approvals re-keying NOTHING, with a success line in the log. Rows 10 and 12
  * exist because of it. **A mutation table only covers the mutations someone
  * thought to write, and a suite whose fixtures all share one value of a
@@ -103,6 +112,15 @@
  * regeneration discipline exists to catch, appearing inside the discipline. The
  * test now uses a foreign row whose stored key DISAGREES with its own
  * workspace's closure, which is the only shape an unscoped statement moves.
+ *
+ * The reset tests then needed strengthening for the same reason one layer up:
+ * they pinned the reset's PRESENCE (`precededLocks === 1`,
+ * `identityLockAt < resetAt`) and not its POSITION, so displacing it past
+ * `DRAFT_FACTS_SQL` — leaking the bound over exactly the statements it exists to
+ * keep unbounded — passed all three suites. Measured at both call sites. They
+ * now assert `precededCalls === 0` and `resetAt === identityLockAt + 1`.
+ * **For a guard, the mutation that matters is rarely "delete it" — it is
+ * "move it".**
  *
  * And the `SET LOCAL lock_timeout` added in round 2 was never reset, so it
  * governed every later lock wait in both transactions — `DRAFT_FACTS_SQL`'s
@@ -1033,6 +1051,10 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
   });
 
   it("every position's re-key statement is generated from the same expression", async () => {
+    // Needs no Postgres either (pure string manipulation over the generated
+    // statements), and inside the `-pg` gate for the same reason as the 0187 pin
+    // above — CI sets `TEST_DATABASE_URL`, and nothing delegates to this one.
+    //
     // A cheap structural pin on `REKEY_DRIFTED_FACTS_SQL`: three statements that
     // differ ONLY in the two column names and the position literal. Anything
     // else in the diff means one position was hand-edited.

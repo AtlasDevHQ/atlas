@@ -44,9 +44,18 @@ interface LockCall {
   readonly precededCalls: number;
 }
 
-/** One `SET LOCAL lock_timeout`, with how many locks it preceded. */
+/**
+ * One `SET LOCAL lock_timeout`, with its position on BOTH axes.
+ *
+ * `precededCalls` is not redundant with `precededLocks`, and the gap between
+ * them is where a real defect hid: with only the lock count, a reset displaced
+ * to AFTER the drafts read still satisfies "it came after the lock" — which is
+ * the presence of the reset, not the property. The property is that no
+ * table-touching statement runs while the bound is in force.
+ */
 interface BoundCall {
   readonly precededLocks: number;
+  readonly precededCalls: number;
 }
 
 /**
@@ -94,11 +103,11 @@ function txWithDrafts(
       // ORDER assertable rather than merely its presence. Answered with an empty
       // result because `pg_advisory_xact_lock` returns void and nothing reads it.
       if (sql === IDENTITY_MUTATION_LOCK_TIMEOUT_SQL) {
-        bounds.push({ precededLocks: locks.length });
+        bounds.push({ precededLocks: locks.length, precededCalls: calls.length });
         return { rows: [] };
       }
       if (sql === IDENTITY_MUTATION_LOCK_RESET_SQL) {
-        resets.push({ precededLocks: locks.length });
+        resets.push({ precededLocks: locks.length, precededCalls: calls.length });
         return { rows: [] };
       }
       if (sql === IDENTITY_MUTATION_LOCK_SQL) {
@@ -312,9 +321,19 @@ describe("promoteBrainFacts", () => {
     await run(promoteBrainFacts(tx, "ws-1"));
 
     expect(resets, "the lock_timeout bound is never reset — it leaks to the whole transaction").toHaveLength(1);
-    // AFTER the acquisition, so the bracket is `set → lock → reset` and covers
-    // exactly one statement.
+    // AFTER the acquisition…
     expect(resets[0].precededLocks).toBe(1);
+    // …and BEFORE any statement that touches a table. This second axis is the
+    // one that matters, and its absence was a real hole: with `precededLocks`
+    // alone, a reset displaced to after `DRAFT_FACTS_SQL` — leaking the bound
+    // over the drafts read, both promote UPDATEs and the supersede stamp, which
+    // is the exact harm the reset exists to prevent — passed this whole file.
+    // Measured, not reasoned: the displacement was applied and all 54 tests
+    // here stayed green.
+    expect(
+      resets[0].precededCalls,
+      "the bound is reset only after a table statement has already run under it",
+    ).toBe(0);
     expect(locks).toHaveLength(1);
   });
 

@@ -1460,7 +1460,15 @@ describeIfPg("the alias decision seam (#5023)", () => {
       expect(vocabLockAt).toBeLessThan(boundAt);
       // …and the bound brackets 5024 exactly.
       expect(boundAt).toBeLessThan(identityLockAt);
-      expect(identityLockAt).toBeLessThan(resetAt);
+      // ADJACENT, not merely later. `toBeLessThan` is satisfied by a reset
+      // anywhere further down the transaction, so it pins the reset's existence
+      // and its left edge while leaving the right edge open — and the right edge
+      // is the property. Measured: moving the reset to after `rekeyDriftedFacts`
+      // left both -pg suites fully green under the weaker assertion.
+      expect(
+        resetAt,
+        "the bound is not reset immediately after the acquisition — every statement in between runs under it",
+      ).toBe(identityLockAt + 1);
     });
 
     it("the two lock namespaces are distinct — one lock taken twice is not two locks", async () => {

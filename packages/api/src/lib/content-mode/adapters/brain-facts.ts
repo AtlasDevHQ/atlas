@@ -948,13 +948,19 @@ export function promoteBrainFacts(
         return new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause });
       },
     });
-    // RESET, immediately. `SET LOCAL` reverts at COMMIT, not at the next
-    // statement, so leaving it set bounds every later lock wait in this
-    // transaction — `DRAFT_FACTS_SQL`'s `FOR UPDATE` (which exists to WAIT for a
-    // concurrent publish), the promote UPDATEs, and `admin-publish.ts`'s phase-4
-    // archive loop, which runs after `runPublishPhases` returns. A publish that
-    // used to block and commit would instead roll back everything already
-    // promoted, on a transient class, under a generic message.
+    // RESET, immediately, and BEFORE the drafts are read. `SET LOCAL` reverts at
+    // COMMIT, not at the next statement, so leaving it set bounds every later
+    // lock wait in this transaction: the promote UPDATEs and the supersede
+    // stamp, which contend for `brain_facts` rows with `reconcile.ts` and
+    // `correction.ts` (namespace 4771 — NOT serialized by the lock above), and
+    // `admin-publish.ts`'s phase-4 archive loop, which runs after
+    // `runPublishPhases` returns. A publish that used to block and commit would
+    // instead roll back everything already promoted, on a transient class, under
+    // a generic message.
+    //
+    // Not `DRAFT_FACTS_SQL`'s `FOR UPDATE`: a second publisher parks on the
+    // advisory lock above and never reaches that row lock. Named because an
+    // earlier draft of this comment led with it and it is unreachable.
     yield* Effect.tryPromise({
       try: () => tx.query(IDENTITY_MUTATION_LOCK_RESET_SQL),
       catch: (cause) =>

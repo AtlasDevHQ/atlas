@@ -1152,7 +1152,9 @@ async function lockIdentityMutation(tx: VocabularyExecutor, workspaceId: string)
   // The reset is not tidiness: `SET LOCAL` reverts at COMMIT, not at the next
   // statement, so leaving it set would bound the proposal claim and every row
   // lock the workspace-wide re-key takes below — turning waits that are correct
-  // into failures. The first cut of this fix did exactly that.
+  // into failures. The first cut of this fix did exactly that. It must be
+  // ADJACENT to the acquisition, not merely somewhere after it; the suite
+  // asserts `resetAt === identityLockAt + 1` for that reason.
   await tx.query(IDENTITY_MUTATION_LOCK_TIMEOUT_SQL);
   await tx.query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, workspaceId]);
   await tx.query(IDENTITY_MUTATION_LOCK_RESET_SQL);

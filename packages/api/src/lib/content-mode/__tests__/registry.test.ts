@@ -684,10 +684,10 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // Postgres to touch, so that second param is the gate, not a filter. The
     // evidence lookup binds the SAME list, so a refused row's episodes cannot
     // widen anything either.
-    // The two #5024 lock statements are excluded by INDEX rather than by a
-    // predicate: the bound binds nothing and the lock binds `[namespace, org]`,
-    // so neither is org-scoped on `$1` and a blanket loop would fail on both.
-    // Their own params are asserted immediately after.
+    // The THREE #5024 lock statements are excluded by INDEX rather than by a
+    // predicate: the bound and its reset bind nothing, and the lock binds
+    // `[namespace, org]`, so none is org-scoped on `$1` and a blanket loop would
+    // fail on all three. Their own params are asserted immediately after.
     for (const c of [...calls.slice(0, 8), calls[11]]) expect(c.params).toEqual(["org-1"]);
     expect(calls[8].params).toEqual([]);
     expect(calls[9].params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, "org-1"]);

@@ -590,14 +590,22 @@ export const IDENTITY_MUTATION_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hash
  * left in place governs **every subsequent lock wait in the transaction**, which
  * at both call sites is a lot more than the acquisition it was written for:
  *
- *   - on the publish path, `DRAFT_FACTS_SQL`'s `FOR UPDATE` (whose own docstring
- *     says it exists to serialize two concurrent publishes and therefore WANTS
- *     to wait), the promote UPDATEs, the supersede stamp, and — because
- *     `runPublishPhases` is not the last thing in `admin-publish.ts`'s
- *     transaction — the phase-4 connection-archive loop's `FOR UPDATE` on
- *     `workspace_plugins`;
- *   - on the decide path, the vocabulary lock (5022), the proposal claim, and
- *     every row lock the workspace-wide re-key takes.
+ *   - on the publish path, the promote UPDATEs and the supersede stamp, which
+ *     contend for `brain_facts` row locks with `reconcile.ts` and
+ *     `correction.ts` — both of which take namespace 4771, NOT this one, so the
+ *     advisory lock does not serialize them; and, because `runPublishPhases` is
+ *     not the last thing in `admin-publish.ts`'s transaction, the phase-4
+ *     connection-archive loop's `FOR UPDATE` on `workspace_plugins`.
+ *   - on the decide path, the proposal claim and every row lock the
+ *     workspace-wide re-key takes.
+ *
+ * Note what is NOT in that list, because an earlier draft led with it and it was
+ * wrong: `DRAFT_FACTS_SQL`'s `FOR UPDATE`. Publisher-versus-publisher contention
+ * there is already impossible — this namespace is taken and held before the
+ * drafts are read, so a second publisher parks on the advisory lock and never
+ * reaches the row lock. It stays out of the list; the two entries above carry
+ * the argument on their own. (5022 is likewise absent from the decide entry: it
+ * is taken BEFORE the bound.)
  *
  * Turning those waits into failures is a behaviour change nobody asked for: a
  * publish that used to block for eleven seconds and commit would instead roll
@@ -630,9 +638,17 @@ export const IDENTITY_MUTATION_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '10s
  * Undo {@link IDENTITY_MUTATION_LOCK_TIMEOUT_SQL} — issued immediately after the
  * acquisition so the bound covers that statement and nothing else.
  *
- * `DEFAULT` rather than `'0'`: it restores whatever the deployment configured
- * rather than asserting "no timeout", which would silently override a
- * server-level `lock_timeout` an operator set on purpose.
+ * `DEFAULT` rather than `'0'`: it restores the RESET VALUE — compiled-in,
+ * `postgresql.conf`, `ALTER DATABASE`, `ALTER ROLE` — rather than asserting "no
+ * timeout", which would silently override a `lock_timeout` an operator set on
+ * purpose. Measured against this repo's PG 16: with `ALTER ROLE … SET
+ * lock_timeout='45s'`, `DEFAULT` restores `45s`.
+ *
+ * ⚠️ A SESSION-level `SET lock_timeout` would NOT survive it — `DEFAULT` resets
+ * to the reset value, not to the session value, so the rest of the transaction
+ * would run at the server default instead. No pool in `lib/db/internal.ts` sets
+ * one today (no `connect` hook anywhere in `packages/api`), which is the only
+ * reason this spelling is safe. Revisit here before adding one.
  */
 export const IDENTITY_MUTATION_LOCK_RESET_SQL = `SET LOCAL lock_timeout = DEFAULT`;
 

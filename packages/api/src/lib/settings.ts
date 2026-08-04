@@ -770,8 +770,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   //
   // `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` ships EMPTY — auto-approval off
   // until an admin opts in — and that is right for a YAML rewrite a human can
-  // read and revert. Shipping the alias split off would be wrong, and the ADR
-  // says why: day one the vocabulary and the entity store are empty for every
+  // read and revert. Shipping the alias split off would be wrong, and T11
+  // (#5016) §3(b) says why: day one the vocabulary and the entity store are
+  // empty for every
   // workspace, so the first producer run emits an edge per entity. If each is a
   // proposal, the queue is `pattern-tiers.ts`'s named anti-goal — CONTEXT.md's
   // "a review queue full of seen-once noise" — at a scale nobody reviews. So
@@ -812,9 +813,11 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     description:
       "Comma-separated alias proposal source classes eligible for auto-approval (warehouse_key, extractor, seam, human). Others always queue for review.",
     type: "string",
-    // ADR-0037 §6 verbatim: "Warehouse-derived entity edges backed by a primary
-    // key may auto-approve. Extractor-derived and seam-proposed edges always
-    // queue." Widening this to `extractor` is a real decision — an extractor
+    // T11 (#5016) §3(b), verbatim: "Warehouse-derived entity edges backed by a
+    // primary key may auto-approve. Extractor-derived and seam-proposed edges
+    // always queue." ADR-0037 §6 restates the same rule with a semicolon and a
+    // lowercase E — the quotation marks belong to the issue comment, which is
+    // why the attribution does. Widening this to `extractor` is a real decision — an extractor
     // edge is an LLM's guess about which two spellings name one thing, and
     // approving it re-keys the corpus with no human in front of it.
     default: "warehouse_key",

@@ -48,8 +48,11 @@
  *
  * ## Two authority postures, and collapsing them is the mistake to avoid
  *
- * ADR-0037 §6 WITHDRAWS T5's claim that entity edges *"invent no new
- * authority"*. One namespace and one key function, but not one posture:
+ * T5's claim that entity edges *"invent no new authority"* is WITHDRAWN — in
+ * #5009's correction comment and in T11's resolution §3(d) (#5016), which is
+ * where a reader checking this should look. ADR-0037 §6 carries the posture
+ * that REPLACED it, not the withdrawal itself, and has no lettered
+ * subsections. One namespace and one key function, but not one posture:
  *
  *   - A **predicate** alias is proposed from evidence inside the brain's own
  *     ACL'd corpus, so an approver's entitlement is expressible in the grant
@@ -63,8 +66,11 @@
  *
  * Both postures are enforced here, at two different points:
  *
- *   1. **Auto-approve** ({@link autoApproveEligible}) is reachable only from a
- *      warehouse primary key at an ENTITY position. `warehouse_key` at the
+ *   1. **Auto-approve** ({@link autoApproveEligible}) is reachable only at an
+ *      ENTITY position — structurally, and an operator cannot widen that — and,
+ *      under the shipped knob, only from a warehouse primary key. The source
+ *      half IS widenable, which is why the position half is the one spelled in
+ *      code rather than in settings. `warehouse_key` at the
  *      predicate position is refused at propose time — a predicate is a verb
  *      phrase and has no primary key, so the class cannot honestly arise there,
  *      and admitting it would route predicate aliases through the arm reserved
@@ -97,13 +103,34 @@
  * around a rejection by emitting the pair the other way — without any intent
  * to. See 0190's header.
  *
- * ## Lock order is load-bearing
+ * ## Lock order, and what it actually buys HERE
  *
  * {@link VOCABULARY_LOCK_SQL} is taken on the workspace BEFORE any proposal row
- * is read or written. The region importer (`admin-migrate.ts`) takes the same
- * lock before its own insert loop, and a decide transaction that touched rows
- * first and locked second would invert the order against it and deadlock
- * (40P01). `migrate-roundtrip-pg.test.ts` carries the regression test.
+ * is read or written, in both the propose and the decide transaction.
+ *
+ * What that buys is the atomicity of two check-then-write pairs this module
+ * owns: the rejection-memory read followed by the INSERT, and the proposal read
+ * followed by the claim. Without it, two concurrent proposals of one pair both
+ * see no rejected row and race the unique index, and two concurrent decisions
+ * on one row both read it `pending`. It also serializes the whole
+ * claim → apply → stamp against the region importer's EDGE writes on the same
+ * workspace, since both take this namespace.
+ *
+ * What it does NOT buy, stated because an earlier version of this block claimed
+ * it and the claim does not survive reading: it is not what avoids a 40P01
+ * against that importer. The rows this module would hold under a lock-second
+ * ordering are `brain_vocabulary_proposal` rows, and the importer never reads
+ * that table at all (bundle-scope classifies it `stays`) — so there is no
+ * second orderable resource and no wait-for cycle can form. The importer's real
+ * deadlock hazard is one layer down, against `approveAliasEdge`, which takes
+ * this lock itself before touching a row; `migrate-roundtrip-pg.test.ts` carries
+ * THAT pair (#5022) and would not fail if this seam's ordering regressed.
+ *
+ * The inversion becomes reachable at #5024, when ADR-0037 §7's drift re-key puts
+ * a `brain_facts` rewrite — a table the importer DOES write — inside this
+ * transaction. Locking first now is what makes that a no-op rather than a
+ * re-discovery. This module's own ordering assertions are in
+ * `vocabulary-decide-pg.test.ts`, and they assert an INVARIANT, not a deadlock.
  */
 
 import { randomUUID } from "node:crypto";
@@ -157,7 +184,7 @@ export function isAliasSourceClass(value: unknown): value is AliasSourceClass {
  *
  * Derived from the position rather than carried on the proposal, so a producer
  * cannot mislabel it: `subject` and `object` name instances, `predicate` names
- * a relation. That is the whole distinction ADR-0037 §6(d) rests on.
+ * a relation. That is the whole distinction T11 §3(d) (#5016) rests on.
  */
 function isEntityPosition(position: SlotPosition): boolean {
   return position === "subject" || position === "object";
@@ -267,7 +294,28 @@ const LOCAL_OPERATOR_ACTOR = "local-operator";
 
 function recordedApprover(approver: AliasApprover): string | null {
   if (approver.kind === "auto") return null;
-  return approver.ctx.userId ?? LOCAL_OPERATOR_ACTOR;
+  // Switched on the ORIGIN rather than written `ctx.userId ?? SENTINEL`, and
+  // the difference is the whole point of the fix: `??` applies the sentinel to
+  // every origin whose `userId` happens to be null, so a FOURTH
+  // `BrainPrincipalContext` arm (a service token, an API-key principal) would
+  // silently inherit "the declared local operator" — the same audit
+  // falsification one origin over. Exhaustive, so a new arm is a compile error
+  // here instead.
+  switch (approver.ctx.origin) {
+    case "authenticated":
+      return approver.ctx.userId;
+    case "unauthenticated-local":
+      return LOCAL_OPERATOR_ACTOR;
+    case "unresolved":
+      // Unreachable: `approverEntitled` refuses this origin before any write.
+      // Thrown rather than coalesced, because reaching it means the entitlement
+      // check moved and the next thing to happen is an unattributed re-key.
+      throw new Error(
+        "decideAliasProposal: an unresolved reader reached the approver record. That origin is " +
+          "refused by the entitlement check, so this is an ordering regression — refusing rather " +
+          "than recording a workspace-wide re-key against no identity.",
+      );
+  }
 }
 
 /** The direction a human sets on an undirected proposal at approval time. */
@@ -282,6 +330,14 @@ export type AliasDecisionRefusal =
   | "workspace-mismatch"
   /** The approver does not clear this position's bar. */
   | "not-entitled"
+  /**
+   * A machine actor attempted a rejection. Its own member rather than a second
+   * meaning for `not-entitled`: on an approved row a rejection is a REMOVAL, so
+   * a route mapping refusals to responses needs to tell "wrong role" (a 403 a
+   * different user could satisfy) from "no actor of this class may ever do
+   * this".
+   */
+  | "machine-may-not-reject"
   /** `auto` reached a proposal the split does not make eligible. */
   | "not-auto-approvable"
   /** The proposal is undirected and no direction was supplied. */
@@ -310,8 +366,9 @@ export type AliasDecisionOutcome =
    * them on purpose (each is "nothing for you to decide"): the row is absent,
    * it belongs to another workspace, it is already `rejected`, or the verb has
    * no transition from its current status — an approve on an `approved` row
-   * (the claim is conditional on `pending`, and an approved pair's only
-   * remaining transition is removal) and a reject on an `applying` one.
+   * or an `applying` one (the claim is conditional on `pending`, and an
+   * approved pair's only remaining transition is removal), and a reject on an
+   * `applying` one.
    *
    * Reported truthfully — never retried into a second apply.
    */
@@ -504,7 +561,16 @@ const PROPOSAL_COLUMNS =
  */
 function toProposalRow(raw: unknown, workspaceId: string): ProposalRow | undefined {
   if (raw === undefined || raw === null) return undefined;
-  const row = raw as ProposalRow & { slot_position?: unknown; confidence?: unknown };
+  // `Omit` + re-declared `unknown`, NOT `ProposalRow & { …?: unknown }`. An
+  // intersection narrows and never widens (`SlotPosition & unknown` is
+  // `SlotPosition`), so the earlier spelling left both guards below statically
+  // dead — the compiler already believed the fields, and a tidy-up deleting
+  // either check would not have failed to compile. This way the checks are what
+  // produce the types, which is what "narrowed" is supposed to mean.
+  const row = raw as Omit<ProposalRow, "slot_position" | "confidence"> & {
+    readonly slot_position: unknown;
+    readonly confidence: unknown;
+  };
   if (!isSlotPosition(row.slot_position)) {
     log.error(
       { workspaceId, proposalId: row.id, slotPosition: row.slot_position },
@@ -593,8 +659,8 @@ export async function proposeAliasEdge(
         `A "warehouse_key" alias proposal is only meaningful at an entity position (subject or ` +
         `object); "${fromNorm}" → "${toNorm}" is at the predicate position. A warehouse primary key ` +
         "backs an entity INSTANCE — a predicate is a verb phrase and has none — so accepting this " +
-        "would route a predicate alias through the auto-approve arm ADR-0037 §6 reserves for " +
-        "evidence that lives outside the grant grammar.",
+        "would route a predicate alias through the auto-approve arm ADR-0037 §6 and T11 §3(d) " +
+        "reserve for evidence that lives outside the grant grammar.",
     };
   }
 
@@ -667,8 +733,9 @@ export interface AliasProducerCounters {
   rejected: number;
   /**
    * Malformed at propose time (never queued), or eligible and refused by the
-   * decide seam (queued, and also counted under `queued`). The two do not sum
-   * to the batch size for that reason.
+   * decide seam (queued, and counted under `queued` as well). Because of that
+   * second case the counters sum to MORE than `inputs.length` — said plainly,
+   * since a producer dashboard adding them up is the thing that trips over it.
    */
   refused: number;
 }
@@ -766,6 +833,13 @@ export async function proposeAliasEdges(
         }
         break;
       }
+      default: {
+        // The counters are documented as "exactly this union, tallied", and a
+        // sixth arm compiling into silence is the wrong failure direction for a
+        // type whose whole job is making the suppression visible.
+        const exhaustive: never = outcome;
+        throw new Error(`proposeAliasEdges: unhandled proposal outcome ${JSON.stringify(exhaustive)}`);
+      }
     }
   }
   } catch (err) {
@@ -806,9 +880,11 @@ export async function proposeAliasEdges(
  * rejection, and a field that is representable-and-ignored is a field a caller
  * will eventually believe in.
  *
- * The type is the primary guard; {@link decideAliasProposal} re-checks both at
- * runtime, because #5025's route will build one of these out of a parsed HTTP
- * body where the compiler is not in the room.
+ * The type is the primary guard. {@link decideAliasProposal} re-checks the
+ * ACTOR half at runtime — #5025's route will build one of these out of a parsed
+ * HTTP body, where the compiler is not in the room — and DISCARDS a direction
+ * sent with a rejection rather than refusing it, since there is no decision a
+ * direction could change there.
  */
 export type AliasDecisionRequest =
   | {
@@ -874,7 +950,7 @@ export async function decideAliasProposal(
     return {
       kind: "refused",
       id,
-      refusal: "not-entitled",
+      refusal: "machine-may-not-reject",
       message:
         `Proposal ${id} cannot be rejected by a machine actor. A rejection on an approved row is a ` +
         "REMOVAL — it drops an edge a human approved and writes permanent rejection memory no " +
@@ -990,7 +1066,10 @@ export async function decideAliasProposal(
 // Internals
 // ---------------------------------------------------------------------------
 
-/** Take the workspace vocabulary lock. See the module header on lock order. */
+/**
+ * Take the workspace vocabulary lock. See the module header for what it buys —
+ * and for the 40P01-against-the-importer story it deliberately does NOT claim.
+ */
 async function lockVocabulary(tx: VocabularyExecutor, workspaceId: string): Promise<void> {
   await tx.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, workspaceId]);
 }
@@ -1046,7 +1125,8 @@ function entitlementMessage(position: SlotPosition, ctx: BrainPrincipalContext):
     `Approving an alias at the ${position} position needs the owner or admin entitlement; this ` +
     `reader is "${ctx.role ?? "no org role"}". Subject and object edges are entity edges, and an ` +
     "entity edge's evidence is a warehouse row — a grant the brain's ACL grammar has no arm for " +
-    "(ADR-0037 §6). Predicate edges carry the lower bar because their evidence lives inside the " +
+    "(T11 §3(d), #5016). Predicate edges carry the lower bar because their evidence lives " +
+    "inside the " +
     "brain's own ACL'd corpus and a verb phrase discloses nothing."
   );
 }
@@ -1140,9 +1220,11 @@ async function approveProposal(
 
   // APPLY. `approveAliasEdge` re-takes the same advisory lock (re-entrant
   // within the transaction, so it costs nothing) and recomputes the closure.
-  // `approvedBy` is NULL for the auto path — migration 0189 calls that column
-  // "the one column an audit of a workspace-wide re-key reads first", and a
-  // 'system' sentinel there would be indistinguishable from a user id.
+  // `approvedBy` is NULL for the AUTO path only — migration 0189 calls that
+  // column "the one column an audit of a workspace-wide re-key reads first", and
+  // a machine-path sentinel there would be indistinguishable from a user id.
+  // The human path always records something; see {@link recordedApprover} for
+  // the third value and why a no-auth deployment needs one.
   const applied = await approveAliasEdge(tx, workspaceId, {
     position: row.slot_position,
     fromNorm: direction.fromNorm,
@@ -1213,7 +1295,11 @@ async function rejectProposal(
   tx: VocabularyExecutor,
   workspaceId: string,
   row: ProposalRow,
-  approver: AliasApprover,
+  // HUMAN only, so "a machine never rejects" holds at the WRITE and not merely
+  // at the seam's entry check. The one call site is already narrowed to this by
+  // the backstop above, so the tightening is free — and it means a future
+  // second caller cannot reintroduce the inversion by skipping the check.
+  approver: Extract<AliasApprover, { kind: "human" }>,
 ): Promise<AliasDecisionOutcome> {
   if (row.status !== "pending" && row.status !== "approved") {
     return { kind: "not_decidable", id: row.id };

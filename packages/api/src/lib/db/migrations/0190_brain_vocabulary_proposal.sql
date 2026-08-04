@@ -110,9 +110,9 @@ CREATE TABLE IF NOT EXISTS brain_vocabulary_proposal (
   -- exists to put a human in front of.
   directed BOOLEAN NOT NULL,
   -- Where the proposal came from, and the ONLY input to auto-approve
-  -- eligibility. ADR-0037 §6: "Warehouse-derived entity edges backed by a
-  -- primary key may auto-approve. Extractor-derived and seam-proposed edges
-  -- always queue."
+  -- eligibility. T11 (#5016) §3(b), restated by ADR-0037 §6: warehouse-derived
+  -- entity edges backed by a primary key may auto-approve; extractor-derived
+  -- and seam-proposed edges always queue.
   --
   -- `warehouse_key` is refused at the PREDICATE position by the writer, not by
   -- a CHECK — a CHECK here would state the rule without the message that makes
@@ -136,9 +136,10 @@ CREATE TABLE IF NOT EXISTS brain_vocabulary_proposal (
   -- The claim token. Set when the row moves to `applying`, and the stamp is
   -- conditional on it — see the header on why it is unobservable today.
   claimed_at TIMESTAMPTZ,
-  -- Who approved or rejected, and when. NULL for `warehouse_key` auto-approval,
-  -- matching `brain_vocabulary_edge.approved_by`'s meaning exactly: no human
-  -- was behind it, and a sentinel would be indistinguishable from a user id.
+  -- Who approved or rejected, and when. Same three-valued domain as
+  -- `brain_vocabulary_edge.approved_by` — NULL for auto-approval,
+  -- 'local-operator' for a human on a no-auth deployment, otherwise a user id.
+  -- See 0189's column comment for why the machine case is the NULL one.
   reviewed_by TEXT,
   reviewed_at TIMESTAMPTZ,
   CONSTRAINT ck_brain_vocabulary_proposal_slot_position

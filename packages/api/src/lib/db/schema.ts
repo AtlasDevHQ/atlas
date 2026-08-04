@@ -3816,8 +3816,9 @@ export const brainVocabularyProposal = pgTable(
     // rewrite wants a transaction of its own this becomes the takeover token
     // `decide.ts` describes.
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
-    // NULL for `warehouse_key` auto-approval, matching
-    // `brainVocabularyEdge.approvedBy` exactly.
+    // Same three-valued domain as `brainVocabularyEdge.approvedBy`: NULL for
+    // auto-approval, `local-operator` for a human on a no-auth deployment,
+    // otherwise a user id. See migration 0189's column comment.
     reviewedBy: text("reviewed_by"),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   },

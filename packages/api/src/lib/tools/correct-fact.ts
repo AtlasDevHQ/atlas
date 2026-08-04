@@ -46,7 +46,10 @@ import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
-import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
+import {
+  VocabularyClosureError,
+  loadWorkspaceVocabulary,
+} from "@atlas/api/lib/brain/vocabulary";
 
 const log = createLogger("correct-fact");
 
@@ -215,10 +218,16 @@ export const correctFactTool = tool({
         requestId,
         // The workspace's real vocabulary since #5023, loaded from `ctx` rather
         // than from this tool's own `workspaceId` so the identity function and
-        // the reader identity provably come from one resolution. A load failure
-        // propagates — `identity.ts`, "a throwing alias is NOT caught": there is
-        // no safe degraded answer, and the empty vocabulary would key the
-        // replacement under a different function than the ingest path used.
+        // the reader identity provably come from one resolution.
+        //
+        // It is never DEGRADED — there is no safe fallback, and the empty
+        // vocabulary would key the replacement under a different function than
+        // the ingest path used. It is not un-caught either, and an earlier
+        // version of this comment claimed it was: the load sits inside the
+        // pre-commit `try` below, so a `VocabularyClosureError` reaches that
+        // catch — which now has its own arm for it, because the generic
+        // "retry once" is advice a deterministic, permanent condition would
+        // make an agent loop on.
         vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
       });
     } catch (err) {
@@ -230,6 +239,33 @@ export const correctFactTool = tool({
         return {
           error: withRequestId(READER_UNRESOLVED_MESSAGE, requestId),
           reason: CORRECT_FACT_TOOL_REASONS.readerUnresolved,
+        };
+      }
+      if (err instanceof VocabularyClosureError) {
+        // Deterministic, workspace-scoped, and permanent until an operator
+        // recomputes the closure — so the generic arm below is actively wrong
+        // here on both counts: retrying cannot clear it, and the brain store is
+        // not "temporarily unavailable". An agent given that advice loops.
+        log.error(
+          {
+            err: err.message,
+            workspaceId,
+            factId: input.factId,
+            verb: input.verb,
+            position: err.position,
+            norm: err.norm,
+            requestId,
+          },
+          "correct_fact refused: the workspace's alias vocabulary is half-rebuilt",
+        );
+        return {
+          error: withRequestId(
+            "This workspace's alias vocabulary is incomplete, so a correction cannot be keyed the " +
+              "way ingest keys it — nothing was changed. Retrying will not help: an operator has to " +
+              "recompute the vocabulary's closure first.",
+            requestId,
+          ),
+          reason: CORRECT_FACT_TOOL_REASONS.correctionFailed,
         };
       }
       log.error(

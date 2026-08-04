@@ -31,7 +31,21 @@ const CURRENT_ORG = "org-1";
 // `resolvePrincipalContext` runs FOR REAL against this handle — the audience
 // expansion is one SELECT, and letting it run is what makes the reviewer-context
 // assertions below test the real wiring instead of a stub of it.
-const INTERNAL_DB = { query: async () => ({ rows: [] as Record<string, unknown>[] }) };
+// #5023 — the vocabulary loader runs FOR REAL through this handle, so the
+// alias row below is what lets the assertions prove the route hands `correctFact`
+// the WORKSPACE'S vocabulary rather than an identity stand-in. Without a row the
+// two answers are byte-identical and no assertion can tell them apart, which is
+// how a revert to `identityVocabulary` stayed green.
+const VOCABULARY_ROWS = [
+  { slot_position: "predicate", norm: "is priced at", effective_target: "priced at" },
+];
+const INTERNAL_DB = {
+  query: async (sql: string) => ({
+    rows: (sql.includes("brain_vocabulary_edge")
+      ? VOCABULARY_ROWS
+      : []) as Record<string, unknown>[],
+  }),
+};
 void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: async () => [] }),
   getInternalDB: () => INTERNAL_DB,
@@ -731,6 +745,29 @@ describe("GET /oversight", () => {
 });
 
 describe("POST /{id}/retract", () => {
+  it("hands correctFact the WORKSPACE'S vocabulary, not an identity stand-in (#5023)", async () => {
+    // The behavioural half of the wiring guard. `vocabulary-decide-pg.test.ts`
+    // covers ingest by observing two spellings landing in one slot; these two
+    // sites cannot be reached that way, and its source-level tripwire only
+    // catches a reverted IMPORT — an inline `{ subject: s => s, … }` at the call
+    // site passes it. Asserting the value the route actually handed over is what
+    // closes that.
+    //
+    // The alias comes from `VOCABULARY_ROWS` through the real loader, so one
+    // side of this assertion is a value the system produced.
+    const res = await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(correctCalls).toHaveLength(1);
+    const vocabulary = correctCalls[0]!.vocabulary as {
+      predicate: (n: string) => string;
+      object: (n: string) => string;
+    };
+    expect(vocabulary.predicate("is priced at")).toBe("priced at");
+    // …and it is position-scoped: the same norm at another position is its own
+    // alias, so a single lookup threaded through all three slots fails here.
+    expect(vocabulary.object("is priced at")).toBe("is priced at");
+  });
+
   it("runs the retract CORRECTION verb and emits NO audit row of its own", async () => {
     correctionOutcome = {
       kind: "corrected",

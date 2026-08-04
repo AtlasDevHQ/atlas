@@ -511,10 +511,21 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       // in one transaction. One retract semantics, not two.
 
       // The workspace's real vocabulary since #5023. REQUIRED on every verb,
-      // and read by `supersede` alone — so on THIS path the load satisfies the
-      // field and does no work. Stated rather than left to look like an
-      // oversight; the argument for why it must be the real one lives on the
-      // `/correct` call site below, which is where it is read.
+      // and the loaded VALUE is read by `supersede` alone — so on THIS path
+      // nothing consults it. The load is not free, though, and the honest
+      // version says so: it costs a query, and it PROPAGATES
+      // `VocabularyClosureError`, so a half-rebuilt closure fails retract too —
+      // the withdrawal verb, during exactly the incident where an operator
+      // wants it.
+      //
+      // Accepted rather than repaired here, and the alternative is recorded so
+      // the next reader need not re-derive it: making
+      // `CorrectionRequest.vocabulary` a thunk that only the supersede arm
+      // forces would make the dependency lazy and truthful, at the cost of
+      // rewriting ~60 test call sites — for a state only a hand-written write
+      // or an aborted restore produces, and in which ingest is already refusing
+      // wholesale. The argument for why the value must be the REAL vocabulary
+      // lives on the `/correct` call site below, which is where it is read.
       const outcome = yield* Effect.tryPromise({
         try: async () =>
           correctFact({

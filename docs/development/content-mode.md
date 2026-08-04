@@ -104,7 +104,7 @@ The carve-out is bounded: only the `/use-demo` route passes `status: "published"
 `lib/brain/correction.ts` is on `check-brain-fact-promotion.sh`'s allowlist, and it is the carve-out the guard's own remediation text forecast. It writes two of them:
 
 - `status = 'published'` (`PROMOTE_CORRECTION_FACT_SQL`) — the replacement claim a `supersede` authors, promoted inside the same transaction rather than queued as a draft;
-- `valid_to` — **not** a second spelling: the verb *executes the publish adapter's own* `SUPERSEDE_STAMP_SQL`, imported rather than restated, so the two human-arbitration paths cannot drift.
+- `valid_to` — **not** a second spelling: the verb *executes* `SUPERSEDE_STAMP_EXPLICIT_SQL`, which since #5024 is the human-arbitration half of the publish adapter's own `supersedeStampSql` builder — one SET clause and one set of target predicates for both warrants, rather than one constant shared by two callers that no longer want the same predicate, so the two human-arbitration paths cannot drift.
 
 **Why this is a gate decision and not a bypass of one.** ADR-0036 §T4 makes a correction the second human-authoritative entry point beside the review gate: the correction's author *is* the reviewer, so making the write wait for a second one would review the reviewer. The write is actor-attributed, recorded as an immutable human-authored correction episode, and still screened through the **same** `classifyFactForPromotion` the publish gate runs — so *no-provenance-no-promotion* and *no-grant-no-promotion* hold on this path too. Tier-1 (warehouse-derived) targets are refused for every verb.
 

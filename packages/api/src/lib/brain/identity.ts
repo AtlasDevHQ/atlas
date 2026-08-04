@@ -431,13 +431,24 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
  * So the expression is generated once, here, beside the TypeScript it must
  * match. 0187 cannot import it (a `.sql` migration is frozen the moment it
  * ships, and rewriting an applied migration is worse than duplicating a
- * string), so the pinning is what carries the guarantee instead:
- * `identity-pg.test.ts` runs this expression and `lexicalNorm` over the same
- * corpus row by row, AND asserts this expression is textually what 0187's
- * `UPDATE` already contains. Three implementations, one expression, two proofs.
+ * string), so the pinning is what carries the guarantee instead. Both proofs
+ * live in `vocabulary-rekey-pg.test.ts`:
  *
- * Not a database dependency, despite the name — this module imports nothing and
- * still holds only the pure lexical layer. It emits a string.
+ *   - it runs this expression and {@link lexicalNorm} over one corpus row by
+ *     row, including the two measured Unicode counter-examples below and a real
+ *     U+000B; and
+ *   - it asserts this expression is textually what 0187's `UPDATE` already
+ *     contains, WHITESPACE-COLLAPSED — 0187 column-aligns its arguments
+ *     (`translate(subject,   '…`), so a raw substring test holds for
+ *     `predicate` and fails for the other two.
+ *
+ * (`identity-pg.test.ts` is the separate, older pinning of 0187 against
+ * `lexicalNorm`. It does not mention this function; naming it here was wrong
+ * and the review panel caught it.)
+ *
+ * Not a database dependency, despite the name — this module imports no runtime
+ * value (only a type, erased at compile time) and still holds only the pure
+ * lexical layer. It emits a string.
  *
  * ## The spelling is 0187's, character for character, and every choice is load-bearing
  *
@@ -528,8 +539,17 @@ export function identityKeySql(columnExpr: string): string {
  * ## Lock ORDER, which is the part a redundancy argument gets wrong
  *
  * The decide transaction takes **5022 then 5024**. Publish takes **5024 only**.
- * The region importer takes **5022 only** (before its own `brain_facts` writes).
  * No wait-for cycle can form: nothing that holds 5024 ever asks for 5022.
+ *
+ * The region importer is the exception worth stating precisely, because the
+ * obvious summary is wrong: it INSERTs `brain_facts` (and conversations,
+ * entities, episodes) **before** it takes 5022, and takes 5022 only when the
+ * bundle carries vocabulary edges at all. So "every actor locks before it
+ * touches rows" is FALSE. What actually keeps it safe is narrower: the importer
+ * only ever INSERTs into `brain_facts`, and an uncommitted INSERT blocks no
+ * UPDATE, so the re-key never waits on it. **An importer that ever UPDATEs an
+ * existing fact row before taking 5022 closes the cycle** — that is the change
+ * to watch for, not a reordering of the locks here.
  *
  * That ordering is not incidental and it is not free to change. #5022's review
  * found a real `40P01 deadlock detected` produced by removing a lock that
@@ -550,3 +570,39 @@ export const IDENTITY_MUTATION_LOCK_NAMESPACE = 5024;
  * is the shape to copy if a third ever needs proof rather than discipline.
  */
 export const IDENTITY_MUTATION_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2))`;
+
+/**
+ * The bound that makes the wait above FAIL rather than hang.
+ *
+ * `pg_advisory_xact_lock` does not error on contention — it waits, forever. So
+ * the `catch` around it never runs for the one failure that matters, and a
+ * publish request that lands while a decide transaction holds this namespace
+ * hangs with no log line, no `requestId` and no response: precisely the
+ * undebuggable shape CLAUDE.md's error rules exist to prevent, and one that no
+ * test can see because every lock test asserts that blocking is CORRECT.
+ *
+ * The exposure is real rather than theoretical now that the decide transaction
+ * holds this lock across a deliberately-unindexed workspace-wide scan.
+ *
+ * `SET LOCAL`, so it reverts at COMMIT and cannot leak onto a pooled
+ * connection — the shape `residency/cleanup.ts` already uses. On timeout
+ * Postgres raises `55P03 lock_not_available`, which both callers turn into a
+ * typed refusal naming the contending operation and telling the caller to
+ * retry. 10s is chosen to be far longer than any human-paced alias decision on
+ * a workspace of realistic size and far shorter than a proxy's idle timeout, so
+ * the failure surfaces as our message rather than as a dropped connection.
+ */
+export const IDENTITY_MUTATION_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '10s'`;
+
+/** Postgres' SQLSTATE for a `lock_timeout` expiry. */
+export const LOCK_NOT_AVAILABLE = "55P03";
+
+/** Whether an unknown error is a `lock_timeout` expiry rather than a real fault. */
+export function isLockTimeout(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === LOCK_NOT_AVAILABLE
+  );
+}

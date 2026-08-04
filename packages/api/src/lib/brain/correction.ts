@@ -854,7 +854,12 @@ export async function correctFact(
         // no longer unbounded — it is now the decide TRANSACTION. The re-key
         // runs inside it, against every row in the workspace at the approved
         // position including tombstoned and superseded ones, so no committed
-        // state exists in which an approved edge and the corpus disagree. A
+        // state produced BY THIS SEAM has an approved edge disagreeing with the
+        // corpus. Scoped deliberately: the region import commits approved edges
+        // with no re-key at all — `admin-migrate.ts` inserts
+        // `brain_vocabulary_edge`, rebuilds the closure, and lands its facts
+        // UNKEYED by design — so after an import the two disagree by
+        // construction until #5035 carries keys verbatim. A
         // correction either reads keys written under the pre-approval vocabulary
         // and re-derives under the same one, or reads post-approval keys and
         // re-derives under that one. Both are self-consistent.

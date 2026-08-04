@@ -27,6 +27,7 @@ import {
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
   IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
 } from "@atlas/api/lib/brain/identity";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { PublishPhaseError, type ModeTxClient } from "@atlas/api/lib/content-mode/port";
@@ -40,6 +41,11 @@ interface Call {
 interface LockCall {
   readonly params: readonly unknown[];
   readonly precededCalls: number;
+}
+
+/** One `SET LOCAL lock_timeout`, with how many locks it preceded. */
+interface BoundCall {
+  readonly precededLocks: number;
 }
 
 /**
@@ -60,9 +66,10 @@ function txWithDrafts(
     /** Overrides which old ids the stamp UPDATE confirms; defaults to all asked. */
     readonly stampConfirms?: readonly string[];
   } = {},
-): { tx: ModeTxClient; calls: Call[]; locks: LockCall[] } {
+): { tx: ModeTxClient; calls: Call[]; locks: LockCall[]; bounds: BoundCall[] } {
   const calls: Call[] = [];
   const locks: LockCall[] = [];
+  const bounds: BoundCall[] = [];
   const tx: ModeTxClient = {
     query: async (sql, params = []) => {
       // The identity-mutation advisory lock (#5024) is recorded SEPARATELY, and
@@ -76,6 +83,10 @@ function txWithDrafts(
       // `precededCalls` is the index it was taken at, which is what makes the
       // ORDER assertable rather than merely its presence. Answered with an empty
       // result because `pg_advisory_xact_lock` returns void and nothing reads it.
+      if (sql === IDENTITY_MUTATION_LOCK_TIMEOUT_SQL) {
+        bounds.push({ precededLocks: locks.length });
+        return { rows: [] };
+      }
       if (sql === IDENTITY_MUTATION_LOCK_SQL) {
         locks.push({ params, precededCalls: calls.length });
         return { rows: [] };
@@ -116,7 +127,7 @@ function txWithDrafts(
       throw new Error(`unrecognised statement in the tx double: ${sql}`);
     },
   };
-  return { tx, calls, locks };
+  return { tx, calls, locks, bounds };
 }
 
 /** The UPDATE statements the adapter issued, in order. */
@@ -253,6 +264,23 @@ describe("promoteBrainFacts", () => {
     expect(locks[0].params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, "ws-1"]);
     // Non-vacuous: the phase really did go on to read something.
     expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("bounds the lock wait BEFORE taking it — an unbounded wait hangs publish with no requestId", async () => {
+    // `pg_advisory_xact_lock` does not error on contention, it waits forever, so
+    // the `catch` around it never runs for the failure that matters. Without the
+    // bound a publish landing during an alias re-key hangs until the proxy kills
+    // it: no log line, no `requestId`, no response — and `admin-publish.ts`'s
+    // 500 path is never reached to report any of it.
+    //
+    // ORDER is the whole property. A `SET LOCAL lock_timeout` issued after the
+    // acquisition it is meant to bound bounds nothing.
+    const { tx, locks, bounds } = txWithDrafts([draft("a")]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(bounds, "publish takes the identity lock with no lock_timeout bound").toHaveLength(1);
+    expect(bounds[0].precededLocks).toBe(0);
+    expect(locks).toHaveLength(1);
   });
 
   it("takes the identity-mutation lock even when there is nothing to promote", async () => {

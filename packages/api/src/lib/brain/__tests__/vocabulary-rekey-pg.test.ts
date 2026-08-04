@@ -2,10 +2,12 @@
  * The drift re-key, the identity-mutation lock, and the supersede stamp's
  * collision re-check (#5024, ADR-0037 §7).
  *
- * Everything here needs a real Postgres and most of it needs TWO connections.
- * That is not a preference — three of the four claims this slice makes are about
- * what happens BETWEEN two statements, and a transaction double cannot be wrong
- * about an interleaving it does not have.
+ * Everything here needs a real Postgres; two of the four groups turn on what
+ * happens BETWEEN two statements, and one of those needs a second connection.
+ * That is not a preference — a transaction double cannot be wrong about an
+ * interleaving it does not have. (Group 3 deliberately uses ONE connection; see
+ * `targetsThenStamp` for why that is the right shape for a standalone-correctness
+ * claim, and for what it consequently cannot prove.)
  *
  * ## What each group falsifies
  *
@@ -20,75 +22,103 @@
  *   3. **The stamp** — that `SUPERSEDE_STAMP_SQL` refuses to stamp a pair whose
  *      collision no longer holds, proved by de-merging BETWEEN the targets
  *      SELECT and the UPDATE.
- *   4. **The locks** — that publish and the decide seam serialize on one
- *      advisory namespace, and that a decide transaction now rewriting
- *      `brain_facts` completes beside a concurrent writer of the same table.
- *      NOT that the 5022 → 5024 order is deadlock-free; see the last section.
+ *   4. **The locks** — that two sessions on this namespace serialize and that
+ *      the lock is transaction-scoped, and that a decide transaction now
+ *      rewriting `brain_facts` completes beside a concurrent writer of the same
+ *      table. **Which code paths take the namespace** is pinned in
+ *      `content-mode/adapters/__tests__/brain-facts.test.ts` and
+ *      `vocabulary-decide-pg.test.ts`, not here — nothing in this file calls
+ *      `promoteBrainFacts`. And NOT that the 5022 → 5024 order is deadlock-free;
+ *      see the last section.
  *
  * ## Mutation table
  *
- * Nineteen mutations, all nineteen caught. Regenerated in ONE pass against the
- * final tree rather than edited row by row — #5022's review found numbers
- * carried forward under a header claiming they had been re-measured, twice, so
- * the harness applies each mutation, runs all three suites, records the first
- * failing test, and reverts. The "caught by" column is that recorded name, not
- * an author's guess about which test ought to have caught it.
+ * Twenty-three mutations, all twenty-three caught. Regenerated in ONE pass
+ * against the final tree rather than edited row by row — #5022's review found
+ * numbers carried forward under a header claiming they had been re-measured,
+ * twice. The harness applies each mutation, runs all three suites, records the
+ * first failing test, and reverts; the "first test to die" column is that
+ * recorded name, not an author's guess about which test ought to have caught it.
  *
  * Three suites are in scope: this one, `vocabulary-decide-pg.test.ts` (the lock
  * ORDER and the column-scoped allowlist assertion), and
- * `content-mode/adapters/__tests__/brain-facts.test.ts` (the publish lock and
- * the two stamp arbitrations).
+ * `content-mode/adapters/__tests__/brain-facts.test.ts` (the publish lock, its
+ * timeout bound, and the two stamp arbitrations).
  *
  * | # | Mutation | First test to die |
  * |---|---|---|
  * | 1 | `rekeyDriftedFacts` call deleted from `approveProposal` | an approval re-keys an existing fact onto the target the new vocabulary decides |
  * | 2 | `rekeyDriftedFacts` call deleted from `rejectProposal` | a REMOVAL returns each row to the target the post-removal vocabulary decides |
- * | 3 | re-key gains `AND f.invalidated_at IS NULL` | covers TOMBSTONED rows |
- * | 4 | re-key gains `AND f.valid_to IS NULL` | covers SUPERSEDED rows |
- * | 5 | re-key gains `, updated_at = now()` | does NOT stamp `updated_at` |
+ * | 3 | re-key gains `AND f.invalidated_at IS NULL` | covers TOMBSTONED rows — the partial index excludes them, the re-key must not |
+ * | 4 | re-key gains `AND f.valid_to IS NULL` | covers SUPERSEDED rows — same exclusion, same requirement |
+ * | 5 | re-key gains `, updated_at = now()` | does NOT stamp `updated_at` — it sorts the reviewer's queue, and a re-key moved nothing |
  * | 6 | re-key's workspace scope weakened to `OR TRUE` | the allowlisted decide seam writes the identity keys and NO other gated column |
  * | 7 | every position uses the `subject` columns | an approval re-keys an existing fact onto the target the new vocabulary decides |
  * | 8 | outer `identityKeySql` dropped from the assignment | re-norms the vocabulary's answer rather than trusting it |
- * | 9 | closure subquery's position pinned to `'predicate'` | every position's re-key statement is generated from the same expression |
- * | 10 | `COALESCE(closure, norm)` → the closure alone | …and does NOT move a row the approval says nothing about (the control) |
- * | 11 | `EXISTS` arm removed from the collision stamp | stamps the rival when the collision still holds (the positive control) |
- * | 12 | `EXISTS` arm's `$3` → `$2` | stamps the rival when the collision still holds (the positive control) |
- * | 13 | collision predicate → `TRUE` inside the `EXISTS` | does NOT stamp when the collision was de-merged between the SELECT and the UPDATE |
- * | 14 | publish's identity-lock call deleted | takes the identity-mutation lock BEFORE reading the drafts |
- * | 15 | publish's namespace → `VOCABULARY_LOCK_NAMESPACE` (5022) | takes the identity-mutation lock BEFORE reading the drafts |
- * | 16 | `lockIdentityMutation` order flipped (5024 before 5022) | decide locks first |
- * | 17 | `lexicalNormSql`'s `translate()` → `lower()` | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
- * | 18 | `chr(11)` dropped from the separator class | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
- * | 19 | `identityKeySql`'s `NULLIF(…, '')` dropped | re-norms the vocabulary's answer rather than trusting it |
+ * | 9 | closure subquery's position pinned to `'predicate'` | re-keys at the SUBJECT position, reading that position's closure only |
+ * | 10 | closure subquery's position filter DELETED | reads ONLY its own position's closure when one norm is aliased at two positions |
+ * | 11 | `COALESCE(closure, norm)` → the closure alone | …and does NOT move a row the approval says nothing about (the control) |
+ * | 12 | `row.slot_position` → hardcoded `"predicate"` at both call sites | re-keys at the SUBJECT position, reading that position's closure only |
+ * | 13 | `EXISTS` arm removed from the collision stamp | stamps the rival when the collision still holds (the positive control) |
+ * | 14 | `EXISTS` arm's `$3` → `$2` | stamps the rival when the collision still holds (the positive control) |
+ * | 15 | collision predicate → `TRUE` inside the `EXISTS` | does NOT stamp when the collision was de-merged between the SELECT and the UPDATE |
+ * | 16 | publish's identity-lock call deleted | takes the identity-mutation lock BEFORE reading the drafts (#5024) |
+ * | 17 | publish's `SET LOCAL lock_timeout` deleted | bounds the lock wait BEFORE taking it — an unbounded wait hangs publish with no requestId |
+ * | 18 | publish's namespace → `VOCABULARY_LOCK_NAMESPACE` (5022) | takes the identity-mutation lock BEFORE reading the drafts (#5024) |
+ * | 19 | `lockIdentityMutation` order flipped (5024 before 5022) | decide locks first |
+ * | 20 | `lockIdentityMutation`'s bound moved AFTER the locks | decide locks first |
+ * | 21 | `lexicalNormSql`'s `translate()` → `lower()` | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
+ * | 22 | `chr(11)` dropped from the separator class | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
+ * | 23 | `identityKeySql`'s `NULLIF(…, '')` dropped | a re-keyed POSITION whose surface norms away reaches NULL, never the empty string |
  *
- * ## What the pass found, which is the part worth carrying
+ * ## What the passes found, which is the part worth carrying
  *
- * The FIRST run had **18 of 19**, and the survivor was #8 — dropping the outer
- * `identityKeySql` left every other test green. The corpus could not reach it:
- * `approveAliasEdge` re-norms both endpoints, so every closure row written
- * through the seam already holds a norm and the outer call is a no-op on all of
- * them. The defense is real and reachable from outside the seam (0189's CHECKs
+ * **Round 1 (19 mutations) left ONE survivor: dropping the outer
+ * `identityKeySql`.** Every closure row this suite wrote went through
+ * `approveAliasEdge`, which re-norms both endpoints — so the outer re-norm was a
+ * no-op on every fixture and could be deleted with all 18 other mutations still
+ * dying. The defence is real and reachable from outside the seam (0189's CHECKs
  * do not constrain `effective_target` to being a norm, and the region import
- * rebuilds that table), so the answer was a test that writes the two relations
- * directly — `re-norms the vocabulary's answer rather than trusting it`.
+ * rebuilds that table), so the fix was a test that writes the two relations
+ * DIRECTLY. Generalization worth keeping: **a fixture built entirely through the
+ * sanctioned seam cannot falsify the guards that exist for writers which bypass
+ * it.**
  *
- * Recorded rather than smoothed over, because the general shape recurs: **a
- * fixture built entirely through the sanctioned seam cannot falsify the guards
- * that exist for writers which bypass it.**
+ * **Round 2 was the review panel, and it found a worse hole the mutation table
+ * had not probed at all.** Every `approve()` in this file was at the `predicate`
+ * position, so `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed
+ * all 100 tests across this suite and `vocabulary-decide-pg`. That is subject
+ * and object approvals re-keying NOTHING: two thirds of the feature dead, with a
+ * success line in the log. Rows 10 and 12 exist because of it, and the fixtures
+ * they need (one norm aliased at TWO positions) are the only shape that
+ * distinguishes a position-scoped closure lookup from an unscoped one.
  *
- * ## What this suite does NOT cover, stated so the 19 are not over-read
+ * The transferable lesson is about the table rather than the code: **a mutation
+ * table only covers the mutations someone thought to write, and a suite whose
+ * fixtures all share one value of a parameter cannot probe that parameter at
+ * all.**
+ *
+ * ## What this suite does NOT cover, stated so the 23 are not over-read
  *
  * The 5022 → 5024 ORDER is asserted as an invariant in
- * `vocabulary-decide-pg.test.ts` (row 16), not provoked as a deadlock. Every
- * actor takes its advisory locks before touching rows, so no wait-for cycle
- * exists for either ordering today — the inverted order is a latent hazard, not
- * a reachable one, and no interleaving here would expose it. #5022's review is
- * explicit that an interleaving which cannot form a cycle passes against a
- * broken implementation, so claiming otherwise would be the same mistake one
- * slice later.
+ * `vocabulary-decide-pg.test.ts` (row 19), not provoked as a deadlock. No
+ * wait-for cycle is reachable for either ordering today: every actor takes its
+ * advisory locks before it UPDATEs a row, and the region importer — which does
+ * INSERT `brain_facts` before taking 5022 — only ever INSERTs, and an
+ * uncommitted INSERT blocks no UPDATE. The inverted order is a latent hazard
+ * that becomes real the moment the importer UPDATEs an existing fact row. #5022's
+ * review is explicit that an interleaving which cannot form a cycle passes
+ * against a broken implementation, so claiming otherwise would be the same
+ * mistake one slice later.
+ *
+ * WHICH code paths take the namespace is likewise not pinned here — nothing in
+ * this file calls `promoteBrainFacts`. Rows 16–18 are all caught in
+ * `content-mode/adapters/__tests__/brain-facts.test.ts`.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
@@ -110,7 +140,6 @@ import {
 import {
   VOCABULARY_LOCK_NAMESPACE,
   VOCABULARY_LOCK_SQL,
-  removeAliasEdge,
 } from "@atlas/api/lib/brain/vocabulary";
 import { reconcileFacts, type ReconcileEpisodeRef } from "@atlas/api/lib/brain/reconcile";
 import {
@@ -406,6 +435,85 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     expect(row.object_key).toBe("widget");
   });
 
+  it("re-keys at the SUBJECT position, reading that position's closure only", async () => {
+    // ⭐ Added after the review panel found that every other `approve()` in this
+    // file is at `predicate` — so `rekeyDriftedFacts(tx, ws, "predicate", id)`,
+    // hardcoded, passed all 100 tests in this suite and `vocabulary-decide-pg`.
+    // Measured, not assumed: the probe was applied and the suites run.
+    //
+    // Two live defects hid behind that, and neither is a near-miss:
+    //   - `row.slot_position` not threaded → subject AND object approvals
+    //     re-key NOTHING. Two thirds of the feature dead, silently, with a
+    //     success line in the log.
+    //   - the closure subquery's `AND t.slot_position = '${position}'` DELETED →
+    //     one position's approval re-keys another's. `brain_vocabulary_target`'s
+    //     PK is `(workspace_id, slot_position, norm)`, so the same norm
+    //     legitimately carries different targets per position, and this is the
+    //     cross-position composition ADR-0037 §6 calls unrecoverable.
+    //
+    // The structural test below cannot reach either: deleting the filter from
+    // all three generated statements leaves them normalizing to the identical
+    // canonical string. Only a fixture with the SAME norm aliased at ONE
+    // position and read at another can.
+    const id = await land(WS, { subject: "widget", predicate: "widget", object: "widget" });
+
+    await approve("widget", "gizmo", "subject");
+
+    const row = await readFact(id);
+    expect(row.subject_key, "a SUBJECT approval did not re-key the subject").toBe("gizmo");
+    expect(
+      row.predicate_key,
+      "a SUBJECT approval re-keyed the PREDICATE — the closure subquery is not position-scoped, so " +
+        "one position's vocabulary is deciding another's keys",
+    ).toBe("widget");
+    expect(row.object_key).toBe("widget");
+  });
+
+  it("reads ONLY its own position's closure when one norm is aliased at two positions", async () => {
+    // ⭐ The direct falsifier for the closure subquery's
+    // `AND t.slot_position = '${position}'`, and it needs a fixture the two
+    // tests around it cannot provide. Measured: with edges at ONE position,
+    // deleting that filter still passes every test in this suite — there is
+    // simply no other position's row for the subquery to over-match.
+    //
+    // `brain_vocabulary_target`'s PK is `(workspace_id, slot_position, norm)`,
+    // so ONE norm legitimately carries DIFFERENT targets at different
+    // positions. That is the only shape that distinguishes a scoped lookup from
+    // an unscoped one — and unscoped, the scalar subquery matches two rows and
+    // Postgres raises `more than one row returned by a subquery used as an
+    // expression`, which is the loud direction.
+    const id = await land(WS, { subject: "widget", predicate: "widget", object: "nine" });
+
+    await approve("widget", "gizmo", "subject");
+    await approve("widget", "doohickey", "predicate");
+
+    const row = await readFact(id);
+    expect(
+      row.subject_key,
+      "the subject key did not come from the SUBJECT closure — one norm, two positions, and the " +
+        "lookup crossed between them",
+    ).toBe("gizmo");
+    expect(
+      row.predicate_key,
+      "the predicate key did not come from the PREDICATE closure. ADR-0037 §6: a position-agnostic " +
+        "vocabulary does not merely permit cross-position composition, it COMPELS it.",
+    ).toBe("doohickey");
+  });
+
+  it("re-keys at the OBJECT position too — all three statements really execute", async () => {
+    // The third arm. Without it `REKEY_DRIFTED_FACTS_SQL.object` is never sent
+    // to Postgres by any test in the repo, so a syntax error or a wrong column
+    // in that one statement ships green.
+    const id = await land(WS, { subject: "widget", predicate: "widget", object: "widget" });
+
+    await approve("widget", "gizmo", "object");
+
+    const row = await readFact(id);
+    expect(row.object_key).toBe("gizmo");
+    expect(row.subject_key).toBe("widget");
+    expect(row.predicate_key).toBe("widget");
+  });
+
   it("is workspace-scoped", async () => {
     const mine = await land(WS, { subject: "widget", predicate: "is priced at", object: "nine" });
     const theirs = await land(OTHER_WS, {
@@ -423,18 +531,29 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     ).toBe("is priced at");
   });
 
-  it("leaves a surface that norms away with a NULL key, never the empty string", async () => {
+  it("a re-keyed POSITION whose surface norms away reaches NULL, never the empty string", async () => {
     // `identityKeySql`'s `NULLIF(…, '')`. A stored `''` is the ONE key value that
     // joins every other degenerate row, so two unrelated placeholder claims would
     // occupy one slot and publishing either would stamp `valid_to` on the other.
-    const id = await land(WS, { subject: "widget", predicate: "is priced at", object: "-" });
+    //
+    // The approval is at the OBJECT position, and that is the point rather than
+    // an arbitrary choice: an earlier cut approved at `predicate` and asserted on
+    // `object_key`, so the object statement never ran and the NULL it checked was
+    // the one `identityKey` wrote at ingest — a no-op with respect to the re-key.
+    // The degenerate surface has to be at the position being re-keyed.
+    const id = await land(WS, { subject: "widget", predicate: "ships on", object: "-" });
     expect((await readFact(id)).object_key).toBeNull();
 
-    await approve("is priced at", "priced at");
+    // A real object alias in the same workspace, so the object statement has
+    // something to do and cannot pass by moving nothing.
+    const other = await land(WS, { subject: "widget", predicate: "ships on", object: "friday" });
+    await approve("friday", "fri", "object");
 
-    const row = await readFact(id);
-    expect(row.predicate_key).toBe("priced at");
-    expect(row.object_key).toBeNull();
+    expect((await readFact(other)).object_key).toBe("fri");
+    expect(
+      (await readFact(id)).object_key,
+      "a surface that norms away was keyed to the empty string by the re-key",
+    ).toBeNull();
   });
 
   it("re-norms the vocabulary's answer rather than trusting it", async () => {
@@ -541,15 +660,23 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
    *
    * By hand rather than through `promoteBrainFacts`, because what is under test
    * is the window between the two statements and the phase does not expose one.
-   * The de-merge runs on the SAME connection, which is what makes this a real
-   * interleaving rather than a lock test: the advisory lock is irrelevant to
-   * whether the UPDATE is correct STANDALONE, and standalone correctness is
-   * precisely the property `DRAFT_FACTS_SQL`'s header argues must not depend on
-   * the lock.
+   *
+   * The de-merge runs on a SECOND connection and COMMITS, through the real
+   * `decideAliasProposal` — a genuine concurrent alias removal, not a
+   * same-transaction edit. An earlier cut did it inline and was legitimate but
+   * weaker: own-transaction visibility and cross-transaction visibility are
+   * identical under READ COMMITTED, so it could not tell them apart, and the
+   * guard would silently become a no-op if this transaction ever ran at
+   * REPEATABLE READ while the test stayed green.
+   *
+   * This transaction deliberately does NOT take the identity lock. The lock is
+   * what makes the read-then-write serial in production; what is under test here
+   * is whether the UPDATE is correct STANDALONE without it — precisely the
+   * property `DRAFT_FACTS_SQL`'s header argues must not depend on the lock.
    */
   async function targetsThenStamp(
     draftIds: readonly string[],
-    demerge: boolean,
+    demerge: null | { readonly proposalId: string },
   ): Promise<readonly string[]> {
     const client = await pool.connect();
     try {
@@ -565,10 +692,9 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       expect(oldIds, "the pair did not collide even before the de-merge").toHaveLength(1);
 
       if (demerge) {
-        await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, WS]);
-        const removed = await removeAliasEdge(client, WS, "predicate", "ships on");
-        expect(removed).toBe(true);
-        await client.query(REKEY_DRIFTED_FACTS_SQL.predicate, [WS]);
+        // Committed by an INDEPENDENT transaction on its own connection while
+        // this one sits between its SELECT and its UPDATE.
+        await remove(demerge.proposalId);
       }
 
       const stamped = await client.query<{ id: string }>(SUPERSEDE_STAMP_SQL, [
@@ -591,7 +717,11 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
   }
 
   /** A published rival and a colliding draft, merged into one slot by an alias. */
-  async function seedCollidingPair(): Promise<{ draftId: string; publishedId: string }> {
+  async function seedCollidingPair(): Promise<{
+    draftId: string;
+    publishedId: string;
+    proposalId: string;
+  }> {
     const publishedId = await land(WS, {
       subject: "widget",
       predicate: "ships on",
@@ -606,25 +736,25 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       publishedId,
     ]);
     // The alias is what makes them collide: two spellings, one slot.
-    await approve("ships on", "delivery date");
+    const proposalId = await approve("ships on", "delivery date");
     const p = await readFact(publishedId);
     const d = await readFact(draftId);
     expect(p.predicate_key).toBe("delivery date");
     expect(d.predicate_key).toBe("delivery date");
-    return { draftId, publishedId };
+    return { draftId, publishedId, proposalId };
   }
 
   it("stamps the rival when the collision still holds (the positive control)", async () => {
     const { draftId, publishedId } = await seedCollidingPair();
-    const stamped = await targetsThenStamp([draftId], false);
+    const stamped = await targetsThenStamp([draftId], null);
     expect(stamped).toEqual([publishedId]);
     expect((await readFact(publishedId)).valid_to).not.toBeNull();
   });
 
   it("does NOT stamp when the collision was de-merged between the SELECT and the UPDATE", async () => {
-    const { draftId, publishedId } = await seedCollidingPair();
+    const { draftId, publishedId, proposalId } = await seedCollidingPair();
 
-    const stamped = await targetsThenStamp([draftId], true);
+    const stamped = await targetsThenStamp([draftId], { proposalId });
 
     expect(
       stamped,
@@ -641,7 +771,7 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
 
   // ── 4. the locks ────────────────────────────────────────────────────────
 
-  it("publish and the decide seam serialize on the identity-mutation namespace", async () => {
+  it("two sessions on the identity-mutation namespace serialize, and the lock is xact-scoped", async () => {
     // Two connections, and the second must WAIT. Asserted by observing that the
     // waiter is still blocked while the holder is open, then unblocks on COMMIT
     // — `pg_locks` rather than a timeout, so a slow machine cannot make this
@@ -653,6 +783,10 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       await holder.query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, WS]);
 
       await waiter.query("BEGIN");
+      const { rows: pidRows } = await waiter.query<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      const waiterPid = pidRows[0]!.pid;
       const blocked = waiter.query(IDENTITY_MUTATION_LOCK_SQL, [
         IDENTITY_MUTATION_LOCK_NAMESPACE,
         WS,
@@ -662,20 +796,26 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       // sleeping a fixed interval and hoping.
       const observer = await pool.connect();
       try {
-        let ungranted = 0;
-        for (let attempt = 0; attempt < 100 && ungranted === 0; attempt++) {
+        // Scoped to the WAITER's own backend pid, not just the namespace.
+        // `promoteBrainFacts` now takes 5024 in five other `-pg` suites against
+        // the same `TEST_DATABASE_URL`, so an unscoped count is a cross-suite
+        // flake waiting to happen — and it would fail in the direction that
+        // looks like a real defect.
+        let waiting = false;
+        for (let attempt = 0; attempt < 100 && !waiting; attempt++) {
           const { rows } = await observer.query<{ n: string }>(
             `SELECT count(*)::text AS n FROM pg_locks
-              WHERE locktype = 'advisory' AND NOT granted AND classid = $1`,
-            [IDENTITY_MUTATION_LOCK_NAMESPACE],
+              WHERE locktype = 'advisory' AND NOT granted
+                AND classid = $1 AND pid = $2::int`,
+            [IDENTITY_MUTATION_LOCK_NAMESPACE, waiterPid],
           );
-          ungranted = Number(rows[0]?.n ?? 0);
-          if (ungranted === 0) await new Promise((r) => setTimeout(r, 20));
+          waiting = Number(rows[0]?.n ?? 0) > 0;
+          if (!waiting) await new Promise((r) => setTimeout(r, 20));
         }
         expect(
-          ungranted,
+          waiting,
           "the second session took the identity-mutation lock while the first still held it",
-        ).toBe(1);
+        ).toBe(true);
       } finally {
         observer.release();
       }
@@ -684,8 +824,15 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       await blocked; // resolves once the lock is released — hangs the test if not
       await waiter.query("COMMIT");
     } finally {
-      holder.release();
-      waiter.release();
+      // `release(true)` DESTROYS rather than returns to the pool. node-postgres
+      // does NOT roll back on a plain `release()`, so on an assertion failure
+      // above these two clients would go back holding an open transaction — and
+      // advisory lock 5024 with it. The next `afterEach` DELETE would then block
+      // forever, and the failure a reader sees is a 60s timeout two tests later
+      // rather than the assertion that actually broke. The test designed to
+      // catch a lock defect must not be the one that hides it.
+      holder.release(true);
+      waiter.release(true);
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -727,7 +874,11 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
         );
         await client.query("COMMIT");
       } finally {
-        client.release();
+        // Destroyed rather than returned, for the reason above — and here it is
+        // sharper: the path that runs when a 40P01 IS detected is the path that
+        // would poison the pool, so the test built to catch the deadlock would
+        // destroy its own evidence.
+        client.release(true);
       }
     })();
 
@@ -787,6 +938,40 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     // Non-vacuous: the corpus must contain at least one input the function
     // actually changes, or an implementation returning its input would pass.
     expect(corpus.some((s) => lexicalNorm(s) !== s)).toBe(true);
+  });
+
+  it("`identityKeySql` is textually what migration 0187 already contains", () => {
+    // ⭐ The second of the two proofs `identity.ts`'s docstring claims. It did
+    // not exist until the review panel checked — and as first worded it could
+    // not have: 0187 column-ALIGNS its arguments (`translate(subject,   '…`,
+    // three spaces; `translate(object,    '…`, four), so a raw `includes` is
+    // true for `predicate` and false for the other two. Whitespace-collapsed it
+    // holds for all three.
+    //
+    // What this buys that the row-by-row corpus run does not: the corpus proves
+    // `lexicalNormSql ≡ lexicalNorm` TODAY. This proves the generated expression
+    // is the same text already applied to every row in every deployed database,
+    // so editing `lexicalNormSql` without a migration cannot silently re-key
+    // half a corpus under a function the other half never saw.
+    //
+    // No Postgres needed, so it sits outside the `-pg` gate would be better —
+    // but `describeIfPg` wraps the file; see the ungated block at the top for
+    // the assertions that genuinely cannot afford to skip.
+    const migration = readFileSync(
+      join(import.meta.dir, "..", "..", "db", "migrations", "0187_brain_fact_identity_keys.sql"),
+      "utf8",
+    );
+    const squash = (sql: string): string => sql.replace(/\s+/g, " ");
+    // Non-vacuous: prove the file is the one we think before asserting about it.
+    expect(migration).toContain("UPDATE brain_facts");
+    for (const position of SLOT_POSITIONS) {
+      expect(
+        squash(migration),
+        `migration 0187's ${position} expression is no longer what \`identityKeySql\` generates — ` +
+          "the SQL twin and the day-one backfill have diverged, so rows keyed by the migration and " +
+          "rows keyed by the re-key are keyed by two different functions",
+      ).toContain(squash(identityKeySql(position)));
+    }
   });
 
   it("`identityKeySql` maps a norm-away surface to NULL, matching `identityKey`", async () => {

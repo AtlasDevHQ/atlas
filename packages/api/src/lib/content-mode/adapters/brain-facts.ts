@@ -50,6 +50,8 @@ import { isUnknownArray, logGrantAnomalies } from "@atlas/api/lib/brain/acl";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
   IDENTITY_MUTATION_LOCK_SQL,
+  IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
+  isLockTimeout,
 } from "@atlas/api/lib/brain/identity";
 import {
   classifyFactForPromotion,
@@ -506,16 +508,29 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
   // "was a promotable draft when this transaction began". What the re-check
   // re-asks is the part an alias decision can still have changed underneath it —
   // the SLOT.
-  const collisionRecheck =
-    arbitration === "explicit"
-      ? ""
-      : `
+  //
+  // An exhaustive SWITCH, not `arbitration === "explicit" ? "" : recheck`. The
+  // ternary's open `else` means a third arm — and the docstring below names
+  // #5033's tier guard as one that is coming — silently inherits the collision
+  // re-check instead of failing to compile.
+  const collisionRecheck = ((): string => {
+    switch (arbitration) {
+      case "explicit":
+        return "";
+      case "collision":
+        return `
      AND EXISTS (
        SELECT 1
          FROM brain_facts d
         WHERE d.workspace_id = $1
           AND d.id = ANY($3::uuid[])
           AND ${supersessionCollisionPredicate("d", "p")})`;
+      default: {
+        const exhaustive: never = arbitration;
+        return exhaustive;
+      }
+    }
+  })();
   return `
   UPDATE brain_facts p
      SET valid_to = now(), updated_at = now()
@@ -556,6 +571,22 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
  * the shortfall, because `RETURNING` is how it learns which pairs actually
  * superseded. The `supersedes` edges and the report can never claim a stamp that
  * did not happen.
+ *
+ * ## It re-checks per TARGET, not per PAIR — recorded, not overlooked
+ *
+ * The `EXISTS` asks *"does ANY draft in `$3` still collide with this published
+ * row?"*. With two same-slot `single` drafts in one batch and one rival — a case
+ * `SUPERSESSION_TARGETS_SQL`'s header discusses as real — a de-merge that breaks
+ * one pair while leaving the other still stamps the rival, and the `supersedes`
+ * edge recorded for the broken pair claims an arbitration that no longer holds.
+ *
+ * Accepted, because the failure directions are not comparable: that is a stamp
+ * that happened with the WRONG attribution, where what this guard exists to
+ * prevent is a stamp that should not have happened at all — a belief retired
+ * with no live collision, invisible to every as-of-now read. Closing the
+ * attribution half needs the caller's one-array `oldIds` shape to become
+ * per-pair, which is a change to `promoteBrainFacts`'s report contract rather
+ * than to this statement.
  *
  * The outer `p.status` / `p.invalidated_at` / `p.valid_to` predicates are kept
  * even though {@link supersessionCollisionPredicate} repeats all three. They are
@@ -873,11 +904,43 @@ export function promoteBrainFacts(
     // Taken here rather than in `admin-publish.ts` so the MCP publish seam and
     // every other `runPublishPhases` caller inherits it — a lock a route has to
     // remember is a lock one route will forget.
+    //
+    // BOUNDED. `pg_advisory_xact_lock` never errors on contention — it waits,
+    // forever — so an unbounded acquisition here is a publish request that hangs
+    // with no log line and no `requestId`, which is the one outcome
+    // `admin-publish.ts`'s 500 path cannot report because it is never reached.
+    // `SET LOCAL` reverts at COMMIT and cannot leak onto the pooled connection.
+    yield* Effect.tryPromise({
+      try: () => tx.query(IDENTITY_MUTATION_LOCK_TIMEOUT_SQL),
+      catch: (cause) =>
+        new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+    });
     yield* Effect.tryPromise({
       try: () =>
         tx.query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, orgId]),
-      catch: (cause) =>
-        new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
+      catch: (cause) => {
+        // Named rather than passed through as a raw `55P03`: this is the one
+        // failure in the phase that is TRANSIENT and worth retrying, and an
+        // operator reading "lock_not_available" has no way to know an alias
+        // decision is what they are queued behind. Logged as well as returned —
+        // the returned message is the caller's copy, not a server-side record.
+        if (isLockTimeout(cause)) {
+          log.warn(
+            { workspaceId: orgId, namespace: IDENTITY_MUTATION_LOCK_NAMESPACE },
+            "brain publish: timed out taking the identity-mutation lock — an alias approval or removal is re-keying this workspace",
+          );
+          return new PublishPhaseError({
+            table: BRAIN_FACTS_TABLE,
+            phase: "promote",
+            cause: new Error(
+              "Publish could not start: an alias approval or removal is re-keying this workspace's " +
+                "facts, and publish must not read the collision set while that is in flight. " +
+                "Nothing was changed. Retry in a few seconds.",
+            ),
+          });
+        }
+        return new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause });
+      },
     });
 
     const drafts = yield* Effect.tryPromise({
@@ -1141,7 +1204,12 @@ export function promoteBrainFacts(
               stamped: stamped.size,
               missing: oldIds.filter((id) => !stamped.has(id)).slice(0, LOGGED_ID_SAMPLE_CAP),
             },
-            "brain publish: some supersession targets were not stamped — retracted or already superseded since the collision check; the will-supersede disclosure may have over-listed",
+            // THREE causes since #5024, and naming only the first two sends an
+            // operator hunting for a retraction that never happened. The third
+            // is the one this slice added on purpose: the stamp re-checks the
+            // collision, so an alias REMOVAL that de-merged the pair leaves it
+            // unstamped. That is the guard working, not a fault.
+            "brain publish: some supersession targets were not stamped — retracted, already superseded, or DE-MERGED by an alias removal since the collision check (the stamp re-checks the collision, #5024); the will-supersede disclosure may have over-listed, and no belief was retired without a live collision",
           );
         }
         const stampedPairs = supersessionPairs.filter((pair) => stamped.has(pair.oldId));

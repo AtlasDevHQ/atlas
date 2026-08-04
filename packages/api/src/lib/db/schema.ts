@@ -3811,7 +3811,7 @@ export const brainVocabularyProposal = pgTable(
     proposedBy: text("proposed_by").notNull(),
     proposedAt: timestamp("proposed_at", { withTimezone: true }).notNull().defaultNow(),
     // The claim token. Unobservable today (claim, apply and stamp share one
-    // transaction, so `applying` never commits) and kept for #5024: ADR-0037 §7
+    // transaction, so `applying` never commits) and kept for the day the re-key moves out of the decide transaction (#5024 landed it INSIDE): ADR-0037 §7
     // puts the drift re-key inside this decide transaction, and the moment that
     // rewrite wants a transaction of its own this becomes the takeover token
     // `decide.ts` describes.

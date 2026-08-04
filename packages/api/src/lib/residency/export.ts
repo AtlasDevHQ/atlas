@@ -652,6 +652,11 @@ export async function exportWorkspaceBundle(
   }));
 
   const brainVocabularyEdges: ExportedBrainVocabularyEdge[] = vocabularyEdgeResult.rows.map((e) => ({
+    // Cast rather than narrowed, unlike the IMPORT side — and the asymmetry is
+    // the point. This reads our own table, where
+    // `ck_brain_vocabulary_edge_slot_position` is the guarantee; the import
+    // reads a foreign region's bundle, where there is none, which is why
+    // `isSlotPosition` lives there.
     slotPosition: e.slot_position as ExportedVocabularySlotPosition,
     fromNorm: e.from_norm as string,
     toNorm: e.to_norm as string,

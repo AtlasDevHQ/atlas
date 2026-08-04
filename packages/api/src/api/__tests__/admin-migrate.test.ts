@@ -1260,6 +1260,18 @@ describe("validateBundle — the vocabulary (#5022)", () => {
       vocabularyBundle([validEdge(), { ...validEdge(), fromNorm: "priced at", toNorm: "unit price", approvedBy: null }]),
     );
     expect(result.ok).toBe(true);
+    // …and the section SURVIVED. `ok: true` alone would pass a validator that
+    // accepted the bundle while silently dropping the vocabulary, which is the
+    // exact failure the route's zod declaration exists to prevent.
+    if (result.ok) expect(result.bundle.brainVocabularyEdges).toHaveLength(2);
+  });
+
+  it("refuses a non-object element", () => {
+    for (const bad of [null, 42, "edge", []]) {
+      const result = validateBundle(vocabularyBundle([bad]));
+      expect(result.ok, `element ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainVocabularyEdges[0]");
+    }
   });
 
   it("refuses a section that is not an array", () => {
@@ -1325,8 +1337,18 @@ describe("validateBundle — the vocabulary (#5022)", () => {
     if (!target.ok) expect(target.error).toContain("toNorm");
   });
 
-  it("refuses a non-string approver but accepts null (the auto-approved edge)", () => {
+  it("refuses a non-string approver, and an OMITTED one, but accepts null", () => {
     expect(validateBundle(vocabularyBundle([{ ...validEdge(), approvedBy: 42 }])).ok).toBe(false);
+    // Omitted is refused rather than read as `null`. Optional AND nullable is
+    // three input states for two meanings, and the omitted one would silently
+    // record an AUTO-APPROVAL on the column an audit reads first — the same
+    // reasoning that made `AliasEdgeInput.approvedBy` required-and-nullable,
+    // applied at the boundary where the untrusted input actually arrives.
+    const { approvedBy: _omitted, ...withoutApprover } = validEdge();
+    const omitted = validateBundle(vocabularyBundle([withoutApprover]));
+    expect(omitted.ok).toBe(false);
+    if (!omitted.ok) expect(omitted.error).toContain("approvedBy");
+    // `null` is the legitimate auto-approved edge and must stay accepted.
     expect(validateBundle(vocabularyBundle([{ ...validEdge(), approvedBy: null }])).ok).toBe(true);
   });
 
@@ -1336,6 +1358,34 @@ describe("validateBundle — the vocabulary (#5022)", () => {
       expect(result.ok, `approvedAt ${JSON.stringify(bad)} was accepted`).toBe(false);
       if (!result.ok) expect(result.error).toContain("approvedAt");
     }
+  });
+
+  it("rebuilds the closure even when the driver reports no rowCount", async () => {
+    // The touched-set must not be gated on `rowCount`. That value is the one
+    // whose ABSENCE means "did this land?" is unknowable, so gating the rebuild
+    // on it commits an edge with no closure row — precisely the half-rebuilt
+    // state `loadClaimVocabulary` refuses to load, reached through the importer.
+    //
+    // A real-Postgres test cannot see this: `pg` always reports `rowCount`, so
+    // the gate is invisible there. A client that omits it is the only executor
+    // that separates the two implementations.
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const client: InternalPoolClient = {
+      query: async (sql: string, params?: unknown[]) => {
+        calls.push({ sql, params: params ?? [] });
+        // The one statement this mock must answer honestly: the vocabulary
+        // primitives refuse to run outside a transaction, and the probe is how
+        // they tell. Everything else returns no rows AND no `rowCount`.
+        if (sql.includes("FROM pg_locks")) return { rows: [{ n: 1 }] };
+        return { rows: [] };
+      },
+      release: () => {},
+    };
+
+    await importBundle(client, vocabularyBundle([validEdge()]) as never, "org-test");
+
+    expect(calls.some((c) => c.sql.includes("INSERT INTO brain_vocabulary_edge"))).toBe(true);
+    expect(calls.some((c) => c.sql.includes("INSERT INTO brain_vocabulary_target"))).toBe(true);
   });
 
   it("accepts a bundle with no vocabulary section at all", () => {

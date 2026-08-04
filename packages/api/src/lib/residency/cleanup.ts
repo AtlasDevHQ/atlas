@@ -322,23 +322,28 @@ export interface CleanupStatement {
 }
 
 /**
- * Build the ordered DELETE statements for one org's cleanup. Parent-scoped
- * rules run first (their subqueries need the parent rows to still exist —
- * see `slack_threads`); the one expression rule rides the same phase for
- * simplicity. The direct-column phase then deletes the parents themselves.
- * Within the column phase, ordering doesn't matter: every FK between
- * in-scope tables is `ON DELETE CASCADE` (or `SET NULL` for
- * `conversations.bound_dashboard_id`), so no column-phase delete can be
- * blocked by remaining child rows — pinned against real Postgres by
+ * Build the ordered DELETE statements for one org's cleanup. Parent-scoped and
+ * expression rules run first (a parent subquery needs the parent rows to still
+ * exist — see `slack_threads`). The direct-column phase then deletes the parents
+ * themselves. Within the column phase ordering doesn't matter, because every FK
+ * LEFT in that phase is `ON DELETE CASCADE` (or `SET NULL` for
+ * `conversations.bound_dashboard_id`) — pinned against real Postgres by
  * `migrate-roundtrip-pg.test.ts`.
  *
- * The single exception is `brain_facts.source_episode_id`, which is RESTRICT
- * on purpose (evidence must not vanish under a live claim). That is why
- * `brain_facts` carries a `parent` rule despite having its own
- * `workspace_id`: the parent phase is what puts its delete ahead of
- * `brain_episodes` in the column phase. A future RESTRICT FK between two
- * in-scope tables needs the same treatment. Exported for the tripwire + PG
- * tests.
+ * That last clause holds only because the RESTRICT children are deliberately
+ * pulled OUT of the column phase, and there are now TWO of them:
+ *
+ *   - `brain_facts.source_episode_id` (#4767) — evidence must not vanish under a
+ *     live claim. `brain_facts` carries a `parent` rule despite having its own
+ *     `workspace_id`, purely so its delete precedes `brain_episodes`.
+ *   - `fk_brain_vocabulary_target_edge` (#5022) — the derived closure must go
+ *     before its approved edges. `brain_vocabulary_target` carries an
+ *     `expression` rule for exactly that phase reason, not for simplicity.
+ *
+ * The two expression rules are therefore not equivalent: `brain_vocabulary_target`
+ * NEEDS the early phase, `chat_cache` merely tolerates it. Any further RESTRICT
+ * FK between in-scope tables needs the same treatment. Exported for the tripwire
+ * + PG tests.
  */
 export function buildCleanupStatements(): readonly CleanupStatement[] {
   const first: CleanupStatement[] = [];

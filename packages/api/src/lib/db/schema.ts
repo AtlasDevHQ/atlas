@@ -3676,10 +3676,13 @@ export const brainVocabularyEdge = pgTable(
     // AT-MOST-ONE-PARENT, structurally: `fromNorm` in the key is what makes
     // `alias` a function, and it is why a second approval for the same norm
     // RAISES rather than silently retargeting a human's prior decision.
-    // ADR-0037 §6's "no cycles + targets unaliased" does not imply this, which
-    // is why `approveAliasEdge` also checks it explicitly — the check turns the
-    // violation into a typed refusal naming the existing target; the key is
-    // what holds under two concurrent approvers.
+    //
+    // ADR-0037 §6 states at-most-one-parent by name. What did NOT imply it is
+    // T3's "no cycles + targets unaliased" framing, which §6 RETRACTS and lists
+    // under "Corrections to the record" — so do not read it as the ADR's
+    // position. `approveAliasEdge` checks the property explicitly on top: the
+    // check turns the violation into a typed refusal naming the existing target;
+    // the key is what holds under two concurrent approvers.
     primaryKey({ columns: [t.workspaceId, t.slotPosition, t.fromNorm] }),
     check(
       "ck_brain_vocabulary_edge_slot_position",

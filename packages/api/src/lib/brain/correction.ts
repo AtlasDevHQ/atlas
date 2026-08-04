@@ -831,9 +831,11 @@ export async function correctFact(
         // is deterministic AND unchanged since the target was ingested.
         //
         // ⚠️ That second condition stops being free the moment a call site loads
-        // a REAL vocabulary, which is #5023 — not #5022. Today no production path
-        // does: `loadClaimVocabulary` has no caller and every site here and in
-        // `extract.ts` names `identityVocabulary`, which cannot move. Once one
+        // a REAL vocabulary, which is #5023 — not #5022. Today no production
+        // path does: `loadClaimVocabulary` has no caller, and every caller of
+        // this module (`admin-brain-facts.ts`, `lib/tools/correct-fact.ts`)
+        // plus the ingest path in `extract.ts` names `identityVocabulary`,
+        // which cannot move. Once one
         // does, a target ingested before an approval and corrected after it is
         // re-derived under a DIFFERENT vocabulary than keyed it. The comparison then widens or narrows relative to the stored
         // slot — it can refuse a supersession the corpus considers distinct, or

@@ -14,7 +14,7 @@ import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/intern
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
 import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
 import { SLOT_POSITIONS, isSlotPosition, lexicalNorm, type SlotPosition } from "@atlas/api/lib/brain/identity";
-import { VOCABULARY_LOCK_SQL, VOCABULARY_LOCK_NAMESPACE, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
+import { recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -501,7 +501,7 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       // input could reach it, and a rule with no failure mode is worse than
       // none, because it reads as protection.
       //
-      // This is the ONLY other
+      // This is the only other
       // write path into `brain_vocabulary_edge`, and unlike `approveAliasEdge`
       // it cannot re-norm: ADR-0037 §8 has a row-copy path carry values
       // verbatim, and silently rewriting a foreign region's decision would make
@@ -515,15 +515,24 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       // never fire (the `from` side is looked up by norm and would never match),
       // while `{fromNorm: "Price", toNorm: "price"}` lands a post-norm 1-cycle
       // that the not-self CHECK cannot see.
-      for (const side of ["fromNorm", "toNorm"] as const) {
-        const raw = e[side] as string;
+      for (const [side, raw] of [
+        ["fromNorm", e.fromNorm],
+        ["toNorm", e.toNorm],
+      ] as const) {
         const normed = lexicalNorm(raw);
         if (normed !== raw) {
           return { ok: false, error: `brainVocabularyEdges[${i}].${side}: "${raw}" is not a lexical norm (it normalizes to "${normed}"). Alias edges store norms, not surfaces — a stored non-norm is an alias that can never match anything, and this path carries values verbatim rather than rewriting another region's decision. Re-export from a region running #5022 or later.` };
         }
       }
-      if (e.approvedBy !== undefined && e.approvedBy !== null && typeof e.approvedBy !== "string") {
-        return { ok: false, error: `brainVocabularyEdges[${i}].approvedBy: must be a string or null (null is an auto-approved edge).` };
+      // OMITTED is refused, not read as `null`. `ExportedBrainVocabularyEdge`
+      // declares `approvedBy: string | null` non-optional, and this same commit
+      // made `AliasEdgeInput.approvedBy` required-and-nullable for the reason
+      // that applies with more force at an untrusted boundary: optional AND
+      // nullable is three input states for two meanings, and the omitted one
+      // would silently record an AUTO-APPROVAL on the column an audit of a
+      // workspace-wide re-key reads first.
+      if (!("approvedBy" in e) || (e.approvedBy !== null && typeof e.approvedBy !== "string")) {
+        return { ok: false, error: `brainVocabularyEdges[${i}].approvedBy: must be present, and a string or null (null is an auto-approved edge — omitting it would silently claim one).` };
       }
       const tsError = missingTimestamps(e, ["approvedAt"]);
       if (tsError) return { ok: false, error: `brainVocabularyEdges[${i}].${tsError}` };
@@ -1334,18 +1343,18 @@ export async function importBundle(
   //      beats silent and not; refusing the edge instead is #5036's job, and
   //      doing it here would be implementing the merge this PR scopes out.
   //
-  //   3. This block is a vocabulary MUTATION and must hold the same workspace
-  //      lock `approveAliasEdge` takes, or the invariant that module states —
-  //      "no two vocabulary mutations in a workspace interleave" — is asserted
-  //      and violated in the same PR. Without it, an import carrying `c → a`
-  //      and a concurrent approval of `a → b` each validate their own snapshot,
-  //      each converge, and both commit: the result names `a` as a target while
-  //      `a` is itself aliased, and no recompute will ever revisit it because
-  //      one only runs when a NEW edge lands.
+  // ON THE WORKSPACE LOCK: this block is a vocabulary MUTATION, and
+  // `vocabulary.ts` states that no two of those interleave in a workspace. It
+  // holds here because `recomputeEffectiveTargets` below TAKES that lock itself,
+  // and the rebuild is what decides the committed closure — whichever writer
+  // recomputes second does so with both edge sets visible and produces a closure
+  // of the union. An explicit second acquisition before the insert loop was
+  // written and then removed: it narrows the window in which another writer sees
+  // a partially-inserted bundle, but that window is invisible anyway (the rows
+  // are uncommitted), and no mutation could falsify it — the recompute's own
+  // lock blocks in exactly the same place. A guard nothing can falsify reads as
+  // protection without being any.
   const vocabularyEdges = bundle.brainVocabularyEdges ?? [];
-  if (vocabularyEdges.length > 0) {
-    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
-  }
 
   const vocabularyPositionsTouched = new Set<SlotPosition>();
   for (const edge of vocabularyEdges) {
@@ -1357,20 +1366,24 @@ export async function importBundle(
       [orgId, edge.slotPosition, edge.fromNorm, edge.toNorm, edge.approvedBy ?? null, edge.approvedAt],
     );
 
-    // `?? 0` rather than `=== 0`, so an executor that omits `rowCount` counts as
-    // SKIPPED. The neighbouring blocks read it bare; here the stakes are higher,
-    // because the comment above makes `skipped > 0` the only signal that a
-    // curated decision was dropped — so the unknown case must fail toward the
-    // loud direction, not the quiet one.
+    // The touched set is marked UNCONDITIONALLY, before the count is consulted.
+    // `recomputeEffectiveTargets` is idempotent and total for a position, so
+    // rebuilding one the bundle merely mentioned costs a query and nothing else
+    // — whereas gating it on `rowCount` makes the rebuild depend on the one
+    // value whose absence means "did this land?" is unknowable. An executor that
+    // omits `rowCount` would otherwise commit an edge with NO closure row, which
+    // is precisely the half-rebuilt state `loadClaimVocabulary` refuses to load.
+    vocabularyPositionsTouched.add(edge.slotPosition);
+
+    // `?? 0` rather than `=== 0`: an unknown `rowCount` counts as SKIPPED, the
+    // conservative direction for a COUNTER whose `> 0` is the only signal that a
+    // curated decision was dropped. (Safe to be conservative here only because
+    // the rebuild above no longer depends on it.)
     if ((inserted.rowCount ?? 0) === 0) {
       result.brainVocabularyEdges.skipped++;
       continue;
     }
     result.brainVocabularyEdges.imported++;
-    // No cast: `validateBundle` narrowed this through `isSlotPosition`. An `as`
-    // here would suppress exactly the compile error that a future drift between
-    // the wire union and `SlotPosition` should produce.
-    vocabularyPositionsTouched.add(edge.slotPosition);
   }
 
   // The closure is RECOMPUTED, never carried — which is why the bundle has no

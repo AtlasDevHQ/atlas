@@ -155,15 +155,33 @@ export const VOCABULARY_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2
  *
  * `pg_advisory_xact_lock` is released at COMMIT. On an autocommit executor (a
  * bare pool) each statement IS its transaction, so the lock is taken and dropped
- * within the lock statement itself and a follow-up query sees nothing. Scoped to
- * `classid = 5022` so a session-level advisory lock held by some other subsystem
- * on the same backend cannot make this pass by accident.
+ * within the lock statement itself and a follow-up query sees nothing.
+ *
+ * Scoped to `classid`, `objid` AND `objsubid = 2` — all three. `classid` alone
+ * would let a session-level lock in THIS namespace for a DIFFERENT workspace
+ * make the probe pass, which stopped being hypothetical the moment
+ * {@link VOCABULARY_LOCK_NAMESPACE} was exported for the region importer to use.
+ * `objid` is the `hashtext` of the workspace id, so the probe asks the exact
+ * question the caller needs answered: is MY lock, on MY workspace, still held?
+ *
+ * The `& 4294967295` is not decoration. `hashtext` returns a SIGNED int4 and is
+ * negative for roughly half of all inputs, while `pg_locks.objid` is an UNSIGNED
+ * oid holding the same 32 bits — so a bare `::oid` cast raises `OID out of
+ * range` on any workspace whose hash happens to be negative, turning the deny
+ * point into a hard failure for half the fleet. Caught by the different-workspace
+ * control, which is why that test exists.
+ *
+ * A STRONG SIGNAL rather than a proof, and the gap is worth naming: a pooled
+ * connection handed back with an open transaction keeps the lock, so a later
+ * `pool.query` reusing that backend would pass. That is a leaked transaction —
+ * a bug in its own right — not a shape this module can be asked to survive.
  *
  * Measured against this repo's Postgres: 0 rows on a pool, 1 inside BEGIN.
  */
 const VOCABULARY_LOCK_HELD_SQL = `SELECT count(*)::int AS n FROM pg_locks
   WHERE locktype = 'advisory' AND pid = pg_backend_pid()
-    AND classid = $1 AND objsubid = 2`;
+    AND classid = $1 AND objid = (hashtext($2)::bigint & 4294967295)::oid
+    AND objsubid = 2`;
 
 /**
  * Take the vocabulary lock and refuse to continue outside a transaction.
@@ -187,8 +205,26 @@ async function lockWorkspaceVocabulary(
   operation: string,
 ): Promise<void> {
   await tx.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, workspaceId]);
-  const held = await tx.query(VOCABULARY_LOCK_HELD_SQL, [VOCABULARY_LOCK_NAMESPACE]);
-  if ((held.rows[0] as { n: number }).n === 0) {
+  const held = await tx.query(VOCABULARY_LOCK_HELD_SQL, [VOCABULARY_LOCK_NAMESPACE, workspaceId]);
+
+  // Narrowed, not cast-and-dereferenced. `VocabularyExecutor` is satisfied by a
+  // test literal by design, and `{ rows: [] }` is a shape real mocks in this
+  // repo return — an unguarded `rows[0].n` would answer the one function whose
+  // job is legibility with a raw TypeError.
+  const probe = held.rows[0] as { n?: unknown } | undefined;
+  const lockCount = typeof probe?.n === "number" ? probe.n : Number.NaN;
+  if (!Number.isFinite(lockCount)) {
+    log.error({ workspaceId, operation }, "Vocabulary lock probe returned no usable count");
+    throw new Error(
+      `${operation} could not verify the vocabulary advisory lock (workspace ${workspaceId}): the ` +
+        "probe returned no usable row, so this executor is not a Postgres client. Refusing rather " +
+        "than assuming the lock is held.",
+    );
+  }
+  // `< 1`, deliberately NOT `=== 0`. This is the deny point, and a deny point
+  // written in the permissive polarity is how the fix becomes the defect: every
+  // value that is not exactly `0` would otherwise read as "lock held".
+  if (lockCount < 1) {
     log.error({ workspaceId, operation }, "Vocabulary mutation attempted outside a transaction");
     throw new Error(
       `${operation} must run inside a transaction (workspace ${workspaceId}). Its check-then-write ` +
@@ -212,14 +248,20 @@ async function lockWorkspaceVocabulary(
  * thrown error rather than a quietly truncated closure — see the convergence
  * check there.
  *
- * EVEN, and the parity matters. An even-length cycle walked to an even depth
- * lands every node back on ITSELF, so `ck_brain_vocabulary_target_not_self`
- * refuses the closure INSERT before the convergence check can run — measured
- * against this repo's Postgres, not reasoned about. Both abort the transaction,
- * so nothing corrupt commits either way; only the odd-length case reaches the
- * actionable message. Changing this constant to an odd number would move the
- * 2-cycle onto the convergence check and is a behaviour change, not a tuning
- * knob.
+ * WHICH cycles die on the CHECK instead of the convergence query is decided by
+ * DIVISIBILITY, not parity — an earlier version of this comment said "even" and
+ * was measured on a 2-cycle then generalised, which a 6-cycle disproves. A node
+ * in a cycle of length L walked to depth D lands back on ITSELF iff `L | D`, and
+ * 64's divisors are the powers of two. So cycles of length 2, 4, 8, 16, 32 and
+ * 64 trip `ck_brain_vocabulary_target_not_self` before the convergence check can
+ * run, and every other length — 3, 5, 6, 10, … — reaches it.
+ *
+ * Measured against this repo's Postgres: a 2- and a 4-cycle trip the CHECK; a 6-
+ * and a 10-cycle insert cleanly and are caught by the convergence query. Both
+ * outcomes abort the transaction, so nothing corrupt commits either way — only
+ * one carries an actionable message. Changing this constant therefore changes
+ * WHICH cycle lengths get the good error, and is a behaviour change rather than
+ * a tuning knob.
  */
 const MAX_CHAIN_DEPTH = 64;
 
@@ -253,6 +295,15 @@ export type AliasApprovalRefusal =
   /** `toNorm`'s chain already reaches `fromNorm`. */
   | "would-cycle";
 
+/**
+ * Named once and used in BOTH arms below, so the split cannot silently un-split.
+ * As two free-standing `"already-aliased"` literals, renaming the union member
+ * (or typo-ing either) would make `Exclude` remove nothing, readmitting the arm
+ * WITHOUT its required `existingTarget` — with no compile error anywhere. As an
+ * `Extract`, a typo resolves to `never` and the constructor stops compiling.
+ */
+type AlreadyAliased = Extract<AliasApprovalRefusal, "already-aliased">;
+
 export type AliasApprovalResult =
   | {
       readonly ok: true;
@@ -272,13 +323,13 @@ export type AliasApprovalResult =
    */
   | {
       readonly ok: false;
-      readonly refusal: "already-aliased";
+      readonly refusal: AlreadyAliased;
       readonly message: string;
       readonly existingTarget: string;
     }
   | {
       readonly ok: false;
-      readonly refusal: Exclude<AliasApprovalRefusal, "already-aliased">;
+      readonly refusal: Exclude<AliasApprovalRefusal, AlreadyAliased>;
       readonly message: string;
     };
 
@@ -463,10 +514,11 @@ export async function removeAliasEdge(
 ): Promise<boolean> {
   const norm = lexicalNorm(fromNorm);
   if (norm === "") {
-    // NOT collapsed into the "no such edge" answer without a word. The same
-    // input gets a typed `degenerate-norm` refusal on the approve side, and
-    // returning a bare `false` here would have #5025's UI tell the operator
-    // "nothing was aliased" for what is actually a malformed request.
+    // The CALLER still sees `false` — a typed refusal here needs a return-type
+    // change, which belongs with #5025's UI. What this arm buys is that the
+    // server side can tell a malformed request from a norm that genuinely has no
+    // parent; the approve side gives the same input a typed `degenerate-norm`
+    // refusal, and the asymmetry is recorded rather than hidden.
     log.warn(
       { workspaceId, position, fromNorm },
       "Alias removal ignored — the norm is degenerate, not merely unaliased",
@@ -510,7 +562,14 @@ async function clearEffectiveTargets(
 
 /**
  * Rebuild one (workspace, position)'s effective-target closure from its
- * approved edges. Returns the number of closure rows written.
+ * approved edges.
+ *
+ * Returns nothing. An earlier cut returned the row count from a third query —
+ * no caller read it, no test asserted it (`return 0` survived every mutation),
+ * and its unguarded `rows[0].n` crashed on an executor that returns `{ rows: [] }`,
+ * which is a shape this module's own seam advertises. A round trip spent
+ * producing a value nobody consumes is not free; it is a third place to be
+ * wrong.
  *
  * MUST run inside a transaction, for {@link approveAliasEdge}'s reason and one
  * of its own: the clear and the rebuild are one decision, and on an autocommit
@@ -537,12 +596,13 @@ async function clearEffectiveTargets(
  * verified: no closure row may name a target that itself has an approved
  * parent. That is the definition of "transitive closure" restated as a query.
  *
- * It fails loudly on an ODD-length cycle and on a cap set below real depth. An
- * EVEN-length cycle never reaches it: at an even cap every node lands back on
- * itself and `ck_brain_vocabulary_target_not_self` refuses the INSERT first. Both
- * abort the transaction, so no wrong closure commits either way — but only one
- * carries an actionable message, and {@link MAX_CHAIN_DEPTH}'s parity is what
- * decides which. Measured against this repo's Postgres.
+ * It fails loudly on a cap set below real depth, and on any cycle whose length
+ * does NOT divide {@link MAX_CHAIN_DEPTH}. A cycle whose length DOES divide it
+ * (2, 4, 8, … for the current 64) never reaches this check: every node lands back
+ * on itself and `ck_brain_vocabulary_target_not_self` refuses the INSERT first.
+ * Both abort the transaction, so no wrong closure commits either way — but only
+ * one carries an actionable message. See {@link MAX_CHAIN_DEPTH}, which has the
+ * measurements.
  *
  * ## The room slice C (#5027) needs
  *
@@ -557,7 +617,7 @@ export async function recomputeEffectiveTargets(
   tx: VocabularyExecutor,
   workspaceId: string,
   position: SlotPosition,
-): Promise<number> {
+): Promise<void> {
   // Re-taken here rather than assumed from the caller: this function is exported
   // and the region importer calls it directly. `pg_advisory_xact_lock` is
   // re-entrant within a transaction, so the approve/remove paths that already
@@ -625,12 +685,6 @@ export async function recomputeEffectiveTargets(
     );
   }
 
-  const written = await tx.query(
-    `SELECT count(*)::int AS n FROM brain_vocabulary_target
-      WHERE workspace_id = $1 AND slot_position = $2`,
-    [workspaceId, position],
-  );
-  return (written.rows[0] as { n: number }).n;
 }
 
 /**
@@ -639,17 +693,29 @@ export async function recomputeEffectiveTargets(
  * ONE query for all three positions, materialized into maps before any
  * candidate is keyed. That is what lets {@link AliasLookup} stay synchronous —
  * `slotKey` is called per slot per candidate — and it also makes the whole
- * episode read a consistent snapshot rather than three reads that could
- * straddle an approval.
+ * episode read a consistent snapshot rather than reads that could straddle an
+ * approval.
+ *
+ * "One query" is load-bearing, not tidiness. A first cut of the completeness
+ * check below issued a SECOND statement to count edges and compared the two —
+ * and under READ COMMITTED (and on a pool, where each statement is its own
+ * transaction) an ordinary approval committing between them made the counts
+ * disagree, so the loader raised a corruption alarm against a healthy store.
+ * That is the fix-becomes-the-defect shape: a guard against "a partial closure
+ * is silently absorbed" that instead loudly rejected a complete one.
  *
  * A position with no rows gets `identityAlias` itself rather than an
  * empty-map closure. Not an optimization: it means an empty vocabulary and a
  * workspace that has approved nothing are the SAME function, so nothing
  * downstream can start depending on the difference.
  *
- * Reads the closure, never the edges. `brain_vocabulary_target` already holds
- * the root for each aliased norm, so a lookup is one map hit and can neither
- * walk nor compose at read time — the composition happened once, at approval.
+ * Reads the closure THROUGH the edges — a single LEFT JOIN driven off
+ * `brain_vocabulary_edge`. The closure still supplies every answer:
+ * `brain_vocabulary_target` holds the root for each aliased norm, so a lookup is
+ * one map hit and can neither walk nor compose at read time. Driving off the
+ * edge table costs nothing (`fk_brain_vocabulary_target_edge` makes closure ⊆
+ * edges, so the join is total) and buys the completeness check for free, in the
+ * same snapshot.
  *
  * ⚠️ NO PRODUCTION CALLER yet. Every shipped path resolves to
  * `identityVocabulary`; #5023's decide seam is what puts a real vocabulary in
@@ -657,15 +723,18 @@ export async function recomputeEffectiveTargets(
  *
  * ## A partial closure is refused, not silently absorbed
  *
- * Every approved edge contributes exactly one closure row, so a position whose
- * closure is SMALLER than its edge set has been left half-rebuilt — by a
- * mutation that ran outside a transaction before the contract above existed, by
- * a restore, or by a hand-written DELETE. That state is the one wrong answer
- * this loader could give without an error to propagate: too few rows and the
- * position degrades to `identityAlias`, which is byte-identical to "approved
- * nothing" and keys the whole episode un-aliased. The empty/absent equivalence
- * below is deliberate; extending it to PARTIAL is a different claim, and not
- * one this module is willing to make.
+ * Every approved edge contributes exactly one closure row, so an edge with NO
+ * closure row has been left half-rebuilt — by a mutation that ran outside a
+ * transaction before the contract above existed, by a restore, or by a
+ * hand-written DELETE. That state is the one wrong answer this loader could give
+ * without an error to propagate: the norm degrades to itself, which is
+ * byte-identical to "approved nothing" and keys the whole episode un-aliased.
+ * The empty/absent equivalence below is deliberate; extending it to PARTIAL is a
+ * different claim, and not one this module is willing to make.
+ *
+ * A missing JOIN partner is the check, so it names the offending NORM rather
+ * than a count, and cannot fire on a healthy store no matter what commits
+ * concurrently — the join and the answer come from one snapshot by construction.
  *
  * ## Errors propagate
  *
@@ -681,44 +750,42 @@ export async function loadClaimVocabulary(
   workspaceId: string,
 ): Promise<ClaimVocabulary> {
   const { rows } = await executor.query(
-    `SELECT slot_position, norm, effective_target
-       FROM brain_vocabulary_target
-      WHERE workspace_id = $1`,
+    `SELECT e.slot_position, e.from_norm AS norm, t.effective_target
+       FROM brain_vocabulary_edge e
+       LEFT JOIN brain_vocabulary_target t
+         ON t.workspace_id = e.workspace_id
+        AND t.slot_position = e.slot_position
+        AND t.norm = e.from_norm
+      WHERE e.workspace_id = $1`,
     [workspaceId],
   );
 
   const byPosition = new Map<string, Map<string, string>>();
   for (const raw of rows) {
-    const row = raw as { slot_position: string; norm: string; effective_target: string };
+    const row = raw as {
+      slot_position: string;
+      norm: string;
+      effective_target: string | null;
+    };
+    if (row.effective_target === null) {
+      log.error(
+        { workspaceId, position: row.slot_position, norm: row.norm },
+        "Vocabulary closure is incomplete — refusing to key an episode against a partial vocabulary",
+      );
+      throw new Error(
+        `Vocabulary closure is incomplete at the ${row.slot_position} position for workspace ` +
+          `${workspaceId}: "${row.norm}" is an approved edge with no closure row. Every approved ` +
+          "edge contributes exactly one, so the position was left half-rebuilt. Run " +
+          "recomputeEffectiveTargets for it inside a transaction before ingest resumes — keying " +
+          "against a partial closure under-matches corpus-wide and is not visible at rest.",
+      );
+    }
     let entries = byPosition.get(row.slot_position);
     if (entries === undefined) {
       entries = new Map<string, string>();
       byPosition.set(row.slot_position, entries);
     }
     entries.set(row.norm, row.effective_target);
-  }
-
-  const edgeCounts = await executor.query(
-    `SELECT slot_position, count(*)::int AS n FROM brain_vocabulary_edge
-      WHERE workspace_id = $1 GROUP BY slot_position`,
-    [workspaceId],
-  );
-  for (const raw of edgeCounts.rows) {
-    const counted = raw as { slot_position: string; n: number };
-    const have = byPosition.get(counted.slot_position)?.size ?? 0;
-    if (have !== counted.n) {
-      log.error(
-        { workspaceId, position: counted.slot_position, edges: counted.n, closureRows: have },
-        "Vocabulary closure is incomplete — refusing to key an episode against a partial vocabulary",
-      );
-      throw new Error(
-        `Vocabulary closure is incomplete at the ${counted.slot_position} position for workspace ` +
-          `${workspaceId}: ${counted.n} approved edges, ${have} closure rows. Every approved edge ` +
-          "contributes exactly one closure row, so the position was left half-rebuilt. Run " +
-          "recomputeEffectiveTargets for it inside a transaction before ingest resumes — keying " +
-          "against a partial closure under-matches corpus-wide and is not visible at rest.",
-      );
-    }
   }
 
   // Built as a literal rather than filled into `{} as Record<…>`: the cast would

@@ -268,16 +268,19 @@ export type SlotPosition = (typeof SLOT_POSITIONS)[number];
  *
  * `ExportedVocabularySlotPosition` (`@useatlas/types`) is the region bundle's
  * copy, and there IS house precedent for duplicating a small union across that
- * boundary (`BrainEntityRole` vs `EntityRole`). This one earns a pin the others
- * do not: the importer NARROWS a bundle value to `SlotPosition` through
- * {@link isSlotPosition}, so a member added on one side and not the other turns
- * a compile error into a runtime INSERT that trips
- * `ck_brain_vocabulary_edge_slot_position` and aborts the whole import — the
- * exact failure that validation block exists to prevent.
+ * boundary (`BrainEntityRole` vs `EntityRole`). The `satisfies` above proves
+ * every internal member is legal on the wire; this proves the reverse, so
+ * neither side can drift alone. Shaped on `_BrainFactStatusesCovered` in
+ * `packages/schemas/src/brain.ts`.
  *
- * The `satisfies` above proves every internal member is legal on the wire; this
- * proves the reverse, so neither side can drift alone. Shaped on
- * `_BrainFactStatusesCovered` in `packages/schemas/src/brain.ts`.
+ * What it buys over the status quo is WHERE the drift surfaces, and the honest
+ * version is narrower than an earlier draft of this comment claimed. Wire-side
+ * drift is already a compile error at `admin-migrate.ts`'s
+ * `Set<SlotPosition>.add(edge.slotPosition)` — but only for as long as that site
+ * keeps its cast off. Pinned here, drift fails at the DEFINITION, where nobody
+ * can suppress it with an `as`. (It does not prevent a runtime CHECK violation:
+ * a wire member the internal union lacks is refused by {@link isSlotPosition}
+ * in `validateBundle` and never reaches an INSERT.)
  */
 type _SlotPositionsCoverTheWire = [
   Exclude<ExportedVocabularySlotPosition, SlotPosition>,
@@ -392,7 +395,8 @@ export const identityVocabulary: ClaimVocabulary = {
  * one is a compile error. `reconcile.ts` threads the workspace's vocabulary
  * through the REQUIRED `ReconcileRequest.vocabulary` — three lookups, one per
  * slot, since #5022 made the vocabulary position-scoped — and `correction.ts`
- * through the required `CorrectionDeps.vocabulary`. Everything else names
+ * through the required `CorrectionRequest.vocabulary` (on the REQUEST, not the
+ * deps bag beside the test seams: it is workspace state). Everything else names
  * {@link identityVocabulary} out loud, which is the choice being made and should
  * read like one.
  *

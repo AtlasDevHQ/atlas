@@ -25,7 +25,7 @@ import {
   type InternalPool,
 } from "@atlas/api/lib/db/internal";
 import { exportWorkspaceBundle } from "../export";
-import { recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
+import { approveAliasEdge, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import { importBundle } from "../../../api/routes/admin-migrate";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
 import type { ImportResult } from "@useatlas/types";
@@ -333,7 +333,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       ]);
 
       // The APPROVER and the decision time survive verbatim. Counts and the
-      // closure alone leave both unpinned, and `bundle-scope.ts` calls
+      // closure alone leave both unpinned, and migration 0189 calls
       // `approved_by` "the one column an audit of a workspace-wide re-key reads
       // first" — an import that nulled it, or stamped `now()`, would pass every
       // other assertion in this block. The NULL row is the auto-approved case
@@ -581,6 +581,96 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     PG_TEST_TIMEOUT_MS,
   );
 
+  /** A v2 bundle carrying nothing but one alias edge. */
+  const vocabularyOnlyBundle = (fromNorm: string, toNorm: string) => ({
+    manifest: {
+      version: 2 as const,
+      exportedAt: "2026-06-01T00:00:00Z",
+      source: { label: "vocab-test" },
+      counts: {
+        conversations: 0, messages: 0, semanticEntities: 0, learnedPatterns: 0,
+        settings: 0, brainVocabularyEdges: 1,
+      },
+    },
+    conversations: [],
+    semanticEntities: [],
+    learnedPatterns: [],
+    settings: [],
+    brainVocabularyEdges: [
+      {
+        slotPosition: "predicate" as const,
+        fromNorm,
+        toNorm,
+        approvedBy: "source-admin",
+        approvedAt: "2026-06-01T00:00:00Z",
+      },
+    ],
+  });
+
+  it(
+    "blocks on the workspace vocabulary lock while an approval is open (#5022)",
+    async () => {
+      // The importer's advisory lock had ZERO kills until this test: deleting
+      // the whole `VOCABULARY_LOCK_SQL` block left both suites green. It is not
+      // decoration — the interleaving is real and worse than a lost update.
+      // Two concurrent full-position recomputes on disjoint snapshots each
+      // DELETE a closure that is empty from their own view and each INSERT their
+      // own half, committing a closure of neither. Nothing revisits it, and the
+      // completeness check in `loadClaimVocabulary` cannot see it either,
+      // because every edge still has a row — just the wrong one.
+      const LOCK_ORG = "org-migrate-vocab-lock";
+      const holder = await pool.connect();
+      const importer = await pool.connect();
+      try {
+        await holder.query("BEGIN");
+        expect(
+          (
+            await approveAliasEdge(holder, LOCK_ORG, {
+              position: "predicate",
+              fromNorm: "a",
+              toNorm: "b",
+              approvedBy: "target-admin",
+            })
+          ).ok,
+        ).toBe(true);
+
+        await importer.query("BEGIN");
+        const blocked = importBundle(importer, vocabularyOnlyBundle("c", "d"), LOCK_ORG);
+        const raced = await Promise.race([
+          blocked.then(() => "completed" as const),
+          new Promise<"pending">((r) => setTimeout(() => r("pending"), 300)),
+        ]);
+        // Still waiting on the holder's lock rather than recomputing around it.
+        expect(raced).toBe("pending");
+
+        await holder.query("COMMIT");
+        const result = await blocked;
+        expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0 });
+        await importer.query("COMMIT");
+      } catch (err) {
+        await holder.query("ROLLBACK").catch(() => {});
+        await importer.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        holder.release();
+        importer.release();
+      }
+
+      // Both writers' edges survive, and the closure covers both — which is only
+      // true because the second rebuild ran AFTER the first committed.
+      const closure = await pool.query<{ norm: string; effective_target: string }>(
+        `SELECT norm, effective_target FROM brain_vocabulary_target
+          WHERE workspace_id = $1 ORDER BY norm`,
+        [LOCK_ORG],
+      );
+      expect(closure.rows).toEqual([
+        { norm: "a", effective_target: "b" },
+        { norm: "c", effective_target: "d" },
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
   it(
     "aborts the import when an arriving alias edge would close a cycle with the target's own (#5022)",
     async () => {
@@ -615,30 +705,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         seedClient.release();
       }
 
-      const cyclic = {
-        manifest: {
-          version: 2 as const,
-          exportedAt: "2026-06-01T00:00:00Z",
-          source: { label: "cycle-test" },
-          counts: {
-            conversations: 0, messages: 0, semanticEntities: 0, learnedPatterns: 0,
-            settings: 0, brainVocabularyEdges: 1,
-          },
-        },
-        conversations: [],
-        semanticEntities: [],
-        learnedPatterns: [],
-        settings: [],
-        brainVocabularyEdges: [
-          {
-            slotPosition: "predicate" as const,
-            fromNorm: "c",
-            toNorm: "a",
-            approvedBy: "source-admin",
-            approvedAt: "2026-06-01T00:00:00Z",
-          },
-        ],
-      };
+      const cyclic = vocabularyOnlyBundle("c", "a");
 
       const client = await pool.connect();
       try {

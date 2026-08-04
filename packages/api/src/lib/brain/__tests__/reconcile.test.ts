@@ -897,10 +897,10 @@ describe("the draft candidate", () => {
   });
 
   test("the workspace's vocabulary reaches every slot", async () => {
-    // The vocabulary seam, through the stage. Without this the whole threading
-    // is unfalsifiable: the default IS the empty vocabulary, so dropping
-    // `request.vocabulary` — or dropping the second argument at the three
-    // `slotKey` calls — changes nothing observable and leaves the suite green.
+    // The vocabulary seam, through the stage. `ReconcileRequest.vocabulary` is
+    // REQUIRED since #5022, so it can no longer be dropped silently — but the
+    // three `slotKey` calls can still be handed the wrong lookup, or the same
+    // one three times, and that is what this and the two tests below catch.
     //
     // #5000's pair, closed by an ENTRY rather than by a normalization rule,
     // which is the whole reason the seam exists (ADR-0037 §6 / #5016). That the

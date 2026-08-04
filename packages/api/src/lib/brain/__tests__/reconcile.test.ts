@@ -710,16 +710,22 @@ describe("advisory contradiction edges", () => {
   });
 
   test("the scan binds the row just written as its own self-exclusion", async () => {
-    // `id <> $5`. Without it every `single` fact earns a self-edge the moment it
+    // `id <> $6`. Without it every `single` fact earns a self-edge the moment it
     // lands, and the review queue fills with claims contradicting themselves.
     // The BIND is what this file can prove; that the statement still spells the
     // arm is the lexical backstop at the bottom.
+    //
+    // Index 5, not 4, since #5030: the agreement tuple spread ahead of it grew a
+    // fourth member (the comparable value). That renumbering is the hazard
+    // `agreementBinds`'s docstring names — a stale index here binds a KEY where
+    // the statement declares `::uuid`, so this assertion is also the one that
+    // fails if the next `_cmp` column widens the spread without renumbering.
     const store = new FakeBrainStore();
     await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
 
     const binds = store.bindsFor("tensionScan");
     expect(binds, "the rival scan was never issued").toHaveLength(1);
-    expect(binds[0]![4]).toBe(store.facts[0]!.id);
+    expect(binds[0]![5]).toBe(store.facts[0]!.id);
   });
 
   test("cardinality defaults to the conservative arm", async () => {
@@ -1114,10 +1120,25 @@ describe("no autonomous supersession (#4912)", () => {
     expect(TENSION_CANDIDATES_SQL).toContain("predicate_key = $3");
     // `<>`, never `=`: a rival asserts a DIFFERENT value in the same slot.
     expect(TENSION_CANDIDATES_SQL).toContain("object_key <> $4");
+    // The object arm is TWO arms since #5030, and the two statements take
+    // opposite halves of one definition — corroboration fires on *provably
+    // same*, the rival scan on everything that is NOT provably same. Pinned
+    // lexically because the fake dispatches on statement identity and reads
+    // binds positionally, so dropping either arm leaves every behavioural test
+    // in this file green.
+    //
+    // ⚠️ The two spellings are deliberately NOT interchangeable. `IS NOT TRUE`
+    // is what carries the abstain band: plain `NOT (object_cmp = $5)` is NULL
+    // whenever either side is unparseable, a WHERE clause treats NULL as false,
+    // and the whole `unknown` population — the reason three-valued agreement
+    // exists — would silently stop earning tension edges.
+    expect(CORROBORATION_LOOKUP_SQL).toContain("(object_key = $4 OR object_cmp = $5)");
+    expect(TENSION_CANDIDATES_SQL).toContain("(object_cmp = $5) IS NOT TRUE");
     // …and the self-exclusion, whose BIND is asserted above but whose presence
     // in the statement nothing else here can see. Without it every `single` fact
-    // is its own rival the moment it lands.
-    expect(TENSION_CANDIDATES_SQL).toContain("id <> $5");
+    // is its own rival the moment it lands. `$6` since #5030 widened the
+    // agreement spread ahead of it.
+    expect(TENSION_CANDIDATES_SQL).toContain("id <> $6");
     // …and no surviving surface comparison in either. An AND-ed surface arm
     // beside a key arm reads as pivoted and is not.
     for (const [name, sql] of [
@@ -1132,7 +1153,9 @@ describe("no autonomous supersession (#4912)", () => {
       }
     }
     // The write half: the INSERT must name all three, or every row it lands is
-    // unkeyed and inert in the two statements above.
-    expect(INSERT_FACT_SQL).toContain("subject_key, predicate_key, object_key");
+    // unkeyed and inert in the two statements above — plus `object_cmp`, which
+    // has NO other writer at all. Migration 0191 deliberately does not backfill,
+    // so a value omitted here is a row that abstains forever.
+    expect(INSERT_FACT_SQL).toContain("subject_key, predicate_key, object_key, object_cmp");
   });
 });

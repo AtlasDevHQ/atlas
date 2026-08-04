@@ -5,11 +5,23 @@
  * consumes it. Corroboration (`CORROBORATION_LOOKUP_SQL`), the advisory rival
  * scan (`TENSION_CANDIDATES_SQL`), and the publish gate's
  * `supersessionCollisionJoin` each read the same materialized
- * `(subject_key, predicate_key, object_key)` triple, and each turns it into a
- * different verdict — *same*, *different-and-coexisting*, *different-and-stamping*.
- * Running all three over one fixture set is what stops them drifting into
- * disagreeing about what collides, which three private fixture sets could not
- * detect by construction.
+ * `(subject_key, predicate_key, object_key, object_cmp)` tuple, and each turns
+ * it into a different verdict — *same*, *different-and-coexisting*,
+ * *different-and-stamping*. Running all three over one fixture set is what stops
+ * them drifting into disagreeing about what collides, which three private
+ * fixture sets could not detect by construction.
+ *
+ * ## ⚠️ Since #5030 the three consumers no longer partition the corpus
+ *
+ * Agreement is THREE-VALUED, so the consumers take non-complementary halves of
+ * it: corroboration fires on *same*, supersession on *different*, and the band
+ * between them — *unknown* — reaches tension and nothing else. The corpus grew a
+ * fourth relation to express that, and the two rival classes are what make the
+ * band visible: `unproven-rival` earns a tension edge and NO stamp,
+ * `proven-rival` earns both. A corpus with only one rival class cannot tell an
+ * abstaining implementation from a stamping one, which is the risk ADR-0037 §9
+ * names — the band has to be produced honestly, and a canonicalizer returning
+ * the raw surface collapses it to empty while looking like it worked.
  *
  * Every expectation below is COMPUTED from `VERDICTS[pair.relation]` rather than
  * written beside the assertion, so the table is the single definition of what
@@ -64,8 +76,31 @@
  * | `supersessionCollisionJoin` repointed at the surface columns | consumer 3's control, via `rival-through-phrasing` |
  * | the corroboration call site binds raw surfaces instead of `item.keys.*` | 6 here — **and 3 in `reconcile.test.ts`**, which is the bind half it can still see |
  * | the tension call site binds raw surfaces | consumer 2's control |
- * | `subject_key =` neutralized in the rival scan / dropped from the collision join | consumers 2 and 3, via `subject-differs` |
- * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | consumers 2 and 3, via `predicate-differs` |
+ * | `subject_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `subject-differs` — consumer 2 and consumer 3 respectively |
+ * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `predicate-differs` |
+ *
+ * …and the #5030 rows, measured the same way:
+ *
+ * | Mutation | Dies on |
+ * |---|---|
+ * | `supersessionCollisionPredicate` back on `object_key <> object_key` | 2 — `rival-through-phrasing` and `cross-type-rival`, both consumer-3 prohibitions |
+ * | `comparableDifferentSql` loses its `split_part` tag arm | **1 — `cross-type-rival`, and it is the only test in the repo that catches this** |
+ * | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 — all three consumers, via `same-through-value` |
+ * | `CORROBORATION_LOOKUP_SQL`'s `object_key = $4` arm neutralized | 6 — all three consumers, via both key-equal `same-claim` pairs |
+ * | `TENSION_CANDIDATES_SQL`'s `IS NOT TRUE` weakened to `NOT (…)` | 1 — `rival-through-phrasing`, consumer 2's abstain-band control |
+ *
+ * The last row is the one worth pausing on. `NOT (object_cmp = $5)` reads as
+ * the same thing and is NULL whenever either side is unparseable; a WHERE
+ * clause treats NULL as false, so the entire `unknown` population silently
+ * stops earning tension edges — the abstain band would exist in the
+ * documentation and nowhere else. It is caught by ONE test.
+ *
+ * The two corroboration rows are a matched pair, and the second was added
+ * because the first measured ZERO behavioural deaths: with only key-equal
+ * `same-claim` entries, neutralizing the `object_cmp` arm killed nothing but a
+ * lexical assertion in `reconcile.test.ts`. `same-through-value` is what
+ * reaches that arm alone. Both arms of a disjunction need an entry that
+ * exercises each in isolation, or one of them is decoration.
  * | `identityAlias` given a global rule (`/^is /` stripped) | 3 — all three PROHIBITIONS, via `copula-pair` |
  * | `lexicalNorm` loses its edge trim | 3 — all three consumers, via `separator-edges` |
  * | `lexicalNorm` loses its ASCII case fold | 8, across all three consumers |
@@ -84,12 +119,16 @@
  * repoint or the call-site bind, depending which side is clean — see that
  * entry's `why`.
  *
- * NOT in the table, and stated because its absence is load-bearing: the
- * `object_key <>` arm of either join is NOT falsifiable from this corpus. The
- * shape that would catch it is `subject =, predicate =, object =` presented as
- * TWO rows, and `reconcileFacts` cannot produce that — corroboration collapses
- * it first. That arm's real-schema owner is `promotion-pg.test.ts`, which seeds
+ * NOT in the table, and stated because its absence is load-bearing: the rival
+ * scan's `object_key <> $4` arm is NOT falsifiable from this corpus. The shape
+ * that would catch it is `subject =, predicate =, object =` presented as TWO
+ * rows, and `reconcileFacts` cannot produce that — corroboration collapses it
+ * first. That arm's real-schema owner is `promotion-pg.test.ts`, which seeds
  * both rows directly. Do not consolidate that suite into this one.
+ *
+ * (Since #5030 the COLLISION join has no `object_key` arm at all — it reads
+ * `object_cmp` and requires positive evidence of difference. The sentence above
+ * used to cover both joins and now covers only the rival scan.)
  *
  * Two entries — `inverse-relations` and `entity-alias` — are not falsified by
  * any mutation above, and that is stated rather than hidden: no rule reachable
@@ -135,7 +174,7 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 // ---------------------------------------------------------------------------
 //
 // This needs no database, and it is what licenses every prohibition/control
-// pairing below. `for (const pair of pairsWhere("rival-claim"))` over an empty
+// pairing below. `for (const pair of pairsWhere("proven-rival"))` over an empty
 // array registers ZERO `it()` blocks and reports success, so deleting the last
 // entry of a relation silently deletes three tests across three consumers. If
 // this guard sat inside `describeIfPg` it would be skipped in exactly the lane
@@ -378,7 +417,8 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
     // corpus entry that no consumer reads. Same in the two consumers below.
     const TITLES: Record<SlotRelation, string> = {
       "same-claim": "⭐ strengthens instead of forking",
-      "rival-claim": "does not absorb a different VALUE in the same slot",
+      "unproven-rival": "does not absorb a different VALUE in the same slot",
+      "proven-rival": "does not absorb a provably different VALUE either",
       "different-claim": "does not collide a different SLOT",
     };
 
@@ -420,7 +460,8 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
 
   describe("consumer 2 — the rival scan says *different-and-coexisting*", () => {
     const TITLES: Record<SlotRelation, string> = {
-      "rival-claim": "⭐ flags a contradiction the phrasing used to hide",
+      "unproven-rival": "⭐ flags a contradiction it CANNOT prove — the abstain band",
+      "proven-rival": "⭐ flags a contradiction it can prove",
       "same-claim": "does not put one claim in tension with itself",
       "different-claim": "does not flag two claims that share no slot",
     };
@@ -470,7 +511,9 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
 
   describe("consumer 3 — the publish gate says *different-and-stamping*", () => {
     const TITLES: Record<SlotRelation, string> = {
-      "rival-claim": "⭐ stamps the incumbent it genuinely contradicts",
+      "proven-rival": "⭐ stamps the incumbent it can PROVE it contradicts",
+      "unproven-rival":
+        "stamps nothing when it cannot PROVE the contradiction — tension only (#5030)",
       "same-claim": "stamps nothing when the draft merely restates the incumbent",
       "different-claim": "stamps nothing across two slots — the irreversible direction",
     };

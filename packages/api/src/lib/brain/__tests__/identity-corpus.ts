@@ -74,11 +74,26 @@
  * claim, and an entry there has to be a bare surface.
  */
 
+// The producer declaration a `Claim` may carry (#5030). A TYPE-only import:
+// this module stays free of behaviour, so it can never agree with the
+// implementation by sharing code with it.
+import type { DeclaredObjectType } from "@atlas/api/lib/brain/object-cmp";
+
 /** One side of a pair — a whole claim, because identity is a triple. */
 export interface Claim {
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
+  /**
+   * What the producer says its object IS (#5030) — omitted by every entry that
+   * does not need it, which is the conservative default a producer gets.
+   *
+   * Present on the corpus because a declaration is the only way a bare `499`
+   * ever becomes comparable, and because the SIDES of a pair may declare
+   * differently: that is what produces a cross-TYPE comparison, the one shape
+   * the `split_part` tag arm exists for and the only shape that falsifies it.
+   */
+  readonly objectType?: DeclaredObjectType;
 }
 
 /**
@@ -90,20 +105,41 @@ export interface Claim {
  * union plus hand-written `pairsWhere("…")` loops would let a new relation land
  * a corpus entry that no consumer ever reads, green.
  */
-export const RELATIONS = ["same-claim", "rival-claim", "different-claim"] as const;
+export const RELATIONS = [
+  "same-claim",
+  "unproven-rival",
+  "proven-rival",
+  "different-claim",
+] as const;
 
 /**
  * What a human says the two claims mean, relative to each other:
  *
  *   - `same-claim` — one claim, two spellings. Same subject slot, same
  *     predicate slot, same value.
- *   - `rival-claim` — one slot, two VALUES. The subject and predicate collide
- *     through a phrasing difference and the objects genuinely disagree. This is
- *     the contradiction class: byte-exact matching hid these, which is #5000.
+ *   - `unproven-rival` — one slot, two VALUES, and the values cannot be
+ *     COMPARED. The subject and predicate collide through a phrasing difference
+ *     and the objects visibly disagree to a human, but nothing on either row
+ *     proves it: `Grace` and `Alan` are two names, and with no entity store the
+ *     system genuinely cannot show they are two people. This is the ABSTAIN
+ *     BAND (#5030) — tension only, never a stamp.
+ *   - `proven-rival` — the same shape with COMPARABLE objects. Both sides carry
+ *     an `object_cmp` of the same type and they disagree, so the difference is
+ *     evidence rather than an inference from two strings failing to match. Only
+ *     this class supersedes.
  *   - `different-claim` — different slots. The claims may look near-identical
  *     to a lexical matcher and are not the same claim, so nothing may collide
  *     them. This is the direction where an over-match costs a `valid_to` stamp
  *     on a belief nobody retired.
+ *
+ * ⚠️ **The split between the two rival classes is the whole of #5030, and it is
+ * the change most likely to be read as a regression.** Before it there was one
+ * `rival-claim` relation and it superseded; `unproven-rival` is what that class
+ * became, and it no longer does. Merging the two back — or giving
+ * `unproven-rival` `supersedes: true` because a human can plainly see the
+ * claims disagree — restores the irreversible stamp the three-valued agreement
+ * was built to remove. A human seeing it is exactly what the tension edge is
+ * for.
  */
 export type SlotRelation = (typeof RELATIONS)[number];
 
@@ -132,21 +168,34 @@ export interface ClaimPair {
  * ## Covering the arms
  *
  * Both `TENSION_CANDIDATES_SQL` and `supersessionCollisionJoin` are
- * `subject_key = … AND predicate_key = … AND object_key <>`, so a prohibition
+ * `subject_key = … AND predicate_key = … AND <an object arm>`, so a prohibition
  * can only bite on a given `=` arm when the OTHER two arms would have matched.
- * An entry whose objects are equal is blocked by the `<>` arm alone and proves
- * nothing about the subject or predicate arm. The six shapes below are what
- * make each arm individually falsifiable; `subject-differs` and
- * `predicate-differs` exist for exactly that reason and for no other.
+ * An entry whose objects are equal is blocked by the object arm alone and proves
+ * nothing about the subject or predicate arm.
  *
- * | entry | subject | predicate | object |
- * |---|---|---|---|
- * | `rival-through-phrasing` | = | = | ≠ |
- * | `subject-differs`        | ≠ | = | ≠ |
- * | `predicate-differs`      | = | ≠ | ≠ |
- * | `inverse-relations`      | ≠ | ≠ | ≠ |
- * | `copula-pair`            | = | ≠ | = |
- * | `entity-alias`           | ≠ | = | = |
+ * ⚠️ **Since #5030 the two consumers no longer share an object arm, and that
+ * splits this table's `≠` column in two.** The rival scan asks *not provably
+ * same* — two names satisfy it. The collision join asks *provably different* —
+ * two names do NOT, so an entry with entity-valued objects is blocked by the
+ * OBJECT there and falsifies neither key arm for consumer 3. That is why
+ * `subject-differs` and `predicate-differs` carry money objects: they exist to
+ * falsify the subject and predicate arms, and with unparseable objects they
+ * would have silently stopped doing it for the consumer that stamps `valid_to`.
+ *
+ * `cmp` below is the object's agreement verdict, which is what consumer 3 reads.
+ *
+ * | entry | subject | predicate | object key | cmp |
+ * |---|---|---|---|---|
+ * | `same-through-value`     | = | = | ≠ | **same** |
+ * | `rival-through-phrasing` | = | = | ≠ | unknown |
+ * | `priced-rival`           | = | = | ≠ | different |
+ * | `declared-rival`         | = | = | ≠ | different |
+ * | `cross-type-rival`       | = | = | ≠ | unknown |
+ * | `subject-differs`        | ≠ | = | ≠ | different |
+ * | `predicate-differs`      | = | ≠ | ≠ | different |
+ * | `inverse-relations`      | ≠ | ≠ | ≠ | unknown |
+ * | `copula-pair`            | = | ≠ | = | unknown |
+ * | `entity-alias`           | ≠ | = | = | unknown |
  */
 export const IDENTITY_CORPUS = [
   {
@@ -177,9 +226,38 @@ export const IDENTITY_CORPUS = [
     b: { subject: "__release train", predicate: "runs-", object: "-weekly_" },
   },
   {
-    id: "rival-through-phrasing",
-    relation: "rival-claim",
+    id: "same-through-value",
+    relation: "same-claim",
     why:
+      "⭐ ADR-0037 §2's pinned case, and the ONLY entry in the corpus that corroborates " +
+      "through the COMPARABLE VALUE rather than through the object key. `499 USD` and " +
+      "`USD 499` are one price; `lexicalNorm` keys them `499 usd` and `usd 499`, which do " +
+      "not match, so the key arm alone mints a second row for a belief Atlas already holds — " +
+      "and worse, the two then read as rivals and publishing either stamps `valid_to` on the " +
+      "other.\n" +
+      "  Its absence was measured, not guessed: with only key-equal `same-claim` entries, " +
+      "neutralizing `CORROBORATION_LOOKUP_SQL`'s `OR object_cmp = $5` arm killed nothing but " +
+      "a lexical assertion. Both arms of a disjunction need an entry that reaches them " +
+      "ALONE, or one of them is decoration.\n" +
+      "  The subject and predicate are held byte-identical on purpose: this entry is about " +
+      "the OBJECT arm, and phrasing noise elsewhere would let a slot-level failure kill it " +
+      "for the wrong reason.",
+    a: { subject: "business tier", predicate: "priced at", object: "499 USD" },
+    b: { subject: "business tier", predicate: "priced at", object: "USD 499" },
+  },
+  {
+    id: "rival-through-phrasing",
+    relation: "unproven-rival",
+    why:
+      "⚠️ THE abstain band's control (#5030). Two names, and nothing on either row " +
+      "proves they are two people — `passthroughEntityResolver` supplies no id and " +
+      "neither surface parses to a typed value, so both `object_cmp`s are NULL and the " +
+      "agreement is UNKNOWN. Tension fires; the publish gate does not. This entry " +
+      "superseded before #5030 and deliberately no longer does: `object_key <> object_key` " +
+      "proves only that two surfaces did not normalize together, which is also true of " +
+      "`$499` and `499 USD`, and supersession has no inverse verb anywhere in the product. " +
+      "The rest of the argument is about the SLOT, and stands unchanged:\n" +
+      "  " +
       "`Ada` reports to exactly one person and these name two. The subject and predicate " +
       "are one slot spelled two ways, so on the surface columns the rival scan matched " +
       "nothing and the reviewer saw two uncontested facts where there was a contradiction. " +
@@ -193,28 +271,98 @@ export const IDENTITY_CORPUS = [
     b: { subject: "ADA", predicate: "reports-to", object: "Alan" },
   },
   {
+    id: "priced-rival",
+    relation: "proven-rival",
+    why:
+      "⭐ #5030's supersession control, and the only relation that still stamps `valid_to`. " +
+      "Two prices, both money with an EXPLICIT ISO-4217 code, so both sides carry an " +
+      "`object_cmp` of the same tag and they disagree — positive evidence of difference " +
+      "rather than an inference from two strings failing to match.\n" +
+      "  BOTH sides are spelled off normal form on the subject and predicate, and " +
+      "differently, for `rival-through-phrasing`'s reason verbatim: with `b` already " +
+      "normalized, binding raw surfaces at the call site would still find the collision; " +
+      "with `a` already normalized, repointing the JOIN at the surface columns would still " +
+      "match. This entry inherits consumer 3's whole slot-pivot proof, because the entry " +
+      "that used to carry it abstains now.\n" +
+      "  The OBJECTS are deliberately in normal form — `499 USD` needs no phrasing noise, " +
+      "and adding some would only test `lexicalNorm`, which no longer reads this position " +
+      "for the collision at all.",
+    a: { subject: "Business_Tier", predicate: "Priced At", object: "499 USD" },
+    b: { subject: "business tier", predicate: "priced-at", object: "599 USD" },
+  },
+  {
+    id: "declared-rival",
+    relation: "proven-rival",
+    why:
+      "The same contradiction reached through a producer DECLARATION rather than through " +
+      "the surface. Bare `499` and `599` parse to plain numbers; declaring both USD money " +
+      "makes them comparable AS PRICES. Separated from the entry above because it is the " +
+      "only thing in the `-pg` lane that proves `objectType` is threaded all the way from " +
+      "`FactCandidate` to the stored column — the unit suite proves the parser honours a " +
+      "declaration, and would stay green if `reconcile.ts` never passed one.",
+    a: {
+      subject: "starter tier",
+      predicate: "priced at",
+      object: "499",
+      objectType: { kind: "money", currency: "USD" },
+    },
+    b: {
+      subject: "starter tier",
+      predicate: "priced at",
+      object: "599",
+      objectType: { kind: "money", currency: "USD" },
+    },
+  },
+  {
+    id: "cross-type-rival",
+    relation: "unproven-rival",
+    why:
+      "⚠️ THE falsifier for the `split_part` tag arm, and the only one in the repo at the " +
+      "SQL level. One producer declares its `price` column USD; the other reads a bare " +
+      "number off the same slot and declares nothing. `number:599` and `money:USD:499` are " +
+      "unequal STRINGS, so a difference arm spelled `<>` alone calls them different and " +
+      "publish stamps `valid_to` — but nothing proves the bare number is not dollars. " +
+      "Cross-type is UNKNOWN.\n" +
+      "  Reachable the day any producer declares a type, which is what `objectType` is for, " +
+      "so this is a live case and not a theoretical one. The amounts differ so the objects " +
+      "do not simply corroborate through `object_key`.",
+    a: { subject: "growth tier", predicate: "priced at", object: "499" },
+    b: {
+      subject: "growth tier",
+      predicate: "priced at",
+      object: "599",
+      objectType: { kind: "money", currency: "USD" },
+    },
+  },
+  {
     id: "subject-differs",
     relation: "different-claim",
     why:
-      "Two people, each reporting to someone different — no contradiction, nothing to " +
-      "arbitrate. Exists to make the SUBJECT arm falsifiable: the predicates match and " +
-      "the objects differ, so `subject_key =` is the only thing holding these apart, and " +
+      "Two tiers, each priced differently — no contradiction, nothing to arbitrate. Exists " +
+      "to make the SUBJECT arm falsifiable: the predicates match and the objects are " +
+      "PROVABLY different, so `subject_key =` is the only thing holding these apart, and " +
       "dropping it from the rival scan or the collision join turns this red. Every other " +
-      "`different-claim` entry is also blocked by some other arm.",
-    a: { subject: "ada", predicate: "reports to", object: "Grace" },
-    b: { subject: "bea", predicate: "reports to", object: "Alan" },
+      "`different-claim` entry is also blocked by some other arm.\n" +
+      "  ⚠️ The objects are money rather than two names since #5030, and the change is " +
+      "load-bearing rather than cosmetic. With `Grace`/`Alan` the object arm abstains, so " +
+      "the pair is blocked by the OBJECT and this entry stops falsifying the subject arm " +
+      "for consumer 3 — a prohibition satisfied by the wrong arm, which is precisely the " +
+      "trap this file's arm-coverage table exists to close.",
+    a: { subject: "business tier", predicate: "priced at", object: "499 USD" },
+    b: { subject: "starter tier", predicate: "priced at", object: "199 USD" },
   },
   {
     id: "predicate-differs",
     relation: "different-claim",
     why:
-      "Who `Ada` reports to and who she sits with are different questions, and both " +
+      "What a tier costs and what it costs to renew are different questions, and both " +
       "answers are true at once. The PREDICATE arm's falsifier, by the same argument as " +
       "the entry above — and the one the repo most needed: the whole supersession section " +
       "of `promotion-pg.test.ts` runs on a single predicate, so deleting " +
-      "`p.predicate_key = d.predicate_key` from the collision join broke no test anywhere.",
-    a: { subject: "ada", predicate: "reports to", object: "Grace" },
-    b: { subject: "ada", predicate: "sits with", object: "Alan" },
+      "`p.predicate_key = d.predicate_key` from the collision join broke no test anywhere. " +
+      "Objects are money for the reason recorded on `subject-differs`.",
+    a: { subject: "business tier", predicate: "priced at", object: "499 USD" },
+    b: { subject: "business tier", predicate: "renews at", object: "449 USD" },
   },
   {
     id: "inverse-relations",
@@ -286,9 +434,14 @@ export const VERDICTS = {
   // One claim: it corroborates, so there is no second row to contend with —
   // both the other two verdicts follow from there being nothing to compare.
   "same-claim": { corroborates: true, tension: false, supersedes: false },
-  // One slot, two values: the two beliefs coexist and are visibly in tension
-  // while both are drafts, and the publish gate is where a human settles it.
-  "rival-claim": { corroborates: false, tension: true, supersedes: true },
+  // One slot, two values, agreement UNKNOWN. The two beliefs coexist, visibly
+  // flagged, and NOTHING settles them autonomously — the publish gate stamps
+  // nothing, because it has no evidence they disagree beyond two strings not
+  // matching. A human settles it at the review queue the tension edge feeds.
+  "unproven-rival": { corroborates: false, tension: true, supersedes: false },
+  // One slot, two values, agreement DIFFERENT — both sides comparable, same
+  // type, unequal. The only class that supersedes.
+  "proven-rival": { corroborates: false, tension: true, supersedes: true },
   // Two slots: every consumer must leave the pair entirely alone.
   "different-claim": { corroborates: false, tension: false, supersedes: false },
 } as const satisfies Record<SlotRelation, Verdict>;

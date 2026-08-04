@@ -300,10 +300,12 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
     // window between `*` and `FROM`, and the real region-export projection is
     // wider than the window — so it read green over a planted `SELECT f.*`.
 
-    // EVERY column, not one representative. The `_cmp` arms in particular
-    // cannot be exercised by the real tree — those columns ship in #5032 — so
-    // without this loop `subject_cmp` and `object_cmp` could be deleted from
-    // KEY_COLUMNS and every assertion in this file would stay green.
+    // EVERY column, not one representative. `subject_cmp` in particular cannot
+    // be exercised by the real tree — that column ships in #5032 — so without
+    // this loop it could be deleted from KEY_COLUMNS and every assertion in
+    // this file would stay green. (`object_cmp` landed in #5030 and IS on the
+    // real tree now; it stays in the loop because the argument is about the
+    // matcher, not about which columns happen to exist this week.)
     for (const column of KEY_COLUMNS) {
       expect(
         projectsKey(`const Q = \`SELECT f.id, f.${column} FROM brain_facts f\`;`),

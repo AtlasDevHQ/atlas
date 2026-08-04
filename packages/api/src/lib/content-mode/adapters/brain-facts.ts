@@ -54,6 +54,10 @@ import {
   IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
   isLockTimeout,
 } from "@atlas/api/lib/brain/identity";
+// *Provably different*, spelled once (#5030). The reconcile stage negates the
+// SAMENESS half of the same module, so the two seams cannot drift into
+// disagreeing about which pairs are merely `unknown`.
+import { comparableDifferentSql } from "@atlas/api/lib/brain/object-cmp";
 import {
   classifyFactForPromotion,
   isJsonObject,
@@ -335,11 +339,47 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
  * The supersession collision (#4912, ADR-0036 §Temporal), spelled ONCE.
  *
  * Joins a draft alias `d` to every already-published fact it would supersede:
- * the same SLOT — `(subject_key, predicate_key)` — a DIFFERENT object slot, and
- * BOTH sides `single`-cardinality. The published side must be live (not
+ * the same SLOT — `(subject_key, predicate_key)` — a PROVABLY DIFFERENT object,
+ * and BOTH sides `single`-cardinality. The published side must be live (not
  * tombstoned) and current (`valid_to IS NULL`) — a fact some earlier promotion
  * already superseded is settled history, and stamping it twice would rewrite
  * when the belief ended.
+ *
+ * ## ⚠️ The object arm is `object_cmp`, NOT `object_key <>` (#5030, ADR-0037 §2)
+ *
+ * This is the single largest behaviour change the identity map makes, and it is
+ * a NARROWING that will read as a regression to anyone who finds it by watching
+ * supersessions stop happening.
+ *
+ * *same* and *different* are not complements. `object_key <> object_key` proves
+ * only that two surfaces did not normalize together — which is true of `$499`
+ * and `499 USD`, one belief spelled twice, and stamping `valid_to` there
+ * destroys a fact nothing contradicted. Supersession is the one operation in
+ * this product with NO inverse: there is no un-supersede verb, and both of
+ * `correct_fact`'s vouching verbs refuse a target whose window has closed
+ * (`brain/correction.ts`). So it now requires POSITIVE evidence of difference —
+ * both sides carrying a comparable value, of the same type, that disagree.
+ *
+ * Everything else is `unknown` and falls to the advisory tension edge
+ * `reconcile.ts` already wrote. Nothing is lost from a reviewer's view; what is
+ * lost is the unattended stamp behind it.
+ *
+ * **The consequence, stated plainly because it is permanent:** with
+ * `passthroughEntityResolver` shipped as the default, an entity-valued object
+ * (`Ada / reports to / Grace` vs `Alan`) has no comparable value on either side
+ * and NEVER supersedes. Only parseable values do — money with an explicit
+ * currency, plain numbers, dates, instants, booleans — plus resolved entity ids
+ * once a real store lands (#5031). That is `passthroughEntityResolver` behaving
+ * honestly rather than pretending: with no entity store the system genuinely
+ * cannot prove `Grace` and `Alan` are different people, and inferring it from
+ * two strings failing to match is the guess that costs a belief.
+ *
+ * **And it is permanently two-tier.** Migration 0191 does not backfill, so every
+ * row written before it keeps `object_cmp` NULL forever and can never prove
+ * difference — with nothing on the row saying so. Backfilling would retroactively
+ * manufacture positive evidence on pairs a reviewer already saw as `unknown`,
+ * and unlike a cardinality flip there is no gate to hang a preview on. Recorded
+ * as an accepted cost in #5030, in 0191's header, and in the ADR.
  *
  * ## Why the keys and not the surfaces (#5020, ADR-0037 §1)
  *
@@ -351,13 +391,15 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
  * disclose. Same index either way — 0187 repointed `idx_brain_facts_subject`
  * onto the key columns with a partial predicate this join already satisfies.
  *
- * A NULL key on EITHER side excludes the pair, since `=` and `<>` are both
- * unknown against NULL. That is fail-closed and the direction this join must
- * fail in — no collision means no `valid_to` stamp, which is the recoverable
- * outcome — but it is not free, and the cost is symmetric: such a row can
- * neither BE superseded nor supersede anything, so an unkeyed draft publishes
- * beside a live rival and an unkeyed published fact survives one. Three
- * populations reach it, and only two of them are transient:
+ * A NULL on EITHER side of ANY arm excludes the pair, since `=` and `<>` are
+ * both unknown against NULL. That is fail-closed and the direction this join
+ * must fail in — no collision means no `valid_to` stamp, which is the
+ * recoverable outcome — but it is not free, and the cost is symmetric: such a
+ * row can neither BE superseded nor supersede anything, so an unkeyed draft
+ * publishes beside a live rival and an unkeyed published fact survives one.
+ * Three populations reach it through the KEY arms, and only two of them are
+ * transient (`object_cmp` NULL is a fourth and is not a defect at all — it is
+ * `unknown` doing its job, per the ⚠️ above):
  *
  *   - Rows written between migration 0187 and #5020 — closed by 0188, which
  *     repeats 0187's re-runnable backfill in #5020's own deploy.
@@ -419,7 +461,7 @@ export function supersessionCollisionPredicate(d: string, p: string): string {
   return `${p}.workspace_id = ${d}.workspace_id
      AND ${p}.subject_key = ${d}.subject_key
      AND ${p}.predicate_key = ${d}.predicate_key
-     AND ${p}.object_key <> ${d}.object_key
+     AND ${comparableDifferentSql(`${p}.object_cmp`, `${d}.object_cmp`)}
      AND ${p}.predicate_cardinality = 'single'
      AND ${d}.predicate_cardinality = 'single'
      AND ${p}.status = 'published'

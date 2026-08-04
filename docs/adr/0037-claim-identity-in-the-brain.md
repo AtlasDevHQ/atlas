@@ -56,6 +56,16 @@ One shared **slot** relation `(subject, predicate)`, composed with a **three-val
 
 A type qualifies for `object_cmp` only if its parse is unambiguous and its equality decidable. Bare `$499` parses to NULL — `$` is ambiguous across currencies. **The design is safe even when the parser is cowardly.**
 
+**Amended by [#5030](https://github.com/AtlasDevHQ/atlas/issues/5030) (shipped):** `object_cmp` landed as one nullable `TEXT` column (migration 0191, `lib/brain/object-cmp.ts`) holding a **tagged** canonical value — `money:USD:499`, `number:499`, `date:2026-08-04`, `time:…Z`, `bool:true`, `entity:01J…`. Three refinements to the rule as written above, each with a reason the spec could not have anticipated without an implementation:
+
+- **`different` additionally requires the two values to share a TAG.** The rule as stated — *both non-null and unequal* — calls `number:499` and `money:USD:499` different, and nothing proves the bare number is not dollars. Cross-tag is `unknown`. The pair is reachable the moment one producer declares a slot's type and another does not, which is precisely what the producer declaration below is for. Spelled once, in `comparableDifferentSql`, as a `split_part(v, ':', 1)` equality beside the `<>`.
+- **The tag is a contract, not an encoding detail.** [#5035](https://github.com/AtlasDevHQ/atlas/issues/5035) discriminates store-local ids from value-typed canonicals on it — §8's *"null wherever it holds a store-local id"* is unimplementable without one.
+- **`date` and `time` are separate tags.** A calendar day and an instant are not the same kind of thing; sharing a tag would make a daily-granularity producer supersede an instant-granularity one on every observation. Instants canonicalize to UTC, so a zone conversion is never a contradiction.
+
+The producer declaration (`FactCandidate.objectType`, on `predicate_cardinality`'s precedent) **narrows and never overrides**: it may supply a currency the surface lacks (`499` + declared USD → `money:USD:499` — the case the feature exists for), and every disagreement with the surface resolves to NULL. **No currency SYMBOL is ever accepted**, including `€` and `£`: an allowlist of "safe" symbols is a maintenance surface where one wrong entry buys an irreversible stamp.
+
+**The consequence to state plainly, because it reads as a regression:** with `passthroughEntityResolver` shipped as the default, an entity-valued object (`Ada / reports to / Grace` vs `Alan`) has **no** comparable value on either side and **never supersedes**. Only parseable values do, plus resolved entity ids once [#5031](https://github.com/AtlasDevHQ/atlas/issues/5031) lands. That is the abstain band working, not a gap — the pair still carries its advisory tension edge and a human still arbitrates at the review gate.
+
 ### 3. Cardinality is a property of the predicate ([T6](https://github.com/AtlasDevHQ/atlas/issues/5010))
 
 `predicate_cardinality` was **not** unpopulated, as previously believed. `extract.ts:484` writes the model's per-claim guess and `correction.ts:1380` inherits it — so supersession fired at roughly P(model says `single`)², from **two independent model calls**, against a prompt biased toward `multi`. A **fourth independent cause** of #5000's symptom, and the only one that is not a string-matching problem.

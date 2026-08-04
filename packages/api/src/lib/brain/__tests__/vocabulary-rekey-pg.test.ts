@@ -763,7 +763,17 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     }
   }
 
-  /** A published rival and a colliding draft, merged into one slot by an alias. */
+  /**
+   * A published rival and a colliding draft, merged into one slot by an alias.
+   *
+   * The objects are DATES rather than weekday names, and since #5030 that is
+   * what makes the pair collide at all: supersession requires positive evidence
+   * of difference — both sides carrying a comparable `object_cmp` of the same
+   * type that disagree — and `friday` vs `monday`, which this fixture used to
+   * say, abstains. The subject under test is the PREDICATE alias merging two
+   * slots into one; a pair that abstains at the object never reaches it, and
+   * both tests below would pass against a stamp that does nothing.
+   */
   async function seedCollidingPair(): Promise<{
     draftId: string;
     publishedId: string;
@@ -772,12 +782,12 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     const publishedId = await land(WS, {
       subject: "widget",
       predicate: "ships on",
-      object: "friday",
+      object: "2026-07-03",
     });
     const draftId = await land(WS, {
       subject: "widget",
       predicate: "delivery date",
-      object: "monday",
+      object: "2026-07-06",
     });
     await pool.query("UPDATE brain_facts SET status = 'published' WHERE id = $1::uuid", [
       publishedId,

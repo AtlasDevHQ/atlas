@@ -900,13 +900,45 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
   it("pins the collision join's invariants in the SQL itself", () => {
     // The join is shared with the two disclosure surfaces, so these strings are
     // the contract: BOTH sides single, the rival published, live, and current,
-    // and only a DIFFERENT object collides (same object = corroboration).
+    // and only a PROVABLY DIFFERENT object collides.
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.predicate_cardinality = 'single'");
     expect(SUPERSESSION_TARGETS_SQL).toContain("d.predicate_cardinality = 'single'");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.status = 'published'");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.invalidated_at IS NULL");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.valid_to IS NULL");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_key <> d.object_key");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_cmp <> d.object_cmp");
+  });
+
+  it("requires POSITIVE evidence of difference, never a failure to match (#5030)", () => {
+    // The narrowing, pinned as a REPLACEMENT. `object_key <> object_key` proves
+    // only that two surfaces did not normalize together — true of `$499` and
+    // `499 USD`, one belief spelled twice — and this is the statement that
+    // stamps `valid_to`, for which the product has no inverse verb. Restoring
+    // the key arm here is the single change that would make supersession
+    // over-fire again, and it would look like a bug fix, because it makes
+    // entity-valued rivals start superseding again.
+    expect(
+      SUPERSESSION_TARGETS_SQL.includes("object_key <>"),
+      "the collision join is back on `object_key <>` — that is a failure to prove SAMENESS, not evidence of DIFFERENCE, and it stamps `valid_to` on beliefs nothing contradicted (ADR-0037 §2)",
+    ).toBe(false);
+
+    // The tag arm, whose deletion is invisible in every fixture that does not
+    // MIX types in one slot. Without it `number:499` and `money:USD:499` read
+    // as different and publish stamps over a producer that declared a currency
+    // where another did not — reachable the day any producer declares one.
+    expect(SUPERSESSION_TARGETS_SQL).toContain(
+      "split_part(p.object_cmp, ':', 1) = split_part(d.object_cmp, ':', 1)",
+    );
+
+    // And the grouping. Every arm of the difference test is `AND`-ed, so the
+    // parentheses are redundant TODAY — they are what stops a later `OR` arm
+    // (a restored key fallback is the obvious one) from binding looser than the
+    // conjunction and re-widening the whole join. Migration 0187's `WHERE`
+    // clause carries the same parenthesization for the same reason, and its
+    // header records that the unparenthesized shape passed every assertion.
+    expect(SUPERSESSION_TARGETS_SQL).toContain(
+      "AND (p.object_cmp <> d.object_cmp\n      AND split_part(",
+    );
   });
 
   it("collides on the identity keys and on no surface column (#5020)", () => {
@@ -920,7 +952,10 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     // on one side of the comparison.
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.subject_key = d.subject_key");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.predicate_key = d.predicate_key");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_key <> d.object_key");
+    // The object arm moved off the key entirely in #5030 — see the test above
+    // for why. It is still a materialized column and still never a surface, so
+    // the surface sweep below covers it on the same terms.
+    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_cmp <> d.object_cmp");
     // A slot column can only be named `<role>_key` here, so a bare `p.subject`
     // is a surviving surface arm. `\b` alone is enough — `_` is a word
     // character, so `\bp\.subject\b` cannot match inside `p.subject_key`; the

@@ -211,16 +211,30 @@ const CORRECTION_AT = CORRECTION_CLOCK().toISOString();
 const AS_OF = "2026-06-26T12:00:00Z";
 const AS_OF_ECHO = "2026-06-26T12:00:00.000Z";
 
-/** Message bodies, named so `EXTRACTIONS` cannot silently drift from the history. */
+/**
+ * Message bodies, named so `EXTRACTIONS` cannot silently drift from the history.
+ *
+ * ⚠️ **The two deploy-window claims name DATES rather than weekdays, and that is
+ * load-bearing since #5030.** Supersession now requires positive evidence of
+ * difference — both sides carrying a comparable `object_cmp` of the same type
+ * that disagree — so `Thursdays` and `Fridays`, which this fixture used to say,
+ * abstain: nothing on either row proves two weekday names denote different
+ * things, and the gate correctly stamps nothing. A date parses, so the two
+ * claims genuinely contradict and step 4 below still has a supersession to walk.
+ *
+ * The abstain band that swap gave up is not lost — it is `promotion-pg.test.ts`'s
+ * `ws-5030-abstain` and the corpus's `unproven-rival` relation, both of which
+ * assert it directly. What this file needs is a loop that reaches the END.
+ */
 const BODY = {
   /** The incumbent belief — public channel, org grant. */
-  thursdays: "the deploy window is Thursdays",
+  earlyWindow: "the deploy window is 2026-07-02",
   /** The claim that will derive from the deploy window — the dependent's source. */
   freeze: "the release freeze is the day before the deploy window",
   /** Small talk in the exec channel; extraction yields nothing. */
   lunch: "lunch?",
   /** The conflicting rival — exec channel, audience grant, arrives a day later. */
-  fridays: "the deploy window is Fridays",
+  lateWindow: "the deploy window is 2026-07-03",
 } as const;
 
 function message(overrides: Partial<SlackHistoryMessage> & { ts: string; text: string }): SlackHistoryMessage {
@@ -234,7 +248,7 @@ function message(overrides: Partial<SlackHistoryMessage> & { ts: string; text: s
 const CHANNEL_HISTORY: Readonly<Record<string, readonly SlackHistoryMessage[]>> = {
   // 2026-06-25T10:00:00Z and 10:05:00Z
   [PUBLIC_CHANNEL]: [
-    message({ ts: "1782381600.000100", text: BODY.thursdays, user: "U_ADA" }),
+    message({ ts: "1782381600.000100", text: BODY.earlyWindow, user: "U_ADA" }),
     message({ ts: "1782381900.000200", text: BODY.freeze, user: "U_ADA" }),
   ],
   // 2026-06-25T11:00:00Z
@@ -242,7 +256,7 @@ const CHANNEL_HISTORY: Readonly<Record<string, readonly SlackHistoryMessage[]>> 
 };
 
 /** The rival claim, said in the EXEC channel a day later. 2026-06-26T11:00:00Z. */
-const FRIDAYS_MESSAGE = message({ ts: "1782471600.000400", text: BODY.fridays, user: "U_ALAN" });
+const LATE_WINDOW_MESSAGE = message({ ts: "1782471600.000400", text: BODY.lateWindow, user: "U_ALAN" });
 
 const PUBLIC_CHANNELS = new Set([PUBLIC_CHANNEL]);
 
@@ -305,11 +319,11 @@ type Candidate = {
  * sides, is what arms the tension pass and the gate's supersession collision.
  */
 const EXTRACTIONS: Partial<Record<(typeof BODY)[keyof typeof BODY], readonly Candidate[]>> = {
-  [BODY.thursdays]: [
-    { subject: "deploy window", predicate: "is", object: "Thursdays", cardinality: "single" },
+  [BODY.earlyWindow]: [
+    { subject: "deploy window", predicate: "is", object: "2026-07-02", cardinality: "single" },
   ],
-  [BODY.fridays]: [
-    { subject: "deploy window", predicate: "is", object: "Fridays", cardinality: "single" },
+  [BODY.lateWindow]: [
+    { subject: "deploy window", predicate: "is", object: "2026-07-03", cardinality: "single" },
   ],
   [BODY.freeze]: [
     {
@@ -874,7 +888,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
         factsCorroborated: 0,
       });
       expect(modelCalls.toSorted(byText)).toEqual(
-        [BODY.thursdays, BODY.freeze, "(no match)"].toSorted(byText),
+        [BODY.earlyWindow, BODY.freeze, "(no match)"].toSorted(byText),
       );
       const firstPublish = await publish();
       expect(firstPublish.promoted).toBe(2);
@@ -895,9 +909,9 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       });
 
       let rows = await facts();
-      const thursdays = factByClaim(rows, "deploy window", "Thursdays");
+      const earlyWindow = factByClaim(rows, "deploy window", "2026-07-02");
       const freeze = factByClaim(rows, "release freeze", "the day before the deploy window");
-      expect(thursdays).toMatchObject({
+      expect(earlyWindow).toMatchObject({
         status: "published",
         predicate_cardinality: "single",
         visible_to: ["org"],
@@ -906,7 +920,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       });
 
       // ---- 2. the rival arrives — draft + advisory tension edge -----------
-      extraMessages = { [EXEC_CHANNEL]: [FRIDAYS_MESSAGE] };
+      extraMessages = { [EXEC_CHANNEL]: [LATE_WINDOW_MESSAGE] };
       const second = await syncHistory();
       expect(second.episodes).toEqual({
         inserted: 1,
@@ -918,19 +932,19 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       expect(rivalCycle).toMatchObject({ inspected: 1, extracted: 1, factsCreated: 1, factsCorroborated: 0 });
 
       rows = await facts();
-      const fridays = factByClaim(rows, "deploy window", "Fridays");
+      const lateWindow = factByClaim(rows, "deploy window", "2026-07-03");
       // The rival is a DRAFT with the exec channel's derived grant — reconcile
       // recorded the conflict, it arbitrated nothing.
-      expect(fridays).toMatchObject({
+      expect(lateWindow).toMatchObject({
         status: "draft",
         predicate_cardinality: "single",
         visible_to: [EXEC_GRANT_TOKEN],
         valid_to: null,
         invalidated_at: null,
       });
-      expect(factByClaim(rows, "deploy window", "Thursdays").status).toBe("published");
+      expect(factByClaim(rows, "deploy window", "2026-07-02").status).toBe("published");
       // The edge reconcile wrote: newer claim → incumbent, exactly once.
-      expect(await edgeCount("in-tension-with", fridays.id, { factId: thursdays.id })).toBe(1);
+      expect(await edgeCount("in-tension-with", lateWindow.id, { factId: earlyWindow.id })).toBe(1);
 
       // ---- 3. surfaced-both-with-provenance, on BOTH read surfaces --------
       // The org member sees the incumbent, and the rival they may not read is
@@ -940,7 +954,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       const memberView = await search(memberCtx);
       expect(subjectsOf(memberView.results)).toEqual(["deploy window", "release freeze"]);
       const memberIncumbent = memberView.results.filter(isFact).find((f) => f.subject === "deploy window");
-      expect(memberIncumbent).toMatchObject({ object: "Thursdays", status: "published" });
+      expect(memberIncumbent).toMatchObject({ object: "2026-07-02", status: "published" });
       expect(memberIncumbent?.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
 
       // The exec-audience admin sees the SAME cluster with the rival's full
@@ -949,16 +963,16 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       const adminView = await search(adminCtx);
       // The draft rival is not itself served in published mode; it reaches the
       // reader only as the incumbent's counterpart.
-      expect(deployObjectsOf(adminView.results)).toEqual(["Thursdays"]);
+      expect(deployObjectsOf(adminView.results)).toEqual(["2026-07-02"]);
       const adminIncumbent = adminView.results.filter(isFact).find((f) => f.subject === "deploy window");
       expect(adminIncumbent?.tensions).toHaveLength(1);
       expect(adminIncumbent?.tensions[0]).toMatchObject({
         visible: true,
-        factId: fridays.id,
+        factId: lateWindow.id,
         // The edge points newer → incumbent, so from the incumbent's side the
         // counterpart sits on the `from` end.
         edgeDirection: "from",
-        object: "Fridays",
+        object: "2026-07-03",
         status: "draft",
         invalidatedAt: null,
         provenance: {
@@ -972,16 +986,16 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       const queue = await loadFactCandidates(pool, { ctx: adminCtx, limit: 50, offset: 0 });
       expect(queue.total).toBe(1);
       expect(queue.candidates[0]).toMatchObject({
-        id: fridays.id,
-        object: "Fridays",
+        id: lateWindow.id,
+        object: "2026-07-03",
         provenance: { source: SLACK_HISTORY_SOURCE, attribution: { visible: true, actor: "slack:U_ALAN" } },
       });
       expect(queue.candidates[0]?.tensions).toEqual([
         expect.objectContaining({
           visible: true,
-          factId: thursdays.id,
+          factId: earlyWindow.id,
           edgeDirection: "to",
-          object: "Thursdays",
+          object: "2026-07-02",
           status: "published",
           invalidatedAt: null,
           // The AC is "surfaced with provenance to reader AND reviewer", and
@@ -1000,11 +1014,11 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       const gate = await publish();
       expect(gate.promoted).toBe(1);
       expect(gate.refused).toEqual([]);
-      expect(gate.superseded).toEqual([{ rowId: fridays.id, superseded: [thursdays.id] }]);
+      expect(gate.superseded).toEqual([{ rowId: lateWindow.id, superseded: [earlyWindow.id] }]);
 
       rows = await facts();
-      const loser = factByClaim(rows, "deploy window", "Thursdays");
-      const winner = factByClaim(rows, "deploy window", "Fridays");
+      const loser = factByClaim(rows, "deploy window", "2026-07-02");
+      const winner = factByClaim(rows, "deploy window", "2026-07-03");
       // The stamp closed the loser's window and ONLY its window: still
       // published (the review verdict stands), still not retracted.
       expect(loser.valid_to).not.toBeNull();
@@ -1026,7 +1040,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
 
       // ---- 5. default reads: the survivor only ----------------------------
       const adminNow = await search(adminCtx);
-      expect(deployObjectsOf(adminNow.results)).toEqual(["Fridays"]);
+      expect(deployObjectsOf(adminNow.results)).toEqual(["2026-07-03"]);
       expect("asOf" in adminNow).toBe(false);
       // Supersession is grant-blind (header pin): the org member's belief
       // simply ENDS — the loser is no longer current and the winner's frozen
@@ -1045,14 +1059,14 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       if (winnerNow === undefined) {
         throw new Error("the survivor was not served — the post-gate cluster assertion would be vacuous");
       }
-      expect(winnerNow.object).toBe("Fridays");
+      expect(winnerNow.object).toBe("2026-07-03");
       expect(winnerNow.tensions).toHaveLength(1);
       const retiredRival = winnerNow.tensions[0];
       if (retiredRival?.visible !== true) {
         throw new Error("the superseded rival is not visible to the admin — expected a labelled counterpart");
       }
-      expect(retiredRival.factId).toBe(thursdays.id);
-      expect(retiredRival.object).toBe("Thursdays");
+      expect(retiredRival.factId).toBe(earlyWindow.id);
+      expect(retiredRival.object).toBe("2026-07-02");
       // The label, carried straight off the counterpart's own row and equal to
       // the stamp the GATE wrote — not a value the fixture chose. Named throw
       // rather than `?? null`, which would let a gate that stopped stamping
@@ -1079,7 +1093,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // and the winner stays withheld by ITS frozen grant.
       const memberThen = await search(memberCtx, { asOf: AS_OF });
       expect(memberThen.asOf).toBe(AS_OF_ECHO);
-      expect(deployObjectsOf(memberThen.results)).toEqual(["Thursdays"]);
+      expect(deployObjectsOf(memberThen.results)).toEqual(["2026-07-02"]);
       const memberThenFact = memberThen.results.filter(isFact).find((f) => f.subject === "deploy window");
       // Named throw, not `?.`: `expect(undefined).not.toBeNull()` PASSES, so
       // the next assertion would be vacuous the moment the read returned
@@ -1098,7 +1112,10 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // point read must not diverge from the default read on NULL
       // `valid_from`). Pinned, not worked around.
       const adminThen = await search(adminCtx, { asOf: AS_OF });
-      expect(deployObjectsOf(adminThen.results)).toEqual(["Fridays", "Thursdays"]);
+      // `deployObjectsOf` sorts by text, and the dates sort the other way round
+      // from the weekday names this fixture used to carry — the assertion is
+      // about WHICH TWO are served, never about rank.
+      expect(deployObjectsOf(adminThen.results)).toEqual(["2026-07-02", "2026-07-03"]);
       // `asOf` leaves the EPISODE store alone (`search.ts`: an episode is
       // append-only evidence of what was SAID and has no validity window), so
       // the same reader's evidence is identical either side of the point read.
@@ -1129,9 +1146,9 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       }
       const stampMs = loser.valid_to.getTime();
       const justAfter = await search(adminCtx, { asOf: new Date(stampMs + 1).toISOString() });
-      expect(deployObjectsOf(justAfter.results)).toEqual(["Fridays"]);
+      expect(deployObjectsOf(justAfter.results)).toEqual(["2026-07-03"]);
       const justBefore = await search(adminCtx, { asOf: new Date(stampMs - 1).toISOString() });
-      expect(deployObjectsOf(justBefore.results)).toEqual(["Fridays", "Thursdays"]);
+      expect(deployObjectsOf(justBefore.results)).toEqual(["2026-07-02", "2026-07-03"]);
 
       // ---- 6b. the OTHER half of asOf: membership is as-of-NOW ------------
       // `search-pg.test.ts` proves the FROZEN-GRANT half — the grant stored on
@@ -1169,13 +1186,13 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       expect(adminCtx.audienceIds).toContain(EXEC_AUDIENCE);
       expect(adminLeft.audienceIds).not.toContain(EXEC_AUDIENCE);
 
-      // The point read now serves ONLY the org-granted loser. `Fridays` is
+      // The point read now serves ONLY the org-granted loser. `2026-07-03` is
       // gone — the same version, at the same instant, for the same user, who
       // was entitled to it a moment ago: the withdrawal is what this arm is
       // about, and it is the frozen grant being matched against a CURRENT
       // roster rather than the roster of the instant.
       const leftThen = await search(adminLeft, { asOf: AS_OF });
-      expect(deployObjectsOf(leftThen.results)).toEqual(["Thursdays"]);
+      expect(deployObjectsOf(leftThen.results)).toEqual(["2026-07-02"]);
       // …and the default read agrees, so the point read is not diverging from
       // the ordinary one on membership — this reader has simply become the
       // org member of step 5.
@@ -1200,7 +1217,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       const adminRejoined = await admin();
       expect(adminRejoined.audienceIds).toContain(EXEC_AUDIENCE);
       const rejoinedThen = await search(adminRejoined, { asOf: AS_OF });
-      expect(deployObjectsOf(rejoinedThen.results)).toEqual(["Fridays", "Thursdays"]);
+      expect(deployObjectsOf(rejoinedThen.results)).toEqual(["2026-07-02", "2026-07-03"]);
 
       // ---- 7. correct_fact retract: tombstone + flag, never cascade -------
       // The write-back-shaped lineage edge (header note): the freeze claim
@@ -1300,9 +1317,9 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // survives: retracting the winner does not resurrect or destroy the
       // loser's window.
       const adminThenAfter = await search(adminCtx, { asOf: AS_OF });
-      expect(deployObjectsOf(adminThenAfter.results)).toEqual(["Thursdays"]);
+      expect(deployObjectsOf(adminThenAfter.results)).toEqual(["2026-07-02"]);
       const memberThenAfter = await search(memberCtx, { asOf: AS_OF });
-      expect(deployObjectsOf(memberThenAfter.results)).toEqual(["Thursdays"]);
+      expect(deployObjectsOf(memberThenAfter.results)).toEqual(["2026-07-02"]);
     },
     PG_TEST_TIMEOUT_MS,
   );

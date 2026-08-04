@@ -213,6 +213,16 @@ import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
 // site is how the write side and a future re-key start disagreeing about what a
 // claim's slot IS.
 import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+// The comparable value, on the same terms: `comparableValue` is the ONE place a
+// surface becomes a typed canonical form, and `comparableSameSql` the ONE place
+// *provably same* is spelled — the two statements below negate each other and
+// must do so against one definition, not two.
+import {
+  comparableSameSql,
+  comparableValue,
+  type ComparableValue,
+  type DeclaredObjectType,
+} from "@atlas/api/lib/brain/object-cmp";
 import type {
   BrainFactProvenance,
   EntityRole,
@@ -294,6 +304,23 @@ export interface FactCandidate {
    * recoverable at the review gate, wrongly superseding destroys a belief.
    */
   readonly predicateCardinality?: PredicateCardinality;
+  /**
+   * What the producer knows its own object IS (#5030) — on
+   * {@link FactCandidate.predicateCardinality}'s precedent exactly: a
+   * producer-declared property of the claim with a conservative default, NOT a
+   * matching rule, so it stays inside ADR-0037's source-agnostic line.
+   *
+   * Omit for the conservative default. With no declaration the surface is
+   * parsed on its own terms and anything ambiguous abstains — which is where
+   * the extractor belongs, since it GUESSES. A warehouse producer reading a
+   * `price` column knows the number is USD and says so, and that is the one
+   * thing that makes a bare `499` comparable at all.
+   *
+   * A declaration only ever supplies what the surface LACKS; it can never
+   * override what the surface states, and every disagreement between them
+   * resolves to `null`. `lib/brain/object-cmp.ts` owns the arms.
+   */
+  readonly objectType?: DeclaredObjectType;
   /**
    * Producer-specific provenance (model id, prompt version, confidence, the
    * pinned SQL of a warehouse fact). Merged UNDER the structural keys, so a
@@ -520,6 +547,21 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
  * corpus-corrupting over-match migration 0187's header rejects `DEFAULT ''` for.
  * A duplicate row is the price and it is the recoverable direction.
  *
+ * ## The object arm is *provably same*, which is TWO arms (#5030, ADR-0037 §2)
+ *
+ * `object_key = $4 OR object_cmp = $5`. The keys prove sameness through the
+ * surface; the comparable value proves it through a typed canonical form, so
+ * `499 USD` and `USD 499` corroborate where their keys do not. Both arms are
+ * NULL-hostile — `= NULL` is unknown — so an unparseable object on either side
+ * simply falls back to the key arm, which is exactly the abstention `null`
+ * means.
+ *
+ * The two arms are an `OR` and neither implies the other, which is why one
+ * column compared two ways cannot do this job (T3 §4): drop the key arm and
+ * byte-identical `Business tier` stops corroborating the moment it is
+ * unresolvable as an entity; drop the cmp arm and two spellings of one price
+ * mint two rows.
+ *
  * Deliberately NOT filtered by review state: a claim re-observed after it was
  * published must corroborate the published fact, not mint a fresh draft
  * duplicate of it. Deliberately not filtered by grant either — a re-observation
@@ -548,7 +590,7 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
     WHERE workspace_id = $1
       AND subject_key = $2
       AND predicate_key = $3
-      AND object_key = $4
+      AND (object_key = $4 OR ${comparableSameSql("object_cmp", "$5")})
       AND invalidated_at IS NULL
       AND valid_to IS NULL
     ORDER BY ingested_at
@@ -574,6 +616,13 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * JSON scalars, `null` included: a surface that norms away has no key, and a
  * sentinel would file every such claim under one slot.
  *
+ * `object_cmp` (#5030) is derived here on the same terms and is the ONLY write
+ * path that ever produces one — migration 0191 deliberately does not backfill,
+ * so a row predating this statement keeps NULL forever and stays `unknown`.
+ * That is why the column is on the guard's UPDATE-only list beside the keys: a
+ * second writer re-deriving it changes what a claim is provably different from,
+ * and difference is what stamps `valid_to`.
+ *
  * `RETURNING id` and nothing else. A key must never reach a consumer that could
  * branch on it — that is what makes an alias un-removable — and
  * `keys-not-on-the-wire.test.ts` scans RETURNING lists naming this exact shape.
@@ -581,11 +630,11 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
 export const INSERT_FACT_SQL = `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, valid_from, extracted_at,
           source_episode_id, provenance, visible_to, predicate_cardinality,
-          subject_key, predicate_key, object_key)
+          subject_key, predicate_key, object_key, object_cmp)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
                $7::uuid, $8::jsonb,
                ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), $10,
-               $11, $12, $13)
+               $11, $12, $13, $14)
        RETURNING id`;
 
 /**
@@ -641,6 +690,34 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * unknown — not a rival — while `object <> $4` would be TRUE, wiring a
  * permanent advisory edge from a real claim to a placeholder that asserts
  * nothing. Pinned by `extract-reconcile-pg.test.ts`.
+ *
+ * ## Tension is *not provably same*, which is where the abstain band LANDS
+ *
+ * Three-valued agreement (#5030, ADR-0037 §2) splits what used to be one
+ * complement into two non-complementary tests, and the three consumers take
+ * different halves: corroboration fires on *same*, supersession on *different*,
+ * and everything in between — the `unknown` band — falls to THIS statement and
+ * nothing else. That is the entire point of the band. A pair whose objects
+ * cannot be compared coexists, visibly flagged, until a human settles it; it is
+ * never merged and never stamped.
+ *
+ * So the object arm here is the NEGATION of corroboration's, not a copy of the
+ * publish gate's: `object_key <> $4` (different keys) AND
+ * `(object_cmp = $5) IS NOT TRUE` (not provably the same value). `IS NOT TRUE`
+ * rather than `NOT (…)` because `NOT NULL` is NULL, which a WHERE clause treats
+ * as false — the spelling that reads as "not the same" would silently drop every
+ * pair where either side is unparseable, i.e. the whole abstain band.
+ *
+ * ⚠️ That second arm is UNREACHABLE today, and it is written anyway. A rival
+ * that were provably-same-by-value would have been returned by
+ * {@link CORROBORATION_LOOKUP_SQL} — same population, same filters — and this
+ * scan would never have run. But that argument is a claim about ANOTHER
+ * statement's arms, and the moment the two stop agreeing (a grant filter added
+ * to one, a `status` scope, #5032's `subject_cmp` suppression landing on one
+ * side first) the reachability returns silently and this scan starts wiring
+ * advisory edges between two spellings of one price. `same` is defined once, in
+ * `object-cmp.ts`; this is that definition negated, not a second opinion about
+ * when it holds.
  */
 export const TENSION_CANDIDATES_SQL = `SELECT id
      FROM brain_facts
@@ -648,11 +725,12 @@ export const TENSION_CANDIDATES_SQL = `SELECT id
       AND subject_key = $2
       AND predicate_key = $3
       AND object_key <> $4
+      AND (${comparableSameSql("object_cmp", "$5")}) IS NOT TRUE
       AND invalidated_at IS NULL
       AND valid_to IS NULL
-      AND id <> $5::uuid
+      AND id <> $6::uuid
     ORDER BY ingested_at DESC
-    LIMIT $6`;
+    LIMIT $7`;
 
 /**
  * The advisory edge. `in-tension-with` is SURFACED with both provenances and
@@ -807,12 +885,27 @@ export async function reconcileFacts(
       predicate: slotKey(predicate, vocabulary.predicate),
       object: slotKey(storedObject, vocabulary.object),
     };
+    // The comparable value, materialized beside the keys and for the same
+    // reason: computing it per statement is how the corroboration lookup and
+    // the INSERT would start disagreeing about what a claim's value IS.
+    //
+    // Off the RESOLVED surface, matching the keys above — but note the resolved
+    // ENTITY ID takes precedence over any parse of it, because the store is
+    // strictly better evidence than the text. `passthroughEntityResolver`
+    // supplies no id, so today this is the surface parse in every deployment;
+    // #5031 is what makes the first arm live.
+    const comparable = comparableValue({
+      surface: storedObject,
+      declared: candidate.objectType,
+      entityId: resolvedObject?.entityId,
+    });
     prepared.push({
       kind: "prepared",
       subject: storedSubject,
       predicate,
       object: storedObject,
       keys,
+      comparable,
       unresolved,
       entityIds: {
         ...(resolvedSubject?.entityId !== undefined ? { subject: resolvedSubject.entityId } : {}),
@@ -913,7 +1006,8 @@ interface SlotKeys {
 const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonly (keyof SlotKeys)[];
 
 /**
- * The triple, in the order all three statements bind it.
+ * The four agreement values, in the order all three statements bind them: the
+ * three slot keys, then the comparable value (#5030).
  *
  * `ReconcileExecutor.query` takes `unknown[]`, so `[…, item.subject,
  * item.predicate, item.object]` type-checks perfectly at every one of these call
@@ -925,17 +1019,26 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
  * spelling, spread three times, is what removes that class along with the
  * order-drift one.
  *
- * A fixed-length TUPLE, not `(string | null)[]`, and the arity is what it buys:
- * `TENSION_CANDIDATES_SQL` spreads this in the MIDDLE of its bind list, so a
- * fourth key added here (the `_cmp` columns `check-brain-fact-promotion.sh`
- * already gates, #5032) would silently push `factId` into `$6` and hand `$5`
- * — declared `::uuid` — a key string. In `INSERT_FACT_SQL` the spread is last
- * and pg would at least raise an arity error; here it would not. It does NOT
- * catch subject/predicate/object ORDER drift, since all three members share a
- * type; only a brand would, and a brand buys nothing against `unknown[]`.
+ * A fixed-length TUPLE, not `(string | null)[]`, and the arity is what it buys.
+ * The hazard this docstring used to warn about ARRIVED in #5030 and is kept
+ * rather than deleted, because `subject_cmp` (#5032) inherits it verbatim:
+ * `TENSION_CANDIDATES_SQL` spreads this in the MIDDLE of its bind list, so
+ * widening the tuple without renumbering that statement's trailing placeholders
+ * pushes `factId` into a slot declared `::uuid` and hands it a key string. In
+ * `INSERT_FACT_SQL` the spread is last and pg would at least raise an arity
+ * error; there it would not.
+ *
+ * It does NOT catch subject/predicate/object ORDER drift, since those three
+ * members share a type; only a brand would, and a brand buys nothing against
+ * `unknown[]`. The comparable value is the one member a swap would be caught on
+ * at all, and only behaviourally: it is TAGGED, so bound at a key position it
+ * matches nothing a `slotKey` ever produced.
  */
-function keyBinds(keys: SlotKeys): readonly [string | null, string | null, string | null] {
-  return [keys.subject, keys.predicate, keys.object];
+function agreementBinds(
+  keys: SlotKeys,
+  comparable: ComparableValue,
+): readonly [string | null, string | null, string | null, ComparableValue] {
+  return [keys.subject, keys.predicate, keys.object, comparable];
 }
 
 interface PreparedCandidate {
@@ -945,6 +1048,13 @@ interface PreparedCandidate {
   readonly object: string;
   /** The identity of the claim above — what the two lookups below match on. */
   readonly keys: SlotKeys;
+  /**
+   * The object's typed canonical value, or `null` for *unknown* (#5030). Not
+   * folded into {@link SlotKeys}: a key proves sameness and is a JOIN arm, this
+   * proves difference and is a COMPARED value, and the three-valued agreement
+   * is exactly the statement that those are different jobs.
+   */
+  readonly comparable: ComparableValue;
   /** Empty when both sides resolved. */
   readonly unresolved: readonly EntityRole[];
   readonly entityIds: Partial<Record<EntityRole, string>>;
@@ -1080,7 +1190,7 @@ async function writeCandidate(
 
   const existing = await tx.query(CORROBORATION_LOOKUP_SQL, [
     episode.workspaceId,
-    ...keyBinds(item.keys),
+    ...agreementBinds(item.keys, item.comparable),
   ]);
   const existingId = firstId(existing.rows);
   if (existingId !== null) {
@@ -1158,7 +1268,7 @@ async function writeCandidate(
     JSON.stringify(provenance),
     JSON.stringify(ctx.grantTokens),
     cardinality,
-    ...keyBinds(item.keys),
+    ...agreementBinds(item.keys, item.comparable),
   ]);
   const factId = firstId(inserted.rows);
   if (factId === null) {
@@ -1212,7 +1322,7 @@ async function writeCandidate(
   if (cardinality === "single") {
     const rivals = await tx.query(TENSION_CANDIDATES_SQL, [
       episode.workspaceId,
-      ...keyBinds(item.keys),
+      ...agreementBinds(item.keys, item.comparable),
       factId,
       TENSION_EDGE_CAP,
     ]);

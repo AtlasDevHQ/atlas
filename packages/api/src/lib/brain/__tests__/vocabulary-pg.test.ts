@@ -14,14 +14,19 @@
  *
  * ## The compressed chain is the only shape that falsifies reversibility
  *
- * `a → b` then `b → c`, remove `b → c`, assert `a` lands back on `b`. A two-node
- * vocabulary passes under path compression, under a scoped patch, and under a
- * full rebuild alike, so a test that does not compose is VACUOUS — ADR-0037 §6
- * says so in as many words, and T7 lists it as target (a).
+ * `a → b` then `b → c`, remove `b → c`, assert `a` lands back on `b`. A
+ * single-edge vocabulary passes under path compression, under a scoped patch,
+ * and under a full rebuild alike, so a test that does not compose is VACUOUS —
+ * ADR-0037 §6 says so in as many words, and T7 lists it as target (a).
+ *
+ * The same trap has a second form, and it is the one that got past the first
+ * cut: a refusal that REPORTS a norm's parent cannot be checked against a
+ * single-edge fixture either, because the raw parent and the effective target
+ * are then the same string. See the `existingTarget` test.
  *
  * ## Every prohibition has a positive control, in its own `test()`
  *
- * Six of the assertions here are refusals, and a refusal passes green against
+ * Most of the assertions here are refusals, and a refusal passes green against
  * machinery that refuses everything — an `approveAliasEdge` that returned
  * `{ok: false}` unconditionally would satisfy all of them. Each is paired with a
  * control that proves the same call can succeed, and the two are separate
@@ -39,31 +44,55 @@
  *
  * ## MUTATIONS THIS CATCHES
  *
- * Run one at a time against this file; each line was verified, not assumed.
+ * Run one at a time; every count below was MEASURED against this file, not
+ * predicted. Re-measured in full after the #5051 review panel.
  *
  * | Mutation | Tests it kills |
  * |---|---|
- * | `loadClaimVocabulary` reads `brain_vocabulary_edge` instead of `_target` (one relation, not two) | 5 |
- * | the recompute's recursive term dropped (closure is depth-1 only) | 9 |
- * | `ORDER BY norm, depth DESC` → `depth ASC` (the closure keeps the first hop, not the root) | 9 |
- * | `removeAliasEdge` drops its final `recomputeEffectiveTargets` | 1 — reversibility, and ONLY that one |
- * | the at-most-one-parent read dropped (the PK still refuses — by THROWING) | 1 — the second-approval refusal |
- * | the cycle walk dropped | 2 — both cycle lengths |
- * | `lexicalNorm` dropped from both write endpoints | 3 |
+ * | `loadClaimVocabulary` reads `brain_vocabulary_edge` instead of `_target` (one relation, not two) | 7 |
+ * | the recompute's recursive term dropped (closure is depth-1 only) | 12 |
+ * | `ORDER BY norm, depth DESC` → `depth ASC` (the closure keeps the first hop, not the root) | 12 |
+ * | `removeAliasEdge` drops its final `recomputeEffectiveTargets` | 2 |
+ * | the at-most-one-parent read dropped (the PK still refuses — by THROWING) | 2 |
+ * | the cycle walk dropped | 3 |
+ * | the cycle walk's `slot_position` arm neutered (a false cycle across positions) | 1 |
+ * | `lexicalNorm` dropped from `approveAliasEdge`'s endpoints | 3 |
+ * | `lexicalNorm` dropped from `removeAliasEdge`'s argument | 1 |
  * | the self-edge arm dropped (`ck_..._not_self` still refuses — by throwing) | 1 |
  * | the degenerate-norm arm dropped (`ck_..._norms_present` still refuses — by throwing) | 1 |
- * | `loadClaimVocabulary` merges the three positions into one map | 3 — position-scoping |
+ * | `loadClaimVocabulary` merges the three positions into one map | 7 |
  * | `loadClaimVocabulary` loses its `workspace_id` filter | 1 |
  * | the convergence check dropped from `recomputeEffectiveTargets` | 1 |
+ * | the partial-closure check dropped from `loadClaimVocabulary` | 1 |
+ * | `existingTarget` reports the closure ROOT instead of the raw approved parent | 1 |
+ * | the transaction-contract probe dropped from `lockWorkspaceVocabulary` | 1 |
+ * | the advisory lock statement dropped | 24 |
+ * | the advisory lock keyed on a CONSTANT instead of the workspace | the different-workspaces control (deadlocks) |
  *
- * Note the shape shared by four rows: the SCHEMA also refuses, so deleting the
- * TypeScript guard does not make the write succeed — it turns a typed refusal
- * into a raw `duplicate key value violates unique constraint` or a CHECK
- * violation. That is a different observable outcome, and asserting on the
- * refusal VALUE rather than on "it did not land" is what makes it visible. Each
- * of those four is caught by exactly one test, and a version of that test
+ * Note the shape shared by FOUR rows — the PK row, `not_self`, `norms_present`,
+ * and `existingTarget`: the SCHEMA also refuses, or answers plausibly, so
+ * deleting the TypeScript guard does not make the write succeed. It turns a
+ * typed refusal into a raw constraint violation, or a correct repair hint into a
+ * wrong one. Each is caught by exactly one test, and a version of that test
  * written as `expect(await storedEdges()).toHaveLength(1)` would pass under all
- * four — which is how they were nearly missed.
+ * four — which is how three of them were nearly missed, and how `existingTarget`
+ * actually was until the #5051 review panel measured it.
+ *
+ * Two rows are compound and say so rather than overclaiming. Dropping the lock
+ * STATEMENT also blinds the transaction probe that reads it, so its 24 kills are
+ * mostly that probe firing; the sharper mutation — the lock keyed on a constant
+ * — is the one that isolates workspace scoping, and it deadlocks the control.
+ *
+ * ## Sibling files, same slice
+ *
+ * The vocabulary's CONSUMERS are falsified where they live, and those counts are
+ * measured too: `reconcile.test.ts` kills a subject↔predicate swap (2) and an
+ * object↔subject swap (1); `correction.test.ts` kills the supersede guard
+ * reading the wrong position (2) and `applySupersede` dropping the vocabulary on
+ * the way into reconcile (1); `admin-migrate.test.ts` +
+ * `migrate-roundtrip-pg.test.ts` kill the import's re-norm refusal (1), its
+ * `slotPosition` arm (1), its empty-norm arm (1), a nulled `approved_by` (2), a
+ * restamped `approved_at` (2), and a skipped closure rebuild (3).
  *
  * Opt in locally with the same scratch database as its sibling brain suites —
  * every one of them creates and drops its OWN schema, so they share it safely:
@@ -73,7 +102,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
-import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
+import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
+import { reconcileFacts, type ReconcileEpisodeRef } from "@atlas/api/lib/brain/reconcile";
 import { is } from "drizzle-orm";
 import { PgTable, getTableConfig } from "drizzle-orm/pg-core";
 import * as schema from "@atlas/api/lib/db/schema";
@@ -132,7 +162,15 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
   let pool: Pool;
   const schemaName = `brain_5022_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 
+  let priorDatabaseUrl: string | undefined;
+
   beforeAll(async () => {
+    // `reconcileFacts` writes through the module-level pool when no runner is
+    // injected, and sibling brain helpers gate on `hasInternalDB()`, which reads
+    // the env var rather than the pool. Both are needed by the composition test
+    // at the bottom; set inside the hook, never at module top level.
+    priorDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = TEST_DB_URL;
     pool = new Pool({
       connectionString: TEST_DB_URL,
       options: `-c search_path="${schemaName}",public`,
@@ -144,9 +182,13 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
       await bootstrap.end();
     }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    _resetPool(pool);
   }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
+    _resetPool(null);
+    if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = priorDatabaseUrl;
     if (pool) {
       await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
       await pool.end();
@@ -158,6 +200,9 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
     // that ordering obligation is the same one the #4458 cleanup sweep carries.
     await pool.query("DELETE FROM brain_vocabulary_target");
     await pool.query("DELETE FROM brain_vocabulary_edge");
+    await pool.query("DELETE FROM brain_edges");
+    await pool.query("DELETE FROM brain_facts");
+    await pool.query("DELETE FROM brain_episodes");
   });
 
   // ── helpers ─────────────────────────────────────────────────────────────
@@ -272,6 +317,21 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
     ]);
   });
 
+  it("re-norms the norm it is asked to remove", async () => {
+    // The removal endpoint's twin of the approve-side re-norm test, and it was
+    // missing: every other `remove()` here passes an already-normalized norm, so
+    // dropping `lexicalNorm` from this function changed nothing observable.
+    //
+    // The bug it lets through is a silent NO-OP: #5025's admin UI hands back the
+    // display form, `removeAliasEdge` finds no row, returns `false`, and the
+    // operator is told nothing was aliased while the edge is still standing.
+    await seedCompressedChain();
+    expect(await remove("predicate", "Priced  At")).toBe(true);
+
+    // …and it really removed the right edge, rather than reporting success.
+    expect((await loadClaimVocabulary(pool, WS)).predicate("is priced at")).toBe("priced at");
+  });
+
   it("removing an unaliased norm changes nothing and reports that it did nothing", async () => {
     await seedCompressedChain();
     expect(await remove("predicate", "unit price")).toBe(false);
@@ -304,6 +364,27 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
     expect((await loadClaimVocabulary(pool, WS)).predicate("is priced at")).toBe("priced at");
   });
 
+  it("names the RAW approved parent as `existingTarget`, not the effective target", async () => {
+    // Seeded as a COMPRESSED chain on purpose. With a single edge the raw parent
+    // and the effective target are the same string, so the assertion cannot tell
+    // them apart — it agrees with the implementation by construction, and
+    // repointing the already-aliased read at `brain_vocabulary_target` passes.
+    //
+    // The distinction is the field's whole reason for existing: the refusal says
+    // "remove that edge first", and `unit price` is the closure's ROOT, which is
+    // not a removable edge from `is priced at` at all. Naming it would send the
+    // operator to undo a decision that is not the one in the way.
+    await seedCompressedChain();
+    expect((await loadClaimVocabulary(pool, WS)).predicate("is priced at")).toBe("unit price");
+
+    const second = await approve(edge("predicate", "is priced at", "list price"));
+    expect(second).toMatchObject({
+      ok: false,
+      refusal: "already-aliased",
+      existingTarget: "priced at",
+    });
+  });
+
   it("a norm that is already a TARGET may still be approved onto something (the control)", async () => {
     // The prohibition above is about a second PARENT, not about reusing a norm.
     // Without this control, an `approveAliasEdge` that refused every approval
@@ -334,6 +415,24 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
     expect(await storedEdges()).toHaveLength(2);
     const vocabulary = await loadClaimVocabulary(pool, WS);
     expect(vocabulary.subject("emea")).toBe("region");
+  });
+
+  it("the cycle walk does not see other positions", async () => {
+    // Neutering `slot_position` in the walk's CTE was caught by NOTHING before
+    // this: no fixture put an edge at one position whose endpoints are also edge
+    // endpoints at another, so a cross-position walk never found a false cycle.
+    //
+    // The failure it prohibits is a spurious `would-cycle` REFUSAL of a
+    // legitimate approval — the cross-position bleed ADR-0037 §6 scopes
+    // positions to prevent, arriving through the guard instead of the closure.
+    // The subject forest here is empty, so the only way to refuse this is to
+    // have walked the predicate one.
+    expect((await approve(edge("predicate", "owned by", "owner"))).ok).toBe(true);
+    expect((await approve(edge("subject", "owner", "owned by"))).ok).toBe(true);
+
+    const vocabulary = await loadClaimVocabulary(pool, WS);
+    expect(vocabulary.predicate("owned by")).toBe("owner");
+    expect(vocabulary.subject("owner")).toBe("owned by");
   });
 
   it("a norm with no parent CAN be approved onto the chain's root (the control)", async () => {
@@ -502,7 +601,210 @@ describeIfPg("the vocabulary — edges, closure, and `alias` (#5022)", () => {
     }
   });
 
-  // ── 9. Derived-ness is structural ───────────────────────────────────────
+  // ── 9. The transaction contract and the lock ────────────────────────────
+
+  it("refuses to mutate the vocabulary outside a transaction", async () => {
+    // `VocabularyExecutor` is structurally satisfied by a POOL on purpose —
+    // that is what lets `loadClaimVocabulary` take one — so nothing in the type
+    // separates a transaction from autocommit, and the mistake is one argument
+    // away. On a pool, `pg_advisory_xact_lock` is released at the end of its own
+    // statement and guards nothing, and `removeAliasEdge` would COMMIT an empty
+    // closure between its DELETE and its rebuild.
+    await expect(
+      approveAliasEdge(pool, WS, edge("predicate", "is priced at", "priced at")),
+    ).rejects.toThrow(/must run inside a transaction/);
+    expect(await storedEdges()).toHaveLength(0);
+
+    await expect(
+      recomputeEffectiveTargets(pool, WS, "predicate"),
+    ).rejects.toThrow(/must run inside a transaction/);
+  });
+
+  it("serializes two concurrent approvals, so a cycle cannot slip between them", async () => {
+    // The one invariant the at-most-one-parent key CANNOT backstop, and the
+    // module says so: two concurrent approvals of `a → b` and `b → a` each see
+    // an acyclic store on their own snapshot, and without the lock both commit.
+    // The result is not benign — reciprocal edges make every later recompute in
+    // that position throw, so the position is wedged until someone hand-deletes
+    // an edge.
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      await first.query("BEGIN");
+      await second.query("BEGIN");
+
+      expect((await approveAliasEdge(first, WS, edge("predicate", "owned by", "owner"))).ok).toBe(true);
+
+      // B blocks on A's lock rather than reading around it. Proven by racing the
+      // promise against a resolved sentinel — if the lock were dropped, B would
+      // have completed its own check-then-write by now.
+      const blocked = approveAliasEdge(second, WS, edge("predicate", "owner", "owned by"));
+      const raced = await Promise.race([
+        blocked.then(() => "completed" as const),
+        new Promise<"pending">((r) => setTimeout(() => r("pending"), 300)),
+      ]);
+      expect(raced).toBe("pending");
+
+      await first.query("COMMIT");
+      // Now that A is visible, B's cycle walk finds the chain and refuses.
+      expect(await blocked).toMatchObject({ ok: false, refusal: "would-cycle" });
+      await second.query("COMMIT");
+    } finally {
+      first.release();
+      second.release();
+    }
+
+    expect(await storedEdges()).toEqual([
+      { slot_position: "predicate", from_norm: "owned by", to_norm: "owner" },
+    ]);
+  });
+
+  it("does not serialize approvals in DIFFERENT workspaces (the control)", async () => {
+    // Without this, a lock keyed on a constant — or taken globally — would
+    // satisfy the test above while turning every workspace's vocabulary writes
+    // into one queue.
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      await first.query("BEGIN");
+      await second.query("BEGIN");
+      expect((await approveAliasEdge(first, WS, edge("predicate", "a", "b"))).ok).toBe(true);
+      // Completes while the first transaction is still open and holding its lock.
+      expect(
+        (await approveAliasEdge(second, OTHER_WS, edge("predicate", "a", "b"))).ok,
+      ).toBe(true);
+      await first.query("COMMIT");
+      await second.query("COMMIT");
+    } finally {
+      first.release();
+      second.release();
+    }
+    await pool.query("DELETE FROM brain_vocabulary_target WHERE workspace_id = $1", [OTHER_WS]);
+    await pool.query("DELETE FROM brain_vocabulary_edge WHERE workspace_id = $1", [OTHER_WS]);
+  });
+
+  it("refuses to load a vocabulary whose closure is only half rebuilt", async () => {
+    // The one wrong answer `loadClaimVocabulary` could give with no error to
+    // propagate: too few closure rows and the position silently degrades to
+    // `identityAlias`, which is byte-identical to "approved nothing" and keys a
+    // whole episode un-aliased. Every approved edge contributes exactly one
+    // closure row, so the counts are the check.
+    await seedCompressedChain();
+    await pool.query(
+      "DELETE FROM brain_vocabulary_target WHERE workspace_id = $1 AND norm = 'is priced at'",
+      [WS],
+    );
+    await expect(loadClaimVocabulary(pool, WS)).rejects.toThrow(/closure is incomplete/);
+  });
+
+  // ── 10. The product claim, end to end ───────────────────────────────────
+
+  it("an approved alias makes two spellings of a claim CORROBORATE, and removing it forks them", async () => {
+    // The one thing this slice exists to make possible, proven where it happens
+    // — in SQL, through the real ingest stage — rather than as two halves that
+    // never meet. Without it the closure is verified here and the threading is
+    // verified against a fake in `reconcile.test.ts`, and the COMPOSITION of the
+    // two rests on the fake, which is the milestone's own named anti-pattern.
+    //
+    // #5000's pair, and the reason the vocabulary exists at all: `is priced at`
+    // and `priced at` deliberately do NOT normalize together (`identity.ts`
+    // refuses copula-stripping — the same rule would collapse `is owned by` into
+    // `owns`), so an ENTRY with a reviewer behind it is the only fix.
+    const seedEpisode = async (sourceId: string): Promise<ReconcileEpisodeRef> => {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_episodes (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
+         VALUES ($1, 'slack', $2, 'U123', 'evidence', now(), ARRAY['org'])
+         RETURNING id`,
+        [WS, sourceId],
+      );
+      return {
+        id: rows[0]!.id,
+        workspaceId: WS,
+        source: "slack",
+        sourceId,
+        sourceActor: "U123",
+        occurredAt: new Date("2026-06-21T09:00:00.000Z"),
+        visibleTo: ["org"],
+      };
+    };
+
+    const land = async (predicate: string, sourceId: string) =>
+      reconcileFacts({
+        episode: await seedEpisode(sourceId),
+        candidates: [
+          {
+            subject: "acme:pro-plan",
+            predicate,
+            object: "49",
+            predicateCardinality: "single",
+          },
+        ],
+        producer: "extraction:v1",
+        extractedAt: new Date(),
+        // Loaded from the store, not hand-built — the whole point.
+        vocabulary: await loadClaimVocabulary(pool, WS),
+      });
+
+    expect((await approve(edge("predicate", "is priced at", "priced at"))).ok).toBe(true);
+
+    const first = await land("priced at", "C1/1");
+    expect(first.outcomes[0]?.kind).toBe("created");
+    const second = await land("is priced at", "C1/2");
+    // ONE claim, corroborated — not a second draft row. The two surfaces are
+    // still stored verbatim; it is the KEY that collapsed.
+    expect(second.outcomes[0]?.kind).toBe("corroborated");
+
+    const stored = await pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1",
+      [WS],
+    );
+    expect(stored.rows[0]!.n).toBe(1);
+  });
+
+  it("without the approved alias the same two spellings FORK (the control)", async () => {
+    // The prohibition's twin, and what proves the corroboration above came from
+    // the vocabulary rather than from a lexical layer that folds copulas anyway
+    // (it must not — `identity.ts` refuses, and `led_by`/`leads` is why).
+    const seedEpisode = async (sourceId: string): Promise<ReconcileEpisodeRef> => {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_episodes (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
+         VALUES ($1, 'slack', $2, 'U123', 'evidence', now(), ARRAY['org'])
+         RETURNING id`,
+        [WS, sourceId],
+      );
+      return {
+        id: rows[0]!.id,
+        workspaceId: WS,
+        source: "slack",
+        sourceId,
+        sourceActor: "U123",
+        occurredAt: new Date("2026-06-21T09:00:00.000Z"),
+        visibleTo: ["org"],
+      };
+    };
+
+    const land = async (predicate: string, sourceId: string) =>
+      reconcileFacts({
+        episode: await seedEpisode(sourceId),
+        candidates: [
+          { subject: "acme:pro-plan", predicate, object: "49", predicateCardinality: "single" },
+        ],
+        producer: "extraction:v1",
+        extractedAt: new Date(),
+        vocabulary: await loadClaimVocabulary(pool, WS),
+      });
+
+    expect((await land("priced at", "C2/1")).outcomes[0]?.kind).toBe("created");
+    expect((await land("is priced at", "C2/2")).outcomes[0]?.kind).toBe("created");
+
+    const stored = await pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1",
+      [WS],
+    );
+    expect(stored.rows[0]!.n).toBe(2);
+  });
+
+  // ── 11. Derived-ness is structural ──────────────────────────────────────
 
   it("refuses to delete an edge out from under its closure row", async () => {
     // `fk_brain_vocabulary_target_edge` is RESTRICT, not CASCADE, and the

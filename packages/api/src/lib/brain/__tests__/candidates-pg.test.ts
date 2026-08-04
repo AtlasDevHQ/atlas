@@ -55,7 +55,7 @@ import {
   loadFactCandidates,
 } from "@atlas/api/lib/brain/candidates";
 import { CORRECTION_REFUSAL_REASONS, correctFact } from "@atlas/api/lib/brain/correction";
-import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { identityAlias, identityVocabulary, slotKey } from "@atlas/api/lib/brain/identity";
 import type { ReconcileTransactionRunner } from "@atlas/api/lib/brain/reconcile";
 import { LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
@@ -516,7 +516,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       const id = await seedFact({ subject: "RetractMe", episodeId: ep });
 
       const first = await correctFact(
-        { ctx: reviewer(), factId: id, verb: "retract", reason: "wrong on arrival" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract", reason: "wrong on arrival" },
         { withTransaction: poolTx },
       );
       if (first.kind !== "corrected") throw new Error(`expected corrected, got ${first.kind}`);
@@ -560,7 +560,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // Second call matches nothing: `invalidated_at IS NULL` already failed —
       // indistinguishable from absence.
       const second = await correctFact(
-        { ctx: reviewer(), factId: id, verb: "retract" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(second.kind).toBe("not-found");
@@ -585,7 +585,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       );
 
       const outcome = await correctFact(
-        { ctx: reviewer(), factId: premise, verb: "retract" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: premise, verb: "retract" },
         { withTransaction: poolTx },
       );
       if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
@@ -626,6 +626,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
 
       const outcome = await correctFact(
         {
+          vocabulary: identityVocabulary,
           ctx: reviewer(),
           factId: oldId,
           verb: "supersede",
@@ -696,7 +697,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       const id = await seedFact({ subject: "PinMe", episodeId: ep, status: "published" });
 
       const outcome = await correctFact(
-        { ctx: reviewer(), factId: id, verb: "pin" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "pin" },
         { withTransaction: poolTx },
       );
       if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
@@ -759,7 +760,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       ]);
 
       const refused = await correctFact(
-        { ctx: reviewer(), factId: closed, verb: "pin" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: closed, verb: "pin" },
         { withTransaction: poolTx },
       );
       expect(refused).toMatchObject({
@@ -781,7 +782,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // The other side of the same boundary: a scheduled end is a live claim,
       // and `brainFactCurrentClause` still serves it — so the vouch lands.
       const admitted = await correctFact(
-        { ctx: reviewer(), factId: scheduled, verb: "pin" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: scheduled, verb: "pin" },
         { withTransaction: poolTx },
       );
       expect(admitted.kind).toBe("corrected");
@@ -826,6 +827,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
 
       const outcome = await correctFact(
         {
+          vocabulary: identityVocabulary,
           ctx: reviewer(),
           factId: oldId,
           verb: "supersede",
@@ -870,7 +872,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       });
 
       const asOutsider = await correctFact(
-        { ctx: reviewer(), factId: id, verb: "retract" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(asOutsider.kind).toBe("not-found");
@@ -883,7 +885,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // A MEMBER who can see it still lacks the verb: corrections land
       // authoritative immediately, so they carry the review gate's bar.
       const asMember = await correctFact(
-        { ctx: insider(), factId: id, verb: "retract" },
+        { vocabulary: identityVocabulary, ctx: insider(), factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(asMember).toMatchObject({
@@ -900,7 +902,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         audienceIds: ["private-channel"],
       };
       const allowed = await correctFact(
-        { ctx: insiderAdmin, factId: id, verb: "retract" },
+        { vocabulary: identityVocabulary, ctx: insiderAdmin, factId: id, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(allowed.kind).toBe("corrected");
@@ -913,7 +915,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     async () => {
       const absent = "00000000-0000-4000-8000-000000000000";
       const outcome = await correctFact(
-        { ctx: reviewer(), factId: absent, verb: "retract" },
+        { vocabulary: identityVocabulary, ctx: reviewer(), factId: absent, verb: "retract" },
         { withTransaction: poolTx },
       );
       expect(outcome.kind).toBe("not-found");

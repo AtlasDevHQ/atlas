@@ -160,8 +160,9 @@ export const CLEANUP_TABLE_RULES = {
   agent_session_memory: { kind: "column", column: "org_id" },
   // Company brain (#4767, ADR-0036). Facts are scoped THROUGH their episode
   // rather than by their own workspace_id — not for scoping but for PHASE:
-  // `brain_facts.source_episode_id` is the one RESTRICT FK among the in-scope
-  // tables, so the facts must be gone before the column phase deletes the
+  // `brain_facts.source_episode_id` was the first RESTRICT FK among the in-scope
+  // tables (#5022 added a second, on the vocabulary closure), so the facts must
+  // be gone before the column phase deletes the
   // episodes, or the sweep fails outright on any workspace that has a brain.
   //
   // The two predicates select the same rows because a composite FK
@@ -194,10 +195,15 @@ export const CLEANUP_TABLE_RULES = {
   // than for scoping. `fk_brain_vocabulary_target_edge` is RESTRICT, so these
   // rows must be gone before the column phase reaches `brain_vocabulary_edge`,
   // or the whole sweep fails outright on any workspace that has approved an
-  // alias. Demoting it to `{ kind: "column", column: "workspace_id" }` would
-  // currently happen to work — declaration order puts it ahead of the edge
-  // table — which is an invisible property of literal ordering rather than a
-  // decision; the tripwire test pins this shape so it stays one.
+  // alias.
+  //
+  // Demoting it to `{ kind: "column", column: "workspace_id" }` would NOT
+  // "happen to work" — an earlier version of this comment claimed it would, and
+  // had the direction backwards. `brain_vocabulary_edge` is declared ABOVE, so
+  // both rules would land in the column phase in THAT order and the RESTRICT FK
+  // would abort the sweep. The phase split is the only thing making the order
+  // right, and the tripwire test pins the shape so it stays a decision rather
+  // than a re-discovery.
   brain_vocabulary_target: { kind: "expression", predicate: "workspace_id = $1" },
   // Scheduling state for the audience re-verifiers (#4971) — "this audience has
   // had its turn", read by nothing but the scan's ORDER BY. Workspace-scoped and

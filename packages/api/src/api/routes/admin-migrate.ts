@@ -13,8 +13,8 @@ import { EPISODE_SOURCES, isEpisodeSource } from "@atlas/api/lib/brain/sources";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
 import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
-import { SLOT_POSITIONS, type SlotPosition } from "@atlas/api/lib/brain/identity";
-import { recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
+import { SLOT_POSITIONS, isSlotPosition, lexicalNorm, type SlotPosition } from "@atlas/api/lib/brain/identity";
+import { VOCABULARY_LOCK_SQL, VOCABULARY_LOCK_NAMESPACE, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -484,7 +484,7 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       if (!e || typeof e !== "object" || typeof e.fromNorm !== "string" || typeof e.toNorm !== "string") {
         return { ok: false, error: `brainVocabularyEdges[${i}]: must have 'fromNorm' and 'toNorm' (strings).` };
       }
-      if (!(SLOT_POSITIONS as readonly string[]).includes(e.slotPosition as string)) {
+      if (!isSlotPosition(e.slotPosition)) {
         return { ok: false, error: `brainVocabularyEdges[${i}].slotPosition: must be one of ${SLOT_POSITIONS.join(", ")}.` };
       }
       if (e.fromNorm === "" || e.toNorm === "") {
@@ -492,6 +492,35 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       }
       if (e.fromNorm === e.toNorm) {
         return { ok: false, error: `brainVocabularyEdges[${i}]: 'fromNorm' and 'toNorm' are both "${e.fromNorm}", which is a 1-cycle rather than an alias.` };
+      }
+      // BOTH endpoints must already be lexical norms, which also SUBSUMES the
+      // post-normalization 1-cycle (`Price` → `price`): once both sides are
+      // known to be norms, `lexicalNorm(a) === lexicalNorm(b)` is exactly
+      // `a === b`, which the byte check above already caught. An explicit second
+      // arm for it was written and then removed — mutation-testing showed no
+      // input could reach it, and a rule with no failure mode is worse than
+      // none, because it reads as protection.
+      //
+      // This is the ONLY other
+      // write path into `brain_vocabulary_edge`, and unlike `approveAliasEdge`
+      // it cannot re-norm: ADR-0037 §8 has a row-copy path carry values
+      // verbatim, and silently rewriting a foreign region's decision would make
+      // the destination's vocabulary disagree with the keys that arrived with
+      // it. So it REFUSES instead, naming the row.
+      //
+      // Nothing in the schema catches this — the table's CHECKs test the
+      // position enum, non-empty and not-self, and a faithful SQL `lexicalNorm`
+      // would be a third implementation of it. Without this arm,
+      // `{fromNorm: "Priced At"}` imports "successfully" and is an alias that can
+      // never fire (the `from` side is looked up by norm and would never match),
+      // while `{fromNorm: "Price", toNorm: "price"}` lands a post-norm 1-cycle
+      // that the not-self CHECK cannot see.
+      for (const side of ["fromNorm", "toNorm"] as const) {
+        const raw = e[side] as string;
+        const normed = lexicalNorm(raw);
+        if (normed !== raw) {
+          return { ok: false, error: `brainVocabularyEdges[${i}].${side}: "${raw}" is not a lexical norm (it normalizes to "${normed}"). Alias edges store norms, not surfaces — a stored non-norm is an alias that can never match anything, and this path carries values verbatim rather than rewriting another region's decision. Re-export from a region running #5022 or later.` };
+        }
       }
       if (e.approvedBy !== undefined && e.approvedBy !== null && typeof e.approvedBy !== "string") {
         return { ok: false, error: `brainVocabularyEdges[${i}].approvedBy: must be a string or null (null is an auto-approved edge).` };
@@ -1304,8 +1333,22 @@ export async function importBundle(
   //      rather than dropping the one offending edge. Loud and recoverable
   //      beats silent and not; refusing the edge instead is #5036's job, and
   //      doing it here would be implementing the merge this PR scopes out.
+  //
+  //   3. This block is a vocabulary MUTATION and must hold the same workspace
+  //      lock `approveAliasEdge` takes, or the invariant that module states —
+  //      "no two vocabulary mutations in a workspace interleave" — is asserted
+  //      and violated in the same PR. Without it, an import carrying `c → a`
+  //      and a concurrent approval of `a → b` each validate their own snapshot,
+  //      each converge, and both commit: the result names `a` as a target while
+  //      `a` is itself aliased, and no recompute will ever revisit it because
+  //      one only runs when a NEW edge lands.
+  const vocabularyEdges = bundle.brainVocabularyEdges ?? [];
+  if (vocabularyEdges.length > 0) {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+  }
+
   const vocabularyPositionsTouched = new Set<SlotPosition>();
-  for (const edge of bundle.brainVocabularyEdges ?? []) {
+  for (const edge of vocabularyEdges) {
     const inserted = await client.query(
       `INSERT INTO brain_vocabulary_edge
          (workspace_id, slot_position, from_norm, to_norm, approved_by, approved_at)
@@ -1314,12 +1357,20 @@ export async function importBundle(
       [orgId, edge.slotPosition, edge.fromNorm, edge.toNorm, edge.approvedBy ?? null, edge.approvedAt],
     );
 
-    if (inserted.rowCount === 0) {
+    // `?? 0` rather than `=== 0`, so an executor that omits `rowCount` counts as
+    // SKIPPED. The neighbouring blocks read it bare; here the stakes are higher,
+    // because the comment above makes `skipped > 0` the only signal that a
+    // curated decision was dropped — so the unknown case must fail toward the
+    // loud direction, not the quiet one.
+    if ((inserted.rowCount ?? 0) === 0) {
       result.brainVocabularyEdges.skipped++;
       continue;
     }
     result.brainVocabularyEdges.imported++;
-    vocabularyPositionsTouched.add(edge.slotPosition as SlotPosition);
+    // No cast: `validateBundle` narrowed this through `isSlotPosition`. An `as`
+    // here would suppress exactly the compile error that a future drift between
+    // the wire union and `SlotPosition` should produce.
+    vocabularyPositionsTouched.add(edge.slotPosition);
   }
 
   // The closure is RECOMPUTED, never carried — which is why the bundle has no

@@ -351,8 +351,10 @@ export async function exportWorkspaceBundle(
     // RECOMPUTE the closure, and a source closure restored into a destination
     // that already holds a vocabulary would be a closure of neither. The
     // reverse-drift arm of `bundle-scope.test.ts` is what keeps a query for it
-    // from being added here unnoticed — and it greps this file's TEXT, so the
-    // closure table is not named anywhere in this comment either.
+    // from being added here unnoticed: it greps this file for `FROM <table>` and
+    // `JOIN <table>`, so adding a query without reclassifying the table fails
+    // the suite. (A bare mention in prose is fine — an earlier version of this
+    // comment imposed a naming taboo the tripwire does not actually enforce.)
     pool.query(
       `SELECT slot_position, from_norm, to_norm, approved_by, approved_at
        FROM brain_vocabulary_edge WHERE ${scopeClause("workspace_id", orgScope)}
@@ -656,7 +658,6 @@ export async function exportWorkspaceBundle(
     approvedBy: (e.approved_by as string | null) ?? null,
     approvedAt: toISO(e.approved_at),
   }));
-
 
   // --- Build bundle ---
   const bundle: ExportBundle = {

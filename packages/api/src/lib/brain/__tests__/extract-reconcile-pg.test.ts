@@ -50,6 +50,7 @@ import {
   type FactExtractor,
   type ResolvedExtractionModel,
 } from "@atlas/api/lib/brain/extract";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -206,6 +207,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   it("lands a fully-formed candidate as a DRAFT it never asked for", async () => {
     const episode = await insertEpisode();
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode,
       candidates: [candidate()],
       producer: "extraction:v1",
@@ -245,6 +247,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const first = candidate();
     await expect(
       reconcileFacts({
+        vocabulary: identityVocabulary,
         episode,
         candidates: [
           first,
@@ -268,6 +271,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // Control: that same first candidate on its own DOES land, so the empty
     // table above is a rollback and not a candidate that never worked.
     await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode,
       candidates: [first],
       producer: "extraction:v1",
@@ -282,6 +286,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // #4769's promotion refusal from becoming a permanent trap.
     const episode = await insertEpisode({ visibleTo: ["everyone"] });
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode,
       candidates: [candidate()],
       producer: "extraction:v1",
@@ -295,6 +300,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   it("stores a provisional flag that survives the jsonb round-trip", async () => {
     const episode = await insertEpisode();
     await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode,
       candidates: [candidate()],
       producer: "extraction:v1",
@@ -312,8 +318,9 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const first = await insertEpisode({ sourceId: "C01:1" });
     const second = await insertEpisode({ sourceId: "C01:2" });
 
-    await reconcileFacts({ episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    await reconcileFacts({ vocabulary: identityVocabulary, episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: second,
       candidates: [candidate()],
       producer: "p",
@@ -353,6 +360,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   it("materializes all three keys on a new fact, off the RESOLVED surfaces", async () => {
     const episode = await insertEpisode({ sourceId: "C01:key-1" });
     await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode,
       candidates: [candidate({ subject: "Deploy_Window", predicate: "Ships  On" })],
       producer: "p",
@@ -405,12 +413,14 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const second = await insertEpisode({ sourceId: "C01:key-7" });
 
     await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: first,
       candidates: [candidate({ object: "-" })],
       producer: "p",
       extractedAt: new Date(),
     });
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: second,
       candidates: [candidate({ object: "___" })],
       producer: "p",
@@ -444,12 +454,14 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const second = await insertEpisode({ sourceId: "C01:key-11" });
 
     await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: first,
       candidates: [candidate({ object: "-", predicateCardinality: "single" })],
       producer: "p",
       extractedAt: new Date(),
     });
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: second,
       candidates: [candidate({ object: "Thursdays", predicateCardinality: "single" })],
       producer: "p",
@@ -472,12 +484,14 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     };
 
     await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: first,
       candidates: [candidate({ ...single, object: "Grace" })],
       producer: "p",
       extractedAt: new Date(),
     });
     await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: second,
       candidates: [candidate({ ...single, object: "Alan" })],
       producer: "p",
@@ -798,10 +812,11 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // somebody already did.
     const first = await insertEpisode({ sourceId: "C01:pub-1" });
     const second = await insertEpisode({ sourceId: "C01:pub-2" });
-    await reconcileFacts({ episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    await reconcileFacts({ vocabulary: identityVocabulary, episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
     await pool.query(`UPDATE brain_facts SET status = 'published'`);
 
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: second,
       candidates: [candidate()],
       producer: "p",
@@ -830,9 +845,10 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       visibleTo: ["audience:chat-channel:slack:C0BK"],
     });
     const pub = await insertEpisode({ sourceId: "C0BB:cross-2", visibleTo: ["org"] });
-    await reconcileFacts({ episode: priv, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    await reconcileFacts({ vocabulary: identityVocabulary, episode: priv, candidates: [candidate()], producer: "p", extractedAt: new Date() });
 
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: pub,
       candidates: [candidate()],
       producer: "p",
@@ -860,10 +876,11 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // silently: the new evidence would attach to a fact no reader can see.
     const first = await insertEpisode({ sourceId: "C01:ret-1" });
     const second = await insertEpisode({ sourceId: "C01:ret-2" });
-    await reconcileFacts({ episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    await reconcileFacts({ vocabulary: identityVocabulary, episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
     await pool.query(`UPDATE brain_facts SET invalidated_at = now()`);
 
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: second,
       candidates: [candidate()],
       producer: "p",
@@ -901,8 +918,9 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       visibleTo: ["org"],
     };
 
-    await reconcileFacts({ episode: mine, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    await reconcileFacts({ vocabulary: identityVocabulary, episode: mine, candidates: [candidate()], producer: "p", extractedAt: new Date() });
     const other = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode: theirs,
       candidates: [candidate()],
       producer: "p",
@@ -964,8 +982,8 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const b = await insertEpisode({ sourceId: "C01:race-b" });
 
     await Promise.all([
-      reconcileFacts({ episode: a, candidates: [candidate()], producer: "p", extractedAt: new Date() }),
-      reconcileFacts({ episode: b, candidates: [candidate()], producer: "p", extractedAt: new Date() }),
+      reconcileFacts({ vocabulary: identityVocabulary, episode: a, candidates: [candidate()], producer: "p", extractedAt: new Date() }),
+      reconcileFacts({ vocabulary: identityVocabulary, episode: b, candidates: [candidate()], producer: "p", extractedAt: new Date() }),
     ]);
 
     expect(await facts()).toHaveLength(1);

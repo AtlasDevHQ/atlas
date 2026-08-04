@@ -154,7 +154,7 @@ import {
   isUnknownArray,
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
-import { identityVocabulary, slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
   INSERT_PROVENANCE_EDGE_SQL,
@@ -308,6 +308,27 @@ export interface CorrectionRequest {
   /** Required for `supersede`, meaningless elsewhere. */
   readonly replacement?: CorrectionReplacement;
   readonly requestId?: string;
+  /**
+   * The workspace's identity vocabulary (ADR-0037 §6, #5022), threaded for
+   * `reconcileFacts`' reason and used at BOTH of this module's key sites: the
+   * supersede guard's slot comparison, and the replacement claim it hands to
+   * reconcile.
+   *
+   * REQUIRED, and on the REQUEST rather than in `CorrectionDeps` beside the test
+   * seams — because it is workspace STATE, not a seam, and defaulting it is the
+   * hazard `identity.ts` spells out under "`alias` is REQUIRED": both sites have
+   * to use the SAME vocabulary the ingest path used, or the guard refuses a
+   * different set than the corpus considers identical and the replacement lands
+   * keyed under a different identity function than every other row in the
+   * workspace. Neither is visible at rest. Defaulting it here would also defeat
+   * `ReconcileRequest.vocabulary` being required, since this module is the one
+   * production caller that feeds it.
+   *
+   * POSITION-SCOPED since #5022: the guard below compares OBJECTS, so it reads
+   * `vocabulary.object` and cannot silently pick up a predicate-position
+   * approval.
+   */
+  readonly vocabulary: ClaimVocabulary;
 }
 
 export interface CorrectionDeps {
@@ -329,22 +350,6 @@ export interface CorrectionDeps {
    * which is where that is enforced, because the type cannot say it.
    */
   readonly auditWriteTimeoutMs?: number;
-  /**
-   * The workspace's identity vocabulary (ADR-0037 §6, #5022), threaded for
-   * `reconcileFacts`' reason and used at BOTH of this module's key sites: the
-   * supersede guard's slot comparison, and the replacement claim it hands to
-   * reconcile. Defaults to `identityVocabulary` — no approved alias.
-   *
-   * Both sites have to use the SAME vocabulary the ingest path used, or the
-   * guard refuses a different set than the corpus considers identical and the
-   * replacement lands keyed under a different identity function than every
-   * other row in the workspace. Neither is visible at rest.
-   *
-   * POSITION-SCOPED since #5022: the guard below compares OBJECTS, so it reads
-   * `vocabulary.object` and cannot silently pick up a predicate-position
-   * approval.
-   */
-  readonly vocabulary?: ClaimVocabulary;
 }
 
 /** What became of one correction request. */
@@ -636,10 +641,9 @@ export async function correctFact(
   request: CorrectionRequest,
   deps: CorrectionDeps = {},
 ): Promise<CorrectionOutcome> {
-  const { ctx, factId, verb, requestId } = request;
+  const { ctx, factId, verb, requestId, vocabulary } = request;
   const now = deps.now ?? (() => new Date());
   const withTransaction = deps.withTransaction ?? withBrainTransaction;
-  const vocabulary = deps.vocabulary ?? identityVocabulary;
   const newCorrectionId = deps.newCorrectionId ?? randomUUID;
 
   // ── Authority ─────────────────────────────────────────────────────────
@@ -826,11 +830,12 @@ export async function correctFact(
         // be honoured literally. Equal to the stored key while the vocabulary
         // is deterministic AND unchanged since the target was ingested.
         //
-        // ⚠️ That second condition stopped being free at #5022. Until then
-        // `alias` was the identity function and could not move; it is now a data
-        // table an approval mutates, so a target ingested before an approval and
-        // corrected after it is re-derived under a DIFFERENT vocabulary than
-        // keyed it. The comparison then widens or narrows relative to the stored
+        // ⚠️ That second condition stops being free the moment a call site loads
+        // a REAL vocabulary, which is #5023 — not #5022. Today no production path
+        // does: `loadClaimVocabulary` has no caller and every site here and in
+        // `extract.ts` names `identityVocabulary`, which cannot move. Once one
+        // does, a target ingested before an approval and corrected after it is
+        // re-derived under a DIFFERENT vocabulary than keyed it. The comparison then widens or narrows relative to the stored
         // slot — it can refuse a supersession the corpus considers distinct, or
         // permit one it considers identical.
         //

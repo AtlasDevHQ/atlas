@@ -92,6 +92,8 @@
  * will ever join.
  */
 
+import type { ExportedVocabularySlotPosition } from "@useatlas/types";
+
 /**
  * Separator run → one space. `-` sits LAST so the bracket reads it as a literal
  * rather than opening a range; migration 0187's twin does the same.
@@ -230,18 +232,73 @@ export function identityKey(surface: string): string | null {
  * two spellings — and neither is visible afterwards. So it propagates: a
  * data-backed alias that throws aborts the episode before the transaction opens,
  * and the episode stays on the queue for the next cycle.
+ *
+ * Since #5022 the REALISTIC failure has moved one layer up, and the arm is kept
+ * anyway. The lookups `loadClaimVocabulary` returns are `identityAlias` or a
+ * pure `Map#get` closure, neither of which can throw; what can fail is the LOAD,
+ * and `lib/brain/vocabulary.ts` makes the same choice there for the same reason
+ * ("Errors propagate"). This arm still binds hand-written and future lookups —
+ * a vocabulary that consulted a cache or a remote would put the throw back here.
  */
 export type AliasLookup = (norm: string) => string;
 
-/** The EMPTY vocabulary: every norm is its own alias. */
+/**
+ * The empty lookup at ONE position: every norm is its own alias.
+ *
+ * Not "the empty vocabulary" — that is {@link identityVocabulary}, which is what
+ * a call site names. Keeping the two distinct is the same distinction
+ * {@link ClaimVocabulary} exists to enforce: a single `AliasLookup` is a
+ * position's answer, never a workspace's.
+ */
 export const identityAlias: AliasLookup = (norm) => norm;
 
 /**
  * A claim's three slots. The vocabulary is scoped by these, and so is
  * everything downstream of it.
  */
-export const SLOT_POSITIONS = ["subject", "predicate", "object"] as const;
+export const SLOT_POSITIONS = [
+  "subject",
+  "predicate",
+  "object",
+] as const satisfies readonly ExportedVocabularySlotPosition[];
 export type SlotPosition = (typeof SLOT_POSITIONS)[number];
+
+/**
+ * The internal and wire spellings of a slot position must stay the same set.
+ *
+ * `ExportedVocabularySlotPosition` (`@useatlas/types`) is the region bundle's
+ * copy, and there IS house precedent for duplicating a small union across that
+ * boundary (`BrainEntityRole` vs `EntityRole`). This one earns a pin the others
+ * do not: the importer NARROWS a bundle value to `SlotPosition` through
+ * {@link isSlotPosition}, so a member added on one side and not the other turns
+ * a compile error into a runtime INSERT that trips
+ * `ck_brain_vocabulary_edge_slot_position` and aborts the whole import — the
+ * exact failure that validation block exists to prevent.
+ *
+ * The `satisfies` above proves every internal member is legal on the wire; this
+ * proves the reverse, so neither side can drift alone. Shaped on
+ * `_BrainFactStatusesCovered` in `packages/schemas/src/brain.ts`.
+ */
+type _SlotPositionsCoverTheWire = [
+  Exclude<ExportedVocabularySlotPosition, SlotPosition>,
+] extends [never]
+  ? true
+  : never;
+const _slotPositionsCoverTheWire: _SlotPositionsCoverTheWire = true;
+void _slotPositionsCoverTheWire;
+
+/**
+ * Narrow an untrusted value to a {@link SlotPosition}.
+ *
+ * Shaped on `isEpisodeSource` (`lib/brain/sources.ts`), and it exists for the
+ * same reason: the region importer reads positions off a bundle, and
+ * `(SLOT_POSITIONS as readonly string[]).includes(v as string)` is a cast that
+ * lies about `unknown` and happens to behave. A guard narrows instead, which is
+ * what lets the INSERT site drop its own `as SlotPosition`.
+ */
+export function isSlotPosition(value: unknown): value is SlotPosition {
+  return typeof value === "string" && (SLOT_POSITIONS as readonly string[]).includes(value);
+}
 
 /**
  * The workspace's vocabulary — one {@link AliasLookup} per claim slot.
@@ -322,17 +379,22 @@ export const identityVocabulary: ClaimVocabulary = {
  * to look up and calling out with `""` would invite a vocabulary that answers
  * it. Or the vocabulary's own answer norms away, per the paragraph above.
  *
- * ## `alias` is REQUIRED, and that is the point
+ * ## `alias` is REQUIRED, and since #5022 the danger it names is live
  *
- * It would default to {@link identityAlias} perfectly well today, and a default
- * is precisely what would make the vocabulary slice (#5016) dangerous: a call
- * site that forgot to pass the workspace's vocabulary would keep compiling and
- * key its rows under a DIFFERENT identity function than the ingest path — an
- * under-match spread corpus-wide, invisible at rest, and unfixable afterwards
- * without a re-key. Spelled explicitly, every such site is `grep identityAlias`
- * and every new one is a compile error. `reconcile.ts` threads the workspace's
- * lookup through `ReconcileRequest.alias`; everything else names the day-one
- * vocabulary out loud, which is the choice being made and should read like one.
+ * It would default to {@link identityAlias} perfectly well, and a default is
+ * precisely what makes that dangerous now that the vocabulary is a real table
+ * (#5022): a call site that forgot to pass the workspace's vocabulary would keep
+ * compiling and key its rows under a DIFFERENT identity function than the ingest
+ * path — an under-match spread corpus-wide, invisible at rest, and unfixable
+ * afterwards without a re-key.
+ *
+ * Spelled explicitly, every such site is `grep identityVocabulary` and every new
+ * one is a compile error. `reconcile.ts` threads the workspace's vocabulary
+ * through the REQUIRED `ReconcileRequest.vocabulary` — three lookups, one per
+ * slot, since #5022 made the vocabulary position-scoped — and `correction.ts`
+ * through the required `CorrectionDeps.vocabulary`. Everything else names
+ * {@link identityVocabulary} out loud, which is the choice being made and should
+ * read like one.
  *
  * Note what this does NOT do: collapse a null key into a sentinel so the
  * eventual `SET NOT NULL` can land. See {@link identityKey}'s ⚠️ — the

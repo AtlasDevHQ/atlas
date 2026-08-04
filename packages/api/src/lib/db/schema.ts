@@ -3658,9 +3658,11 @@ export const brainVocabularyEdge = pgTable(
     slotPosition: text("slot_position").notNull(),
     // LEXICAL NORMS, never surfaces: `alias` composes over `lexicalNorm`, so
     // one entry covers every casing and separator variant of both sides.
-    // `approveAliasEdge` re-norms both endpoints before writing; the CHECKs
-    // are what stop a hand-written INSERT landing `Priced At` as a target,
-    // which would key nothing to anything, corpus-wide and silently.
+    //
+    // Normal form is NOT a CHECK — those cover the position enum, non-emptiness
+    // and the 1-cycle only, and a SQL version would be a third implementation of
+    // `lexicalNorm`. Both writers carry it instead: `approveAliasEdge` re-norms,
+    // and the region importer refuses a non-norm row. See migration 0189.
     fromNorm: text("from_norm").notNull(),
     toNorm: text("to_norm").notNull(),
     // NULL for an auto-approved warehouse-derived edge, which has no human
@@ -3731,9 +3733,10 @@ export const brainVocabularyTarget = pgTable(
     //
     // RESTRICT, deliberately NOT cascade — the tidy-looking answer is the wrong
     // one. Cascade would delete `b`'s row when `b → c` is dropped and leave
-    // `a` pointing at a `c` nobody approves any more. RESTRICT forces the
-    // removal path to clear the position's closure BEFORE dropping the edge and
-    // rebuild it after, which is the recomputation reversibility is made of.
+    // `a` pointing at a `c` nobody approves any more. What RESTRICT buys is
+    // narrower than "forces a rebuild": it stops an edge going while its own
+    // closure row stands, so a caller cannot skip `recomputeEffectiveTargets`
+    // silently. See migration 0189.
     foreignKey({
       name: "fk_brain_vocabulary_target_edge",
       columns: [t.workspaceId, t.slotPosition, t.norm],

@@ -212,7 +212,7 @@ import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
 // ONE place `alias(lexicalNorm(surface))` is assembled, and a second assembly
 // site is how the write side and a future re-key start disagreeing about what a
 // claim's slot IS.
-import { identityVocabulary, slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
 import type {
   BrainFactProvenance,
   EntityRole,
@@ -366,14 +366,23 @@ export interface ReconcileRequest {
   readonly resolveEntity?: EntityResolver;
   /**
    * The workspace's curated identity vocabulary — one lookup over lexical norms
-   * per claim slot (ADR-0037 §6, #5022's `lib/brain/vocabulary.ts`). Defaults to
-   * `identityVocabulary`, the answer for a workspace that has approved nothing.
+   * per claim slot (ADR-0037 §6, #5022's `lib/brain/vocabulary.ts`).
    *
    * Threaded through the REQUEST rather than left as `slotKey`'s default
    * parameter for `resolveEntity`'s reason exactly: a real vocabulary is
    * per-workspace and DB-backed, so the caller loads it once with
    * `loadClaimVocabulary` — above the per-candidate loop, which is what lets the
    * seam stay synchronous.
+   *
+   * REQUIRED, unlike `resolveEntity` beside it, and for `slotKey`'s stated
+   * reason rather than by analogy (`identity.ts`, "`alias` is REQUIRED"). This
+   * is the seam where a claim's keys are MATERIALIZED, so a caller that silently
+   * defaulted would key its rows under a different identity function than every
+   * other row in the workspace — an under-match spread corpus-wide, invisible at
+   * rest, unfixable without a re-key. A failed entity resolution flags one
+   * candidate provisional; a forgotten vocabulary is silent and corpus-wide.
+   * Every call site therefore names `identityVocabulary` out loud, and #5023
+   * cannot wire the loader into ingest and miss one.
    *
    * ⚠️ POSITION-SCOPED, and #5020 shipped this as a single bare `AliasLookup`,
    * which was wrong in a way worth recording rather than quietly fixing. One
@@ -383,7 +392,7 @@ export interface ReconcileRequest {
    * the direction nothing can undo. That is why #5022 edited this field despite
    * this comment previously promising it would not have to.
    */
-  readonly vocabulary?: ClaimVocabulary;
+  readonly vocabulary: ClaimVocabulary;
 }
 
 export interface ReconcileDeps {
@@ -680,7 +689,7 @@ export async function reconcileFacts(
 ): Promise<ReconcileReport> {
   const { episode, candidates, producer } = request;
   const resolveEntity = request.resolveEntity ?? passthroughEntityResolver;
-  const vocabulary = request.vocabulary ?? identityVocabulary;
+  const { vocabulary } = request;
   const now = deps.now ?? (() => new Date());
 
   const blocked: Record<ReconcileBlockReason, number> = { ...NO_BLOCKS };

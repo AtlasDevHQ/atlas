@@ -355,6 +355,9 @@ function run(
       candidates: [candidate()],
       producer: "extraction:v1",
       extractedAt: new Date("2026-06-21T10:00:00.000Z"),
+      // Defaulted in the HELPER, not in the production type — the field is
+      // required there on purpose (`identity.ts`, "`alias` is REQUIRED").
+      vocabulary: identityVocabulary,
       ...request,
     },
     { withTransaction: store.runner, now: () => new Date("2026-06-21T10:00:01.000Z") },
@@ -831,6 +834,7 @@ describe("the draft candidate", () => {
     await expect(
       reconcileFacts(
         {
+          vocabulary: identityVocabulary,
           episode: episode(),
           candidates: [candidate()],
           producer: "extraction:v1",
@@ -941,15 +945,46 @@ describe("the draft candidate", () => {
 
     await run(store, {
       vocabulary,
-      candidates: [candidate({ subject: "Owner", predicate: "owner", object: "owner" })],
+      candidates: [candidate({ subject: "Owner", predicate: "owner", object: "OWNER" })],
     });
 
     const keys = store.keyBindsFor("insertFact")[0];
     expect(keys).toMatchObject({ predicate: "account owner" });
     // The prohibition. Both of these are `"account owner"` under a
-    // position-agnostic vocabulary, and the surfaces are spelled off normal form
-    // on the subject side so a broken fold cannot be what makes them pass.
+    // position-agnostic vocabulary, and BOTH surfaces are spelled off normal
+    // form so a broken fold cannot be what makes either pass — an earlier
+    // version of this fixture had the object side already normalized, which is
+    // the repo's own "both sides off normal form" hazard.
     expect(keys).toMatchObject({ subject: "owner", object: "owner" });
+  });
+
+  test("all three slots read their OWN position's lookup", async () => {
+    // The test above proves predicate ≠ the other two, but leaves subject and
+    // object indistinguishable (both the empty function) — so swapping
+    // `vocabulary.object` for `vocabulary.subject` at the call site survives it.
+    // Three distinct non-identity lookups over the same norm is what separates
+    // all three, and it is the call-site twin of `vocabulary-pg.test.ts`'s
+    // "three independent forests" control.
+    const store = new FakeBrainStore();
+    const only =
+      (target: string): ((norm: string) => string) =>
+      (norm) =>
+        norm === "owner" ? target : norm;
+
+    await run(store, {
+      vocabulary: {
+        subject: only("owner (person)"),
+        predicate: only("account owner"),
+        object: only("owner (value)"),
+      },
+      candidates: [candidate({ subject: "Owner", predicate: "owner", object: "OWNER" })],
+    });
+
+    expect(store.keyBindsFor("insertFact")[0]).toEqual({
+      subject: "owner (person)",
+      predicate: "account owner",
+      object: "owner (value)",
+    });
   });
 
   test("a throwing vocabulary aborts the episode — it never degrades to the un-aliased norm", async () => {

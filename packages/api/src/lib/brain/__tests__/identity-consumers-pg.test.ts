@@ -124,6 +124,7 @@ import {
   type ClaimPair,
   type SlotRelation,
 } from "./identity-corpus";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -247,6 +248,7 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
   async function land(workspaceId: string, sourceId: string, claim: Claim) {
     const episode = await seedEpisode(workspaceId, sourceId);
     const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
       episode,
       candidates: [{ ...claim, predicateCardinality: "single" }],
       producer: "identity-corpus",

@@ -153,6 +153,7 @@ import type {
   BrainFactReviewStatus,
   BrainSearchResult,
 } from "@useatlas/types";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -1211,7 +1212,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       );
 
       const correction = await correctFact(
-        { ctx: adminCtx, factId: winner.id, verb: "retract", reason: "wrong side of the rename" },
+        { vocabulary: identityVocabulary, ctx: adminCtx, factId: winner.id, verb: "retract", reason: "wrong side of the rename" },
         { now: CORRECTION_CLOCK },
       );
       if (correction.kind !== "corrected") {

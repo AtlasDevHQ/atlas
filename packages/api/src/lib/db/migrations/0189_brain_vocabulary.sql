@@ -86,9 +86,16 @@ CREATE TABLE IF NOT EXISTS brain_vocabulary_edge (
   -- The norm being aliased AWAY (the child) and the norm it was approved onto
   -- (the parent). Both are LEXICAL NORMS, not surfaces: `alias` composes over
   -- `lexicalNorm`, so one entry covers every casing and separator variant of
-  -- both sides. `lib/brain/vocabulary.ts` re-norms both endpoints before
-  -- writing; the CHECKs below are what stops a hand-written INSERT from
-  -- landing `Priced At` as a target, which would key nothing to anything.
+  -- both sides.
+  --
+  -- NORMAL FORM IS NOT ENFORCED HERE, and an earlier version of this comment
+  -- claimed it was. The CHECKs below test the position enum, non-emptiness and
+  -- the 1-cycle — none of them rejects `Priced At`, and a faithful SQL check
+  -- would be a third implementation of `lexicalNorm` (0187 already carries the
+  -- second). The two write paths carry it instead: `approveAliasEdge` re-norms
+  -- both endpoints, and the region importer REFUSES a non-norm row rather than
+  -- rewriting another region's decision (`admin-migrate.ts`'s validation). A
+  -- stored `Priced At` on the `from` side is an alias that can never match.
   from_norm TEXT NOT NULL,
   to_norm TEXT NOT NULL,
   -- The approver. NULLABLE because an auto-approved warehouse-derived edge has
@@ -99,17 +106,20 @@ CREATE TABLE IF NOT EXISTS brain_vocabulary_edge (
   approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- AT-MOST-ONE-PARENT, structurally. `from_norm` in the key is what makes
   -- `alias` a function: a second approval for the same norm raises a unique
-  -- violation instead of silently retargeting a human's prior decision. Note
-  -- that ADR-0037 §6's "no cycles + targets unaliased" does NOT by itself imply
-  -- this, which is why it is spelled here AND checked explicitly in
-  -- `approveAliasEdge` — the check is what turns the violation into a typed
+  -- violation instead of silently retargeting a human's prior decision.
+  --
+  -- ADR-0037 §6 states at-most-one-parent by name in its own table. What did NOT
+  -- imply it is T3's "no cycles + targets unaliased" framing — which §6 RETRACTS
+  -- and lists under "Corrections to the record", so do not read it as the ADR's
+  -- position. That is why the property is spelled structurally here AND checked
+  -- explicitly in `approveAliasEdge`: the check turns the violation into a typed
   -- refusal naming the existing target, and the PK is what holds under two
   -- concurrent approvers.
   --
-  -- It doubles as the closure walk's access path: the recompute joins
-  -- `e.from_norm = walk.target` under a fixed workspace and position, which is
-  -- this key's exact prefix. Zero net new indexes on this table, the same
-  -- result ADR-0037 §1 got for the slot index.
+  -- It doubles as the closure walk's access path: the recompute's anchor scopes
+  -- on this key's leading two columns and its recursive term joins on all three.
+  -- Zero net new indexes on this table, the same result ADR-0037 §1 got for the
+  -- slot index.
   PRIMARY KEY (workspace_id, slot_position, from_norm),
   CONSTRAINT ck_brain_vocabulary_edge_slot_position
     CHECK (slot_position IN ('subject', 'predicate', 'object')),
@@ -158,10 +168,15 @@ CREATE TABLE IF NOT EXISTS brain_vocabulary_target (
   -- be "simplified" later. Cascade looks like the tidy answer and is a WRONG
   -- one: with `a → b` and `b → c`, deleting `b → c` must move `a`'s row from
   -- `c` back to `b`, and cascade would delete `b`'s row and leave `a` pointing
-  -- at a `c` nobody approves any more. RESTRICT makes the removal path clear
-  -- the position's closure BEFORE dropping the edge and rebuild it after — the
-  -- recomputation ADR-0037 §6 says reversibility is made of, enforced by the
-  -- database rather than remembered by the caller.
+  -- at a `c` nobody approves any more — a wrong closure, committed, with nothing
+  -- to surface it.
+  --
+  -- What RESTRICT buys is precise, and less than an earlier version of this
+  -- comment claimed: it stops an edge being dropped while ITS OWN closure row
+  -- stands. It does not by itself force a full rebuild — a caller could delete
+  -- one closure row plus its edge and strand the rest. `recomputeEffectiveTargets`
+  -- clears the whole position, so the correct ordering falls out of calling it;
+  -- the FK is what stops a caller SKIPPING it silently.
   CONSTRAINT fk_brain_vocabulary_target_edge
     FOREIGN KEY (workspace_id, slot_position, norm)
     REFERENCES brain_vocabulary_edge (workspace_id, slot_position, from_norm)

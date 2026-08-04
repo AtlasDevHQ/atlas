@@ -126,6 +126,7 @@ import {
   type ReconcileEpisodeRef,
   type ReconcileReport,
 } from "@atlas/api/lib/brain/reconcile";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 const log = createLogger("brain.extract");
 
@@ -1010,6 +1011,12 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
     candidates,
     producer: BRAIN_EXTRACTION_PRODUCER,
     extractedAt,
+    // The extraction pipeline is THE ingest path, so this is the call site
+    // #5023 must change to `await loadClaimVocabulary(pool, episode.workspaceId)`.
+    // Required rather than defaulted precisely so that change cannot be
+    // forgotten here while landing everywhere else (`identity.ts`, "`alias` is
+    // REQUIRED").
+    vocabulary: identityVocabulary,
   });
 
   // The stage refused the whole episode despite our pre-flight passing. It

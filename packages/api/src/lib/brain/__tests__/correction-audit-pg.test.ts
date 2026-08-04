@@ -43,7 +43,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
-import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { identityAlias, identityVocabulary, slotKey } from "@atlas/api/lib/brain/identity";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { CORRECTION_REFUSAL_REASONS, correctFact } from "@atlas/api/lib/brain/correction";
@@ -255,7 +255,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
 
       const outcome = await asRequest("req-retract-1", () =>
         correctFact(
-          { ctx: reviewer(), factId, verb: "retract", reason: "wrong on arrival" },
+          { vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "retract", reason: "wrong on arrival" },
           { withTransaction: poolTx },
         ),
       );
@@ -305,6 +305,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
       const outcome = await asRequest("req-supersede-1", () =>
         correctFact(
           {
+            vocabulary: identityVocabulary,
             ctx: reviewer(),
             factId,
             verb: "supersede",
@@ -363,7 +364,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
       // `brain_facts.id`. The emitter uses `result.factId` for exactly this.
       const outcome = await asRequest("req-pin-1", () =>
         correctFact(
-          { ctx: reviewer(), factId: factId.toUpperCase(), verb: "pin" },
+          { vocabulary: identityVocabulary, ctx: reviewer(), factId: factId.toUpperCase(), verb: "pin" },
           { withTransaction: poolTx },
         ),
       );
@@ -411,7 +412,7 @@ describeIfPg("correction audit row (real Postgres)", () => {
       );
 
       const outcome = await asRequest("req-refused-1", () =>
-        correctFact({ ctx: reviewer(), factId, verb: "pin" }, { withTransaction: poolTx }),
+        correctFact({ vocabulary: identityVocabulary, ctx: reviewer(), factId, verb: "pin" }, { withTransaction: poolTx }),
       );
       expect(outcome).toMatchObject({
         kind: "refused",

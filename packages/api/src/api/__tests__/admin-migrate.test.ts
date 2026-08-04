@@ -260,6 +260,7 @@ describe("bundle round-trip shape", () => {
       brainFacts: { imported: 9, skipped: 3 },
       brainEdges: { imported: 4, skipped: 0 },
       factAudienceMembers: { imported: 2, skipped: 5 },
+      brainVocabularyEdges: { imported: 1, skipped: 4 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;
@@ -1218,6 +1219,179 @@ describe("validateBundle — company brain (#4767)", () => {
     for (const good of [undefined, null, [], ["org"], ["audience:x", "role:admin"]]) {
       expect(validateBundle(widenedBundle(good)).ok).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The curated identity vocabulary (#5022, ADR-0037 §6/§8)
+// ---------------------------------------------------------------------------
+//
+// This is the UNTRUSTED-INPUT boundary for a cross-region POST, and every arm
+// below existed with no test at all: deleting the whole validation block left
+// this file green. The stakes are in the block's own comment — an unrecognized
+// `slotPosition` fails the table's CHECK mid-transaction and rolls back an
+// import that has already written every earlier pillar.
+//
+// The re-norm arms are the ones that are not merely defensive. The importer is
+// the SECOND writer into `brain_vocabulary_edge` and the only one that cannot
+// re-norm (ADR-0037 §8 carries a row-copy path verbatim rather than rewriting
+// another region's decision), so refusal is the only remaining guard: nothing
+// in the schema rejects `Priced At`, and it would import "successfully" as an
+// alias that can never match anything.
+
+describe("validateBundle — the vocabulary (#5022)", () => {
+  const vocabularyBundle = (edges: unknown[]): unknown => ({
+    ...validV2Bundle(),
+    brainVocabularyEdges: edges,
+  });
+
+  const validEdge = () => ({
+    slotPosition: "predicate",
+    fromNorm: "is priced at",
+    toNorm: "priced at",
+    approvedBy: "user-1",
+    approvedAt: "2026-06-01T00:00:00Z",
+  });
+
+  it("accepts a well-formed vocabulary section (the control)", () => {
+    // Without this, every refusal below is satisfied by a validator that
+    // rejects the section unconditionally.
+    const result = validateBundle(
+      vocabularyBundle([validEdge(), { ...validEdge(), fromNorm: "priced at", toNorm: "unit price", approvedBy: null }]),
+    );
+    expect(result.ok).toBe(true);
+    // …and the section SURVIVED. `ok: true` alone would pass a validator that
+    // accepted the bundle while silently dropping the vocabulary, which is the
+    // exact failure the route's zod declaration exists to prevent.
+    if (result.ok) expect(result.bundle.brainVocabularyEdges).toHaveLength(2);
+  });
+
+  it("refuses a non-object element", () => {
+    for (const bad of [null, 42, "edge", []]) {
+      const result = validateBundle(vocabularyBundle([bad]));
+      expect(result.ok, `element ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainVocabularyEdges[0]");
+    }
+  });
+
+  it("refuses a section that is not an array", () => {
+    const result = validateBundle({ ...validV2Bundle(), brainVocabularyEdges: "nope" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("brainVocabularyEdges");
+  });
+
+  it("refuses an unrecognized slot position, naming the row", () => {
+    // The arm that matters most: this value is part of the primary key, and
+    // without the check it reaches `ck_brain_vocabulary_edge_slot_position`
+    // inside the import transaction and takes the whole migration with it.
+    for (const bad of ["Predicate", "verb", "", 42, null, undefined]) {
+      const result = validateBundle(vocabularyBundle([{ ...validEdge(), slotPosition: bad }]));
+      expect(result.ok, `slotPosition ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainVocabularyEdges[0].slotPosition");
+    }
+  });
+
+  it("refuses a non-string or missing norm", () => {
+    for (const bad of [42, null, undefined, {}]) {
+      expect(validateBundle(vocabularyBundle([{ ...validEdge(), fromNorm: bad }])).ok).toBe(false);
+      expect(validateBundle(vocabularyBundle([{ ...validEdge(), toNorm: bad }])).ok).toBe(false);
+    }
+  });
+
+  it("refuses an empty norm on either side", () => {
+    // The `DEFAULT ''` hazard migration 0187 rejects, reached through the
+    // bundle: a stored empty key joins every other degenerate row.
+    expect(validateBundle(vocabularyBundle([{ ...validEdge(), fromNorm: "" }])).ok).toBe(false);
+    expect(validateBundle(vocabularyBundle([{ ...validEdge(), toNorm: "" }])).ok).toBe(false);
+  });
+
+  it("refuses a 1-cycle", () => {
+    const identical = validateBundle(
+      vocabularyBundle([{ ...validEdge(), fromNorm: "price", toNorm: "price" }]),
+    );
+    expect(identical.ok).toBe(false);
+
+    // The post-NORMALIZATION 1-cycle (`Price` → `price`) is refused too, but by
+    // the norm check below rather than by this arm — and the error says so.
+    // Asserting only `ok === false` here would hide which guard is load-bearing,
+    // and the explicit post-norm arm that used to exist was unreachable for
+    // exactly this reason.
+    const afterNorm = validateBundle(
+      vocabularyBundle([{ ...validEdge(), fromNorm: "Price", toNorm: "price" }]),
+    );
+    expect(afterNorm.ok).toBe(false);
+    if (!afterNorm.ok) expect(afterNorm.error).toContain("is not a lexical norm");
+  });
+
+  it("refuses an endpoint that is not already a lexical norm", () => {
+    // `Priced At` on the `from` side is the silent one: it satisfies every
+    // CHECK, imports as `imported`, and is an alias that can never fire,
+    // because the lookup is keyed on the norm and would never match it.
+    for (const raw of ["Priced At", "is_priced  at", " priced at "]) {
+      const result = validateBundle(vocabularyBundle([{ ...validEdge(), fromNorm: raw }]));
+      expect(result.ok, `fromNorm ${JSON.stringify(raw)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("is not a lexical norm");
+    }
+    const target = validateBundle(vocabularyBundle([{ ...validEdge(), toNorm: "Priced At" }]));
+    expect(target.ok).toBe(false);
+    if (!target.ok) expect(target.error).toContain("toNorm");
+  });
+
+  it("refuses a non-string approver, and an OMITTED one, but accepts null", () => {
+    expect(validateBundle(vocabularyBundle([{ ...validEdge(), approvedBy: 42 }])).ok).toBe(false);
+    // Omitted is refused rather than read as `null`. Optional AND nullable is
+    // three input states for two meanings, and the omitted one would silently
+    // record an AUTO-APPROVAL on the column an audit reads first — the same
+    // reasoning that made `AliasEdgeInput.approvedBy` required-and-nullable,
+    // applied at the boundary where the untrusted input actually arrives.
+    const { approvedBy: _omitted, ...withoutApprover } = validEdge();
+    const omitted = validateBundle(vocabularyBundle([withoutApprover]));
+    expect(omitted.ok).toBe(false);
+    if (!omitted.ok) expect(omitted.error).toContain("approvedBy");
+    // `null` is the legitimate auto-approved edge and must stay accepted.
+    expect(validateBundle(vocabularyBundle([{ ...validEdge(), approvedBy: null }])).ok).toBe(true);
+  });
+
+  it("refuses a missing or malformed approval timestamp", () => {
+    for (const bad of [undefined, "not-a-date", 42]) {
+      const result = validateBundle(vocabularyBundle([{ ...validEdge(), approvedAt: bad }]));
+      expect(result.ok, `approvedAt ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("approvedAt");
+    }
+  });
+
+  it("rebuilds the closure even when the driver reports no rowCount", async () => {
+    // The touched-set must not be gated on `rowCount`. That value is the one
+    // whose ABSENCE means "did this land?" is unknowable, so gating the rebuild
+    // on it commits an edge with no closure row — precisely the half-rebuilt
+    // state `loadClaimVocabulary` refuses to load, reached through the importer.
+    //
+    // A real-Postgres test cannot see this: `pg` always reports `rowCount`, so
+    // the gate is invisible there. A client that omits it is the only executor
+    // that separates the two implementations.
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const client: InternalPoolClient = {
+      query: async (sql: string, params?: unknown[]) => {
+        calls.push({ sql, params: params ?? [] });
+        // The one statement this mock must answer honestly: the vocabulary
+        // primitives refuse to run outside a transaction, and the probe is how
+        // they tell. Everything else returns no rows AND no `rowCount`.
+        if (sql.includes("FROM pg_locks")) return { rows: [{ n: 1 }] };
+        return { rows: [] };
+      },
+      release: () => {},
+    };
+
+    await importBundle(client, vocabularyBundle([validEdge()]) as never, "org-test");
+
+    expect(calls.some((c) => c.sql.includes("INSERT INTO brain_vocabulary_edge"))).toBe(true);
+    expect(calls.some((c) => c.sql.includes("INSERT INTO brain_vocabulary_target"))).toBe(true);
+  });
+
+  it("accepts a bundle with no vocabulary section at all", () => {
+    // A pre-#5022 producer. The section is optional on the wire for the same
+    // reason every other v2 section is.
+    expect(validateBundle(validV2Bundle()).ok).toBe(true);
   });
 });
 

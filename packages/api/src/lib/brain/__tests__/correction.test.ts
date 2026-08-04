@@ -58,7 +58,12 @@ import {
   INSERT_SUPERSEDES_EDGES_SQL,
   SUPERSEDE_STAMP_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
-import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import {
+  identityAlias,
+  identityVocabulary,
+  slotKey,
+  type ClaimVocabulary,
+} from "@atlas/api/lib/brain/identity";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 
@@ -453,9 +458,22 @@ class FakeCorrectionStore {
   }
 }
 
-function run(store: FakeCorrectionStore, request: Omit<CorrectionRequest, "ctx"> & { ctx?: BrainPrincipalContext }) {
+/**
+ * `vocabulary` is defaulted here rather than at every call site, and EXPOSED so
+ * the threading tests below can override it. The production field is required
+ * on purpose (`identity.ts`, "`alias` is REQUIRED"); a test helper is exactly
+ * where a default belongs, since forgetting it here costs nothing and
+ * forgetting it in production keys a corpus under the wrong identity function.
+ */
+function run(
+  store: FakeCorrectionStore,
+  request: Omit<CorrectionRequest, "ctx" | "vocabulary"> & {
+    ctx?: BrainPrincipalContext;
+    vocabulary?: ClaimVocabulary;
+  },
+) {
   return correctFact(
-    { ctx: admin(), ...request },
+    { ctx: admin(), vocabulary: identityVocabulary, ...request },
     { withTransaction: store.runner, now: () => NOW, newCorrectionId: () => "test-uuid" },
   );
 }
@@ -1061,6 +1079,85 @@ describe("supersede", () => {
       reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
     });
     expect(store.episodes).toHaveLength(0);
+  });
+
+  test("the workspace's OBJECT vocabulary decides what 'restates' means (#5022)", async () => {
+    // The threading through corrections was entirely unfalsifiable before this:
+    // no test constructed a non-identity vocabulary, so both
+    // `slotKey(…, vocabulary.object)` calls could be repointed at
+    // `vocabulary.predicate` — or the whole vocabulary swapped for the empty one
+    // on the way into `reconcileFacts` — with the suite still green.
+    //
+    // The failure it prohibits is the destructive direction: a supersession
+    // PERMITTED that the corpus considers identical closes a published belief
+    // and replaces it with a successor in the very same slot.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Ana Torres" },
+      vocabulary: {
+        ...identityVocabulary,
+        object: (norm) => (norm === "ana torres" ? "ana" : norm),
+      },
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+    });
+    expect(store.episodes).toHaveLength(0);
+  });
+
+  test("the same rule at the PREDICATE position does not reach the object guard (#5022)", async () => {
+    // The control, and the half that catches a `vocabulary.object` →
+    // `vocabulary.predicate` repoint: the identical rule hung on the wrong
+    // position must leave `Ana Torres` a genuinely different object, so the
+    // supersession is ADMITTED. Without it, a guard that refused everything
+    // would satisfy the prohibition above.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Ana Torres" },
+      vocabulary: {
+        ...identityVocabulary,
+        predicate: (norm) => (norm === "ana torres" ? "ana" : norm),
+      },
+    });
+
+    expect(outcome.kind).toBe("corrected");
+  });
+
+  test("the replacement claim lands keyed under the workspace's vocabulary (#5022)", async () => {
+    // The OTHER half of the threading, and the one the guard tests cannot see:
+    // `applySupersede` passes the vocabulary through to `reconcileFacts`, and
+    // replacing that with `identityVocabulary` leaves every guard assertion
+    // green while the successor lands in a DIFFERENT slot from every other row
+    // in the workspace — unreachable from the slot future collisions join on.
+    //
+    // The key asserted here is a value the reconcile INSERT bound, not one the
+    // test wrote: the fake records `slot` off the statement's binds.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Ana Torres" },
+      vocabulary: {
+        ...identityVocabulary,
+        object: (norm) => (norm === "ana torres" ? "ana torres (crm)" : norm),
+      },
+    });
+
+    expect(outcome.kind).toBe("corrected");
+    const replacement = store.facts.find((f) => f.object === "Ana Torres");
+    expect(replacement?.slot.object).toBe("ana torres (crm)");
   });
 
   test("refuses a replacement that restates the object in a DIFFERENT SPELLING (#5020)", async () => {

@@ -35,6 +35,8 @@ import {
   type ExportedBrainFact,
   type ExportedBrainEdge,
   type ExportedFactAudienceMember,
+  type ExportedBrainVocabularyEdge,
+  type ExportedVocabularySlotPosition,
 } from "@useatlas/types";
 
 const log = createLogger("region-export");
@@ -102,8 +104,9 @@ function scopeClause(columnRef: string, orgScope: string | null): string {
  * link graph + review status), scheduled-task definitions (next run
  * recomputed at import), durable agent session memory, and the company brain
  * (#4767 — episodes with their facts nested, the typed edge graph, audience
- * membership). The returned bundle is ready to POST to the target region's
- * import endpoint.
+ * membership, and since #5022 the curated identity vocabulary's approved alias
+ * edges — the derived closure is recomputed at the destination, not carried).
+ * The returned bundle is ready to POST to the target region's import endpoint.
  *
  * @param orgScope - Org id to export, or `null` to export rows with
  *   `org_id IS NULL` (no-auth self-hosted instances, CLI path).
@@ -136,6 +139,7 @@ export async function exportWorkspaceBundle(
     brainFactResult,
     brainEdgeResult,
     factAudienceResult,
+    vocabularyEdgeResult,
   ] = await Promise.all([
     // --- 1. Conversations + Messages (2 queries, no N+1) ---
     pool.query(
@@ -320,6 +324,41 @@ export async function exportWorkspaceBundle(
       `SELECT audience_id, user_id, source, created_at
        FROM fact_audience_member WHERE ${scopeClause("workspace_id", orgScope)}
        ORDER BY audience_id, user_id ASC`,
+      params,
+    ),
+    // --- 10. The curated identity vocabulary (#5022, ADR-0037 §6/§8) ---
+    // The approved alias edges are the human's decisions and the reason every
+    // exported fact's identity key reads the way it does — `alias` is the outer
+    // layer of `alias(lexicalNorm(surface))`, and ADR-0037 §8 carries those keys
+    // VERBATIM. A workspace that arrived without its vocabulary would hold keys
+    // the target region can neither explain nor undo, and 'stays' would DELETE
+    // them at source after the grace period (#4458): the decisions destroyed and
+    // the keys stranded in one move.
+    //
+    // No ACL narrowing on the way out, unlike `brain_facts.pre_widening_visible_to`
+    // above, and that is derived rather than skipped: neither table has a grant
+    // column at all. ADR-0037 §6 makes the vocabulary the one piece of brain
+    // state with no ACL, permanently — all three identity consumers are already
+    // workspace-scoped with no grant arm, and grant-scoping would need
+    // `alias(norm, reader)` at a seam materialized by a fiber that has no reader.
+    //
+    // Not a key projection. `keys-not-on-the-wire.test.ts` forbids any read
+    // surface selecting `subject_key`/`predicate_key`/`object_key`; these are
+    // lexical NORMS in the table §8 exports by name.
+    //
+    // The EDGES only. The derived closure table is classified 'stays' and is
+    // deliberately absent: §8 has the import union the approved edges and
+    // RECOMPUTE the closure, and a source closure restored into a destination
+    // that already holds a vocabulary would be a closure of neither. The
+    // reverse-drift arm of `bundle-scope.test.ts` is what keeps a query for it
+    // from being added here unnoticed: it greps this file for `FROM <table>` and
+    // `JOIN <table>`, so adding a query without reclassifying the table fails
+    // the suite. (A bare mention in prose is fine — an earlier version of this
+    // comment imposed a naming taboo the tripwire does not actually enforce.)
+    pool.query(
+      `SELECT slot_position, from_norm, to_norm, approved_by, approved_at
+       FROM brain_vocabulary_edge WHERE ${scopeClause("workspace_id", orgScope)}
+       ORDER BY slot_position, from_norm ASC`,
       params,
     ),
   ]);
@@ -612,6 +651,19 @@ export async function exportWorkspaceBundle(
     createdAt: toISO(a.created_at),
   }));
 
+  const brainVocabularyEdges: ExportedBrainVocabularyEdge[] = vocabularyEdgeResult.rows.map((e) => ({
+    // Cast rather than narrowed, unlike the IMPORT side — and the asymmetry is
+    // the point. This reads our own table, where
+    // `ck_brain_vocabulary_edge_slot_position` is the guarantee; the import
+    // reads a foreign region's bundle, where there is none, which is why
+    // `isSlotPosition` lives there.
+    slotPosition: e.slot_position as ExportedVocabularySlotPosition,
+    fromNorm: e.from_norm as string,
+    toNorm: e.to_norm as string,
+    approvedBy: (e.approved_by as string | null) ?? null,
+    approvedAt: toISO(e.approved_at),
+  }));
+
   // --- Build bundle ---
   const bundle: ExportBundle = {
     manifest: {
@@ -638,6 +690,7 @@ export async function exportWorkspaceBundle(
         brainFacts: totalBrainFacts,
         brainEdges: brainEdges.length,
         factAudienceMembers: factAudienceMembers.length,
+        brainVocabularyEdges: brainVocabularyEdges.length,
       },
     },
     conversations,
@@ -651,6 +704,7 @@ export async function exportWorkspaceBundle(
     brainEpisodes,
     brainEdges,
     factAudienceMembers,
+    brainVocabularyEdges,
   };
 
   log.info(

@@ -54,6 +54,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test, mock } from "bun:test";
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 // --- logger: every VALUE export stubbed (mock-all-exports) -----------------
 type LogCall = { level: "error" | "warn" | "info" | "debug"; payload: unknown; message: string };
@@ -313,7 +314,7 @@ beforeEach(() => {
 describe("the correction audit row", () => {
   test("retract emits exactly one brain_fact.retract row, from the machinery", async () => {
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "retract", requestId: "req-1" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-1" },
       fakeTransaction({ dependents: ["dep-1"] }),
     );
 
@@ -354,7 +355,7 @@ describe("the correction audit row", () => {
     for (const verb of ["pin", "re-authority"] as const) {
       committed.length = 0;
       const outcome = await correctFact(
-        { ctx: admin, factId: FACT, verb, requestId: "req-2" },
+        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb, requestId: "req-2" },
         fakeTransaction(),
       );
       expect(outcome.kind).toBe("corrected");
@@ -373,7 +374,7 @@ describe("the correction audit row", () => {
 
   test("a retract with no dependents omits flaggedForReReview rather than logging an empty list", async () => {
     await correctFact(
-      { ctx: admin, factId: FACT, verb: "retract", requestId: "req-3" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-3" },
       fakeTransaction(),
     );
     expect(committed).toHaveLength(1);
@@ -392,6 +393,7 @@ describe("the correction audit row", () => {
     // that each distinct path is WALKED rather than reasoned about.
     const outcome = await correctFact(
       {
+        vocabulary: identityVocabulary,
         ctx: { ...admin, userId: "member-1", role: "member" },
         factId: FACT,
         verb: "pin",
@@ -402,7 +404,7 @@ describe("the correction audit row", () => {
     expect(outcome.kind).toBe("refused");
 
     const rolledBack = await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4b" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4b" },
       fakeTransaction({ warehouseDerived: true }),
     );
     expect(rolledBack.kind).toBe("refused");
@@ -412,7 +414,7 @@ describe("the correction audit row", () => {
     // `info`; the assertions below filter on `warn` for that reason.)
     logCalls.length = 0;
     const quarantined = await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4c" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4c" },
       fakeTransaction({ source: "warehouse:prod" }),
     );
     expect(quarantined.kind).toBe("refused");
@@ -449,7 +451,7 @@ describe("the correction audit row", () => {
     // for one, because the same gate also blocks `retract`.
     logCalls.length = 0;
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4e" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4e" },
       // `null` rather than a string — the shape the import can restore because
       // its fact validator never inspects `provenance.source`.
       fakeTransaction({ source: null }),
@@ -477,7 +479,7 @@ describe("the correction audit row", () => {
     logCalls.length = 0;
     const huge = "x".repeat(5000);
     await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4f" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4f" },
       fakeTransaction({ source: huge }),
     );
     const logged = logCalls.filter((c) => c.level === "warn")[0]?.payload as { source: string };
@@ -491,7 +493,7 @@ describe("the correction audit row", () => {
     // the product.
     logCalls.length = 0;
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-4d" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-4d" },
       fakeTransaction(),
     );
     expect(outcome.kind).toBe("corrected");
@@ -506,7 +508,7 @@ describe("the correction audit row", () => {
       ): Promise<T> => fn({ query: async () => ({ rows: [] }) }),
     };
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-5" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-5" },
       deps,
     );
     expect(outcome.kind).toBe("not-found");
@@ -534,7 +536,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       });
 
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-6" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-6" },
       fakeTransaction(),
     );
 
@@ -548,7 +550,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     };
 
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "retract", requestId: "req-7" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-7" },
       fakeTransaction(),
     );
 
@@ -594,7 +596,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     auditBehaviour = () => new Promise<void>(() => {});
 
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-8" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-8" },
       { ...fakeTransaction(), auditWriteTimeoutMs: 20 },
     );
 
@@ -616,7 +618,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       });
 
     await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-late" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-late" },
       { ...fakeTransaction(), auditWriteTimeoutMs: 10 },
     );
     // Polled, not slept. A fixed sleep couples the assertion to the scheduler:
@@ -653,7 +655,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     breakAdminActions = true;
 
     const outcome = await correctFact(
-      { ctx: admin, factId: FACT, verb: "retract", requestId: "req-break" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "retract", requestId: "req-break" },
       fakeTransaction(),
     );
 
@@ -686,7 +688,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     };
 
     await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
       fakeTransaction(),
     );
 
@@ -718,7 +720,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
         throw thrown;
       };
       await correctFact(
-        { ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
+        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-pg" },
         fakeTransaction(),
       );
       const errors = logCalls.filter((c) => c.level === "error");
@@ -817,7 +819,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
         });
 
       await correctFact(
-        { ctx: admin, factId: FACT, verb: "pin", requestId: `req-${label}` },
+        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: `req-${label}` },
         { ...fakeTransaction(), auditWriteTimeoutMs: ms },
       );
 
@@ -847,7 +849,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
       logCalls.length = 0;
       requestContext = ctxShape;
       await correctFact(
-        { ctx: admin, factId: FACT, verb: "pin", requestId: "req-noactor" },
+        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-noactor" },
         fakeTransaction(),
       );
       const warns = logCalls.filter(
@@ -865,7 +867,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     // Without this the warn test above passes on a guard that fires
     // unconditionally, which would be alert fatigue on every single correction.
     await correctFact(
-      { ctx: admin, factId: FACT, verb: "pin", requestId: "req-ok" },
+      { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-ok" },
       fakeTransaction(),
     );
     expect(logCalls.filter((c) => c.level === "warn")).toHaveLength(0);
@@ -887,7 +889,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
     } as const;
 
     const outcome = await correctFact(
-      { ctx: localOperator, factId: FACT, verb: "pin", requestId: "req-local" },
+      { vocabulary: identityVocabulary, ctx: localOperator, factId: FACT, verb: "pin", requestId: "req-local" },
       fakeTransaction(),
     );
 
@@ -922,7 +924,7 @@ describe("the write is awaited, bounded, and never swallowed", () => {
 
     try {
       await correctFact(
-        { ctx: admin, factId: FACT, verb: "pin", requestId: "req-9" },
+        { vocabulary: identityVocabulary, ctx: admin, factId: FACT, verb: "pin", requestId: "req-9" },
         fakeTransaction(),
       );
     } finally {

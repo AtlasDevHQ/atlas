@@ -24,7 +24,9 @@
  *
  * `CLEANUP_TABLE_RULES` below maps each in-scope table to its org-scoping
  * predicate (most tables carry `org_id`/`workspace_id` directly; a few scope
- * through a parent table or, for `chat_cache`, a JSONB expression). The
+ * through a parent table, and two use an `expression` — `chat_cache` because it
+ * has no org column at all, `brain_vocabulary_target` because it needs the
+ * earlier phase). The
  * tripwire test (`__tests__/cleanup.test.ts`) asserts the rule set equals the
  * registry-derived scope exactly AND validates every referenced column
  * against the Drizzle schema — so a new table cannot silently miss cleanup,
@@ -160,8 +162,9 @@ export const CLEANUP_TABLE_RULES = {
   agent_session_memory: { kind: "column", column: "org_id" },
   // Company brain (#4767, ADR-0036). Facts are scoped THROUGH their episode
   // rather than by their own workspace_id — not for scoping but for PHASE:
-  // `brain_facts.source_episode_id` is the one RESTRICT FK among the in-scope
-  // tables, so the facts must be gone before the column phase deletes the
+  // `brain_facts.source_episode_id` was the first RESTRICT FK among the in-scope
+  // tables (#5022 added a second, on the vocabulary closure), so the facts must
+  // be gone before the column phase deletes the
   // episodes, or the sweep fails outright on any workspace that has a brain.
   //
   // The two predicates select the same rows because a composite FK
@@ -181,8 +184,29 @@ export const CLEANUP_TABLE_RULES = {
   brain_episodes: { kind: "column", column: "workspace_id" },
   brain_edges: { kind: "column", column: "workspace_id" },
   fact_audience_member: { kind: "column", column: "workspace_id" },
+  // The curated identity vocabulary's approved edges (#5022, ADR-0037 §6).
+  // Column-scoped, and safe in the column phase only because its one dependant
+  // — `brain_vocabulary_target`, a RESTRICT FK — is deleted in the earlier
+  // phase; see its rule below.
+  brain_vocabulary_edge: { kind: "column", column: "workspace_id" },
 
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
+  // The vocabulary's derived closure (#5022). `expression` rather than
+  // `column`, and the predicate IS just the column — the kind is chosen for its
+  // PHASE, exactly as `brain_facts` above is `parent`-scoped for phase rather
+  // than for scoping. `fk_brain_vocabulary_target_edge` is RESTRICT, so these
+  // rows must be gone before the column phase reaches `brain_vocabulary_edge`,
+  // or the whole sweep fails outright on any workspace that has approved an
+  // alias.
+  //
+  // Demoting it to `{ kind: "column", column: "workspace_id" }` would NOT
+  // "happen to work" — an earlier version of this comment claimed it would, and
+  // had the direction backwards. `brain_vocabulary_edge` is declared ABOVE, so
+  // both rules would land in the column phase in THAT order and the RESTRICT FK
+  // would abort the sweep. The phase split is the only thing making the order
+  // right, and the tripwire test pins the shape so it stays a decision rather
+  // than a re-discovery.
+  brain_vocabulary_target: { kind: "expression", predicate: "workspace_id = $1" },
   // Scheduling state for the audience re-verifiers (#4971) — "this audience has
   // had its turn", read by nothing but the scan's ORDER BY. Workspace-scoped and
   // therefore deletable by column, like the membership table it sits beside, but
@@ -300,23 +324,28 @@ export interface CleanupStatement {
 }
 
 /**
- * Build the ordered DELETE statements for one org's cleanup. Parent-scoped
- * rules run first (their subqueries need the parent rows to still exist —
- * see `slack_threads`); the one expression rule rides the same phase for
- * simplicity. The direct-column phase then deletes the parents themselves.
- * Within the column phase, ordering doesn't matter: every FK between
- * in-scope tables is `ON DELETE CASCADE` (or `SET NULL` for
- * `conversations.bound_dashboard_id`), so no column-phase delete can be
- * blocked by remaining child rows — pinned against real Postgres by
+ * Build the ordered DELETE statements for one org's cleanup. Parent-scoped and
+ * expression rules run first (a parent subquery needs the parent rows to still
+ * exist — see `slack_threads`). The direct-column phase then deletes the parents
+ * themselves. Within the column phase ordering doesn't matter, because every FK
+ * LEFT in that phase is `ON DELETE CASCADE` (or `SET NULL` for
+ * `conversations.bound_dashboard_id`) — pinned against real Postgres by
  * `migrate-roundtrip-pg.test.ts`.
  *
- * The single exception is `brain_facts.source_episode_id`, which is RESTRICT
- * on purpose (evidence must not vanish under a live claim). That is why
- * `brain_facts` carries a `parent` rule despite having its own
- * `workspace_id`: the parent phase is what puts its delete ahead of
- * `brain_episodes` in the column phase. A future RESTRICT FK between two
- * in-scope tables needs the same treatment. Exported for the tripwire + PG
- * tests.
+ * That last clause holds only because the RESTRICT children are deliberately
+ * pulled OUT of the column phase, and there are now TWO of them:
+ *
+ *   - `brain_facts.source_episode_id` (#4767) — evidence must not vanish under a
+ *     live claim. `brain_facts` carries a `parent` rule despite having its own
+ *     `workspace_id`, purely so its delete precedes `brain_episodes`.
+ *   - `fk_brain_vocabulary_target_edge` (#5022) — the derived closure must go
+ *     before its approved edges. `brain_vocabulary_target` carries an
+ *     `expression` rule for exactly that phase reason, not for simplicity.
+ *
+ * The two expression rules are therefore not equivalent: `brain_vocabulary_target`
+ * NEEDS the early phase, `chat_cache` merely tolerates it. Any further RESTRICT
+ * FK between in-scope tables needs the same treatment. Exported for the tripwire
+ * + PG tests.
  */
 export function buildCleanupStatements(): readonly CleanupStatement[] {
   const first: CleanupStatement[] = [];

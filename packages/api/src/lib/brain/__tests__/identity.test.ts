@@ -15,6 +15,8 @@
 import { describe, expect, it } from "bun:test";
 import {
   identityAlias,
+  identityVocabulary,
+  SLOT_POSITIONS,
   identityKey,
   lexicalNorm,
   slotKey,
@@ -183,6 +185,18 @@ describe("lexicalNorm", () => {
       // (`slotKey === identityKey` across the corpus) is what covers it.
       expect(identityAlias("owned by")).toBe("owned by");
       expect(identityAlias("")).toBe("");
+    });
+
+    it("identityVocabulary is the empty vocabulary at every position (#5022)", () => {
+      // Three positions, all the identity function — a workspace that has
+      // approved no alias. Enumerated from SLOT_POSITIONS rather than written
+      // out, so adding a fourth slot to the claim shape fails HERE rather than
+      // silently shipping a position with no vocabulary arm at all.
+      expect(Object.keys(identityVocabulary).toSorted()).toEqual([...SLOT_POSITIONS].toSorted());
+      for (const position of SLOT_POSITIONS) {
+        expect(identityVocabulary[position]("owned by"), position).toBe("owned by");
+        expect(identityVocabulary[position](""), position).toBe("");
+      }
     });
   });
 

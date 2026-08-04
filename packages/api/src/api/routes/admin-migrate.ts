@@ -13,6 +13,12 @@ import { EPISODE_SOURCES, isEpisodeSource } from "@atlas/api/lib/brain/sources";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
 import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
+import { SLOT_POSITIONS, isSlotPosition, lexicalNorm, type SlotPosition } from "@atlas/api/lib/brain/identity";
+import {
+  VOCABULARY_LOCK_NAMESPACE,
+  VOCABULARY_LOCK_SQL,
+  recomputeEffectiveTargets,
+} from "@atlas/api/lib/brain/vocabulary";
 import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -468,6 +474,75 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  // The curated identity vocabulary (#5022, ADR-0037 §6/§8). `slotPosition` is
+  // checked against the enum rather than merely typed: it is part of the primary
+  // key, and an unrecognized value would fail the table's CHECK mid-transaction
+  // and roll the WHOLE import back — a validation error naming the row is the
+  // difference between "fix this edge" and "the migration failed".
+  if ("brainVocabularyEdges" in obj && obj.brainVocabularyEdges !== undefined) {
+    if (!Array.isArray(obj.brainVocabularyEdges)) {
+      return { ok: false, error: "Invalid 'brainVocabularyEdges' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainVocabularyEdges.length; i++) {
+      const e = obj.brainVocabularyEdges[i] as Record<string, unknown> | null;
+      if (!e || typeof e !== "object" || typeof e.fromNorm !== "string" || typeof e.toNorm !== "string") {
+        return { ok: false, error: `brainVocabularyEdges[${i}]: must have 'fromNorm' and 'toNorm' (strings).` };
+      }
+      if (!isSlotPosition(e.slotPosition)) {
+        return { ok: false, error: `brainVocabularyEdges[${i}].slotPosition: must be one of ${SLOT_POSITIONS.join(", ")}.` };
+      }
+      if (e.fromNorm === "" || e.toNorm === "") {
+        return { ok: false, error: `brainVocabularyEdges[${i}]: neither norm may be empty — an empty key joins every other degenerate row.` };
+      }
+      if (e.fromNorm === e.toNorm) {
+        return { ok: false, error: `brainVocabularyEdges[${i}]: 'fromNorm' and 'toNorm' are both "${e.fromNorm}", which is a 1-cycle rather than an alias.` };
+      }
+      // BOTH endpoints must already be lexical norms, which also SUBSUMES the
+      // post-normalization 1-cycle (`Price` → `price`): once both sides are
+      // known to be norms, `lexicalNorm(a) === lexicalNorm(b)` is exactly
+      // `a === b`, which the byte check above already caught. An explicit second
+      // arm for it was written and then removed — mutation-testing showed no
+      // input could reach it, and a rule with no failure mode is worse than
+      // none, because it reads as protection.
+      //
+      // This is the only other
+      // write path into `brain_vocabulary_edge`, and unlike `approveAliasEdge`
+      // it cannot re-norm: ADR-0037 §8 has a row-copy path carry values
+      // verbatim, and silently rewriting a foreign region's decision would make
+      // the destination's vocabulary disagree with the keys that arrived with
+      // it. So it REFUSES instead, naming the row.
+      //
+      // Nothing in the schema catches this — the table's CHECKs test the
+      // position enum, non-empty and not-self, and a faithful SQL `lexicalNorm`
+      // would be a third implementation of it. Without this arm,
+      // `{fromNorm: "Priced At"}` imports "successfully" and is an alias that can
+      // never fire (the `from` side is looked up by norm and would never match),
+      // while `{fromNorm: "Price", toNorm: "price"}` lands a post-norm 1-cycle
+      // that the not-self CHECK cannot see.
+      for (const [side, raw] of [
+        ["fromNorm", e.fromNorm],
+        ["toNorm", e.toNorm],
+      ] as const) {
+        const normed = lexicalNorm(raw);
+        if (normed !== raw) {
+          return { ok: false, error: `brainVocabularyEdges[${i}].${side}: "${raw}" is not a lexical norm (it normalizes to "${normed}"). Alias edges store norms, not surfaces — a stored non-norm is an alias that can never match anything, and this path carries values verbatim rather than rewriting another region's decision. Re-export from a region running #5022 or later.` };
+        }
+      }
+      // OMITTED is refused, not read as `null`. `ExportedBrainVocabularyEdge`
+      // declares `approvedBy: string | null` non-optional, and this same commit
+      // made `AliasEdgeInput.approvedBy` required-and-nullable for the reason
+      // that applies with more force at an untrusted boundary: optional AND
+      // nullable is three input states for two meanings, and the omitted one
+      // would silently record an AUTO-APPROVAL on the column an audit of a
+      // workspace-wide re-key reads first.
+      if (!("approvedBy" in e) || (e.approvedBy !== null && typeof e.approvedBy !== "string")) {
+        return { ok: false, error: `brainVocabularyEdges[${i}].approvedBy: must be present, and a string or null (null is an auto-approved edge — omitting it would silently claim one).` };
+      }
+      const tsError = missingTimestamps(e, ["approvedAt"]);
+      if (tsError) return { ok: false, error: `brainVocabularyEdges[${i}].${tsError}` };
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -488,6 +563,7 @@ const ImportResultSchema = z.object({
   brainFacts: z.object({ imported: z.number(), skipped: z.number() }),
   brainEdges: z.object({ imported: z.number(), skipped: z.number() }),
   factAudienceMembers: z.object({ imported: z.number(), skipped: z.number() }),
+  brainVocabularyEdges: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 const importRoute = createRoute({
@@ -530,6 +606,7 @@ const importRoute = createRoute({
                 brainFacts: z.number().optional(),
                 brainEdges: z.number().optional(),
                 factAudienceMembers: z.number().optional(),
+                brainVocabularyEdges: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -548,6 +625,11 @@ const importRoute = createRoute({
             brainEpisodes: z.array(z.unknown()).optional(),
             brainEdges: z.array(z.unknown()).optional(),
             factAudienceMembers: z.array(z.unknown()).optional(),
+            // The curated identity vocabulary (#5022). Declared for the same
+            // strip-unknown-keys reason: undeclared, the whole vocabulary is
+            // dropped before the importer runs and the target region keeps the
+            // imported facts' keys with nothing that explains them.
+            brainVocabularyEdges: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -599,6 +681,7 @@ export async function importBundle(
     brainFacts: { imported: 0, skipped: 0 },
     brainEdges: { imported: 0, skipped: 0 },
     factAudienceMembers: { imported: 0, skipped: 0 },
+    brainVocabularyEdges: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -1231,6 +1314,112 @@ export async function importBundle(
 
     if (inserted.rowCount === 0) result.factAudienceMembers.skipped++;
     else result.factAudienceMembers.imported++;
+  }
+
+  // The curated identity vocabulary (#5022, ADR-0037 §6/§8). It travels because
+  // the identity keys on every imported fact are `alias(lexicalNorm(surface))`
+  // and ADR-0037 §8 carries those keys verbatim — a workspace that arrived
+  // without its vocabulary would hold keys nothing in this region can explain or
+  // undo.
+  //
+  // `ON CONFLICT DO NOTHING` on the at-most-one-parent key, which is the
+  // deliberately CONSERVATIVE half of this block. An arriving edge whose
+  // `fromNorm` is already approved onto something else in this region is
+  // SKIPPED, never applied over the top: the destination's edge is a decision a
+  // human here made, and silently retargeting it is exactly the rewrite
+  // ADR-0037 §6 forbids at approval time. #5036 owns the real merge — union the
+  // approved edges, refuse cycle-closing ones, log every refusal — and this
+  // skip is what keeps the gap from being a corruption in the meantime.
+  //
+  // ⚠️ TWO residuals, recorded rather than papered over. Both need a
+  // destination that ALREADY holds a vocabulary, which the ordinary migration
+  // flow (a fresh region) does not produce — they are the re-import and
+  // merge-into-occupied cases #5036 owns.
+  //
+  //   1. Skipping means an imported workspace can end up with FEWER aliases
+  //      than the bundle carried, and nothing says which. Visible in the counts
+  //      (`skipped > 0`) and no further; the surfacing is #5036's refusal log.
+  //   2. `ON CONFLICT DO NOTHING` does not look for CYCLES, so an arriving edge
+  //      can close one against a destination edge. That does not corrupt
+  //      anything — the closure rebuild below refuses to commit a
+  //      non-converging closure — but it aborts the ENTIRE import transaction
+  //      rather than dropping the one offending edge. Loud and recoverable
+  //      beats silent and not; refusing the edge instead is #5036's job, and
+  //      doing it here would be implementing the merge this PR scopes out.
+  //
+  // ⚠️ THE LOCK IS TAKEN BEFORE THE INSERT LOOP, AND THE ORDER IS THE POINT.
+  //
+  // `approveAliasEdge` acquires the advisory lock FIRST and then touches rows.
+  // An importer that inserts first and reaches the lock only inside
+  // `recomputeEffectiveTargets` acquires the same two resources in the opposite
+  // order, so two writers sharing a `from_norm` close a cycle: the approver
+  // holds the advisory lock and blocks on the importer's uncommitted row, while
+  // the importer blocks on the advisory lock. Postgres resolves it with `40P01
+  // deadlock detected`, and the victim — sometimes the entire region import — is
+  // whichever transaction it picks.
+  //
+  // This is recorded at length because the acquisition was REMOVED once, on the
+  // reasoning that `recomputeEffectiveTargets` takes the same lock so an earlier
+  // acquisition was redundant. That reasoning is wrong in the way lock-ordering
+  // arguments usually are: the later lock does not block in the same PLACE, and
+  // the displacement IS the bug. Measured — with the removal, an approver and an
+  // import over the same norm deadlock; with it restored, they serialize and the
+  // approver gets its typed `already-aliased` refusal.
+  //
+  // Re-taking it inside `recomputeEffectiveTargets` costs nothing:
+  // `pg_advisory_xact_lock` is re-entrant within a transaction.
+  const vocabularyEdges = bundle.brainVocabularyEdges ?? [];
+  if (vocabularyEdges.length > 0) {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+  }
+
+  const vocabularyPositionsTouched = new Set<SlotPosition>();
+  for (const edge of vocabularyEdges) {
+    const inserted = await client.query(
+      `INSERT INTO brain_vocabulary_edge
+         (workspace_id, slot_position, from_norm, to_norm, approved_by, approved_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (workspace_id, slot_position, from_norm) DO NOTHING`,
+      [orgId, edge.slotPosition, edge.fromNorm, edge.toNorm, edge.approvedBy ?? null, edge.approvedAt],
+    );
+
+    // `!== 0`, deliberately NOT `(rowCount ?? 0) !== 0`: an ABSENT `rowCount` is
+    // UNKNOWN and must rebuild, while a reported `0` is a definite conflict that
+    // needs none. Gating the rebuild on a `?? 0` would make it depend on the one
+    // value whose absence means "did this land?" is unanswerable, and an
+    // executor that omits it would then commit an edge with NO closure row —
+    // precisely the half-rebuilt state `loadClaimVocabulary` refuses to load.
+    //
+    // The COUNTER below takes the opposite default on purpose: unknown counts as
+    // skipped, because `skipped > 0` is the only signal that a curated decision
+    // was dropped and a counter should under-claim rather than over-claim.
+    // No `as SlotPosition` here: `validateBundle` narrowed it through
+    // `isSlotPosition`, and a cast would suppress exactly the compile error that
+    // drift between the wire union and `SlotPosition` should produce. That is
+    // the call site `identity.ts`'s `_SlotPositionsCoverTheWire` pin names.
+    if (inserted.rowCount !== 0) vocabularyPositionsTouched.add(edge.slotPosition);
+
+    if ((inserted.rowCount ?? 0) === 0) {
+      result.brainVocabularyEdges.skipped++;
+      continue;
+    }
+    result.brainVocabularyEdges.imported++;
+  }
+
+  // The closure is RECOMPUTED, never carried — which is why the bundle has no
+  // `brainVocabularyTargets` section and `brain_vocabulary_target` is classified
+  // 'stays'. Restoring a source closure into a destination that already holds
+  // its own vocabulary would produce a closure of neither: the source's rows
+  // know nothing about the destination's edges, and the destination's know
+  // nothing about the arrivals. Recomputing from the edges now present is the
+  // only answer that is a closure of what this region actually approves.
+  //
+  // Deliberately NOT a re-derive of anything ADR-0037 §8 says must be carried.
+  // §8's rule is about identity KEYS, where re-deriving fails to OVER-match (the
+  // irreversible direction); this is a derived relation whose inputs are all
+  // present in the same transaction, so recomputation is exact.
+  for (const position of vocabularyPositionsTouched) {
+    await recomputeEffectiveTargets(client, orgId, position);
   }
 
   return result;

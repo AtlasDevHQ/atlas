@@ -85,6 +85,7 @@ import {
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 const DEFAULT_LIMIT = 50;
 
@@ -509,7 +510,12 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       // (#4915): tombstone + correction episode + dependent re-review flags,
       // in one transaction. One retract semantics, not two.
       const outcome = yield* Effect.tryPromise({
-        try: () => correctFact({ ctx, factId, verb: "retract", requestId }),
+        // `identityVocabulary` named out loud because the field is required
+        // (`identity.ts`, "`alias` is REQUIRED"). No production path loads a real
+        // vocabulary yet; #5023's decide seam is what changes this line, and the
+        // compiler is what stops it being missed.
+        try: () =>
+          correctFact({ ctx, factId, verb: "retract", requestId, vocabulary: identityVocabulary }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -602,6 +608,8 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
               ? { object: body.replacement.object, validFrom: replacementValidFrom }
               : undefined,
             requestId,
+            // See the `retract` call above — required, empty until #5023.
+            vocabulary: identityVocabulary,
           }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });

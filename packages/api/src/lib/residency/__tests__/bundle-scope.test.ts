@@ -87,11 +87,19 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // is not neutral — stays rows are DELETED from the source after the
     // grace period, which would make a region migration silently destroy the
     // workspace's accumulated knowledge.
+    //
+    // Extended again by #5022 (ADR-0037 §6/§8) with the vocabulary's DURABLE
+    // half, on the same reasoning one layer down: the aliases are curated by a
+    // human and the keys they produced travel verbatim, so 'stays' would destroy
+    // the decisions at source AND leave the imported keys un-re-derivable.
+    // `brain_vocabulary_target` is deliberately NOT here — it is the derived
+    // closure, and §8 has the import recompute it rather than carry it.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
       "brain_edges",
       "brain_episodes",
       "brain_facts",
+      "brain_vocabulary_edge",
       "conversations",
       "dashboard_cards",
       "dashboard_user_drafts",

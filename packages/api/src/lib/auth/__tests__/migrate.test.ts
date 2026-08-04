@@ -567,6 +567,10 @@ describe("migrateAuthTables", () => {
             // 0188 (re-key of unkeyed brain facts, #5020) is a plain UPDATE on
             // `brain_facts` — same reasoning as 0187 above.
             { name: "0188_rekey_unkeyed_brain_facts.sql" },
+            // 0189 (the curated identity vocabulary, #5022) creates two new
+            // brain tables and touches nothing Better Auth owns — same
+            // reasoning as 0187 and 0188 above.
+            { name: "0189_brain_vocabulary.sql" },
           ],
         };
       }

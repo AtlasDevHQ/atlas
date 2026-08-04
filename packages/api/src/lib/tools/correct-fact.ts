@@ -46,6 +46,7 @@ import {
   BrainReaderIdentityError,
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 const log = createLogger("correct-fact");
 
@@ -212,6 +213,9 @@ export const correctFactTool = tool({
           ? { object: input.replacement.object, validFrom: replacementValidFrom }
           : undefined,
         requestId,
+        // Required and empty until #5023 wires the loader — `identity.ts`,
+        // "`alias` is REQUIRED", is why this is spelled rather than defaulted.
+        vocabulary: identityVocabulary,
       });
     } catch (err) {
       if (err instanceof BrainReaderIdentityError) {

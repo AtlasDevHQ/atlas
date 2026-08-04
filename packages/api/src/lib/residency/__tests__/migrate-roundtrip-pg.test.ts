@@ -25,6 +25,7 @@ import {
   type InternalPool,
 } from "@atlas/api/lib/db/internal";
 import { exportWorkspaceBundle } from "../export";
+import { approveAliasEdge, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import { importBundle } from "../../../api/routes/admin-migrate";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
 import type { ImportResult } from "@useatlas/types";
@@ -195,6 +196,30 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
        VALUES ($1, 'eng', 'user-1', 'slack')`,
       [SOURCE_ORG],
     );
+
+    // ── The curated identity vocabulary (#5022, ADR-0037 §6/§8) ──
+    // A COMPRESSED chain, which is the only shape that can tell "the closure
+    // was recomputed" from "the closure was copied": the bundle carries no
+    // closure section at all, so `is priced at` can only land on `unit price`
+    // in the target if the importer walked the two edges itself. A flat
+    // one-edge vocabulary would round-trip identically under both designs.
+    await pool.query(
+      `INSERT INTO brain_vocabulary_edge (workspace_id, slot_position, from_norm, to_norm, approved_by)
+       VALUES ($1, 'predicate', 'is priced at', 'priced at', 'user-1'),
+              ($1, 'predicate', 'priced at', 'unit price', NULL)`,
+      [SOURCE_ORG],
+    );
+    // In a transaction, because `recomputeEffectiveTargets` now refuses to run
+    // outside one — its clear-then-rebuild is not atomic on an autocommit
+    // connection, and a failed rebuild would commit an empty closure.
+    const seedClient = await pool.connect();
+    try {
+      await seedClient.query("BEGIN");
+      await recomputeEffectiveTargets(seedClient, SOURCE_ORG, "predicate");
+      await seedClient.query("COMMIT");
+    } finally {
+      seedClient.release();
+    }
   }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -249,6 +274,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainFacts: 2, // the live claim AND the superseded/tombstoned one
         brainEdges: 2,
         factAudienceMembers: 1,
+        // The approved edges only. There is no `brainVocabularyTargets` count
+        // because the derived closure does not ride the bundle — §8 has the
+        // import recompute it, and the assertion below is what proves it did.
+        brainVocabularyEdges: 2,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would
@@ -284,6 +313,52 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(result.brainFacts).toEqual({ imported: 2, skipped: 0 });
       expect(result.brainEdges).toEqual({ imported: 2, skipped: 0 });
       expect(result.factAudienceMembers).toEqual({ imported: 1, skipped: 0 });
+      expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0 });
+
+      // The vocabulary's closure is REBUILT in the target, not carried. Nothing
+      // in the bundle says `is priced at` resolves to `unit price` — the export
+      // ships two edges and no closure — so this row exists only if the importer
+      // walked the compressed chain itself. A copy-the-closure importer would
+      // leave the target with an EMPTY `brain_vocabulary_target`, and every
+      // claim keyed there would silently key onto the un-aliased norm.
+      const targetClosure = await pool.query<{ norm: string; effective_target: string }>(
+        `SELECT norm, effective_target FROM brain_vocabulary_target
+          WHERE workspace_id = $1 AND slot_position = 'predicate'
+          ORDER BY norm`,
+        [TARGET_ORG],
+      );
+      expect(targetClosure.rows).toEqual([
+        { norm: "is priced at", effective_target: "unit price" },
+        { norm: "priced at", effective_target: "unit price" },
+      ]);
+
+      // The APPROVER and the decision time survive verbatim. Counts and the
+      // closure alone leave both unpinned, and migration 0189 calls
+      // `approved_by` "the one column an audit of a workspace-wide re-key reads
+      // first" — an import that nulled it, or stamped `now()`, would pass every
+      // other assertion in this block. The NULL row is the auto-approved case
+      // and is why the fixture seeds one of each.
+      const targetEdges = await pool.query<{
+        from_norm: string;
+        approved_by: string | null;
+        approved_at: Date;
+      }>(
+        `SELECT from_norm, approved_by, approved_at FROM brain_vocabulary_edge
+          WHERE workspace_id = $1 ORDER BY from_norm`,
+        [TARGET_ORG],
+      );
+      expect(targetEdges.rows.map((r) => [r.from_norm, r.approved_by])).toEqual([
+        ["is priced at", "user-1"],
+        ["priced at", null],
+      ]);
+      const sourceEdges = await pool.query<{ from_norm: string; approved_at: Date }>(
+        `SELECT from_norm, approved_at FROM brain_vocabulary_edge
+          WHERE workspace_id = $1 ORDER BY from_norm`,
+        [SOURCE_ORG],
+      );
+      expect(targetEdges.rows.map((r) => r.approved_at.toISOString())).toEqual(
+        sourceEdges.rows.map((r) => r.approved_at.toISOString()),
+      );
 
       // The brain survives the hop INTACT — not just row counts, but every
       // property that makes a fact trustworthy. A migration that moved the
@@ -472,6 +547,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainFacts: { imported: 0, skipped: 2 },
         brainEdges: { imported: 0, skipped: 2 },
         factAudienceMembers: { imported: 0, skipped: 1 },
+        // Skipped on the at-most-one-parent key. A re-import must never apply
+        // an arriving edge over a target-region decision — that is the rewrite
+        // ADR-0037 §6 forbids, reached through the import door.
+        brainVocabularyEdges: { imported: 0, skipped: 2 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a
@@ -498,6 +577,246 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(late.rows[0].object).toBe("59");
       // Attached to the episode the target already held.
       expect(late.rows[0].source_episode_id).toBe(EPISODE_ID);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  /** A v2 bundle carrying nothing but one alias edge. */
+  const vocabularyOnlyBundle = (fromNorm: string, toNorm: string) => ({
+    manifest: {
+      version: 2 as const,
+      exportedAt: "2026-06-01T00:00:00Z",
+      source: { label: "vocab-test" },
+      counts: {
+        conversations: 0, messages: 0, semanticEntities: 0, learnedPatterns: 0,
+        settings: 0, brainVocabularyEdges: 1,
+      },
+    },
+    conversations: [],
+    semanticEntities: [],
+    learnedPatterns: [],
+    settings: [],
+    brainVocabularyEdges: [
+      {
+        slotPosition: "predicate" as const,
+        fromNorm,
+        toNorm,
+        approvedBy: "source-admin",
+        approvedAt: "2026-06-01T00:00:00Z",
+      },
+    ],
+  });
+
+  it(
+    "blocks on the workspace vocabulary lock while an approval is open (#5022)",
+    async () => {
+      // Two vocabulary writers over DISJOINT norms: they must serialize on the
+      // workspace lock and end with a closure of the union, not of either half.
+      // What this pins is the serialization; the test below pins the LOCK ORDER,
+      // which is the property that actually bites.
+      const LOCK_ORG = "org-migrate-vocab-lock";
+      const holder = await pool.connect();
+      const importer = await pool.connect();
+      try {
+        await holder.query("BEGIN");
+        expect(
+          (
+            await approveAliasEdge(holder, LOCK_ORG, {
+              position: "predicate",
+              fromNorm: "a",
+              toNorm: "b",
+              approvedBy: "target-admin",
+            })
+          ).ok,
+        ).toBe(true);
+
+        await importer.query("BEGIN");
+        const blocked = importBundle(importer, vocabularyOnlyBundle("c", "d"), LOCK_ORG);
+        const raced = await Promise.race([
+          blocked.then(() => "completed" as const),
+          new Promise<"pending">((r) => setTimeout(() => r("pending"), 300)),
+        ]);
+        // Still waiting on the holder's lock rather than recomputing around it.
+        expect(raced).toBe("pending");
+
+        await holder.query("COMMIT");
+        const result = await blocked;
+        expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0 });
+        await importer.query("COMMIT");
+      } catch (err) {
+        // intentionally ignored: the assertion failure below is the real
+        // outcome; a rollback error on an already-dead connection would mask it
+        await holder.query("ROLLBACK").catch(() => {});
+        await importer.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        holder.release();
+        importer.release();
+      }
+
+      // Both writers' edges survive, and the closure covers both — which is only
+      // true because the second rebuild ran AFTER the first committed.
+      const closure = await pool.query<{ norm: string; effective_target: string }>(
+        `SELECT norm, effective_target FROM brain_vocabulary_target
+          WHERE workspace_id = $1 ORDER BY norm`,
+        [LOCK_ORG],
+      );
+      expect(closure.rows).toEqual([
+        { norm: "a", effective_target: "b" },
+        { norm: "c", effective_target: "d" },
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not deadlock against a concurrent approval of the SAME norm (#5022)",
+    async () => {
+      // The regression test for a defect this PR shipped and then removed: the
+      // importer's advisory lock was deleted as "redundant, since
+      // `recomputeEffectiveTargets` takes it anyway". It is not redundant.
+      //
+      // `approveAliasEdge` takes the advisory lock and THEN inserts. An importer
+      // that inserts first and reaches the lock only at recompute time acquires
+      // the same two resources in the opposite order, and the cycle needs a
+      // precise interleaving:
+      //
+      //   1. the importer inserts the contended row (taking its row lock) and
+      //      keeps working;
+      //   2. the approver takes the ADVISORY lock, then blocks on that row;
+      //   3. the importer finishes and asks for the advisory lock → cycle.
+      //
+      // So the fixture puts the contended norm FIRST in the bundle and pads it
+      // with enough filler edges that step 2 lands inside the loop. An earlier
+      // version of this test had the approver insert first, which cannot
+      // deadlock — the approver then waits on nothing, so there is no cycle, and
+      // the test passed against the broken code. The padding is the test.
+      const DEADLOCK_ORG = "org-migrate-vocab-deadlock";
+      const PADDING = 400;
+
+      const bundle = vocabularyOnlyBundle("shared", "source side");
+      for (let i = 0; i < PADDING; i++) {
+        bundle.brainVocabularyEdges.push({
+          slotPosition: "predicate" as const,
+          fromNorm: `filler ${i}`,
+          toNorm: `filler target ${i}`,
+          approvedBy: "source-admin",
+          approvedAt: "2026-06-01T00:00:00Z",
+        });
+      }
+
+      const approver = await pool.connect();
+      const importer = await pool.connect();
+      const failures: string[] = [];
+      try {
+        await importer.query("BEGIN");
+        const importing = importBundle(importer, bundle, DEADLOCK_ORG).catch((err: unknown) => {
+          failures.push(`import: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        });
+
+        // Long enough for the importer to have written the contended row and be
+        // partway through the padding.
+        await new Promise((r) => setTimeout(r, 60));
+
+        await approver.query("BEGIN");
+        const approving = approveAliasEdge(approver, DEADLOCK_ORG, {
+          position: "predicate",
+          fromNorm: "shared",
+          toNorm: "target side",
+          approvedBy: "target-admin",
+        }).catch((err: unknown) => {
+          failures.push(`approve: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        });
+
+        // The importer is awaited and COMMITTED first, and the order matters
+        // for the test itself: with the lock correctly held, the approver waits
+        // on it until the importer's transaction ENDS, so awaiting the approver
+        // before committing the importer would hang on a dependency the test
+        // created rather than on anything under test.
+        await importing;
+        await importer.query("COMMIT").catch(() => {});
+        await approving;
+        await approver.query("COMMIT").catch(() => {});
+      } finally {
+        approver.release();
+        importer.release();
+      }
+
+      // The whole assertion. Either writer may win, and the loser may be refused
+      // — those are ordinary outcomes. What must never happen is Postgres
+      // breaking a lock cycle for us, because the victim is picked arbitrarily
+      // and is sometimes the entire region import.
+      expect(
+        failures.filter((f) => /deadlock/i.test(f)),
+        `lock-order inversion between importBundle and approveAliasEdge: ${failures.join(" | ")}`,
+      ).toEqual([]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "aborts the import when an arriving alias edge would close a cycle with the target's own (#5022)",
+    async () => {
+      // The importer's documented residual #2, which was documented and never
+      // tested. `ON CONFLICT DO NOTHING` deduplicates on the at-most-one-parent
+      // key and does NOT look for cycles, so an arriving edge can close one
+      // against a decision the destination region already holds.
+      //
+      // The claim under test is "loud and recoverable beats silent and not":
+      // the closure rebuild refuses, and because the whole import is one
+      // transaction NOTHING lands — not the edge, and not the pillars imported
+      // before it. Refusing the single offending edge instead is #5036's merge
+      // semantics, deliberately not implemented here.
+      //
+      // THREE nodes, for `vocabulary-pg.test.ts`'s reason: at an even
+      // MAX_CHAIN_DEPTH a 2-cycle lands every norm back on itself and dies on
+      // `ck_..._not_self` instead of the convergence check. Both abort, but only
+      // one exercises the guard this test is named for.
+      const CYCLE_ORG = "org-migrate-vocab-cycle";
+      await pool.query(
+        `INSERT INTO brain_vocabulary_edge (workspace_id, slot_position, from_norm, to_norm, approved_by)
+         VALUES ($1, 'predicate', 'a', 'b', 'target-admin'),
+                ($1, 'predicate', 'b', 'c', 'target-admin')`,
+        [CYCLE_ORG],
+      );
+      const seedClient = await pool.connect();
+      try {
+        await seedClient.query("BEGIN");
+        await recomputeEffectiveTargets(seedClient, CYCLE_ORG, "predicate");
+        await seedClient.query("COMMIT");
+      } finally {
+        seedClient.release();
+      }
+
+      const cyclic = vocabularyOnlyBundle("c", "a");
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await expect(importBundle(client, cyclic, CYCLE_ORG)).rejects.toThrow(/did not converge/);
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
+
+      // The target's own vocabulary is exactly as it was — the arriving edge is
+      // absent and the closure still resolves to the root it always did.
+      const edges = await pool.query<{ from_norm: string }>(
+        `SELECT from_norm FROM brain_vocabulary_edge WHERE workspace_id = $1 ORDER BY from_norm`,
+        [CYCLE_ORG],
+      );
+      expect(edges.rows.map((r) => r.from_norm)).toEqual(["a", "b"]);
+      const closure = await pool.query<{ norm: string; effective_target: string }>(
+        `SELECT norm, effective_target FROM brain_vocabulary_target
+          WHERE workspace_id = $1 ORDER BY norm`,
+        [CYCLE_ORG],
+      );
+      expect(closure.rows).toEqual([
+        { norm: "a", effective_target: "c" },
+        { norm: "b", effective_target: "c" },
+      ]);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -772,6 +1091,30 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         [CLEAN_ORG],
       );
 
+      // Vocabulary residue (#5022) — the SECOND place phase ordering is
+      // load-bearing, and the reason `brain_vocabulary_target`'s cleanup rule is
+      // `expression`-kind rather than `column`. Its FK to the edge table is
+      // RESTRICT and the edge table is declared FIRST, so under a `column` rule
+      // the two deletes would run in the wrong order and abort the sweep for
+      // every workspace that has ever approved an alias. Without rows here, both
+      // new DELETE statements have never executed against real Postgres and the
+      // residency promise that curated aliases are deleted at source is asserted
+      // nowhere.
+      await pool.query(
+        `INSERT INTO brain_vocabulary_edge (workspace_id, slot_position, from_norm, to_norm, approved_by)
+         VALUES ($1, 'predicate', 'is priced at', 'priced at', 'user-1'),
+                ($1, 'predicate', 'priced at', 'unit price', NULL)`,
+        [CLEAN_ORG],
+      );
+      const cleanupSeedClient = await pool.connect();
+      try {
+        await cleanupSeedClient.query("BEGIN");
+        await recomputeEffectiveTargets(cleanupSeedClient, CLEAN_ORG, "predicate");
+        await cleanupSeedClient.query("COMMIT");
+      } finally {
+        cleanupSeedClient.release();
+      }
+
       // ── A workspace that migrated away but came BACK before cleanup ran:
       // the cutover guard must refuse to delete its (live) data ──
       await pool.query(
@@ -817,6 +1160,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         expect(await countIn(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1`, [C_CONV])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM slack_threads WHERE conversation_id = $1`, [C_CONV])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM agent_session_memory WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        // Both vocabulary tables, and the sweep completing at all is half the
+        // assertion: a wrong phase order aborts it on the RESTRICT FK.
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_vocabulary_target WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_vocabulary_edge WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM dashboards WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM dashboard_cards WHERE dashboard_id = $1`, [C_DASH])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM dashboard_user_drafts WHERE dashboard_id = $1`, [C_DASH])).toBe(0);

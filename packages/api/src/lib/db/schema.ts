@@ -3624,3 +3624,130 @@ export const brainAudienceReverifyAttempt = pgTable(
   },
   (t) => [primaryKey({ columns: [t.workspaceId, t.audienceId] })],
 );
+
+// brain_vocabulary_edge — the curated identity vocabulary's DURABLE half: the
+// human's approved alias decisions (0189, #5022, ADR-0037 §6).
+//
+// The OUTER layer of `key = alias(lexicalNorm(surface))`. `lib/brain/identity.ts`
+// owns the inner one and the composition; this is the data `alias` is a lookup
+// against — except that it is not read directly. `alias` reads
+// `brainVocabularyTarget` below, which is this table's transitive closure.
+//
+// TWO relations rather than one, and the split is what makes a bad alias
+// undoable. ADR-0037 §6 retracts T3's "forest invariant" by name: it asserted
+// depth-1 AND composition, and the only way to have both under one table is
+// path compression at approval time — which rewrites edges nobody approved in
+// that action, and after which removing `price → unit price` cannot restore
+// `is priced at → price`, because that edge is gone. Split, removal is a
+// RECOMPUTATION and the restore falls out.
+//
+// Written by approval/removal only (#5023 owns the flow; the write primitives
+// with their at-most-one-parent and cycle refusals are `lib/brain/vocabulary.ts`).
+export const brainVocabularyEdge = pgTable(
+  "brain_vocabulary_edge",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // The claim slot this edge governs — part of the key, so the three
+    // positions are three independent forests. Position-scoping is a
+    // compulsion, not a permission: agnostic, `owned by → platform` plus
+    // `platform → platform team` puts two edges in one chain, the closure
+    // composes them, and a PREDICATE approval has re-keyed SUBJECTS
+    // workspace-wide in the irreversible direction. Warehouse predicates are
+    // bare common nouns (`price`, `owner`, `status`, `tier`, `region`) —
+    // exactly the norms most likely to also be subjects or objects.
+    slotPosition: text("slot_position").notNull(),
+    // LEXICAL NORMS, never surfaces: `alias` composes over `lexicalNorm`, so
+    // one entry covers every casing and separator variant of both sides.
+    //
+    // Normal form is NOT a CHECK — those cover the position enum, non-emptiness
+    // and the 1-cycle only, and a SQL version would be a third implementation of
+    // `lexicalNorm`. Both writers carry it instead: `approveAliasEdge` re-norms,
+    // and the region importer refuses a non-norm row. See migration 0189.
+    fromNorm: text("from_norm").notNull(),
+    toNorm: text("to_norm").notNull(),
+    // NULL for an auto-approved warehouse-derived edge, which has no human
+    // behind it (ADR-0037 §6's auto-approve split). A `'system'` sentinel would
+    // be indistinguishable from a user id at the one column an audit of a
+    // workspace-wide re-key reads first.
+    approvedBy: text("approved_by"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // AT-MOST-ONE-PARENT, structurally: `fromNorm` in the key is what makes
+    // `alias` a function, and it is why a second approval for the same norm
+    // RAISES rather than silently retargeting a human's prior decision.
+    //
+    // ADR-0037 §6 states at-most-one-parent by name. What did NOT imply it is
+    // T3's "no cycles + targets unaliased" framing, which §6 RETRACTS and lists
+    // under "Corrections to the record" — so do not read it as the ADR's
+    // position. `approveAliasEdge` checks the property explicitly on top: the
+    // check turns the violation into a typed refusal naming the existing target;
+    // the key is what holds under two concurrent approvers.
+    primaryKey({ columns: [t.workspaceId, t.slotPosition, t.fromNorm] }),
+    check(
+      "ck_brain_vocabulary_edge_slot_position",
+      sql`slot_position IN ('subject', 'predicate', 'object')`,
+    ),
+    // An empty norm is not a slot — 0187's `DEFAULT ''` hazard reached through
+    // the front door, since a stored empty key is the one value that joins
+    // every other degenerate row.
+    check("ck_brain_vocabulary_edge_norms_present", sql`from_norm <> '' AND to_norm <> ''`),
+    // The 1-cycle — the one cycle length a CHECK can see without reading other
+    // rows. Longer ones are refused by `approveAliasEdge`.
+    check("ck_brain_vocabulary_edge_not_self", sql`from_norm <> to_norm`),
+  ],
+);
+
+// brain_vocabulary_target — the vocabulary's DERIVED half: the transitive
+// closure of the approved edges, and what `alias` actually reads (0189, #5022).
+//
+// A row exists IFF the norm has an approved parent. Unaliased norms are ABSENT
+// rather than stored as `norm = effectiveTarget`: `alias` is total by falling
+// back to its input, so a self-row would be a second encoding of "no entry" and
+// the two would drift the first time a recompute wrote one and a reader tested
+// for the other. The `not_self` CHECK makes that unrepresentable.
+//
+// Recomputed WHOLESALE per (workspace, position) on every approval and removal
+// — never patched. That is what makes removal reversible: with `a → b` and
+// `b → c` the closure holds `a → c`, and deleting `b → c` recomputes `a` back
+// onto `b`, which no incremental patch of the deleted row could reach.
+export const brainVocabularyTarget = pgTable(
+  "brain_vocabulary_target",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    slotPosition: text("slot_position").notNull(),
+    norm: text("norm").notNull(),
+    effectiveTarget: text("effective_target").notNull(),
+    recomputedAt: timestamp("recomputed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.slotPosition, t.norm] }),
+    check(
+      "ck_brain_vocabulary_target_slot_position",
+      sql`slot_position IN ('subject', 'predicate', 'object')`,
+    ),
+    check(
+      "ck_brain_vocabulary_target_norms_present",
+      sql`norm <> '' AND effective_target <> ''`,
+    ),
+    check("ck_brain_vocabulary_target_not_self", sql`norm <> effective_target`),
+    // Derived-ness made structural: a closure row must name a norm that has an
+    // approved parent, so the derived relation cannot outlive the decision.
+    //
+    // RESTRICT, deliberately NOT cascade — the tidy-looking answer is the wrong
+    // one. Cascade would delete `b`'s row when `b → c` is dropped and leave
+    // `a` pointing at a `c` nobody approves any more. What RESTRICT buys is
+    // narrower than "forces a rebuild": it stops an edge going while its own
+    // closure row stands, so a caller cannot skip `recomputeEffectiveTargets`
+    // silently. See migration 0189.
+    foreignKey({
+      name: "fk_brain_vocabulary_target_edge",
+      columns: [t.workspaceId, t.slotPosition, t.norm],
+      foreignColumns: [
+        brainVocabularyEdge.workspaceId,
+        brainVocabularyEdge.slotPosition,
+        brainVocabularyEdge.fromNorm,
+      ],
+    }).onDelete("restrict"),
+  ],
+);

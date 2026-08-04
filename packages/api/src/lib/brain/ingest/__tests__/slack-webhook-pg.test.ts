@@ -55,6 +55,7 @@ import {
   slackEpisodeSourceId,
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import { ingestSlackWebhookMessage } from "@atlas/api/lib/brain/ingest/slack/webhook";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -291,6 +292,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
         visibleTo: row.visible_to,
       };
       await reconcileFacts({
+        vocabulary: identityVocabulary,
         episode: ref,
         candidates: [{ subject: "deploy window", predicate: "is", object: "Thursdays" }],
         producer: "extraction:v1",

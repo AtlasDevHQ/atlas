@@ -15,18 +15,31 @@ import { describe, expect, it } from "bun:test";
 import { Effect } from "effect";
 import {
   BRAIN_FACTS_TABLE,
+  SUPERSEDE_STAMP_EXPLICIT_SQL,
   SUPERSEDE_STAMP_SQL,
   SUPERSESSION_TARGETS_SQL,
   brainFactStatusClause,
   brainFactsCountSql,
   promoteBrainFacts,
+  supersedingDraftPredicate,
+  supersessionCollisionPredicate,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
+  IDENTITY_MUTATION_LOCK_NAMESPACE,
+  IDENTITY_MUTATION_LOCK_SQL,
+} from "@atlas/api/lib/brain/identity";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { PublishPhaseError, type ModeTxClient } from "@atlas/api/lib/content-mode/port";
 
 interface Call {
   readonly sql: string;
   readonly params: readonly unknown[];
+}
+
+/** One `pg_advisory_xact_lock` call, with how many statements preceded it. */
+interface LockCall {
+  readonly params: readonly unknown[];
+  readonly precededCalls: number;
 }
 
 /**
@@ -47,10 +60,26 @@ function txWithDrafts(
     /** Overrides which old ids the stamp UPDATE confirms; defaults to all asked. */
     readonly stampConfirms?: readonly string[];
   } = {},
-): { tx: ModeTxClient; calls: Call[] } {
+): { tx: ModeTxClient; calls: Call[]; locks: LockCall[] } {
   const calls: Call[] = [];
+  const locks: LockCall[] = [];
   const tx: ModeTxClient = {
     query: async (sql, params = []) => {
+      // The identity-mutation advisory lock (#5024) is recorded SEPARATELY, and
+      // that is a deliberate shape rather than a convenience. It is not a
+      // statement about a table: it has no `workspace_id = $1` and no
+      // `invalidated_at IS NULL`, so folding it into `calls` would force every
+      // "…on every statement" loop in this file to grow an exemption — and an
+      // exemption in a loop is where the next statement that should have been
+      // checked quietly stops being.
+      //
+      // `precededCalls` is the index it was taken at, which is what makes the
+      // ORDER assertable rather than merely its presence. Answered with an empty
+      // result because `pg_advisory_xact_lock` returns void and nothing reads it.
+      if (sql === IDENTITY_MUTATION_LOCK_SQL) {
+        locks.push({ params, precededCalls: calls.length });
+        return { rows: [] };
+      }
       calls.push({ sql, params });
       if (/^\s*UPDATE/i.test(sql)) {
         if (opts.failOnUpdate) throw new Error("update exploded");
@@ -87,7 +116,7 @@ function txWithDrafts(
       throw new Error(`unrecognised statement in the tx double: ${sql}`);
     },
   };
-  return { tx, calls };
+  return { tx, calls, locks };
 }
 
 /** The UPDATE statements the adapter issued, in order. */
@@ -206,6 +235,45 @@ describe("promoteBrainFacts", () => {
     const { tx, calls } = txWithDrafts([draft("a")]);
     await run(promoteBrainFacts(tx, "ws-1"));
     expect(calls[0].sql).toMatch(/FOR UPDATE/i);
+  });
+
+  it("takes the identity-mutation lock BEFORE reading the drafts (#5024)", async () => {
+    // `FOR UPDATE` above locks DRAFTS. The published rivals this phase stamps
+    // `valid_to` on are not covered by it, so what serializes this phase against
+    // an alias decision is the advisory lock — and it has to be held before the
+    // collision set is read, not merely before it is written. A lock taken after
+    // the read it protects is not a lock.
+    const { tx, calls, locks } = txWithDrafts([draft("a")]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+
+    expect(locks).toHaveLength(1);
+    // ZERO statements preceded it — the strongest form of "before the drafts are
+    // read", and it does not weaken if a statement is added ahead of the SELECT.
+    expect(locks[0].precededCalls).toBe(0);
+    expect(locks[0].params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, "ws-1"]);
+    // Non-vacuous: the phase really did go on to read something.
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("takes the identity-mutation lock even when there is nothing to promote", async () => {
+    // The positive control's mirror, and it is not pedantry: the natural
+    // "optimization" is to lock only once there is work, which reintroduces
+    // exactly the window the lock closes — the decision about whether there is
+    // work is itself made from a read of the collision set.
+    const { tx, locks } = txWithDrafts([]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+    expect(locks).toHaveLength(1);
+    expect(locks[0].precededCalls).toBe(0);
+  });
+
+  it("uses a namespace that is neither reconcile's nor the vocabulary's", () => {
+    // 4771 would serialize publish against the extraction fiber, which this
+    // module refuses at length ("Refuse the row, never the workspace"). 5022 is
+    // held by the region importer for its whole edge-insert loop. Both are
+    // spelled as literals rather than imported, so a rename cannot make this
+    // test agree with a regression by construction.
+    expect(IDENTITY_MUTATION_LOCK_NAMESPACE).not.toBe(4771);
+    expect(IDENTITY_MUTATION_LOCK_NAMESPACE).not.toBe(5022);
   });
 
   it("scopes every statement to the workspace", async () => {
@@ -503,7 +571,14 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     const targets = calls.find((c) => c.sql.includes("superseded_id"));
     expect(targets?.params).toEqual(["ws-1", ["new-1"]]);
     const stamp = calls.find((c) => c.sql.includes("valid_to = now()"));
-    expect(stamp?.params).toEqual(["ws-1", ["old-1"]]);
+    // THREE binds since #5024: the workspace, the ids to stamp, and — `$3` — the
+    // same promotable-`single` draft list the targets SELECT was given, so the
+    // stamp re-asks the question that produced `$2` instead of trusting it
+    // across the window an alias removal can land in. `$3` MUST equal the
+    // targets SELECT's `$2`; a stamp that re-checked against a different set
+    // would be a second spelling of "what collides".
+    expect(stamp?.params).toEqual(["ws-1", ["old-1"], ["new-1"]]);
+    expect(stamp?.params[2]).toEqual(targets?.params[1]);
     const edge = calls.find((c) => /^\s*INSERT/i.test(c.sql));
     expect(edge?.sql).toContain("'supersedes'");
     expect(JSON.parse(String(edge?.params[1]))).toEqual([{ newId: "new-1", oldId: "old-1" }]);
@@ -746,6 +821,45 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(SUPERSEDE_STAMP_SQL).toContain("status = 'published'");
     expect(SUPERSEDE_STAMP_SQL).toContain("invalidated_at IS NULL");
     expect(SUPERSEDE_STAMP_SQL).toContain("valid_to IS NULL");
+  });
+
+  it("the collision stamp is the explicit stamp PLUS one predicate — one spelling of the valid_to write", () => {
+    // #4912 requires ONE spelling of the `valid_to` write; #5024 needed publish
+    // to re-check the collision and `correct_fact` not to, because a human
+    // correction has no colliding draft and never did. Both come out of one
+    // builder, and this is what says so: the explicit statement is the collision
+    // statement with the `EXISTS` arm removed, character for character.
+    //
+    // Comparing the STRINGS rather than asserting each carries the same
+    // predicates — a checklist would pass while the two SET clauses drifted, and
+    // the SET clause is the write.
+    const exists = SUPERSEDE_STAMP_SQL.indexOf("     AND EXISTS (");
+    expect(exists).toBeGreaterThan(0);
+    const withoutRecheck =
+      SUPERSEDE_STAMP_SQL.slice(0, exists) +
+      SUPERSEDE_STAMP_SQL.slice(SUPERSEDE_STAMP_SQL.indexOf("   RETURNING"));
+    expect(withoutRecheck).toBe(SUPERSEDE_STAMP_EXPLICIT_SQL);
+
+    // The explicit arm has no `$3`, so `correction.ts` binding two params is not
+    // an under-supply that Postgres would reject.
+    expect(SUPERSEDE_STAMP_EXPLICIT_SQL).not.toContain("$3");
+    expect(SUPERSEDE_STAMP_SQL).toContain("$3::uuid[]");
+  });
+
+  it("the collision re-check uses the SAME arms as the targets SELECT, and drops only the draft-side one", () => {
+    // The re-check must not be a paraphrase — `supersessionCollisionPredicate`
+    // is the one place the arms are written, and this proves the stamp got them
+    // from there rather than restating them.
+    const recheck = SUPERSEDE_STAMP_SQL.slice(SUPERSEDE_STAMP_SQL.indexOf("AND EXISTS ("));
+    expect(recheck).toContain(supersessionCollisionPredicate("d", "p"));
+
+    // …and that it deliberately does NOT carry the draft-side predicate. The
+    // stamp runs AFTER the promote UPDATEs, so every id in `$3` is `published`
+    // by then and `d.status = 'draft'` would match zero rows — silently
+    // disabling the whole guard while looking stricter than the alternative.
+    // This is the assertion that would have caught it.
+    expect(recheck).not.toContain(supersedingDraftPredicate("d"));
+    expect(recheck).not.toContain("d.status = 'draft'");
   });
 });
 

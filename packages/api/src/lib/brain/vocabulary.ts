@@ -132,11 +132,19 @@ void _executorsInterchangeable;
  * Exported so the region importer can take the same lock — it is the one other
  * vocabulary mutation path, and an unlocked writer makes the claim below false.
  *
- * It is NOT distinct from the publish gate's, because the publish gate takes no
- * advisory lock at all — ADR-0037 §7 says so in as many words, and reserves a
- * separate identity-mutation namespace for the publish-time re-key that does not
- * exist yet. Recorded because an earlier version of this comment claimed a
- * distinction from a lock that has never been written.
+ * It WAS not distinct from the publish gate's, because until #5024 the publish
+ * gate took no advisory lock at all. It is now: ADR-0037 §7's separate
+ * identity-mutation namespace exists as `IDENTITY_MUTATION_LOCK_NAMESPACE`
+ * (`lib/brain/identity.ts`, 5024), publish takes that one, and this one stays
+ * what it always was — vocabulary mutation, held by the decide seam and the
+ * region importer.
+ *
+ * The ORDER between the two is fixed and load-bearing: the one caller that takes
+ * both (`vocabulary-decide.ts`) takes THIS one first. Nothing holding 5024 ever
+ * asks for 5022, so no wait-for cycle can form. See
+ * {@link IDENTITY_MUTATION_LOCK_NAMESPACE} for why neither this namespace nor
+ * reconcile's 4771 could serve publish, and #5022's own review for the 40P01 a
+ * lock-redundancy argument produced when it got this wrong.
  */
 export const VOCABULARY_LOCK_NAMESPACE = 5022;
 

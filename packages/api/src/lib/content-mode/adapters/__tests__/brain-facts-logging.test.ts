@@ -51,6 +51,11 @@ void mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 const { promoteBrainFacts } = await import("@atlas/api/lib/content-mode/adapters/brain-facts");
+// Imported the same way as the module under test rather than statically: a
+// static import is hoisted above the `mock.module` call above, and while
+// `identity.ts` happens not to pull the logger today, "happens not to" is the
+// property that changes silently.
+const { IDENTITY_MUTATION_LOCK_SQL } = await import("@atlas/api/lib/brain/identity");
 const { PublishPhaseError } = await import("@atlas/api/lib/content-mode/port");
 type ModeTxClient = import("@atlas/api/lib/content-mode/port").ModeTxClient;
 
@@ -82,6 +87,10 @@ function tx(
 ): ModeTxClient {
   return {
     query: async (sql, params = []) => {
+      // The identity-mutation advisory lock (#5024) — void, and nothing here
+      // reads it. The sibling double records it; this one does not need to,
+      // since every assertion in this file is about log output.
+      if (sql === IDENTITY_MUTATION_LOCK_SQL) return { rows: [] };
       if (/^\s*UPDATE/i.test(sql)) {
         // The plain promote binds an id array; the widening one binds a jsonb
         // string of `{id, grant}` entries. Both report a row per target.

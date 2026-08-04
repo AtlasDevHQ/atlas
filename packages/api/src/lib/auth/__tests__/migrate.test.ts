@@ -571,6 +571,10 @@ describe("migrateAuthTables", () => {
             // brain tables and touches nothing Better Auth owns — same
             // reasoning as 0187 and 0188 above.
             { name: "0189_brain_vocabulary.sql" },
+            // 0190 (the alias proposal queue and its rejection memory, #5023)
+            // creates one new brain table and touches nothing Better Auth
+            // owns — same reasoning as 0187–0189 above.
+            { name: "0190_brain_vocabulary_proposal.sql" },
           ],
         };
       }

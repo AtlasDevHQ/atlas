@@ -98,10 +98,22 @@ CREATE TABLE IF NOT EXISTS brain_vocabulary_edge (
   -- stored `Priced At` on the `from` side is an alias that can never match.
   from_norm TEXT NOT NULL,
   to_norm TEXT NOT NULL,
-  -- The approver. NULLABLE because an auto-approved warehouse-derived edge has
-  -- no human behind it (ADR-0037 §6's auto-approve split, implemented by
-  -- #5023) — and a sentinel like 'system' would be indistinguishable from a
-  -- user id, at the one column an audit of a workspace-wide re-key reads first.
+  -- The approver, and the one column an audit of a workspace-wide re-key reads
+  -- first. THREE legal values, and #5023 added the third:
+  --
+  --   NULL             — auto-approved. No human was behind it (ADR-0037 §6's
+  --                      auto-approve split). A sentinel like 'system' here
+  --                      would be indistinguishable from a user id, which is
+  --                      why the machine case is the NULL one.
+  --   'local-operator' — a human on a self-hosted no-auth deployment, where
+  --                      `unauthenticated-local` is the only origin there is
+  --                      and carries no user id. Written rather than NULL so a
+  --                      human re-key does not read as a machine one; the
+  --                      sentinel is `correction.ts`'s, not a new invention.
+  --   anything else    — the approving user's id.
+  --
+  -- So `approved_by IS NOT NULL` means "a human", and it means it by
+  -- construction rather than by luck.
   approved_by TEXT,
   approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- AT-MOST-ONE-PARENT, structurally. `from_norm` in the key is what makes

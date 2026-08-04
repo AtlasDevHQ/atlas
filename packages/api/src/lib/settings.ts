@@ -764,6 +764,67 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
 
+  // The alias auto-approve split (#5023, ADR-0037 §6). Modelled on the two
+  // keys above and NOT a copy of their defaults, because the two subsystems
+  // fail in opposite directions.
+  //
+  // `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` ships EMPTY — auto-approval off
+  // until an admin opts in — and that is right for a YAML rewrite a human can
+  // read and revert. Shipping the alias split off would be wrong, and T11
+  // (#5016) §3(b) says why: day one the vocabulary and the entity store are
+  // empty for every
+  // workspace, so the first producer run emits an edge per entity. If each is a
+  // proposal, the queue is `pattern-tiers.ts`'s named anti-goal — CONTEXT.md's
+  // "a review queue full of seen-once noise" — at a scale nobody reviews. So
+  // the shipped default is ADR-0037 §6's own split rather than "nothing".
+  //
+  // What the knob buys is the ability to turn the split OFF (empty threshold
+  // → everything queues) or to widen it — never a decision an implementer had
+  // to make for the operator.
+  //
+  // ⚠️ ONE CONSEQUENCE OF DEFAULTING ON, recorded rather than solved. A
+  // workspace that opts OUT does so with a DB override, and `loadSettings`
+  // treats a failed load as non-fatal (it logs at error and leaves the cache at
+  // its last good state — empty on first boot). So on a boot where the settings
+  // load failed, an opted-out workspace resolves through the tier chain to this
+  // default and auto-approval is back ON. The two keys above cannot reach that
+  // state because their default is already the off position; these can.
+  // Dormant today — nothing calls the seam until #5034's producer — and the
+  // repair belongs with whatever makes a failed settings load fail closed
+  // generally, not with a bespoke latch on this one authority path.
+  {
+    key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+    section: "Intelligence",
+    label: "Alias Auto-Approve Threshold",
+    description:
+      "Alias proposals with confidence >= this value and an eligible source class are approved without review (leave empty to queue everything)",
+    type: "string",
+    // 1, not 0.9: the only class eligible below is a warehouse primary key,
+    // which is certain by construction. A threshold under 1 would let a future
+    // producer's merely-probable edge auto-approve on a knob nobody re-read.
+    default: "1",
+    envVar: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+    section: "Intelligence",
+    label: "Alias Auto-Approve Sources",
+    description:
+      "Comma-separated alias proposal source classes eligible for auto-approval (warehouse_key, extractor, seam, human). Others always queue for review.",
+    type: "string",
+    // T11 (#5016) §3(b), verbatim: "Warehouse-derived entity edges backed by a
+    // primary key may auto-approve. Extractor-derived and seam-proposed edges
+    // always queue." ADR-0037 §6 restates the same rule with a semicolon and a
+    // lowercase E — the quotation marks belong to the issue comment, which is
+    // why the attribution does. Widening this to `extractor` is a real decision — an extractor
+    // edge is an LLM's guess about which two spellings name one thing, and
+    // approving it re-keys the corpus with no human in front of it.
+    default: "warehouse_key",
+    envVar: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+    scope: "workspace",
+  },
+
   // Demo
   {
     key: "ATLAS_DEMO_INDUSTRY",

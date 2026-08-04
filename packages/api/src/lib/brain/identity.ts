@@ -392,13 +392,15 @@ export const identityVocabulary: ClaimVocabulary = {
  * afterwards without a re-key.
  *
  * Spelled explicitly, every such site is `grep identityVocabulary` and every new
- * one is a compile error. `reconcile.ts` threads the workspace's vocabulary
- * through the REQUIRED `ReconcileRequest.vocabulary` — three lookups, one per
- * slot, since #5022 made the vocabulary position-scoped — and `correction.ts`
- * through the required `CorrectionRequest.vocabulary` (on the REQUEST, not the
- * deps bag beside the test seams: it is workspace state). Everything else names
- * {@link identityVocabulary} out loud, which is the choice being made and should
- * read like one.
+ * one is a compile error — which is exactly how #5023 found the four that had
+ * to change. `reconcile.ts` threads the workspace's vocabulary through the
+ * REQUIRED `ReconcileRequest.vocabulary` — three lookups, one per slot, since
+ * #5022 made the vocabulary position-scoped — and `correction.ts` through the
+ * required `CorrectionRequest.vocabulary` (on the REQUEST, not the deps bag
+ * beside the test seams: it is workspace state). Production supplies both from
+ * `loadWorkspaceVocabulary`; {@link identityVocabulary} survives as the answer
+ * for a workspace that has approved nothing, and as what a test names when it
+ * means "no vocabulary" rather than "I forgot".
  *
  * Note what this does NOT do: collapse a null key into a sentinel so the
  * eventual `SET NOT NULL` can land. See {@link identityKey}'s ⚠️ — the

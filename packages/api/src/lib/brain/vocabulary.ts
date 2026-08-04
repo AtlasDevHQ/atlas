@@ -63,24 +63,29 @@
  *
  * ## What this module is NOT
  *
- * Not the approval flow. #5023 owns the proposal queue, the `decideAmendment`
- * seam these primitives run inside, the auto-approve split (warehouse-derived
- * entity edges may auto-approve; extractor- and seam-proposed edges queue), and
- * #4507's permanent rejection memory. Not the UI (#5025). Not cardinality
- * (#5027) — see {@link recomputeEffectiveTargets} for the room left for it.
- * Not the import-time merge of two workspaces' vocabularies (#5036).
+ * Not the approval flow. `lib/brain/vocabulary-decide.ts` (#5023) owns the
+ * proposal queue, the `decideAmendment`-shaped seam these primitives run
+ * inside, the auto-approve split (warehouse-derived entity edges may
+ * auto-approve; extractor- and seam-proposed edges queue), and #4507's
+ * permanent rejection memory. Not the UI (#5025). Not cardinality (#5027) —
+ * see {@link recomputeEffectiveTargets} for the room left for it. Not the
+ * import-time merge of two workspaces' vocabularies (#5036).
  *
- * ## ⚠️ Not WIRED for reading yet, and that is easy to miss
+ * ## WIRED for reading since #5023
  *
- * {@link loadClaimVocabulary} has NO production caller. `reconcile.ts` and
- * `correction.ts` take a {@link ClaimVocabulary} and every production call site
- * passes `identityVocabulary`, so no shipped code path consults these tables at
- * read time — the only production WRITER is the region importer
- * (`admin-migrate.ts`). #5023's decide seam is what makes the store readable.
+ * {@link loadWorkspaceVocabulary} is the production entry point, and it has
+ * four call sites: the extraction fiber (`extract.ts` — THE ingest path) and
+ * the three `correctFact` entry points. Until #5023 every one of them named
+ * `identityVocabulary` and no shipped path consulted these tables at read time;
+ * the earlier version of this block said so at length, and deleting it rather
+ * than editing it is deliberate — a warning that has come true is not a
+ * warning.
  *
- * Stated because every other doc block around this slice reads as though `alias`
- * consults the closure today, and because it is exactly the line that becomes
- * false at #5023 — which invites its own deletion.
+ * What that turns on is worth stating once, in the module that owns it: two
+ * spellings of one claim now key into ONE slot, so they corroborate instead of
+ * duplicating, earn tension edges against each other, and become supersedable
+ * at the publish gate. Every one of those is the point, and every one of them
+ * is a behaviour change on a live corpus.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -731,9 +736,9 @@ export async function recomputeEffectiveTargets(
  * edges, so the join is total) and buys the completeness check for free, in the
  * same snapshot.
  *
- * ⚠️ NO PRODUCTION CALLER yet. Every shipped path resolves to
- * `identityVocabulary`; #5023's decide seam is what puts a real vocabulary in
- * front of ingest. Until then this is exercised only by `vocabulary-pg.test.ts`.
+ * Reached in production through {@link loadWorkspaceVocabulary}, which supplies
+ * the internal pool — see there for why a pool is the correct executor for a
+ * READ when the mutators refuse one.
  *
  * ## A partial closure is refused, not silently absorbed
  *
@@ -818,4 +823,27 @@ export async function loadClaimVocabulary(
     predicate: lookupFor("predicate"),
     object: lookupFor("object"),
   };
+}
+
+/**
+ * {@link loadClaimVocabulary} against the internal pool — the call every
+ * production consumer makes.
+ *
+ * Exists so the four sites that used to name `identityVocabulary` (#5023: the
+ * extraction pipeline and the three `correctFact` entry points) spell one
+ * function rather than each reaching for the pool, and so a fifth consumer has
+ * an obvious right answer to copy. The pool is the correct executor here and is
+ * NOT a loosening of {@link loadClaimVocabulary}'s contract: reading takes no
+ * lock and needs no transaction — only the MUTATORS do, and they refuse a pool
+ * outright.
+ *
+ * The DB import is dynamic for the reason `decide.ts` gives at its own seam: it
+ * keeps `db/internal` out of this module's static graph, so a suite that
+ * partial-mocks the vocabulary store does not have to re-export the pool
+ * machinery it never calls. Everything above this line still has no database
+ * dependency at all.
+ */
+export async function loadWorkspaceVocabulary(workspaceId: string): Promise<ClaimVocabulary> {
+  const { getInternalDB } = await import("@atlas/api/lib/db/internal");
+  return loadClaimVocabulary(getInternalDB(), workspaceId);
 }

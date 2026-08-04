@@ -381,8 +381,9 @@ export interface ReconcileRequest {
    * other row in the workspace — an under-match spread corpus-wide, invisible at
    * rest, unfixable without a re-key. A failed entity resolution flags one
    * candidate provisional; a forgotten vocabulary is silent and corpus-wide.
-   * Every call site therefore names `identityVocabulary` out loud, and #5023
-   * cannot wire the loader into ingest and miss one.
+   * Every call site therefore names its vocabulary out loud, which is what let
+   * #5023 wire the loader into ingest without missing one: the four sites that
+   * needed it were `grep identityVocabulary`, and a fifth would not compile.
    *
    * ⚠️ POSITION-SCOPED, and #5020 shipped this as a single bare `AliasLookup`,
    * which was wrong in a way worth recording rather than quietly fixing. One

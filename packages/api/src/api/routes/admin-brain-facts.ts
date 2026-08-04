@@ -85,7 +85,7 @@ import {
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
-import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 
 const DEFAULT_LIMIT = 50;
 
@@ -509,13 +509,32 @@ adminBrainFacts.openapi(retractRoute, async (c) => {
       // The `retract` correction verb — the SAME code path `/correct` runs
       // (#4915): tombstone + correction episode + dependent re-review flags,
       // in one transaction. One retract semantics, not two.
+
+      // The workspace's real vocabulary since #5023. REQUIRED on every verb,
+      // and the loaded VALUE is read by `supersede` alone — so on THIS path
+      // nothing consults it. The load is not free, though, and the honest
+      // version says so: it costs a query, and it PROPAGATES
+      // `VocabularyClosureError`, so a half-rebuilt closure fails retract too —
+      // the withdrawal verb, during exactly the incident where an operator
+      // wants it.
+      //
+      // Accepted rather than repaired here, and the alternative is recorded so
+      // the next reader need not re-derive it: making
+      // `CorrectionRequest.vocabulary` a thunk that only the supersede arm
+      // forces would make the dependency lazy and truthful, at the cost of
+      // rewriting ~60 test call sites — for a state only a hand-written write
+      // or an aborted restore produces, and in which ingest is already refusing
+      // wholesale. The argument for why the value must be the REAL vocabulary
+      // lives on the `/correct` call site below, which is where it is read.
       const outcome = yield* Effect.tryPromise({
-        // `identityVocabulary` named out loud because the field is required
-        // (`identity.ts`, "`alias` is REQUIRED"). No production path loads a real
-        // vocabulary yet; #5023's decide seam is what changes this line, and the
-        // compiler is what stops it being missed.
-        try: () =>
-          correctFact({ ctx, factId, verb: "retract", requestId, vocabulary: identityVocabulary }),
+        try: async () =>
+          correctFact({
+            ctx,
+            factId,
+            verb: "retract",
+            requestId,
+            vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
+          }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
@@ -596,7 +615,7 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
 
       const ctx = yield* reviewerContext(mode, user, orgId, requestId);
       const outcome: CorrectionOutcome = yield* Effect.tryPromise({
-        try: () =>
+        try: async () =>
           correctFact({
             ctx,
             factId,
@@ -608,8 +627,15 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
               ? { object: body.replacement.object, validFrom: replacementValidFrom }
               : undefined,
             requestId,
-            // See the `retract` call above — required, empty until #5023.
-            vocabulary: identityVocabulary,
+            // `correctFact` reads this at BOTH of the `supersede` verb's key
+            // sites — the guard's slot comparison and the replacement claim it
+            // hands to reconcile — so it has to be the same function the ingest
+            // path used, or the guard refuses a different set than the corpus
+            // considers identical and the replacement lands keyed under a
+            // different identity function than every other row in the
+            // workspace. A load failure propagates: there is no degraded
+            // answer, and the empty vocabulary is not a safe one.
+            vocabulary: await loadWorkspaceVocabulary(ctx.workspaceId),
           }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });

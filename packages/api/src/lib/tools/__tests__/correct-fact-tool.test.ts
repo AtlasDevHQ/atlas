@@ -30,7 +30,17 @@ let mockRequestContext:
 let mockHasInternalDB = true;
 let mockAuthMode: AuthMode = "none";
 
-const fakePool = { query: async () => ({ rows: [] as unknown[] }) };
+// #5023 — see the twin in `admin-brain-facts.test.ts`. The loader runs for real
+// through this handle, and an empty vocabulary answers identically to the empty
+// stand-in, so the alias row is what makes the assertion falsifiable.
+const VOCABULARY_ROWS = [
+  { slot_position: "predicate", norm: "is priced at", effective_target: "priced at" },
+];
+const fakePool = {
+  query: async (sql: string) => ({
+    rows: (sql.includes("brain_vocabulary_edge") ? VOCABULARY_ROWS : []) as unknown[],
+  }),
+};
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
@@ -191,6 +201,20 @@ describe("degraded paths", () => {
 });
 
 describe("outcome mapping", () => {
+  it("hands correctFact the WORKSPACE'S vocabulary, not an identity stand-in (#5023)", async () => {
+    // See the twin in `admin-brain-facts.test.ts`. The source-level tripwire in
+    // `vocabulary-decide-pg.test.ts` only catches a reverted IMPORT; an inline
+    // identity vocabulary at the call site passes it. This asserts the value.
+    await run({ reason: "wrong" });
+    expect(correctCalls).toHaveLength(1);
+    const vocabulary = correctCalls[0]!.vocabulary as {
+      predicate: (n: string) => string;
+      object: (n: string) => string;
+    };
+    expect(vocabulary.predicate("is priced at")).toBe("priced at");
+    expect(vocabulary.object("is priced at")).toBe("is priced at");
+  });
+
   it("ships the correction payload plus a relayable summary on success", async () => {
     const out = await run({ reason: "wrong" });
     expect(out.corrected).toBe(true);

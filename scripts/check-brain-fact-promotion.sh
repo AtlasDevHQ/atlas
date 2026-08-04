@@ -147,6 +147,31 @@
 #     rationale in the module), and none of those flag writes touches a gated
 #     column.
 #
+#   packages/api/src/lib/brain/vocabulary-decide.ts
+#     The alias decide transaction (#5023, ADR-0037 §6/§7) — the IDENTITY arm's
+#     sanctioned writer, and the only entry here that is a PRE-REGISTRATION:
+#     this file writes no gated column today, and is not even a scan candidate
+#     (it names `brain_facts` only in prose, and comments are stripped before
+#     matching). The rationale is recorded now rather than
+#     when the write lands, for the reason the two `_cmp` arms are gated ahead
+#     of their schema — the guard must never be the thing lagging, and a
+#     carve-out argued at the moment its writer arrives is one argued under
+#     deadline.
+#     WHY it is the right home: a key decides what a claim collides with, and an
+#     alias approval changes that for existing rows. §7 puts the drift re-key
+#     inside this transaction — TypeScript at request time, NOT another
+#     migration (0187, re-run by 0188, was the day-one backfill) — because
+#     the re-key is triggered BY the approval and needs the same workspace
+#     advisory lock the edge write takes. It is the one place the vocabulary
+#     version that authorized the re-key is known. #5024 lands that write.
+#     COST, stated because this list has no per-column granularity: an entry
+#     exempts a FILE, so this also exempts the seam for `status`, `visible_to`
+#     and `valid_to` — columns it has no business writing. What holds that in
+#     place is the module's own scope (it writes `brain_vocabulary_*`, never
+#     `brain_facts`) plus the register in docs/development/content-mode.md; if
+#     #5024 needs one of the other three, that is a NEW argument rather than an
+#     inherited one.
+#
 # Comments are stripped before matching so an explanatory comment in a source
 # file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in
 # neither the search roots nor `--include`, so the gate can never scan itself.)
@@ -184,9 +209,11 @@ ALLOWLIST=(
   "packages/api/src/lib/content-mode/adapters/brain-facts.ts"
   "packages/api/src/api/routes/admin-migrate.ts"
   "packages/api/src/lib/brain/correction.ts"
+  "packages/api/src/lib/brain/vocabulary-decide.ts"
   "create-atlas/templates/*/src/lib/content-mode/adapters/brain-facts.ts"
   "create-atlas/templates/*/src/api/routes/admin-migrate.ts"
   "create-atlas/templates/*/src/lib/brain/correction.ts"
+  "create-atlas/templates/*/src/lib/brain/vocabulary-decide.ts"
 )
 
 # `BRAIN_PROMOTION_ROOT` points the scan at a throwaway tree — used ONLY by the

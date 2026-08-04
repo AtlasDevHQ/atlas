@@ -3751,3 +3751,115 @@ export const brainVocabularyTarget = pgTable(
     }).onDelete("restrict"),
   ],
 );
+
+// brain_vocabulary_proposal — the alias queue and its permanent rejection
+// memory (0190, #5023, ADR-0037 §6 "Authority: `decideAmendment`'s shape").
+//
+// A THIRD relation rather than a `status` column on `brainVocabularyEdge`, and
+// the reason is that table's primary key. `(workspaceId, slotPosition,
+// fromNorm)` IS the at-most-one-parent invariant, so a pending row would
+// occupy the slot an approved edge needs — a queue entry vetoing a decision —
+// and `recomputeEffectiveTargets`, which reads the edge table wholesale, would
+// compose a merge nobody approved into the closure.
+//
+// The identity is the UNORDERED pair, which is what the two generated columns
+// are for. Direction is not fixed until approval (a seam-proposed candidate is
+// undirected when neither side is warehouse-derived), so an ordered identity
+// would let a producer route around a rejection just by emitting the pair the
+// other way — and approval SWAPS `fromNorm`/`toNorm` to set the direction,
+// which both generated columns are invariant under. The unique constraint is
+// therefore total: one row per pair for all time, its statuses the pair's whole
+// history. That is what lets `approved → rejected` — a REMOVAL — write the
+// rejection memory that stops the producer re-emitting what a human removed.
+//
+// No grant column, for `brainVocabularyEdge`'s reason: the vocabulary is the
+// one piece of brain state with no ACL, permanently, and a proposal is
+// vocabulary state. Proposal VISIBILITY is positional and belongs to the queue
+// read (#5025 over #5034), computed from the evidence rows rather than stored
+// here as a second, drifting ACL.
+export const brainVocabularyProposal = pgTable(
+  "brain_vocabulary_proposal",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    slotPosition: text("slot_position").notNull(),
+    // The proposed direction — the producer's claim for a directed proposal,
+    // and merely the arrival order for an undirected one. Approval is what
+    // fixes it (ADR-0037 §6: approval sets direction where absent).
+    fromNorm: text("from_norm").notNull(),
+    toNorm: text("to_norm").notNull(),
+    // The unordered identity, GENERATED so no writer can compute the pair key
+    // itself and get the ordering wrong, and so a direction-setting approval
+    // leaves the row's identity untouched.
+    pairLow: text("pair_low").generatedAlwaysAs(sql`LEAST(from_norm, to_norm)`),
+    pairHigh: text("pair_high").generatedAlwaysAs(sql`GREATEST(from_norm, to_norm)`),
+    // FALSE when neither side is warehouse-derived, so no producer can say
+    // which spelling is canonical. Approving one of these without a supplied
+    // direction is refused rather than guessed — guessing is the silent
+    // workspace-wide re-key the vocabulary exists to put a human in front of.
+    directed: boolean("directed").notNull(),
+    // The ONLY input to auto-approve eligibility: warehouse-derived entity
+    // edges backed by a primary key may auto-approve; extractor- and
+    // seam-proposed edges always queue (ADR-0037 §6).
+    sourceClass: text("source_class").notNull(),
+    // 0–1. The threshold half of the auto-approve knob reads it, on
+    // `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD`'s model.
+    confidence: doublePrecision("confidence").notNull(),
+    status: text("status").notNull().default("pending"),
+    // NOT NULL, unlike `brainVocabularyEdge.approvedBy` — there, NULL carries
+    // the meaning "auto-approved, no human"; here every proposal has an author.
+    proposedBy: text("proposed_by").notNull(),
+    proposedAt: timestamp("proposed_at", { withTimezone: true }).notNull().defaultNow(),
+    // The claim token. Unobservable today (claim, apply and stamp share one
+    // transaction, so `applying` never commits) and kept for #5024: ADR-0037 §7
+    // puts the drift re-key inside this decide transaction, and the moment that
+    // rewrite wants a transaction of its own this becomes the takeover token
+    // `decide.ts` describes.
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // Same three-valued domain as `brainVocabularyEdge.approvedBy`: NULL for
+    // auto-approval, `local-operator` for a human on a no-auth deployment,
+    // otherwise a user id. See migration 0189's column comment.
+    reviewedBy: text("reviewed_by"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "ck_brain_vocabulary_proposal_slot_position",
+      sql`slot_position IN ('subject', 'predicate', 'object')`,
+    ),
+    check(
+      "ck_brain_vocabulary_proposal_status",
+      sql`status IN ('pending', 'applying', 'approved', 'rejected')`,
+    ),
+    check(
+      "ck_brain_vocabulary_proposal_source_class",
+      sql`source_class IN ('warehouse_key', 'extractor', 'seam', 'human')`,
+    ),
+    check(
+      "ck_brain_vocabulary_proposal_confidence",
+      sql`confidence >= 0 AND confidence <= 1`,
+    ),
+    check(
+      "ck_brain_vocabulary_proposal_norms_present",
+      sql`from_norm <> '' AND to_norm <> ''`,
+    ),
+    check("ck_brain_vocabulary_proposal_not_self", sql`from_norm <> to_norm`),
+    // One row per pair, for all time. THIS is the rejection memory: a rejected
+    // row occupies the pair's only slot, so a re-proposal cannot insert beside
+    // it and the refusal is structural rather than a race between a SELECT and
+    // an INSERT.
+    uniqueIndex("uq_brain_vocabulary_proposal_pair").on(
+      t.workspaceId,
+      t.slotPosition,
+      t.pairLow,
+      t.pairHigh,
+    ),
+    // The queue read. The unique constraint leads with `workspaceId` but
+    // continues on the pair columns, so it is not an access path for a
+    // status-filtered scan. Partial, because decided rows are rejection MEMORY
+    // — read by identity through the constraint above, never listed.
+    index("idx_brain_vocabulary_proposal_pending")
+      .on(t.workspaceId, t.slotPosition, t.proposedAt.desc())
+      .where(sql`status IN ('pending', 'applying')`),
+  ],
+);

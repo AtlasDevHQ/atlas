@@ -126,7 +126,8 @@ import {
   type ReconcileEpisodeRef,
   type ReconcileReport,
 } from "@atlas/api/lib/brain/reconcile";
-import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import type { ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 
 const log = createLogger("brain.extract");
 
@@ -695,6 +696,8 @@ export interface BrainExtractionDeps {
   readonly resolveModel?: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
   /** Defaults to `reconcileFacts`. */
   readonly reconcile?: typeof reconcileFacts;
+  /** Defaults to {@link loadWorkspaceVocabulary}. */
+  readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
   /** Test clock. */
   readonly now?: () => Date;
 }
@@ -734,6 +737,7 @@ export function runBrainExtractionCycle(
   const extract = deps.extract ?? llmFactExtractor;
   const resolveModel = deps.resolveModel ?? resolveExtractionModel;
   const reconcile = deps.reconcile ?? reconcileFacts;
+  const loadVocabulary = deps.loadVocabulary ?? loadWorkspaceVocabulary;
   const now = deps.now ?? (() => new Date());
 
   // `Effect.suspend` so the per-tick mutable state below is allocated per RUN
@@ -868,7 +872,8 @@ export function runBrainExtractionCycle(
         excludedThisTick = excluded.length;
         return internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE, excluded]);
       },
-      applyRow: (row) => extractEpisode(row, { extract, modelFor, reconcile, now, failures }),
+      applyRow: (row) =>
+        extractEpisode(row, { extract, modelFor, reconcile, loadVocabulary, now, failures }),
       defectOutcome: (error) => ({ kind: "failed", error }),
       tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
       emitCycleAudit: settleAndAudit,
@@ -880,6 +885,7 @@ interface ApplyDeps {
   readonly extract: FactExtractor;
   readonly modelFor: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
   readonly reconcile: typeof reconcileFacts;
+  readonly loadVocabulary: (workspaceId: string) => Promise<ClaimVocabulary>;
   readonly now: () => Date;
   /**
    * Consecutive-failure ledger — see the quarantine note. THE SAME map the
@@ -1006,17 +1012,40 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
     modelId: resolved.modelId,
   });
 
+  // The extraction pipeline is THE ingest path, so this is the workspace's real
+  // vocabulary — one snapshot, materialized before any candidate is keyed, so
+  // the whole episode keys against one function rather than against reads that
+  // could straddle an approval.
+  //
+  // Loaded HERE rather than before the model call, and the gap is the reason: a
+  // vocabulary read minutes before `reconcile` would be a staler snapshot than
+  // one read immediately before it, and reconcile's corroboration lookup joins
+  // against keys other writers materialized in the meantime.
+  //
+  // The cost of that ordering is one wasted model call per failing episode, and
+  // the failure ledger does NOT cap it the way it caps a poison episode: a
+  // `VocabularyClosureError` is workspace-scoped and deterministic, so it fails
+  // every episode of that workspace, and the drain's backing-off exclusion —
+  // whose whole purpose is to let the head advance — hands the next tick a fresh
+  // batch. The spend therefore scales with the workspace's unextracted backlog,
+  // not with `QUARANTINE_AFTER_FAILURES`. Accepted as the honest cost of the
+  // fresher snapshot, and stated because "the ledger caps it" is the thing a
+  // reader would otherwise assume.
+  //
+  // NOT caught. `vocabulary.ts` refuses to answer against a partial closure, and
+  // degrading to `identityVocabulary` here would key the whole episode into the
+  // slot the vocabulary exists to move it OUT of — an under-match today, an
+  // over-match the moment an entry merges two spellings, and neither visible at
+  // rest. The throw lands on the drain's defect path, which charges a strike and
+  // leaves the episode queued for the next cycle.
+  const vocabulary = await deps.loadVocabulary(episode.workspaceId);
+
   const report = await deps.reconcile({
     episode,
     candidates,
     producer: BRAIN_EXTRACTION_PRODUCER,
     extractedAt,
-    // The extraction pipeline is THE ingest path, so this is the call site
-    // #5023 must change to `await loadClaimVocabulary(pool, episode.workspaceId)`.
-    // Required rather than defaulted precisely so that change cannot be
-    // forgotten here while landing everywhere else (`identity.ts`, "`alias` is
-    // REQUIRED").
-    vocabulary: identityVocabulary,
+    vocabulary,
   });
 
   // The stage refused the whole episode despite our pre-flight passing. It

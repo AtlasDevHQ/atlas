@@ -5,11 +5,17 @@
  *
  *   key = alias( lexicalNorm( surface ) )
  *
- * This module owns the INNER one. `alias` — the curated, versioned workspace
- * vocabulary — is a later slice, and until it exists it is the identity
- * function, so every key produced today is exactly {@link identityKey} of the
- * surface: `lexicalNorm(surface)`, or `null` where that is empty. That is why
- * this slice is expected to change no observable behaviour at all.
+ * This module owns the INNER one, and since #5020 it also owns the composition
+ * ({@link slotKey}). `alias` — the curated, versioned workspace vocabulary
+ * (ADR-0037 §6 / #5016) — does not exist yet, and until it does it is the
+ * identity function, so every key produced today is exactly {@link identityKey}
+ * of the surface: `lexicalNorm(surface)`, or `null` where that is empty.
+ *
+ * That made #5019 — the columns and the backfill — a slice with no observable
+ * behaviour at all. It does NOT make #5020 one: materializing these keys and
+ * pivoting the three slot consumers onto them is exactly what turns two
+ * spellings of a claim into one, and `reconcile.ts`'s header owns that
+ * consequence.
  *
  * ## What `lexicalNorm` is, and the harder question of what it is NOT
  *
@@ -109,9 +115,13 @@ const foldAscii = (c: string): string => String.fromCharCode(c.charCodeAt(0) + 3
  * The lexical layer of a claim's identity key.
  *
  * TOTAL — every string has a norm, including the empty one. Totality is not a
- * convenience: the vocabulary's forest invariant rests on `f(f(x)) === f(x)`,
- * and a partial function has no fixpoint to reason about. A surface made only
- * of separators norms to `""`.
+ * convenience: the vocabulary composes over this function and relies on
+ * `f(f(x)) === f(x)` (ADR-0037 §6, and {@link slotKey}, which re-norms the
+ * vocabulary's answer on the strength of it), and a partial function has no
+ * fixpoint to reason about. A surface made only of separators norms to `""`.
+ * (An earlier version of this line called that a "forest invariant" — §6
+ * retracts T3's forest framing by name, and the ADR lists it again under
+ * "Corrections to the record".)
  *
  * `""` is a norm. It is NOT a key — see {@link identityKey}.
  */
@@ -156,9 +166,117 @@ export function lexicalNorm(surface: string): string {
  * Kept SEPARATE from `lexicalNorm` rather than folded into it, because the two
  * answer different questions: `lexicalNorm` is the pure normalization the
  * vocabulary composes over (and must stay total to have a fixpoint), while this
- * is the storage decision. #5020 calls this one at the INSERT site.
+ * is the storage decision. {@link slotKey} is what #5020 calls at the INSERT
+ * site; this is its vocabulary-free half.
  */
 export function identityKey(surface: string): string | null {
   const norm = lexicalNorm(surface);
   return norm === "" ? null : norm;
+}
+
+/**
+ * The OUTER layer of `key = alias(lexicalNorm(surface))` — the curated,
+ * versioned workspace vocabulary, as a seam.
+ *
+ * Empty today, and {@link identityAlias} is the whole implementation. The seam
+ * exists now rather than with the vocabulary itself (ADR-0037 §6 / #5016) for
+ * the same reason `reconcile.ts`'s
+ * `EntityResolver` seam predates any entity store: what this slice pins is the
+ * SHAPE — a norm goes in, a norm comes out, and the composition happens in ONE
+ * place — so slice B adds a vocabulary rather than moving the call site under
+ * live data.
+ *
+ * Takes the NORM, not the surface: the vocabulary maps normalized spellings to
+ * a chosen one (`is priced at` → `priced at`), so a lookup keyed on raw surfaces
+ * would need an entry per casing and separator variant of both sides. Composing
+ * over `lexicalNorm` is what makes one entry cover them all.
+ *
+ * TOTAL, like the layer beneath it: a norm with no vocabulary entry maps to
+ * itself. ADR-0037 §6 builds `alias` as a lookup against the TRANSITIVE CLOSURE
+ * of at-most-one-parent approved edges, so an effective target is already its
+ * own target and `f(f(x)) === f(x)` falls out — but only if every input has an
+ * answer. (Do NOT call that a "forest invariant". §6 retracts T3's, by name, as
+ * self-contradictory — depth-1 AND composing — and lists it under the ADR's
+ * "Corrections to the record".)
+ *
+ * ## What the signature cannot say, and what {@link slotKey} does about it
+ *
+ * `(norm: string) => string` expresses totality and NOTHING ELSE. It cannot say
+ * that the input is a norm, and — the half that bites — it cannot say the OUTPUT
+ * must be one. A vocabulary row authored as `is priced at → "Priced At"` (an
+ * admin typing the canonical DISPLAY form, the likeliest authoring mistake once
+ * this is a reviewed data table) would otherwise store a key that joins nothing,
+ * corpus-wide and silently. `slotKey` re-norms the result rather than trusting
+ * it; see there.
+ *
+ * ## A throwing alias is NOT caught, deliberately
+ *
+ * `reconcile.ts` catches a throwing `EntityResolver` and degrades the candidate
+ * to provisional, and the opposite choice here is the point of the asymmetry: an
+ * unresolved ENTITY is a quality failure a reviewer can repair, while a
+ * vocabulary lookup that fails has no safe degraded answer. Falling back to the
+ * un-aliased norm would key the row into the slot the vocabulary exists to move
+ * it OUT of — an under-match today, and an over-match the moment an entry merges
+ * two spellings — and neither is visible afterwards. So it propagates: a
+ * data-backed alias that throws aborts the episode before the transaction opens,
+ * and the episode stays on the queue for the next cycle.
+ */
+export type AliasLookup = (norm: string) => string;
+
+/** The day-one vocabulary: every norm is its own alias. */
+export const identityAlias: AliasLookup = (norm) => norm;
+
+/**
+ * A claim slot's stored key — `alias(lexicalNorm(surface))`, or `null`.
+ *
+ * THE call site for the whole composition. `reconcile.ts` materializes all
+ * three of a candidate's keys through this function before `INSERT_FACT_SQL`
+ * (#5020), and no consumer ever re-derives one: ADR-0037 §8 settles that even a
+ * row-copy path carries keys VERBATIM, because re-deriving fails to OVER-match
+ * — the irreversible direction — where carrying fails to under-match.
+ *
+ * ## The vocabulary's answer is re-normed, not trusted
+ *
+ * `identityKey(alias(norm))`, not `alias(norm)`. `lexicalNorm` is idempotent, so
+ * for a well-behaved vocabulary — one whose targets are already norms — this is
+ * a no-op and the composition is exactly `alias(lexicalNorm(surface))`. For a
+ * MISBEHAVING one it is the difference between a harmless correction and a
+ * silent corpus-wide under-match, because `alias` is going to be a data table
+ * with a reviewer behind it and not a proof: `Priced At` as an entry's target
+ * keys nothing to anything, and nothing anywhere would say so.
+ *
+ * It also subsumes the empty-string arm rather than special-casing it. A
+ * vocabulary that maps a real norm to `""` (or to `" - "`) reaches the same
+ * `null` as a surface that norms away, and that is the right answer for the
+ * `DEFAULT ''` reason migration 0187's header gives: a stored `""` is the ONE
+ * key value that joins every other degenerate row, so two unrelated claims would
+ * occupy one slot and publishing either would stamp `valid_to` on the other.
+ *
+ * ## Two ways to reach `null`
+ *
+ * The surface norms away (`-`, `___`, `  `) — {@link identityKey}'s case, and
+ * the alias is never consulted, because a claim that asserts nothing has no slot
+ * to look up and calling out with `""` would invite a vocabulary that answers
+ * it. Or the vocabulary's own answer norms away, per the paragraph above.
+ *
+ * ## `alias` is REQUIRED, and that is the point
+ *
+ * It would default to {@link identityAlias} perfectly well today, and a default
+ * is precisely what would make the vocabulary slice (#5016) dangerous: a call
+ * site that forgot to pass the workspace's vocabulary would keep compiling and
+ * key its rows under a DIFFERENT identity function than the ingest path — an
+ * under-match spread corpus-wide, invisible at rest, and unfixable afterwards
+ * without a re-key. Spelled explicitly, every such site is `grep identityAlias`
+ * and every new one is a compile error. `reconcile.ts` threads the workspace's
+ * lookup through `ReconcileRequest.alias`; everything else names the day-one
+ * vocabulary out loud, which is the choice being made and should read like one.
+ *
+ * Note what this does NOT do: collapse a null key into a sentinel so the
+ * eventual `SET NOT NULL` can land. See {@link identityKey}'s ⚠️ — the
+ * constraint's prerequisite is a TIGHTER ingest guard, not a wider key.
+ */
+export function slotKey(surface: string, alias: AliasLookup): string | null {
+  const norm = identityKey(surface);
+  if (norm === null) return null;
+  return identityKey(alias(norm));
 }

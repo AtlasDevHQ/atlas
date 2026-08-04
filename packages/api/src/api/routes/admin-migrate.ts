@@ -1119,6 +1119,26 @@ export async function importBundle(
         // whole org. It cannot be re-derived here — the import writes `status`
         // verbatim, so the fact never re-publishes and the widening UPDATE
         // that is its only writer never runs again.
+        //
+        // ⚠️ The three IDENTITY KEY columns (`subject_key`, `predicate_key`,
+        // `object_key`) are absent from this list, and since #5020 that has a
+        // consequence this INSERT is the sole producer of: an imported fact
+        // lands UNKEYED, and all three slot consumers compare keys with `=` or
+        // `<>`, both of which are UNKNOWN against NULL. So an imported claim
+        // corroborates nothing (a re-observation forks a duplicate draft), earns
+        // no `in-tension-with` edge, and can neither supersede nor be superseded
+        // at the publish gate — where the will-supersede disclosure then reports
+        // "nothing to supersede" without being able to say the check could not
+        // run. Fail-closed, and invisible.
+        //
+        // #5035 is the fix and it is a CARRY, not a re-derive: ADR-0037 §8
+        // settles that a row-copy path carries keys verbatim, because
+        // re-deriving fails to OVER-match (irreversible) where carrying fails to
+        // under-match (recoverable). That needs the v3 bundle to project them,
+        // which `keys-not-on-the-wire.test.ts` forbids until §8's exception is
+        // implemented — so adding the columns here ahead of #5035 is not
+        // available, and migration 0188's backfill cannot cover it either (it
+        // runs at boot; this runs whenever an admin triggers an import).
         `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, pre_widening_visible_to, predicate_cardinality, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [

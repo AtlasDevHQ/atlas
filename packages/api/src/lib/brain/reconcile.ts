@@ -76,39 +76,110 @@
  * (acceptance criterion 5) and what lets `extract.ts` stamp the queue marker
  * AFTER the commit — a crash in that window costs a repeated LLM call and, when
  * the producer reproduces its own output, no duplicated belief. That proviso is
- * load-bearing; see the byte-exactness note below for what a paraphrase costs.
+ * load-bearing; see the third bullet of the slot-key note below for what a
+ * paraphrase still costs.
  *
  * Two writers racing on the same claim would defeat a bare read-then-insert, so
  * the transaction opens by taking a per-workspace transaction-scoped advisory
- * lock. The rejected alternative was a partial UNIQUE index on
- * `(workspace_id, subject, predicate, object) WHERE invalidated_at IS NULL` plus
+ * lock. The rejected alternative was a partial UNIQUE index on the claim tuple
+ * (as written then, `(workspace_id, subject, predicate, object)`; today it would
+ * be the key columns) `WHERE invalidated_at IS NULL` plus
  * `ON CONFLICT DO NOTHING`: structurally stronger, but it needs a migration to
  * a table this milestone is still shaping, and it would make an ordinary
  * bi-temporal case (the same SPO re-asserted over a different validity window,
  * which M2 owns) unrepresentable rather than merely unusual. The lock is
  * reversible; the index would be a decision M2 has to live with. Revisit it
- * when M2 settles supersession.
+ * when M2 settles supersession — and read `identity-pg.test.ts`'s argument
+ * against a UNIQUE slot index first, which is a second and independent reason:
+ * on the keys it would make a tension between two live objects structurally
+ * unrepresentable.
  *
- * Identity is BYTE-EXACT on the trimmed, resolved SPO — deliberately, so that
- * deciding whether `Alice` and `alice` are one entity stays the ENTITY
- * RESOLVER's job. A `lower()` comparison here would silently take that decision
- * away from the seam that exists to make it.
+ * Identity is the materialized SLOT KEY of the trimmed, resolved SPO —
+ * `alias(lexicalNorm(surface))`, computed by `lib/brain/identity.ts`'s
+ * {@link slotKey} once per candidate here and stored on the row (#5020,
+ * ADR-0037 §1). It REPLACED a byte-exact comparison of the surface columns, and
+ * that is an observable change, not a refactor: `Ships On` and `ships_on` were
+ * two slots and are now one, so a claim that used to duplicate silently now
+ * corroborates. The retained surface is still exactly what the producer said —
+ * only what COUNTS AS THE SAME CLAIM moved.
  *
- * ADR-0037 is replacing byte-exactness with a materialized identity key
- * (`alias(lexicalNorm(surface))`, `lib/brain/identity.ts`), which keeps that
- * separation — the lexical layer does nothing semantic, and everything that
- * WOULD take a decision from the resolver is curated vocabulary with a reviewer
- * behind it. Migration 0187 added the columns and repointed
- * `idx_brain_facts_subject` onto them; until #5020 supplies them at
- * `INSERT_FACT_SQL` and pivots the join arm below, this lookup still compares
- * surfaces and no longer has an index behind it.
+ * What did NOT move is the entity resolver's job. The lexical layer folds ASCII
+ * case and separators and does nothing semantic (no stemming — the corpus
+ * carries `led_by` and `leads`, which are INVERSE relations), so deciding that
+ * `the deploy box` and `deploy-01` are one entity is still the resolver's
+ * decision, made per workspace at a seam built for it. Anything beyond the
+ * lexical layer that WOULD take a decision from the resolver arrives as curated
+ * vocabulary with a reviewer behind it, never as a rule here — which is why
+ * `is priced at` and `priced at` still do not unify.
  *
- * The cost of byte-exactness, stated because it is easy to over-read the
- * paragraph above: dedupe is only as good as the producer's determinism. Two
- * passes that phrase one claim differently ("is" vs "is on") are two claims
- * here, and a pass whose entity resolution CHANGES between runs will miss its
- * own earlier row. The reviewer collapses those; nothing in this stage can.
- * `extract.ts` pins its model call to `temperature: 0` for exactly this reason.
+ * The keys are written at `INSERT_FACT_SQL` and READ by the two lookups below.
+ * No PRODUCER outside this stage derives one (ADR-0037 §8 — a region import
+ * carries keys verbatim, #5035); the two writers that legitimately key rows they
+ * did not author are both migrations of the corpus rather than claim producers —
+ * 0187/0188's backfill, and ADR-0037 §7's drift re-key inside the
+ * alias-approval decide transaction.
+ *
+ * ## The fold widens matching, and two downstreams feel it
+ *
+ * Stated because the NULL bullets below are all UNDER-matches and would
+ * otherwise read as the whole risk register. Folding `Ships On` into `ships_on`
+ * makes more things one claim, and one claim is a join arm:
+ *
+ *   - **The grant.** A corroboration writes a `provenance` edge, and publish
+ *     unions the grants of every evidenced episode into the promoted fact
+ *     (`widenGrantFromEvidence`, #4823). So a restatement in a WIDER-audience
+ *     episode now attaches to a claim first seen in a private channel, where
+ *     byte-exactness minted a separate fact that kept its narrow grant. Not a
+ *     hole — the widening happens only at the review gate and is disclosed to
+ *     the admin as a `GrantWidening` — but the ACL surface did move.
+ *   - **`valid_to`.** The same fold reaches `supersessionCollisionJoin`, and a
+ *     collision is what the publish gate stamps. The irreversible write is now
+ *     reachable through a lexical rule rather than a byte comparison. Bounded
+ *     (ASCII case and separators, nothing semantic), human-gated, and
+ *     previewed pair-by-pair by `loadSupersessionPreview` — which is the whole
+ *     mitigation, and it is only as good as the reviewer reading the first
+ *     batch after this deploys.
+ *
+ * It NARROWS the two `<>` arms in the same move, and that direction is worth
+ * naming because it is the one an operator sees first: a live rival whose object
+ * differs only by case or separator stops being a rival, so a workspace's
+ * will-supersede count can DROP at this deploy and some standing advisory
+ * `in-tension-with` edges stop being minted. At ingest that is strictly better
+ * — those pairs corroborate instead. For rows already in the corpus it is a
+ * visible number moving the opposite way from the paragraph above.
+ *
+ * ## What the NULLABLE keys cost
+ *
+ * The acceptance criteria for #5020 also asked for `SET NOT NULL` on all three
+ * columns. It is deliberately NOT in this cut: migration 0187's header
+ * enumerates three prerequisites, and the third — tightening `MALFORMED_CLAIM`
+ * to refuse a candidate whose key is null — is unowned, so the constraint would
+ * turn a claim that is storable TODAY into a transaction-killing violation. Read
+ * that header before flipping it.
+ *
+ *   - A surface that norms away (`-`, `___`) has a NULL key, so it corroborates
+ *     nothing and earns no tension edge — where byte-exactness would have
+ *     matched another `-`. `null = null` is unknown in SQL, and that is the
+ *     point: the alternative, a stored `''`, is the one key value that joins
+ *     every other degenerate row (migration 0187's header). Never write these
+ *     comparisons NULL-safe. This one is PERMANENT and legal; no backfill
+ *     repairs it, which is why it is logged at the prepare loop below.
+ *   - A row written between 0187 deploying and this code deploying is unkeyed,
+ *     and drops out of all three slot consumers. Migration 0188 repeats 0187's
+ *     re-runnable backfill in THIS deploy to close exactly that window — the
+ *     correctness need arrives here, not at the constraint flip, because here is
+ *     where the consumers start depending on the column.
+ *   - Every row a region import lands is likewise unkeyed until #5035 carries
+ *     keys verbatim on the v3 bundle, and 0188 cannot help: it runs at boot and
+ *     an import runs whenever an admin triggers one. Those facts are inert in
+ *     all three consumers in the meantime — fail-closed, and #5035's to fix.
+ *   - Dedupe is still only as good as the producer's determinism, just at a
+ *     coarser grain. Two passes that phrase one claim differently ("is" vs "is
+ *     on") remain two claims — that pair is a vocabulary ENTRY, not a
+ *     normalization rule — and a pass whose entity resolution CHANGES between
+ *     runs still misses its own earlier row. The reviewer collapses those;
+ *     nothing in this stage can. `extract.ts` pins its model call to
+ *     `temperature: 0` for exactly this reason.
  *
  * ## What this slice does NOT do
  *
@@ -137,6 +208,11 @@ import { logGrantAnomalies } from "@atlas/api/lib/brain/acl";
 // happen. It lives under `ingest/` for historical reasons but is a pure
 // grant-vocabulary helper with no ingest state.
 import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
+// The identity composition, imported rather than spelled here: `slotKey` is the
+// ONE place `alias(lexicalNorm(surface))` is assembled, and a second assembly
+// site is how the write side and a future re-key start disagreeing about what a
+// claim's slot IS.
+import { identityAlias, slotKey, type AliasLookup } from "@atlas/api/lib/brain/identity";
 import type {
   BrainFactProvenance,
   EntityRole,
@@ -288,6 +364,20 @@ export interface ReconcileRequest {
   readonly sourcePrincipal?: string | null;
   /** Defaults to {@link passthroughEntityResolver}. */
   readonly resolveEntity?: EntityResolver;
+  /**
+   * The workspace's curated identity vocabulary, as a lookup over lexical norms
+   * (ADR-0037 §6 / #5016). Defaults to `identityAlias`, which is the whole
+   * vocabulary today.
+   *
+   * Threaded through the REQUEST rather than left as `slotKey`'s default
+   * parameter for `resolveEntity`'s reason exactly: a real vocabulary is
+   * per-workspace and DB-backed, so the caller loads it once — above the
+   * per-candidate loop, which is what lets the seam stay synchronous — and
+   * drops it in without this module changing. A default parameter would have
+   * made slice B edit these call sites, which is the work the seam exists to
+   * avoid.
+   */
+  readonly alias?: AliasLookup;
 }
 
 export interface ReconcileDeps {
@@ -401,11 +491,18 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
 /**
  * Does a live fact already assert exactly this claim?
  *
- * NOT served by an index as written. `idx_brain_facts_subject` was this
- * statement's access path until 0187 repointed it onto the identity keys
- * (#5019); #5020 pivots the three arms below onto `subject_key` /
- * `predicate_key` / `object_key` and gets it back, with the tighter
- * `valid_to IS NULL` partial predicate this statement already requires.
+ * Matched on the SLOT KEYS, not the surfaces (#5020) — so a re-observation that
+ * says `Ships On` where the stored row says `ships_on` strengthens it instead of
+ * minting a second belief. `idx_brain_facts_subject` serves this again: 0187
+ * repointed it onto `(workspace_id, subject_key, predicate_key)` with the
+ * tighter `invalidated_at IS NULL AND valid_to IS NULL` partial predicate, both
+ * of which this statement requires.
+ *
+ * A NULL bind (the candidate's surface norms away) matches NOTHING here, and
+ * that is deliberate rather than tolerated: `IS NOT DISTINCT FROM` would make
+ * every degenerate claim corroborate every other one, which is the same
+ * corpus-corrupting over-match migration 0187's header rejects `DEFAULT ''` for.
+ * A duplicate row is the price and it is the recoverable direction.
  *
  * Deliberately NOT filtered by review state: a claim re-observed after it was
  * published must corroborate the published fact, not mint a fresh draft
@@ -433,9 +530,9 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
 export const CORROBORATION_LOOKUP_SQL = `SELECT id
      FROM brain_facts
     WHERE workspace_id = $1
-      AND subject = $2
-      AND predicate = $3
-      AND object = $4
+      AND subject_key = $2
+      AND predicate_key = $3
+      AND object_key = $4
       AND invalidated_at IS NULL
       AND valid_to IS NULL
     ORDER BY ingested_at
@@ -452,13 +549,27 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * `unknown[]`, and it is structurally satisfied by both the `pg` client and a
  * test literal. Keeping every parameter a JSON scalar means no driver-specific
  * array marshalling can leak into that seam.
+ *
+ * ## The identity keys are named here, and this is their only deriver (#5020)
+ *
+ * Derived at ingest exactly as the grant is — which is why
+ * `check-brain-fact-promotion.sh` gates the key columns on UPDATE only, and says
+ * in as many words that OMITTING them is not a fix. They travel as three more
+ * JSON scalars, `null` included: a surface that norms away has no key, and a
+ * sentinel would file every such claim under one slot.
+ *
+ * `RETURNING id` and nothing else. A key must never reach a consumer that could
+ * branch on it — that is what makes an alias un-removable — and
+ * `keys-not-on-the-wire.test.ts` scans RETURNING lists naming this exact shape.
  */
 export const INSERT_FACT_SQL = `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, valid_from, extracted_at,
-          source_episode_id, provenance, visible_to, predicate_cardinality)
+          source_episode_id, provenance, visible_to, predicate_cardinality,
+          subject_key, predicate_key, object_key)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
                $7::uuid, $8::jsonb,
-               ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), $10)
+               ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), $10,
+               $11, $12, $13)
        RETURNING id`;
 
 /**
@@ -491,13 +602,36 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * A FUTURE-dated `valid_to` (region import only) is likewise skipped — the
  * same accepted coexistence `supersessionCollisionJoin` documents: its end is
  * already decided, so it is neither a rival to flag nor a belief to supersede.
+ *
+ * Matched on the SLOT KEYS (#5020), which moves the rule in BOTH directions and
+ * each is the intended one: `Alice`/`alice` under the same subject and predicate
+ * are one claim rather than two rivals (they corroborated above and never
+ * reached here), while `Ships On`/`ships_on` as PREDICATES now put their
+ * differing objects in tension instead of sorting into two silent slots.
+ *
+ * A NULL key on either side matches nothing — `object_key <> NULL` is unknown,
+ * so a degenerate or unkeyed row abstains OUT of tension. That is the weaker
+ * direction (#5000's shape, and the reason the acceptance criteria want these
+ * columns `NOT NULL` eventually), and it is still strictly better than the
+ * over-match a NULL-safe comparison would buy: an edge here is advisory and a
+ * missing one costs a reviewer a hint, where a wrong SLOT costs a `valid_to`
+ * stamp at the publish gate.
+ *
+ * The object arm's falsifying case is a DEGENERATE rival, and it is reachable
+ * without a region import, a concurrent writer, or `correct_fact`. A live row
+ * in this slot whose object is `-` has `object_key IS NULL`, so
+ * {@link CORROBORATION_LOOKUP_SQL} does not return it either (`object_key = $4`
+ * is unknown too) and it survives to this scan. There `object_key <> $4` is
+ * unknown — not a rival — while `object <> $4` would be TRUE, wiring a
+ * permanent advisory edge from a real claim to a placeholder that asserts
+ * nothing. Pinned by `extract-reconcile-pg.test.ts`.
  */
 export const TENSION_CANDIDATES_SQL = `SELECT id
      FROM brain_facts
     WHERE workspace_id = $1
-      AND subject = $2
-      AND predicate = $3
-      AND object <> $4
+      AND subject_key = $2
+      AND predicate_key = $3
+      AND object_key <> $4
       AND invalidated_at IS NULL
       AND valid_to IS NULL
       AND id <> $5::uuid
@@ -540,6 +674,7 @@ export async function reconcileFacts(
 ): Promise<ReconcileReport> {
   const { episode, candidates, producer } = request;
   const resolveEntity = request.resolveEntity ?? passthroughEntityResolver;
+  const alias = request.alias ?? identityAlias;
   const now = deps.now ?? (() => new Date());
 
   const blocked: Record<ReconcileBlockReason, number> = { ...NO_BLOCKS };
@@ -644,11 +779,24 @@ export async function reconcileFacts(
     if (resolvedSubject === null) unresolved.push("subject");
     if (resolvedObject === null) unresolved.push("object");
 
+    const storedSubject = resolvedSubject?.canonical ?? subject;
+    const storedObject = resolvedObject?.canonical ?? object;
+
+    // Materialized ONCE, here, off the RESOLVED surfaces — the strings that land
+    // in the SPO columns, so the stored key always describes the stored row.
+    // Computing it later, per statement, is how the corroboration lookup and the
+    // INSERT would start disagreeing about which slot a claim is in.
+    const keys: SlotKeys = {
+      subject: slotKey(storedSubject, alias),
+      predicate: slotKey(predicate, alias),
+      object: slotKey(storedObject, alias),
+    };
     prepared.push({
       kind: "prepared",
-      subject: resolvedSubject?.canonical ?? subject,
+      subject: storedSubject,
       predicate,
-      object: resolvedObject?.canonical ?? object,
+      object: storedObject,
+      keys,
       unresolved,
       entityIds: {
         ...(resolvedSubject?.entityId !== undefined ? { subject: resolvedSubject.entityId } : {}),
@@ -725,11 +873,62 @@ export async function reconcileFacts(
 // Internals
 // ---------------------------------------------------------------------------
 
+/**
+ * A candidate's three materialized slot keys, `null` where the surface norms
+ * away (`lib/brain/identity.ts`).
+ *
+ * Named by ROLE rather than as `subjectKey` / `predicateKey` / `objectKey`:
+ * `keys-not-on-the-wire.test.ts` bans those three identifiers outright in any
+ * source file that speaks about `brain_facts`, because a fact-shaped TYPE that
+ * grows a key field is the leak it exists to catch and it cannot tell one from a
+ * local. This shape is internal to the stage and never reaches a row type.
+ */
+interface SlotKeys {
+  readonly subject: string | null;
+  readonly predicate: string | null;
+  readonly object: string | null;
+}
+
+/**
+ * The three roles, once. Tied to {@link SlotKeys} by `satisfies`, so a renamed
+ * field is a compile error here rather than a filter that silently matches
+ * nothing.
+ */
+const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonly (keyof SlotKeys)[];
+
+/**
+ * The triple, in the order all three statements bind it.
+ *
+ * `ReconcileExecutor.query` takes `unknown[]`, so `[…, item.subject,
+ * item.predicate, item.object]` type-checks perfectly at every one of these call
+ * sites and silently restores byte-exact identity — the regression this cut
+ * exists to undo. (The unit suite DOES catch that one: its fake records the
+ * binds it was given and matches on them, so a surface bind fails the phrasing
+ * test. What it cannot see is the COLUMN half — the statement text — which is
+ * `extract-reconcile-pg.test.ts`'s plus the lexical backstop beside it.) One
+ * spelling, spread three times, is what removes that class along with the
+ * order-drift one.
+ *
+ * A fixed-length TUPLE, not `(string | null)[]`, and the arity is what it buys:
+ * `TENSION_CANDIDATES_SQL` spreads this in the MIDDLE of its bind list, so a
+ * fourth key added here (the `_cmp` columns `check-brain-fact-promotion.sh`
+ * already gates, #5032) would silently push `factId` into `$6` and hand `$5`
+ * — declared `::uuid` — a key string. In `INSERT_FACT_SQL` the spread is last
+ * and pg would at least raise an arity error; here it would not. It does NOT
+ * catch subject/predicate/object ORDER drift, since all three members share a
+ * type; only a brand would, and a brand buys nothing against `unknown[]`.
+ */
+function keyBinds(keys: SlotKeys): readonly [string | null, string | null, string | null] {
+  return [keys.subject, keys.predicate, keys.object];
+}
+
 interface PreparedCandidate {
   readonly kind: "prepared";
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
+  /** The identity of the claim above — what the two lookups below match on. */
+  readonly keys: SlotKeys;
   /** Empty when both sides resolved. */
   readonly unresolved: readonly EntityRole[];
   readonly entityIds: Partial<Record<EntityRole, string>>;
@@ -865,9 +1064,7 @@ async function writeCandidate(
 
   const existing = await tx.query(CORROBORATION_LOOKUP_SQL, [
     episode.workspaceId,
-    item.subject,
-    item.predicate,
-    item.object,
+    ...keyBinds(item.keys),
   ]);
   const existingId = firstId(existing.rows);
   if (existingId !== null) {
@@ -945,6 +1142,7 @@ async function writeCandidate(
     JSON.stringify(provenance),
     JSON.stringify(ctx.grantTokens),
     cardinality,
+    ...keyBinds(item.keys),
   ]);
   const factId = firstId(inserted.rows);
   if (factId === null) {
@@ -958,13 +1156,47 @@ async function writeCandidate(
 
   await tx.query(INSERT_PROVENANCE_EDGE_SQL, [episode.workspaceId, factId, episode.id]);
 
+  // A null key is legal, permanent, and invisible everywhere else: the row is
+  // stored and then joins nothing — no corroboration, no tension edge, and no
+  // supersession at the publish gate — for as long as it exists. No backfill
+  // repairs it (0187/0188 write the same NULL), so this line is the only signal
+  // such a claim ever produces.
+  //
+  // Emitted HERE rather than in the preparation loop so it describes a row that
+  // exists: everything after this point can still roll the episode back, and on
+  // the extraction path a failing episode is retried every cycle until
+  // quarantine — which would have re-emitted the identical line for a fact that
+  // was never written. `factId` is what makes it actionable.
+  //
+  // Warned rather than blocked because blocking is a GUARD change: 0187's header
+  // item 3 wants `MALFORMED_CLAIM` widened from `trim() === ""` to this
+  // predicate, and that is the `SET NOT NULL` prerequisite nobody owns yet.
+  // Refusing here unilaterally would drop claims a reviewer can currently see
+  // and repair.
+  const unkeyed = SLOT_ROLES.filter((role) => item.keys[role] === null);
+  if (unkeyed.length > 0) {
+    log.warn(
+      {
+        workspaceId: episode.workspaceId,
+        episodeId: episode.id,
+        producer: ctx.producer,
+        factId,
+        unkeyed,
+      },
+      // Two causes, and the message names both because it cannot distinguish
+      // them once the vocabulary is real: the SURFACE norms away (`-`, `___`,
+      // and the only reachable cause today), or an alias entry maps a real slot
+      // to something that does. Naming only the producer would send an operator
+      // after the wrong subsystem the day #5016 lands.
+      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Either the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3) or a vocabulary entry maps that slot to nothing",
+    );
+  }
+
   let tensionEdges = 0;
   if (cardinality === "single") {
     const rivals = await tx.query(TENSION_CANDIDATES_SQL, [
       episode.workspaceId,
-      item.subject,
-      item.predicate,
-      item.object,
+      ...keyBinds(item.keys),
       factId,
       TENSION_EDGE_CAP,
     ]);

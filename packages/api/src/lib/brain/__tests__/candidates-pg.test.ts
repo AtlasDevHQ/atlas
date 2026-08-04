@@ -55,6 +55,7 @@ import {
   loadFactCandidates,
 } from "@atlas/api/lib/brain/candidates";
 import { CORRECTION_REFUSAL_REASONS, correctFact } from "@atlas/api/lib/brain/correction";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import type { ReconcileTransactionRunner } from "@atlas/api/lib/brain/reconcile";
 import { LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
@@ -141,23 +142,34 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     /** The grant before publish-time widening; omit for a never-widened fact. */
     preWideningVisibleTo?: readonly (string | null)[];
   }): Promise<string> {
+    const predicate = opts.predicate ?? "uses";
+    const object = opts.object ?? "Postgres";
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, pre_widening_visible_to, predicate_cardinality)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9::text[], $10)
+          status, visible_to, pre_widening_visible_to, predicate_cardinality,
+          subject_key, predicate_key, object_key)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9::text[], $10,
+               $11, $12, $13)
        RETURNING id`,
       [
         WS,
         opts.subject,
-        opts.predicate ?? "uses",
-        opts.object ?? "Postgres",
+        predicate,
+        object,
         opts.episodeId,
         JSON.stringify(opts.provenance ?? { source: "slack", actor: "U1" }),
         opts.status ?? "draft",
         opts.visibleTo ?? ["org"],
         opts.preWideningVisibleTo ?? null,
         opts.cardinality ?? "multi",
+        // Keyed like an ingested row (#5020) — `correct_fact`'s replacement path
+        // runs the reconcile lookups, which match on the keys and see nothing on
+        // an unkeyed row. Derived through `slotKey` — the same function
+        // `reconcile.ts` calls when binding `INSERT_FACT_SQL`.
+        slotKey(opts.subject, identityAlias),
+        slotKey(predicate, identityAlias),
+        slotKey(object, identityAlias),
       ],
     );
     return rows[0]!.id;

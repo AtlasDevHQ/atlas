@@ -704,7 +704,34 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.status = 'published'");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.invalidated_at IS NULL");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.valid_to IS NULL");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object <> d.object");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_key <> d.object_key");
+  });
+
+  it("collides on the identity keys and on no surface column (#5020)", () => {
+    // The pivot, asserted as a REPLACEMENT rather than an addition. Matching
+    // both would let a surface arm survive beside a key arm, which is the one
+    // shape that reads as fixed and is not: an AND-ed `p.subject = d.subject`
+    // re-imposes byte-exactness on top of the key and the join silently
+    // no-ops on exactly the phrasing mismatch #5020 exists to close.
+    // The WHOLE arm, both sides — `p.subject_key = d.subject` contains
+    // `p.subject_key` and is a mixed arm that silently restores byte-exactness
+    // on one side of the comparison.
+    expect(SUPERSESSION_TARGETS_SQL).toContain("p.subject_key = d.subject_key");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("p.predicate_key = d.predicate_key");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_key <> d.object_key");
+    // A slot column can only be named `<role>_key` here, so a bare `p.subject`
+    // is a surviving surface arm. `\b` alone is enough — `_` is a word
+    // character, so `\bp\.subject\b` cannot match inside `p.subject_key`; the
+    // `(?!_key)` is belt-and-braces against a future `-`-separated spelling.
+    // BOTH aliases are swept, which is what the mixed arm above needs.
+    for (const alias of ["p", "d"]) {
+      for (const surface of ["subject", "predicate", "object"]) {
+        expect(
+          new RegExp(`\\b${alias}\\.${surface}\\b(?!_key)`).test(SUPERSESSION_TARGETS_SQL),
+          `the collision join still compares ${alias}'s ${surface} SURFACE. Identity is the materialized key (ADR-0037 §1); a surface arm — even on ONE side of a comparison whose other side is a key — restores the byte-exactness the keys replaced, and the join goes back to no-op'ing on a phrasing mismatch.`,
+        ).toBe(false);
+      }
+    }
   });
 
   it("supersession is NOT retraction — the stamp never touches the tombstone or the review verdict", () => {

@@ -328,11 +328,38 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
  * The supersession collision (#4912, ADR-0036 §Temporal), spelled ONCE.
  *
  * Joins a draft alias `d` to every already-published fact it would supersede:
- * same (subject, predicate), a DIFFERENT object, and BOTH sides
- * `single`-cardinality. The published side must be live (not tombstoned) and
- * current (`valid_to IS NULL`) — a fact some earlier promotion already
- * superseded is settled history, and stamping it twice would rewrite when the
- * belief ended.
+ * the same SLOT — `(subject_key, predicate_key)` — a DIFFERENT object slot, and
+ * BOTH sides `single`-cardinality. The published side must be live (not
+ * tombstoned) and current (`valid_to IS NULL`) — a fact some earlier promotion
+ * already superseded is settled history, and stamping it twice would rewrite
+ * when the belief ended.
+ *
+ * ## Why the keys and not the surfaces (#5020, ADR-0037 §1)
+ *
+ * This is a column-to-column join, so BOTH sides are the materialized identity
+ * `alias(lexicalNorm(surface))`, written at ingest by `reconcile.ts` and never
+ * re-derived here. On the surfaces it silently no-op'd on a phrasing mismatch: a
+ * draft saying `Ships On` never collided with a published `ships_on`, so publish
+ * left two current `single` values standing and the disclosure showed nothing to
+ * disclose. Same index either way — 0187 repointed `idx_brain_facts_subject`
+ * onto the key columns with a partial predicate this join already satisfies.
+ *
+ * A NULL key on EITHER side excludes the pair, since `=` and `<>` are both
+ * unknown against NULL. That is fail-closed and the direction this join must
+ * fail in — no collision means no `valid_to` stamp, which is the recoverable
+ * outcome — but it is not free, and the cost is symmetric: such a row can
+ * neither BE superseded nor supersede anything, so an unkeyed draft publishes
+ * beside a live rival and an unkeyed published fact survives one. Three
+ * populations reach it, and only two of them are transient:
+ *
+ *   - Rows written between migration 0187 and #5020 — closed by 0188, which
+ *     repeats 0187's re-runnable backfill in #5020's own deploy.
+ *   - Rows a region import lands, until #5035 carries keys verbatim on the v3
+ *     bundle (`admin-migrate.ts`'s 18-column INSERT names no key column). A
+ *     backfill cannot own this one: it runs at boot, the import runs on demand.
+ *   - A surface that norms away (`-`, `___`) — PERMANENT and legal, per
+ *     `identityKey`'s ⚠️. No backfill repairs it; `reconcile.ts` warns at
+ *     ingest, which is the only signal such a claim ever produces.
  *
  * `valid_to IS NULL`, deliberately NOT `brainFactCurrentClause`'s wider
  * `IS NULL OR > now()`: a FUTURE-dated `valid_to` (reachable only via a region
@@ -364,9 +391,9 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
 export function supersessionCollisionJoin(d: string, p: string): string {
   return `JOIN brain_facts ${p}
       ON ${p}.workspace_id = ${d}.workspace_id
-     AND ${p}.subject = ${d}.subject
-     AND ${p}.predicate = ${d}.predicate
-     AND ${p}.object <> ${d}.object
+     AND ${p}.subject_key = ${d}.subject_key
+     AND ${p}.predicate_key = ${d}.predicate_key
+     AND ${p}.object_key <> ${d}.object_key
      AND ${p}.predicate_cardinality = 'single'
      AND ${d}.predicate_cardinality = 'single'
      AND ${p}.status = 'published'

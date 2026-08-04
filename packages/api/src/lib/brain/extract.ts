@@ -26,9 +26,13 @@
  * existing fact gains at most an already-present provenance edge. So the cost
  * of a crash is a repeated model call.
  *
- * That "no-op" is conditional and the condition is ours to hold: dedupe is
- * BYTE-EXACT on the SPO, so it collapses a re-extraction only if the model
- * reproduces its own output. `llmFactExtractor` therefore pins `temperature: 0`.
+ * That "no-op" is conditional and the condition is ours to hold: dedupe is on
+ * the claim's SLOT KEY (`alias(lexicalNorm(surface))` since #5020), so it
+ * collapses a re-extraction only if the model reproduces its own output closely
+ * enough to land in the same slot. That is looser than the byte-exactness it
+ * replaced — a re-phrasing differing only in case or separators now collapses —
+ * and nowhere near loose enough to absorb "is" vs "is on".
+ * `llmFactExtractor` therefore still pins `temperature: 0`.
  * A paraphrase would mint a second draft for one claim — not corruption (the
  * reviewer collapses it), but not free either, which is why determinism is
  * load-bearing here rather than a preference.
@@ -447,9 +451,10 @@ export const llmFactExtractor: FactExtractor = async ({ episode, body, model, mo
     model,
     schema: ExtractionSchema,
     system: EXTRACTION_SYSTEM_PROMPT,
-    // Pinned. The reconcile stage's corroboration dedupe is BYTE-EXACT on the
-    // SPO, so a re-extraction that paraphrases its own earlier output mints a
-    // duplicate belief instead of strengthening one — and re-extraction is
+    // Pinned. The reconcile stage's corroboration dedupe is on the SLOT KEY
+    // (#5020) — case and separators are folded, nothing semantic is — so a
+    // re-extraction that PARAPHRASES its own earlier output still mints a
+    // duplicate belief instead of strengthening one, and re-extraction is
     // routine here (it is the whole crash-safety story). Determinism is not a
     // quality preference; it is what makes idempotence real.
     temperature: 0,

@@ -41,6 +41,7 @@ import {
   aclVisibilityClause,
   resolvePrincipalContext,
 } from "@atlas/api/lib/brain/acl";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import { FACT_REFUSAL_REASONS } from "@atlas/api/lib/brain/promotion";
 import { CORROBORATION_LOOKUP_SQL } from "@atlas/api/lib/brain/reconcile";
 import { loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
@@ -1237,22 +1238,47 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       episodeId: string;
       subject: string;
       object: string;
+      /** Defaults to `manager`; override to vary the PREDICATE slot. */
+      predicate?: string;
       cardinality?: "single" | "multi";
       status?: "draft" | "published";
+      /**
+       * Land the row UNKEYED — all three key columns NULL — which is what a
+       * region import produces today (`admin-migrate.ts`'s 18-column INSERT
+       * names none of them, #5035) and what every row written between migration
+       * 0187 and #5020 looked like before 0188's backfill repeat.
+       */
+      unkeyed?: boolean;
     }): Promise<string> {
+      const predicate = opts.predicate ?? "manager";
+      // Keyed like an ingested row (#5020): the collision join and the
+      // corroboration lookup both match on `*_key`, so a seed that omitted them
+      // would be an UNKEYED row — a legitimate corpus state (0187's interval,
+      // and a region import until #5035) but not the one these tests are about,
+      // and one that collides with nothing. Derived through `slotKey`, the same
+      // function `INSERT_FACT_SQL` calls, rather than hand-written beside the
+      // surface where the two could quietly disagree. (`INSERT_FACT_SQL` is a
+      // string constant; the function is what `reconcile.ts` calls when binding
+      // it.)
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
-            provenance, status, visible_to, predicate_cardinality)
-         VALUES ($1, $2, 'manager', $3, $4, '{"actor":"test"}'::jsonb, $5, '{org}', $6)
+            provenance, status, visible_to, predicate_cardinality,
+            subject_key, predicate_key, object_key)
+         VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, $6, '{org}', $7,
+                 $8, $9, $10)
          RETURNING id`,
         [
           opts.workspaceId,
           opts.subject,
+          predicate,
           opts.object,
           opts.episodeId,
           opts.status ?? "draft",
           opts.cardinality ?? "single",
+          opts.unkeyed === true ? null : slotKey(opts.subject, identityAlias),
+          opts.unkeyed === true ? null : slotKey(predicate, identityAlias),
+          opts.unkeyed === true ? null : slotKey(opts.object, identityAlias),
         ],
       );
       return rows[0]!.id;
@@ -1461,17 +1487,23 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         await publish(ws);
         expect((await factState(old)).valid_to).not.toBeNull();
 
-        // The exact string `reconcile.ts` runs. "alice manager bob" flips back:
+        // The exact string `reconcile.ts` runs, bound the way it binds it — the
+        // SLOT KEYS, not the surfaces (#5020). "alice manager bob" flips back:
         // the superseded row must NOT absorb the evidence — it is hidden from
         // every as-of-now read, so corroborating it would swallow the flip.
-        const back = await pool.query(CORROBORATION_LOOKUP_SQL, [ws, "alice", "manager", "bob"]);
+        const back = await pool.query(CORROBORATION_LOOKUP_SQL, [
+          ws,
+          slotKey("alice", identityAlias),
+          slotKey("manager", identityAlias),
+          slotKey("bob", identityAlias),
+        ]);
         expect(back.rows).toEqual([]);
         // The CURRENT claim still corroborates normally.
         const current = await pool.query<{ id: string }>(CORROBORATION_LOOKUP_SQL, [
           ws,
-          "alice",
-          "manager",
-          "carol",
+          slotKey("alice", identityAlias),
+          slotKey("manager", identityAlias),
+          slotKey("carol", identityAlias),
         ]);
         expect(current.rows.map((r) => r.id)).toEqual([draft]);
       },
@@ -1527,6 +1559,228 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     );
 
     it(
+      "⭐ supersedes across a phrasing difference — the collision is the SLOT (#5020)",
+      async () => {
+        // The third consumer's half of #5020, end to end. On the surface
+        // columns this pair did not collide: `p.subject = d.subject` is false
+        // for `alice` vs `Alice`, so publish left TWO current `single` values
+        // standing, the will-supersede disclosure showed nothing, and nothing
+        // anywhere said so. Nothing about the two rows changed — only what
+        // counts as the same slot.
+        const ws = "ws-5020-phrasing";
+        const ep = await seedEpisode(ws, "phrasing");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        const draft = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          // Same slot, different spelling — case AND separator, on BOTH the
+          // subject and the predicate, so each key arm is load-bearing here.
+          subject: "Alice",
+          predicate: "Manager",
+          object: "carol",
+        });
+
+        // Disclosed before the admin confirms, and disclosed as the SAME pair
+        // the transaction then stamps — the two must not drift.
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        const preview = await loadSupersessionPreview(pool, reader);
+        expect(preview.total).toBe(1);
+        expect(preview.pairs.map((p) => [p.draftId, p.supersededId])).toEqual([[draft, old]]);
+        // Both LABELS carry the surfaces the producers actually used — the keys
+        // decide the collision and never reach the reviewer's screen.
+        expect(preview.pairs[0]).toMatchObject({
+          draftLabel: "Alice Manager carol",
+          supersededLabel: "alice manager bob",
+        });
+
+        const report = await publish(ws);
+        expect(report.superseded).toEqual([{ rowId: draft, superseded: [old] }]);
+        expect((await factState(old)).valid_to).not.toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([{ f: draft, t: old }]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "does NOT supersede a rival whose OBJECT is the same slot spelled differently",
+      async () => {
+        // The object arm, and the direction that actually costs something. On
+        // the surfaces `p.object <> d.object` is TRUE for `Bob` vs `bob`, so
+        // publishing the draft stamped `valid_to` on a published fact asserting
+        // THE SAME THING — retiring a belief nobody contradicted, invisibly,
+        // because every as-of-now read then hides the row it touched. On the
+        // keys the pair is one claim and the two coexist.
+        //
+        // Reachable without reconcile ever minting the pair: every row written
+        // before #5020 was stored under byte-exact identity, so `Bob` and `bob`
+        // were two claims and both are live — and migration 0187's backfill then
+        // keyed them into ONE slot. (NOT via a region import, which is the
+        // obvious guess and is wrong: `admin-migrate.ts`'s 18-column INSERT
+        // names no key column, so an imported row lands UNKEYED and drops out of
+        // this join entirely rather than colliding.)
+        const ws = "ws-5020-object";
+        const ep = await seedEpisode(ws, "object-slot");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        const draft = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "Bob",
+        });
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(1);
+        expect(report.superseded).toEqual([]);
+        expect((await factState(old)).valid_to).toBeNull();
+        expect((await factState(draft)).valid_to).toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "an UNKEYED row supersedes nothing and is superseded by nothing — fail-closed, in both directions",
+      async () => {
+        // The state that dominates the corpus this deploys onto, and the one
+        // the new seeder would otherwise have erased from the suite: a row a
+        // region import landed (#5035), or one written in the 0187→#5020 window
+        // that 0188's backfill has not reached. `=` and `<>` are both UNKNOWN
+        // against NULL, so such a row drops out of `supersessionCollisionJoin`
+        // entirely — from BOTH sides, which is the half the docstring claims
+        // and nothing pinned.
+        //
+        // Fail-closed is the right direction (no collision ⇒ no `valid_to`
+        // stamp ⇒ nothing irreversible), but it is not free: the pair below
+        // WOULD collide if either row were keyed, and the reviewer is shown an
+        // affirmative "this publish supersedes nothing".
+        const ws = "ws-5020-unkeyed";
+        const ep = await seedEpisode(ws, "unkeyed");
+
+        // (a) unkeyed PUBLISHED incumbent, keyed draft that would replace it.
+        const oldUnkeyed = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+          unkeyed: true,
+        });
+        const draftKeyed = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+        });
+        // (b) the converse — keyed incumbent, unkeyed draft.
+        const oldKeyed = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "dana",
+          object: "erin",
+          status: "published",
+        });
+        const draftUnkeyed = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "dana",
+          object: "frank",
+          unkeyed: true,
+        });
+
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        // Disclosed as "nothing to supersede", because the check could not run.
+        expect(await loadSupersessionPreview(pool, reader)).toMatchObject({
+          total: 0,
+          pairs: [],
+        });
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(2);
+        expect(report.superseded).toEqual([]);
+        for (const id of [oldUnkeyed, draftKeyed, oldKeyed, draftUnkeyed]) {
+          expect((await factState(id)).valid_to).toBeNull();
+        }
+        expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "a PARTIALLY keyed row does not collide either — the `<>` arm's own NULL case",
+      async () => {
+        // The unkeyed case above is decided by the `=` arms before the object
+        // arm is ever consulted, so it leaves `object_key <> object_key`
+        // unfalsified. This is that arm: both rows are in the SAME slot
+        // (`alice` / `manager`), and only the OBJECT key is NULL.
+        //
+        // Reachable straight off the ingest path — `reconcile.ts` stores
+        // `alice manager -` with two real keys and `object_key IS NULL`, and
+        // nothing in `classifyFactForPromotion` refuses it, so it is a
+        // promotable draft. Under a NULL-safe arm (`IS DISTINCT FROM`)
+        // publishing it would stamp `valid_to` on the real published belief in
+        // its slot — the irreversible write, spent on a placeholder.
+        const ws = "ws-5020-partial";
+        const ep = await seedEpisode(ws, "partial");
+        const published = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        // `slotKey("-")` is null, so the seeder keys subject and predicate and
+        // leaves `object_key` NULL — exactly what the ingest path produces.
+        const placeholder = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "-",
+        });
+
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        expect(await loadSupersessionPreview(pool, reader)).toMatchObject({
+          total: 0,
+          pairs: [],
+        });
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(1);
+        expect(report.superseded).toEqual([]);
+        expect((await factState(published)).valid_to).toBeNull();
+        expect((await factState(placeholder)).valid_to).toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
       "withholds a pair whose PUBLISHED side the reader may not see — counted, never listed",
       async () => {
         const ws = "ws-4912-withheld";
@@ -1535,10 +1789,18 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         await pool.query(
           `INSERT INTO brain_facts
              (workspace_id, subject, predicate, object, source_episode_id,
-              provenance, status, visible_to, predicate_cardinality)
+              provenance, status, visible_to, predicate_cardinality,
+              subject_key, predicate_key, object_key)
            VALUES ($1, 'alice', 'manager', 'bob', $2, '{"actor":"t"}'::jsonb,
-                   'published', $3::text[], 'single')`,
-          [ws, privateEp, [SUPERSEDE_PRIVATE_GRANT]],
+                   'published', $3::text[], 'single', $4, $5, $6)`,
+          [
+            ws,
+            privateEp,
+            [SUPERSEDE_PRIVATE_GRANT],
+            slotKey("alice", identityAlias),
+            slotKey("manager", identityAlias),
+            slotKey("bob", identityAlias),
+          ],
         );
         await seedFact({
           workspaceId: ws,

@@ -332,6 +332,220 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     );
   });
 
+  // ── claim identity (#5020, ADR-0037 §1) ─────────────────────────────────
+  //
+  // The write side and the two lookups that now read it. Only a live schema
+  // settles these: the unit suite's fake records what the stage BOUND, which
+  // cannot tell a correct bind from one the column list drops on the floor —
+  // an INSERT naming ten columns and passing thirteen params errors, but one
+  // whose keys land in the wrong columns does not.
+
+  /** The stored identity of every fact, in insertion order. */
+  async function slots(): Promise<
+    { subject_key: string | null; predicate_key: string | null; object_key: string | null }[]
+  > {
+    const { rows } = await pool.query(
+      `SELECT subject_key, predicate_key, object_key FROM brain_facts ORDER BY ingested_at, id`,
+    );
+    return rows;
+  }
+
+  it("materializes all three keys on a new fact, off the RESOLVED surfaces", async () => {
+    const episode = await insertEpisode({ sourceId: "C01:key-1" });
+    await reconcileFacts({
+      episode,
+      candidates: [candidate({ subject: "Deploy_Window", predicate: "Ships  On" })],
+      producer: "p",
+      extractedAt: new Date(),
+      // The key must describe the row that was STORED, so it is derived after
+      // resolution — not from the candidate's raw surface.
+      resolveEntity: (surface) =>
+        surface === "Deploy_Window" ? { canonical: "The Deploy Box" } : { canonical: surface },
+    });
+
+    expect(await slots()).toEqual([
+      { subject_key: "the deploy box", predicate_key: "ships on", object_key: "thursdays" },
+    ]);
+    // The retained surface is the resolver's canonical form, untouched by the
+    // fold — identity moved, the record of the claim did not.
+    expect((await facts())[0]).toMatchObject({ subject: "The Deploy Box" });
+  });
+
+  it("⭐ corroborates across a phrasing difference — the slot, not the spelling", async () => {
+    // THE behaviour this slice buys, end to end. Byte-exactness minted a second
+    // draft here and the reviewer got two rows asserting one thing; the keys
+    // make the second observation strengthen the first.
+    const first = await insertEpisode({ sourceId: "C01:key-2" });
+    const second = await insertEpisode({ sourceId: "C01:key-3" });
+
+    // Every one of the three arms varies, so each is load-bearing here —
+    // mutation-checked one at a time.
+    await reconcileFacts({
+      episode: first,
+      candidates: [candidate({ subject: "deploy_window", predicate: "ships_on", object: "Thursdays" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+    const report = await reconcileFacts({
+      episode: second,
+      candidates: [candidate({ subject: "Deploy Window", predicate: "Ships On", object: "thursdays" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    expect(report.corroborated).toBe(1);
+    const stored = await facts();
+    expect(stored).toHaveLength(1);
+    // The FIRST phrasing is what the corpus keeps; the second episode arrives
+    // as evidence on the row that already exists.
+    expect(stored[0]).toMatchObject({ subject: "deploy_window" });
+    expect((await edges()).filter((e) => e.edge_type === "provenance")).toHaveLength(2);
+  });
+
+  it("does NOT unify what the vocabulary owns — `is priced at` is not `priced at`", async () => {
+    // The refusal the lexical layer is built around. Collapsing these is a
+    // curated entry with a reviewer behind it (ADR-0037 §6 / #5016), because the same rule
+    // applied generally folds `is owned by` into `owns` — and `led_by`/`leads`,
+    // which are INVERSE relations, into one slot whose join arm stamps
+    // `valid_to`.
+    const first = await insertEpisode({ sourceId: "C01:key-4" });
+    const second = await insertEpisode({ sourceId: "C01:key-5" });
+
+    await reconcileFacts({
+      episode: first,
+      candidates: [candidate({ predicate: "is priced at" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+    const report = await reconcileFacts({
+      episode: second,
+      candidates: [candidate({ predicate: "priced at" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    expect(report.corroborated).toBe(0);
+    expect(await facts()).toHaveLength(2);
+  });
+
+  it("keys a surface that norms away as NULL, and NULL corroborates nothing", async () => {
+    // `-` and `___` survive the MALFORMED_CLAIM guard (`trim` strips whitespace,
+    // not `_` or `-`), so they are storable claims with no slot. They must NOT
+    // share one: a stored `''` — or a NULL-safe join arm — would file every
+    // placeholder in the corpus under one key, and at `single` cardinality
+    // publishing either would stamp `valid_to` on the other.
+    //
+    // What the column read below pins is that `slotKey` returned `null` rather
+    // than `""` — NOT that no `DEFAULT ''` exists, since `INSERT_FACT_SQL` now
+    // binds `object_key` explicitly and an explicit NULL always beats a default.
+    // `identity-pg.test.ts` introspects the column for the default itself.
+    const first = await insertEpisode({ sourceId: "C01:key-6" });
+    const second = await insertEpisode({ sourceId: "C01:key-7" });
+
+    await reconcileFacts({
+      episode: first,
+      candidates: [candidate({ object: "-" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+    const report = await reconcileFacts({
+      episode: second,
+      candidates: [candidate({ object: "___" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    expect(report.corroborated).toBe(0);
+    const stored = await facts();
+    expect(stored).toHaveLength(2);
+    // The degenerate SURFACES survive to the column verbatim — a reviewer has
+    // to be able to see what the producer emitted in order to repair it.
+    expect(stored.map((f) => f.object)).toEqual(["-", "___"]);
+    for (const slot of await slots()) {
+      expect(slot.object_key).toBeNull();
+      expect(slot.subject_key).toBe("deploy window");
+    }
+  });
+
+  it("flags a tension the phrasing used to hide — the rival scan is the slot too", async () => {
+    // The first row of #5020's consumer table. Two `single`-cardinality claims
+    // about one slot, spelled differently: on the surface columns the rival scan
+    // matched nothing, so the second claim landed with no `in-tension-with` edge
+    // and the reviewer saw two uncontested facts where there was a genuine
+    // contradiction. Mutation-checked — reverting the SUBJECT or PREDICATE arm
+    // of `TENSION_CANDIDATES_SQL` to the surfaces turns this red. The OBJECT arm
+    // needs a degenerate rival to distinguish it, which is the next case: here
+    // `Grace` and `Alan` differ on the surface and on the key alike.
+    const first = await insertEpisode({ sourceId: "C01:key-8" });
+    const second = await insertEpisode({ sourceId: "C01:key-9" });
+
+    await reconcileFacts({
+      episode: first,
+      candidates: [
+        candidate({
+          subject: "Ada",
+          predicate: "Reports_To",
+          object: "Grace",
+          predicateCardinality: "single",
+        }),
+      ],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+    const report = await reconcileFacts({
+      episode: second,
+      candidates: [
+        candidate({
+          subject: "ada",
+          predicate: "reports to",
+          object: "Alan",
+          predicateCardinality: "single",
+        }),
+      ],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    // Two beliefs — the objects genuinely differ — and now they are visibly in
+    // tension. Advisory only: nothing was superseded or invalidated.
+    expect(report.outcomes[0]).toMatchObject({ kind: "created", tensionEdges: 1 });
+    expect(await facts()).toHaveLength(2);
+    expect((await edges()).filter((e) => e.edge_type === "in-tension-with")).toHaveLength(1);
+  });
+
+  it("a rival with NO object identity is not a rival — the object arm's falsifier", async () => {
+    // This is what makes `object_key <> $4` load-bearing rather than
+    // decorative, and it took a review to find: a live row in the same slot
+    // whose object is `-` has `object_key IS NULL`, so the corroboration
+    // lookup does not return it either (`object_key = $4` is unknown) and it
+    // survives to the rival scan. There the two spellings genuinely diverge —
+    // `object <> $4` is TRUE, `object_key <> $4` is unknown.
+    //
+    // Wiring the edge would be the worse outcome: a permanent advisory
+    // `in-tension-with` from a real claim to a placeholder that asserts
+    // nothing, shown to a reviewer as a contradiction to arbitrate.
+    const first = await insertEpisode({ sourceId: "C01:key-10" });
+    const second = await insertEpisode({ sourceId: "C01:key-11" });
+
+    await reconcileFacts({
+      episode: first,
+      candidates: [candidate({ object: "-", predicateCardinality: "single" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+    const report = await reconcileFacts({
+      episode: second,
+      candidates: [candidate({ object: "Thursdays", predicateCardinality: "single" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    // Two facts — the degenerate one could not corroborate — and NO edge.
+    expect(report.outcomes[0]).toMatchObject({ kind: "created", tensionEdges: 0 });
+    expect(await facts()).toHaveLength(2);
+    expect((await edges()).filter((e) => e.edge_type === "in-tension-with")).toHaveLength(0);
+  });
+
   it("records an advisory in-tension-with edge without invalidating anything", async () => {
     const first = await insertEpisode({ sourceId: "C01:3" });
     const second = await insertEpisode({ sourceId: "C01:4" });

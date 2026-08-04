@@ -3280,8 +3280,9 @@ export const brainFacts = pgTable(
     //
     // NULLABLE, and for longer than one slice. `alias` is the identity function
     // until the vocabulary lands, so 0187 fills every existing row with
-    // `identityKey(surface)` — but no INSERT site names these columns yet, so
-    // `NOT NULL` here would refuse every write.
+    // `identityKey(surface)`. `INSERT_FACT_SQL` names all three since #5020;
+    // the region import's 18-column INSERT still names none of them (#5035), so
+    // `NOT NULL` here would still refuse every import.
     //
     // NULL carries TWO meanings, and conflating them is how the constraint
     // plan goes wrong: "no writer has keyed this row yet" (transient, what
@@ -3406,10 +3407,11 @@ export const brainFacts = pgTable(
     // scan of one publish's draft set either way.) The index gets strictly
     // smaller.
     //
-    // The three consumers still compare the SURFACE columns until #5020 pivots
-    // them onto the keys, so until that PR merges they lose their
-    // `(subject, predicate)` access path. Deliberate — carrying two indexes
-    // through the cut is the thing "repoint, not add" exists to avoid.
+    // #5020 pivoted all three consumers onto the key columns, so this index is
+    // their access path again. For the window between the two PRs — separate
+    // merges, no enforced ordering — they compared the SURFACE columns and had
+    // none, which was the accepted cost of "repoint, not add" rather than
+    // carrying two indexes through the cut.
     index("idx_brain_facts_subject")
       .on(t.workspaceId, t.subjectKey, t.predicateKey)
       .where(sql`invalidated_at IS NULL AND valid_to IS NULL`),

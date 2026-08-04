@@ -13,7 +13,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { identityKey, lexicalNorm } from "@atlas/api/lib/brain/identity";
+import {
+  identityAlias,
+  identityKey,
+  lexicalNorm,
+  slotKey,
+} from "@atlas/api/lib/brain/identity";
 import { DEGENERATE_SURFACES, PAIRED_SURFACES } from "./identity-fixtures";
 
 describe("lexicalNorm", () => {
@@ -85,6 +90,99 @@ describe("lexicalNorm", () => {
       // why the arm above is a live rule rather than defence in depth.
       expect("-".trim()).not.toBe("");
       expect("___".trim()).not.toBe("");
+    });
+  });
+
+  describe("slotKey — the whole composition (#5020)", () => {
+    it("is `identityKey` while the vocabulary is empty", () => {
+      // The day-one claim, and the reason #5019's slice changed no behaviour:
+      // `alias` is the identity function, so every key produced today is
+      // exactly what migration 0187's backfill wrote.
+      for (const surface of ["Owned_By", "  Reports   To  ", "led_by", "leads", "$499"]) {
+        expect(slotKey(surface, identityAlias), surface).toBe(identityKey(surface));
+      }
+      for (const degenerate of DEGENERATE_SURFACES) {
+        expect(slotKey(degenerate, identityAlias)).toBeNull();
+      }
+    });
+
+    it("composes the vocabulary OVER the norm, not over the surface", () => {
+      // The seam's shape, which is what this slice pins. An entry maps a
+      // NORMALIZED spelling, so one entry covers every casing and separator
+      // variant of both sides — a lookup keyed on raw surfaces would need
+      // `Is_Priced At`, `IS PRICED AT`, and the rest spelled out.
+      const seen: string[] = [];
+      const vocabulary = (norm: string): string => {
+        seen.push(norm);
+        return norm === "is priced at" ? "priced at" : norm;
+      };
+
+      expect(slotKey("Is_Priced  At", vocabulary)).toBe("priced at");
+      expect(slotKey("priced at", vocabulary)).toBe("priced at");
+      expect(seen).toEqual(["is priced at", "priced at"]);
+    });
+
+    it("never consults the vocabulary for a surface that asserts nothing", () => {
+      // A claim whose subject norms away has no slot to look up, so there is
+      // nothing for an entry to map — and calling out with `""` would invite a
+      // vocabulary that answers it.
+      let consulted = 0;
+      const vocabulary = (norm: string): string => {
+        consulted++;
+        return norm;
+      };
+      for (const degenerate of DEGENERATE_SURFACES) {
+        expect(slotKey(degenerate, vocabulary)).toBeNull();
+      }
+      expect(consulted).toBe(0);
+    });
+
+    it("RE-NORMS the vocabulary's answer instead of trusting it", () => {
+      // The failure this defends against is an authoring mistake, not a bug: an
+      // admin types the canonical DISPLAY form as an entry's target. Trusted
+      // verbatim, `Priced At` is a key that joins nothing to anything,
+      // corpus-wide, with nothing anywhere saying so.
+      //
+      // A vocabulary that does NOT already return norms, on purpose — a
+      // conforming one cannot tell `alias(norm)` from `identityKey(alias(norm))`
+      // and would make this assertion unfalsifiable.
+      expect(slotKey("is_priced  at", () => "Priced   At")).toBe("priced at");
+      // …and the empty-key arm falls out of the same call rather than being a
+      // special case: a target that norms away is the `DEFAULT ''` hazard
+      // reached from the vocabulary side, and `null` joins nothing.
+      expect(slotKey("owned by", () => "")).toBeNull();
+      expect(slotKey("owned by", () => " - _ ")).toBeNull();
+    });
+
+    it("leaves the fixpoint intact — a key re-keys to itself", () => {
+      // `f(f(x)) === f(x)`, which is what lets ADR-0037 §7's drift re-key run
+      // over a corpus without walking rows to a new slot on each pass. Driven
+      // off the shared corpus with the REAL default alias, rather than off a
+      // hand-written vocabulary that satisfies idempotence by construction.
+      for (const surface of [
+        ...PAIRED_SURFACES.inverseRelations,
+        ...PAIRED_SURFACES.copulaPair,
+        ...PAIRED_SURFACES.caseFold,
+        ...PAIRED_SURFACES.nonAsciiSpace,
+        "  __Reports-_ To\t\t",
+        "$499",
+      ]) {
+        const once = slotKey(surface, identityAlias);
+        if (once === null) continue;
+        expect(
+          slotKey(once, identityAlias),
+          `${JSON.stringify(surface)} does not re-key to itself`,
+        ).toBe(once);
+      }
+    });
+
+    it("identityAlias returns its input unchanged, including the empty norm", () => {
+      // Only `identityAlias` itself is pinned here. That the DEFAULT is this
+      // function is not separately assertable — any identity-behaving default
+      // satisfies the same equality — and the day-one equivalence above
+      // (`slotKey === identityKey` across the corpus) is what covers it.
+      expect(identityAlias("owned by")).toBe("owned by");
+      expect(identityAlias("")).toBe("");
     });
   });
 

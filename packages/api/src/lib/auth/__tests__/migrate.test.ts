@@ -564,6 +564,9 @@ describe("migrateAuthTables", () => {
             // belongs in this already-applied set for the same reason 0185 and
             // 0186 do.
             { name: "0187_brain_fact_identity_keys.sql" },
+            // 0188 (re-key of unkeyed brain facts, #5020) is a plain UPDATE on
+            // `brain_facts` — same reasoning as 0187 above.
+            { name: "0188_rekey_unkeyed_brain_facts.sql" },
           ],
         };
       }

@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { zipSync, strToU8 } from "fflate";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
@@ -960,12 +961,29 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     const episodeId = epRows[0]!.id;
     const seedFact = async (object: string, status: "draft" | "published") => {
       const { rows } = await pool.query<{ id: string }>(
+        // Keyed like an ingested row (#5020): `supersessionCollisionJoin`
+        // matches on `subject_key`/`predicate_key`/`object_key`, and `=` and
+        // `<>` are both UNKNOWN against NULL — so an unkeyed seed collides with
+        // nothing, `collectSupersessions` returns `[]`, and this test's whole
+        // chain reads as an adapter-registration drift. Derived through
+        // `slotKey`, the same function `reconcile.ts` calls when binding
+        // `INSERT_FACT_SQL`.
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
-            provenance, status, visible_to, predicate_cardinality)
-         VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}', 'single')
+            provenance, status, visible_to, predicate_cardinality,
+            subject_key, predicate_key, object_key)
+         VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}', 'single',
+                 $5, $6, $7)
          RETURNING id`,
-        [wsPromote, object, episodeId, status],
+        [
+          wsPromote,
+          object,
+          episodeId,
+          status,
+          slotKey("alice", identityAlias),
+          slotKey("manager", identityAlias),
+          slotKey(object, identityAlias),
+        ],
       );
       return rows[0]!.id;
     };

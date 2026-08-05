@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { cleanup, render } from "@testing-library/react";
 
 // Toggleable deploy mode — the EnterpriseUpsell hosted-only branch reads it.
 // The factory returns a function that reads `mockDeployMode` at call time, so
@@ -41,11 +41,19 @@ describe("FeatureGate — canned copy (no server message)", () => {
     expect(container.textContent).toContain("sign in");
   });
 
-  test("renders 503 — internal database not configured", () => {
+  test("renders 503 — an unexplained outage, NOT a database diagnosis", () => {
+    // The arm used to assert "Internal database not configured / Set
+    // DATABASE_URL". No route emits that: a missing internal DB answers 404
+    // `not_available`, and every real 503 (`permissions_unavailable`, billing
+    // check, browser unavailable) carries a message, so it takes the branch
+    // above. What reaches HERE is an infra 503 with an HTML body — a
+    // restarting service or an unhealthy proxy — where sending the operator
+    // to set an already-set variable is the misdirection.
     const { container } = render(<FeatureGate status={503} feature="Custom Domains" />);
-    expect(container.textContent).toContain("Internal database not configured");
-    expect(container.textContent).toContain("DATABASE_URL");
-    expect(container.textContent).toContain("Custom Domains");
+    expect(container.textContent).toContain("Custom Domains is unavailable");
+    expect(container.textContent).toContain("Retry in a moment");
+    expect(container.textContent).not.toContain("DATABASE_URL");
+    expect(container.textContent).not.toContain("Internal database not configured");
   });
 
   test("renders no request-id line when the response carried no id", () => {
@@ -85,27 +93,26 @@ describe("FeatureGate — the server's message displaces the guess (#5068)", () 
     );
   });
 
-  test("401 prefers the server message over the sign-in line", () => {
+  test("401 ADDS the server message and keeps the sign-in line", () => {
+    // 401 is the one status whose canned line is not a guess at the cause but
+    // the affordance — it is true whatever the server said. Displacing it
+    // leaves an accurate diagnosis with no next step, which is why this arm
+    // appends where the other three replace.
     const { container } = render(
       <FeatureGate
         status={401}
         feature="Audit Log"
-        message="Your session expired. Sign in again to continue."
+        message="Your session expired."
       />,
     );
     expect(container.textContent).toContain("Authentication required");
     expect(container.textContent).toContain("Your session expired.");
-    expect(container.textContent).not.toContain(
+    expect(container.textContent).toContain(
       "Please sign in to access the admin console.",
     );
   });
 
-  test("503 drops the DATABASE_URL guess from the HEADLINE too, not just the body", () => {
-    // A `permissions_unavailable` 503 has nothing to do with the database. If
-    // only the description gave way, the headline would still send an operator
-    // to check a variable that is already set — which is the whole failure this
-    // arm exists to prevent, and it is invisible to a description-only
-    // assertion.
+  test("503 replaces the whole unexplained-outage line, headline included", () => {
     const { container } = render(
       <FeatureGate
         status={503}
@@ -117,8 +124,21 @@ describe("FeatureGate — the server's message displaces the guess (#5068)", () 
     expect(container.textContent).toContain(
       "Authorization service is temporarily unavailable.",
     );
-    expect(container.textContent).not.toContain("Internal database not configured");
-    expect(container.textContent).not.toContain("DATABASE_URL");
+    // The no-message guidance must not tag along behind a real explanation.
+    expect(container.textContent).not.toContain("Retry in a moment");
+  });
+
+  test("a blank server message does not render an empty description", () => {
+    // `serverMessage` normalizes blanks away, but `FeatureGate` takes a bare
+    // `string | undefined` and any caller can hand it one. Icon + headline
+    // over an empty <p> is the blank-chrome failure `buildFetchError` exists
+    // to prevent, and the `??` guard is nullish-only.
+    const { container } = render(
+      <FeatureGate status={404} feature="Users" message="" />,
+    );
+    expect(container.textContent).toContain(
+      "Enable this feature in your server configuration to use this page.",
+    );
   });
 });
 
@@ -134,11 +154,13 @@ describe("FeatureGate — request id (#5068)", () => {
         <FeatureGate status={status} feature="Users" requestId={REQUEST_ID} />,
       );
       const line = container.querySelector('[data-testid="feature-gate-request-id"]');
-      expect(line).not.toBeNull();
+      // `throw` rather than `expect(...).not.toBeNull()` + `line!`: bun's
+      // expect does not narrow, and this names the failure.
+      if (!line) throw new Error(`no request-id line on the ${status} gate`);
       // Read the id off ITS OWN element, not the container: `toContain` on the
       // whole page passes for an id rendered anywhere, including inside a
       // description that happened to quote it.
-      expect(line!.textContent).toContain(REQUEST_ID);
+      expect(line.textContent).toContain(REQUEST_ID);
     });
   }
 
@@ -172,6 +194,18 @@ describe("MfaRequiredPlaceholder", () => {
     const { container } = render(<MfaRequiredPlaceholder feature="AI Provider" />);
     expect(container.textContent).not.toContain("admin role");
     expect(container.textContent).not.toContain("Access denied");
+  });
+
+  test("carries the request id when one is present (#5068)", () => {
+    // The copy stays fixed — see the component doc — but the id is not copy.
+    const { container } = render(
+      <MfaRequiredPlaceholder feature="AI Provider" requestId="req-mfa-x" />,
+    );
+    const line = container.querySelector('[data-testid="feature-gate-request-id"]');
+    if (!line) throw new Error("MFA placeholder rendered no request-id line");
+    expect(line.textContent).toContain("req-mfa-x");
+    // Still the enrollment copy, not the server's generic 403 sentence.
+    expect(container.textContent).toContain("Enroll an authenticator app or passkey");
   });
 });
 
@@ -228,5 +262,26 @@ describe("EnterpriseUpsell", () => {
     expect(container.textContent).toContain(
       "Proactive monitoring is available only on Atlas Cloud (the hosted SaaS).",
     );
+  });
+
+  test("carries the request id on BOTH arms (#5068)", () => {
+    // `enterprise_required` is evaluated before the `FeatureGate` branch, so
+    // this is the gated 403 most likely to arrive unexpectedly — an
+    // entitlement lookup that misfired for a paying workspace. Both arms,
+    // because the hosted-only branch is the one a self-hosted operator hits
+    // and it is a separate block of markup.
+    for (const [mode, feature] of [
+      ["self-hosted", "Proactive Chat"],
+      ["saas", "SSO"],
+    ] as const) {
+      mockDeployMode = mode;
+      const { container } = render(
+        <EnterpriseUpsell feature={feature} requestId="req-ee-x" />,
+      );
+      const line = container.querySelector('[data-testid="feature-gate-request-id"]');
+      if (!line) throw new Error(`no request-id line on the ${mode} upsell arm`);
+      expect(line.textContent).toContain("req-ee-x");
+      cleanup();
+    }
   });
 });

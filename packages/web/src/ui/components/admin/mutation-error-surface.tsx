@@ -4,6 +4,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import {
   EnterpriseUpsell,
   FeatureGate,
+  isGateStatus,
 } from "@/ui/components/admin/feature-disabled";
 import { InlineError } from "@/ui/components/admin/compact";
 import type { FeatureName } from "@/ui/components/admin/feature-registry";
@@ -126,13 +127,15 @@ export function MutationErrorSurface({
   }
 
   if (isEnterpriseRequired) {
-    return <EnterpriseUpsell feature={feature} message={authored} />;
+    return (
+      <EnterpriseUpsell feature={feature} message={authored} requestId={error.requestId} />
+    );
   }
 
-  if (error.status && [401, 403, 404, 503].includes(error.status)) {
+  if (isGateStatus(error.status)) {
     return (
       <FeatureGate
-        status={error.status as 401 | 403 | 404 | 503}
+        status={error.status}
         feature={feature}
         message={authored}
         requestId={error.requestId}

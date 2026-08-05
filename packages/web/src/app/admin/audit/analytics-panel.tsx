@@ -15,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { FeatureGate, isGateStatus } from "@/ui/components/admin/feature-disabled";
 import { DataTable } from "@/components/data-table/data-table";
 import { useDataTable } from "@/hooks/use-data-table";
 import {
@@ -51,10 +51,20 @@ function buildQS(from: string, to: string): string {
   return parts.length > 0 ? `?${parts.join("&")}` : "";
 }
 
-/** Check if any fetch error is an auth/availability gate error. */
+/**
+ * The first of the five panel fetches whose failure is a gate rather than a
+ * fault.
+ *
+ * Uses the shared `isGateStatus`, which includes **503**; this file used to
+ * write its own `[401, 403, 404]` list twice and silently omit it, so an
+ * authz-service outage fell through to five per-chart error banners rendering
+ * the raw message with no correlation id. Nothing marked that as a decision,
+ * and #5068's premise — a 503 is a refusal to explain, not a fault to retry
+ * per-chart — is the same one that puts it in the set.
+ */
 function findGateError(...errors: (FetchError | null)[]): FetchError | null {
   for (const err of errors) {
-    if (err?.status && [401, 403, 404].includes(err.status)) return err;
+    if (isGateStatus(err?.status)) return err;
   }
   return null;
 }
@@ -123,10 +133,10 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
 
   // Gate: auth/availability errors surface as FeatureGate
   const gateError = findGateError(volumeError, slowError, frequentError, errorsError, userError);
-  if (gateError?.status && [401, 403, 404].includes(gateError.status)) {
+  if (gateError && isGateStatus(gateError.status)) {
     return (
       <FeatureGate
-        status={gateError.status as 401 | 403 | 404}
+        status={gateError.status}
         feature="Query Analytics"
         message={serverMessage(gateError)}
         requestId={gateError.requestId}

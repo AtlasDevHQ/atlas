@@ -1,7 +1,7 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
-import { Ban, Cloud, DatabaseZap, ServerOff, ShieldCheck, ShieldX } from "lucide-react";
+import { Ban, Cloud, ServerOff, ShieldCheck, ShieldX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   isSaasExclusiveFeature,
@@ -30,10 +30,13 @@ import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 export function EnterpriseUpsell({
   feature,
   message,
+  requestId,
 }: {
   feature: FeatureName;
-  /** Optional override for the description text (usually the server message). */
+  /** The server's description of this refusal. Pass `serverMessage(err)`. */
   message?: string;
+  /** Correlation id from the response body, for log lookup. */
+  requestId?: string;
 }) {
   // Only SaaS-exclusive features need the authoritative deploy mode; for every
   // other feature `hostedOnly` is false regardless, so skip the settings fetch
@@ -65,6 +68,7 @@ export function EnterpriseUpsell({
               </a>
             </Button>
           </div>
+          <GateRequestId requestId={requestId} />
         </div>
       </div>
     );
@@ -95,14 +99,54 @@ export function EnterpriseUpsell({
             </a>
           </Button>
         </div>
+        <GateRequestId requestId={requestId} />
       </div>
     </div>
   );
 }
 
 /**
+ * The statuses that route to {@link FeatureGate} rather than a red error
+ * banner: a refusal the operator is meant to act on, not a fault.
+ *
+ * One definition, because the set was previously written out at each call
+ * site next to an `as 401 | 403 | 404 | 503` cast that TypeScript was told to
+ * trust. Widening the union without touching every `includes` list compiled
+ * and silently gated nothing new. `isGateStatus` narrows, so the casts are
+ * gone and the two can no longer disagree.
+ */
+export const GATE_STATUSES = [401, 403, 404, 503] as const;
+export type GateStatus = (typeof GATE_STATUSES)[number];
+
+export function isGateStatus(status: number | undefined): status is GateStatus {
+  return status !== undefined && (GATE_STATUSES as readonly number[]).includes(status);
+}
+
+/**
+ * The correlation id, rendered under whichever gated placeholder is showing.
+ *
+ * A gate an operator did not expect — a 403 they believe they should pass, a
+ * 404 on a feature they configured, an entitlement that should be live — is
+ * un-diagnosable without this, and `ErrorBanner` has appended it to every
+ * *non*-gated error for as long as it has existed. All three placeholders on
+ * the gated path render it (#5068), so which branch an operator lands on
+ * never decides whether they get a log handle.
+ */
+export function GateRequestId({ requestId }: { requestId?: string }) {
+  if (!requestId) return null;
+  return (
+    <p
+      data-testid="feature-gate-request-id"
+      className="mt-2 font-mono text-[11px] text-muted-foreground/70"
+    >
+      Request ID: {requestId}
+    </p>
+  );
+}
+
+/**
  * The shared body of every {@link FeatureGate} arm: icon, headline, one line
- * of description, and — when the response carried one — the correlation id.
+ * of description, and the correlation id.
  *
  * Extracted so the id renders identically on all four statuses. Before #5068
  * each arm was its own copy of this markup and the id had nowhere to go.
@@ -124,18 +168,7 @@ function GateBody({
         <Icon className="mx-auto size-10 text-muted-foreground/50" aria-hidden="true" />
         <p className="mt-3 text-sm font-medium">{title}</p>
         <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-        {requestId && (
-          // A gate an operator did not expect (a 403 they believe they should
-          // pass, a 404 on a feature they configured) is un-diagnosable
-          // without this — `ErrorBanner` has appended it to every non-gated
-          // error for as long as it has existed.
-          <p
-            data-testid="feature-gate-request-id"
-            className="mt-2 font-mono text-[11px] text-muted-foreground/70"
-          >
-            Request ID: {requestId}
-          </p>
-        )}
+        <GateRequestId requestId={requestId} />
       </div>
     </div>
   );
@@ -145,17 +178,26 @@ function GateBody({
  * Shown when an admin page gets a 401/403/404/503 status.
  *
  * Evaluation order (matches code):
- * - 503 → service unavailable (internal database missing, authz outage, …)
- * - 404 → feature not enabled (enterprise config)
+ * - 503 → unavailable (authz outage, billing check, restarting service, …)
+ * - 404 → feature not enabled (enterprise config, no internal database)
  * - 401 → authentication required
  * - 403 → insufficient role
  *
- * Every arm prefers the server's own `message` over its canned copy: the
- * canned line is a guess at the cause from the status alone, and the server
- * knows. The canned copy remains the fallback for an empty response body —
- * which is why callers must pass `serverMessage(err)` rather than
- * `err.message` (see that helper: the latter is `HTTP {status}` on an empty
- * body, and rendering it would replace real guidance with a status echo).
+ * Each arm prefers the server's own `message` over its canned copy, because
+ * the canned line is a guess at the cause from the status alone and the
+ * server knows. The canned copy is the fallback for an empty response body —
+ * which is why callers must pass `serverMessage(err)` and never `err.message`
+ * (see that helper: the latter is a synthesized placeholder on an empty body,
+ * and rendering it replaces real guidance with a status echo).
+ *
+ * 401 is the exception: its canned line is the *affordance*, not a guess, so
+ * the server's message is appended to it rather than displacing it.
+ *
+ * ⚠️ This makes the `message` field of every gated 401/403/404/503 response
+ * user-facing prose on ~60 admin pages. It was rendered nowhere before #5068.
+ * A route that interpolates a driver error, a connection string, or a caught
+ * `err.message` into a gated status now puts it on an admin's screen — see
+ * CLAUDE.md § "No secrets in responses".
  */
 export function FeatureGate({
   status,
@@ -163,7 +205,7 @@ export function FeatureGate({
   message,
   requestId,
 }: {
-  status: 401 | 403 | 404 | 503;
+  status: GateStatus;
   feature: FeatureName;
   /** The server's description of *this* refusal. Pass `serverMessage(err)`. */
   message?: string;
@@ -171,24 +213,27 @@ export function FeatureGate({
   requestId?: string;
 }) {
   if (status === 503) {
-    // Missing DATABASE_URL is one cause of a 503 here; `permissions_unavailable`
-    // (the authz service being down) is another, and "Internal database not
-    // configured" is simply false for it. So when the server explained itself
-    // the headline drops its guess too — not just the description. With no
-    // message the DATABASE_URL hint stays: it is still the likeliest cause and
-    // the only actionable thing we can say.
-    return message ? (
+    // This arm used to assert one cause — "Internal database not configured /
+    // Set DATABASE_URL" — on every 503. No route emits that: a missing
+    // internal DB answers 404 `not_available` (`requireOrgContext`), and the
+    // 503s that exist are things like `permissions_unavailable`, an authz
+    // outage the database line is simply false for. (The stale `503:
+    // "Internal database not configured"` entries in several routers'
+    // OpenAPI blocks describe handlers that return 404.)
+    //
+    // What actually reaches the no-message branch is an infrastructure 503
+    // with an HTML body — a restarting service, an unhealthy proxy — where
+    // `extractFetchError` finds no message at all. Sending that operator to
+    // set a variable which is already set is the misdirection, not the
+    // absence of a guess.
+    return (
       <GateBody
         icon={ServerOff}
         title={`${feature} is unavailable`}
-        description={message}
-        requestId={requestId}
-      />
-    ) : (
-      <GateBody
-        icon={DatabaseZap}
-        title="Internal database not configured"
-        description={`Set DATABASE_URL to enable ${feature}.`}
+        description={
+          message ||
+          "The server returned 503 with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs."
+        }
         requestId={requestId}
       />
     );
@@ -200,22 +245,29 @@ export function FeatureGate({
         icon={Ban}
         title={`${feature} not enabled`}
         description={
-          message ?? "Enable this feature in your server configuration to use this page."
+          message || "Enable this feature in your server configuration to use this page."
         }
         requestId={requestId}
       />
     );
   }
 
+  const SIGN_IN = "Please sign in to access the admin console.";
   return (
     <GateBody
       icon={ShieldX}
       title={status === 401 ? "Authentication required" : "Access denied"}
       description={
-        message ??
-        (status === 401
-          ? "Please sign in to access the admin console."
-          : "You need the admin role to access this page.")
+        status === 401
+          ? // 401 is the one status whose canned line is not a guess at the
+            // cause but the *affordance* — it stays true whatever the server
+            // said, so it is appended rather than displaced. Otherwise a
+            // server that answers "No user ID in session." leaves the user
+            // with an accurate diagnosis and no next step.
+            message
+            ? `${message} ${SIGN_IN}`
+            : SIGN_IN
+          : message || "You need the admin role to access this page."
       }
       requestId={requestId}
     />
@@ -233,16 +285,30 @@ export function FeatureGate({
  * placeholder before the user sees it; the inline copy is the carve-out
  * for the enrollment page itself (`/admin/account-security`), which the
  * layout intentionally leaves un-gated so the user can finish setup.
+ *
+ * The copy stays fixed on purpose — the server's 403 message is the generic
+ * two-factor line and the enrollment CTA is the whole value here, so #5068's
+ * "prefer the server's words" does NOT apply. The correlation id does: an
+ * admin who *has* enrolled and still hits this needs something to hand an
+ * operator.
  */
-export function MfaRequiredPlaceholder({ feature }: { feature: FeatureName }) {
+export function MfaRequiredPlaceholder({
+  feature,
+  requestId,
+}: {
+  feature: FeatureName;
+  /** Correlation id from the response body, for log lookup. */
+  requestId?: string;
+}) {
   return (
     <div className="flex h-full items-center justify-center">
-      <div className="text-center">
+      <div className="max-w-sm text-center">
         <ShieldCheck className="mx-auto size-10 text-primary/70" aria-hidden="true" />
         <p className="mt-3 text-sm font-medium">Two-factor required</p>
-        <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+        <p className="mt-1 text-xs text-muted-foreground">
           Enroll an authenticator app or passkey to access {feature}.
         </p>
+        <GateRequestId requestId={requestId} />
       </div>
     </div>
   );

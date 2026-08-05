@@ -236,6 +236,54 @@ describe("serverMessage", () => {
     // is client-authored, so a gate must not present it as the server's word.
     expect(serverMessage({ message: "Network error" })).toBeUndefined();
   });
+
+  test("recognizes buildFetchError's placeholder too, not just extractFetchError's", () => {
+    // The module mints TWO synthetic messages that keep their status, and a
+    // predicate that knows one is fooled by the other. This spelling is
+    // `buildFetchError`'s production substitute; treating it as server copy
+    // puts "Request failed (403)" where the gate's canned guidance belongs —
+    // the same defect, through the other door.
+    expect(serverMessage({ message: "Request failed (403)", status: 403 })).toBeUndefined();
+    // Same mismatched-status boundary as the `HTTP {status}` spelling.
+    expect(serverMessage({ message: "Request failed (404)", status: 403 })).toBe(
+      "Request failed (404)",
+    );
+  });
+
+  test("a whitespace-only server message reaches the placeholder path in production", async () => {
+    // Not a hypothetical: `extractFetchError` admits "   " (it tests
+    // `length > 0`, untrimmed), `buildFetchError` trims it to empty, and in
+    // production substitutes `Request failed ({status})` with the status
+    // preserved. Dev throws instead, so this arm is the only warning a
+    // production build ever gets.
+    // Next's types declare NODE_ENV readonly; write through a widened view,
+    // as the `buildFetchError` block below already does.
+    const mutableEnv = process.env as Record<string, string | undefined>;
+    const prev = mutableEnv.NODE_ENV;
+    mutableEnv.NODE_ENV = "production";
+    try {
+      const err = await extractFetchError(mockResponse(404, { message: "   " }));
+      expect(err.message).toBe("Request failed (404)");
+      expect(err.status).toBe(404);
+      expect(serverMessage(err)).toBeUndefined();
+    } finally {
+      mutableEnv.NODE_ENV = prev;
+    }
+  });
+
+  test("treats a blank message as no message rather than passing '' through", () => {
+    // A caller writing `message ?? canned` would render an empty <p> — icon
+    // and headline over nothing. `buildFetchError` refuses to construct this,
+    // but `FetchError` is a bare interface anything can build.
+    expect(serverMessage({ message: "", status: 403 })).toBeUndefined();
+    expect(serverMessage({ message: "   ", status: 403 })).toBeUndefined();
+  });
+
+  test("trims the message it does return", () => {
+    expect(serverMessage({ message: "  Admin role required.  ", status: 403 })).toBe(
+      "Admin role required.",
+    );
+  });
 });
 
 describe("friendlyError", () => {
@@ -329,6 +377,20 @@ describe("friendlyError", () => {
         requestId: "req-mfa",
       }),
     ).toBe("Two-factor required. (Request ID: req-mfa)");
+  });
+
+  test("a blank message falls through to canned copy instead of a blank banner", () => {
+    // Behaviour this gained when the precedence check moved into
+    // `serverMessage`: the old `!isHttpStatusFallback(...)` test was true for
+    // `""`, so `ErrorBanner` rendered alert chrome with no copy —
+    // indistinguishable from a successful render. Pinned here so a refactor
+    // back to a bare `message !== undefined` check can't quietly restore it.
+    expect(friendlyError({ message: "", status: 403 })).toBe(
+      "Access denied. You may need additional permissions to view this page.",
+    );
+    expect(friendlyError({ message: "   ", status: 404 })).toBe(
+      "This feature is not enabled on this server.",
+    );
   });
 
   test("routes schema_mismatch to a version-drift specific message", () => {

@@ -254,6 +254,11 @@ describe("Company Brain overview — counts are never fabricated (#5066)", () =>
     // legitimate, then no digit may remain — which is what catches an
     // UNLABELLED bare count that `expectNoCounts` cannot see. Throws rather
     // than `?.remove()` so a silent no-op strip can't leave this green.
+    //
+    // ⚠️ This couples to `NO_INTERNAL_DB.message` being digit-free, since the
+    // gate now renders it. Give that message a port or a version number and
+    // the failure reads "fabricated count" — which is the wrong place to
+    // start debugging.
     const outsideId = view.container.cloneNode(true) as HTMLElement;
     const idLine = outsideId.querySelector('[data-testid="feature-gate-request-id"]');
     if (!idLine) throw new Error("no request-id line to strip — the 404 gate surface changed");

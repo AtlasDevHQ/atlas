@@ -77,15 +77,23 @@ describe("MutationErrorSurface", () => {
     expect(container.textContent).toContain("Admin role required.");
   });
 
-  test("401 routes to FeatureGate sign-in copy", () => {
+  test("401 routes to FeatureGate sign-in copy, carrying the server's message", () => {
     const error: FetchError = { message: "No user ID in session.", status: 401 };
     const { container } = render(
       <MutationErrorSurface error={error} feature="SCIM" />,
     );
     expect(container.textContent).toContain("Authentication required");
+    // Without this the fixture is inert — the test passed identically with
+    // `message` dropped from the props.
+    expect(container.textContent).toContain("No user ID in session.");
+    // 401 appends rather than displaces: the sign-in affordance stays true
+    // whatever the server said.
+    expect(container.textContent).toContain(
+      "Please sign in to access the admin console.",
+    );
   });
 
-  test("503 with no server message keeps the internal-db copy", () => {
+  test("503 with no server message keeps the unexplained-outage copy", () => {
     // `HTTP 503` is what `extractFetchError` leaves behind on an empty body —
     // the only shape that legitimately falls back. Writing an invented
     // one-word message here instead would assert the fallback on an input that
@@ -94,8 +102,8 @@ describe("MutationErrorSurface", () => {
     const { container } = render(
       <MutationErrorSurface error={error} feature="Custom Domains" />,
     );
-    expect(container.textContent).toContain("Internal database not configured");
-    expect(container.textContent).toContain("Custom Domains");
+    expect(container.textContent).toContain("Custom Domains is unavailable");
+    expect(container.textContent).toContain("Retry in a moment");
   });
 
   test("503 with a server message routes to FeatureGate carrying it (#5068)", () => {
@@ -129,6 +137,43 @@ describe("MutationErrorSurface", () => {
     );
     expect(container.textContent).toContain("SSO requires Enterprise.");
     expect(container.textContent).not.toContain("HTTP 403");
+  });
+
+  test("BANNER enterprise upsell drops the HTTP placeholder too", () => {
+    // The inline sibling above had this arm and the banner one did not, so
+    // reverting the banner call site to `message={error.message}` survived
+    // the whole suite — every other enterprise fixture carries a real body,
+    // where `authored` and `error.message` are indistinguishable.
+    const error: FetchError = {
+      message: "HTTP 403",
+      status: 403,
+      code: "enterprise_required",
+    };
+    const { container } = render(
+      <MutationErrorSurface error={error} feature="SSO" />,
+    );
+    expect(container.textContent).toContain("SSO requires an enterprise plan");
+    expect(container.textContent).toContain("contact sales");
+    expect(container.textContent).not.toContain("HTTP 403");
+  });
+
+  test("the enterprise upsell carries the request id, like every other gated surface", () => {
+    // `enterprise_required` is evaluated one branch BEFORE the gate, so it
+    // was the class of 403 most likely to arrive unexpectedly — a paying
+    // workspace whose entitlement lookup misfired — and the only one that
+    // reached the operator with no log handle.
+    const error: FetchError = {
+      message: "Enterprise tier required to use SSO.",
+      status: 403,
+      code: "enterprise_required",
+      requestId: "req-ee-gate",
+    };
+    const { container } = render(
+      <MutationErrorSurface error={error} feature="SSO" />,
+    );
+    const line = container.querySelector('[data-testid="feature-gate-request-id"]');
+    if (!line) throw new Error("enterprise upsell rendered no request-id line");
+    expect(line.textContent).toContain("req-ee-gate");
   });
 
   test("enterprise_required without a status still routes to EnterpriseUpsell", () => {

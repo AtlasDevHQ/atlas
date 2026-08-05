@@ -150,6 +150,15 @@ describe("admin mutation error passthrough", () => {
     expect(utils.container.textContent).not.toContain("admin role");
     expect(utils.container.textContent).not.toContain("Access denied");
     expect(utils.container.textContent).not.toContain("HTTP 403");
+    // The copy stays fixed here on purpose — the enrollment CTA is the value,
+    // not the server's generic two-factor sentence — so #5068's "prefer the
+    // server's words" deliberately does not apply. The correlation id is not
+    // copy though: an admin who HAS enrolled and still lands here needs
+    // something to hand an operator.
+    expect(utils.container.textContent).not.toContain(
+      "Two-factor authentication is required for admin accounts.",
+    );
+    expect(utils.container.textContent).toContain("req-mfa-123");
   });
 
   test("403 (no enterprise code) renders the server's role message, not 'HTTP 403'", async () => {
@@ -200,6 +209,12 @@ describe("admin mutation error passthrough", () => {
     expect(utils.container.textContent).toContain(
       "Your session expired. Sign in again to continue.",
     );
+    // 401 alone appends rather than displaces — the sign-in affordance is
+    // true whatever the server said, so losing it would leave an accurate
+    // diagnosis with no next step.
+    expect(utils.container.textContent).toContain(
+      "Please sign in to access the admin console.",
+    );
     expect(utils.container.textContent).toContain("req-401-abc");
     expect(utils.container.textContent).not.toContain("HTTP 401");
   });
@@ -223,6 +238,9 @@ describe("admin mutation error passthrough", () => {
       expect(utils.container.textContent).toContain("Scheduled Tasks not enabled");
     });
     expect(utils.container.textContent).toContain("No internal database configured.");
+    expect(utils.container.textContent).not.toContain(
+      "Enable this feature in your server configuration",
+    );
     expect(utils.container.textContent).toContain("req-404-abc");
     expect(utils.container.textContent).not.toContain("HTTP 404");
   });

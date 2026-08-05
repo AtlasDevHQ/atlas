@@ -63,8 +63,9 @@ function buildQS(from: string, to: string): string {
  * being a verdict on all of them. Those keep their per-section banner.
  *
  * Derived from the shared `GATE_STATUSES` rather than the inline
- * `[401, 403, 404]` this used to hold — which was the sixth copy of that list
- * in the codebase, and indistinguishable from an accidental omission (#5068).
+ * `[401, 403, 404]` this used to hold — the last of five hand-written copies,
+ * and one of the three that spelled it without 503 while two spelled it with,
+ * so an accidental omission and a reasoned one looked identical (#5068).
  */
 function isTabGateStatus(status: number | undefined): status is Exclude<GateStatus, 503> {
   return isGateStatus(status) && status !== 503;

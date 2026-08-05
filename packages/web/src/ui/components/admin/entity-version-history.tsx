@@ -367,7 +367,7 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
   };
 
   if (loading) return <LoadingState message="Loading version history..." />;
-  if (error) return <div className="p-6"><ErrorBanner message={error.message} /></div>;
+  if (error) return <div className="p-6"><ErrorBanner message={friendlyError(error)} /></div>;
   if (versions.length === 0) {
     return (
       <EmptyState icon={RotateCcw} message="No version history">

@@ -60,6 +60,20 @@ const httpStatusMessage = (status: number | string) => `HTTP ${status}`;
 const requestFailedMessage = (status: number | string) => `Request failed (${status})`;
 
 /**
+ * What to say when the server refused and explained nothing.
+ *
+ * Exported so `FeatureGate`'s 503 arm and `friendlyError` give one answer
+ * rather than two. They disagreed for a while — the gate had been corrected to
+ * stop blaming DATABASE_URL for a restarting replica while this file still
+ * said "Check server configuration", so the same status read as two different
+ * diagnoses one file apart.
+ */
+export function unexplainedFailure(status: number | undefined): string {
+  const code = status === undefined ? "" : ` (${status})`;
+  return `The server returned an error${code} with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs.`;
+}
+
+/**
  * Construct a {@link FetchError} with an empty-message invariant.
  *
  * `MutationErrorSurface` / `ErrorBanner` / `InlineError` render `error.message`
@@ -248,11 +262,13 @@ export function friendlyErrorOrNull(err: FetchError | null | undefined): string 
  * blank-chrome failure that helper exists to prevent.
  */
 export function serverMessage(err: FetchError): string | undefined {
-  // `status === undefined` stands in for "no HTTP response", which is why a
-  // body `code` without a status reads as "no server message" here. That pair
-  // cannot occur — `extractFetchError` always sets a status, and the
-  // status-less producers (network catch, `schema_mismatch`) never set a
-  // code — so the approximation is exact in practice, not merely convenient.
+  // `status === undefined` means no HTTP response was parsed, and every
+  // status-less producer in this codebase authors its own message client-side
+  // (the network catch, the non-JSON-body fallback, `schema_mismatch`, the
+  // hand-built errors in `use-admin-mutation` / `use-config-form` /
+  // `query-utils`). So a status-less error never carries server prose — which
+  // holds regardless of `code`. `schema_mismatch` in particular IS status-less
+  // *with* a code, and returning `undefined` for it is right, not a gap.
   if (err.status === undefined) return undefined;
   if (isSynthesizedMessage(err.message, err.status)) return undefined;
   return err.message.trim() || undefined;
@@ -268,8 +284,8 @@ export function serverMessage(err: FetchError): string | undefined {
  * without a `FetchError`), but the decision of *which* two fields and *how*
  * they are derived stops being replicated per call site. #5068 was one call
  * site forgetting; the panel review then found a second call site with no test
- * at all, which is how the same list of statuses had silently diverged there.
- * Per-call-site discipline does not survive call site four.
+ * at all, whose narrower status set turned out to be correct but was
+ * indistinguishable from an accident.
  */
 export interface GateErrorProps {
   message?: string;
@@ -347,14 +363,20 @@ export function friendlyError(err: FetchError): string {
     msg = "Access denied. You may need additional permissions to view this page.";
   else if (err.status === 404)
     msg = "This feature is not enabled on this server.";
-  else if (err.status === 503)
-    msg = "A required service is unavailable. Check server configuration.";
+  else if (err.status === 503) msg = unexplainedFailure(503);
   // Every status without a friendly mapping — 500, 409, 429 — plus the
-  // status-less client failures. `.trim() ||` because a blank here produced
-  // alert chrome carrying nothing but "(Request ID: …)", or nothing at all,
-  // which is indistinguishable from a successful render. The four gated
-  // statuses were covered above; this is the same class on the rest.
-  else msg = err.message.trim() || `Request failed${err.status ? ` (${err.status})` : ""}. Retry; if it persists, check the API service logs.`;
+  // status-less client failures.
+  //
+  // `isPlaceholderMessage`, not a bare `.trim()` and not `serverMessage`.
+  //
+  // A trim check could never fire for the statuses this arm was written for:
+  // an empty-bodied 500 arrives as the placeholder `"HTTP 500"`, which is
+  // non-blank, so the banner rendered the status echo. But `serverMessage` is
+  // too strong here — it discards every status-less message, and those are
+  // client-authored ("Network error", the schema-mismatch sentence) and are
+  // exactly what this arm should show. Only the placeholder and the blank are
+  // worth replacing.
+  else msg = (isPlaceholderMessage(err) ? "" : err.message.trim()) || unexplainedFailure(err.status);
   return appendRequestId(msg, err.requestId);
 }
 

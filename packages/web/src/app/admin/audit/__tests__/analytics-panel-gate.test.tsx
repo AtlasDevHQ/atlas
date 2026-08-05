@@ -179,8 +179,15 @@ describe("AnalyticsPanel — the gate carries the server's words and the id (#50
     // server sentence either way, so asserting on the copy proves nothing.
     expect(view.container.textContent ?? "").not.toContain("Query Analytics is unavailable");
     // The banners go through `friendlyError`, so they carry the correlation id
-    // that raw `.message` was dropping.
-    expect(view.container.textContent ?? "").toContain(REQUEST_ID);
+    // that raw `.message` was dropping. Asserted PER BANNER, not on the
+    // container: this page has five independent `friendlyError` call sites and
+    // a container-scoped `toContain` is satisfied by any one of them, so
+    // reverting four would have stayed green.
+    const alerts = Array.from(view.container.querySelectorAll('[role="alert"]'));
+    expect(alerts.length).toBe(5);
+    for (const alert of alerts) {
+      expect(alert.textContent ?? "").toContain(REQUEST_ID);
+    }
   });
 
   test("a 500 is a fault, not a gate — the whitelist still means something", async () => {

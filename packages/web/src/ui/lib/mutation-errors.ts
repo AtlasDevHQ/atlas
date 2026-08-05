@@ -20,26 +20,35 @@ export function combineMutationErrors(
   const seen = new Set<string>();
   const unique: FetchError[] = [];
   for (const err of errors) {
-    if (!err || err.message.length === 0) continue;
-    if (seen.has(err.message)) continue;
-    seen.add(err.message);
+    // Trimmed, to match every other blank guard on this path (`serverMessage`,
+    // `FeatureGate`, `GateRequestId`). A whitespace-only message that became
+    // primary rendered a gate description of "(+1 more)" — icon and headline
+    // over a parenthetical.
+    if (!err || err.message.trim().length === 0) continue;
+    if (seen.has(err.message.trim())) continue;
+    seen.add(err.message.trim());
     unique.push(err);
   }
 
   if (unique.length === 0) return null;
   const primary = unique[0]!;
   if (unique.length === 1) return primary;
-  // Never build the "+N more" suffix onto a synthesized placeholder.
-  // `"HTTP 403"` decorated to `"HTTP 403 (+1 more)"` stops matching
-  // `serverMessage`'s sentinels, so it reads as server prose to every surface
-  // downstream — and since #5068 those surfaces render it as a gate's only
-  // line of copy, which is the status-echo-where-guidance-belongs defect this
-  // all exists to prevent. Dropping to the generic keeps the count visible
-  // without lying about where the text came from.
+  // A placeholder is returned UNDECORATED — not re-worded, not suffixed.
+  //
+  // Any transform of `message` destroys its provenance, because provenance is
+  // recovered by string-comparing against the two spellings this module mints
+  // (`serverMessage`). `"HTTP 403"` suffixed to `"HTTP 403 (+1 more)"` matches
+  // neither, so every downstream surface takes it for the server's own words —
+  // and since #5068 the gated placeholders render exactly that as their only
+  // line of copy. Re-wording it to `"Request failed (+1 more)"` first does not
+  // help: that is equally unrecognized, and it replaces the enterprise upsell's
+  // "Upgrade your plan or contact sales…" with a sentence carrying strictly
+  // less than the canned copy it displaced. The count is cosmetic; the correct
+  // diagnosis is not.
   //
   // `isPlaceholderMessage`, not `serverMessage`: a message with no status is
-  // client-authored ("Network error") but perfectly good to decorate, and
-  // `serverMessage` would discard it.
-  const base = isPlaceholderMessage(primary) ? "Request failed" : primary.message;
-  return { ...primary, message: `${base} (+${unique.length - 1} more)` };
+  // client-authored ("Network error") and decorates fine, but `serverMessage`
+  // would discard it.
+  if (isPlaceholderMessage(primary)) return primary;
+  return { ...primary, message: `${primary.message} (+${unique.length - 1} more)` };
 }

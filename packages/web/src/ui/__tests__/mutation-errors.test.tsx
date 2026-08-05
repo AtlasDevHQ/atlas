@@ -1,6 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, mock } from "bun:test";
+import { render } from "@testing-library/react";
+
+// `EnterpriseUpsell` reads useDeployMode (→ useAdminFetch → useAtlasConfig);
+// the end-to-end arm below renders it without a provider, so stub the hook to
+// a stable mode. SSO is not SaaS-exclusive, so the mode never flips the copy.
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
+  useDeployMode: () => ({
+    deployMode: "self-hosted",
+    loading: false,
+    error: null,
+    resolved: true,
+  }),
+}));
 import { combineMutationErrors } from "../lib/mutation-errors";
 import { serverMessage, type FetchError } from "../lib/fetch-error";
+import { MutationErrorSurface } from "../components/admin/mutation-error-surface";
 
 function err(message: string, overrides: Partial<FetchError> = {}): FetchError {
   return { message, ...overrides };
@@ -63,22 +77,42 @@ describe("combineMutationErrors", () => {
     });
   });
 
-  test("does not decorate a synthesized placeholder into something that reads as server prose (#5068)", () => {
-    // `"HTTP 403"` suffixed to `"HTTP 403 (+1 more)"` no longer matches
-    // `serverMessage`'s sentinels, so every downstream surface takes it for
-    // the server's own words — and since #5068 the gated placeholders render
-    // exactly that string as their only line of copy. The combiner is the one
-    // place that transforms a message, so it is the one place that has to
-    // know. Reachable today from `custom-domain`, `residency`, `cache`,
-    // `sandbox` and `email-provider`, all of which combine then gate.
+  test("leaves a synthesized placeholder UNDECORATED so it stays recognizable (#5068)", () => {
+    // Provenance is recovered by string-comparing against the two spellings
+    // this module mints, so ANY transform destroys it. `"HTTP 403 (+1 more)"`
+    // matches no sentinel — but neither does `"Request failed (+1 more)"`, so
+    // re-wording is not a fix. `serverMessage` returning undefined is the
+    // property that matters, and it is the only one a downstream surface can
+    // act on. The combiner is the codebase's one message transform, so it is
+    // the one place that has to know. Reachable from every
+    // `combineMutationErrors` consumer — all six feed `MutationErrorSurface`.
     const combined = combineMutationErrors([
       err("HTTP 403", { status: 403, requestId: "req-x" }),
       err("something else", { status: 500 }),
     ]);
-    expect(combined?.message).toBe("Request failed (+1 more)");
-    expect(serverMessage(combined!)).toBe("Request failed (+1 more)");
-    // The status echo must not survive into the combined message at all.
-    expect(combined?.message).not.toContain("HTTP 403");
+    expect(combined?.message).toBe("HTTP 403");
+    expect(serverMessage(combined!)).toBeUndefined();
+    // The count is what gets dropped — cosmetic, and the price of a correct
+    // diagnosis. Assert it so the trade is visible rather than assumed.
+    expect(combined?.message).not.toContain("+1 more");
+    expect(combined?.requestId).toBe("req-x");
+  });
+
+  test("a placeholder primary still renders the gate's CANNED copy end-to-end", () => {
+    // The string assertions above are necessary and not sufficient: what makes
+    // this a regression-vs-main is what an admin reads. Before this arm, the
+    // combiner→gate boundary had no test at all, which is how two successive
+    // fixes to the same defect both looked complete.
+    const combined = combineMutationErrors([
+      err("HTTP 403", { status: 403, code: "enterprise_required" }),
+      err("something else", { status: 500 }),
+    ]);
+    const { container } = render(
+      <MutationErrorSurface error={combined} feature="SSO" />,
+    );
+    expect(container.textContent).toContain("contact sales");
+    expect(container.textContent).not.toContain("+1 more");
+    expect(container.textContent).not.toContain("HTTP 403");
   });
 
   test("still builds the suffix onto a REAL server message", () => {

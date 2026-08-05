@@ -6,6 +6,7 @@ import {
   friendlyErrorOrNull,
   gateProps,
   serverMessage,
+  unexplainedFailure,
 } from "../lib/fetch-error";
 
 function mockResponse(status: number, body?: unknown, headers?: Record<string, string>): Response {
@@ -367,9 +368,9 @@ describe("friendlyError", () => {
     );
   });
 
-  test("falls back to canned 503 copy when body is empty", () => {
+  test("falls back to the unexplained-outage copy on an empty-bodied 503", () => {
     expect(friendlyError({ message: "HTTP 503", status: 503 })).toBe(
-      "A required service is unavailable. Check server configuration.",
+      unexplainedFailure(503),
     );
   });
 
@@ -402,6 +403,36 @@ describe("friendlyError", () => {
         requestId: "req-mfa",
       }),
     ).toBe("Two-factor required. (Request ID: req-mfa)");
+  });
+
+  test("an empty-bodied 500 gets actionable copy, not the status echo", () => {
+    // The arm that could never fire before: an empty body arrives as the
+    // placeholder `"HTTP 500"`, which is non-blank, so a `.trim()` guard was
+    // always truthy and the banner rendered "HTTP 500". Only `serverMessage`
+    // catches the placeholder as well as the blank.
+    expect(friendlyError({ message: "HTTP 500", status: 500, requestId: "req-y" })).toBe(
+      "The server returned an error (500) with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs. (Request ID: req-y)",
+    );
+    expect(friendlyError({ message: "HTTP 429", status: 429 })).toContain("Retry in a moment");
+    expect(friendlyError({ message: "HTTP 409", status: 409 })).toContain("(409)");
+  });
+
+  test("a real message on an unmapped status still passes through verbatim", () => {
+    // The complement — without it, an arm that returned the generic
+    // unconditionally would pass the test above.
+    expect(friendlyError({ message: "Rate limit exceeded.", status: 429 })).toBe(
+      "Rate limit exceeded.",
+    );
+  });
+
+  test("the 503 copy matches the gate's, so one status has one diagnosis", () => {
+    // These lived one file apart and disagreed: the gate had been corrected to
+    // stop blaming DATABASE_URL for a restarting replica while this still said
+    // "Check server configuration".
+    expect(friendlyError({ message: "HTTP 503", status: 503 })).toBe(unexplainedFailure(503));
+    expect(friendlyError({ message: "HTTP 503", status: 503 })).not.toContain(
+      "Check server configuration",
+    );
   });
 
   test("a blank message falls through to canned copy instead of a blank banner", () => {

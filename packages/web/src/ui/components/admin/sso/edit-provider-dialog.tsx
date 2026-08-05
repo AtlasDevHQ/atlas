@@ -244,7 +244,7 @@ function EditProviderDialogInner({
         )}
 
         {detailError && (
-          <ErrorBanner message={detailError.message} />
+          <ErrorBanner message={friendlyError(detailError)} />
         )}
 
         {!detailLoading && !detailError && detail && (

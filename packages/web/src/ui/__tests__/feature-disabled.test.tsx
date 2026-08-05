@@ -150,13 +150,16 @@ describe("FeatureGate — the server's message displaces the guess (#5068)", () 
     // to prevent, and it is guarded by `||` — a nullish `??` would let ""
     // through. Every arm, because the guard was falsified on exactly one of
     // four and swapping the other three back to `??` changed nothing visible.
+    // Hardcoded, NOT `GATE_STATUSES`: iterating the constant means the
+    // coverage shrinks with it, so dropping 503 from the set would silently
+    // stop testing 503. The set itself is pinned separately below.
     const canned: Record<GateStatus, string> = {
       401: "Please sign in to access the admin console.",
       403: "You need the admin role to access this page.",
       404: "Enable this feature in your server configuration to use this page.",
       503: "Retry in a moment",
     };
-    for (const status of GATE_STATUSES) {
+    for (const status of [401, 403, 404, 503] as const) {
       for (const blank of ["", "   "]) {
         const { container } = render(
           <FeatureGate status={status} feature="Users" message={blank} />,
@@ -165,6 +168,15 @@ describe("FeatureGate — the server's message displaces the guess (#5068)", () 
         cleanup();
       }
     }
+  });
+});
+
+describe("FeatureGate — the gated status set", () => {
+  test("is exactly 401/403/404/503", () => {
+    // The one place a change to the set fails loudly. Every other loop in this
+    // file hardcodes the four so its coverage cannot shrink along with the
+    // constant; this is where widening or narrowing has to be a decision.
+    expect([...GATE_STATUSES]).toEqual([401, 403, 404, 503]);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   type FeatureName,
 } from "@/ui/components/admin/feature-registry";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
+import { unexplainedFailure } from "@/ui/lib/fetch-error";
 
 /**
  * Dedicated upsell shown when an admin page returns an
@@ -44,6 +45,9 @@ export function EnterpriseUpsell({
   const isSaasExclusive = isSaasExclusiveFeature(feature);
   const { deployMode } = useDeployMode({ enabled: isSaasExclusive });
   const hostedOnly = isSaasExclusive && deployMode === "self-hosted";
+  // Same normalization, same reason, as `FeatureGate`: "   " is truthy, so a
+  // whitespace message would render the headline over an empty <p>.
+  const authored = message?.trim() || undefined;
 
   if (hostedOnly) {
     return (
@@ -54,7 +58,7 @@ export function EnterpriseUpsell({
             {feature} is an Atlas Cloud feature
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {message ||
+            {authored ??
               `${feature} is available only on Atlas Cloud (the hosted SaaS) and can't be enabled on a self-hosted deployment.`}
           </p>
           <div className="mt-4 flex justify-center">
@@ -85,7 +89,7 @@ export function EnterpriseUpsell({
           {feature} requires an enterprise plan
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          {message ||
+          {authored ??
             `${feature} is part of Atlas Enterprise. Upgrade your plan or contact sales to enable it for your workspace.`}
         </p>
         <div className="mt-4 flex justify-center">
@@ -109,11 +113,12 @@ export function EnterpriseUpsell({
  * The statuses that route to {@link FeatureGate} rather than a red error
  * banner: a refusal the operator is meant to act on, not a fault.
  *
- * One definition, because the set was previously written out at each call
- * site next to an `as 401 | 403 | 404 | 503` cast that TypeScript was told to
- * trust. Widening the union without touching every `includes` list compiled
- * and silently gated nothing new. `isGateStatus` narrows, so the casts are
- * gone and the two can no longer disagree.
+ * One definition, because the set was previously written out at five call
+ * sites — three of them beside an `as` cast TypeScript was told to trust, and
+ * they did not all spell the same list. Widening the union without touching
+ * every `includes` list compiled and silently gated nothing new.
+ * `isGateStatus` narrows, so the casts are gone and the copies cannot
+ * disagree.
  */
 export const GATE_STATUSES = [401, 403, 404, 503] as const;
 export type GateStatus = (typeof GATE_STATUSES)[number];
@@ -127,10 +132,13 @@ export function isGateStatus(status: number | undefined): status is GateStatus {
  *
  * A gate an operator did not expect — a 403 they believe they should pass, a
  * 404 on a feature they configured, an entitlement that should be live — is
- * un-diagnosable without this, and `ErrorBanner` has appended it to every
- * *non*-gated error for as long as it has existed. All three placeholders on
- * the gated path render it (#5068), so which branch an operator lands on
- * never decides whether they get a log handle.
+ * un-diagnosable without this. `friendlyError` appends it to non-gated errors;
+ * the gated placeholders had nowhere to put it, so it was simply dropped.
+ *
+ * All three FULL-SURFACE placeholders now render it (#5068). The one gated
+ * surface that still does not is `MutationErrorSurface`'s inline
+ * `enterprise_required` variant, which is a single line of text with no room
+ * for it.
  */
 export function GateRequestId({ requestId }: { requestId?: string }) {
   // `.trim()` for the same reason `serverMessage` trims: `extractFetchError`
@@ -142,7 +150,7 @@ export function GateRequestId({ requestId }: { requestId?: string }) {
       data-testid="feature-gate-request-id"
       className="mt-2 font-mono text-[11px] text-muted-foreground/70"
     >
-      Request ID: {requestId}
+      Request ID: {requestId.trim()}
     </p>
   );
 }
@@ -196,16 +204,18 @@ function GateBody({
  *
  * 401 briefly *appended* its canned sign-in line instead, on the theory that
  * the affordance stays true whatever the server said. It does not, and the
- * concatenation was the giveaway: every 401 message the API actually emits is
- * a bare fragment (`managed.ts`, `simple-key.ts`, `byot.ts` — "Not signed
- * in", "Account is banned", "API key required"), so the shipped line read
- * "Not signed in Please sign in to access the admin console." And for a
- * banned account, or either key-based `ATLAS_AUTH_MODE`, signing in is
- * exactly what will not help. The headline carries the affordance; the
- * description belongs to whoever knows the cause.
+ * concatenation was the giveaway: most 401 messages the API emits are bare
+ * fragments with no terminal punctuation (`managed.ts` — "Not signed in",
+ * "Account is banned", "Session expired (idle timeout)"; `byot.ts` — "JWT
+ * missing sub claim"), so the shipped line read "Not signed in Please sign in
+ * to access the admin console." And for a banned account, or either
+ * key-based `ATLAS_AUTH_MODE`, signing in is exactly what will not help. The
+ * headline carries the affordance; the description belongs to whoever knows
+ * the cause.
  *
  * ⚠️ This makes the `message` field of every gated 401/403/404/503 response
- * user-facing prose on ~60 admin pages. It was rendered nowhere before #5068.
+ * user-facing prose on ~60 admin pages. Before #5068 it reached the screen on
+ * `enterprise_required` 403s only.
  * A route that interpolates a driver error, a connection string, or a caught
  * `err.message` into a gated status now puts it on an admin's screen — see
  * CLAUDE.md § "No secrets in responses".
@@ -233,12 +243,15 @@ export function FeatureGate({
 
   if (status === 503) {
     // This arm used to assert one cause — "Internal database not configured /
-    // Set DATABASE_URL" — on every 503. No route emits that: a missing
-    // internal DB answers 404 `not_available` (`requireOrgContext`), and the
-    // 503s that exist are things like `permissions_unavailable`, an authz
-    // outage the database line is simply false for. (The stale `503:
-    // "Internal database not configured"` entries in several routers'
-    // OpenAPI blocks describe handlers that return 404.)
+    // Set DATABASE_URL" — on every 503. No route the admin console consumes
+    // emits that: on admin routes a missing internal DB answers 404
+    // `not_available` (`requireOrgContext`), and the 503s that exist are
+    // things like `permissions_unavailable`, an authz outage the database
+    // line is simply false for. (The API's one DATABASE_URL 503 lives in
+    // `sub-processor-subscriptions.ts`, a public legal endpoint with no admin
+    // surface. The `503: "Internal database not configured"` entries in
+    // `platform-residency.ts` and `admin-domains.ts` are stale — those
+    // handlers return 404.)
     //
     // What actually reaches the no-message branch is an infrastructure 503
     // with an HTML body — a restarting service, an unhealthy proxy — where
@@ -250,8 +263,7 @@ export function FeatureGate({
         icon={ServerOff}
         title={`${feature} is unavailable`}
         description={
-          authored ??
-          "The server returned 503 with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs."
+          authored ?? unexplainedFailure(503)
         }
         requestId={requestId}
       />
@@ -272,11 +284,18 @@ export function FeatureGate({
   }
 
   // Exhaustiveness: 404 and 503 returned above, so only 401 | 403 may remain.
-  // Widening `GATE_STATUSES` without adding an arm is a compile error here
-  // rather than a new status silently rendering "Access denied" — which is a
-  // worse failure than the un-narrowed casts this replaced, because it
-  // reaches a user with a wrong diagnosis.
-  const authStatus: Exclude<GateStatus, 404 | 503> = status;
+  // Widening `GATE_STATUSES` without adding an arm is a compile error here,
+  // rather than a new status silently rendering "Access denied" — a wrong
+  // diagnosis on screen, which is worse than the un-narrowed casts this
+  // replaced.
+  //
+  // The literals are the whole point. `Exclude<GateStatus, 404 | 503>` reads
+  // better and is worthless: it is computed FROM `GateStatus`, so widening the
+  // tuple widens the annotation in lockstep and the assignment stays valid
+  // forever. That was this file's own version of a fixture agreeing with
+  // itself by construction, at the type level — verified by adding 429 to
+  // `GATE_STATUSES` and watching tsgo exit 0.
+  const authStatus: 401 | 403 = status;
   return (
     <GateBody
       icon={ShieldX}

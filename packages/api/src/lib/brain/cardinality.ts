@@ -97,6 +97,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { comparableDifferentSql } from "@atlas/api/lib/brain/object-cmp";
 import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
+import type { ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";
 import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
 
 const log = createLogger("brain-cardinality");
@@ -115,6 +116,19 @@ const log = createLogger("brain-cardinality");
 export interface CardinalityExecutor {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
 }
+
+/**
+ * Compile-time pin: a `reconcile.ts` `tx` must satisfy this module's executor.
+ *
+ * The same three lines `vocabulary.ts` carries, and for the same reason — the
+ * interchangeability above is a stated invariant, and `correction.ts` hands
+ * this module the transaction runner's `tx`. Costs a TYPE-ONLY import, which is
+ * erased, so nothing about the runtime layering changes.
+ */
+type _ReconcileExecutorIsACardinalityExecutor =
+  ReconcileExecutor extends CardinalityExecutor ? true : never;
+const _executorsInterchangeable: _ReconcileExecutorIsACardinalityExecutor = true;
+void _executorsInterchangeable;
 
 /** ADR-0037 §3(d)'s three sources, in the order the ADR names them. */
 export const CARDINALITY_SOURCE_CLASSES = [
@@ -139,9 +153,19 @@ export type CardinalityProposerClass = Exclude<CardinalitySourceClass, "human">;
 export const CARDINALITY_STATUSES = ["pending", "approved", "rejected"] as const;
 export type CardinalityStatus = (typeof CARDINALITY_STATUSES)[number];
 
-/** One workspace's entry for one canonical predicate. */
+/**
+ * One workspace's entry for one canonical predicate.
+ *
+ * ⚠️ **It does NOT carry the predicate key, and that is a prohibition rather
+ * than an omission.** The caller supplied the key to look the row up, so
+ * returning it is redundant — and `keys-not-on-the-wire.test.ts` scans for
+ * exactly this shape, because a fact-shaped TYPE that grows a key field is one
+ * `c.json(record)` away from putting a canonical predicate key on the wire.
+ * A consumer that can branch on a key is what makes an alias un-removable
+ * (ADR-0037 §6), and #5025's review UI is the consumer this record exists for.
+ * Render the SURFACE.
+ */
 export interface PredicateCardinalityRecord {
-  readonly predicateKey: string;
   readonly cardinality: PredicateCardinality;
   readonly status: CardinalityStatus;
   readonly sourceClass: CardinalitySourceClass;
@@ -158,7 +182,13 @@ export type CardinalityRefusal =
   | "already-decided";
 
 export type CardinalityWriteResult =
-  | { readonly ok: true; readonly predicateKey: string; readonly cardinality: PredicateCardinality }
+  /**
+   * No `predicateKey` on the success arm, for
+   * {@link PredicateCardinalityRecord}'s reason: the caller passed it in, so
+   * echoing it back is redundant, and a result shape that carries a canonical
+   * predicate key is one `c.json(result)` away from putting it on the wire.
+   */
+  | { readonly ok: true; readonly cardinality: PredicateCardinality }
   | { readonly ok: false; readonly refusal: CardinalityRefusal; readonly message: string };
 
 // ---------------------------------------------------------------------------
@@ -234,39 +264,58 @@ export async function readPredicateCardinality(
   predicateKey: string,
 ): Promise<PredicateCardinalityRecord | null> {
   const { rows } = await executor.query(
-    `SELECT predicate_key, cardinality, status, source_class, proposed_by
+    `SELECT cardinality, status, source_class, proposed_by
        FROM brain_predicate_cardinality
       WHERE workspace_id = $1 AND predicate_key = $2`,
     [workspaceId, predicateKey],
   );
-  const row = rows[0] as
-    | {
-        predicate_key: string;
-        cardinality: string;
-        status: string;
-        source_class: string;
-        proposed_by: string;
-      }
-    | undefined;
+  // NARROWED, not cast-and-dereferenced. `CardinalityExecutor` is satisfied by
+  // a test literal BY DESIGN — that is what lets the mutators take a `tx` and
+  // this reader take a pool — so nothing in the type stops `{ rows: [{}] }`
+  // reaching here, and a cast would hand back a `PredicateCardinalityRecord`
+  // whose `readonly cardinality: PredicateCardinality` is `undefined`. The
+  // record's own invariant would be violated at its single construction point.
+  const row = rows[0] as Record<string, unknown> | undefined;
   if (row === undefined) return null;
+  if (typeof row.proposed_by !== "string" || row.proposed_by === "") {
+    log.warn(
+      { workspaceId, predicateKey, proposedBy: row.proposed_by },
+      "brain cardinality: entry has no usable author — reading it as ABSENT, so the predicate stays uncurated and supersedes nothing; the projection drifted",
+    );
+    return null;
+  }
   return {
-    predicateKey: row.predicate_key,
     // Narrowed against the CHECK's own vocabulary rather than cast. The CHECK
     // makes an out-of-vocabulary value unreachable from the database, so a
-    // mismatch here is query drift — and the conservative arm is the one that
-    // never supersedes.
-    cardinality: row.cardinality === "single" ? "single" : "multi",
+    // mismatch here is query drift — reported for `narrowStatus`'s reason
+    // rather than silently taken, because the conservative arm and the drifted
+    // one are the same value and nothing else would ever say so.
+    cardinality: narrowCardinality(row.cardinality, { workspaceId, predicateKey }),
     status: narrowStatus(row.status, { workspaceId, predicateKey }),
     sourceClass: narrowSourceClass(row.source_class, { workspaceId, predicateKey }),
     proposedBy: row.proposed_by,
   };
 }
 
+function narrowCardinality(
+  raw: unknown,
+  meta: { workspaceId: string; predicateKey: string },
+): PredicateCardinality {
+  if (raw === "single" || raw === "multi") return raw;
+  log.warn(
+    { ...meta, cardinality: raw },
+    "brain cardinality: entry carries a cardinality outside the vocabulary — reading it as `multi`, which never supersedes",
+  );
+  return "multi";
+}
+
 function narrowStatus(
-  raw: string,
+  raw: unknown,
   meta: { workspaceId: string; predicateKey: string },
 ): CardinalityStatus {
-  if ((CARDINALITY_STATUSES as readonly string[]).includes(raw)) return raw as CardinalityStatus;
+  if (typeof raw === "string" && (CARDINALITY_STATUSES as readonly string[]).includes(raw)) {
+    return raw as CardinalityStatus;
+  }
   log.warn(
     { ...meta, status: raw },
     "brain cardinality: entry carries a status outside the vocabulary — reading it as `rejected`, which neither supersedes nor re-proposes",
@@ -275,17 +324,25 @@ function narrowStatus(
 }
 
 function narrowSourceClass(
-  raw: string,
+  raw: unknown,
   meta: { workspaceId: string; predicateKey: string },
 ): CardinalitySourceClass {
-  if ((CARDINALITY_SOURCE_CLASSES as readonly string[]).includes(raw)) {
+  if (typeof raw === "string" && (CARDINALITY_SOURCE_CLASSES as readonly string[]).includes(raw)) {
     return raw as CardinalitySourceClass;
   }
+  // `correction_event`, NOT `human`, and the difference is which way the label
+  // is allowed to be wrong. An earlier cut chose `human` as "the class with no
+  // automated re-proposal path" — but nothing about the CLASS provides that
+  // property; the primary key does, through `ON CONFLICT DO NOTHING`. What
+  // `human` DOES do is tell #5025's reviewer that a person authored a row a
+  // machine wrote, on the screen where they decide whether to approve a flag
+  // whose blast radius is retroactive and irreversible. Inflating apparent
+  // authority is the one direction a drifted label must not fail in.
   log.warn(
     { ...meta, sourceClass: raw },
-    "brain cardinality: entry carries a source class outside the allowlist — reading it as `human`, the class with no automated re-proposal path",
+    "brain cardinality: entry carries a source class outside the allowlist — reading it as `correction_event`, the least authoritative class, so a reviewer is never told a machine-written row was human-authored",
   );
-  return "human";
+  return "correction_event";
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +353,18 @@ function narrowSourceClass(
 export interface CardinalityProposalInput {
   /** `slotKey(surface, vocabulary.predicate)` — never a hand-normalized string. */
   readonly predicateKey: string | null;
-  readonly cardinality: PredicateCardinality;
+  /**
+   * `"single"`, and the type says so rather than the runtime alone.
+   *
+   * A producer proposing `multi` asserts NOTHING — absent already means `multi`
+   * — while occupying the predicate's only slot, so it blocks the `single`
+   * proposal that carries information. {@link proposePredicateCardinality}
+   * still refuses it at runtime, because the CHECK's allowlist has to hold for
+   * a caller that reaches this through a cast or from untyped data; narrowing
+   * here makes the refusal unreachable from every ordinary TS caller instead of
+   * merely refused after the fact.
+   */
+  readonly cardinality: "single";
   readonly sourceClass: CardinalityProposerClass;
   /** The producer id. */
   readonly proposedBy: string;
@@ -313,10 +381,12 @@ export interface CardinalityProposalInput {
  * refusal is structural rather than a race between a SELECT and an INSERT
  * (#4507, on 0190's terms).
  *
- * `RETURNING predicate_key` is how the caller learns whether the row was new: a
- * suppressed conflict returns no row, and the two outcomes are reported
- * differently because "a proposal was raised" is a thing to log once and "the
- * predicate was already decided" is not a thing to log at all.
+ * `RETURNING 1` is how the caller learns whether the row was new — a suppressed
+ * conflict returns no row — and the two outcomes are reported differently
+ * because "a proposal was raised" is a thing to log once and "the predicate was
+ * already decided" is not a thing to log at all. It returns a LITERAL rather
+ * than the key it just wrote: `keys-not-on-the-wire.test.ts` reads RETURNING
+ * lists, and the caller already holds the key it passed in.
  */
 export async function proposePredicateCardinality(
   executor: CardinalityExecutor,
@@ -334,7 +404,14 @@ export async function proposePredicateCardinality(
         "written under an empty key would describe EVERY degenerate predicate in the workspace at once.",
     };
   }
-  if (input.cardinality === "multi") {
+  // `as string`, and the cast is the point: {@link CardinalityProposalInput}
+  // narrows this to `"single"`, so TypeScript can see the branch is dead for a
+  // typed caller — which is the guarantee. It is not dead for a caller that
+  // reached here through a cast, from `JSON.parse`, or from a future producer
+  // whose config carries the value, and the CHECK's allowlist has to hold for
+  // those too. A `// @ts-expect-error`-free way of saying "the type prevents
+  // this; the runtime still refuses it".
+  if ((input.cardinality as string) === "multi") {
     return {
       ok: false,
       refusal: "producer-proposed-multi",
@@ -351,7 +428,7 @@ export async function proposePredicateCardinality(
        (workspace_id, predicate_key, cardinality, status, source_class, proposed_by)
      VALUES ($1, $2, $3, 'pending', $4, $5)
      ON CONFLICT (workspace_id, predicate_key) DO NOTHING
-     RETURNING predicate_key`,
+     RETURNING 1 AS inserted`,
     [workspaceId, predicateKey, input.cardinality, input.sourceClass, input.proposedBy],
   );
   if (rows.length === 0) {
@@ -365,7 +442,7 @@ export async function proposePredicateCardinality(
         "exists to stop.",
     };
   }
-  return { ok: true, predicateKey, cardinality: input.cardinality };
+  return { ok: true, cardinality: input.cardinality };
 }
 
 /** {@link declarePredicateCardinality}'s inputs. */
@@ -429,6 +506,14 @@ export async function declarePredicateCardinality(
         SET cardinality = EXCLUDED.cardinality,
             status = 'approved',
             source_class = 'human',
+            -- Overwritten with the author, NOT left as the producer's id. This
+            -- path authors OVER a pending proposal, so without it the row
+            -- commits saying source_class = human beside a proposed_by naming
+            -- the correction-event producer -- a pair 0192's own column comment
+            -- makes self-contradictory ("the producer id, OR the human who
+            -- authored the row directly"), and the one an audit of a
+            -- retroactive re-key reads first.
+            proposed_by = EXCLUDED.proposed_by,
             reviewed_by = EXCLUDED.reviewed_by,
             reviewed_at = now()`,
     [workspaceId, predicateKey, input.cardinality, input.authoredBy],
@@ -437,7 +522,7 @@ export async function declarePredicateCardinality(
     { workspaceId, predicateKey, cardinality: input.cardinality, authoredBy: input.authoredBy },
     "brain cardinality: a human declared a canonical predicate's cardinality — `single` makes every existing published pair in that slot supersedable at the next publish",
   );
-  return { ok: true, predicateKey, cardinality: input.cardinality };
+  return { ok: true, cardinality: input.cardinality };
 }
 
 /**
@@ -462,14 +547,14 @@ export async function decidePredicateCardinality(
   executor: CardinalityExecutor,
   workspaceId: string,
   predicateKey: string,
-  verdict: "approved" | "rejected",
+  verdict: Exclude<CardinalityStatus, "pending">,
   reviewedBy: string | null,
 ): Promise<boolean> {
   const { rows } = await executor.query(
     `UPDATE brain_predicate_cardinality
         SET status = $3, reviewed_by = $4, reviewed_at = now()
       WHERE workspace_id = $1 AND predicate_key = $2 AND status = 'pending'
-      RETURNING predicate_key`,
+      RETURNING 1 AS decided`,
     [workspaceId, predicateKey, verdict, reviewedBy],
   );
   return rows.length > 0;
@@ -591,15 +676,29 @@ export const CORRECTION_REPEAT_COUNT_SQL = `
  * would also make the falsification tests unable to tell a refused proposal from
  * a broken one.
  *
- * Returns whether a proposal was raised, for the caller's log line and for the
- * tests that falsify the gate in both directions.
+ * Returns whether a proposal was raised — read by the tests that falsify the
+ * gate in both directions. The caller discards it: the `log.info` below is the
+ * operator-facing record, and a second line at the call site would say the same
+ * thing with less context.
  */
 export async function proposeFromCorrectionEvents(
   executor: CardinalityExecutor,
   workspaceId: string,
   predicateKey: string | null,
 ): Promise<boolean> {
-  if (predicateKey === null || predicateKey === "") return false;
+  if (predicateKey === null || predicateKey === "") {
+    // Logged rather than returned silently: this module's header says every arm
+    // is a refusal and never a silent no-op, and a supersede on a predicate
+    // surface that norms away would otherwise produce no proposal and no trace.
+    // Unreachable from today's only caller (`correction.ts` guards on non-null),
+    // so `debug` — the value is that a SECOND caller inherits a signal instead
+    // of a shrug.
+    log.debug(
+      { workspaceId },
+      "brain cardinality: no canonical predicate to propose against — the surface norms away, so this claim has no slot an entry could describe",
+    );
+    return false;
+  }
 
   const { rows } = await executor.query(CORRECTION_REPEAT_COUNT_SQL, [
     workspaceId,

@@ -7,6 +7,10 @@ import {
   PREDICATE_CARDINALITIES,
   TRUST_TIERS,
 } from "@atlas/api/lib/brain/types";
+import {
+  CARDINALITY_SOURCE_CLASSES,
+  CARDINALITY_STATUSES,
+} from "@atlas/api/lib/brain/cardinality";
 
 // Source-level drift guard between the TypeScript vocabulary and migration
 // 0180's CHECK constraints (#4767, ADR-0036).
@@ -98,5 +102,89 @@ describe("brain substrate vocabulary (#4767)", () => {
     // on brain_facts, tier-1 has been given a home here and the no-double-
     // gating decision (T5) needs revisiting before this test is updated.
     expect(MIGRATION_SQL).not.toMatch(/^\s*(trust_)?tier\s+(int|smallint|text)/mi);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The same guard for migration 0192's vocabularies (#5027, ADR-0037 §3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cardinality's three source classes and three statuses are each written twice
+ * — a TS tuple and a CHECK — and they fail asymmetrically for exactly the
+ * reason the block above gives, with one arm strictly worse here.
+ *
+ * Widen the TS tuple and forget the CHECK: #5042's warehouse producer compiles,
+ * type-checks, passes every suite, and then fails at runtime on a `23514` the
+ * first time it runs against a real database — which is precisely the failure
+ * `lib/brain/cardinality.ts` says the CHECK exists to force EARLY.
+ *
+ * Widen the CHECK and forget the tuple: rows land that `narrowSourceClass`
+ * cannot narrow, so they degrade to `correction_event` with a warning, and a
+ * producer's authority is silently relabelled. Silent, and on the table that
+ * gates an irreversible write.
+ */
+const MIGRATION_0192_SQL = readFileSync(
+  join(import.meta.dir, "..", "..", "db", "migrations", "0192_brain_predicate_cardinality.sql"),
+  "utf8",
+);
+
+function checkValues0192(constraintName: string): string[] {
+  const withoutComments = MIGRATION_0192_SQL.replace(/--.*$/gm, "");
+  const constraint = new RegExp(
+    `CONSTRAINT\\s+${constraintName}\\s*CHECK\\s*\\(([^)]*)\\)`,
+    "i",
+  ).exec(withoutComments);
+  if (!constraint) {
+    throw new Error(
+      `constraint ${constraintName} not found in 0192_brain_predicate_cardinality.sql — ` +
+        "renamed or dropped? The TS vocabulary in lib/brain/cardinality.ts is now unpinned.",
+    );
+  }
+  return [...constraint[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+}
+
+describe("cardinality vocabulary (#5027)", () => {
+  it("CARDINALITY_SOURCE_CLASSES matches 0192's source-class CHECK exactly", () => {
+    expect(checkValues0192("ck_brain_predicate_cardinality_source_class").toSorted()).toEqual(
+      [...CARDINALITY_SOURCE_CLASSES].toSorted(),
+    );
+  });
+
+  it("CARDINALITY_STATUSES matches 0192's status CHECK exactly", () => {
+    expect(checkValues0192("ck_brain_predicate_cardinality_status").toSorted()).toEqual(
+      [...CARDINALITY_STATUSES].toSorted(),
+    );
+  });
+
+  it("the cardinality CHECK is the same two values as the row column's", () => {
+    // Two tables, one vocabulary — and they have to agree while both exist,
+    // because #5028 drops the row column and a mismatch would surface as a
+    // migration failure rather than as a decision.
+    expect(checkValues0192("ck_brain_predicate_cardinality_value").toSorted()).toEqual(
+      [...PREDICATE_CARDINALITIES].toSorted(),
+    );
+  });
+
+  it("pins ADR-0037 §3(d)'s three sources — a fourth needs a migration, not an edit here", () => {
+    // Spelled out rather than derived, on `BRAIN_EDGE_TYPES`' precedent: this is
+    // the committed set from the ADR, and a slice widening it should have to
+    // change a line that says so out loud. `single` may enter by these three
+    // doors and no others.
+    expect([...CARDINALITY_SOURCE_CLASSES].toSorted()).toEqual([
+      "correction_event",
+      "human",
+      "warehouse_structural",
+    ]);
+  });
+
+  it("has NO default cardinality — absence is the answer, not a stored `multi`", () => {
+    // The inverse of the row column's `DEFAULT 'multi'` guard above, and the
+    // whole positive-evidence rule: a default would make every INSERT that
+    // omitted the column assert something, where absence from the TABLE is what
+    // means `multi`. There must also be no backfill.
+    expect(MIGRATION_0192_SQL).toMatch(/cardinality text NOT NULL,/);
+    expect(MIGRATION_0192_SQL).not.toMatch(/cardinality text NOT NULL DEFAULT/);
+    expect(MIGRATION_0192_SQL.replace(/--.*$/gm, "")).not.toMatch(/\bUPDATE\b|\bINSERT\b/i);
   });
 });

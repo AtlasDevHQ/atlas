@@ -185,6 +185,16 @@ class FakeCorrectionStore {
    * CALLER absorbs it, and only a real throw crossing the real seam shows that.
    */
   failCardinalityProposal = false;
+  /**
+   * Make the repeat-gate COUNT never settle — a DEGRADED internal database,
+   * reachable but not answering (#5027).
+   *
+   * The realistic shape rather than a throw, and it is the one a `try`/`catch`
+   * cannot absorb: the internal pool sets no `statement_timeout` and
+   * `internalQuery` bypasses the circuit breaker, so nothing upstream ever
+   * rejects. Only a deadline turns this into an error.
+   */
+  hangCardinalityProposal = false;
   /** Every statement executed, in order — the identity assertions read this. */
   readonly executed: string[] = [];
   /**
@@ -458,6 +468,7 @@ class FakeCorrectionStore {
     // provable-difference half is a SQL arm and is falsified only against real
     // Postgres — stubbing it here would be a fixture that agrees with itself.
     if (sql === CORRECTION_REPEAT_COUNT_SQL) {
+      if (this.hangCardinalityProposal) return new Promise<never>(() => {});
       const subjects = new Set(
         this.edges
           .filter((e) => e.edgeType === "supersedes")
@@ -1452,6 +1463,45 @@ describe("cardinality proposer", () => {
       expect(store.transactions).toBe(1);
     },
   );
+
+  test("a HUNG proposal never reaches the caller either — the deadline is what makes that true", async () => {
+    // The failure a `try`/`catch` cannot absorb, and the one the placement
+    // argument does not cover on its own. A degraded internal DB never throws:
+    // `internalQuery` bypasses the circuit breaker and the internal pool sets no
+    // `statement_timeout`, so without a deadline this await never settles,
+    // `correctFact` never returns, and the caller's own timeout fires. The agent
+    // tool's error copy then says *"nothing was changed — retry"* about a
+    // correction that IS committed, and the retry mints a SECOND correction
+    // episode for one human decision — exactly what the audit deadline beside it
+    // exists to prevent.
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    store.hangCardinalityProposal = true;
+
+    const outcome = await correctFact(
+      {
+        ctx: admin(),
+        vocabulary: identityVocabulary,
+        factId: "old",
+        verb: "supersede",
+        replacement: { object: "Bo" },
+      },
+      {
+        withTransaction: store.runner,
+        now: () => NOW,
+        newCorrectionId: () => "test-uuid",
+        // The same knob the audit write uses, deliberately: two post-commit
+        // writes with different answers to one hazard is how one of them ends
+        // up unbounded again.
+        auditWriteTimeoutMs: 50,
+      },
+    );
+
+    expect(outcome.kind).toBe("corrected");
+    expect(store.fact("old").validTo).toBe(NOW.toISOString());
+    expect(store.cardinalityProposals).toEqual([]);
+  }, 5_000);
 
   test("a failed proposal never reaches the caller — the correction is already committed", async () => {
     const store = new FakeCorrectionStore();

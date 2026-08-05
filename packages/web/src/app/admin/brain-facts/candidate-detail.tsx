@@ -282,12 +282,31 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
           <span className="text-muted-foreground">{candidate.predicate}</span>{" "}
           <span className="font-medium">{candidate.object}</span>
         </p>
+        {/*
+          The cardinality clause that used to sit here is DELETED, not repointed
+          (#5027, ADR-0037 §3). It read `candidate.predicateCardinality` and
+          rendered "one value expected — a new value would supersede this" — a
+          claim about an irreversible write, on the screen where a reviewer
+          decides to make it.
+
+          That field is no longer what decides supersession. Cardinality is a
+          property of the CANONICAL PREDICATE now, and the row column stopped
+          being written: every fact ingested since the migration reports `multi`
+          whatever its predicate is curated as, and every fact ingested before it
+          carries a stale LLM guess. So the line was wrong in both directions —
+          telling a reviewer values coexist while the batch preview one modal
+          over says publishing will retire one, or promising a supersession that
+          cannot happen.
+
+          Not repointed here because the truthful version needs the vocabulary
+          entry, and #5025 owns that surface along with the blast-radius preview
+          a `single` flag requires. No claim beats a false one, and the
+          will-supersede preview already tells the reviewer what this publish
+          actually does. #5028 removes the field from the wire type.
+        */}
         <p className="text-xs text-muted-foreground">
           {candidate.corroborationCount} corroborating{" "}
-          {candidate.corroborationCount === 1 ? "source" : "sources"} ·{" "}
-          {candidate.predicateCardinality === "single"
-            ? "one value expected — a new value would supersede this"
-            : "many values may coexist"}
+          {candidate.corroborationCount === 1 ? "source" : "sources"}
         </p>
       </div>
 

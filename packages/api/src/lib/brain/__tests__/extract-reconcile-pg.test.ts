@@ -248,8 +248,15 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // of `INSERT_FACT_SQL`'s column list — the value no longer reaches Postgres,
     // so the batch simply succeeded and this test passed while asserting
     // nothing. A NUL byte is the replacement: `22021 invalid byte sequence for
-    // encoding "UTF8"` is refused by the SERVER, on that row's INSERT, which is
-    // the same shape of failure at the same point.
+    // encoding "UTF8"` is refused by the SERVER, which is what the `/invalid
+    // byte sequence/` anchor pins.
+    //
+    // ⚠️ It fails at a DIFFERENT STATEMENT than the old inducer, and this file's
+    // standard is precision about which. `lexicalNorm` does not strip NUL, so
+    // the byte survives into the slot key and the refusal lands on candidate 2's
+    // CORROBORATION LOOKUP, one statement before its INSERT. The claim under
+    // test is unaffected — candidate 1's INSERT has already run, which is what
+    // the rollback is about — but "on that row's INSERT" would have been wrong.
     //
     // Deliberately NOT a column this repo owns. The old inducer was coupled to a
     // constraint that was about to be dropped, and picking another one would put

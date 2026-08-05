@@ -124,6 +124,15 @@ function tx(
    * independently or `superseding` is 0 by construction.
    */
   targets: readonly { draft_id: string; superseded_id: string }[] = [],
+  /**
+   * `CARDINALITY_HELD_BACK_COUNT_SQL`'s single column (#5027) — provable
+   * collisions held back because their canonical predicate is uncurated.
+   *
+   * Defaults to 0 rather than `undefined`, because the statement now runs on
+   * every publish that has a promotable draft and a double that refused it
+   * would fail every test in the file for a reason unrelated to what it asserts.
+   */
+  uncurated = 0,
 ): ModeTxClient {
   return {
     query: async (sql, params = []) => {
@@ -135,7 +144,15 @@ function tx(
       if (/^\s*SAVEPOINT /i.test(sql) || /^\s*ROLLBACK TO SAVEPOINT /i.test(sql)) {
         return { rows: [] };
       }
+      // TWO statements name `held_back` since #5027 — the tier count and the
+      // uncurated-cardinality count — over the same collision core. Told apart
+      // on `IS NOT TRUE`, #5033's three-valued negation, which #5027's count
+      // does not use (`cardinalitySingleSql` is an `EXISTS`, negated with a bare
+      // `NOT`). Without the discriminator the cardinality statement would be
+      // handed the tier fixture's value, including its EXPLODE sentinel, and
+      // every assertion in this block would be about the wrong statement.
       if (sql.includes("held_back")) {
+        if (!sql.includes("IS NOT TRUE")) return { rows: [{ held_back: uncurated }] };
         // The sentinel: any other string is a driver-shape case the reader
         // must degrade on, so the failure needs a value no real driver returns.
         if (heldBack === EXPLODE) throw new Error("held-back count exploded");
@@ -416,6 +433,46 @@ describe("promoteBrainFacts — the tier guard states what it held back (#5033)"
   /** A `single` draft — the only cardinality that reaches the supersession block. */
   const single = (id: string) => draft(id, { predicate_cardinality: "single" });
   const infos = () => logCalls.filter((c) => c.level === "info");
+
+  it("says a provable collision was withheld because its predicate is UNCURATED (#5027)", async () => {
+    // ⭐ The only artifact of the event, and after this slice the overwhelmingly
+    // common one: `single` requires positive evidence and there is no backfill,
+    // so until a human curates a predicate every workspace supersedes NOTHING.
+    // Without this line "supersession stopped completely" is indistinguishable
+    // from "the cardinality read is broken" — and it silently neutralized the
+    // tier line one commit earlier, which reads a constant 0 while the
+    // vocabulary is empty (the cardinality arm sits inside the collision core
+    // both counts join on).
+    const report = await run(
+      promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], 0, [], 3), "ws-1"),
+    );
+
+    // The publish is UNAFFECTED — nothing is withheld from the promotion, only
+    // from the consequence.
+    expect(report.promoted).toBe(1);
+
+    const line = infos().find((c) => c.message.includes("not curated"));
+    expect(line?.payload).toMatchObject({ workspaceId: "ws-1", uncurated: 3, superseding: 0 });
+    // The message has to say what an operator should DO, because unlike the tier
+    // refusal this one is fixable: the number answers "how many beliefs would
+    // this publish retire if you curated their predicates?"
+    expect(line?.message).toContain("curating the predicate");
+    // …and it has to disclose that the fix is RETROACTIVE. A curator reading
+    // "these three become supersedable" and not "every existing pair at that
+    // predicate does" is being told half of a destructive, irreversible change.
+    expect(line?.message).toContain("retroactively");
+    // NOT in the durable record. `supersessionHeldBack` is a per-publish record
+    // of a permanent tier refusal; a count that is large-and-shrinking for every
+    // workspace during the vocabulary's first months does not belong in one.
+    expect(report.supersessionHeldBack).toBe(0);
+  });
+
+  it("stays silent when nothing was held back for want of curation", async () => {
+    // The prohibition half. Without it the test above is satisfied by a line
+    // that fires on every publish, which is a line an operator learns to ignore.
+    await run(promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], 0, [], 0), "ws-1"));
+    expect(infos().find((c) => c.message.includes("not curated"))).toBeUndefined();
+  });
 
   it("says a provable collision was withheld on tier grounds, and why", async () => {
     // ⭐ The only artifact of the event. The pair is filtered inside the

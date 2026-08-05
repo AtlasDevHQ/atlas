@@ -155,10 +155,12 @@ import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal"
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
   IDENTITY_MUTATION_LOCK_SQL,
+  identityAlias,
   identityVocabulary,
   lexicalNorm,
   lexicalNormSql,
   identityKeySql,
+  slotKey,
   SLOT_POSITIONS,
   type SlotPosition,
 } from "@atlas/api/lib/brain/identity";
@@ -806,7 +808,12 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     // §6 records that an alias approval moves a predicate's population under a
     // different cardinality entry.
     const declared = await declarePredicateCardinality(pool, WS, {
-      predicateKey: "delivery date",
+      // Through `slotKey`, like every other repointed suite, rather than the
+      // literal the assertions two lines up happen to spell. A normalization
+      // change would silently decouple a hand-written key from the one the
+      // collision join reads, and this fixture would then curate a predicate
+      // that no row has.
+      predicateKey: slotKey("delivery date", identityAlias),
       cardinality: "single",
       authoredBy: "curator-1",
     });

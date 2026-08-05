@@ -88,6 +88,9 @@ function txWithDrafts(
     readonly heldBack?: number | string | null;
     /** Make the held-back COUNT itself fail, as a timeout or deadlock would. */
     readonly heldBackFails?: boolean;
+    /** `CARDINALITY_HELD_BACK_COUNT_SQL`'s single column (#5027). */
+    readonly uncurated?: number;
+    readonly uncuratedFails?: boolean;
   } = {},
 ): {
   tx: ModeTxClient;
@@ -175,12 +178,21 @@ function txWithDrafts(
         const pairs = JSON.parse(String(params[1])) as readonly unknown[];
         return { rows: pairs.map((_, i) => ({ id: `edge-${i}` })) };
       }
-      // #5033's held-back diagnostic — a COUNT, answered before the targets
-      // arm below because both statements carry the collision join and only
-      // this one names `held_back`.
+      // TWO held-back diagnostics, and they must be told apart HERE rather than
+      // by arrival order: both are `COUNT(*) … AS held_back` over the same
+      // collision core, so a single `includes("held_back")` arm would answer
+      // whichever ran first and hand the other the same number — the tier tests
+      // below would then pass while reading the cardinality count, and neither
+      // statement would be modelled by anything.
+      //
+      // Discriminated on `IS NOT TRUE`, which is #5033's three-valued negation
+      // and is spelled nowhere else: `cardinalitySingleSql` is an `EXISTS`, so
+      // #5027's count negates it with a bare `NOT`.
       if (sql.includes("held_back")) {
-        if (opts.heldBackFails) throw new Error("held-back count exploded");
-        return { rows: [{ held_back: opts.heldBack ?? 0 }] };
+        const tier = sql.includes("IS NOT TRUE");
+        if (tier && opts.heldBackFails) throw new Error("held-back count exploded");
+        if (!tier && opts.uncuratedFails) throw new Error("uncurated count exploded");
+        return { rows: [{ held_back: (tier ? opts.heldBack : opts.uncurated) ?? 0 }] };
       }
       if (sql.includes("superseded_id")) return { rows: [...(opts.supersessions ?? [])] };
       if (sql.includes("brain_edges")) return { rows: [...(opts.evidence ?? [])] };
@@ -258,8 +270,10 @@ describe("promoteBrainFacts", () => {
       // its declared value; the `-pg` suite is where a non-zero one is proven.
       supersessionHeldBack: 0,
     });
-    // draft SELECT → evidence SELECT → targets SELECT → held-back COUNT →
-    // one UPDATE (nothing widened).
+    // draft SELECT → targets SELECT → tier held-back COUNT → uncurated-cardinality
+    // COUNT → evidence SELECT → one UPDATE (nothing widened). The two counts run
+    // BEFORE the promote UPDATEs, beside the targets SELECT, so all three ask
+    // the same question of the same rows.
     //
     // The two supersession reads used to be SKIPPED for a batch of `multi`
     // drafts, because the adapter could tell from the rows themselves that
@@ -269,7 +283,7 @@ describe("promoteBrainFacts", () => {
     // one extra SELECT and one extra COUNT per publish — an admin action, not a
     // hot path — in exchange for deleting a stochastic gate on an irreversible
     // write.
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     expect(calls[0].params).toEqual(["ws-1"]);
     expect(calls[1].params).toEqual(["ws-1", ["fact-a", "fact-b"]]);
     expect(updates(calls)).toHaveLength(1);
@@ -1251,9 +1265,15 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     // The savepoint was taken and rolled back to, in that order. Without the
     // ROLLBACK the transaction stays aborted and every later statement fails,
     // so its presence is the whole mechanism rather than a detail.
+    // The tier savepoint was taken and rolled back to, and the SECOND
+    // diagnostic then ran inside its OWN savepoint rather than inheriting the
+    // aborted state — which is why they are not one savepoint: a shared one
+    // would leave the transaction aborted after the first failure and the
+    // second statement would fail for a reason that has nothing to do with it.
     expect(savepoints).toEqual([
       "SAVEPOINT brain_tier_held_back",
       "ROLLBACK TO SAVEPOINT brain_tier_held_back",
+      "SAVEPOINT brain_cardinality_held_back",
     ]);
     // …and the promote UPDATE still ran AFTER the rollback.
     expect(updates(calls)).toHaveLength(1);

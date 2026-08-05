@@ -463,9 +463,15 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
       "a producer may not propose `multi` — it asserts nothing and occupies the slot",
       async () => {
         const ws = "ws-5027-producer-multi";
+        // Cast, deliberately: `CardinalityProposalInput.cardinality` is
+        // narrowed to `"single"`, so a typed caller CANNOT reach this refusal —
+        // which is the stronger half of the guarantee and is checked by the
+        // compiler. What this test covers is the other half: an untyped caller
+        // (a cast, `JSON.parse`, a future producer reading config) is still
+        // refused at runtime rather than occupying the predicate's only slot.
         const result = await proposePredicateCardinality(pool, ws, {
           predicateKey: slotKey("reports to", identityAlias),
-          cardinality: "multi",
+          cardinality: "multi" as "single",
           sourceClass: "correction_event",
           proposedBy: CORRECTION_EVENT_PRODUCER,
         });

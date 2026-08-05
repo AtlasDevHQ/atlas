@@ -793,12 +793,26 @@ describe("advisory contradiction edges", () => {
     // satisfiable by deleting the field: the hint survives, with exactly the
     // authority a model guess is worth. An `in-tension-with` edge is recoverable
     // in both directions; a `valid_to` stamp is recoverable in neither.
+    //
+    // Asserted as a CONTRAST in one test rather than as a bare "the scan ran",
+    // which `an empty rival scan writes no edge` already proves and which would
+    // read as coverage without adding any: what this pins is that the hint is
+    // still the thing that decides, i.e. that #5027 removed the field's
+    // destructive consumer and not the field.
     const store = new FakeBrainStore();
     await run(store, {
       candidates: [candidate({ predicateCardinality: "single", object: "Grace" })],
     });
-
     expect(store.bindsFor("tensionScan")).toHaveLength(1);
+
+    await run(store, {
+      episode: episode({ id: "ep-hint-multi" }),
+      candidates: [candidate({ predicateCardinality: "multi", object: "Alan" })],
+    });
+    expect(
+      store.bindsFor("tensionScan"),
+      "the cardinality hint stopped gating the tension scan — either it lost its last consumer (and `ExtractionSchema.cardinality` is now dead weight the model is still asked for) or it gained one that ignores it",
+    ).toHaveLength(1);
   });
 });
 

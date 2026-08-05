@@ -32,6 +32,7 @@ const spec: MutationSpec = {
   out: "scripts/mutations/cardinality.md",
   targets: [
     { name: "cardinality-pg.test.ts", file: "src/lib/brain/__tests__/cardinality-pg.test.ts" },
+    { name: "cardinality.test.ts", file: "src/lib/brain/__tests__/cardinality.test.ts" },
     { name: "correction.test.ts", file: "src/lib/brain/__tests__/correction.test.ts" },
     {
       name: "brain-facts.test.ts",
@@ -56,9 +57,9 @@ human behind it.
       edits: [
         {
           file: "src/lib/content-mode/adapters/brain-facts.ts",
-          oldString: "     AND ${cardinalitySingleSql(d)}\n",
+          oldString: "  return `${collisionCorePredicate(d, p)}\n     AND ${cardinalitySingleSql(d)}`;",
           newString:
-            "     AND ${p}.predicate_cardinality = 'single'\n     AND ${d}.predicate_cardinality = 'single'\n",
+            "  return `${collisionCorePredicate(d, p)}\n     AND ${p}.predicate_cardinality = 'single'\n     AND ${d}.predicate_cardinality = 'single'`;",
         },
       ],
       note: "The defect itself. Every row written since this slice falls to the schema default `'multi'`, so the restored clause supersedes NOTHING, forever, with no error anywhere — and against a corpus written before it, it supersedes at roughly P(model says `single`)².",
@@ -101,7 +102,7 @@ human behind it.
       edits: [
         {
           file: CARDINALITY,
-          oldString: '  if (input.cardinality === "multi") {',
+          oldString: '  if ((input.cardinality as string) === "multi") {',
           newString: "  if (false) {",
         },
       ],
@@ -113,10 +114,10 @@ human behind it.
         {
           file: CARDINALITY,
           oldString: `     ON CONFLICT (workspace_id, predicate_key) DO NOTHING
-     RETURNING predicate_key\`,`,
+     RETURNING 1 AS inserted\`,`,
           newString: `     ON CONFLICT (workspace_id, predicate_key) DO UPDATE
         SET status = 'pending', proposed_at = now()
-     RETURNING predicate_key\`,`,
+     RETURNING 1 AS inserted\`,`,
         },
       ],
       note: "#4507's memory. Without it the next producer run re-proposes what a human rejected, and the vocabulary stops being reversible for exactly the population the proposer adds.",
@@ -192,26 +193,43 @@ human behind it.
       edits: [
         {
           file: CORRECTION,
-          oldString: '        case "retract":\n          return applyRetract(',
-          newString:
-            '        case "retract":\n          supersededPredicateKey = slotKey(target.predicate, vocabulary.predicate);\n          return applyRetract(',
+          oldString: `        case "retract":
+          return noSupersededPredicate(
+            applyRetract(tx, ctx.workspaceId, target, episodeId, at, base),
+          );`,
+          newString: `        case "retract":
+          return withSupersededPredicate(
+            slotKey(target.predicate, vocabulary.predicate),
+            applyRetract(tx, ctx.workspaceId, target, episodeId, at, base),
+          );`,
         },
       ],
       note: "The realistic drift — a later reader wiring one more verb into the gate. Retracting a claim WITHDRAWS it and says nothing about how many values could have coexisted, so counting it turns \"this was wrong\" into evidence that the slot holds one value.",
+    },
+    {
+      label: "the post-commit proposer loses its deadline",
+      edits: [
+        {
+          file: CORRECTION,
+          oldString: "        cardinalityProposalDeadline(resolveAuditDeadline(deps.auditWriteTimeoutMs)),\n",
+          newString: "",
+        },
+      ],
+      note: "A DEGRADED internal DB — reachable, not answering — never throws, so the catch never runs and `correctFact` never returns. The caller's own timeout then reports *\"nothing was changed — retry\"* about a correction that IS committed, and the retry mints a second correction episode for one human decision. Unbounded is worse than failing, and `Promise.race` with a REJECTING timer is what routes it into the existing catch.",
     },
     {
       label: "the proposer runs INSIDE the correction's transaction",
       edits: [
         {
           file: CORRECTION,
-          oldString: `      await withTransaction((tx) =>
-        proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicateKey),
-      );`,
-          newString: `      await proposeFromCorrectionEvents(
-        { query: async () => ({ rows: [] }) },
-        ctx.workspaceId,
-        supersededPredicateKey,
-      );`,
+          oldString: `        withTransaction((tx) =>
+          proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
+        ),`,
+          newString: `        proposeFromCorrectionEvents(
+          { query: async () => ({ rows: [] }) },
+          ctx.workspaceId,
+          supersededPredicate,
+        ),`,
         },
       ],
       note: "Stands in for the placement change rather than reproducing it literally (the real one cannot be expressed as a local edit). What it removes is the proposer's access to the committed `supersedes` edge — which is why the placement is post-commit rather than a `SAVEPOINT`.",

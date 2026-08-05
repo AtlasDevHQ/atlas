@@ -88,7 +88,26 @@ const ORM_KEY_RE = new RegExp(`\\b(${ORM_KEY_COLUMNS.join("|")})\\b`);
  * and a shape-based exemption is one any read surface could adopt (the reason
  * `check-brain-fact-promotion.sh` names full paths too).
  */
-const DECLARATION_SITES = new Set(["packages/api/src/lib/db/schema.ts"]);
+const DECLARATION_SITES = new Set([
+  "packages/api/src/lib/db/schema.ts",
+  // The cardinality store (#5027). Its table's PRIMARY KEY is `predicate_key`,
+  // so the module cannot address a row without naming it — the same position
+  // `schema.ts` is in, one table over. What the arm is actually guarding is a
+  // fact-shaped TYPE growing a key field, and that is closed structurally
+  // rather than by this exemption: neither `PredicateCardinalityRecord` nor
+  // `CardinalityWriteResult` carries the key (the caller supplied it), and both
+  // say so in their own docstrings. Every remaining hit is a parameter name or
+  // a WHERE-clause bind, and #5025's review UI must render the SURFACE.
+  "packages/api/src/lib/brain/cardinality.ts",
+  // A MUTATION SPEC — a test fixture that happens to live outside `__tests__`,
+  // so the scan's non-test filter does not reach it. Its `predicate_key`
+  // occurrences are the before/after strings of the "`INSERT_FACT_SQL` feeds
+  // `predicate_cardinality` again" mutation, i.e. quoted copies of production
+  // SQL that `scripts/mutate.ts` applies and then reverts. It is not a read
+  // surface, it ships in no bundle, and it is reached by this scan only because
+  // the file it mutates says `brain_facts`.
+  "packages/api/scripts/mutations/cardinality.mutations.ts",
+]);
 
 /**
  * Every non-test source file that speaks about `brain_facts` in either

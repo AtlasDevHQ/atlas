@@ -609,6 +609,62 @@ export const REPLACEMENT_ROW_SQL = `SELECT f.id::text AS id,
 // The verb dispatcher
 // ---------------------------------------------------------------------------
 
+/**
+ * A rejecting timer for the post-commit cardinality proposal, cleared in a
+ * `finally` so the fast path never leaves one armed.
+ *
+ * Its own function rather than an inline `new Promise`, for one reason worth
+ * stating: without the `finally` the timer keeps the event loop alive for the
+ * full bound on EVERY correction, which is exactly the defect
+ * `AUDIT_WRITE_TIMEOUT_MS`'s docstring records its two hand-rolled precedents
+ * having ("they leave a timer armed for the full bound on every fast path.
+ * This is the side to keep.").
+ *
+ * Rejects rather than resolves, so the caller's existing catch — which already
+ * says the correction is committed and unaffected — is the one place the
+ * outcome is reported. A resolving race would silently continue past a hung
+ * query with no line at all.
+ */
+function cardinalityProposalDeadline(ms: number): Promise<never> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `the cardinality repeat gate did not answer within ${ms}ms — the internal database is ` +
+              "reachable but not responding, or CORRECTION_REPEAT_COUNT_SQL is scanning without an index",
+          ),
+        ),
+      ms,
+    );
+  }).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+/**
+ * Tag a verb's response with the canonical predicate it closed, or with nothing.
+ *
+ * Two named helpers rather than an inline object literal at five call sites,
+ * because the DEFAULT has to be loud. `noSupersededPredicate` is a caller
+ * SAYING this verb is not evidence about cardinality; an omitted field would be
+ * a caller who did not think about it, and the two are indistinguishable in a
+ * diff. A sixth verb has to pick one.
+ */
+async function withSupersededPredicate(
+  supersededPredicate: string | null,
+  response: Promise<BrainFactCorrectionResponse>,
+): Promise<{ response: BrainFactCorrectionResponse; supersededPredicate: string | null }> {
+  return { response: await response, supersededPredicate };
+}
+
+async function noSupersededPredicate(
+  response: Promise<BrainFactCorrectionResponse>,
+): Promise<{ response: BrainFactCorrectionResponse; supersededPredicate: string | null }> {
+  return { response: await response, supersededPredicate: null };
+}
+
 interface TargetRow {
   readonly id: string;
   readonly subject: string;
@@ -700,19 +756,29 @@ export async function correctFact(
   // this catch would be classified as a refusal or rethrown to a caller whose
   // own error copy says "nothing was changed — retry" (`lib/tools/correct-fact.ts`).
   // Placement, not a comment, is what keeps that impossible.
-  let result: BrainFactCorrectionResponse | null;
   /**
-   * The canonical predicate a `supersede` closed, or `null` for every other verb
-   * and for a `supersede` that never reached dispatch (#5027).
+   * The verb's response, plus the canonical predicate a `supersede` closed —
+   * `null` on that second field for every other verb (#5027).
    *
    * Only `supersede` is evidence about cardinality: it is the one verb in which
    * a human asserts BY THEIR ACTION that this slot holds one value. `retract`
    * withdraws a claim without replacing it and says nothing about how many could
    * coexist; the two vouching verbs say the opposite of nothing.
+   *
+   * RETURNED from the transaction rather than assigned to a captured `let`, and
+   * that is not a style preference: TypeScript's flow analysis cannot see an
+   * assignment made inside an awaited callback, so a `let x: string | null = null`
+   * read afterwards narrows to `never` at the guard — the branch reads as dead
+   * to every type-aware tool, and any future type error inside it is masked.
+   * Returning it also states the invariant *only a `supersede` sets this* in the
+   * shape rather than in a comment.
    */
-  let supersededPredicateKey: string | null = null;
+  let outcome: {
+    readonly response: BrainFactCorrectionResponse;
+    readonly supersededPredicate: string | null;
+  } | null;
   try {
-    result = await withTransaction(async (tx) => {
+    outcome = await withTransaction(async (tx) => {
       // ── The target, ACL-gated and row-locked ──────────────────────────
       const params: unknown[] = [...acl.params, factId];
       const targetResult = await tx.query(correctionTargetSql(acl.sql, params.length), params);
@@ -985,36 +1051,40 @@ export async function correctFact(
       };
       switch (verb) {
         case "retract":
-          return applyRetract(tx, ctx.workspaceId, target, episodeId, at, base);
+          return noSupersededPredicate(
+            applyRetract(tx, ctx.workspaceId, target, episodeId, at, base),
+          );
         case "supersede":
           // `replacement` is non-null past the pure-validation gate above; the
           // assertion-free re-check keeps that reasoning local.
           if (replacement === null) {
             throw new Error("brain correction: supersede reached dispatch without a replacement");
           }
-          // Captured for the post-commit cardinality proposer (#5027). Derived
-          // HERE rather than after the transaction because this is the only
-          // place both the target's predicate surface and the vocabulary are in
-          // hand — `BrainFactCorrectionResponse` carries no claim text, and
-          // widening it to carry one would put a key one step from the wire,
-          // which `keys-not-on-the-wire.test.ts` exists to refuse.
-          //
-          // Assigned even when the verb goes on to throw: the assignment is
-          // meaningless then, because the catch below returns before the
-          // proposer is reached.
-          supersededPredicateKey = slotKey(target.predicate, vocabulary.predicate);
-          return applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
-            replacement,
-            sourcePrincipal,
-            actor,
-            correctionSourceId,
-            grantTokens: target.grantTokens,
-            vocabulary,
-          });
+          // The canonical predicate travels out with the response, for the
+          // post-commit cardinality proposer (#5027). Derived HERE because this
+          // is the only place both the target's predicate surface and the
+          // vocabulary are in hand — `BrainFactCorrectionResponse` carries no
+          // claim text, and widening it to carry one would put a key one step
+          // from the wire, which `keys-not-on-the-wire.test.ts` refuses.
+          return withSupersededPredicate(
+            slotKey(target.predicate, vocabulary.predicate),
+            applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
+              replacement,
+              sourcePrincipal,
+              actor,
+              correctionSourceId,
+              grantTokens: target.grantTokens,
+              vocabulary,
+            }),
+          );
         case "re-authority":
-          return applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "reAuthority", actor);
+          return noSupersededPredicate(
+            applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "reAuthority", actor),
+          );
         case "pin":
-          return applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "pinned", actor);
+          return noSupersededPredicate(
+            applyVouch(tx, ctx.workspaceId, target, episodeId, at, base, "pinned", actor),
+          );
         default: {
           const unexpected: never = verb;
           throw new Error(`Unhandled correction verb: ${JSON.stringify(unexpected)}`);
@@ -1033,13 +1103,14 @@ export async function correctFact(
     throw err;
   }
 
-  if (result === null) {
+  if (outcome === null) {
     log.info(
       { workspaceId: ctx.workspaceId, factId, verb, userId: ctx.userId, requestId },
       "brain correction: verb matched no row — absent, already retracted, or not visible to this actor",
     );
     return { kind: "not-found" };
   }
+  const { response: result, supersededPredicate } = outcome;
 
   log.info(
     {
@@ -1078,17 +1149,29 @@ export async function correctFact(
   //
   // It PROPOSES. Nothing is superseded by this write, now or ever: the row
   // lands `pending`, and `cardinalitySingleSql` reads only `approved` ones.
-  if (supersededPredicateKey !== null) {
+  if (supersededPredicate !== null) {
     try {
-      await withTransaction((tx) =>
-        proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicateKey),
-      );
+      // BOUNDED, on `emitCorrectionAudit`'s reasoning one paragraph stronger.
+      // `internalQuery` bypasses the circuit breaker and the internal pool sets
+      // no `statement_timeout`, so a DEGRADED internal DB — reachable, not
+      // answering — never throws and this await never settles. The catch would
+      // not run, `correctFact` would not return, and the caller's own timeout
+      // would report *"nothing was changed — retry"* about a correction that IS
+      // committed: a retry then mints a SECOND correction episode for one human
+      // decision, which is exactly what the audit deadline above exists to
+      // prevent. Same deadline, same knob, so the two post-commit writes cannot
+      // drift into having different answers to the same hazard.
+      await Promise.race([
+        withTransaction((tx) =>
+          proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
+        ),
+        cardinalityProposalDeadline(resolveAuditDeadline(deps.auditWriteTimeoutMs)),
+      ]);
     } catch (err) {
       log.warn(
         {
           workspaceId: ctx.workspaceId,
           factId: result.factId,
-          predicateKey: supersededPredicateKey,
           requestId,
           error: err instanceof Error ? err.message : String(err),
         },

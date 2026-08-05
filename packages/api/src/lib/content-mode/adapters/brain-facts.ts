@@ -58,6 +58,10 @@ import {
 // SAMENESS half of the same module, so the two seams cannot drift into
 // disagreeing about which pairs are merely `unknown`.
 import { comparableDifferentSql } from "@atlas/api/lib/brain/object-cmp";
+// The tier vocabulary (#5033). Derived from `EPISODE_SOURCE_SPECS`'s declared
+// classes, so a future warehouse-class member inherits the guard below without
+// touching this file.
+import { NON_WAREHOUSE_SOURCES } from "@atlas/api/lib/brain/sources";
 import {
   classifyFactForPromotion,
   isJsonObject,
@@ -336,14 +340,148 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
 `;
 
 /**
+ * The tier vocabulary as a SQL array literal, built ONCE at module load.
+ *
+ * Spliced unquoted, and safe because `sources.ts` enforces
+ * `EPISODE_SOURCE_SLUG` over the whole vocabulary at ITS module load — the
+ * validation lives beside the values rather than beside this consumer, so the
+ * next seam that splices the list inherits it and the rule cannot be spelled
+ * two ways. Nothing user-supplied reaches here: every element is a
+ * compile-time key of `EPISODE_SOURCE_SPECS`.
+ *
+ * An EMPTY list (every member warehouse-class) yields `ARRAY[]::text[]` — valid
+ * SQL, false for every row, so the guard degrades to "only a `source`-less row
+ * may supersede". Fail-closed, and `brain/__tests__/sources.test.ts` asserts
+ * non-emptiness so the degradation is a red test rather than a quiet narrowing.
+ */
+const NON_WAREHOUSE_SOURCE_ARRAY_SQL = `ARRAY[${NON_WAREHOUSE_SOURCES.map(
+  (source) => `'${source}'`,
+).join(", ")}]::text[]`;
+
+/**
+ * The TIER GUARD (#5033, ADR-0037 §4) — *identity is source-agnostic;
+ * consequence is tier-ordered.*
+ *
+ * True when this row's stored provenance is evidence that the row is not
+ * tier-1 — **or names no source at all**, which is the deliberate carve-out
+ * below and the one population that passes on no evidence.
+ *
+ * A warehouse-derived fact is authoritative by construction and has no
+ * correction path at all (`brain/correction.ts` refuses every verb on one), so
+ * an LLM-extracted draft stamping its `valid_to` retires an authoritative belief
+ * that no verb can restore: `supersede` refuses a target whose window is already
+ * closed, and every as-of-now read then hides the row it touched.
+ *
+ * ⚠️ **What happens instead is not "the join matches and the stamp is skipped".**
+ * The guard is inside the predicate, so the pair drops out of the join
+ * ENTIRELY: the will-supersede preview returns 0 for it and the transaction
+ * discloses and stamps nothing. What survives is a DIFFERENT record, written by
+ * a different statement at a different time — the advisory `in-tension-with`
+ * edge `reconcile.ts` mints at ingest — and that is where a human arbitrates.
+ * Because those are two separate mechanisms, the edge is not guaranteed to
+ * exist for every held-back pair (a post-ingest re-key can create a collision
+ * that never existed at ingest, and `TENSION_EDGE_CAP` bounds the fan-out), which
+ * is why `promoteBrainFacts` counts the held-back pairs and warns rather than
+ * trusting the edge to be the trace.
+ *
+ * ## It reads as a REFUSAL to claim a tier, not as "is not warehouse"
+ *
+ * Four populations, and the third is why this is an allowlist:
+ *
+ *   - `source` names a member of {@link NON_WAREHOUSE_SOURCES} → TRUE. The
+ *     ordinary case: every stored kind not declared `class: "warehouse"`. Not
+ *     spelled out here on purpose — the list is DERIVED, and a docstring naming
+ *     today's four members would go stale on the fifth.
+ *   - `source` resolves to a WAREHOUSE-class member → FALSE. The case the guard
+ *     exists for. Listed separately from the one below because
+ *     `unrecognizedSourceKind()` returns `null` for it — `correction.ts` refuses
+ *     it under `warehouseTarget`, a different reason with different prose — so
+ *     folding the two together would break that mapping.
+ *   - `source` is PRESENT and does not resolve — `warehouse:prod`, `snowflake`,
+ *     `null`, `42` → NOT TRUE, so the pair is excluded. (`false` for a value;
+ *     SQL `NULL` for a JSON `null`, since `NULL = ANY (…)` is unknown. The
+ *     distinction costs nothing while every STAMPING OR DISCLOSING caller uses
+ *     this predicate positively — an `ON` arm or an `EXISTS`. There is exactly
+ *     one negative caller, {@link TIER_HELD_BACK_COUNT_SQL}, and it is why
+ *     `IS NOT TRUE` is mandatory there and a bare `NOT (…)` wrapper is
+ *     forbidden everywhere: `NOT (NULL)` is NULL, which would drop this very
+ *     population out of the count that exists to see it.) This is #4964's conclusion applied
+ *     one seam over. `isWarehouseDerivedSource` answers `false` for an
+ *     unrecognised kind, and that used to be called the safe direction; it is
+ *     precisely wrong for the ONE lane that produces such values, the region
+ *     import, which restores a bundle's `source` verbatim with no vocabulary
+ *     gate. `correction.ts` quarantines the correction path of such a fact
+ *     rather than pretending it is tier-2 — `unrecognizedSourceKind()`, whose
+ *     two refusal reasons (`unrecognizedSourceKind` for a resolvable string,
+ *     `malformedSourceKind` for a non-string) are exactly the two shapes this
+ *     arm excludes — and the same reasoning is stronger here: a lost correction
+ *     refusal is recoverable by a deploy, a `valid_to` stamp is recoverable by
+ *     nothing.
+ *   - `source` is ABSENT entirely → TRUE, and this carve-out is deliberate.
+ *     `correction.ts` makes exactly the same one, in as many words: *that shape
+ *     predates this lane, nothing structurally guarantees the key, and
+ *     quarantining it would retire the correction path for facts no import ever
+ *     touched — a regression dressed as a fix.* Read `retire the supersession
+ *     path` for the same sentence here. `reconcile.ts` spreads
+ *     `source: episode.source` — a `string` — after the producer's detail, so a
+ *     row it wrote always has the key; a row without one predates that or came
+ *     through the import. The residual is the same one the record already
+ *     accepts: DELETING `source` from a bundle evades both gates. The lane is
+ *     narrowed, not sealed.
+ *
+ * `NOT jsonb_exists(…)` is also TRUE for any provenance that is not an OBJECT
+ * at all — a jsonb scalar or array has no `source` key either. That would be a
+ * fail-OPEN reading of the first disjunct, and it is unrepresentable rather than
+ * handled: `chk_brain_facts_provenance_nonempty` requires
+ * `jsonb_typeof(provenance) = 'object'`, and the column is NOT NULL. The guard's
+ * fail-closed property therefore DEPENDS on that CHECK — named here so a
+ * migration relaxing it trips over the dependency. `correction.ts`'s
+ * `unrecognizedSourceKind` short-circuits on the same condition
+ * (`if (!isJsonObject(provenance)) return null`), so the two seams agree.
+ *
+ * ## Both sides, and warehouse↔warehouse too
+ *
+ * The caller applies this to the published row AND the draft, because
+ * ADR-0037 §4 is symmetric: a newly-produced warehouse fact colliding with a
+ * published extracted fact is *also* tension-only. Auto-stamping there is
+ * autonomous supersession by ADR-0036's own definition with merely the
+ * sympathetic side winning — and the warehouse row is a snapshot that may
+ * already be hours old, while a stale extracted fact in visible tension is
+ * recoverable.
+ *
+ * That makes warehouse↔warehouse re-emission tension-only as well: the producer
+ * re-runs, a price moves, and the new snapshot does NOT retire its own
+ * predecessor. Recorded as open Fog in #5008's resolution, not overlooked — the
+ * escape (the producer stamps its own previous snapshot) is a machine
+ * invalidating a fact, which #4759 §2 forbids by name. The weakening that
+ * re-opens it is the one that blocks only when EXACTLY ONE side is warehouse —
+ * i.e. warehouse↔warehouse may stamp. `warehouse-both` in
+ * `brain/__tests__/identity-corpus.ts` exists to pin that single sentence.
+ *
+ * `alias` is interpolated; callers pass a plain identifier they control — same
+ * contract as {@link supersessionCollisionPredicate} itself.
+ */
+function supersedableTierSql(alias: string): string {
+  // Continuation indented to match `comparableDifferentSql`'s, so the two arms
+  // of the join read as siblings rather than as one nested inside the other.
+  return `(NOT jsonb_exists(${alias}.provenance, 'source')
+      OR ${alias}.provenance->>'source' = ANY (${NON_WAREHOUSE_SOURCE_ARRAY_SQL}))`;
+}
+
+/**
  * The supersession collision (#4912, ADR-0036 §Temporal), spelled ONCE.
  *
  * Joins a draft alias `d` to every already-published fact it would supersede:
- * the same SLOT — `(subject_key, predicate_key)` — a PROVABLY DIFFERENT object,
- * and BOTH sides `single`-cardinality. The published side must be live (not
- * tombstoned) and current (`valid_to IS NULL`) — a fact some earlier promotion
- * already superseded is settled history, and stamping it twice would rewrite
- * when the belief ended.
+ * the same WORKSPACE, the same SLOT — `(subject_key, predicate_key)` — a
+ * PROVABLY DIFFERENT object, BOTH sides `single`-cardinality, and BOTH sides
+ * either carrying positive evidence that they are NOT tier-1 or naming no
+ * source at all ({@link supersedableTierSql}, #5033). Read that arm's three
+ * other three populations before summarizing it as "below tier-1": an
+ * UNRESOLVABLE kind is excluded despite proving nothing either way, and an
+ * ABSENT `source` is admitted on no evidence at all. The published side must be live (not tombstoned) and
+ * current (`valid_to IS NULL`) — a fact some earlier promotion already
+ * superseded is settled history, and stamping it twice would rewrite when the
+ * belief ended.
  *
  * ## ⚠️ The object arm is `object_cmp`, NOT `object_key <>` (#5030, ADR-0037 §2)
  *
@@ -458,6 +596,37 @@ export function supersessionCollisionJoin(d: string, p: string): string {
  * it become a second copy.
  */
 export function supersessionCollisionPredicate(d: string, p: string): string {
+  return `${collisionIdentityPredicate(d, p)}
+     AND ${supersedableTierSql(p)}
+     AND ${supersedableTierSql(d)}`;
+}
+
+/**
+ * The collision MINUS the tier guard — every arm about identity, cardinality and
+ * the published row's live-and-current state, and nothing about consequence.
+ *
+ * Exists for exactly one reason: {@link TIER_HELD_BACK_COUNT_SQL} has to ask
+ * *"which pairs would have collided but for the tier?"*, and the only two
+ * spellings of that available were (a) copy the arms, which
+ * {@link supersessionCollisionJoin}'s header forbids at length, or (b) split the
+ * predicate at the one seam that makes the question expressible. This is (b) —
+ * so the shipped guard is `core AND tier(p) AND tier(d)` and the diagnostic is
+ * `core AND (tier(p) AND tier(d)) IS NOT TRUE`, both built from ONE spelling of
+ * the core and ONE of the tier. The negation is spelled `IS NOT TRUE` and never
+ * `NOT (…)` — see {@link TIER_HELD_BACK_COUNT_SQL}'s ⚠️, which is not a style
+ * note.
+ *
+ * ⚠️ **Private, and it must stay that way.** A caller reaching for this instead
+ * of {@link supersessionCollisionPredicate} gets a collision rule with the tier
+ * guard silently absent — which, applied to any of the four stamping or
+ * disclosing statements, is #5033 deleted while looking like a refactor. The
+ * name says `identity` rather than `collision` for that reason: what collides
+ * is the exported predicate, and this is only the half of it that is not about
+ * CONSEQUENCE. (It is not "the identity arms" narrowly — it also carries
+ * cardinality and the published row's live-and-current state. What it excludes
+ * is the tier, and nothing else.)
+ */
+function collisionIdentityPredicate(d: string, p: string): string {
   return `${p}.workspace_id = ${d}.workspace_id
      AND ${p}.subject_key = ${d}.subject_key
      AND ${p}.predicate_key = ${d}.predicate_key
@@ -468,6 +637,60 @@ export function supersessionCollisionPredicate(d: string, p: string): string {
      AND ${p}.invalidated_at IS NULL
      AND ${p}.valid_to IS NULL`;
 }
+
+/**
+ * How many provable collisions this publish is HOLDING BACK on tier grounds
+ * (#5033) — the operator-visible trace of a refusal that is otherwise silent.
+ *
+ * ## Why a warning is required rather than nice to have
+ *
+ * The tier guard filters inside the collision predicate, so a held-back pair
+ * never reaches `supersessionPairs` and therefore never reaches the shortfall
+ * warning below (`stamped.size !== oldIds.length` is unreachable for it). Without
+ * this statement the publish reports `superseded: []`, a preview total of 0, and
+ * NOT ONE log line — an operator cannot tell "no collision existed" from "a
+ * provable collision was found and its consequence was permanently withheld".
+ * The de-merge case one slice earlier got a line for a strictly weaker reason:
+ * it is a transient race, where this is permanent.
+ *
+ * The obvious objection is that the pair is already visible as the
+ * `in-tension-with` edge `reconcile.ts` writes. That is the DESIGN, and it is
+ * not a guarantee: the edge is minted at INGEST, by a different statement, and
+ * two reachable paths produce a held-back pair with no edge behind it — a
+ * vocabulary re-key (`vocabulary-decide.ts`) merges two slots after ingest and
+ * runs no tension rescan, and `TENSION_EDGE_CAP` bounds the fan-out at ten
+ * rivals. So the edge is where a human ARBITRATES; this line is how an operator
+ * learns there was something to arbitrate.
+ *
+ * ## Cost
+ *
+ * One extra `COUNT(*)` per publish that has at least one promotable `single`
+ * draft — the same guard the targets SELECT already sits behind. Publish is an
+ * admin action, not a hot path, and this reads no claim content: a number, never
+ * a label, on `oversight.ts`'s rule.
+ *
+ * ⚠️ `IS NOT TRUE`, not `NOT (…)`, and the repo has already paid for this
+ * distinction once. {@link supersedableTierSql} is SQL `NULL` — not `false` —
+ * for a `{"source": null}` provenance, so `NOT (…)` is NULL there and the row
+ * drops out of the count: the single most subtle held-back population would
+ * become the one this warning cannot see. `objectNotSameSql` carries the
+ * identical note in `brain/object-cmp.ts`, and its mutation row records that
+ * weakening it to `NOT (…)` is caught by exactly one test.
+ *
+ * Run BEFORE the promote UPDATEs, beside {@link SUPERSESSION_TARGETS_SQL} and
+ * carrying its draft-side predicate, so the two statements ask the same question
+ * of the same rows and their answers partition the collisions.
+ */
+export const TIER_HELD_BACK_COUNT_SQL = `
+  SELECT COUNT(*)::int AS held_back
+    FROM brain_facts d
+    JOIN brain_facts p
+      ON ${collisionIdentityPredicate("d", "p")}
+   WHERE d.workspace_id = $1
+     AND ${supersedingDraftPredicate("d")}
+     AND d.id = ANY($2::uuid[])
+     AND (${supersedableTierSql("p")} AND ${supersedableTierSql("d")}) IS NOT TRUE
+`;
 
 /**
  * The draft side of the same collision: what the publish gate offers for
@@ -553,12 +776,39 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
   // the SLOT.
   //
   // An exhaustive SWITCH, not `arbitration === "explicit" ? "" : recheck`. The
-  // ternary's open `else` means a third arm — and the docstring below names
-  // #5033's tier guard as one that is coming — silently inherits the collision
-  // re-check instead of failing to compile.
+  // ternary's open `else` means a third arm silently inherits the collision
+  // re-check instead of failing to compile. #5033 was named here as a coming
+  // third arm and turned out NOT to be one — see the `explicit` arm below,
+  // which is where that answer is recorded.
   const collisionRecheck = ((): string => {
     switch (arbitration) {
       case "explicit":
+        // NO TIER GUARD HERE, and that is #5033's answer rather than an
+        // omission. The guard rides `supersessionCollisionPredicate`, so the
+        // collision arm inherits it and this one does not — correct, because
+        // `correctFact` refuses a warehouse-derived target for EVERY verb
+        // before it reaches the stamp (`CORRECTION_REFUSAL_REASONS.warehouseTarget`),
+        // and refuses an unresolvable source kind immediately after
+        // (`unrecognizedSourceKind()`, #4964, whose two reasons —
+        // `unrecognizedSourceKind` and `malformedSourceKind` — cover the string
+        // and non-string halves). Both refusals cover the same two populations
+        // `supersedableTierSql` excludes on the PUBLISHED side, evaluated one
+        // layer up and earlier in the SAME transaction, against a row-locked
+        // target — so there is no check-then-stamp window for a SQL re-check to
+        // close. There is no draft-side equivalent because there is no draft:
+        // the superseding row is the replacement `correctFact` installs, which
+        // enters through `reconcileFacts` carrying `HUMAN_SOURCE`.
+        //
+        // Restating them here would be strictly worse, not merely redundant: a
+        // SQL arm cannot say WHY it refused, so a target that reached the stamp
+        // would stamp zero rows and trip `correction.ts`'s own zero-rows throw,
+        // which reports statement DRIFT and surfaces to the agent as a
+        // transient-sounding retry suggestion (`lib/tools/correct-fact.ts`).
+        // That is advice that loops forever on a permanent tier-1 condition. A tier-1
+        // correction has to fail as an actionable refusal naming the warehouse,
+        // which is what it already does. The two arbitrations differ in their
+        // WARRANT, and the switch is what makes that a decision rather than an
+        // inheritance.
         return "";
       case "collision":
         return `
@@ -638,10 +888,10 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
  *
  * The outer `p.status` / `p.invalidated_at` / `p.valid_to` predicates are kept
  * even though {@link supersessionCollisionPredicate} repeats all three. They are
- * not duplication for its own sake: the shared builder is about to grow arms
- * that narrow it further (#5033's tier guard), and this statement must keep
- * refusing to stamp a tombstoned or already-superseded row on its own terms
- * whatever happens to the collision rule.
+ * not duplication for its own sake: the shared builder has since grown arms that
+ * narrow it further (#5033's tier guard), and this statement must keep refusing
+ * to stamp a tombstoned or already-superseded row on its own terms whatever
+ * happens to the collision rule.
  */
 export const SUPERSEDE_STAMP_SQL = supersedeStampSql("collision");
 
@@ -781,6 +1031,128 @@ function toDraftFactRow(row: unknown): DraftFactRow | null {
  *     the number to act on, and these are the two that argue against lowering.
  */
 const LOGGED_ID_SAMPLE_CAP = 20;
+
+/**
+ * Run a statement whose ONLY product is telemetry, so that its failure costs
+ * the telemetry and never the transaction.
+ *
+ * `SAVEPOINT` → statement → on failure `ROLLBACK TO SAVEPOINT` and report 0.
+ * Extracted rather than inlined because the shape is subtle in a way a reader
+ * will otherwise "simplify": the obvious `Effect.catchAll` around the query
+ * looks equivalent and is not, since Postgres aborts the whole transaction on
+ * any statement error and every later statement then fails with `25P02`. The
+ * savepoint is what makes the recovery real.
+ *
+ * `onFailure` is called with the cause and is REQUIRED — never silent, per
+ * CLAUDE.md, and the caller supplies the message because only it knows which
+ * signal was lost.
+ *
+ * ## `null` means "could not be computed", and it is not the same as 0
+ *
+ * Returning 0 on a failure would write a confident "nothing was held back" into
+ * whatever durable record the caller keeps, which is exactly the ambiguity the
+ * count exists to remove — and worse than the original, because a statement
+ * that has DRIFTED fails on every publish thereafter, so the durable record
+ * lies persistently rather than once. `null` makes the unknown state
+ * representable; the caller decides how to render it.
+ *
+ * ## Every statement here is guarded, including `SAVEPOINT` itself
+ *
+ * An earlier cut left the two transaction-control statements unguarded, on the
+ * reasoning that a failing `SAVEPOINT` means an already-dead connection. That
+ * is FALSE for `25P01 no_active_sql_transaction`, which Postgres raises on a
+ * perfectly healthy connection when there is no transaction block — and
+ * `ModeTxClient` is a one-method interface that a bare pool satisfies
+ * structurally, with nothing enforcing transactionality. So the reasoning would
+ * have re-created the very failure this helper exists to prevent, one statement
+ * earlier: a publish rolled back because its DIAGNOSTIC could not open a
+ * savepoint. A failed `SAVEPOINT` is therefore also just a lost count, and the
+ * `ROLLBACK` is skipped because there is nothing to roll back to.
+ */
+function advisoryCount(
+  tx: ModeTxClient,
+  opts: {
+    readonly savepoint: string;
+    readonly sql: string;
+    readonly params: readonly unknown[];
+    /** `null` for a row the reader cannot make sense of — drift, not data. */
+    readonly read: (row: unknown) => number | null;
+    readonly onFailure: (cause: unknown) => void;
+  },
+): Effect.Effect<number | null, never, never> {
+  // `Effect.either` on each step rather than a `catch` that constructs a
+  // `PublishPhaseError`: this helper has NO failure channel by design, so
+  // there is no path by which a diagnostic can fail the phase.
+  const attempt = (sql: string, params: readonly unknown[] = []) =>
+    Effect.tryPromise({ try: () => tx.query(sql, [...params]), catch: (cause) => cause }).pipe(
+      Effect.either,
+    );
+  return Effect.gen(function* () {
+    // The name is a compile-time literal at every call site, never tenant data.
+    const opened = yield* attempt(`SAVEPOINT ${opts.savepoint}`);
+    if (opened._tag === "Left") {
+      opts.onFailure(opened.left);
+      return null;
+    }
+    const result = yield* attempt(opts.sql, opts.params);
+    if (result._tag === "Left") {
+      // ROLLBACK FIRST, report second. The recovery is the load-bearing half:
+      // if a reporter ever threw — a serializer on a hostile cause, or an
+      // `onFailure` that grows beyond logging — reporting first would leave the
+      // transaction aborted (`25P02`) and every later statement, including the
+      // promote UPDATEs, would fail.
+      yield* attempt(`ROLLBACK TO SAVEPOINT ${opts.savepoint}`);
+      opts.onFailure(result.left);
+      return null;
+    }
+    // `rows?.[0]` — the same driver-shape defence `read` applies to the row's
+    // CONTENTS, applied to the row's existence. A client wrapper reporting only
+    // `rowCount` would otherwise throw a `TypeError` out of `Effect.gen`, which
+    // is a DEFECT rather than a failure and escapes this helper's no-failure
+    // contract entirely.
+    return opts.read(result.right.rows?.[0]);
+  });
+}
+
+/**
+ * Read {@link TIER_HELD_BACK_COUNT_SQL}'s single column.
+ *
+ * Degrades to `null` — *unknown* — never to 0. Throwing would fail the publish
+ * over a diagnostic (CLAUDE.md's *prefer errors over silent fallbacks* governs
+ * security checks that must not degrade to a false negative; this is
+ * telemetry), and returning 0 would write "nothing was held back" into a
+ * durable audit row on no evidence. Drift is PERSISTENT — a renamed column
+ * fails every publish thereafter — so a confident 0 here would not be one bad
+ * record but a standing lie. The drift is also never silent: it gets its own
+ * warning, because a diagnostic that quietly stopped diagnosing is the failure
+ * this statement exists to prevent, one level up.
+ *
+ * The accepted shape is a NON-NEGATIVE INTEGER, not merely "finite". `-1` would
+ * otherwise pass, fail `> 0`, and produce neither the info line nor the warn —
+ * a drifted statement reading exactly like "nothing was held back", which is
+ * the one silence this whole statement exists to remove.
+ *
+ * `COUNT(*)::int` cannot return NULL or a non-numeric, so every arm here is
+ * query drift rather than data. The string arm is kept for the reason
+ * `oversight.ts`'s will-supersede total keeps one: driver-shape defence on a
+ * number no caller can re-derive.
+ */
+function readHeldBackCount(raw: unknown, workspaceId: string): number | null {
+  const value = isJsonObject(raw) ? raw.held_back : undefined;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+  }
+  log.warn(
+    // `heldBackRaw`, deliberately NOT `heldBack`: that key carries a number on
+    // the info line, and one field with two types is a structured alert that
+    // mis-fires or silently no-ops.
+    { workspaceId, heldBackRaw: value },
+    "brain publish: the tier-held-back count did not read back as a non-negative integer — pairs may have been withheld from supersession on tier grounds with no trace; diff TIER_HELD_BACK_COUNT_SQL",
+  );
+  return null;
+}
 
 /** One promotable draft, carried past the classifier so its grant can be widened. */
 interface PromotableDraft {
@@ -1066,6 +1438,17 @@ export function promoteBrainFacts(
     // no brain drafts is the overwhelmingly common case and publish runs this
     // adapter on every call.
     let promoted = 0;
+    // #5033 — provable collisions the tier guard withheld. Declared beside the
+    // three report accumulators rather than inside the supersession block,
+    // because it must reach the report even when that block reports nothing:
+    // "held back 2, superseded 0" is exactly the state an empty `superseded`
+    // would otherwise render as "nothing collided".
+    //
+    // `number | null`, and the `null` is load-bearing: the diagnostic can fail
+    // or drift, and a durable record that said 0 in that case would re-create
+    // the ambiguity the field exists to remove. 0 is the answer when the count
+    // ran and found nothing.
+    let heldBack: number | null = 0;
     const widened: GrantWidening[] = [];
     const superseded: FactSupersession[] = [];
     if (promotable.length > 0) {
@@ -1106,6 +1489,64 @@ export function promoteBrainFacts(
           log.warn(
             { workspaceId: orgId, unusableTargetRows, targetRows: targets.rows.length },
             "brain publish: supersession target rows came back without usable ids — those published rivals were NOT superseded and will keep answering as-of-now reads; diff SUPERSESSION_TARGETS_SQL",
+          );
+        }
+
+        // #5033 — the OTHER half of the same question. The statement above lists
+        // what will be stamped; this one counts what provably collided and will
+        // NOT be, because one side is tier-1 or its source kind is unresolvable.
+        // Without it that outcome is invisible: the pair is filtered inside the
+        // collision predicate, so it reaches neither `supersessionPairs` nor the
+        // shortfall warning below, and the publish reports an empty `superseded`
+        // that reads identically to "nothing collided".
+        //
+        // A COUNT, not ids: both claims are still live and addressable through
+        // the fact's `in-tension-with` cluster, and this line exists to say
+        // THAT THERE IS SOMETHING TO LOOK AT rather than to re-disclose the
+        // claims.
+        //
+        // ## Behind a SAVEPOINT, because telemetry must not be able to destroy
+        // ## the operation it describes
+        //
+        // This statement produces one log line and one report field. Everything
+        // else in this transaction is the publish itself, and
+        // `admin-publish.ts` runs EVERY adapter inside one transaction — so an
+        // unguarded failure here would roll back the connections, prompts,
+        // knowledge documents, semantic entities and facts of a complete,
+        // correct publish because a diagnostic could not be computed. That
+        // inverts this file's own posture ("Refuse the row, never the
+        // workspace") and makes the diagnostic stricter than the thing it
+        // diagnoses: the unusable-target-rows path twenty lines up treats
+        // genuinely load-bearing drift as skip-and-warn.
+        //
+        // A bare `catchAll` is NOT sufficient and was the first thing tried:
+        // Postgres puts the whole transaction in the aborted state (`25P02`)
+        // after ANY statement error, so every later statement — the promote
+        // UPDATEs, the stamp — fails too. Recovering needs a savepoint. The
+        // reachable causes are ordinary rather than exotic: a `statement_timeout`
+        // (`57014`), a deadlock against `reconcile.ts` or `correction.ts` on
+        // `brain_facts` (`40P01`), or statement drift (`42703`, a column this
+        // statement names having been renamed or dropped).
+        //
+        // The SAVEPOINT is not released on the success path. One savepoint in a
+        // short admin transaction costs nothing, and `RELEASE` is a fourth
+        // statement whose own failure would need the same treatment.
+        const heldBackCount = yield* advisoryCount(tx, {
+          savepoint: "brain_tier_held_back",
+          sql: TIER_HELD_BACK_COUNT_SQL,
+          params: [orgId, singleIds],
+          read: (row) => readHeldBackCount(row, orgId),
+          onFailure: (cause) =>
+            log.warn(
+              { workspaceId: orgId, err: cause instanceof Error ? cause.message : String(cause) },
+              "brain publish: the tier-held-back count could not be computed — any pairs withheld on tier grounds this publish have NO trace, though the publish itself is unaffected and commits; diff TIER_HELD_BACK_COUNT_SQL",
+            ),
+        });
+        heldBack = heldBackCount;
+        if (heldBackCount !== null && heldBackCount > 0) {
+          log.info(
+            { workspaceId: orgId, heldBack: heldBackCount, superseding: supersessionPairs.length },
+            "brain publish: provable collisions were NOT superseded because one side is warehouse-derived (tier-1) or carries a source kind this region cannot classify (#5033) — no valid_to was stamped and both claims stay current and published; a human arbitrates from the fact's in-tension-with cluster, NOT the draft review queue",
           );
         }
       }
@@ -1386,6 +1827,11 @@ export function promoteBrainFacts(
       // means "nothing was superseded this run", distinct from a table where
       // the concept does not exist.
       superseded,
+      // …and the fourth (#5033): what supersession was DECLINED, so a caller can
+      // tell "nothing collided" from "a collision was proven and its consequence
+      // withheld". Always present for this adapter — `0` included, and `null`
+      // when the count itself could not be established.
+      supersessionHeldBack: heldBack,
     } satisfies PromotionReport;
   });
 }

@@ -154,9 +154,20 @@
  * Self-healing — deploying the vocabulary that knows the kind restores the
  * correct gate with no data migration.
  *
+ * ⚠️ **Since #5033 there are TWO such gates, not one.** The publish gate's tier
+ * guard also refuses to stamp `valid_to` on — or with — a fact whose kind this
+ * region cannot classify ({@link NON_WAREHOUSE_SOURCES}). Same argument, heavier
+ * consequence: a lost correction refusal is recoverable by a deploy, a
+ * `valid_to` stamp is recoverable by nothing.
+ *
  * The consequence for THIS file, since it is what makes the healing work:
- * adding a member here is still a one-line PR, and that line is now also what
- * releases every imported fact of that kind from quarantine.
+ * adding a member here is still a one-line PR, and that line is what releases
+ * every imported fact of that kind from BOTH quarantines — with one carve-out
+ * that is easy to miss. If the member you add is WAREHOUSE-CLASS, neither gate
+ * reopens: the fact moves from *refused because unclassifiable* to *refused
+ * because tier-1*, `correction.ts` swaps `unrecognizedSourceKind` for
+ * `warehouseTarget`, and the tier guard keeps holding it back. That is the
+ * correct outcome and it is not a healing.
  */
 
 /**
@@ -578,7 +589,11 @@ export function episodeSourceClassOf(value: unknown): EpisodeSourceClass | null 
 
 /**
  * Does an arbitrary stored value name a WAREHOUSE-CLASS source? The single
- * trigger behind `correction.ts`'s tier-1 correction refusal.
+ * trigger behind `correction.ts`'s tier-1 correction refusal — and, since
+ * #5033, also the derivation behind {@link NON_WAREHOUSE_SOURCES}, which is
+ * what decides whether the publish gate may stamp a fact's `valid_to`. Weigh a
+ * change here against BOTH: one costs a refusal a deploy can restore, the other
+ * retires a belief nothing can.
  *
  * Takes `unknown` rather than `EpisodeSource` because every caller reads it off
  * a stored JSON payload (`provenance.source`) that no type system has checked —
@@ -601,3 +616,90 @@ export function episodeSourceClassOf(value: unknown): EpisodeSourceClass | null 
 export function isWarehouseDerivedSource(value: unknown): boolean {
   return isEpisodeSource(value) && episodeSourceClass(value) === WAREHOUSE_CLASS;
 }
+
+/**
+ * The shape every stored kind must have to be safe as a SQL string literal.
+ *
+ * Exported because #5033's tier guard SPLICES the vocabulary into a statement
+ * (`content-mode/adapters/brain-facts.ts` builds `ARRAY['slack', …]::text[]`
+ * from {@link NON_WAREHOUSE_SOURCES}), and the rule that makes that safe is a
+ * property of the vocabulary rather than of any one consumer. Spelled once here
+ * so the next consumer that splices the list does not re-derive it — and so the
+ * assertion below and `__tests__/sources.test.ts` cannot loosen independently,
+ * which is the drift that matters: a looser consumer with a stricter test is
+ * green until it is a boot failure.
+ */
+export const EPISODE_SOURCE_SLUG = /^[a-z][a-z0-9_-]*$/;
+
+/**
+ * Module-load enforcement of the rule above. THROWS rather than filtering the
+ * offender out, because every value here is a compile-time key of
+ * {@link EPISODE_SOURCE_SPECS}: this either always throws or never does, so CI
+ * is where an author meets it and there is no runtime input that can reach it.
+ *
+ * ⚠️ Be honest about the blast radius, which is bigger than "the tier guard":
+ * this module is on the static import path of `search.ts` and the tool
+ * registry, so a throw here takes the API process down at boot, not just
+ * publish. That is the correct direction — a vocabulary member that needs SQL
+ * escaping is a decision somebody must make deliberately, not one a string
+ * splice makes silently — but it is not a localized failure, and the fix is to
+ * rename the member rather than to relax the pattern.
+ */
+for (const source of EPISODE_SOURCES) {
+  if (!EPISODE_SOURCE_SLUG.test(source)) {
+    throw new Error(
+      `Episode source "${source}" is not a bare slug (${String(EPISODE_SOURCE_SLUG)}) — EPISODE_SOURCE_SPECS keys are spliced into SQL by #5033's tier guard, so rename the member or quote it deliberately at every splice site`,
+    );
+  }
+}
+
+/**
+ * Every stored kind that is NOT warehouse-class — the vocabulary half of
+ * #5033's tier guard, derived rather than spelled.
+ *
+ * The complement of {@link isWarehouseDerivedSource} over
+ * {@link EPISODE_SOURCES}, in declaration order, so a member added under
+ * `class: "warehouse"` LEAVES this list in the same one-line PR that adds it and
+ * inherits the guard with no second edit. That is the same property
+ * {@link isWarehouseDerivedSource} has and the reason both read the class rather
+ * than the stored value (#4963).
+ *
+ * ⚠️ Membership here is POSITIVE evidence that a row is not tier-1, and the
+ * consumer uses it that way: a value outside this list — including one outside
+ * the vocabulary entirely — is not thereby "non-warehouse". See
+ * `content-mode/adapters/brain-facts.ts`'s tier guard for what that costs and
+ * why the unresolvable case is refused rather than admitted, which is #4964's
+ * conclusion applied one seam over.
+ *
+ * ## The residual this INHERITS, and why it is not closed here
+ *
+ * A member declaring a NEW class that is warehouse-shaped —
+ * `{ class: "lakehouse", vendor: null }` — lands in this list by default and is
+ * therefore supersedable. So does the header's own example, a warehouse-shaped
+ * kind declaring an EXISTING non-warehouse class (`{ class: "chat", vendor:
+ * "snowflake" }`) — which is the cheaper edit of the two, since a brand-new
+ * class must also widen `EPISODE_SOURCE_CLASSES` and `EpisodeSourceSpec` before
+ * it compiles at all. Same family, and the same root: the type system does not
+ * know what warehouse-shaped means. It is inherited rather than introduced —
+ * {@link isWarehouseDerivedSource} has always had it, and this list is defined
+ * as its complement.
+ *
+ * What CHANGED is the price. Through `correction.ts` the residual costs a lost
+ * tier-1 refusal, recoverable by a deploy that re-declares the class. Through
+ * this list it costs a `valid_to` stamp, which is recoverable by nothing.
+ *
+ * A `Record<EpisodeSourceClass, 1 | 2>` tier table would make it a compile
+ * error, and was considered and rejected — but NOT on #4938's grounds, which
+ * were about two independent string literals agreeing by coincidence. A tier
+ * table that {@link isWarehouseDerivedSource} read THROUGH would be one
+ * spelling, not two. It is rejected because the product has exactly one tier
+ * distinction that any code branches on — warehouse or not — and a numeric
+ * column invites readers to invent orderings the ADR has not decided, in the
+ * one module whose job is to keep the two axes from multiplying. **So the rule
+ * stays prose, and it is this: a warehouse-shaped kind must declare
+ * `class: WAREHOUSE_CLASS`.** Revisit the table the day a second tier
+ * distinction is real.
+ */
+export const NON_WAREHOUSE_SOURCES: readonly EpisodeSource[] = Object.freeze(
+  EPISODE_SOURCES.filter((source) => !isWarehouseDerivedSource(source)),
+);

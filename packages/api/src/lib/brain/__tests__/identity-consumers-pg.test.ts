@@ -27,6 +27,23 @@
  * written beside the assertion, so the table is the single definition of what
  * collides and flipping a cell turns three tests red.
  *
+ * ## ⚠️ And since #5033 a fifth relation varies something that is NOT identity
+ *
+ * `tier-guarded-rival` holds five pairs whose subject, predicate and object are
+ * byte-identical to `priced-rival`'s. Only the episode's stored `source` differs
+ * — the value `reconcile.ts` copies into `provenance.source`, which no arm of
+ * any consumer's MATCHING reads. Consumers 1 and 2 must therefore answer exactly
+ * as they do for `proven-rival`, and consumer 3 must answer differently; that
+ * asymmetry across one held-fixed fixture is what ADR-0037 §4's *identity is
+ * source-agnostic; consequence is tier-ordered* means, expressed as tests.
+ *
+ * The consequence for reading the prohibitions below: consumer 3's
+ * `tier-guarded-rival` block is the only place in THIS FILE where a pair that
+ * collides on every identity arm is refused a stamp for a non-identity reason.
+ * Its positive control is `priced-rival`, one relation up, and the two are the
+ * same claims. `promotion-pg.test.ts` carries the other non-identity refusals —
+ * the cardinality gate, and the tier guard's absent-`source` carve-out.
+ *
  * ## Why this is a `-pg` suite and not a unit one
  *
  * Because the question is which COLUMNS the statements name, and no in-memory
@@ -41,7 +58,7 @@
  * assertions in the identity slice now live in the slower, WSL2-flakier lane,
  * and a `--affected` run over `lib/brain/` no longer covers them without
  * `TEST_DATABASE_URL`. The one-corpus design bounds that rather than removing
- * it — thirteen pairs, three consumers, not three suites.
+ * it — eighteen pairs, three consumers, not three suites.
  *
  * ## Every prohibition has a positive control, in its own `test()`
  *
@@ -71,10 +88,10 @@
  *
  * | Mutation | Dies on |
  * |---|---|
- * | `lexicalNorm` loses its ASCII case fold | 9 |
+ * | `lexicalNorm` loses its ASCII case fold | 14 |
  * | `CORROBORATION_LOOKUP_SQL` repointed at the surface columns | 6 |
  * | the corroboration call site binds raw surfaces instead of `item.keys.*` | 6 — **and 3 in `reconcile.test.ts`**, which is the bind half it can still see |
- * | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 5 — the edge DIRECTION is what the review queue renders |
+ * | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 10 — the edge DIRECTION is what the review queue renders |
  * | `CORROBORATION_LOOKUP_SQL`'s `object_key = $4` arm neutralized | 6 — via both key-equal `same-claim` pairs |
  * | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 — via `same-through-value` |
  * | `objectSameSql` loses its difference VETO | 3 — via `sign-flip-rival` |
@@ -82,17 +99,68 @@
  * | `supersessionCollisionPredicate` back on `object_key <> object_key` | 3 — `rival-through-phrasing`, `cross-type-rival`, `sign-flip-rival` |
  * | `lexicalNorm` loses its edge trim | 3 — via `separator-edges` |
  * | `identityAlias` given a global rule (`/^is /` stripped) | 3 — all three PROHIBITIONS, via `copula-pair` |
- * | `TENSION_CANDIDATES_SQL` repointed at the surface columns | 2 |
- * | the tension call site binds raw surfaces | 2 |
+ * | `TENSION_CANDIDATES_SQL` repointed at the surface columns | 7 |
+ * | the tension call site binds raw surfaces | 7 |
  * | `supersessionCollisionJoin` repointed at the surface columns | 1 — via `priced-rival` |
  * | `subject_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `subject-differs` |
  * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `predicate-differs` |
  * | `comparableDifferentSql` loses its `split_part` tag arm | 1 — `cross-type-rival` (`object-cmp-pg.test.ts`'s parity tests catch it too, at the SQL level) |
  * | `objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)` | **1 — `rival-through-phrasing`** |
+ * | the tier guard deleted from `supersessionCollisionPredicate` | 5 — every `tier-guarded-rival` |
+ * | the tier guard applied to the PUBLISHED side only | 2 — `warehouse-draft`, `unresolvable-draft` |
+ * | the tier guard applied to the DRAFT side only | 2 — `warehouse-incumbent`, `unresolvable-incumbent` |
+ * | the tier guard weakened to a denylist — the allowlist ARM replaced by `<> 'warehouse'`, the absent-key disjunct kept | **2 — both `unresolvable-*`** |
+ * | the tier guard loses its absent-key disjunct | **0 — see below** |
+ * | the carve-out simplified to `->>'source' IS NULL` | **0 — see below** |
+ * | `TIER_HELD_BACK_COUNT_SQL`'s `IS NOT TRUE` weakened to `NOT (…)` | **0 — see below** |
+ * | `TIER_HELD_BACK_COUNT_SQL` hard-wired to `SELECT 0` | **0 — see below** |
  *
  * ⚠️ **EVERY count above was re-measured on this tree, one mutation at a time,
- * and several MOVED** — the case fold 8→9, both tension-repoint rows 1→2, the
- * tension-edge direction 1→5, because #5030 added five corpus entries.
+ * and several MOVED** — the case fold 9→14, both tension-repoint rows 2→7, the
+ * tension-edge direction 5→10, because #5033 added five corpus entries. (#5030
+ * had already moved them from 8, 1 and 1.) Numbers are regenerated in one pass
+ * against the FINAL tree and never edited a row at a time, because slice B's
+ * table carried numbers forward twice under a header claiming they had been
+ * re-measured — and the first cut of THIS slice reproduced that exact defect,
+ * updating this paragraph while leaving four cells above it stale.
+ *
+ * The five tier rows are what #5033 buys, and three of them are worth reading
+ * as a set. Two aliases carry the same guard, so "it is present" is not the
+ * assertion — *which side* it is present on is, and the one-sided mutations die
+ * on DISJOINT fixtures (the two `*-draft` entries versus the two `*-incumbent`
+ * ones; `warehouse-both` survives either, since the surviving arm still blocks
+ * it). The denylist row is the whole argument for spelling the guard as an
+ * allowlist: `<> 'warehouse'` passes every other tier fixture and admits an
+ * imported `warehouse:prod`, which is #4964's fail-open lane arriving where the
+ * consequence is a `valid_to` stamp.
+ *
+ * ⚠️ **The denylist row spells its mutation out because the number depends on
+ * the spelling, and the first cut of these tables got that wrong.** It replaces
+ * the allowlist ARM with `<> 'warehouse'` and keeps the absent-key disjunct.
+ * Spelled `IS DISTINCT FROM 'warehouse'` instead, the number here is the same
+ * but `promotion-pg.test.ts`'s becomes 1 rather than 0, because `<>` is NULL
+ * for a null-valued `source` while `IS DISTINCT FROM` is TRUE. Replacing the
+ * WHOLE predicate is a third mutation — it drops the carve-out too, so it
+ * additionally kills 8 over there and the rows stop being separable. Both
+ * tables in this slice are measured with the `<>` spelling above.
+ *
+ * ⚠️ **The last four rows are ZEROS, and they are stated rather than omitted.**
+ * They mark this file's blind spot exactly, and `promotion-pg.test.ts` is where
+ * each is falsified — 8, 1, 1 and 2 respectively:
+ *
+ *   - The first two are the absent-`source` carve-out. Every pair here lands
+ *     through `reconcileFacts`, which spreads `source: episode.source` onto
+ *     every fact it writes, so this corpus cannot produce a provenance with no
+ *     `source` key — nor one whose `source` is present and `null`, which is the
+ *     single input separating `NOT jsonb_exists(…)` from the `IS NULL`
+ *     simplification a reader will reach for.
+ *   - The last two are the held-back DIAGNOSTIC. Nothing here reads
+ *     `PromotionReport.supersessionHeldBack`, so a diagnostic that answered 0
+ *     forever — the one failure its own docstring says it exists to prevent —
+ *     is green in every test in this file.
+ *
+ * The two files' blind spots are complements: this one owns the vocabulary
+ * cases and the two aliases, that one owns the carve-out and the count.
  *
  * The `objectNotSameSql` disjunct row is the least obvious arm in the slice and
  * the one a reader would delete as redundant: it is what carries a key-equal,
@@ -176,6 +244,7 @@ import {
   type SlotRelation,
 } from "./identity-corpus";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { isEpisodeSource, isWarehouseDerivedSource } from "@atlas/api/lib/brain/sources";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -207,6 +276,90 @@ describe("the identity corpus itself (#5021)", () => {
     for (const pair of IDENTITY_CORPUS) {
       expect(pair.a, `corpus entry \`${pair.id}\` compares a claim with itself`).not.toEqual(pair.b);
     }
+  });
+
+  it("the tier fixtures name what they claim to (#5033)", () => {
+    // `identity-corpus.ts` may not import behaviour — that is its stated
+    // discipline, and it is what stops a fixture agreeing with the
+    // implementation by sharing code with it. The cost is that its `source`
+    // values are bare literals, so renaming the vocabulary member `warehouse`
+    // would silently turn three warehouse fixtures into three more copies of
+    // `unresolvable-incumbent`: still green, still refusing the stamp, but for
+    // the OUT-OF-VOCABULARY reason rather than the CLASS reason — and the
+    // corpus's claim that the two entries are each other's controls would be
+    // quietly false.
+    //
+    // So the corpus keeps the literals and this file, which may import, checks
+    // that they still mean what the corpus says. Asserted as "at least one of
+    // each" rather than per-id, because which fixture carries which shape is
+    // the corpus's business; that BOTH shapes are present is what licenses the
+    // allowlist-vs-denylist argument.
+    const tierSources = pairsWhere("tier-guarded-rival").flatMap((pair) => [
+      pair.a.source,
+      pair.b.source,
+    ]);
+    expect(
+      tierSources.filter((source) => isWarehouseDerivedSource(source)),
+      "no `tier-guarded-rival` fixture carries a WAREHOUSE-CLASS source — the guard's headline case is untested and the class arm is falsified by nothing",
+    ).not.toHaveLength(0);
+    expect(
+      tierSources.filter(
+        (source) => source !== undefined && !isEpisodeSource(source),
+      ),
+      "no `tier-guarded-rival` fixture carries an OUT-OF-VOCABULARY source — nothing then distinguishes the shipped allowlist from a `<> 'warehouse'` denylist",
+    ).not.toHaveLength(0);
+  });
+
+  it("the tier fixtures vary ONLY the tier (#5033)", () => {
+    // The corpus's whole falsification argument is *hold identity fixed, vary
+    // the tier*: `warehouse-incumbent`'s own `why` says that without a stamping
+    // control of the same shape, it "passes green against a guard that dropped
+    // the pair from every statement". That control is `priced-rival`, and
+    // nothing else checks the two are actually the same claims.
+    //
+    // The failure this closes is the #5030 shape, twice paid for: change a tier
+    // fixture's objects to two NAMES and it becomes an `unproven-rival` wearing
+    // a `tier-guarded-rival` label — no comparable value, so the object arm
+    // blocks it, so it refuses the stamp for a reason that has nothing to do
+    // with the tier, and the guard-deleted mutation quietly survives on it. All
+    // three consumers stay green throughout.
+    const [control] = pairsWhere("proven-rival").filter((pair) => pair.id === "priced-rival");
+    expect(control, "`priced-rival` is gone — the tier fixtures have no control").toBeDefined();
+    const identityOf = (claim: Claim) => ({
+      subject: claim.subject,
+      predicate: claim.predicate,
+      object: claim.object,
+      objectType: claim.objectType,
+    });
+    for (const pair of pairsWhere("tier-guarded-rival")) {
+      expect(
+        [identityOf(pair.a), identityOf(pair.b)],
+        `\`${pair.id}\` is not identity-identical to \`priced-rival\` — it can no longer show that ONLY the tier changed the verdict, and a guard that dropped every pair would pass it`,
+      ).toEqual([identityOf(control!.a), identityOf(control!.b)]);
+    }
+
+    // …and the five entries present five DISTINCT tier shapes. Without this,
+    // dropping `source: "warehouse"` from `warehouse-both`'s `b` side leaves
+    // every other invariant and all three consumers green — while deleting the
+    // only `-pg` test that kills the weakening `warehouse-both` exists to pin
+    // (block only when EXACTLY ONE side is warehouse, i.e. let
+    // warehouse↔warehouse stamp). A corpus that collapses two fixtures into one
+    // shape loses a mutation and says nothing about it.
+    const shapes = pairsWhere("tier-guarded-rival").map(
+      (pair) => `${pair.a.source ?? "-"}|${pair.b.source ?? "-"}`,
+    );
+    expect(new Set(shapes).size, `two tier fixtures share a source shape: ${shapes.join(", ")}`).toBe(
+      shapes.length,
+    );
+    // The both-sides-warehouse shape specifically, named because it is the one
+    // that has no other killer anywhere in the repo.
+    expect(
+      shapes.some((shape) => {
+        const [a, b] = shape.split("|");
+        return isWarehouseDerivedSource(a) && isWarehouseDerivedSource(b);
+      }),
+      "no fixture has BOTH sides warehouse-class — warehouse↔warehouse re-emission is then untested, and weakening the guard to an exclusive-or passes every suite",
+    ).toBe(true);
   });
 
   it("holds no duplicate id", () => {
@@ -266,19 +419,32 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
   /** One workspace per pair, so a failure names the entry that produced it. */
   const workspaceFor = (pair: ClaimPair): string => `ws-identity-${pair.id}`;
 
-  async function seedEpisode(workspaceId: string, sourceId: string): Promise<ReconcileEpisodeRef> {
+  /**
+   * `source` is the episode's stored kind, which `reconcile.ts` copies into
+   * `provenance.source` — the column #5033's tier guard reads. Defaulted to the
+   * ordinary extracted case so every pre-#5033 entry lands exactly as before.
+   *
+   * Bound as a PARAMETER, not interpolated, and deliberately unvalidated: 0180
+   * puts no CHECK on the column and the region import writes out-of-vocabulary
+   * values through it, so a corpus entry must be able to reach that state.
+   */
+  async function seedEpisode(
+    workspaceId: string,
+    sourceId: string,
+    source = "slack",
+  ): Promise<ReconcileEpisodeRef> {
     const occurredAt = new Date("2026-06-21T09:00:00.000Z");
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes
          (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
-       VALUES ($1, 'slack', $2, 'U123', 'evidence', $3::timestamptz, ARRAY['org'])
+       VALUES ($1, $4, $2, 'U123', 'evidence', $3::timestamptz, ARRAY['org'])
        RETURNING id`,
-      [workspaceId, sourceId, occurredAt.toISOString()],
+      [workspaceId, sourceId, occurredAt.toISOString(), source],
     );
     return {
       id: rows[0]!.id,
       workspaceId,
-      source: "slack",
+      source,
       sourceId,
       sourceActor: "U123",
       occurredAt,
@@ -297,10 +463,13 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
    * corpus, which is the drift this file exists to prevent.
    */
   async function land(workspaceId: string, sourceId: string, claim: Claim) {
-    const episode = await seedEpisode(workspaceId, sourceId);
+    const episode = await seedEpisode(workspaceId, sourceId, claim.source);
     const report = await reconcileFacts({
       vocabulary: identityVocabulary,
       episode,
+      // `source` is spread in with the rest and is harmless — `FactCandidate`
+      // has no such field, and the tier the guard reads comes off the EPISODE
+      // above, which is the only place a producer can stamp it.
       candidates: [{ ...claim, predicateCardinality: "single" }],
       producer: "identity-corpus",
       extractedAt: new Date("2026-06-21T10:00:00.000Z"),
@@ -431,6 +600,11 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       "same-claim": "⭐ strengthens instead of forking",
       "unproven-rival": "does not absorb a different VALUE in the same slot",
       "proven-rival": "does not absorb a provably different VALUE either",
+      // Identity is source-agnostic (#5033): corroboration must behave here
+      // EXACTLY as it does for `proven-rival`. A guard that leaked into the
+      // lookup would start merging or forking on tier, which is per-class
+      // matching — the thing ADR-0037 §4 rules out.
+      "tier-guarded-rival": "does not absorb one across a tier boundary either",
       "different-claim": "does not collide a different SLOT",
     };
 
@@ -474,6 +648,12 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
     const TITLES: Record<SlotRelation, string> = {
       "unproven-rival": "⭐ flags a contradiction it CANNOT prove — the abstain band",
       "proven-rival": "⭐ flags a contradiction it can prove",
+      // ⭐ The half of #5033 that says the pair is HELD BACK rather than
+      // dropped. The tier guard withholds the stamp; if it also cost the
+      // tension edge, a cross-tier contradiction would vanish from the review
+      // queue entirely — silently, and precisely where the authoritative side
+      // is the one at stake.
+      "tier-guarded-rival": "⭐ still flags the contradiction the publish gate will NOT act on",
       "same-claim": "does not put one claim in tension with itself",
       "different-claim": "does not flag two claims that share no slot",
     };
@@ -526,6 +706,8 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       "proven-rival": "⭐ stamps the incumbent it can PROVE it contradicts",
       "unproven-rival":
         "stamps nothing when it cannot PROVE the contradiction — tension only (#5030)",
+      "tier-guarded-rival":
+        "stamps nothing across a TIER boundary, however provable the contradiction (#5033)",
       "same-claim": "stamps nothing when the draft merely restates the incumbent",
       "different-claim": "stamps nothing across two slots — the irreversible direction",
     };

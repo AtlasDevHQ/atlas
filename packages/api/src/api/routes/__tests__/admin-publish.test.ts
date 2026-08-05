@@ -17,6 +17,7 @@ import {
   collectRefusals,
   collectSupersessions,
   collectWidenings,
+  countSupersessionsHeldBack,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode/promoted";
 import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
@@ -104,6 +105,7 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
   // #4823 / #4912 audit assertions is that the ROUTE's sweep is the shared one.
   collectWidenings,
   collectSupersessions,
+  countSupersessionsHeldBack,
   makeService: () => ({
     runPublishPhases: () =>
       Effect.try({
@@ -417,6 +419,58 @@ describe("POST /api/v1/admin/publish — refused drafts (#4769)", () => {
       supersededFactCount: 0,
       supersededFacts: [],
     });
+  });
+
+  it("records what the TIER GUARD held back, as its own durable number (#5033)", async () => {
+    // The complement of the row above, and the reason it needs a field of its
+    // own: a publish that PROVED three collisions against warehouse-derived
+    // incumbents and declined every one of them writes exactly the same
+    // `supersededFacts: []` as a publish that found nothing to arbitrate. The
+    // adapter's log line rotates; this row is the durable answer to "did we
+    // defend something, or was there nothing there?".
+    REPORTS = [
+      {
+        table: "brain_facts",
+        promoted: 2,
+        refused: [],
+        superseded: [],
+        supersessionHeldBack: 3,
+      },
+    ];
+    await publish();
+    expect(auditCalls[0].metadata).toMatchObject({
+      supersededFactCount: 0,
+      supersessionsHeldBack: 3,
+    });
+  });
+
+  it("sums the held-back count across adapters, and writes 0 rather than omitting it", async () => {
+    // `0` and absent are different claims — absent is a publish that predates
+    // the guard. And the sweep is a SUM over reports rather than a lookup on
+    // `brain_facts`, so a second adapter growing a tier guard is picked up here
+    // instead of at the call site; an adapter that reports nothing contributes
+    // nothing rather than `NaN`.
+    REPORTS = [
+      { table: "brain_facts", promoted: 1, refused: [], supersessionHeldBack: 0 },
+      { table: "semantic_entities", promoted: 4 },
+    ];
+    await publish();
+    expect(auditCalls[0].metadata).toMatchObject({ supersessionsHeldBack: 0 });
+  });
+
+  it("records `null` — not 0 — when an adapter could not compute its count", async () => {
+    // The third state, and the reason the field is `number | null`. A count
+    // that failed or drifted must not write "nothing was held back" into a row
+    // read months later: drift is persistent, so 0 there is a standing lie
+    // rather than one bad record. A `null` from ANY adapter poisons the total,
+    // because a workspace-wide number built from a partial answer is the same
+    // confident falsehood one level up.
+    REPORTS = [
+      { table: "brain_facts", promoted: 1, refused: [], supersessionHeldBack: null },
+      { table: "semantic_entities", promoted: 4 },
+    ];
+    await publish();
+    expect(auditCalls[0].metadata).toMatchObject({ supersessionsHeldBack: null });
   });
 });
 

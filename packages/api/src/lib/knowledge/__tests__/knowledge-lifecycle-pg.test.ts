@@ -979,6 +979,16 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
         // `passthroughEntityResolver` supplies none, and the abstain that
         // produces is `promotion-pg.test.ts`'s `ws-5030-abstain` to prove, not
         // this file's — what THIS file needs is a supersession to project.
+        //
+        // ⚠️ The provenance carries NO `source` key, and since #5033 that is
+        // load-bearing rather than incidental: the publish gate's tier guard
+        // admits a `source`-less row (the carve-out `correction.ts` makes for
+        // the correction path, argued at `supersedableTierSql`). Adding
+        // `source: "slack"` here would be harmless; adding `source: "warehouse"`
+        // would stop the supersession this fixture exists to project, and the
+        // failure would read as an adapter-registration bug rather than a
+        // fixture one. `promotion-pg.test.ts`'s `seedFact` carries the same
+        // warning, and owns the carve-out's coverage.
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
             provenance, status, visible_to, predicate_cardinality,

@@ -14,6 +14,7 @@ void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   }),
 }));
 
+import { unexplainedFailure } from "@/ui/lib/fetch-error";
 import {
   EnterpriseUpsell,
   FeatureGate,
@@ -53,9 +54,14 @@ describe("FeatureGate — canned copy (no server message)", () => {
     // to set an already-set variable is the misdirection.
     const { container } = render(<FeatureGate status={503} feature="Custom Domains" />);
     expect(container.textContent).toContain("Custom Domains is unavailable");
-    expect(container.textContent).toContain("Retry in a moment");
     expect(container.textContent).not.toContain("DATABASE_URL");
     expect(container.textContent).not.toContain("Internal database not configured");
+    // Compared to the SHARED helper, deliberately by construction: sharing one
+    // source with `friendlyError` is the invariant, and a substring match let
+    // the gate drift back to a hand-written literal and stay green. The copy
+    // itself is pinned independently, as a full literal, in fetch-error.test.
+    const description = container.querySelectorAll("p")[1];
+    expect(description?.textContent).toBe(unexplainedFailure(503));
   });
 
   test("renders no request-id line when the response carried no id", () => {
@@ -204,6 +210,18 @@ describe("FeatureGate — request id (#5068)", () => {
     });
   }
 
+  test("renders the id trimmed, not as the caller padded it", () => {
+    // The guard trims, so a padded id correctly renders a line — but the
+    // padding used to leak into the text, which breaks copy/paste into a
+    // support ticket and is invisible to a clean fixture.
+    const { container } = render(
+      <FeatureGate status={403} feature="Users" requestId="  req-x  " />,
+    );
+    const line = container.querySelector('[data-testid="feature-gate-request-id"]');
+    if (!line) throw new Error("no request-id line");
+    expect(line.textContent).toBe("Request ID: req-x");
+  });
+
   test("a blank id renders no line rather than a bare label", () => {
     // `extractFetchError` accepts any string, so "   " reaches here. The label
     // over nothing is the same blank-chrome class the message guard prevents.
@@ -315,6 +333,18 @@ describe("EnterpriseUpsell", () => {
     expect(container.textContent).toContain(
       "Proactive monitoring is available only on Atlas Cloud (the hosted SaaS).",
     );
+  });
+
+  test("a blank server message keeps the canned upsell copy", () => {
+    // `FeatureGate`'s identical normalization is pinned on all four arms; this
+    // one shipped unfalsified. "   " is truthy, so `||` alone would render the
+    // headline over an empty <p>.
+    mockDeployMode = "self-hosted";
+    for (const blank of ["", "   "]) {
+      const { container } = render(<EnterpriseUpsell feature="SSO" message={blank} />);
+      expect(container.textContent).toContain("contact sales");
+      cleanup();
+    }
   });
 
   test("carries the request id on BOTH arms (#5068)", () => {

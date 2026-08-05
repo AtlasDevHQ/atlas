@@ -88,7 +88,7 @@ describe("combineMutationErrors", () => {
     // `combineMutationErrors` consumer — all six feed `MutationErrorSurface`.
     const combined = combineMutationErrors([
       err("HTTP 403", { status: 403, requestId: "req-x" }),
-      err("something else", { status: 500 }),
+      err("HTTP 500", { status: 500 }),
     ]);
     expect(combined?.message).toBe("HTTP 403");
     expect(serverMessage(combined!)).toBeUndefined();
@@ -98,14 +98,40 @@ describe("combineMutationErrors", () => {
     expect(combined?.requestId).toBe("req-x");
   });
 
-  test("a placeholder primary still renders the gate's CANNED copy end-to-end", () => {
+  test("a placeholder never shadows a sibling's real message or its requestId", () => {
+    // The combined error is the SOLE surface on all six consumers — there is
+    // no per-mutation banner behind it. So returning the placeholder as-is
+    // when a sibling actually explained itself discards that explanation and
+    // its correlation id with no signal at all, which is worse than the
+    // status echo it was avoiding. Demote the un-explanatory instead.
+    const combined = combineMutationErrors([
+      err("HTTP 403", { status: 403, code: "enterprise_required" }),
+      err("Migration failed: disk full on region eu-west", { status: 500, requestId: "req-b" }),
+    ]);
+    expect(combined?.message).toBe("Migration failed: disk full on region eu-west (+1 more)");
+    expect(combined?.requestId).toBe("req-b");
+    // ...and the demotion is total: the placeholder's status/code must not
+    // ride along, or the gate would still render an enterprise upsell.
+    expect(combined?.status).toBe(500);
+    expect(combined?.code).toBeUndefined();
+  });
+
+  test("skips blank and de-dupes on the trimmed message", () => {
+    // Both `.trim()`s shipped unfalsified. A whitespace-only primary produced
+    // a gate description of "(+1 more)" — the blank-chrome class, and the
+    // motivating case the code comment names.
+    expect(combineMutationErrors([err("   "), err("real")])?.message).toBe("real");
+    expect(combineMutationErrors([err("a"), err(" a ")])?.message).toBe("a");
+  });
+
+  test("an ALL-placeholder set still renders the gate's CANNED copy end-to-end", () => {
     // The string assertions above are necessary and not sufficient: what makes
     // this a regression-vs-main is what an admin reads. Before this arm, the
     // combiner→gate boundary had no test at all, which is how two successive
     // fixes to the same defect both looked complete.
     const combined = combineMutationErrors([
       err("HTTP 403", { status: 403, code: "enterprise_required" }),
-      err("something else", { status: 500 }),
+      err("HTTP 500", { status: 500 }),
     ]);
     const { container } = render(
       <MutationErrorSurface error={combined} feature="SSO" />,

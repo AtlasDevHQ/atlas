@@ -138,8 +138,15 @@ describe("TokenUsageTab — the gate carries the server's words and the id (#506
     // sentence either way, so asserting on the copy proves nothing.
     expect(view.container.textContent ?? "").not.toContain("Token Usage is unavailable");
     expect(view.container.textContent ?? "").not.toContain("Access denied");
-    // Through `friendlyError`, so the banner carries the id raw `.message` dropped.
-    expect(view.container.textContent ?? "").toContain(REQUEST_ID);
+    // Per banner, not container-scoped: this tab has three independent
+    // `friendlyError` call sites and a whole-container `toContain` is
+    // satisfied by any one, so reverting two would stay green — the exact
+    // weakness the sibling analytics-panel arm was rewritten to close.
+    const alerts = Array.from(view.container.querySelectorAll('[role="alert"]'));
+    expect(alerts.length).toBe(3);
+    for (const alert of alerts) {
+      expect(alert.textContent ?? "").toContain(REQUEST_ID);
+    }
   });
 
   test("an empty-bodied 500 banner shows actionable copy, never the status echo", async () => {

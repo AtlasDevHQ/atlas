@@ -63,14 +63,29 @@ const requestFailedMessage = (status: number | string) => `Request failed (${sta
  * What to say when the server refused and explained nothing.
  *
  * Exported so `FeatureGate`'s 503 arm and `friendlyError` give one answer
- * rather than two. They disagreed for a while — the gate had been corrected to
- * stop blaming DATABASE_URL for a restarting replica while this file still
- * said "Check server configuration", so the same status read as two different
- * diagnoses one file apart.
+ * rather than two. They disagreed for two commits — the gate had been
+ * corrected to stop blaming DATABASE_URL for a restarting replica while this
+ * file still said "Check server configuration", so the same status read as two
+ * different diagnoses one file apart.
+ *
+ * The restarting/proxy guess is 5xx-only, and that boundary is the point. An
+ * unexplained 409 is a conflict, which retrying in a moment reproduces; an
+ * unexplained 429 came from a rate limiter that is working; an unexplained 400
+ * is a client fault, and sending that operator to the API service logs is the
+ * same misdiagnosis-from-status-alone this whole change removed from the 503
+ * arm — one level up. Edge- and proxy-generated 4xx with no JSON body are
+ * exactly the population reaching the caller, so 4xx gets the neutral line.
  */
 export function unexplainedFailure(status: number | undefined): string {
-  const code = status === undefined ? "" : ` (${status})`;
-  return `The server returned an error${code} with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs.`;
+  // No status means no HTTP response was parsed at all, so "the server
+  // returned" would be a claim about something that never happened.
+  if (status === undefined) {
+    return "The request failed and no response could be read. Check your network connection; if it persists, check the API service logs.";
+  }
+  if (status >= 500) {
+    return `The server returned an error (${status}) with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs.`;
+  }
+  return `The server rejected the request (${status}) with no explanation. If it persists, check the API service logs.`;
 }
 
 /**
@@ -309,7 +324,15 @@ export function gateProps(err: FetchError): GateErrorProps {
  * reads as server prose to every surface downstream.
  */
 export function isPlaceholderMessage(err: FetchError): boolean {
-  return err.status !== undefined && isSynthesizedMessage(err.message, err.status);
+  if (err.status === undefined) {
+    // `serverMessage` never sees this case (it early-returns on a missing
+    // status), but `friendlyError`'s catch-all arm does, and it is where
+    // `buildFetchError`'s third spelling lands: a status-less empty message
+    // becomes `Request failed (unknown)`, which would otherwise render as if
+    // a human had written it.
+    return err.message.trim() === requestFailedMessage("unknown");
+  }
+  return isSynthesizedMessage(err.message, err.status);
 }
 
 /**
@@ -403,7 +426,11 @@ export function friendlyError(err: FetchError): string {
  * guard and this needs to grow.
  */
 function isSynthesizedMessage(message: string, status: number): boolean {
-  return message === httpStatusMessage(status) || message === requestFailedMessage(status);
+  // Trimmed, because every sibling guard on this path trims and this is the
+  // one that decides provenance. A padded `"  HTTP 403  "` slipping through
+  // reads as server prose to the gate — the defect, one space over.
+  const m = message.trim();
+  return m === httpStatusMessage(status) || m === requestFailedMessage(status);
 }
 
 function appendRequestId(message: string, requestId: string | undefined): string {

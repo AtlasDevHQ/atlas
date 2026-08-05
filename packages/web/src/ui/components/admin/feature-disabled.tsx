@@ -243,15 +243,20 @@ export function FeatureGate({
 
   if (status === 503) {
     // This arm used to assert one cause — "Internal database not configured /
-    // Set DATABASE_URL" — on every 503. No route the admin console consumes
-    // emits that: on admin routes a missing internal DB answers 404
-    // `not_available` (`requireOrgContext`), and the 503s that exist are
-    // things like `permissions_unavailable`, an authz outage the database
-    // line is simply false for. (The API's one DATABASE_URL 503 lives in
-    // `sub-processor-subscriptions.ts`, a public legal endpoint with no admin
-    // surface. The `503: "Internal database not configured"` entries in
-    // `platform-residency.ts` and `admin-domains.ts` are stale — those
-    // handlers return 404.)
+    // Set DATABASE_URL" — on every 503, and it is the wrong place to say it.
+    //
+    // Not because no such 503 exists: `no_internal_db` from
+    // `ee/platform/residency.ts` and `ee/platform/domains.ts` maps to 503
+    // (`shared-residency.ts`, `shared-domains.ts`), and `/platform/residency`
+    // consumes one. But every one of those carries its own message
+    // ("Internal database is required for data residency."), so `serverMessage`
+    // renders it verbatim through the branch above and this fallback is never
+    // what an operator with a missing DATABASE_URL reads.
+    //
+    // What reaches HERE is a 503 with no message at all — an infrastructure
+    // one with an HTML body, a restarting service, an unhealthy proxy — plus
+    // authz outages like `permissions_unavailable`. Sending that operator to
+    // set a variable which is already set is the misdirection.
     //
     // What actually reaches the no-message branch is an infrastructure 503
     // with an HTML body — a restarting service, an unhealthy proxy — where

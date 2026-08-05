@@ -576,6 +576,7 @@ describe("migrateAuthTables", () => {
             // owns — same reasoning as 0187–0189 above.
             { name: "0190_brain_vocabulary_proposal.sql" },
             { name: "0191_brain_fact_object_cmp.sql" },
+            { name: "0192_brain_predicate_cardinality.sql" },
           ],
         };
       }

@@ -20,7 +20,7 @@ Interleave the negatives with the positives when posting. A block of 15 clean fa
 
 **Install it first.** Admin → **Knowledge Base → New collection** → *Company Brain (Slack history)*, entering the channel IDs. **Not** Admin → Integrations — that page renders only `chat` and `action` pillar rows, so this connector never appears there. Without an install row nothing reads the channels, and posting seeds is a no-op.
 
-**Loop:** post → *Sync now* on `/admin/knowledge` (expect **0 documents** — episodes aren't documents) → wait ≤5 min for the extraction fiber → review `/admin/brain-facts` → publish → ask the questions.
+**Loop:** post → *Sync now* on `/admin/knowledge` (expect **0 documents** — episodes aren't documents) → wait ≤5 min for the extraction fiber → review `/admin/brain/facts` → publish → ask the questions.
 
 > **Caveat on seed content.** These claims are drawn from `CLAUDE.md`, which makes retrieval realistic but means a correct answer may be model recall rather than a brain hit. R1/R2 are the control. For a stronger one, swap two or three §A seeds for facts that are true but unguessable (an internal ticket number, a specific vendor).
 
@@ -148,7 +148,7 @@ A "returns nothing" that is actually the whole queue being empty proves nothing 
 
 Signed in as **B** (or any reader outside the private channel), compare two numbers:
 
-- `/admin/brain-facts` — the review queue, **ACL-scoped to the reader**
+- `/admin/brain/facts` — the review queue, **ACL-scoped to the reader**
 - `/api/v1/mode` → `draftCounts.brainFacts` — **every draft in the workspace, unscoped by design**
 
 | Observed | Meaning |
@@ -183,7 +183,7 @@ K3 is the one that will look like a retrieval bug during the soak. Expect it.
 |---|---|---|
 | R1 | What is our AWS bill? | nothing — never seeded. A confident answer here means the agent is answering from the model, not the brain |
 | R2 | Who is our biggest customer? | nothing — never seeded |
-| R3 | Re-ask **any** question from §A after **retracting** its fact at `/admin/brain-facts` | **must not return.** `searchBrain` has to AND `invalidated_at IS NULL` itself on top of the status and ACL clauses — a retracted fact still returning is a real defect |
+| R3 | Re-ask **any** question from §A after **retracting** its fact at `/admin/brain/facts` | **must not return.** `searchBrain` has to AND `invalidated_at IS NULL` itself on top of the status and ACL clauses — a retracted fact still returning is a real defect |
 | R4 | Ask something matching only an episode body, not a published fact (e.g. a distinctive phrase from N9) | should come back as **tier-3 evidence**, not tier-2 |
 | R5 | Any §A question, **before** publishing | nothing — drafts must not be readable through `searchBrain` |
 
@@ -202,7 +202,7 @@ R3 and R5 are the two that would let unreviewed or withdrawn claims reach a user
 | C2 | separate belief from paraphrase | 1 (expected limitation) | |
 | C3 | one fact survives cross-grant; both edges recorded | yes; narrow at draft, **union** at publish (#4823) | |
 | C3 | `pre_widening_visible_to` records the narrow grant at publish | non-NULL on the widened fact, NULL elsewhere (#4836) | |
-| C3 | attribution withheld from a reader gained by widening, kept for the original audience | both, in `/admin/brain-facts` **and** a `searchBrain` answer (#4836) | |
+| C3 | attribution withheld from a reader gained by widening, kept for the original audience | both, in `/admin/brain/facts` **and** a `searchBrain` answer (#4836) | |
 | X1 | contradiction surfaced, S1 not overwritten | yes | |
 | D | B denied on all 3 private facts | yes | |
 | D | revocation within one interval | yes | |

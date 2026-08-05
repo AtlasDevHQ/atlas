@@ -44,7 +44,7 @@
  *
  * Composing `aclVisibilityClause` here would be the obvious-looking move and
  * would destroy the surface: the reader's own subset is what
- * `/admin/brain-facts/summary` already reports, and a view that agreed with it
+ * `/api/v1/admin/brain-facts/summary` already reports, and a view that agreed with it
  * would say "your queue is your workspace" — which is exactly the false
  * all-clear an admin currently gets.
  *

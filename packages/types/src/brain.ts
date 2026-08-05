@@ -599,7 +599,7 @@ export interface BrainFactOversight {
   readonly buckets: readonly BrainFactOversightBucket[];
   readonly workspaceTotals: BrainFactOversightTotals;
   /**
-   * Live drafts THIS reader may open at `/admin/brain-facts` — reader-scoped.
+   * Live drafts THIS reader may open at `/admin/brain/facts` — reader-scoped.
    * Normally no larger than `workspaceTotals.awaitingReview`; the difference is
    * the backlog federated to somebody else. When it IS larger,
    * {@link countsConsistent} is false and the difference means nothing.
@@ -786,7 +786,7 @@ export interface BrainSearchTensionWithheld {
  * evidence. Source authority and recency are surfacing hints for the READER;
  * nothing in the ordering or the shape names a winner: entries are sorted by
  * `factId` alone, with the withheld aggregate last. Arbitration belongs to the
- * human gate (`/admin/brain-facts`, composing with supersession — #4912).
+ * human gate (`/admin/brain/facts`, composing with supersession — #4912).
  */
 export type BrainSearchTensionView = BrainFactTensionVisible | BrainSearchTensionWithheld;
 

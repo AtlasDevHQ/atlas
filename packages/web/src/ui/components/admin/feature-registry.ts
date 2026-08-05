@@ -31,11 +31,14 @@ export const FEATURE_NAMES = [
   "Backups",
   "Billing",
   "Billing Portal",
-  "Brain Facts",
   "Branding",
   "BYOT",
   "Cache",
   "Change plan",
+  // Was "Brain Facts" (#5066). The table name `brain_facts` had been wearing a
+  // product label; the surface is the Company Brain, and the banner copy that
+  // interpolates this ("… requires an enterprise plan") should say so.
+  "Company Brain",
   "Connections",
   "CRM Outbox",
   "Custom Domains",

@@ -76,6 +76,74 @@ describe("resolveAdminBreadcrumb", () => {
     });
   });
 
+  test("Company Brain is its own group, and its landing page doesn't swallow its leaves (#5066)", () => {
+    // `/admin/brain` is a group LANDING page with a real child under it —
+    // one of three sibling-prefix pairs in this file (`/admin/semantic` +
+    // `/admin/semantic/improve` and `/platform` + its children are the
+    // others), and the second landing-page-with-children after `/platform`.
+    // Opting it into prefixMatch (the reflex for "it's a parent") would
+    // collapse every future /admin/brain/* surface onto "Overview", which is
+    // the #2176 shape one level down. Assert both leaves resolve to
+    // themselves. `no prefixMatch item is a strict prefix of a sibling`
+    // below generalizes this to all three pairs.
+    expect(resolveAdminBreadcrumb("/admin/brain")).toEqual({
+      kind: "page",
+      section: "Company Brain",
+      page: "Overview",
+    });
+    expect(resolveAdminBreadcrumb("/admin/brain/facts")).toEqual({
+      kind: "page",
+      section: "Company Brain",
+      page: "Facts",
+    });
+  });
+
+  test("the retired /admin/brain-facts URL is not a nav entry (#5066)", () => {
+    // It redirects at the config layer, so it must NOT also resolve here —
+    // a leftover entry would put a 308-ing href back in the sidebar and the
+    // command palette, both of which build from `navGroups`.
+    expect(resolveAdminBreadcrumb("/admin/brain-facts")).toEqual({ kind: "overview" });
+    const hrefs = navGroups.flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs).not.toContain("/admin/brain-facts");
+  });
+
+  test("no prefixMatch item is a strict path prefix of another nav item", () => {
+    // The prefix/exact rule lives in a JSDoc sentence on `prefixMatch?`, and
+    // nothing in the type stops `{ href: "/admin/brain", prefixMatch: true }`.
+    // There are three sibling-prefix pairs in this file now, so guard the rule
+    // itself rather than today's paths: the two breadcrumb tests above cover
+    // `/admin/semantic` and `/admin/brain` by name and would say nothing about
+    // the next split.
+    const allHrefs = navGroups.flatMap((g) => g.items.map((i) => i.href));
+    // Positive control: the loop below is a pure throw-guard, so if
+    // `prefixMatch` were ever dropped from the type — or the scan silently
+    // stopped matching — it would degrade to a no-op that passes. Assert the
+    // set it inspects is non-empty first.
+    expect(navGroups.flatMap((g) => g.items).filter((i) => i.prefixMatch).length).toBeGreaterThan(0);
+    for (const group of navGroups) {
+      for (const item of group.items) {
+        if (!item.prefixMatch) continue;
+        const swallowed = allHrefs.filter((h) => h.startsWith(item.href + "/"));
+        if (swallowed.length > 0) {
+          throw new Error(
+            `nav item ${item.href} ("${item.label}") sets prefixMatch and would swallow ` +
+              `the breadcrumb of: ${swallowed.join(", ")}. Either drop prefixMatch, or ` +
+              `remove the nested entries it is absorbing.`,
+          );
+        }
+      }
+    }
+  });
+
+  test("no two nav groups share an icon", () => {
+    // Splitting Company Brain out of Intelligence (#5066) left two groups
+    // holding the `Brain` glyph until Intelligence was re-iconed. Duplicate
+    // icons read as one group accidentally rendered twice, and the next split
+    // will hit the same fork.
+    const icons = navGroups.map((g) => g.icon);
+    expect(new Set(icons).size).toBe(icons.length);
+  });
+
   test("returns overview kind for an unmapped /admin/* path", () => {
     expect(resolveAdminBreadcrumb("/admin/totally-not-a-route")).toEqual({ kind: "overview" });
   });

@@ -132,7 +132,7 @@ interface PublishPreviewData {
    * `single`-cardinality draft that collides with a live published fact stamps
    * the old fact's `valid_to`, and as-of-now reads then hide it. A
    * workspace-wide count, not a list — the per-pair disclosure lives on
-   * `/admin/brain-facts`. Optional and defaulted to 0 for a deploy-overlap
+   * `/admin/brain/facts`. Optional and defaulted to 0 for a deploy-overlap
    * window; an older API omitting it degrades to the previous silence rather
    * than to a wrong count.
    */
@@ -441,7 +441,7 @@ function WithheldFactsNotice({
  * predicate replaces the old one, atomically with the promotion. A COUNT and
  * never a list: the preview endpoint carries no reader-scoped supersession
  * pairs — the per-pair "X replaces Y" disclosure lives on
- * `/admin/brain-facts`, which the copy points at.
+ * `/admin/brain/facts`, which the copy points at.
  */
 function WillSupersedeNotice({ count }: { count: number }) {
   const one = count === 1;
@@ -458,7 +458,7 @@ function WillSupersedeNotice({ count }: { count: number }) {
           A draft holds a new value for a single-valued predicate, so the currently published{" "}
           {one ? "fact" : "facts"} will stop being served as current belief. Nothing is deleted —
           the old {one ? "value stays" : "values stay"} readable to as-of questions. Review the
-          exact replacements under Brain facts in the admin sidebar before confirming.
+          exact replacements under Company Brain → Facts in the admin sidebar before confirming.
         </p>
       </div>
     </div>

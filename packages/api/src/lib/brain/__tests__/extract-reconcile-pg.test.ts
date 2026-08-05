@@ -240,9 +240,20 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   it("rolls the WHOLE episode back when one candidate's write fails", async () => {
     // The invariant is "no half-formed rows", which means half-formed BATCHES
     // too: a reviewer must never inherit two of three claims from a pass that
-    // did not finish. The failure is induced by aiming the SECOND candidate at
-    // a cardinality `chk_brain_facts_predicate_cardinality` refuses, so what is
+    // did not finish. The failure is induced on the SECOND candidate, so what is
     // proven is that the FIRST candidate's already-succeeded write is undone.
+    //
+    // The inducer used to be a cardinality `chk_brain_facts_predicate_cardinality`
+    // refuses. That stopped working when #5027 took `predicate_cardinality` out
+    // of `INSERT_FACT_SQL`'s column list — the value no longer reaches Postgres,
+    // so the batch simply succeeded and this test passed while asserting
+    // nothing. A NUL byte is the replacement: `22021 invalid byte sequence for
+    // encoding "UTF8"` is refused by the SERVER, on that row's INSERT, which is
+    // the same shape of failure at the same point.
+    //
+    // Deliberately NOT a column this repo owns. The old inducer was coupled to a
+    // constraint that was about to be dropped, and picking another one would put
+    // this test back on the same clock; encoding is not going anywhere.
     const episode = await insertEpisode();
     const first = candidate();
     await expect(
@@ -251,10 +262,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
         episode,
         candidates: [
           first,
-          candidate({
-            object: "Fridays",
-            predicateCardinality: "sometimes" as FactCandidate["predicateCardinality"],
-          }),
+          candidate({ object: `Fri${String.fromCharCode(0)}days` }),
           candidate({ object: "Mondays" }),
         ],
         producer: "extraction:v1",
@@ -263,7 +271,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       // Anchored: an unanchored `toThrow()` would also pass if the FIRST
       // candidate started failing for an unrelated reason, in which case
       // nothing was ever written and the rollback claim is untested.
-    ).rejects.toThrow(/predicate_cardinality/);
+    ).rejects.toThrow(/invalid byte sequence/);
 
     expect(await facts()).toHaveLength(0);
     expect(await edges()).toHaveLength(0);

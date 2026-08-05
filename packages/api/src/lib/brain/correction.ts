@@ -155,6 +155,10 @@ import {
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+// ADR-0037 §3(d)2 — a human superseding a slot is positive evidence that it
+// holds one value. The only cardinality proposer that can be observed from
+// inside the brain (#5027).
+import { proposeFromCorrectionEvents } from "@atlas/api/lib/brain/cardinality";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
   INSERT_PROVENANCE_EDGE_SQL,
@@ -423,7 +427,6 @@ export function correctionTargetSql(aclSql: string, idParam: number): string {
                 f.predicate,
                 f.object,
                 f.status,
-                f.predicate_cardinality,
                 f.provenance,
                 f.visible_to,
                 f.valid_to,
@@ -612,7 +615,6 @@ interface TargetRow {
   readonly predicate: string;
   readonly object: string;
   readonly status: string;
-  readonly cardinality: "single" | "multi";
   readonly provenance: unknown;
   readonly grantTokens: readonly string[];
   /**
@@ -699,6 +701,16 @@ export async function correctFact(
   // own error copy says "nothing was changed — retry" (`lib/tools/correct-fact.ts`).
   // Placement, not a comment, is what keeps that impossible.
   let result: BrainFactCorrectionResponse | null;
+  /**
+   * The canonical predicate a `supersede` closed, or `null` for every other verb
+   * and for a `supersede` that never reached dispatch (#5027).
+   *
+   * Only `supersede` is evidence about cardinality: it is the one verb in which
+   * a human asserts BY THEIR ACTION that this slot holds one value. `retract`
+   * withdraws a claim without replacing it and says nothing about how many could
+   * coexist; the two vouching verbs say the opposite of nothing.
+   */
+  let supersededPredicateKey: string | null = null;
   try {
     result = await withTransaction(async (tx) => {
       // ── The target, ACL-gated and row-locked ──────────────────────────
@@ -980,6 +992,17 @@ export async function correctFact(
           if (replacement === null) {
             throw new Error("brain correction: supersede reached dispatch without a replacement");
           }
+          // Captured for the post-commit cardinality proposer (#5027). Derived
+          // HERE rather than after the transaction because this is the only
+          // place both the target's predicate surface and the vocabulary are in
+          // hand — `BrainFactCorrectionResponse` carries no claim text, and
+          // widening it to carry one would put a key one step from the wire,
+          // which `keys-not-on-the-wire.test.ts` exists to refuse.
+          //
+          // Assigned even when the verb goes on to throw: the assignment is
+          // meaningless then, because the catch below returns before the
+          // proposer is reached.
+          supersededPredicateKey = slotKey(target.predicate, vocabulary.predicate);
           return applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
             replacement,
             sourcePrincipal,
@@ -1038,6 +1061,43 @@ export async function correctFact(
     requestId,
     timeoutMs: resolveAuditDeadline(deps.auditWriteTimeoutMs),
   });
+
+  // ── ADR-0037 §3(d)2 — the correction-event cardinality proposer (#5027) ──
+  //
+  // A human superseding a slot has asserted BY THEIR ACTION that it holds one
+  // value. That is one of the three declared sources for a `single` cardinality
+  // entry, and it is the only one that can be observed from inside the brain.
+  //
+  // POST-COMMIT, in its own transaction, and for `emitCorrectionAudit`'s reason
+  // one paragraph stronger: this reads the `supersedes` edge the verb just
+  // wrote, so it needs that edge committed, and a failure must not reach a
+  // caller whose error copy says "nothing was changed — retry". Inside the
+  // verb's transaction a catch could not deliver that at all — Postgres puts the
+  // whole transaction in `25P02` after any statement error, so the correction's
+  // own COMMIT would fail with it.
+  //
+  // It PROPOSES. Nothing is superseded by this write, now or ever: the row
+  // lands `pending`, and `cardinalitySingleSql` reads only `approved` ones.
+  if (supersededPredicateKey !== null) {
+    try {
+      await withTransaction((tx) =>
+        proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicateKey),
+      );
+    } catch (err) {
+      log.warn(
+        {
+          workspaceId: ctx.workspaceId,
+          factId: result.factId,
+          predicateKey: supersededPredicateKey,
+          requestId,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "brain correction: the cardinality repeat gate could not be evaluated — the correction itself is " +
+          "committed and unaffected, and the next supersede on this predicate re-derives the count from " +
+          "the corpus rather than from a lost counter",
+      );
+    }
+  }
   return { kind: "corrected", result };
 }
 
@@ -1489,7 +1549,27 @@ async function applySupersede(
           predicate: target.predicate,
           object: inputs.replacement.object,
           validFrom: inputs.replacement.validFrom ?? at,
-          predicateCardinality: target.cardinality,
+          // DERIVED from the verb, not inherited from the row (#5027).
+          //
+          // This used to read `target.cardinality` — the extractor's LLM guess
+          // on the original fact, laundered through a human verb into something
+          // that looked authored. So whether a live rival in this slot earned an
+          // advisory `in-tension-with` edge depended on what a model had said
+          // about a different message.
+          //
+          // A human superseding a slot has asserted BY THEIR ACTION that it
+          // holds one value — that is ADR-0037 §3(d)2's own premise, and the
+          // whole basis of the proposer this verb now feeds. Reading it off the
+          // verb is the same claim, made from the evidence that actually
+          // supports it, and it makes the tension edges DETERMINISTIC where they
+          // were a coin flip.
+          //
+          // Advisory in both directions, and that is why it can be decided here
+          // at all: since #5027 this field gates `in-tension-with` edges and
+          // nothing else. It reaches no `valid_to` stamp — that needs an
+          // APPROVED entry in `brain_predicate_cardinality`, which this verb can
+          // only ever PROPOSE.
+          predicateCardinality: "single",
         },
       ],
       vocabulary: inputs.vocabulary,
@@ -1842,16 +1922,6 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
   ) {
     return drift(`non-text SPO/status for fact ${row.id}`);
   }
-  const cardinality =
-    row.predicate_cardinality === "single" || row.predicate_cardinality === "multi"
-      ? row.predicate_cardinality
-      : "multi";
-  if (cardinality !== row.predicate_cardinality) {
-    log.warn(
-      { rowId: row.id, workspaceId, cardinality: row.predicate_cardinality },
-      "brain correction: target carries a predicate cardinality outside the vocabulary — treating it as `multi`",
-    );
-  }
   const grantTokens = isUnknownArray(row.visible_to)
     ? row.visible_to.filter((t): t is string => typeof t === "string")
     : [];
@@ -1899,7 +1969,6 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
     predicate: row.predicate,
     object: row.object,
     status: row.status,
-    cardinality,
     provenance: row.provenance,
     grantTokens,
     validTo,

@@ -104,12 +104,14 @@ function tx(
   rowCountFor: (ids: readonly string[]) => number,
   evidence: readonly unknown[] = [],
   /**
-   * `TIER_HELD_BACK_COUNT_SQL`'s single column (#5033), when a test drives a
-   * `single`-cardinality draft and therefore reaches the supersession block.
-   * `undefined` keeps the statement unrecognised, which is what every
-   * pre-#5033 test in this file wants: their drafts are `multi`, `singleIds` is
-   * empty, and the block is never entered — so a double that answered it
-   * anyway would hide a regression that started issuing it unconditionally.
+   * `TIER_HELD_BACK_COUNT_SQL`'s single column (#5033).
+   *
+   * `undefined` used to keep the statement UNRECOGNISED, so a regression that
+   * started issuing it unconditionally would fail loudly. Since #5027 issuing it
+   * unconditionally is the SHIPPED behaviour and not a regression: a draft
+   * carries no cardinality opinion, so the adapter cannot tell from the rows
+   * whether anything in the batch could supersede and must ask. `undefined` now
+   * means "answer 0" — the statement runs, finds nothing, and reports nothing.
    */
   // `string` covers the `"explode"` sentinel below — spelling the literal in the
   // union as well is `no-redundant-type-constituents`, and the extra arm would
@@ -133,13 +135,17 @@ function tx(
       if (/^\s*SAVEPOINT /i.test(sql) || /^\s*ROLLBACK TO SAVEPOINT /i.test(sql)) {
         return { rows: [] };
       }
-      if (heldBack !== undefined && sql.includes("held_back")) {
+      if (sql.includes("held_back")) {
         // The sentinel: any other string is a driver-shape case the reader
         // must degrade on, so the failure needs a value no real driver returns.
         if (heldBack === EXPLODE) throw new Error("held-back count exploded");
-        return { rows: [{ held_back: heldBack }] };
+        // `=== undefined`, deliberately NOT `??`: `null` is a DRIFT case a test
+        // drives on purpose (a count that did not read back), and `??` would
+        // launder it into a clean 0 — which is the exact fabrication the
+        // `supersessionHeldBack: number | null` field exists to refuse.
+        return { rows: [{ held_back: heldBack === undefined ? 0 : heldBack }] };
       }
-      if (heldBack !== undefined && sql.includes("superseded_id")) return { rows: [...targets] };
+      if (sql.includes("superseded_id")) return { rows: [...targets] };
       // The supersedes-edge batch insert RETURNs one id per inserted edge.
       if (/^\s*INSERT/i.test(sql)) {
         const pairs = JSON.parse(String(params[1])) as readonly unknown[];

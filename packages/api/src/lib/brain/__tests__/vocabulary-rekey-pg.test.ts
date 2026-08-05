@@ -162,6 +162,7 @@ import {
   SLOT_POSITIONS,
   type SlotPosition,
 } from "@atlas/api/lib/brain/identity";
+import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import {
   decideAliasProposal,
   proposeAliasEdge,
@@ -798,6 +799,18 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     const d = await readFact(draftId);
     expect(p.predicate_key).toBe("delivery date");
     expect(d.predicate_key).toBe("delivery date");
+    // …and the merged CANONICAL predicate has to be curated `single`, or the
+    // collision cannot fire whatever the alias did (#5027). Declared AFTER the
+    // approval, on the post-merge key: an entry under `ships on` would key to a
+    // predicate that no longer has any rows, which is the whole reason ADR-0037
+    // §6 records that an alias approval moves a predicate's population under a
+    // different cardinality entry.
+    const declared = await declarePredicateCardinality(pool, WS, {
+      predicateKey: "delivery date",
+      cardinality: "single",
+      authoredBy: "curator-1",
+    });
+    expect(declared.ok, "curation failed — both tests below would pass against a stamp that does nothing").toBe(true);
     return { draftId, publishedId, proposalId };
   }
 

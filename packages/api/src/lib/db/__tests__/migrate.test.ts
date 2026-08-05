@@ -289,7 +289,15 @@ describe("runMigrations", () => {
     //   of difference on pairs a reviewer already saw as `unknown`, and unlike a
     //   cardinality flip there is no gate to hang a preview on, #5030 /
     //   ADR-0037 §2) = 192.
-    expect(count).toBe(192);
+    //   Plus 0192 (brain_predicate_cardinality — cardinality as a property of
+    //   the CANONICAL PREDICATE rather than of the row. `predicate_cardinality`
+    //   was believed unpopulated; it carried the extractor's per-claim LLM
+    //   guess, and the publish gate required `single` on BOTH sides, so
+    //   supersession fired at roughly P(model says `single`)² from two
+    //   independent model calls. One value per predicate makes the two sides
+    //   unable to disagree, and absence means `multi`, so an uncurated
+    //   predicate never supersedes, #5027 / ADR-0037 §3) = 193.
+    expect(count).toBe(193);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -510,6 +518,7 @@ describe("runMigrations", () => {
         "0189_brain_vocabulary.sql",
         "0190_brain_vocabulary_proposal.sql",
         "0191_brain_fact_object_cmp.sql",
+        "0192_brain_predicate_cardinality.sql",
       ],
     });
 

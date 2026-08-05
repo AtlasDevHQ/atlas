@@ -216,16 +216,27 @@ function draft(id: string, over: Record<string, unknown> = {}) {
     source_episode_id: EPISODE,
     provenance: { actor: "slack:U1" },
     visible_to: ["org"],
-    // The schema default, and the arm that never supersedes (#4912) — so every
-    // pre-supersession test keeps its exact statement plan.
-    predicate_cardinality: "multi",
     ...over,
   };
 }
 
-/** A `single`-cardinality draft — the only kind that can supersede (#4912). */
+/**
+ * A draft whose CANONICAL PREDICATE is declared `single` — the only kind that
+ * can supersede (#4912, re-keyed by #5027).
+ *
+ * Identical to {@link draft} at the row level, and that is the whole point of
+ * the slice: a draft carries no cardinality opinion any more, so nothing about
+ * THIS fixture decides whether it supersedes. What decides is an approved
+ * `brain_predicate_cardinality` entry, which lives in the database and which
+ * these unit doubles do not have — so the doubles script the targets SELECT's
+ * ANSWER (`supersessions`), and `cardinality-pg.test.ts` is where the entry's
+ * presence or absence is falsified against real Postgres.
+ *
+ * Kept as a named alias rather than inlined so the tests below still SAY which
+ * drafts they mean to be supersedable.
+ */
 function singleDraft(id: string, over: Record<string, unknown> = {}) {
-  return draft(id, { predicate_cardinality: "single", ...over });
+  return draft(id, over);
 }
 
 const run = <A>(e: Effect.Effect<A, PublishPhaseError, never>) => Effect.runPromise(e);
@@ -247,8 +258,18 @@ describe("promoteBrainFacts", () => {
       // its declared value; the `-pg` suite is where a non-zero one is proven.
       supersessionHeldBack: 0,
     });
-    // draft SELECT → evidence SELECT → one UPDATE (nothing widened).
-    expect(calls).toHaveLength(3);
+    // draft SELECT → evidence SELECT → targets SELECT → held-back COUNT →
+    // one UPDATE (nothing widened).
+    //
+    // The two supersession reads used to be SKIPPED for a batch of `multi`
+    // drafts, because the adapter could tell from the rows themselves that
+    // none could supersede. It cannot any more and should not be able to
+    // (#5027): a draft carries no cardinality opinion, so "does anything in
+    // this batch collide" is a question only the database can answer. That is
+    // one extra SELECT and one extra COUNT per publish — an admin action, not a
+    // hot path — in exchange for deleting a stochastic gate on an irreversible
+    // write.
+    expect(calls).toHaveLength(5);
     expect(calls[0].params).toEqual(["ws-1"]);
     expect(calls[1].params).toEqual(["ws-1", ["fact-a", "fact-b"]]);
     expect(updates(calls)).toHaveLength(1);
@@ -771,25 +792,24 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(targetsIndex).toBeLessThan(firstUpdateIndex);
   });
 
-  it("never even asks about collisions for a multi-cardinality batch", async () => {
-    // `multi` values coexist and corroborate — the promotion must not spend a
-    // round trip on a question whose answer it may not act on.
-    const { tx, calls } = txWithDrafts([draft("m1"), draft("m2")]);
+  it("offers EVERY promotable draft to the collision, and stamps nothing when none collides", async () => {
+    // The shape #5027 replaced: the adapter used to pre-filter this list in
+    // TypeScript to the drafts whose own `predicate_cardinality` said `single`,
+    // and skip the round trip entirely when that subset was empty.
+    //
+    // There is nothing left to pre-filter ON — a draft carries no cardinality
+    // opinion — so the question is now asked for every promotable row and
+    // answered by the join's one lookup on the shared `predicate_key`. Nothing
+    // widened: with no approved entry the join matches nothing, which is what
+    // this double's empty `supersessions` stands for.
+    const { tx, calls } = txWithDrafts([draft("m1"), draft("m2")], { supersessions: [] });
     const report = await run(promoteBrainFacts(tx, "ws-1"));
 
-    expect(report.superseded).toEqual([]);
-    expect(calls.some((c) => c.sql.includes("superseded_id"))).toBe(false);
-    expect(calls.some((c) => c.sql.includes("valid_to"))).toBe(false);
-  });
-
-  it("scopes the targets query to the single-cardinality drafts only", async () => {
-    const { tx, calls } = txWithDrafts([draft("multi-1"), singleDraft("single-1")], {
-      supersessions: [],
-    });
-    await run(promoteBrainFacts(tx, "ws-1"));
-
     const targets = calls.find((c) => c.sql.includes("superseded_id"));
-    expect(targets?.params[1]).toEqual(["single-1"]);
+    expect(targets?.params[1]).toEqual(["m1", "m2"]);
+    // Asked, and answered "nothing" — so no belief is retired.
+    expect(report.superseded).toEqual([]);
+    expect(calls.some((c) => c.sql.includes("SET valid_to"))).toBe(false);
   });
 
   it("a REFUSED single draft supersedes nothing", async () => {
@@ -858,18 +878,30 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     ]);
   });
 
-  it("treats a draft with an unreadable cardinality as `multi` — it coexists, never destroys", async () => {
-    // The conservative fallback (`draftCardinality`): a row missing the column
-    // is query drift, and drift must not be able to retire a published belief.
-    // No supersession statement runs at all.
-    const missing = { ...draft("drifted") } as Record<string, unknown>;
-    delete missing.predicate_cardinality;
-    const { tx, calls } = txWithDrafts([missing]);
+  it("the draft projection carries no cardinality at all — there is nothing left to misread (#5027)", async () => {
+    // This replaces a test that fed a draft row with the column DELETED and
+    // asserted the adapter degraded to `multi`. That fallback existed because a
+    // per-row cardinality could be misread; the column is not selected any more,
+    // so the misreading it guarded against is unrepresentable rather than
+    // handled — which is the shape of the whole slice.
+    const { tx, calls } = txWithDrafts([draft("d1")], { supersessions: [] });
     const report = await run(promoteBrainFacts(tx, "ws-1"));
 
     expect(report.promoted).toBe(1);
-    expect(report.superseded).toEqual([]);
-    expect(calls.some((c) => c.sql.includes("superseded_id"))).toBe(false);
+    // No statement the publish issues names the COLUMN — not the draft
+    // projection, not the collision, not the stamp.
+    //
+    // ⚠️ Matched with a negative lookbehind, not `includes`. The new TABLE is
+    // `brain_predicate_cardinality`, which contains `predicate_cardinality` as a
+    // substring — so a plain `includes` check reports the column present on
+    // every statement that reads the vocabulary, i.e. it is true of the fixed
+    // code and would have been true of the broken code too. A substring assertion
+    // that cannot distinguish the two states is not an assertion.
+    const namesTheColumn = /(?<!brain_)predicate_cardinality/;
+    expect(calls.filter((c) => namesTheColumn.test(c.sql)).map((c) => c.sql)).toEqual([]);
+    // Positive control: the pattern DOES fire on the clause that was deleted, so
+    // the emptiness above is evidence rather than a regex that matches nothing.
+    expect(namesTheColumn.test("p.predicate_cardinality = 'single'")).toBe(true);
   });
 
   it("fails the phase when the stamp UPDATE throws — atomicity, not skip-and-warn", async () => {
@@ -947,14 +979,59 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
 
   it("pins the collision join's invariants in the SQL itself", () => {
     // The join is shared with the two disclosure surfaces, so these strings are
-    // the contract: BOTH sides single, the rival published, live, and current,
-    // and only a PROVABLY DIFFERENT object collides.
-    expect(SUPERSESSION_TARGETS_SQL).toContain("p.predicate_cardinality = 'single'");
-    expect(SUPERSESSION_TARGETS_SQL).toContain("d.predicate_cardinality = 'single'");
+    // the contract: the canonical predicate declared single, the rival
+    // published, live, and current, and only a PROVABLY DIFFERENT object
+    // collides.
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.status = 'published'");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.invalidated_at IS NULL");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.valid_to IS NULL");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_cmp <> d.object_cmp");
+  });
+
+  it("the both-sides cardinality clause is GONE, replaced by one lookup (#5027)", () => {
+    // The load-bearing assertion of ADR-0037 §3, and it has to be spelled as a
+    // PROHIBITION rather than as a presence check.
+    //
+    // The clause it removes was `p.predicate_cardinality = 'single' AND
+    // d.predicate_cardinality = 'single'` — two rows in one slot each carrying
+    // an opinion, each opinion an independent LLM guess against a prompt biased
+    // toward `multi`, so supersession fired at roughly P(model says `single`)².
+    // Restoring EITHER arm re-creates it, and restoring it would look like a
+    // safety tightening: an extra `= 'single'` reads as a narrower guard.
+    for (const alias of ["p", "d"]) {
+      expect(
+        SUPERSESSION_TARGETS_SQL.includes(`${alias}.predicate_cardinality`),
+        `the collision join is reading a per-ROW cardinality again for alias \`${alias}\` — that is a stochastic gate on an irreversible \`valid_to\` stamp, not a tighter one (ADR-0037 §3)`,
+      ).toBe(false);
+    }
+
+    // What replaced it: ONE correlated lookup on the shared canonical
+    // predicate, which is what makes the two sides unable to disagree.
+    expect(SUPERSESSION_TARGETS_SQL).toContain("FROM brain_predicate_cardinality c");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("c.predicate_key = d.predicate_key");
+    expect(SUPERSESSION_TARGETS_SQL).toContain("c.cardinality = 'single'");
+
+    // `status = 'approved'` is not decoration. A `pending` row is the
+    // correction-event proposer's output — a repeat-gated heuristic — and
+    // reading it here would let that heuristic stamp `valid_to` with no human
+    // anywhere in the loop, which is exactly what ADR-0037 §3(d) exists to stop.
+    expect(
+      SUPERSESSION_TARGETS_SQL,
+      "the collision join stopped filtering cardinality entries to `approved` — a producer's PROPOSAL would then retire published beliefs with no human decision behind it",
+    ).toContain("c.status = 'approved'");
+  });
+
+  it("the IRREVERSIBLE stamp re-asks the cardinality question too", () => {
+    // `SUPERSEDE_STAMP_SQL` re-checks the whole collision from inside an
+    // EXISTS, because the published rows are not covered by `DRAFT_FACTS_SQL`'s
+    // FOR UPDATE. Asserted directly rather than through the builder, on the
+    // tier guard's precedent one test up: both sides of a builder comparison
+    // move together, so a hoist that dropped this arm from the re-check alone
+    // would leave every other assertion green.
+    expect(
+      SUPERSEDE_STAMP_SQL,
+      "the `valid_to` stamp's collision re-check lost the cardinality lookup — the statement that actually writes the irreversible column must re-ask the whole question",
+    ).toContain("FROM brain_predicate_cardinality c");
   });
 
   it("requires POSITIVE evidence of difference, never a failure to match (#5030)", () => {
@@ -1084,8 +1161,8 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
       "p.subject_key = d.subject_key",
       "p.predicate_key = d.predicate_key",
       "p.object_cmp <> d.object_cmp",
-      "p.predicate_cardinality = 'single'",
-      "d.predicate_cardinality = 'single'",
+      "c.cardinality = 'single'",
+      "c.status = 'approved'",
       "p.status = 'published'",
       "p.valid_to IS NULL",
     ]) {

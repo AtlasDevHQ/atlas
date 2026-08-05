@@ -58,6 +58,10 @@ import {
 // SAMENESS half of the same module, so the two seams cannot drift into
 // disagreeing about which pairs are merely `unknown`.
 import { comparableDifferentSql } from "@atlas/api/lib/brain/object-cmp";
+// Cardinality as a property of the canonical predicate (#5027), replacing the
+// both-sides row comparison this file used to spell inline. Imported for the
+// same reason as the arm above: one place says what collides.
+import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 // The tier vocabulary (#5033). Derived from `EPISODE_SOURCE_SPECS`'s declared
 // classes, so a future warehouse-class member inherits the guard below without
 // touching this file.
@@ -169,9 +173,15 @@ export function brainFactCurrentClause(alias: string): string {
 }
 
 /**
- * Draft facts awaiting review, with exactly the columns the refusal rules and
- * the supersession classifier read (#4912 — `predicate_cardinality` is the
- * supersession input; everything else feeds `classifyFactForPromotion`).
+ * Draft facts awaiting review, with exactly the columns
+ * `classifyFactForPromotion`'s refusal rules read.
+ *
+ * It used to also select `predicate_cardinality`, and this docstring used to
+ * say that column WAS the supersession input (#4912). Since #5027 it is not:
+ * cardinality is a property of the canonical predicate, read live from
+ * `brain_predicate_cardinality` inside the collision predicate itself
+ * ({@link cardinalitySingleSql}). Nothing on the draft row decides whether it
+ * may supersede, which is why nothing here has to carry it.
  *
  * `FOR UPDATE` because this adapter is read-then-write, which the simple
  * entries are not: it serializes two concurrent publishes on the same
@@ -205,8 +215,7 @@ export const DRAFT_FACTS_SQL = `
          object,
          source_episode_id::text AS source_episode_id,
          provenance,
-         visible_to,
-         predicate_cardinality
+         visible_to
     FROM brain_facts
    WHERE workspace_id = $1
      AND status = 'draft'
@@ -473,7 +482,8 @@ function supersedableTierSql(alias: string): string {
  *
  * Joins a draft alias `d` to every already-published fact it would supersede:
  * the same WORKSPACE, the same SLOT — `(subject_key, predicate_key)` — a
- * PROVABLY DIFFERENT object, BOTH sides `single`-cardinality, and BOTH sides
+ * PROVABLY DIFFERENT object, a shared canonical predicate DECLARED
+ * `single`-cardinality, and BOTH sides
  * either carrying positive evidence that they are NOT tier-1 or naming no
  * source at all ({@link supersedableTierSql}, #5033). Read that arm's three
  * other three populations before summarizing it as "below tier-1": an
@@ -559,11 +569,26 @@ function supersedableTierSql(alias: string): string {
  * which likewise leaves such a row alone. The cost is a briefly tension-less
  * coexistence of two current values; the alternative destroys an import.
  *
- * Both sides `single`, not just the draft, because the two rows can disagree
- * about the predicate (corroboration never upgrades cardinality — see
- * `reconcile.ts`) and wrongly superseding destroys a belief where wrongly
- * coexisting is recoverable at the review gate. A `multi` fact is NEVER
- * superseded by publish, whatever the incoming draft claims.
+ * ## The both-sides cardinality clause is DELETED, not weakened (#5027, §3)
+ *
+ * This arm used to read `p.predicate_cardinality = 'single' AND
+ * d.predicate_cardinality = 'single'`, and the reason given was that the two
+ * rows could disagree about the predicate. They could — because each carried
+ * its own opinion, and each opinion was an independent LLM guess against a
+ * prompt biased toward `multi`, so the conjunction fired at roughly
+ * P(model says `single`)². A column everyone believed unpopulated was in fact a
+ * STOCHASTIC gate on an irreversible operation.
+ *
+ * {@link cardinalitySingleSql} is ONE lookup on the shared `predicate_key`. Two
+ * rows in one slot can no longer disagree about cardinality, because they no
+ * longer each carry an opinion — the fourth cause of #5000's symptom is made
+ * UNREPRESENTABLE rather than repaired. Absent from the vocabulary means
+ * `multi`, so an uncurated predicate never supersedes: the same conservative
+ * outcome as before, now deterministic instead of a coin flip.
+ *
+ * `d`, not `p`, and either would do — the identity arms above already equate
+ * both sides' `workspace_id` and `predicate_key`, which is exactly what makes
+ * one lookup sufficient.
  *
  * A builder rather than a constant because THREE statements need the identical
  * join and must never drift: the promote-time targets SELECT below, the
@@ -625,14 +650,20 @@ export function supersessionCollisionPredicate(d: string, p: string): string {
  * CONSEQUENCE. (It is not "the identity arms" narrowly — it also carries
  * cardinality and the published row's live-and-current state. What it excludes
  * is the tier, and nothing else.)
+ *
+ * The cardinality arm is a correlated EXISTS rather than a column comparison
+ * since #5027, which changes nothing about this split: it is still one arm,
+ * still evaluated inside the predicate, and still on the identity side of the
+ * seam — {@link TIER_HELD_BACK_COUNT_SQL} must ask "which pairs would have
+ * collided but for the TIER", and a pair the cardinality arm excluded never
+ * collided at all.
  */
 function collisionIdentityPredicate(d: string, p: string): string {
   return `${p}.workspace_id = ${d}.workspace_id
      AND ${p}.subject_key = ${d}.subject_key
      AND ${p}.predicate_key = ${d}.predicate_key
      AND ${comparableDifferentSql(`${p}.object_cmp`, `${d}.object_cmp`)}
-     AND ${p}.predicate_cardinality = 'single'
-     AND ${d}.predicate_cardinality = 'single'
+     AND ${cardinalitySingleSql(d)}
      AND ${p}.status = 'published'
      AND ${p}.invalidated_at IS NULL
      AND ${p}.valid_to IS NULL`;
@@ -716,10 +747,16 @@ export function supersedingDraftPredicate(d: string): string {
  * `draft` — which is the other failure: zero supersession. Either way the
  * ordering is load-bearing, and the unit test pins it.)
  *
- * `$2` is the `single`-cardinality subset of the classified-promotable ids
- * (the join re-checks cardinality regardless), so a refused draft never
- * supersedes anything: the collision only fires for rows the transaction will
- * actually promote.
+ * `$2` is the classified-promotable ids, so a refused draft never supersedes
+ * anything: the collision only fires for rows the transaction will actually
+ * promote.
+ *
+ * It used to be the `single`-cardinality SUBSET of them, filtered in TypeScript
+ * off each draft row's own `predicate_cardinality`. Since #5027 there is no such
+ * column to filter on — cardinality belongs to the canonical predicate — and the
+ * join's own {@link cardinalitySingleSql} arm is the whole test rather than a
+ * re-check of a caller's pre-filter. Nothing widened: a draft whose predicate is
+ * uncurated matches no entry and supersedes nothing.
  */
 export const SUPERSESSION_TARGETS_SQL = `
   SELECT d.id::text AS draft_id, p.id::text AS superseded_id
@@ -1164,35 +1201,6 @@ interface PromotableDraft {
    * principal, and this is the last point at which the type can say it cannot.
    */
   readonly grant: StoredGrant;
-  /**
-   * The draft's predicate cardinality (#4912) — `single` is the only kind
-   * that can supersede on promotion; `multi` coexists.
-   */
-  readonly cardinality: "single" | "multi";
-}
-
-/**
- * Cardinality off the draft row, defaulting CONSERVATIVELY.
- *
- * `chk_brain_facts_predicate_cardinality` makes an out-of-vocabulary value
- * unreachable from the database, so a fallback here is query drift — logged,
- * because the `multi` arm is the one that never supersedes: a `single` draft
- * misread as `multi` leaves a stale rival answering as-of-now reads, which an
- * operator can only find from this line. Wrongly superseding destroys a
- * belief; wrongly coexisting leaves a visible tension — so drift degrades to
- * the recoverable side.
- */
-function draftCardinality(
-  raw: unknown,
-  meta: { readonly rowId: string; readonly workspaceId: string },
-): "single" | "multi" {
-  const value = isJsonObject(raw) ? raw.predicate_cardinality : undefined;
-  if (value === "single" || value === "multi") return value;
-  log.warn(
-    { ...meta, cardinality: value },
-    "brain publish: draft carries a predicate cardinality outside the vocabulary — treating it as `multi`, so it will coexist rather than supersede",
-  );
-  return "multi";
 }
 
 /**
@@ -1427,11 +1435,7 @@ export function promoteBrainFacts(
         rowId: row.id,
         workspaceId: orgId,
       });
-      promotable.push({
-        id: row.id,
-        grant,
-        cardinality: draftCardinality(raw, { rowId: row.id, workspaceId: orgId }),
-      });
+      promotable.push({ id: row.id, grant });
     }
 
     // Skip the round trips when there is nothing to promote — a workspace with
@@ -1454,15 +1458,20 @@ export function promoteBrainFacts(
     if (promotable.length > 0) {
       // #4912: which already-published facts will this promotion supersede?
       // Read BEFORE the promote UPDATEs, and only for the classified-promotable
-      // `single` drafts — see SUPERSESSION_TARGETS_SQL on both. A refused draft
-      // never reaches this list, so it can never supersede.
-      const singleIds = promotable
-        .filter((draft) => draft.cardinality === "single")
-        .map((draft) => draft.id);
+      // drafts — see SUPERSESSION_TARGETS_SQL. A refused draft never reaches
+      // this list, so it can never supersede.
+      //
+      // EVERY promotable draft is offered, where this used to pre-filter to the
+      // rows whose own `predicate_cardinality` said `single` (#5027). There is
+      // nothing left to pre-filter ON: cardinality is a property of the
+      // canonical predicate now, so the answer lives in
+      // `brain_predicate_cardinality` and the collision predicate reads it
+      // there. The filter did not move — it stopped being expressible here.
+      const offeredIds = promotable.map((draft) => draft.id);
       const supersessionPairs: { readonly newId: string; readonly oldId: string }[] = [];
-      if (singleIds.length > 0) {
+      if (offeredIds.length > 0) {
         const targets = yield* Effect.tryPromise({
-          try: () => tx.query(SUPERSESSION_TARGETS_SQL, [orgId, singleIds]),
+          try: () => tx.query(SUPERSESSION_TARGETS_SQL, [orgId, offeredIds]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });
@@ -1534,7 +1543,7 @@ export function promoteBrainFacts(
         const heldBackCount = yield* advisoryCount(tx, {
           savepoint: "brain_tier_held_back",
           sql: TIER_HELD_BACK_COUNT_SQL,
-          params: [orgId, singleIds],
+          params: [orgId, offeredIds],
           read: (row) => readHeldBackCount(row, orgId),
           onFailure: (cause) =>
             log.warn(
@@ -1664,11 +1673,11 @@ export function promoteBrainFacts(
       if (supersessionPairs.length > 0) {
         const oldIds = [...new Set(supersessionPairs.map((pair) => pair.oldId))];
         const stampResult = yield* Effect.tryPromise({
-          // `singleIds` a SECOND time, and not a convenience: it is the same
+          // `offeredIds` a SECOND time, and not a convenience: it is the same
           // list `SUPERSESSION_TARGETS_SQL` was given, so the stamp re-asks the
           // exact question that produced `oldIds` instead of trusting the answer
           // across the window an alias removal can land in (#5024).
-          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds, singleIds]),
+          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds, offeredIds]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });

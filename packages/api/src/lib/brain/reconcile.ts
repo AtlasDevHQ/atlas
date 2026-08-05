@@ -300,9 +300,24 @@ export interface FactCandidate {
   /** Valid time, when the producer can establish one. */
   readonly validFrom?: Date | null;
   /**
-   * Omit for the conservative default (`multi` — values coexist). `single`
-   * additionally earns the advisory tension edges below; wrongly coexisting is
-   * recoverable at the review gate, wrongly superseding destroys a belief.
+   * A HINT, and since #5027 an advisory one only: it gates the
+   * `in-tension-with` edges below and nothing else.
+   *
+   * It used to be written to `brain_facts.predicate_cardinality`, where the
+   * publish gate read it from both sides of a collision — so two independent
+   * model calls had to agree, and supersession fired at roughly
+   * P(model says `single`)² against a prompt biased toward `multi`. Cardinality
+   * is now a property of the CANONICAL PREDICATE (`lib/brain/cardinality.ts`,
+   * ADR-0037 §3), read live at the publish gate, and this field reaches no
+   * destructive path at all.
+   *
+   * Kept rather than deleted because a tension edge is exactly what a model
+   * guess is worth: over-flagging costs a reviewer a glance, and under-flagging
+   * costs a hint. Omit for the conservative default (`multi` — values coexist).
+   *
+   * ⚠️ Do NOT reintroduce a consumer that can stamp `valid_to` from this. That
+   * is the defect #5027 removed, and it is invisible at rest — the column looked
+   * unpopulated to everyone who read the schema.
    */
   readonly predicateCardinality?: PredicateCardinality;
   /**
@@ -633,15 +648,28 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * `RETURNING id` and nothing else. A key must never reach a consumer that could
  * branch on it — that is what makes an alias un-removable — and
  * `keys-not-on-the-wire.test.ts` scans RETURNING lists naming this exact shape.
+ *
+ * ## `predicate_cardinality` is deliberately ABSENT from the column list (#5027)
+ *
+ * It was `$10` here, fed by the extractor's per-claim guess. Cardinality is a
+ * property of the canonical predicate now (`lib/brain/cardinality.ts`,
+ * ADR-0037 §3), so nothing on the row decides supersession and no producer
+ * should be writing an opinion onto one.
+ *
+ * Omitted from the list rather than bound to a literal, so the column falls to
+ * its schema default (`'multi'`, 0180) — which is what keeps this statement
+ * legal while the column is still `NOT NULL` with a live CHECK. #5028 drops the
+ * column one release later, per the two-phase discipline in
+ * `db/migrations/README.md`. Re-adding it here is a regression, not a fix.
  */
 export const INSERT_FACT_SQL = `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, valid_from, extracted_at,
-          source_episode_id, provenance, visible_to, predicate_cardinality,
+          source_episode_id, provenance, visible_to,
           subject_key, predicate_key, object_key, object_cmp)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
                $7::uuid, $8::jsonb,
-               ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), $10,
-               $11, $12, $13, $14)
+               ARRAY(SELECT jsonb_array_elements_text($9::jsonb)),
+               $10, $11, $12, $13)
        RETURNING id`;
 
 /**
@@ -1305,7 +1333,6 @@ async function writeCandidate(
     ...provisionalFragment(provisional, item.unresolved),
   } satisfies BrainFactProvenance;
 
-  const cardinality: PredicateCardinality = item.candidate.predicateCardinality ?? "multi";
   const validFrom = ctx.item.candidate.validFrom ?? null;
 
   const inserted = await tx.query(INSERT_FACT_SQL, [
@@ -1318,7 +1345,6 @@ async function writeCandidate(
     episode.id,
     JSON.stringify(provenance),
     JSON.stringify(ctx.grantTokens),
-    cardinality,
     ...agreementBinds(item.keys, item.comparable),
   ]);
   const factId = firstId(inserted.rows);
@@ -1370,7 +1396,13 @@ async function writeCandidate(
   }
 
   let tensionEdges = 0;
-  if (cardinality === "single") {
+  // The producer's hint, and since #5027 the ONLY thing it still gates. It no
+  // longer reaches `INSERT_FACT_SQL`, so it can no longer reach a `valid_to`
+  // stamp — what it buys is an ADVISORY `in-tension-with` edge, which is
+  // recoverable in both directions (a missing one costs a reviewer a hint; a
+  // spurious one costs a reviewer a glance). An LLM guess is worth exactly that
+  // much, which is why it kept this consumer and lost the other.
+  if ((item.candidate.predicateCardinality ?? "multi") === "single") {
     const rivals = await tx.query(TENSION_CANDIDATES_SQL, [
       episode.workspaceId,
       ...agreementBinds(item.keys, item.comparable),

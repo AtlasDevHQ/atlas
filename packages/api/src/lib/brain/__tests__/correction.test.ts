@@ -64,6 +64,11 @@ import {
   slotKey,
   type ClaimVocabulary,
 } from "@atlas/api/lib/brain/identity";
+import {
+  CORRECTION_EVENT_PRODUCER,
+  CORRECTION_REPEAT_COUNT_SQL,
+  CORRECTION_REPEAT_THRESHOLD,
+} from "@atlas/api/lib/brain/cardinality";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 
@@ -110,7 +115,6 @@ interface StoredFact {
   /** Set only by the reconcile insert; seeded facts default to null. */
   validFrom?: string | null;
   status: string;
-  cardinality: string;
   provenance: Record<string, unknown>;
   visibleTo: string[];
   validTo: string | null;
@@ -157,8 +161,41 @@ class FakeCorrectionStore {
   readonly facts: StoredFact[] = [];
   readonly episodes: StoredEpisode[] = [];
   readonly edges: StoredEdge[] = [];
+  /**
+   * Cardinality proposals this store accepted (#5027) — `pending` rows, never
+   * approved ones, because the correction-event source may only propose.
+   */
+  readonly cardinalityProposals: {
+    predicateKey: string;
+    cardinality: string;
+    sourceClass: string;
+    proposedBy: string;
+  }[] = [];
+  /**
+   * Distinct subjects ALREADY corrected at the predicate before this test's own
+   * verb ran — the corpus history the repeat gate reads and this fake has no
+   * `brain_edges` rows for. Set it to stand a workspace up just below or just
+   * over `CORRECTION_REPEAT_THRESHOLD`.
+   */
+  priorCorrectedSubjects = 0;
+  /**
+   * Make the proposal INSERT throw — the post-commit failure path (#5027).
+   *
+   * A flag rather than a mocked module: the claim under test is that the
+   * CALLER absorbs it, and only a real throw crossing the real seam shows that.
+   */
+  failCardinalityProposal = false;
   /** Every statement executed, in order — the identity assertions read this. */
   readonly executed: string[] = [];
+  /**
+   * The params each statement was bound with, parallel to {@link executed}.
+   *
+   * Kept separately rather than folded in so every existing `toContain(SQL)`
+   * assertion keeps working on a plain string array — and so a param-count
+   * claim (which is what catches a column silently re-entering an INSERT's
+   * list) has something to read.
+   */
+  readonly executedParamsLog: (readonly unknown[])[] = [];
   transactions = 0;
   private seq = 0;
 
@@ -169,13 +206,18 @@ class FakeCorrectionStore {
     return fn({ query: (sql, params) => this.query(sql, params ?? []) });
   };
 
+  /** The params one statement was bound with, or `undefined` if it never ran. */
+  executedParams(sql: string): readonly unknown[] | undefined {
+    const at = this.executed.indexOf(sql);
+    return at === -1 ? undefined : this.executedParamsLog[at];
+  }
+
   seedFact(partial: Partial<StoredFact> & { id: string }): StoredFact {
     const base = {
       subject: "Billing",
       predicate: "is owned by",
       object: "Ana",
       status: "published",
-      cardinality: "single",
       provenance: { source: "slack", producer: "extraction:v1" },
       visibleTo: ["org"],
       validTo: null,
@@ -208,6 +250,7 @@ class FakeCorrectionStore {
 
   private async query(sql: string, params: unknown[]): Promise<{ rows: readonly unknown[] }> {
     this.executed.push(sql);
+    this.executedParamsLog.push(params);
 
     // ── correction.ts statements ────────────────────────────────────────
     if (sql.includes("FOR UPDATE") && sql.includes("f.invalidated_at IS NULL")) {
@@ -344,10 +387,9 @@ class FakeCorrectionStore {
         subject: String(params[1]),
         predicate: String(params[2]),
         object: String(params[3]),
-        slot: slotParams(params, 10),
+        slot: slotParams(params, 9),
         validFrom: params[4] === null ? null : String(params[4]),
         status: "draft",
-        cardinality: String(params[9]),
         provenance: JSON.parse(String(params[7])) as Record<string, unknown>,
         visibleTo: JSON.parse(String(params[8])) as string[],
         validTo: null,
@@ -402,6 +444,45 @@ class FakeCorrectionStore {
       return { rows: [{ id: `edge-${++this.seq}` }] };
     }
 
+    // ── The cardinality proposer (#5027, ADR-0037 §3(d)2) ──────────────
+    //
+    // The repeat gate is a COUNT over `brain_edges`, and this fake holds the
+    // edges the verb just wrote — so the gate is answered from the same store
+    // the verb mutated rather than stubbed to a constant. That is what makes
+    // "three distinct subjects raises a proposal" a claim about the production
+    // query's INPUTS; the query's own SQL is executed for real in
+    // `cardinality-pg.test.ts`.
+    //
+    // `object_cmp` has no representation here (the fake stores no comparables),
+    // so this arm deliberately answers the SUBJECT-DISTINCTNESS half only. The
+    // provable-difference half is a SQL arm and is falsified only against real
+    // Postgres — stubbing it here would be a fixture that agrees with itself.
+    if (sql === CORRECTION_REPEAT_COUNT_SQL) {
+      const subjects = new Set(
+        this.edges
+          .filter((e) => e.edgeType === "supersedes")
+          .map((e) => this.facts.find((f) => f.id === e.fromFactId))
+          .filter((f): f is StoredFact => f !== undefined && f.slot.predicate === params[1])
+          .map((f) => f.slot.subject)
+          .filter((k): k is string => k !== null),
+      );
+      return { rows: [{ n: subjects.size + this.priorCorrectedSubjects }] };
+    }
+    if (sql.startsWith("INSERT INTO brain_predicate_cardinality")) {
+      if (this.failCardinalityProposal) {
+        throw new Error("FakeCorrectionStore: cardinality proposal insert failed (simulated)");
+      }
+      const key = String(params[1]);
+      if (this.cardinalityProposals.some((row) => row.predicateKey === key)) return { rows: [] };
+      this.cardinalityProposals.push({
+        predicateKey: key,
+        cardinality: String(params[2]),
+        sourceClass: String(params[3]),
+        proposedBy: String(params[4]),
+      });
+      return { rows: [{ predicate_key: key }] };
+    }
+
     throw new Error(`FakeCorrectionStore: unrecognized statement:\n${sql}`);
   }
 
@@ -441,7 +522,6 @@ class FakeCorrectionStore {
       predicate: fact.predicate,
       object: fact.object,
       status: fact.status,
-      predicate_cardinality: fact.cardinality,
       provenance: fact.provenance,
       visible_to: fact.visibleTo,
       valid_to: fact.validTo,
@@ -918,7 +998,7 @@ describe("retract", () => {
 describe("supersede", () => {
   test("publishes the replacement and stamps the target through the adapter's own statements", async () => {
     const store = new FakeCorrectionStore();
-    store.seedFact({ id: "old", object: "Ana", status: "published", cardinality: "single" });
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
 
     const outcome = await run(store, {
       factId: "old",
@@ -948,7 +1028,6 @@ describe("supersede", () => {
     expect(replacement.status).toBe("published");
     expect(replacement.subject).toBe("Billing");
     expect(replacement.object).toBe("Bo");
-    expect(replacement.cardinality).toBe("single"); // inherited from the target
     expect(replacement.visibleTo).toEqual(["org"]); // the target's grant, via the episode
     expect(replacement.provenance.producer).toBe("correction");
     expect(replacement.provenance.actor).toBe("user:admin-1");
@@ -966,7 +1045,16 @@ describe("supersede", () => {
       toFactId: null,
       toEpisodeId: store.episodes[0]!.id,
     });
-    expect(store.transactions).toBe(1);
+    // The VERB is still ONE transaction — the episode, the stamp, the edges and
+    // the replacement commit together or not at all. The second is the #5027
+    // cardinality proposer, and its separation is deliberate rather than
+    // incidental: it reads the `supersedes` edge this transaction wrote, so it
+    // needs that edge COMMITTED, and a failure in it must not roll back a
+    // correction the user was told succeeded. Inside, it could not — Postgres
+    // aborts the whole transaction after any statement error, so the verb's own
+    // COMMIT would fail with it. The other three verbs still run exactly one
+    // (asserted in the proposer suite).
+    expect(store.transactions).toBe(2);
 
     // The ordering property: because the stamp ran BEFORE the replacement
     // reconciled, the retired belief was already settled history when the
@@ -984,8 +1072,8 @@ describe("supersede", () => {
 
   test("a THIRD live rival still earns its advisory tension edge — only the arbitrated pair is settled", async () => {
     const store = new FakeCorrectionStore();
-    store.seedFact({ id: "old", object: "Ana", status: "published", cardinality: "single" });
-    store.seedFact({ id: "third", object: "Cy", status: "published", cardinality: "single" });
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    store.seedFact({ id: "third", object: "Cy", status: "published" });
 
     const outcome = await run(store, {
       factId: "old",
@@ -1011,7 +1099,7 @@ describe("supersede", () => {
     // Both entry seams validate ISO-8601; this pins the machinery's own
     // backstop for a future direct caller.
     const store = new FakeCorrectionStore();
-    store.seedFact({ id: "old", object: "Ana", status: "published", cardinality: "single" });
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
     const outcome = await run(store, {
       factId: "old",
       verb: "supersede",
@@ -1037,8 +1125,8 @@ describe("supersede", () => {
 
   test("a live rival already asserting the value is corroborated and promoted, not duplicated", async () => {
     const store = new FakeCorrectionStore();
-    store.seedFact({ id: "old", object: "Ana", status: "published", cardinality: "single" });
-    store.seedFact({ id: "rival", object: "Bo", status: "draft", cardinality: "single" });
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    store.seedFact({ id: "rival", object: "Bo", status: "draft" });
 
     const outcome = await run(store, {
       factId: "old",
@@ -1252,6 +1340,137 @@ describe("supersede", () => {
       reason: CORRECTION_REFUSAL_REASONS.validityAlreadyClosed,
     });
     expect(store.fact("settled").validTo).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The cardinality proposer (#5027, ADR-0037 §3(d)2)
+//
+// The verb's side of source 2. What it can falsify here is the WIRING — which
+// verbs feed the gate, what a proposal carries, and that a proposal is all it
+// ever is. What it cannot falsify is the gate's SQL, which needs real Postgres
+// and lives in `cardinality-pg.test.ts`; in particular the provable-difference
+// arm that the typo target turns on has no representation in this fake, and
+// stubbing one here would be a fixture agreeing with itself (#5000's trap).
+// ---------------------------------------------------------------------------
+
+describe("cardinality proposer", () => {
+  test("supersede does NOT write the row's cardinality — the column left INSERT_FACT_SQL", async () => {
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+    await run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } });
+
+    // The falsification of "extract stops feeding the column, and so does the
+    // correction path". Re-adding `predicate_cardinality` to the insert's column
+    // list restores the stochastic gate #5027 deleted, and the ONLY thing that
+    // catches it is a parameter count: the statement would still be valid SQL
+    // and every other assertion in this file would still pass.
+    const insert = store.executedParams(INSERT_FACT_SQL);
+    expect(insert).not.toBeUndefined();
+    expect(insert).toHaveLength(13);
+    expect(INSERT_FACT_SQL).not.toContain("predicate_cardinality");
+  });
+
+  test("raises a `single` PROPOSAL once enough distinct subjects have been superseded", async () => {
+    const store = new FakeCorrectionStore();
+    // One short of the bar before this verb runs; the verb itself supplies the
+    // subject that reaches it, so the gate is crossed by a REAL correction
+    // rather than by the fixture.
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+
+    expect(outcome.kind).toBe("corrected");
+    expect(store.cardinalityProposals).toEqual([
+      {
+        // Non-null by construction (`is owned by` norms to itself), and asserted
+        // as such rather than `!`-ed: a `slotKey` that started answering null
+        // here would make the proposal's KEY wrong, which is the one field that
+        // decides which population a `single` entry licenses.
+        predicateKey: expect.stringMatching(/^is owned by$/),
+        cardinality: "single",
+        sourceClass: "correction_event",
+        proposedBy: CORRECTION_EVENT_PRODUCER,
+      },
+    ]);
+  });
+
+  test("stays silent below the repeat threshold", async () => {
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 2;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+    await run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } });
+
+    expect(store.cardinalityProposals).toEqual([]);
+  });
+
+  test("the proposal is `pending` — the write path admits no `approved` from a producer", async () => {
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+    await run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } });
+
+    // Not an assertion about the row this fake stored — an assertion about the
+    // STATEMENT, which is where the guarantee lives. A producer that could write
+    // `approved` would make `cardinalitySingleSql` read a repeat-gated heuristic
+    // with no human anywhere in the loop, which is the whole thing §3(d)
+    // exists to prevent.
+    const proposeSql = store.executed.find((sql) =>
+      sql.startsWith("INSERT INTO brain_predicate_cardinality"),
+    );
+    expect(proposeSql).toContain("'pending'");
+    expect(proposeSql).not.toContain("'approved'");
+    expect(proposeSql).toContain("ON CONFLICT (workspace_id, predicate_key) DO NOTHING");
+  });
+
+  test.each(["retract", "re-authority", "pin"] as const)(
+    "%s proposes nothing — only supersede is evidence about cardinality",
+    async (verb) => {
+      const store = new FakeCorrectionStore();
+      // Far past the bar, so a verb that fed the gate would certainly propose.
+      store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD + 5;
+      store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+      const outcome = await run(store, { factId: "old", verb });
+
+      expect(outcome.kind).toBe("corrected");
+      // Retracting a claim says nothing about how many could have coexisted, and
+      // vouching says less. Only `supersede` is a human asserting BY ACTION that
+      // the slot holds one value.
+      expect(store.cardinalityProposals).toEqual([]);
+      expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
+      // And no second transaction is opened at all — the proposer is not merely
+      // silent for these verbs, it is not reached.
+      expect(store.transactions).toBe(1);
+    },
+  );
+
+  test("a failed proposal never reaches the caller — the correction is already committed", async () => {
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    store.failCardinalityProposal = true;
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+
+    // The verb committed: the episode, the stamp and the edges are durable, and
+    // reporting failure here would invite a retry that mints a SECOND correction
+    // episode for one human decision — the same argument the audit row makes.
+    expect(outcome.kind).toBe("corrected");
+    expect(store.fact("old").validTo).toBe(NOW.toISOString());
+    expect(store.cardinalityProposals).toEqual([]);
   });
 });
 

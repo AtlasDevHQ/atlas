@@ -42,6 +42,7 @@ import {
   resolvePrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
 import { FACT_REFUSAL_REASONS } from "@atlas/api/lib/brain/promotion";
 import { CORROBORATION_LOOKUP_SQL } from "@atlas/api/lib/brain/reconcile";
@@ -1287,6 +1288,21 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       object: string;
       /** Defaults to `manager`; override to vary the PREDICATE slot. */
       predicate?: string;
+      /**
+       * The CANONICAL PREDICATE's cardinality, declared in the vocabulary
+       * (#5027) — no longer a column on the row.
+       *
+       * The option survives the move because every test here still means "this
+       * predicate can/cannot supersede", but WHERE it is recorded changed
+       * completely: `brain_facts.predicate_cardinality` is not written by this
+       * fixture any more (it falls to its schema default, exactly as
+       * `INSERT_FACT_SQL` now leaves it), and the publish gate reads
+       * `brain_predicate_cardinality` instead.
+       *
+       * ⚠️ It is therefore PER PREDICATE, not per row: two `seedFact` calls in
+       * one workspace at one predicate share an entry, and the last one wins.
+       * A test that needs two cardinalities at once needs two predicates.
+       */
       cardinality?: "single" | "multi";
       status?: "draft" | "published";
       /** Defaults to org-wide; override for the ACL-withholding cases. */
@@ -1374,10 +1390,10 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
-            provenance, status, visible_to, predicate_cardinality,
+            provenance, status, visible_to,
             subject_key, predicate_key, object_key, object_cmp)
-         VALUES ($1, $2, $3, $4, $5, $13::jsonb, $6, $11::text[], $7,
-                 $8, $9, $10, $12)
+         VALUES ($1, $2, $3, $4, $5, $12::jsonb, $6, $10::text[],
+                 $7, $8, $9, $11)
          RETURNING id`,
         [
           opts.workspaceId,
@@ -1386,7 +1402,6 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           opts.object,
           opts.episodeId,
           opts.status ?? "draft",
-          opts.cardinality ?? "single",
           opts.unkeyed === true ? null : slotKey(opts.subject, identityAlias),
           opts.unkeyed === true ? null : slotKey(predicate, identityAlias),
           opts.unkeyed === true ? null : objectKey,
@@ -1401,6 +1416,23 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           JSON.stringify(opts.provenance ?? { actor: "test" }),
         ],
       );
+      // Declared AFTER the row lands, and through the shipped authoring door
+      // rather than a raw INSERT, so a change to what the write path admits
+      // reaches this suite instead of being routed around.
+      //
+      // Unconditional, including for an `unkeyed` row: its NULL `predicate_key`
+      // matches no entry, which is the fail-closed behaviour those tests are
+      // about, and skipping the declaration would make them pass for the wrong
+      // reason.
+      const declared = await declarePredicateCardinality(pool, opts.workspaceId, {
+        predicateKey: slotKey(predicate, identityAlias),
+        cardinality: opts.cardinality ?? "single",
+        authoredBy: "curator-1",
+      });
+      expect(
+        declared.ok,
+        `declaring "${predicate}" ${opts.cardinality ?? "single"} failed — supersession would then never fire and every prohibition here would pass vacuously`,
+      ).toBe(true);
       return rows[0]!.id;
     }
 
@@ -1507,16 +1539,24 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     );
 
     it(
-      "multi-cardinality facts coexist — never superseded by publish, in either direction",
+      "a `multi` predicate coexists — never superseded by publish (#5027)",
       async () => {
+        // This test used to seed FOUR rows to cover both directions of a
+        // disagreement: a `multi` incumbent under a `single` draft, and the
+        // reverse. Both directions are gone, and their absence is the slice:
+        // cardinality belongs to the canonical predicate, so two rows in one
+        // slot cannot disagree about it — the state those two pairs modelled is
+        // unrepresentable rather than handled.
+        //
+        // What remains is the rule itself, plus a control in the same shape so
+        // "0" is evidence rather than a fixture that could never have collided.
         const ws = "ws-4912-multi";
         const ep = await seedEpisode(ws, "multi");
-        // Published side says `multi`: however the draft spells it, the two
-        // rows disagree about the predicate and the recoverable arm wins.
-        const oldMulti = await seedFact({
+        const coexisting = await seedFact({
           workspaceId: ws,
           episodeId: ep,
           subject: "alice",
+          predicate: "speaks",
           object: "python",
           cardinality: "multi",
           status: "published",
@@ -1525,14 +1565,17 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           workspaceId: ws,
           episodeId: ep,
           subject: "alice",
+          predicate: "speaks",
           object: "rust",
-          cardinality: "single",
+          cardinality: "multi",
         });
-        // Draft side says `multi` against a `single` incumbent.
-        const oldSingle = await seedFact({
+        // The control, on its OWN predicate so the two entries do not overwrite
+        // each other — the one way this fixture can now be got wrong.
+        const retired = await seedFact({
           workspaceId: ws,
           episodeId: ep,
           subject: "bob",
+          predicate: "manager",
           object: "go",
           cardinality: "single",
           status: "published",
@@ -1541,15 +1584,56 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           workspaceId: ws,
           episodeId: ep,
           subject: "bob",
+          predicate: "manager",
           object: "zig",
-          cardinality: "multi",
+          cardinality: "single",
         });
 
         const report = await publish(ws);
         expect(report.promoted).toBe(2);
+        expect((await factState(coexisting)).valid_to).toBeNull();
+        expect(
+          (await factState(retired)).valid_to,
+          "the `single` control was not superseded either — this test is then a prohibition against a fixture that could never have collided",
+        ).not.toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([{ f: expect.any(String), t: retired }]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "an UNCURATED predicate coexists too — absent means `multi` (#5027)",
+      async () => {
+        // The positive-evidence rule at the gate that actually stamps. An
+        // explicit `multi` entry is a human declining the question; ABSENCE is
+        // nobody having asked, and the two must behave identically here.
+        const ws = "ws-5027-uncurated-publish";
+        const ep = await seedEpisode(ws, "uncurated");
+        const incumbent = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          predicate: "manager",
+          object: "bob",
+          status: "published",
+        });
+        await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          predicate: "manager",
+          object: "carol",
+        });
+        // Remove the entry `seedFact` wrote, leaving the corpus in the state a
+        // workspace that has curated nothing is in. Deleting is the only way to
+        // reach it: the fixture declares on every seed precisely so no OTHER
+        // test can be silently uncurated.
+        await pool.query(`DELETE FROM brain_predicate_cardinality WHERE workspace_id = $1`, [ws]);
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(1);
         expect(report.superseded).toEqual([]);
-        expect((await factState(oldMulti)).valid_to).toBeNull();
-        expect((await factState(oldSingle)).valid_to).toBeNull();
+        expect((await factState(incumbent)).valid_to).toBeNull();
         expect(await supersedesEdges(ws)).toEqual([]);
       },
       PG_TEST_TIMEOUT_MS,

@@ -106,7 +106,6 @@ interface StoredFact {
   slot: SlotBinds;
   provenance: Record<string, unknown>;
   visibleTo: string[];
-  cardinality: string;
   validFrom: string | null;
   extractedAt: string | null;
 }
@@ -160,7 +159,7 @@ function keyParams(params: readonly unknown[], from: number): SlotBinds {
 const STATEMENTS = {
   lock: { sql: RECONCILE_LOCK_SQL },
   corroboration: { sql: CORROBORATION_LOOKUP_SQL, keyOffset: 1 },
-  insertFact: { sql: INSERT_FACT_SQL, keyOffset: 10 },
+  insertFact: { sql: INSERT_FACT_SQL, keyOffset: 9 },
   provenanceEdge: { sql: INSERT_PROVENANCE_EDGE_SQL },
   tensionScan: { sql: TENSION_CANDIDATES_SQL, keyOffset: 1 },
   tensionEdge: { sql: INSERT_TENSION_EDGE_SQL },
@@ -276,7 +275,6 @@ class FakeBrainStore {
           extractedAt: params[5] === null ? null : String(params[5]),
           provenance: JSON.parse(String(params[7])) as Record<string, unknown>,
           visibleTo: JSON.parse(String(params[8])) as string[],
-          cardinality: String(params[9]),
           slot: keyParams(params, STATEMENTS.insertFact.keyOffset),
         });
         return { rows: [{ id }] };
@@ -773,10 +771,34 @@ describe("advisory contradiction edges", () => {
     ).toHaveLength(0);
   });
 
-  test("cardinality defaults to the conservative arm", async () => {
+  test("the stage binds NO cardinality at all — the column left the insert (#5027)", async () => {
+    // The falsification of ADR-0037 §3's "the extractor stops feeding the
+    // column". It used to be `$10` here, carrying the model's per-claim guess
+    // into the both-sides clause at the publish gate — so supersession fired at
+    // roughly P(model says `single`)², from two independent model calls.
+    //
+    // A COUNT rather than a value check, and that is the only thing that
+    // catches it: re-adding the column and its bind leaves valid SQL, an
+    // unchanged row, and every other assertion in this file still green. The
+    // column now falls to its schema default until #5028 drops it.
     const store = new FakeBrainStore();
-    await run(store);
-    expect(store.facts[0]?.cardinality).toBe("multi");
+    await run(store, { candidates: [candidate({ predicateCardinality: "single" })] });
+
+    expect(INSERT_FACT_SQL).not.toContain("predicate_cardinality");
+    expect(store.bindsFor("insertFact")[0]).toHaveLength(13);
+  });
+
+  test("the producer's cardinality hint still gates the ADVISORY tension scan", async () => {
+    // The other half, and it is what keeps the previous test from being
+    // satisfiable by deleting the field: the hint survives, with exactly the
+    // authority a model guess is worth. An `in-tension-with` edge is recoverable
+    // in both directions; a `valid_to` stamp is recoverable in neither.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ predicateCardinality: "single", object: "Grace" })],
+    });
+
+    expect(store.bindsFor("tensionScan")).toHaveLength(1);
   });
 });
 

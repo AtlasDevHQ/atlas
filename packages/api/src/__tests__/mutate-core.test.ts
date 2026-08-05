@@ -476,6 +476,30 @@ describe("cell and label escaping", () => {
     expect(escapeCell("a | b")).toBe("a \\| b");
   });
 
+  test("a backslash cannot smuggle a live delimiter past the pipe escape", () => {
+    // `a\|b` is the one input the pipe escape exists for that it used to get
+    // WRONG: escaping `|` alone yields `a\\|b`, which reads as a literal
+    // backslash followed by a live cell delimiter. So the fixture has to carry
+    // a backslash immediately before the pipe — `a | b` is satisfied by an
+    // implementation that never touches backslashes at all.
+    expect(escapeCell("a\\|b")).toBe("a\\\\\\|b");
+
+    // The single pass exists so there is no ordering to get wrong, and this
+    // pins the failure it rules out: two sequential replaces in the wrong
+    // order re-escape the backslash the pipe escape just wrote, yielding four
+    // backslashes and a live `|`. Kept as a negative because the two-pass
+    // shape is the one a future edit is most likely to reach for.
+    expect(escapeCell("a\\|b")).not.toBe("a\\\\\\\\|b");
+
+    // ...and the converse, which is why the pattern requires a pipe at all: a
+    // backslash that splits nothing is left alone. `MONEY_RE back to `\s+``
+    // is a real label in object-cmp.mutations.ts, and its backslash sits in a
+    // code span, where markdown escapes do not apply — doubling it would put a
+    // literal `\\s+` in front of the reader to fix a row that was never at
+    // risk. This assertion is what pins the fix to the structural case.
+    expect(escapeCell("`\\s+`")).toBe("`\\s+`");
+  });
+
   test("renderCell distinguishes a real zero from an error", () => {
     expect(renderCell({ kind: "count", fail: 0 })).toBe("0");
     expect(renderCell({ kind: "error", fail: 0, flag: "boom" })).toBe("⚠️ boom");

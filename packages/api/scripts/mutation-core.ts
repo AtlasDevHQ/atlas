@@ -240,9 +240,32 @@ export function renderCell(cell: Cell): string {
   return cell.flag === undefined ? String(cell.fail) : `${cell.fail} ⚠️`;
 }
 
-/** Escape `|` so a label containing one cannot split its row into extra cells. */
+/**
+ * Escape `|` so a label containing one cannot split its row into extra cells.
+ *
+ * A backslash is escaped only where one already precedes a pipe. Escaping `|`
+ * alone sends `a\|b` to `a\\|b`, where the `\\` is a literal backslash and the
+ * `|` behind it is a live delimiter again — the escape defeats itself on
+ * precisely the input it exists for (the shape fixed in #4389).
+ *
+ * The narrowing is not timidity, it is the renderer: GFM special-cases `\|` at
+ * the row-splitting stage and nothing else, and labels put their backslashes
+ * inside CODE SPANS (`` `\s+` ``), where markdown escapes do not apply. So
+ * doubling every backslash would fix nothing structural and would render a
+ * visible `\\s+` to the reader. Escape what can split a row; leave the rest.
+ *
+ * ⚠️ The two-replace spelling of this — `.replace(/\\/g, …)` then
+ * `.replace(/\|/g, …)` — is what CodeQL's `js/incomplete-sanitization` asks
+ * for, and it is WRONG here for the code-span reason above. The single pass
+ * satisfies the rule without doubling benign backslashes; if a future edit
+ * splits it back into two replaces, expect a HIGH alert and re-read this
+ * comment rather than blanket-escaping to silence it.
+ */
 export function escapeCell(text: string): string {
-  return text.replace(/\|/g, "\\|");
+  // One pass over "an optional backslash then a pipe", so there is no
+  // which-replace-runs-first hazard to get wrong: a pipe already carrying a
+  // backslash gets both escaped together, a bare pipe just gets escaped.
+  return text.replace(/\\?\|/g, (match) => (match.startsWith("\\") ? "\\\\\\|" : "\\|"));
 }
 
 /**

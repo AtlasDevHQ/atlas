@@ -243,7 +243,8 @@ import {
   type ClaimPair,
   type SlotRelation,
 } from "./identity-corpus";
-import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { identityAlias, identityVocabulary, slotKey } from "@atlas/api/lib/brain/identity";
+import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import { isEpisodeSource, isWarehouseDerivedSource } from "@atlas/api/lib/brain/sources";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -721,6 +722,18 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
      */
     async function landWithIncumbent(pair: ClaimPair) {
       const workspaceId = workspaceFor(pair);
+      // Cardinality is a property of the CANONICAL PREDICATE since #5027, and
+      // absent means `multi` — so without an approved entry this consumer
+      // stamps nothing for ANY pair and all nine cases below would agree on
+      // zero, which is the shape of a suite that has stopped asking anything.
+      //
+      // BOTH predicates are curated, and deliberately: this suite is about the
+      // identity and object arms, so cardinality must be a non-factor rather
+      // than a second variable moving with the fixture. `predicate-differs`
+      // carries two different predicates, and curating only one would make it
+      // pass for a reason it is not testing.
+      await curateSingle(workspaceId, pair.a.predicate);
+      await curateSingle(workspaceId, pair.b.predicate);
       await land(workspaceId, `${pair.id}-a`, pair.a);
       expect((await publish(workspaceId)).promoted).toBe(1);
       const [incumbent] = await factIds(workspaceId);
@@ -734,6 +747,25 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
         [workspaceId],
       );
       return rows.map((r) => r.valid_to);
+    }
+
+    /**
+     * Declare a predicate `single` through the shipped authoring door (#5027).
+     *
+     * `declarePredicateCardinality` rather than a raw INSERT, so a change to
+     * what the write path admits reaches this suite instead of being routed
+     * around by a fixture that writes the table directly.
+     */
+    async function curateSingle(workspaceId: string, predicate: string) {
+      const result = await declarePredicateCardinality(pool, workspaceId, {
+        predicateKey: slotKey(predicate, identityAlias),
+        cardinality: "single",
+        authoredBy: "curator-1",
+      });
+      expect(
+        result.ok,
+        `curating "${predicate}" failed — this consumer would then stamp nothing for any reason`,
+      ).toBe(true);
     }
 
     /** The disclosure an admin sees BEFORE pressing publish. */

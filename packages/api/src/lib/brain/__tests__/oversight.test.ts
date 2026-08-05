@@ -846,11 +846,26 @@ describe("loadSupersessionPreview", () => {
     expect(pairsSql).toContain("d.workspace_id = $");
     expect(pairsSql).toContain("p.workspace_id = ");
     expect(totalSql).toContain("d.workspace_id = $1");
-    // And the join itself is the adapter's — current, published, both single.
+    // And the join itself is the adapter's — current, published, and the shared
+    // canonical predicate declared `single`.
     for (const sql of [pairsSql, totalSql]) {
       expect(sql).toContain("p.valid_to IS NULL");
       expect(sql).toContain("p.status = 'published'");
-      expect(sql).toContain("d.predicate_cardinality = 'single'");
+      // The cardinality arm, in its post-#5027 shape: one correlated lookup on
+      // the shared `predicate_key`, filtered to APPROVED entries. It used to be
+      // `d.predicate_cardinality = 'single'` — a per-ROW opinion, and the
+      // preview's whole job is to list exactly what the transaction will stamp,
+      // so if the two spellings ever diverge the disclosure is a lie about an
+      // irreversible write.
+      expect(sql).toContain("FROM brain_predicate_cardinality c");
+      expect(sql).toContain("c.status = 'approved'");
+      // …and the prohibition, because restoring the row read here would look
+      // like a tightening and would silently re-couple the preview to a column
+      // the transaction no longer consults.
+      expect(
+        /(?<!brain_)predicate_cardinality/.test(sql),
+        "the will-supersede preview is reading a per-ROW cardinality again — it would then disclose a set the publish transaction does not stamp",
+      ).toBe(false);
     }
   });
 

@@ -153,7 +153,8 @@ import type {
   BrainFactReviewStatus,
   BrainSearchResult,
 } from "@useatlas/types";
-import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { identityAlias, identityVocabulary, slotKey } from "@atlas/api/lib/brain/identity";
+import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -340,7 +341,6 @@ type FactRow = {
   readonly subject: string;
   readonly object: string;
   readonly status: BrainFactReviewStatus;
-  readonly predicate_cardinality: PredicateCardinality;
   readonly visible_to: readonly string[];
   readonly valid_from: Date | null;
   readonly valid_to: Date | null;
@@ -787,7 +787,7 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
 
   async function facts(): Promise<readonly FactRow[]> {
     const { rows } = await pool.query<FactRow>(
-      `SELECT id, subject, object, status, predicate_cardinality, visible_to,
+      `SELECT id, subject, object, status, visible_to,
               valid_from, valid_to, invalidated_at, provenance
          FROM brain_facts ORDER BY subject, object`,
     );
@@ -913,7 +913,6 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       const freeze = factByClaim(rows, "release freeze", "the day before the deploy window");
       expect(earlyWindow).toMatchObject({
         status: "published",
-        predicate_cardinality: "single",
         visible_to: ["org"],
         valid_to: null,
         invalidated_at: null,
@@ -937,7 +936,6 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       // recorded the conflict, it arbitrated nothing.
       expect(lateWindow).toMatchObject({
         status: "draft",
-        predicate_cardinality: "single",
         visible_to: [EXEC_GRANT_TOKEN],
         valid_to: null,
         invalidated_at: null,
@@ -1011,6 +1009,21 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       ]);
 
       // ---- 4. the reviewer publishes — supersession at the gate -----------
+      //
+      // Cardinality is a property of the CANONICAL PREDICATE since #5027, and
+      // absent means `multi`. The extractor's per-claim guess used to ride onto
+      // the row and be read from both sides here; it no longer reaches the gate
+      // at all, so a workspace that has curated nothing supersedes nothing. That
+      // is the deterministic under-supersession ADR-0037 §3 chose over the
+      // stochastic gate this loop used to depend on — and it means this step now
+      // needs the curation a real workspace would have done.
+      const declared = await declarePredicateCardinality(pool, WORKSPACE, {
+        predicateKey: slotKey("is", identityAlias),
+        cardinality: "single",
+        authoredBy: "curator-1",
+      });
+      expect(declared.ok, "curation failed — the gate below would then stamp nothing").toBe(true);
+
       const gate = await publish();
       expect(gate.promoted).toBe(1);
       expect(gate.refused).toEqual([]);

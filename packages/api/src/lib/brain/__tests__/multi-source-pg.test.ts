@@ -251,6 +251,8 @@ import {
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import type { BrainSourceConnector } from "@atlas/api/lib/brain/ingest/types";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import type { BrainEdgeType, PredicateCardinality } from "@atlas/api/lib/brain/types";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type {
@@ -589,7 +591,6 @@ type FactRow = {
   readonly subject: string;
   readonly object: string;
   readonly status: BrainFactReviewStatus;
-  readonly predicate_cardinality: PredicateCardinality;
   readonly visible_to: readonly string[];
   readonly pre_widening_visible_to: readonly string[] | null;
   readonly valid_from: Date | null;
@@ -1117,7 +1118,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
 
   async function facts(): Promise<readonly FactRow[]> {
     const { rows } = await pool.query<FactRow>(
-      `SELECT id, subject, object, status, predicate_cardinality, visible_to,
+      `SELECT id, subject, object, status, visible_to,
               pre_widening_visible_to, valid_from, valid_to, invalidated_at, provenance
          FROM brain_facts ORDER BY subject, object`,
     );
@@ -1556,7 +1557,6 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // between overlapping people are two audiences.
       expect(lateWindow).toMatchObject({
         status: "draft",
-        predicate_cardinality: "single",
         visible_to: [RIVAL_GRANT],
         valid_to: null,
         invalidated_at: null,
@@ -1699,9 +1699,23 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
 
       // ---- 7. the human gate arbitrates ACROSS classes ---------------------
       // Advisory tension is not arbitration; a reviewer publishing IS. The gate
-      // picks by the supersession collision — the (subject, predicate) SLOT
-      // plus `single` on both sides — and is blind to class, which is the
-      // property this step pins.
+      // picks by the supersession collision — the (subject, predicate) SLOT plus
+      // a canonical predicate the workspace has CURATED `single` (#5027) — and
+      // is blind to class, which is the property this step pins.
+      //
+      // The curation is a step a real workspace performs, not fixture noise:
+      // cardinality left the row entirely, so absent means `multi` and an
+      // uncurated predicate supersedes nothing. Note it is a property of the
+      // PREDICATE, so it covers `hiring plan is frozen` too — which is exactly
+      // why the multi-valued case in this loop had to stop being expressed as a
+      // per-claim cardinality.
+      const declared = await declarePredicateCardinality(pool, WORKSPACE, {
+        predicateKey: slotKey("is", identityAlias),
+        cardinality: "single",
+        authoredBy: "curator-1",
+      });
+      expect(declared.ok, "curation failed — the gate below would then stamp nothing").toBe(true);
+
       const gate = await publish();
       expect(gate.promoted).toBe(1);
       expect(gate.refused).toEqual([]);

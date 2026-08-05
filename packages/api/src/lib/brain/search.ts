@@ -421,7 +421,22 @@ function factStatus(value: unknown, rowId: string, workspaceId: string) {
   return "draft" as const;
 }
 
-/** Cardinality off `pg`. `multi` is the fallback and UNDERSTATES conflict — hence the log. */
+/**
+ * Cardinality off `pg`. `multi` is the conservative fallback — hence the log.
+ *
+ * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.**
+ *
+ * Cardinality is a property of the CANONICAL PREDICATE now, read live from `brain_predicate_cardinality` at the
+ * publish gate. `brain_facts.predicate_cardinality` stopped being written, so
+ * every fact ingested since the migration reports `multi` however its predicate
+ * is curated, and every earlier one carries the extractor's stale LLM guess.
+ *
+ * This is the second surviving consumer and the one with the wider blast radius:
+ * `searchBrain` returns `BrainFactResult` TO THE MODEL, so the agent is told
+ * `multi` for every fact ingested since the migration. Lower stakes than the
+ * rendered sentence `candidate-detail.tsx` deleted (no prose is attached to it),
+ * but it is not nothing, and #5028 owns removing it from the wire.
+ */
 function cardinality(value: unknown, rowId: string, workspaceId: string) {
   if (value === "single" || value === "multi") return value;
   log.warn(

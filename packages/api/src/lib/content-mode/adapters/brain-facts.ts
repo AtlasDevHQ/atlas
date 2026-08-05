@@ -58,6 +58,10 @@ import {
 // SAMENESS half of the same module, so the two seams cannot drift into
 // disagreeing about which pairs are merely `unknown`.
 import { comparableDifferentSql } from "@atlas/api/lib/brain/object-cmp";
+// Cardinality as a property of the canonical predicate (#5027), replacing the
+// both-sides row comparison this file used to spell inline. Imported for the
+// same reason as the arm above: one place says what collides.
+import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 // The tier vocabulary (#5033). Derived from `EPISODE_SOURCE_SPECS`'s declared
 // classes, so a future warehouse-class member inherits the guard below without
 // touching this file.
@@ -169,9 +173,15 @@ export function brainFactCurrentClause(alias: string): string {
 }
 
 /**
- * Draft facts awaiting review, with exactly the columns the refusal rules and
- * the supersession classifier read (#4912 — `predicate_cardinality` is the
- * supersession input; everything else feeds `classifyFactForPromotion`).
+ * Draft facts awaiting review, with exactly the columns
+ * `classifyFactForPromotion`'s refusal rules read.
+ *
+ * It used to also select `predicate_cardinality`, and this docstring used to
+ * say that column WAS the supersession input (#4912). Since #5027 it is not:
+ * cardinality is a property of the canonical predicate, read live from
+ * `brain_predicate_cardinality` inside the collision predicate itself
+ * ({@link cardinalitySingleSql}). Nothing on the draft row decides whether it
+ * may supersede, which is why nothing here has to carry it.
  *
  * `FOR UPDATE` because this adapter is read-then-write, which the simple
  * entries are not: it serializes two concurrent publishes on the same
@@ -205,8 +215,7 @@ export const DRAFT_FACTS_SQL = `
          object,
          source_episode_id::text AS source_episode_id,
          provenance,
-         visible_to,
-         predicate_cardinality
+         visible_to
     FROM brain_facts
    WHERE workspace_id = $1
      AND status = 'draft'
@@ -473,7 +482,8 @@ function supersedableTierSql(alias: string): string {
  *
  * Joins a draft alias `d` to every already-published fact it would supersede:
  * the same WORKSPACE, the same SLOT — `(subject_key, predicate_key)` — a
- * PROVABLY DIFFERENT object, BOTH sides `single`-cardinality, and BOTH sides
+ * PROVABLY DIFFERENT object, a shared canonical predicate DECLARED
+ * `single`-cardinality, and BOTH sides
  * either carrying positive evidence that they are NOT tier-1 or naming no
  * source at all ({@link supersedableTierSql}, #5033). Read that arm's three
  * other three populations before summarizing it as "below tier-1": an
@@ -559,11 +569,26 @@ function supersedableTierSql(alias: string): string {
  * which likewise leaves such a row alone. The cost is a briefly tension-less
  * coexistence of two current values; the alternative destroys an import.
  *
- * Both sides `single`, not just the draft, because the two rows can disagree
- * about the predicate (corroboration never upgrades cardinality — see
- * `reconcile.ts`) and wrongly superseding destroys a belief where wrongly
- * coexisting is recoverable at the review gate. A `multi` fact is NEVER
- * superseded by publish, whatever the incoming draft claims.
+ * ## The both-sides cardinality clause is DELETED, not weakened (#5027, §3)
+ *
+ * This arm used to read `p.predicate_cardinality = 'single' AND
+ * d.predicate_cardinality = 'single'`, and the reason given was that the two
+ * rows could disagree about the predicate. They could — because each carried
+ * its own opinion, and each opinion was an independent LLM guess against a
+ * prompt biased toward `multi`, so the conjunction fired at roughly
+ * P(model says `single`)². A column everyone believed unpopulated was in fact a
+ * STOCHASTIC gate on an irreversible operation.
+ *
+ * {@link cardinalitySingleSql} is ONE lookup on the shared `predicate_key`. Two
+ * rows in one slot can no longer disagree about cardinality, because they no
+ * longer each carry an opinion — the fourth cause of #5000's symptom is made
+ * UNREPRESENTABLE rather than repaired. Absent from the vocabulary means
+ * `multi`, so an uncurated predicate never supersedes: the same conservative
+ * outcome as before, now deterministic instead of a coin flip.
+ *
+ * `d`, not `p`, and either would do — the identity arms above already equate
+ * both sides' `workspace_id` and `predicate_key`, which is exactly what makes
+ * one lookup sufficient.
  *
  * A builder rather than a constant because THREE statements need the identical
  * join and must never drift: the promote-time targets SELECT below, the
@@ -610,9 +635,12 @@ export function supersessionCollisionPredicate(d: string, p: string): string {
  * spellings of that available were (a) copy the arms, which
  * {@link supersessionCollisionJoin}'s header forbids at length, or (b) split the
  * predicate at the one seam that makes the question expressible. This is (b) —
- * so the shipped guard is `core AND tier(p) AND tier(d)` and the diagnostic is
- * `core AND (tier(p) AND tier(d)) IS NOT TRUE`, both built from ONE spelling of
- * the core and ONE of the tier. The negation is spelled `IS NOT TRUE` and never
+ * so the shipped guard is `core AND card AND tier(p) AND tier(d)` and the
+ * diagnostic is `core AND card AND (tier(p) AND tier(d)) IS NOT TRUE`, both
+ * built from ONE spelling of each piece. (`core` became a real function name in
+ * #5027 — {@link collisionCorePredicate}, which EXCLUDES the cardinality arm —
+ * so this formula names `card` separately where an earlier version folded it
+ * into an informal "core".) The negation is spelled `IS NOT TRUE` and never
  * `NOT (…)` — see {@link TIER_HELD_BACK_COUNT_SQL}'s ⚠️, which is not a style
  * note.
  *
@@ -625,18 +653,105 @@ export function supersessionCollisionPredicate(d: string, p: string): string {
  * CONSEQUENCE. (It is not "the identity arms" narrowly — it also carries
  * cardinality and the published row's live-and-current state. What it excludes
  * is the tier, and nothing else.)
+ *
+ * The cardinality arm is a correlated EXISTS rather than a column comparison
+ * since #5027, which changes nothing about this split: it is still one arm,
+ * still evaluated inside the predicate, and still on the identity side of the
+ * seam — {@link TIER_HELD_BACK_COUNT_SQL} must ask "which pairs would have
+ * collided but for the TIER", and a pair the cardinality arm excluded never
+ * collided at all.
  */
 function collisionIdentityPredicate(d: string, p: string): string {
+  return `${collisionCorePredicate(d, p)}
+     AND ${cardinalitySingleSql(d)}`;
+}
+
+/**
+ * The collision minus BOTH consequence gates — identity, provable difference,
+ * and the published row's live-and-current state, and nothing about whether the
+ * pair may act.
+ *
+ * Split off for {@link CARDINALITY_HELD_BACK_COUNT_SQL}, on exactly the argument
+ * {@link collisionIdentityPredicate} makes for the tier: there are now two
+ * questions of the form *"which pairs would have collided but for X?"*, and the
+ * only two spellings available were to copy the arms — which this file's header
+ * forbids at length — or to split at the seam that makes each question
+ * expressible. Every statement is still built from ONE spelling of the core, ONE
+ * of the tier, and ONE of the cardinality.
+ *
+ * ⚠️ **Private, and more dangerous than its sibling.** A caller reaching for
+ * this instead of {@link supersessionCollisionPredicate} gets a collision rule
+ * with the tier guard AND the cardinality gate silently absent — #5033 and
+ * #5027 both deleted, while looking like a refactor.
+ */
+function collisionCorePredicate(d: string, p: string): string {
   return `${p}.workspace_id = ${d}.workspace_id
      AND ${p}.subject_key = ${d}.subject_key
      AND ${p}.predicate_key = ${d}.predicate_key
      AND ${comparableDifferentSql(`${p}.object_cmp`, `${d}.object_cmp`)}
-     AND ${p}.predicate_cardinality = 'single'
-     AND ${d}.predicate_cardinality = 'single'
      AND ${p}.status = 'published'
      AND ${p}.invalidated_at IS NULL
      AND ${p}.valid_to IS NULL`;
 }
+
+/**
+ * How many provable collisions this publish is holding back because the
+ * predicate is UNCURATED (#5027) — the operator-visible trace of a refusal that
+ * is otherwise total and silent.
+ *
+ * ## Why this is required rather than symmetrical decoration
+ *
+ * {@link TIER_HELD_BACK_COUNT_SQL} exists because a tier-blocked pair leaves no
+ * trace, and its docstring calls a warning *"required rather than nice to
+ * have"*. Everything it says is true here and MORE so, in two ways:
+ *
+ *   - It withholds strictly more. `single` requires positive evidence and there
+ *     is no backfill, so on the day this ships EVERY workspace has an empty
+ *     vocabulary and the publish gate supersedes NOTHING, anywhere, until a
+ *     human curates a predicate (#5025's UI). "Supersession stopped completely"
+ *     with no log line is indistinguishable from "the cardinality read is
+ *     broken".
+ *   - It silently neutralized the diagnostic that shipped one commit earlier.
+ *     The cardinality arm sits INSIDE {@link collisionIdentityPredicate}, which
+ *     the tier count also joins on — so a pair excluded by cardinality never
+ *     reaches the tier count either, and `heldBack` reads a constant `0` for as
+ *     long as the vocabulary is empty. Adding this statement is what stops
+ *     #5033's line from becoming decoration.
+ *
+ * And unlike the tier case it is ACTIONABLE, which is the reason it earns its
+ * own round trip rather than a "no entries" flag: the number answers *"how many
+ * beliefs would this publish retire if you curated their predicates?"*, which is
+ * the prompt that makes a vocabulary get curated at all. A count, never labels —
+ * `oversight.ts`'s rule.
+ *
+ * ## The two diagnostics partition, with one named gap
+ *
+ * Stamped is `core ∧ card ∧ tier`; the tier count is `core ∧ card ∧ ¬tier`; this
+ * is `core ∧ ¬card ∧ tier`. A pair blocked by BOTH (`core ∧ ¬card ∧ ¬tier`)
+ * appears in neither, deliberately: the tier refusal is permanent and the
+ * curation one is not, so reporting such a pair as *"curate this and it will
+ * supersede"* would be false. It stays invisible until the tier stops being the
+ * reason, which is the conservative direction for a number an operator acts on.
+ *
+ * ⚠️ A bare `NOT (…)` is correct HERE and forbidden on the tier arm, and the
+ * difference is worth stating because the file's other ⚠️ says the opposite.
+ * `EXISTS` is a two-valued operator — it is never SQL NULL — so `NOT EXISTS`
+ * cannot drop a row into the three-valued hole `supersedableTierSql`'s
+ * `{"source": null}` provenance falls into. {@link cardinalitySingleSql} is an
+ * `EXISTS`; {@link supersedableTierSql} is a comparison.
+ */
+export const CARDINALITY_HELD_BACK_COUNT_SQL = `
+  SELECT COUNT(*)::int AS held_back
+    FROM brain_facts d
+    JOIN brain_facts p
+      ON ${collisionCorePredicate("d", "p")}
+   WHERE d.workspace_id = $1
+     AND ${supersedingDraftPredicate("d")}
+     AND d.id = ANY($2::uuid[])
+     AND ${supersedableTierSql("p")}
+     AND ${supersedableTierSql("d")}
+     AND NOT ${cardinalitySingleSql("d")}
+`;
 
 /**
  * How many provable collisions this publish is HOLDING BACK on tier grounds
@@ -664,10 +779,13 @@ function collisionIdentityPredicate(d: string, p: string): string {
  *
  * ## Cost
  *
- * One extra `COUNT(*)` per publish that has at least one promotable `single`
- * draft — the same guard the targets SELECT already sits behind. Publish is an
- * admin action, not a hot path, and this reads no claim content: a number, never
- * a label, on `oversight.ts`'s rule.
+ * One extra `COUNT(*)` per publish that has at least one promotable draft — the
+ * same guard the targets SELECT already sits behind. It used to say "at least
+ * one promotable `single` draft", which was true while the adapter could tell
+ * from the ROWS whether anything in the batch could supersede; since #5027 it
+ * cannot, and the question is asked whenever there is anything to promote.
+ * Publish is an admin action, not a hot path, and this reads no claim content:
+ * a number, never a label, on `oversight.ts`'s rule.
  *
  * ⚠️ `IS NOT TRUE`, not `NOT (…)`, and the repo has already paid for this
  * distinction once. {@link supersedableTierSql} is SQL `NULL` — not `false` —
@@ -716,10 +834,16 @@ export function supersedingDraftPredicate(d: string): string {
  * `draft` — which is the other failure: zero supersession. Either way the
  * ordering is load-bearing, and the unit test pins it.)
  *
- * `$2` is the `single`-cardinality subset of the classified-promotable ids
- * (the join re-checks cardinality regardless), so a refused draft never
- * supersedes anything: the collision only fires for rows the transaction will
- * actually promote.
+ * `$2` is the classified-promotable ids, so a refused draft never supersedes
+ * anything: the collision only fires for rows the transaction will actually
+ * promote.
+ *
+ * It used to be the `single`-cardinality SUBSET of them, filtered in TypeScript
+ * off each draft row's own `predicate_cardinality`. Since #5027 there is no such
+ * column to filter on — cardinality belongs to the canonical predicate — and the
+ * join's own {@link cardinalitySingleSql} arm is the whole test rather than a
+ * re-check of a caller's pre-filter. Nothing widened: a draft whose predicate is
+ * uncurated matches no entry and supersedes nothing.
  */
 export const SUPERSESSION_TARGETS_SQL = `
   SELECT d.id::text AS draft_id, p.id::text AS superseded_id
@@ -770,10 +894,14 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
   // must precede them — so by stamp time every id in `$3` is `published` and the
   // draft-side predicate would match zero rows, silently disabling the whole
   // guard. Draft-ness is historical here and `$3` is what records it: the list
-  // is built from `promotable` filtered to `single`, so membership already means
-  // "was a promotable draft when this transaction began". What the re-check
-  // re-asks is the part an alias decision can still have changed underneath it —
-  // the SLOT.
+  // IS `promotable`, so membership already means "was a promotable draft when
+  // this transaction began". (It used to be `promotable` filtered to `single`;
+  // since #5027 there is no per-row cardinality to filter on, which changes what
+  // the list contains and not what membership MEANS — the premise this note
+  // rests on is untouched.) What the re-check re-asks is the part an alias
+  // decision can still have changed underneath it — the SLOT, and now also the
+  // cardinality entry, which a `decideAmendment` can retract between the two
+  // statements.
   //
   // An exhaustive SWITCH, not `arbitration === "explicit" ? "" : recheck`. The
   // ternary's open `else` means a third arm silently inherits the collision
@@ -844,9 +972,12 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
 /**
  * The publish gate's stamp — the collision arbitration, RE-CHECKED (#5024).
  *
- * `$3` is the same promotable-`single` draft id list `SUPERSESSION_TARGETS_SQL`
- * was given, so the statement re-asks the exact question that produced `$2`
- * rather than trusting the answer.
+ * `$3` is the same promotable-draft id list `SUPERSESSION_TARGETS_SQL` was
+ * given, so the statement re-asks the exact question that produced `$2` rather
+ * than trusting the answer. (No longer filtered to `single` before it gets here
+ * — #5027 moved cardinality off the row, so the re-check's own
+ * {@link cardinalitySingleSql} arm is where that question is asked, on both
+ * statements, from one spelling.)
  *
  * ## Why re-checking is not redundant with the lock, and both are kept
  *
@@ -1115,7 +1246,9 @@ function advisoryCount(
 }
 
 /**
- * Read {@link TIER_HELD_BACK_COUNT_SQL}'s single column.
+ * Read a held-back count's single column — {@link TIER_HELD_BACK_COUNT_SQL}
+ * (#5033) or {@link CARDINALITY_HELD_BACK_COUNT_SQL} (#5027). WHICH one is the
+ * `statement` parameter's business; see it for why that is not decoration.
  *
  * Degrades to `null` — *unknown* — never to 0. Throwing would fail the publish
  * over a diagnostic (CLAUDE.md's *prefer errors over silent fallbacks* governs
@@ -1137,7 +1270,18 @@ function advisoryCount(
  * `oversight.ts`'s will-supersede total keeps one: driver-shape defence on a
  * number no caller can re-derive.
  */
-function readHeldBackCount(raw: unknown, workspaceId: string): number | null {
+function readHeldBackCount(
+  raw: unknown,
+  workspaceId: string,
+  // PARAMETERIZED since #5027, and it is not decoration: there are two
+  // statements shaped like this now, and a reader hard-coded to one of them
+  // reports a drift in the CARDINALITY count as a tier-guard problem — sending
+  // an operator to diff a statement that is provably fine, at the moment the
+  // only trace of supersession having stopped workspace-wide has gone missing.
+  // The `onFailure` messages were parameterized per call site from the start;
+  // this one was the half that got left behind.
+  statement: { readonly name: string; readonly withheldBecause: string },
+): number | null {
   const value = isJsonObject(raw) ? raw.held_back : undefined;
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -1148,8 +1292,8 @@ function readHeldBackCount(raw: unknown, workspaceId: string): number | null {
     // `heldBackRaw`, deliberately NOT `heldBack`: that key carries a number on
     // the info line, and one field with two types is a structured alert that
     // mis-fires or silently no-ops.
-    { workspaceId, heldBackRaw: value },
-    "brain publish: the tier-held-back count did not read back as a non-negative integer — pairs may have been withheld from supersession on tier grounds with no trace; diff TIER_HELD_BACK_COUNT_SQL",
+    { workspaceId, heldBackRaw: value, statement: statement.name },
+    `brain publish: a held-back count did not read back as a non-negative integer — pairs may have been withheld from supersession ${statement.withheldBecause} with no trace; diff ${statement.name}`,
   );
   return null;
 }
@@ -1164,35 +1308,6 @@ interface PromotableDraft {
    * principal, and this is the last point at which the type can say it cannot.
    */
   readonly grant: StoredGrant;
-  /**
-   * The draft's predicate cardinality (#4912) — `single` is the only kind
-   * that can supersede on promotion; `multi` coexists.
-   */
-  readonly cardinality: "single" | "multi";
-}
-
-/**
- * Cardinality off the draft row, defaulting CONSERVATIVELY.
- *
- * `chk_brain_facts_predicate_cardinality` makes an out-of-vocabulary value
- * unreachable from the database, so a fallback here is query drift — logged,
- * because the `multi` arm is the one that never supersedes: a `single` draft
- * misread as `multi` leaves a stale rival answering as-of-now reads, which an
- * operator can only find from this line. Wrongly superseding destroys a
- * belief; wrongly coexisting leaves a visible tension — so drift degrades to
- * the recoverable side.
- */
-function draftCardinality(
-  raw: unknown,
-  meta: { readonly rowId: string; readonly workspaceId: string },
-): "single" | "multi" {
-  const value = isJsonObject(raw) ? raw.predicate_cardinality : undefined;
-  if (value === "single" || value === "multi") return value;
-  log.warn(
-    { ...meta, cardinality: value },
-    "brain publish: draft carries a predicate cardinality outside the vocabulary — treating it as `multi`, so it will coexist rather than supersede",
-  );
-  return "multi";
 }
 
 /**
@@ -1427,11 +1542,7 @@ export function promoteBrainFacts(
         rowId: row.id,
         workspaceId: orgId,
       });
-      promotable.push({
-        id: row.id,
-        grant,
-        cardinality: draftCardinality(raw, { rowId: row.id, workspaceId: orgId }),
-      });
+      promotable.push({ id: row.id, grant });
     }
 
     // Skip the round trips when there is nothing to promote — a workspace with
@@ -1454,15 +1565,20 @@ export function promoteBrainFacts(
     if (promotable.length > 0) {
       // #4912: which already-published facts will this promotion supersede?
       // Read BEFORE the promote UPDATEs, and only for the classified-promotable
-      // `single` drafts — see SUPERSESSION_TARGETS_SQL on both. A refused draft
-      // never reaches this list, so it can never supersede.
-      const singleIds = promotable
-        .filter((draft) => draft.cardinality === "single")
-        .map((draft) => draft.id);
+      // drafts — see SUPERSESSION_TARGETS_SQL. A refused draft never reaches
+      // this list, so it can never supersede.
+      //
+      // EVERY promotable draft is offered, where this used to pre-filter to the
+      // rows whose own `predicate_cardinality` said `single` (#5027). There is
+      // nothing left to pre-filter ON: cardinality is a property of the
+      // canonical predicate now, so the answer lives in
+      // `brain_predicate_cardinality` and the collision predicate reads it
+      // there. The filter did not move — it stopped being expressible here.
+      const offeredIds = promotable.map((draft) => draft.id);
       const supersessionPairs: { readonly newId: string; readonly oldId: string }[] = [];
-      if (singleIds.length > 0) {
+      if (offeredIds.length > 0) {
         const targets = yield* Effect.tryPromise({
-          try: () => tx.query(SUPERSESSION_TARGETS_SQL, [orgId, singleIds]),
+          try: () => tx.query(SUPERSESSION_TARGETS_SQL, [orgId, offeredIds]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });
@@ -1534,8 +1650,12 @@ export function promoteBrainFacts(
         const heldBackCount = yield* advisoryCount(tx, {
           savepoint: "brain_tier_held_back",
           sql: TIER_HELD_BACK_COUNT_SQL,
-          params: [orgId, singleIds],
-          read: (row) => readHeldBackCount(row, orgId),
+          params: [orgId, offeredIds],
+          read: (row) =>
+            readHeldBackCount(row, orgId, {
+              name: "TIER_HELD_BACK_COUNT_SQL",
+              withheldBecause: "on tier grounds",
+            }),
           onFailure: (cause) =>
             log.warn(
               { workspaceId: orgId, err: cause instanceof Error ? cause.message : String(cause) },
@@ -1543,6 +1663,48 @@ export function promoteBrainFacts(
             ),
         });
         heldBack = heldBackCount;
+
+        // #5027 — the OTHER reason a provable collision does not stamp, and
+        // since this slice the overwhelmingly common one. Its own savepoint, so
+        // a failure in either diagnostic cannot take the other down with it (a
+        // shared one would be rolled back by the first failure and the second
+        // statement would run in an aborted transaction).
+        //
+        // Not folded into `heldBack`: the two numbers mean different things to
+        // an operator — one is a permanent tier refusal to arbitrate by hand,
+        // the other is a curation prompt — and a sum would be a number with no
+        // action attached. Kept OUT of the report and the audit row on purpose,
+        // which is the line this fix was scoped at: `supersessionHeldBack` is a
+        // durable per-publish record of an irreversible refusal, and a count
+        // that will be large-and-shrinking for every workspace during the
+        // vocabulary's first months does not belong in one. #5025's preview is
+        // where it becomes a surface.
+        const uncuratedCount = yield* advisoryCount(tx, {
+          savepoint: "brain_cardinality_held_back",
+          sql: CARDINALITY_HELD_BACK_COUNT_SQL,
+          params: [orgId, offeredIds],
+          read: (row) =>
+            readHeldBackCount(row, orgId, {
+              name: "CARDINALITY_HELD_BACK_COUNT_SQL",
+              withheldBecause: "for want of a vocabulary entry",
+            }),
+          onFailure: (cause) =>
+            log.warn(
+              { workspaceId: orgId, err: cause instanceof Error ? cause.message : String(cause) },
+              "brain publish: the uncurated-cardinality count could not be computed — pairs held back for want of a vocabulary entry this publish have NO trace, though the publish itself is unaffected and commits; diff CARDINALITY_HELD_BACK_COUNT_SQL",
+            ),
+        });
+        if (uncuratedCount !== null && uncuratedCount > 0) {
+          log.info(
+            {
+              workspaceId: orgId,
+              uncurated: uncuratedCount,
+              superseding: supersessionPairs.length,
+            },
+            "brain publish: provable collisions were NOT superseded because their canonical predicate is not curated `single` (#5027) — absent from the vocabulary means `multi`, so nothing was stamped and both claims stay current; curating the predicate makes these supersedable at the NEXT publish, retroactively and with no per-row record of the regime each fact was written under",
+          );
+        }
+
         if (heldBackCount !== null && heldBackCount > 0) {
           log.info(
             { workspaceId: orgId, heldBack: heldBackCount, superseding: supersessionPairs.length },
@@ -1664,11 +1826,11 @@ export function promoteBrainFacts(
       if (supersessionPairs.length > 0) {
         const oldIds = [...new Set(supersessionPairs.map((pair) => pair.oldId))];
         const stampResult = yield* Effect.tryPromise({
-          // `singleIds` a SECOND time, and not a convenience: it is the same
+          // `offeredIds` a SECOND time, and not a convenience: it is the same
           // list `SUPERSESSION_TARGETS_SQL` was given, so the stamp re-asks the
           // exact question that produced `oldIds` instead of trusting the answer
           // across the window an alias removal can land in (#5024).
-          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds, singleIds]),
+          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds, offeredIds]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });

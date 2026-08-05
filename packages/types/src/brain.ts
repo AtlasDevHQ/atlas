@@ -357,7 +357,21 @@ export interface BrainFactCandidate {
   readonly predicate: string;
   readonly object: string;
   readonly status: BrainFactReviewStatus;
-  /** `single` supersedes on conflict; `multi` coexists and corroborates. */
+  /**
+   * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.**
+   *
+   * It used to mean *`single` supersedes on conflict; `multi` coexists*. It no
+   * longer decides either: cardinality is a property of the CANONICAL PREDICATE,
+   * curated in `brain_predicate_cardinality` and read live at the publish gate.
+   * The row column stopped being written, so a fact ingested since the migration
+   * reports `multi` whatever its predicate is curated as, and one ingested
+   * before it carries the extractor's stale LLM guess.
+   *
+   * Still on the wire only because removing a field from a published type is a
+   * breaking change, and #5028 — which drops the column — owns it. Rendering a
+   * supersession claim from this field is a lie in both directions;
+   * `candidate-detail.tsx` deleted the one that existed.
+   */
   readonly predicateCardinality: "single" | "multi";
   /**
    * The derived grant, verbatim. A grant is never empty at rest, so `[]` here
@@ -785,6 +799,21 @@ export interface BrainFactResult {
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
+  /**
+   * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.**
+   *
+   * It used to mean *`single` supersedes on conflict; `multi` coexists*. It no
+   * longer decides either: cardinality is a property of the CANONICAL PREDICATE,
+   * curated in `brain_predicate_cardinality` and read live at the publish gate.
+   * The row column stopped being written, so a fact ingested since the migration
+   * reports `multi` whatever its predicate is curated as, and one ingested
+   * before it carries the extractor's stale LLM guess.
+   *
+   * Still on the wire only because removing a field from a published type is a
+   * breaking change, and #5028 — which drops the column — owns it. Rendering a
+   * supersession claim from this field is a lie in both directions;
+   * `candidate-detail.tsx` deleted the one that existed.
+   */
   readonly predicateCardinality: "single" | "multi";
   /**
    * Always `published` for an ordinary read — the content-mode clause admits

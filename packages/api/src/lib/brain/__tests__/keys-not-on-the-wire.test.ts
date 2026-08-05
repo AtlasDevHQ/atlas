@@ -88,7 +88,40 @@ const ORM_KEY_RE = new RegExp(`\\b(${ORM_KEY_COLUMNS.join("|")})\\b`);
  * and a shape-based exemption is one any read surface could adopt (the reason
  * `check-brain-fact-promotion.sh` names full paths too).
  */
-const DECLARATION_SITES = new Set(["packages/api/src/lib/db/schema.ts"]);
+const DECLARATION_SITES = new Set([
+  "packages/api/src/lib/db/schema.ts",
+  // The cardinality store (#5027). Its table's PRIMARY KEY is `predicate_key`,
+  // so the module cannot address a row without naming it — the same position
+  // `schema.ts` is in, one table over. What the arm is actually guarding is a
+  // fact-shaped TYPE growing a key field, and that is closed structurally
+  // rather than by this exemption: neither `PredicateCardinalityRecord` nor
+  // `CardinalityWriteResult` carries the key (the caller supplied it), and both
+  // say so in their own docstrings. #5025's review UI must render the SURFACE.
+  //
+  // ⚠️ **What this exemption COSTS, stated because the first version of this
+  // comment got it wrong.** It claimed "every remaining hit is a parameter name
+  // or a WHERE-clause bind". It is not: `CORRECTION_REPEAT_COUNT_SQL` has
+  // `COUNT(DISTINCT n.subject_key)` in PROJECTION position, so exempting the
+  // file switches off the SELECT/RETURNING arm as well as the ORM one — for the
+  // single module keyed on `predicate_key`. An aggregate over a key is not a
+  // projection OF a key (the same distinction `STAR_PROJECTION`'s lookahead
+  // draws for `COUNT(*)`), so nothing is wrong today; what is switched off is
+  // the guard against a FUTURE `RETURNING predicate_key` there.
+  //
+  // The compensating pin is `cardinality.test.ts`'s "does not project the
+  // predicate key", which reads the projection SPAN of the statement rather
+  // than its first column. That is the file-local replacement for what this
+  // line turns off, and it is why the exemption is affordable.
+  "packages/api/src/lib/brain/cardinality.ts",
+  // A MUTATION SPEC — a test fixture that happens to live outside `__tests__`,
+  // so the scan's non-test filter does not reach it. Its `predicate_key`
+  // occurrences are the before/after strings of the "`INSERT_FACT_SQL` feeds
+  // `predicate_cardinality` again" mutation, i.e. quoted copies of production
+  // SQL that `scripts/mutate.ts` applies and then reverts. It is not a read
+  // surface, it ships in no bundle, and it is reached by this scan only because
+  // the file it mutates says `brain_facts`.
+  "packages/api/scripts/mutations/cardinality.mutations.ts",
+]);
 
 /**
  * Every non-test source file that speaks about `brain_facts` in either

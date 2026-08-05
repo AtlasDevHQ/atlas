@@ -3903,3 +3903,94 @@ export const brainVocabularyProposal = pgTable(
       .where(sql`status IN ('pending', 'applying')`),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// brain_predicate_cardinality — cardinality as a property of the canonical
+// predicate (0192, #5027, ADR-0037 §3).
+//
+// `brainFacts.predicateCardinality` was believed unpopulated. It was not: the
+// extractor wrote the MODEL's per-claim guess and the correction path inherited
+// it, so the publish gate's both-sides `'single'` requirement fired at roughly
+// P(model says 'single')² — from two independent model calls, against a prompt
+// biased toward `multi`. An unpopulated column fails predictably; that one
+// failed STOCHASTICALLY, on a `valid_to` stamp no verb restores.
+//
+// One value per canonical predicate makes the both-sides requirement satisfiable
+// by construction: two rows in one slot share a `predicateKey`, so they can no
+// longer each carry an opinion and therefore cannot disagree.
+//
+// Keyed on `predicateKey` — `alias(lexicalNorm(surface))`, i.e. what
+// `brainFacts.predicateKey` holds — and NOT on a raw norm, which would hold two
+// entries for one slot the moment an alias merged two spellings.
+//
+// NOT on `brainVocabularyTarget`: `recomputeEffectiveTargets` deletes and
+// rebuilds that relation wholesale on every approval, so authored state parked
+// there is destroyed by the next unrelated approval at the same position.
+//
+// ONE relation with a `status`, unlike 0190's third-relation split, and the
+// difference is principled rather than convenient — neither of 0190's two
+// reasons reaches here. A pending row occupying the predicate's only slot is
+// idempotence rather than a queue entry vetoing a decision, and that same slot
+// carries the REJECTION MEMORY (#4507) once REJECTED; and there
+// is no closure rebuild to confuse a proposal with a decision, only one reader,
+// which filters `status = 'approved'` explicitly. See migration 0192's header.
+//
+// ABSENT MEANS `multi`, and there is no backfill: an uncurated predicate never
+// supersedes. Ambiguity resolves to `multi` too, so a predicate whose
+// cardinality depends on the subject's type (`located in`) is simply never
+// marked `single` and never has to be adjudicated.
+export const brainPredicateCardinality = pgTable(
+  "brain_predicate_cardinality",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // The canonical predicate. Callers derive it with `slotKey(surface,
+    // vocabulary.predicate)` and never hand-normalize.
+    predicateKey: text("predicate_key").notNull(),
+    // A stored `multi` is not redundant with absence: absence means nobody has
+    // looked, and a stored `multi` is a human declining the question — which is
+    // what stops a producer re-proposing it.
+    cardinality: text("cardinality").notNull(),
+    status: text("status").notNull().default("pending"),
+    // The allowlist for how `single` may enter — ADR-0037 §3(d)'s three sources
+    // and no others. `correction_event` may only ever write `pending`; `human`
+    // writes `approved`, because the human IS the approval.
+    sourceClass: text("source_class").notNull(),
+    // NOT NULL on `brainVocabularyProposal.proposedBy`'s reasoning: every row
+    // has an author, and "machine, no human" is carried by a NULL `reviewedBy`.
+    proposedBy: text("proposed_by").notNull(),
+    proposedAt: timestamp("proposed_at", { withTimezone: true }).notNull().defaultNow(),
+    // Same three-valued domain as `brainVocabularyEdge.approvedBy`: NULL for a
+    // machine decision, `local-operator` for a human on a no-auth deployment,
+    // otherwise a user id.
+    reviewedBy: text("reviewed_by"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.predicateKey] }),
+    check("ck_brain_predicate_cardinality_value", sql`cardinality IN ('single', 'multi')`),
+    check(
+      "ck_brain_predicate_cardinality_status",
+      sql`status IN ('pending', 'approved', 'rejected')`,
+    ),
+    check(
+      "ck_brain_predicate_cardinality_source_class",
+      sql`source_class IN ('warehouse_structural', 'correction_event', 'human')`,
+    ),
+    // `identityKey` answers NULL for a surface that norms away, and a caller
+    // coercing that to `''` would file every degenerate predicate under one
+    // entry — which, on a `single` row, is a workspace-wide licence to supersede.
+    check("ck_brain_predicate_cardinality_key_present", sql`predicate_key <> ''`),
+    // `NOT NULL` alone admits `''` — an unattributed row wearing the shape of
+    // an attributed one, on the column an audit of a retroactive re-key reads
+    // first.
+    check("ck_brain_predicate_cardinality_author_present", sql`proposed_by <> ''`),
+    // The queue read. The PK leads with `workspaceId` but continues on
+    // `predicateKey`, so it is not an access path for a status-filtered scan.
+    // Partial, because decided rows are read by IDENTITY through the PK — the
+    // approved ones by the publish gate's EXISTS, the rejected ones by the
+    // proposer's ON CONFLICT — and never listed.
+    index("idx_brain_predicate_cardinality_pending")
+      .on(t.workspaceId, t.proposedAt.desc())
+      .where(sql`status = 'pending'`),
+  ],
+);

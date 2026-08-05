@@ -387,10 +387,23 @@ const ExtractionSchema = z.object({
           .describe("The relationship, as a short lowercase verb phrase, e.g. 'reports to'."),
         object: z.string().describe("The value or entity the subject relates to."),
         cardinality: z
-          // Derived from the SSOT tuple, never hand-listed: the value is
-          // written straight into `predicate_cardinality`, whose CHECK is the
-          // same list, and two spellings would drift the first time M2 adds an
-          // arm.
+          // Derived from the SSOT tuple, never hand-listed — two spellings would
+          // drift the first time an arm is added.
+          //
+          // ⚠️ This answer is a NON-LOAD-BEARING HINT since #5027 (ADR-0037 §3).
+          // It used to be written straight into
+          // `brain_facts.predicate_cardinality`, which the publish gate then
+          // required to read `single` on BOTH sides of a collision — two
+          // independent model calls, on two different messages, against the
+          // "when unsure answer 'multi'" instruction below. Supersession
+          // therefore fired at roughly P(model says `single`)²: a stochastic
+          // gate on an operation with no inverse.
+          //
+          // It is still asked for, because it is worth recording what the
+          // extractor thought and it feeds the advisory tension edges. It must
+          // never again decide whether a belief is retired — cardinality belongs
+          // to the canonical predicate, and only a human or a warehouse
+          // structural declaration may set it.
           .enum(PREDICATE_CARDINALITIES)
           .describe(
             "'single' when the subject can only have ONE such object at a time (a manager, an owner); 'multi' when several can coexist (a language, a skill). When unsure answer 'multi'.",
@@ -488,11 +501,30 @@ export const llmFactExtractor: FactExtractor = async ({ episode, body, model, mo
     subject: fact.subject,
     predicate: fact.predicate,
     object: fact.object,
+    // A HINT since #5027, and one that now reaches only the advisory
+    // `in-tension-with` edges (`reconcile.ts`). It no longer reaches
+    // `brain_facts.predicate_cardinality`, and therefore no longer reaches a
+    // `valid_to` stamp: cardinality is a property of the CANONICAL PREDICATE,
+    // curated in `brain_predicate_cardinality` and read live at the publish gate
+    // (ADR-0037 §3). What this line used to do was let two independent model
+    // calls on two different messages decide, between them, whether a belief was
+    // destroyed.
     predicateCardinality: fact.cardinality,
     // The model id belongs in provenance: a later pass with a better model has
     // to be tellable from this one, and the reviewer is entitled to know what
     // asserted the claim on the source's behalf.
-    detail: { extractor: BRAIN_EXTRACTION_PRODUCER, model: modelId },
+    //
+    // `cardinalityHint` rides here for the same reason and with no more
+    // authority than the model id: it records WHAT THE EXTRACTOR THOUGHT, which
+    // is worth keeping (a curator adjudicating `reports to` can see that the
+    // extractor called it `single` on forty messages) and is worth nothing more.
+    // Nothing reads it, and nothing may read it into a supersession decision —
+    // that is the defect #5027 removed.
+    detail: {
+      extractor: BRAIN_EXTRACTION_PRODUCER,
+      model: modelId,
+      cardinalityHint: fact.cardinality,
+    },
   }));
 };
 

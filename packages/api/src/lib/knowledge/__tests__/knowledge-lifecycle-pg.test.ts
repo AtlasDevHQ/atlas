@@ -20,6 +20,7 @@ import { Pool } from "pg";
 import { zipSync, strToU8 } from "fflate";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
@@ -993,7 +994,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
            (workspace_id, subject, predicate, object, source_episode_id,
             provenance, status, visible_to, predicate_cardinality,
             subject_key, predicate_key, object_key, object_cmp)
-         VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}', 'single',
+         VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}', 'multi',
                  $5, $6, $7, $8)
          RETURNING id`,
         [
@@ -1011,6 +1012,25 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     };
     const supersededFactId = await seedFact("bob", "published");
     const supersedingFactId = await seedFact("carol", "draft");
+
+    // Cardinality is a property of the CANONICAL PREDICATE since #5027, and
+    // absent means `multi` — so without this the publish gate stamps nothing and
+    // the supersession assertion below reads `[]` for a reason that has nothing
+    // to do with the adapter registration it exists to pin. The row column
+    // above is deliberately `'multi'` now: it decides nothing, and leaving it
+    // `'single'` would suggest the fixture still turns on it.
+    //
+    // Declared through the shipped authoring door rather than a raw INSERT, so a
+    // change to what the write path admits reaches this suite instead of being
+    // routed around.
+    const curated = await declarePredicateCardinality(pool, wsPromote, {
+      predicateKey: slotKey("manager", identityAlias),
+      cardinality: "single",
+      authoredBy: "curator-1",
+    });
+    expect(curated.ok, "curation failed — the supersession assertion below would be vacuous").toBe(
+      true,
+    );
 
     // Run the SAME registry promote the atomic publish endpoint runs, inside a
     // real transaction — this executes the derived

@@ -214,6 +214,13 @@ export const CLEANUP_TABLE_RULES = {
   // a human decision this classification loses at a cutover, and names #5036 as
   // where it starts travelling.
   brain_vocabulary_proposal: { kind: "column", column: "workspace_id" },
+  // Cardinality on the canonical predicate (#5027). Column-scoped and
+  // phase-indifferent, like the queue above: no FK points at it in either
+  // direction. bundle-scope.ts records what this deletion costs — the curated
+  // `single` entries and the producers' rejection memory — and why carrying
+  // them is DEFERRED rather than refused: the importer lands its facts unkeyed
+  // today, so an entry would arrive beside rows it cannot match (#5035, #5036).
+  brain_predicate_cardinality: { kind: "column", column: "workspace_id" },
   // Scheduling state for the audience re-verifiers (#4971) — "this audience has
   // had its turn", read by nothing but the scan's ORDER BY. Workspace-scoped and
   // therefore deletable by column, like the membership table it sits beside, but

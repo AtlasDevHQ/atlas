@@ -535,12 +535,23 @@ function reviewStatus(value: unknown, rowId: string, workspaceId: string): Brain
 /**
  * Predicate cardinality off `pg`.
  *
- * Logged on drift for the same reason `reviewStatus` is, and it matters MORE
- * here: the fallback arm is the less conservative reading. `multi` renders as
- * "many values may coexist", understating a conflict, where `single` is the
- * cautious one. `chk_brain_facts_predicate_cardinality` puts this on the same
- * footing as the status CHECK — unreachable from the database, so a hit is
- * query drift.
+ * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.**
+ *
+ * Cardinality is a property of the CANONICAL PREDICATE now, read live from `brain_predicate_cardinality` at the
+ * publish gate. `brain_facts.predicate_cardinality` stopped being written, so
+ * every fact ingested since the migration reports `multi` however its predicate
+ * is curated, and every earlier one carries the extractor's stale LLM guess.
+ *
+ * The reading it used to drive is gone with it: this docstring said `multi`
+ * "renders as *many values may coexist*, understating a conflict", and
+ * `candidate-detail.tsx` deleted that sentence in the same slice — a claim
+ * about an irreversible write, on the screen where a reviewer makes it, sourced
+ * from a column that no longer decides one.
+ *
+ * Still projected only because removing a field from a published type is a
+ * breaking change; #5028, which drops the column, owns it. Nothing may branch on
+ * it, and the drift log below is now about the STORED value's shape rather than
+ * about a conflict anyone will read.
  */
 function predicateCardinality(row: FactRow, workspaceId: string): "single" | "multi" {
   if (row.predicate_cardinality === "single" || row.predicate_cardinality === "multi") {

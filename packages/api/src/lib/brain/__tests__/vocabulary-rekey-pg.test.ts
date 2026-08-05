@@ -155,13 +155,16 @@ import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal"
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
   IDENTITY_MUTATION_LOCK_SQL,
+  identityAlias,
   identityVocabulary,
   lexicalNorm,
   lexicalNormSql,
   identityKeySql,
+  slotKey,
   SLOT_POSITIONS,
   type SlotPosition,
 } from "@atlas/api/lib/brain/identity";
+import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import {
   decideAliasProposal,
   proposeAliasEdge,
@@ -798,6 +801,23 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     const d = await readFact(draftId);
     expect(p.predicate_key).toBe("delivery date");
     expect(d.predicate_key).toBe("delivery date");
+    // …and the merged CANONICAL predicate has to be curated `single`, or the
+    // collision cannot fire whatever the alias did (#5027). Declared AFTER the
+    // approval, on the post-merge key: an entry under `ships on` would key to a
+    // predicate that no longer has any rows, which is the whole reason ADR-0037
+    // §6 records that an alias approval moves a predicate's population under a
+    // different cardinality entry.
+    const declared = await declarePredicateCardinality(pool, WS, {
+      // Through `slotKey`, like every other repointed suite, rather than the
+      // literal the assertions two lines up happen to spell. A normalization
+      // change would silently decouple a hand-written key from the one the
+      // collision join reads, and this fixture would then curate a predicate
+      // that no row has.
+      predicateKey: slotKey("delivery date", identityAlias),
+      cardinality: "single",
+      authoredBy: "curator-1",
+    });
+    expect(declared.ok, "curation failed — both tests below would pass against a stamp that does nothing").toBe(true);
     return { draftId, publishedId, proposalId };
   }
 

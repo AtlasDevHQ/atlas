@@ -612,6 +612,18 @@ describe("ContentModeRegistry.runPublishPhases", () => {
           },
         ],
       },
+      // #5027 — the supersession block now runs on EVERY publish that has a
+      // promotable draft, and it runs BEFORE the evidence lookup. It used to be
+      // skipped entirely here: the adapter pre-filtered to the drafts whose own
+      // `predicate_cardinality` said `single`, and these fixture rows carry no
+      // such column, so the subset was empty. Cardinality is a property of the
+      // canonical predicate now, so "does anything in this batch collide" is a
+      // question only the database can answer and it is always asked.
+      { rows: [] }, //                                           SUPERSESSION_TARGETS_SQL (nothing collides)
+      { rows: [] }, //                                           SAVEPOINT brain_tier_held_back
+      { rows: [{ held_back: 0 }] }, //                           TIER_HELD_BACK_COUNT_SQL
+      { rows: [] }, //                                           SAVEPOINT brain_cardinality_held_back
+      { rows: [{ held_back: 0 }] }, //                           CARDINALITY_HELD_BACK_COUNT_SQL
       // #4823 evidence-grant lookup: `f-ok`'s only episode carries the grant it
       // already has, so nothing widens and the plain promote runs.
       { rows: [{ fact_id: "f-ok", visible_to: ["org"] }] },
@@ -652,10 +664,17 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(reports[5].refused?.map((r) => r.rowId)).toEqual(["f-ungranted"]);
     expect(reports[5].widened).toEqual([]);
 
-    // 14 since #5024: the eleven above plus the lock bound, the
-    // identity-mutation lock the brain phase takes before it reads, and the
-    // reset that keeps the bound off every later statement in the transaction.
-    expect(calls).toHaveLength(14);
+    // 19 since #5027: the 14 of #5024, plus the five the supersession block now
+    // always issues — the targets SELECT and the two advisory counts, each
+    // behind its OWN savepoint (a shared one would leave the transaction
+    // aborted after the first failure, so the second count would fail for a
+    // reason unrelated to it).
+    //
+    // The cost is stated where it lands: two extra round trips per publish that
+    // has anything to promote, on an admin action rather than a hot path, in
+    // exchange for deleting a stochastic gate on an irreversible write and for
+    // the only operator trace that a provable collision was withheld.
+    expect(calls).toHaveLength(19);
     expect(calls[0].sql).toContain("UPDATE workspace_plugins");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
@@ -666,8 +685,9 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(calls[6].sql).toMatch(/DELETE FROM semantic_entities/);
     expect(calls[7].sql).toContain("UPDATE semantic_entities");
     // brain_facts: bound the wait, take the identity-mutation lock (#5024),
-    // read the drafts under a row lock, read the grants of the episodes behind
-    // them (#4823), then promote by explicit id.
+    // read the drafts under a row lock, ask what collides and why it did not
+    // (#5033, #5027), read the grants of the episodes behind them (#4823), then
+    // promote by explicit id.
     expect(calls[8].sql).toContain("SET LOCAL lock_timeout = '");
     expect(calls[9].sql).toContain("pg_advisory_xact_lock");
     // Reset BEFORE the drafts are read: `SET LOCAL` reverts at COMMIT, so an
@@ -676,8 +696,26 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(calls[10].sql).toContain("SET LOCAL lock_timeout = DEFAULT");
     expect(calls[11].sql).toMatch(/FROM brain_facts/);
     expect(calls[11].sql).toMatch(/FOR UPDATE/i);
-    expect(calls[12].sql).toContain("brain_edges");
-    expect(calls[13].sql).toContain("UPDATE brain_facts");
+    // #5027 — the collision question, then the two diagnostics that say why it
+    // was answered "nothing", each behind its own savepoint. Asserted by INDEX
+    // and not merely by presence, because this double answers in ORDER: a
+    // statement issued in a different place consumes the wrong seeded response
+    // and shifts every assertion after it by one.
+    expect(calls[12].sql).toContain("superseded_id");
+    expect(calls[13].sql).toContain("SAVEPOINT brain_tier_held_back");
+    expect(calls[14].sql).toContain("IS NOT TRUE");
+    expect(calls[15].sql).toContain("SAVEPOINT brain_cardinality_held_back");
+    // Identified by `NOT EXISTS` rather than by the table name: calls 12, 14 AND
+    // 16 all name `brain_predicate_cardinality`. Call 12 joins on
+    // `supersessionCollisionPredicate` and call 14 on `collisionIdentityPredicate`
+    // — both of which contain `cardinalitySingleSql` — while this one joins on
+    // the CORE and negates it. Pinning on the table name would pass if this
+    // statement were replaced by a second copy of the tier count; `NOT EXISTS`
+    // is what distinguishes them.
+    expect(calls[16].sql).toContain("NOT EXISTS");
+    expect(calls[16].sql).not.toContain("IS NOT TRUE");
+    expect(calls[17].sql).toContain("brain_edges");
+    expect(calls[18].sql).toContain("UPDATE brain_facts");
 
     // Every phase is org-scoped on $1. The brain promote additionally binds the
     // promotable id list on $2 — the refusal is enforced by which rows we ask
@@ -692,8 +730,19 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(calls[8].params).toEqual([]);
     expect(calls[9].params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, "org-1"]);
     expect(calls[10].params).toEqual([]);
-    expect(calls[12].params).toEqual(["org-1", ["f-ok"]]);
-    expect(calls[13].params).toEqual(["org-1", ["f-ok"]]);
+    // Every statement that takes an id list gets the SAME one — the classified-
+    // promotable set — so the collision question, both diagnostics, the evidence
+    // lookup and the promote all speak about exactly the rows this transaction
+    // will publish. A diagnostic scoped to a different set would report a number
+    // about pairs the transaction never considered.
+    for (const i of [12, 14, 16, 17, 18]) {
+      expect(calls[i].params, `statement ${i} was scoped to a different id list`).toEqual([
+        "org-1",
+        ["f-ok"],
+      ]);
+    }
+    // The savepoints take none.
+    for (const i of [13, 15]) expect(calls[i].params).toEqual([]);
   });
 
   it("invokes simple and exotic adapters in tuple order with a non-failing exotic (test tuple)", async () => {

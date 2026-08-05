@@ -219,7 +219,10 @@ function fakeTransaction(
                   predicate: "leads",
                   object: "Platform",
                   status: "published",
-                  predicate_cardinality: "single",
+                  // No `predicate_cardinality`: `correctionTargetSql` stopped
+                  // selecting it in #5027 and `readTargetRow` no longer narrows
+                  // it, so a fixture still supplying it would read as though the
+                  // projection still carried it.
                   provenance: { source },
                   visible_to: ["org"],
                   valid_to: null,

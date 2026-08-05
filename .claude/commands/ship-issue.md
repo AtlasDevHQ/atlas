@@ -56,8 +56,9 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 /review-panel
 ```
-- Verdict **CHANGES REQUESTED** → address the must-fix findings, then re-run `/review-panel` on the new diff.
+- Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → decide in-PR vs follow-up explicitly and record the reason in the PR body), then fix, then re-run `/review-panel` on the new diff.
 - Repeat until **CLEAN**, capped at **3 rounds**. If it can't converge in 3 (usually a spec ambiguity), STOP and ask the human.
+- The cap is on ROUNDS, not on scope. A round-2 fix that adds real machinery *should* earn a round 3 — don't skip the re-review to stay under the cap. If the work genuinely needs a fourth round, that is the STOP-and-ask case, not a reason to merge unreviewed.
 
 **Step 4 — CI gate**
 

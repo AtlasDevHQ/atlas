@@ -351,7 +351,7 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
     "a pre-store row is `unknown`, so it neither supersedes nor is superseded",
     async () => {
       // What the NULL actually MEANS, asserted rather than left implied by the
-      // two tests above. This is the permanent two-tier corpus the issue records
+      // tests above. This is the permanent two-tier corpus the issue records
       // as an accepted cost, and it is the reason the no-backfill rule is safe
       // to keep: the legacy row is not broken, it abstains.
       const ws = "ws-5030-two-tier";
@@ -513,7 +513,7 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
         // `split_part('money', ':', 1)` returns the whole string `'money'`,
         // which IS in the known-tag list — so before the `strpos` arm these
         // read as *provably different* from every real value of their own type,
-        // measured on PG 16. The three fixtures above all carry a separator and
+        // measured on PG 16. The fixtures above all carry a separator and
         // so dodge the one shape the membership arm cannot handle alone; that
         // is the fixtures-agree-by-construction trap, inside the test written
         // to close it.

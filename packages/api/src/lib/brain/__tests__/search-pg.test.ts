@@ -210,7 +210,8 @@ describeIfPg("searchBrain against the live schema", () => {
   it(
     "matches a snake_case predicate by its spaced spelling, and ranks a subject hit above a predicate-only hit",
     async () => {
-      // Two properties of 0181's expression, both easy to break silently.
+      // The properties of 0181's expression that this pins, each easy to break
+      // silently.
       //
       // 1. Snake_case predicates are matchable as words. This works because the
       //    default parser emits `_` as a blank — NOT because of any special

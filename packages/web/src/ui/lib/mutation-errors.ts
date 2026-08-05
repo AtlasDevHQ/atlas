@@ -1,4 +1,4 @@
-import type { FetchError } from "@/ui/lib/fetch-error";
+import { isPlaceholderMessage, type FetchError } from "@/ui/lib/fetch-error";
 
 /**
  * Combine multiple mutation error slots into a single banner entry.
@@ -29,5 +29,17 @@ export function combineMutationErrors(
   if (unique.length === 0) return null;
   const primary = unique[0]!;
   if (unique.length === 1) return primary;
-  return { ...primary, message: `${primary.message} (+${unique.length - 1} more)` };
+  // Never build the "+N more" suffix onto a synthesized placeholder.
+  // `"HTTP 403"` decorated to `"HTTP 403 (+1 more)"` stops matching
+  // `serverMessage`'s sentinels, so it reads as server prose to every surface
+  // downstream — and since #5068 those surfaces render it as a gate's only
+  // line of copy, which is the status-echo-where-guidance-belongs defect this
+  // all exists to prevent. Dropping to the generic keeps the count visible
+  // without lying about where the text came from.
+  //
+  // `isPlaceholderMessage`, not `serverMessage`: a message with no status is
+  // client-authored ("Network error") but perfectly good to decorate, and
+  // `serverMessage` would discard it.
+  const base = isPlaceholderMessage(primary) ? "Request failed" : primary.message;
+  return { ...primary, message: `${base} (+${unique.length - 1} more)` };
 }

@@ -17,7 +17,9 @@ void mock.module("@/ui/hooks/use-deploy-mode", () => ({
 import {
   EnterpriseUpsell,
   FeatureGate,
+  GATE_STATUSES,
   MfaRequiredPlaceholder,
+  type GateStatus,
 } from "../components/admin/feature-disabled";
 
 describe("FeatureGate — canned copy (no server message)", () => {
@@ -93,23 +95,36 @@ describe("FeatureGate — the server's message displaces the guess (#5068)", () 
     );
   });
 
-  test("401 ADDS the server message and keeps the sign-in line", () => {
-    // 401 is the one status whose canned line is not a guess at the cause but
-    // the affordance — it is true whatever the server said. Displacing it
-    // leaves an accurate diagnosis with no next step, which is why this arm
-    // appends where the other three replace.
+  test("401 prefers the server message over the sign-in line", () => {
+    // Fixtures are the shapes `managed.ts` / `simple-key.ts` / `byot.ts`
+    // actually emit: bare fragments with NO terminal punctuation. An earlier
+    // pass appended the canned line to them and shipped "Not signed in Please
+    // sign in to access the admin console." on 100% of real 401s — a fixture
+    // ending in a period was the only reason that looked fine.
+    for (const message of ["Not signed in", "Session expired (idle timeout)"]) {
+      const { container } = render(
+        <FeatureGate status={401} feature="Audit Log" message={message} />,
+      );
+      expect(container.textContent).toContain("Authentication required");
+      expect(container.textContent).toContain(message);
+      expect(container.textContent).not.toContain(
+        "Please sign in to access the admin console.",
+      );
+      cleanup();
+    }
+  });
+
+  test("401 does not tell a BANNED account to sign in", () => {
+    // The case that killed the append outright: `managed.ts:83` answers 401
+    // with "Account is banned", and signing in is precisely what will not
+    // help. Same for either key-based ATLAS_AUTH_MODE, where there is no
+    // sign-in at all. The canned line is not an affordance that survives every
+    // cause — it is one more guess, and the server's beats it.
     const { container } = render(
-      <FeatureGate
-        status={401}
-        feature="Audit Log"
-        message="Your session expired."
-      />,
+      <FeatureGate status={401} feature="Audit Log" message="Account is banned" />,
     );
-    expect(container.textContent).toContain("Authentication required");
-    expect(container.textContent).toContain("Your session expired.");
-    expect(container.textContent).toContain(
-      "Please sign in to access the admin console.",
-    );
+    expect(container.textContent).toContain("Account is banned");
+    expect(container.textContent).not.toContain("sign in");
   });
 
   test("503 replaces the whole unexplained-outage line, headline included", () => {
@@ -128,17 +143,28 @@ describe("FeatureGate — the server's message displaces the guess (#5068)", () 
     expect(container.textContent).not.toContain("Retry in a moment");
   });
 
-  test("a blank server message does not render an empty description", () => {
+  test("a blank server message does not render an empty description — on ANY arm", () => {
     // `serverMessage` normalizes blanks away, but `FeatureGate` takes a bare
     // `string | undefined` and any caller can hand it one. Icon + headline
     // over an empty <p> is the blank-chrome failure `buildFetchError` exists
-    // to prevent, and the `??` guard is nullish-only.
-    const { container } = render(
-      <FeatureGate status={404} feature="Users" message="" />,
-    );
-    expect(container.textContent).toContain(
-      "Enable this feature in your server configuration to use this page.",
-    );
+    // to prevent, and it is guarded by `||` — a nullish `??` would let ""
+    // through. Every arm, because the guard was falsified on exactly one of
+    // four and swapping the other three back to `??` changed nothing visible.
+    const canned: Record<GateStatus, string> = {
+      401: "Please sign in to access the admin console.",
+      403: "You need the admin role to access this page.",
+      404: "Enable this feature in your server configuration to use this page.",
+      503: "Retry in a moment",
+    };
+    for (const status of GATE_STATUSES) {
+      for (const blank of ["", "   "]) {
+        const { container } = render(
+          <FeatureGate status={status} feature="Users" message={blank} />,
+        );
+        expect(container.textContent).toContain(canned[status]);
+        cleanup();
+      }
+    }
   });
 });
 
@@ -159,10 +185,25 @@ describe("FeatureGate — request id (#5068)", () => {
       if (!line) throw new Error(`no request-id line on the ${status} gate`);
       // Read the id off ITS OWN element, not the container: `toContain` on the
       // whole page passes for an id rendered anywhere, including inside a
-      // description that happened to quote it.
-      expect(line.textContent).toContain(REQUEST_ID);
+      // description that happened to quote it. Exact text, not `toContain`,
+      // so dropping the "Request ID:" label — leaving a bare uuid an operator
+      // has no reason to recognize — fails here.
+      expect(line.textContent).toBe(`Request ID: ${REQUEST_ID}`);
     });
   }
+
+  test("a blank id renders no line rather than a bare label", () => {
+    // `extractFetchError` accepts any string, so "   " reaches here. The label
+    // over nothing is the same blank-chrome class the message guard prevents.
+    for (const blank of ["", "   "]) {
+      const { container } = render(
+        <FeatureGate status={403} feature="Users" requestId={blank} />,
+      );
+      expect(container.querySelector('[data-testid="feature-gate-request-id"]')).toBeNull();
+      expect(container.textContent).not.toContain("Request ID");
+      cleanup();
+    }
+  });
 
   test("renders the id alongside a server message rather than instead of it", () => {
     const { container } = render(

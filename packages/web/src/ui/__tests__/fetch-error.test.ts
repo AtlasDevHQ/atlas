@@ -4,6 +4,7 @@ import {
   extractFetchError,
   friendlyError,
   friendlyErrorOrNull,
+  gateProps,
   serverMessage,
 } from "../lib/fetch-error";
 
@@ -283,6 +284,30 @@ describe("serverMessage", () => {
     expect(serverMessage({ message: "  Admin role required.  ", status: 403 })).toBe(
       "Admin role required.",
     );
+  });
+});
+
+describe("gateProps", () => {
+  // The pairing the three gated placeholders take. It exists so "which two
+  // fields, derived how" is decided once rather than per call site — #5068 was
+  // one call site forgetting, and the review then found a second with no test.
+  test("derives the server message and the id together", () => {
+    expect(
+      gateProps({
+        message: "No internal database configured.",
+        status: 404,
+        requestId: "req-1",
+      }),
+    ).toEqual({ message: "No internal database configured.", requestId: "req-1" });
+  });
+
+  test("passes NO message through when the body carried none", () => {
+    // The whole reason the helper exists: a spread of `{message: err.message}`
+    // would put "HTTP 404" where the placeholder's canned guidance belongs.
+    expect(gateProps({ message: "HTTP 404", status: 404, requestId: "req-2" })).toEqual({
+      message: undefined,
+      requestId: "req-2",
+    });
   });
 });
 

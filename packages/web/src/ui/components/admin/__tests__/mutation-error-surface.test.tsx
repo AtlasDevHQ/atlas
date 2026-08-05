@@ -86,9 +86,7 @@ describe("MutationErrorSurface", () => {
     // Without this the fixture is inert — the test passed identically with
     // `message` dropped from the props.
     expect(container.textContent).toContain("No user ID in session.");
-    // 401 appends rather than displaces: the sign-in affordance stays true
-    // whatever the server said.
-    expect(container.textContent).toContain(
+    expect(container.textContent).not.toContain(
       "Please sign in to access the admin console.",
     );
   });

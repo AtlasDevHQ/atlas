@@ -8,7 +8,7 @@ import {
 } from "@/ui/components/admin/feature-disabled";
 import { InlineError } from "@/ui/components/admin/compact";
 import type { FeatureName } from "@/ui/components/admin/feature-registry";
-import { friendlyError, serverMessage, type FetchError } from "@/ui/lib/fetch-error";
+import { friendlyError, gateProps, serverMessage, type FetchError } from "@/ui/lib/fetch-error";
 
 type Variant = "banner" | "inline";
 
@@ -127,20 +127,11 @@ export function MutationErrorSurface({
   }
 
   if (isEnterpriseRequired) {
-    return (
-      <EnterpriseUpsell feature={feature} message={authored} requestId={error.requestId} />
-    );
+    return <EnterpriseUpsell feature={feature} {...gateProps(error)} />;
   }
 
   if (isGateStatus(error.status)) {
-    return (
-      <FeatureGate
-        status={error.status}
-        feature={feature}
-        message={authored}
-        requestId={error.requestId}
-      />
-    );
+    return <FeatureGate status={error.status} feature={feature} {...gateProps(error)} />;
   }
 
   return <ErrorBanner message={friendlyError(error)} onRetry={onRetry} />;

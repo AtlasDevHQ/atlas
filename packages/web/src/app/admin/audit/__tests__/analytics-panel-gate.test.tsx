@@ -146,13 +146,25 @@ describe("AnalyticsPanel — the gate carries the server's words and the id (#50
     ).toBeNull();
   });
 
-  test("a 503 reaches the gate at all — this file used to omit it from the set", async () => {
-    // The panel wrote its own `[401, 403, 404]` list twice and left 503 out,
-    // so an authz-service outage fell through to five per-chart error banners
-    // rendering the raw message with no correlation id. Now it shares
-    // `isGateStatus`. The `[role="alert"]` assertion is what distinguishes
-    // "routed to the gate" from "routed to the banners" — the copy alone
-    // would appear either way, since the banners render the same message.
+  test("a 404 without a body message still shows the id when one is present", async () => {
+    failAll(404, { error: "not_available", requestId: REQUEST_ID });
+    const view = renderPanel();
+
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("Query Analytics not enabled"),
+    );
+    const line = view.container.querySelector('[data-testid="feature-gate-request-id"]');
+    if (!line) throw new Error("gate rendered no request-id line");
+    expect(line.textContent).toContain(REQUEST_ID);
+  });
+
+  test("a 503 is NOT promoted to a page-level gate — it stays per-chart", async () => {
+    // 503 is deliberately excluded from this page's gate set. 401/403/404 are
+    // shared verdicts (whatever denies one of the five requests denies all
+    // five), but a 503 can fail one — a restarting replica, an unhealthy
+    // proxy — and gating on the first would discard four charts that rendered
+    // fine. An earlier pass added 503 here and this is the arm that says why
+    // it came back out.
     failAll(503, {
       error: "permissions_unavailable",
       message: "Authorization service is temporarily unavailable.",
@@ -161,12 +173,32 @@ describe("AnalyticsPanel — the gate carries the server's words and the id (#50
     const view = renderPanel();
 
     await waitFor(() =>
-      expect(view.container.textContent ?? "").toContain("Query Analytics is unavailable"),
+      expect(view.container.querySelectorAll('[role="alert"]').length).toBeGreaterThan(0),
     );
-    expect(view.container.querySelector('[role="alert"]')).toBeNull();
-    expect(view.container.textContent ?? "").toContain(
-      "Authorization service is temporarily unavailable.",
-    );
+    // The gate's own headline is the discriminator — the banners render the
+    // server sentence either way, so asserting on the copy proves nothing.
+    expect(view.container.textContent ?? "").not.toContain("Query Analytics is unavailable");
+    // The banners go through `friendlyError`, so they carry the correlation id
+    // that raw `.message` was dropping.
     expect(view.container.textContent ?? "").toContain(REQUEST_ID);
+  });
+
+  test("a 500 is a fault, not a gate — the whitelist still means something", async () => {
+    // The negative the gate arms need: without it, widening `findGateError` to
+    // return ANY errored request passes every positive above. 500 is the
+    // canonical "known status that must NOT gate".
+    failAll(500, {
+      error: "internal_error",
+      message: "Failed to load analytics.",
+      requestId: REQUEST_ID,
+    });
+    const view = renderPanel();
+
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[role="alert"]').length).toBeGreaterThan(0),
+    );
+    expect(view.container.textContent ?? "").not.toContain("Query Analytics not enabled");
+    expect(view.container.textContent ?? "").not.toContain("Query Analytics is unavailable");
+    expect(view.container.textContent ?? "").not.toContain("Access denied");
   });
 });

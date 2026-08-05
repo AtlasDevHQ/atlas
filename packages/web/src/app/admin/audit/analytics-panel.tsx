@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
-import { serverMessage } from "@/ui/lib/fetch-error";
+import { friendlyError, gateProps } from "@/ui/lib/fetch-error";
 import {
   AuditVolumeResponseSchema,
   AuditSlowResponseSchema,
@@ -15,7 +15,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { FeatureGate, isGateStatus } from "@/ui/components/admin/feature-disabled";
+import {
+  FeatureGate,
+  isGateStatus,
+  type GateStatus,
+} from "@/ui/components/admin/feature-disabled";
 import { DataTable } from "@/components/data-table/data-table";
 import { useDataTable } from "@/hooks/use-data-table";
 import {
@@ -53,18 +57,31 @@ function buildQS(from: string, to: string): string {
 
 /**
  * The first of the five panel fetches whose failure is a gate rather than a
- * fault.
+ * fault — and a gate here replaces the *whole* panel, not one chart.
  *
- * Uses the shared `isGateStatus`, which includes **503**; this file used to
- * write its own `[401, 403, 404]` list twice and silently omit it, so an
- * authz-service outage fell through to five per-chart error banners rendering
- * the raw message with no correlation id. Nothing marked that as a decision,
- * and #5068's premise — a 503 is a refusal to explain, not a fault to retry
- * per-chart — is the same one that puts it in the set.
+ * Deliberately narrower than the shared `GATE_STATUSES`: **503 is excluded**.
+ * 401/403/404 are shared verdicts — whatever denies one of the five requests
+ * denies all five — so promoting the first one to a page-level gate loses
+ * nothing. A 503 is not: a restarting replica or an unhealthy proxy can fail
+ * one request of five, and gating on it would discard four charts that
+ * rendered fine. Those get the per-chart banner instead.
+ *
+ * (This file previously wrote `[401, 403, 404]` inline, twice, with nothing
+ * saying whether the omission was reasoned or accidental. It is reasoned —
+ * but it is derived from the shared set so the two cannot drift apart, and
+ * the narrowing survives as a type.)
  */
-function findGateError(...errors: (FetchError | null)[]): FetchError | null {
+type PanelGateStatus = Exclude<GateStatus, 503>;
+
+function isPanelGateStatus(status: number | undefined): status is PanelGateStatus {
+  return isGateStatus(status) && status !== 503;
+}
+
+function findGateError(
+  ...errors: (FetchError | null)[]
+): (FetchError & { status: PanelGateStatus }) | null {
   for (const err of errors) {
-    if (isGateStatus(err?.status)) return err;
+    if (err && isPanelGateStatus(err.status)) return { ...err, status: err.status };
   }
   return null;
 }
@@ -133,13 +150,12 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
 
   // Gate: auth/availability errors surface as FeatureGate
   const gateError = findGateError(volumeError, slowError, frequentError, errorsError, userError);
-  if (gateError && isGateStatus(gateError.status)) {
+  if (gateError) {
     return (
       <FeatureGate
         status={gateError.status}
         feature="Query Analytics"
-        message={serverMessage(gateError)}
-        requestId={gateError.requestId}
+        {...gateProps(gateError)}
       />
     );
   }
@@ -156,7 +172,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
         </CardHeader>
         <CardContent>
           {volumeError ? (
-            <ErrorBanner message={volumeError.message} />
+            <ErrorBanner message={friendlyError(volumeError)} />
           ) : volumeLoading ? (
             <div className="flex h-64 items-center justify-center">
               <LoadingState message="Loading volume data..." />
@@ -180,7 +196,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
           </CardHeader>
           <CardContent>
             {slowError ? (
-              <ErrorBanner message={slowError.message} />
+              <ErrorBanner message={friendlyError(slowError)} />
             ) : slowLoading ? (
               <div className="flex h-40 items-center justify-center">
                 <LoadingState message="Loading..." />
@@ -203,7 +219,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
           </CardHeader>
           <CardContent>
             {frequentError ? (
-              <ErrorBanner message={frequentError.message} />
+              <ErrorBanner message={friendlyError(frequentError)} />
             ) : frequentLoading ? (
               <div className="flex h-40 items-center justify-center">
                 <LoadingState message="Loading..." />
@@ -227,7 +243,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
         </CardHeader>
         <CardContent>
           {errorsError ? (
-            <ErrorBanner message={errorsError.message} />
+            <ErrorBanner message={friendlyError(errorsError)} />
           ) : errorLoading ? (
             <div className="flex h-40 items-center justify-center">
               <LoadingState message="Loading..." />
@@ -250,7 +266,7 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
         </CardHeader>
         <CardContent>
           {userError ? (
-            <ErrorBanner message={userError.message} />
+            <ErrorBanner message={friendlyError(userError)} />
           ) : userLoading ? (
             <div className="flex h-40 items-center justify-center">
               <LoadingState message="Loading..." />

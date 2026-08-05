@@ -125,6 +125,14 @@ describe("admin mutation error passthrough", () => {
     // Must not fall through to the generic banner copy.
     expect(utils.container.textContent).not.toContain("Request failed");
     expect(utils.container.textContent).not.toContain("HTTP 403");
+    // The server's own sentence, and the id, through the WRAPPER path — the
+    // most-travelled `enterprise_required` route and the one whose two new
+    // props had no falsifier: deleting either from the call site left the
+    // whole suite green.
+    expect(utils.container.textContent).toContain("Enterprise features required");
+    const line = utils.container.querySelector('[data-testid="feature-gate-request-id"]');
+    if (!line) throw new Error("wrapper's enterprise upsell rendered no request-id line");
+    expect(line.textContent).toContain("req-ee-123");
   });
 
   test("403 + mfa_enrollment_required renders MfaRequiredPlaceholder, not 'admin role' copy (#2486)", async () => {
@@ -209,10 +217,7 @@ describe("admin mutation error passthrough", () => {
     expect(utils.container.textContent).toContain(
       "Your session expired. Sign in again to continue.",
     );
-    // 401 alone appends rather than displaces — the sign-in affordance is
-    // true whatever the server said, so losing it would leave an accurate
-    // diagnosis with no next step.
-    expect(utils.container.textContent).toContain(
+    expect(utils.container.textContent).not.toContain(
       "Please sign in to access the admin console.",
     );
     expect(utils.container.textContent).toContain("req-401-abc");

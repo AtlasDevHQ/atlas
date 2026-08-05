@@ -48,6 +48,18 @@ export interface FetchError {
 }
 
 /**
+ * The two messages this module mints when a response body supplies none.
+ *
+ * Functions rather than inline template literals so {@link isSynthesizedMessage}
+ * can be written in terms of the same builders the constructors use. Held
+ * apart as string literals, the predicate and its constructors were one
+ * careless edit away from disagreeing — and the whole `serverMessage` design
+ * rests on them agreeing.
+ */
+const httpStatusMessage = (status: number | string) => `HTTP ${status}`;
+const requestFailedMessage = (status: number | string) => `Request failed (${status})`;
+
+/**
  * Construct a {@link FetchError} with an empty-message invariant.
  *
  * `MutationErrorSurface` / `ErrorBanner` / `InlineError` render `error.message`
@@ -74,10 +86,7 @@ export function buildFetchError(input: {
 }): FetchError {
   const message = input.message?.trim();
   if (!message) {
-    // Placeholder #2 of the two — keep the spelling in step with
-    // `isSynthesizedMessage`, which is what stops surfaces from rendering it
-    // as if the server had written it.
-    const fallback = `Request failed (${input.status ?? "unknown"})`;
+    const fallback = requestFailedMessage(input.status ?? "unknown");
     if (process.env.NODE_ENV !== "production") {
       throw new Error(
         `[buildFetchError] refused to construct FetchError with empty message. ` +
@@ -189,8 +198,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
   // always non-empty here (either the body field or the `HTTP ${status}`
   // fallback below), so the dev-throw branch never fires on happy paths.
   return buildFetchError({
-    // Placeholder #1 of the two — see `isSynthesizedMessage`.
-    message: message ?? `HTTP ${res.status}`,
+    message: message ?? httpStatusMessage(res.status),
     status: res.status,
     code,
     requestId,
@@ -240,9 +248,52 @@ export function friendlyErrorOrNull(err: FetchError | null | undefined): string 
  * blank-chrome failure that helper exists to prevent.
  */
 export function serverMessage(err: FetchError): string | undefined {
+  // `status === undefined` stands in for "no HTTP response", which is why a
+  // body `code` without a status reads as "no server message" here. That pair
+  // cannot occur — `extractFetchError` always sets a status, and the
+  // status-less producers (network catch, `schema_mismatch`) never set a
+  // code — so the approximation is exact in practice, not merely convenient.
   if (err.status === undefined) return undefined;
   if (isSynthesizedMessage(err.message, err.status)) return undefined;
   return err.message.trim() || undefined;
+}
+
+/**
+ * The two fields every gated placeholder — `FeatureGate`, `EnterpriseUpsell`,
+ * `MfaRequiredPlaceholder` — takes from a {@link FetchError}, derived once.
+ *
+ * Spread it: `<FeatureGate status={s} feature={f} {...gateProps(err)} />`.
+ *
+ * The placeholders stay purely presentational (plain props, unit-testable
+ * without a `FetchError`), but the decision of *which* two fields and *how*
+ * they are derived stops being replicated per call site. #5068 was one call
+ * site forgetting; the panel review then found a second call site with no test
+ * at all, which is how the same list of statuses had silently diverged there.
+ * Per-call-site discipline does not survive call site four.
+ */
+export interface GateErrorProps {
+  message?: string;
+  requestId?: string;
+}
+
+export function gateProps(err: FetchError): GateErrorProps {
+  return { message: serverMessage(err), requestId: err.requestId };
+}
+
+/**
+ * Is this error's `message` a placeholder this module minted, rather than
+ * text worth showing or transforming?
+ *
+ * The narrower sibling of {@link serverMessage}, for the one caller that must
+ * distinguish "synthesized" from "not the server's" — `combineMutationErrors`
+ * decorates a message with a "+N more" suffix, and a *client*-authored message
+ * ("Network error", a schema-mismatch sentence) is perfectly good to decorate
+ * even though no server wrote it. Only the placeholders are not: suffixing one
+ * yields `"HTTP 403 (+1 more)"`, which no longer matches the sentinels and so
+ * reads as server prose to every surface downstream.
+ */
+export function isPlaceholderMessage(err: FetchError): boolean {
+  return err.status !== undefined && isSynthesizedMessage(err.message, err.status);
 }
 
 /**
@@ -298,7 +349,12 @@ export function friendlyError(err: FetchError): string {
     msg = "This feature is not enabled on this server.";
   else if (err.status === 503)
     msg = "A required service is unavailable. Check server configuration.";
-  else msg = err.message;
+  // Every status without a friendly mapping — 500, 409, 429 — plus the
+  // status-less client failures. `.trim() ||` because a blank here produced
+  // alert chrome carrying nothing but "(Request ID: …)", or nothing at all,
+  // which is indistinguishable from a successful render. The four gated
+  // statuses were covered above; this is the same class on the rest.
+  else msg = err.message.trim() || `Request failed${err.status ? ` (${err.status})` : ""}. Retry; if it persists, check the API service logs.`;
   return appendRequestId(msg, err.requestId);
 }
 
@@ -306,25 +362,26 @@ export function friendlyError(err: FetchError): string {
  * Is this message one *this module* synthesized from the status, rather than
  * anything the server said?
  *
- * There are two spellings, minted in two places, and they must be listed
- * together or the surfaces that branch on "did the server explain itself"
- * recognize one and are fooled by the other:
+ * There are two spellings and they must be recognized together, or a surface
+ * branching on "did the server explain itself" catches one and is fooled by
+ * the other. Both are built by the functions above, which is the point: the
+ * predicate calls the same builders its constructors do, so the two cannot
+ * drift. A placeholder this predicate stops recognizing goes straight back to
+ * being rendered as if a human had written it.
  *
- * - `HTTP {status}` — {@link extractFetchError}, when the body had no
- *   `message` field. The common one.
- * - `Request failed ({status})` — {@link buildFetchError}'s production
- *   substitute for an empty message. Reachable from a real response:
- *   `extractFetchError` admits a whitespace-only `message` (it tests
- *   `length > 0`), which `buildFetchError` then trims to empty. In
- *   development that path throws instead, so this spelling only ever reaches
- *   a user in production — where the dev-throw cannot warn anyone.
+ * `Request failed ({status})` looks unreachable and is not: `extractFetchError`
+ * admits a whitespace-only body `message` (it tests `length > 0`, untrimmed),
+ * which `buildFetchError` then trims to empty and substitutes. In development
+ * that path throws instead, so this spelling only ever reaches a user in
+ * production — where the dev-throw cannot warn anyone.
  *
- * ⚠️ These strings are duplicated from their two construction sites. Change
- * one there and change it here; a placeholder this predicate no longer
- * recognizes goes back to being rendered as if a human had written it.
+ * A third spelling, `Request failed (unknown)`, exists for a status-less
+ * `buildFetchError`. It is covered by {@link serverMessage}'s
+ * `status === undefined` guard rather than by this predicate — relax that
+ * guard and this needs to grow.
  */
 function isSynthesizedMessage(message: string, status: number): boolean {
-  return message === `HTTP ${status}` || message === `Request failed (${status})`;
+  return message === httpStatusMessage(status) || message === requestFailedMessage(status);
 }
 
 function appendRequestId(message: string, requestId: string | undefined): string {

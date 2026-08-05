@@ -133,7 +133,10 @@ export function isGateStatus(status: number | undefined): status is GateStatus {
  * never decides whether they get a log handle.
  */
 export function GateRequestId({ requestId }: { requestId?: string }) {
-  if (!requestId) return null;
+  // `.trim()` for the same reason `serverMessage` trims: `extractFetchError`
+  // accepts any string, so "   " would render the label over nothing — the
+  // blank-chrome class, one field over.
+  if (!requestId?.trim()) return null;
   return (
     <p
       data-testid="feature-gate-request-id"
@@ -183,15 +186,23 @@ function GateBody({
  * - 401 → authentication required
  * - 403 → insufficient role
  *
- * Each arm prefers the server's own `message` over its canned copy, because
+ * Every arm prefers the server's own `message` over its canned copy, because
  * the canned line is a guess at the cause from the status alone and the
  * server knows. The canned copy is the fallback for an empty response body —
- * which is why callers must pass `serverMessage(err)` and never `err.message`
- * (see that helper: the latter is a synthesized placeholder on an empty body,
- * and rendering it replaces real guidance with a status echo).
+ * which is why callers should use `gateProps(err)` rather than hand-passing
+ * `err.message` (see `serverMessage`: the latter is a synthesized placeholder
+ * on an empty body, and rendering it replaces real guidance with a status
+ * echo).
  *
- * 401 is the exception: its canned line is the *affordance*, not a guess, so
- * the server's message is appended to it rather than displacing it.
+ * 401 briefly *appended* its canned sign-in line instead, on the theory that
+ * the affordance stays true whatever the server said. It does not, and the
+ * concatenation was the giveaway: every 401 message the API actually emits is
+ * a bare fragment (`managed.ts`, `simple-key.ts`, `byot.ts` — "Not signed
+ * in", "Account is banned", "API key required"), so the shipped line read
+ * "Not signed in Please sign in to access the admin console." And for a
+ * banned account, or either key-based `ATLAS_AUTH_MODE`, signing in is
+ * exactly what will not help. The headline carries the affordance; the
+ * description belongs to whoever knows the cause.
  *
  * ⚠️ This makes the `message` field of every gated 401/403/404/503 response
  * user-facing prose on ~60 admin pages. It was rendered nowhere before #5068.
@@ -212,6 +223,14 @@ export function FeatureGate({
   /** Correlation id from the response body, for log lookup. */
   requestId?: string;
 }) {
+  // Normalize once, here, rather than guarding at each arm. `serverMessage`
+  // already trims blanks away, but this prop is a bare `string | undefined`
+  // that any caller can hand "   " — and a whitespace message is truthy, so
+  // even the `||` guards below would render the icon and headline over an
+  // empty <p>. That is the blank-chrome failure `buildFetchError` exists to
+  // prevent, arriving one layer lower.
+  const authored = message?.trim() || undefined;
+
   if (status === 503) {
     // This arm used to assert one cause — "Internal database not configured /
     // Set DATABASE_URL" — on every 503. No route emits that: a missing
@@ -231,7 +250,7 @@ export function FeatureGate({
         icon={ServerOff}
         title={`${feature} is unavailable`}
         description={
-          message ||
+          authored ??
           "The server returned 503 with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs."
         }
         requestId={requestId}
@@ -245,29 +264,28 @@ export function FeatureGate({
         icon={Ban}
         title={`${feature} not enabled`}
         description={
-          message || "Enable this feature in your server configuration to use this page."
+          authored ?? "Enable this feature in your server configuration to use this page."
         }
         requestId={requestId}
       />
     );
   }
 
-  const SIGN_IN = "Please sign in to access the admin console.";
+  // Exhaustiveness: 404 and 503 returned above, so only 401 | 403 may remain.
+  // Widening `GATE_STATUSES` without adding an arm is a compile error here
+  // rather than a new status silently rendering "Access denied" — which is a
+  // worse failure than the un-narrowed casts this replaced, because it
+  // reaches a user with a wrong diagnosis.
+  const authStatus: Exclude<GateStatus, 404 | 503> = status;
   return (
     <GateBody
       icon={ShieldX}
-      title={status === 401 ? "Authentication required" : "Access denied"}
+      title={authStatus === 401 ? "Authentication required" : "Access denied"}
       description={
-        status === 401
-          ? // 401 is the one status whose canned line is not a guess at the
-            // cause but the *affordance* — it stays true whatever the server
-            // said, so it is appended rather than displaced. Otherwise a
-            // server that answers "No user ID in session." leaves the user
-            // with an accurate diagnosis and no next step.
-            message
-            ? `${message} ${SIGN_IN}`
-            : SIGN_IN
-          : message || "You need the admin role to access this page."
+        authored ??
+        (authStatus === 401
+          ? "Please sign in to access the admin console."
+          : "You need the admin role to access this page.")
       }
       requestId={requestId}
     />

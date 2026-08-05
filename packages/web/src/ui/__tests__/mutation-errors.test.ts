@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { combineMutationErrors } from "../lib/mutation-errors";
-import type { FetchError } from "../lib/fetch-error";
+import { serverMessage, type FetchError } from "../lib/fetch-error";
 
 function err(message: string, overrides: Partial<FetchError> = {}): FetchError {
   return { message, ...overrides };
@@ -61,5 +61,33 @@ describe("combineMutationErrors", () => {
       code: "enterprise_required",
       requestId: "req-abc",
     });
+  });
+
+  test("does not decorate a synthesized placeholder into something that reads as server prose (#5068)", () => {
+    // `"HTTP 403"` suffixed to `"HTTP 403 (+1 more)"` no longer matches
+    // `serverMessage`'s sentinels, so every downstream surface takes it for
+    // the server's own words — and since #5068 the gated placeholders render
+    // exactly that string as their only line of copy. The combiner is the one
+    // place that transforms a message, so it is the one place that has to
+    // know. Reachable today from `custom-domain`, `residency`, `cache`,
+    // `sandbox` and `email-provider`, all of which combine then gate.
+    const combined = combineMutationErrors([
+      err("HTTP 403", { status: 403, requestId: "req-x" }),
+      err("something else", { status: 500 }),
+    ]);
+    expect(combined?.message).toBe("Request failed (+1 more)");
+    expect(serverMessage(combined!)).toBe("Request failed (+1 more)");
+    // The status echo must not survive into the combined message at all.
+    expect(combined?.message).not.toContain("HTTP 403");
+  });
+
+  test("still builds the suffix onto a REAL server message", () => {
+    // The complement — without it the fix above could throw away every
+    // message and still pass.
+    const combined = combineMutationErrors([
+      err("Platform admin role required.", { status: 403 }),
+      err("other", { status: 500 }),
+    ]);
+    expect(combined?.message).toBe("Platform admin role required. (+1 more)");
   });
 });

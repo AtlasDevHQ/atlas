@@ -29,11 +29,15 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the repeat threshold drops to 1 | 1 | 1 | 0 | 0 | 0 |
 | `INSERT_FACT_SQL` feeds `predicate_cardinality` again | 0 | 0 | 5 | 0 | 8 |
 | `retract` feeds the proposer too | 0 | 0 | 2 | 0 | 0 |
-| the post-commit proposer loses its deadline | 0 | 0 | 3 | 0 | 0 |
+| the post-commit proposer loses its deadline | 0 | 0 | 5 | 0 | 0 |
 | the deadline's timer is never cleared | 0 | 0 | 1 | 0 | 0 |
-| the proposer runs INSIDE the correction's transaction | 0 | 0 | 5 | 0 | 0 |
+| the post-deadline continuation is deleted | 0 | 0 | 2 | 0 | 0 |
+| the late-SUCCESS arm's guard is inverted | 0 | 0 | 1 | 0 | 0 |
+| `logDegeneratePredicate` fires for every verb, not only `supersede` | 0 | 0 | 3 | 0 | 0 |
+| `logDegeneratePredicate`'s call is removed | 0 | 0 | 1 | 0 | 0 |
+| the proposer runs INSIDE the correction's transaction | 0 | 0 | 7 | 0 | 0 |
 
-Suite sizes: **cardinality-pg.test.ts** 23 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 55 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 47 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **cardinality-pg.test.ts** 23 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 61 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 47 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 
@@ -51,4 +55,8 @@ Suite sizes: **cardinality-pg.test.ts** 23 tests (`src/lib/brain/__tests__/cardi
 - **`retract` feeds the proposer too** — The realistic drift — a later reader wiring one more verb into the gate. Retracting a claim WITHDRAWS it and says nothing about how many values could have coexisted, so counting it turns "this was wrong" into evidence that the slot holds one value.
 - **the post-commit proposer loses its deadline** — A DEGRADED internal DB — reachable, not answering — never throws, so the catch never runs and `correctFact` never returns. The caller's own timeout then reports *"nothing was changed — retry"* about a correction that IS committed, and the retry mints a second correction episode for one human decision. Unbounded is worse than failing, and `Promise.race` with a REJECTING timer is what routes it into the existing catch.
 - **the deadline's timer is never cleared** — Round 1's own defect, respelled as the edit that reproduces it: a `finally` attached to the TIMER PROMISE settles only when the timer fires, so `clearTimeout` was always a no-op and the fast path left a 5s timer armed per correction. Round 2 published this row as an honest `0` (`bun test` force-exits); round 3 falsified it with the technique already in `correction-audit.test.ts`, which had stayed green only because it drives `pin` — a verb that never reaches the proposer.
+- **the post-deadline continuation is deleted** — `Promise.race` marks the loser's rejection HANDLED, so a store error arriving after the deadline is dropped with no line and not even an unhandled rejection — while the only record an operator holds says the statement *may still commit*. Round 3 wrote this block and shipped nothing that could reach it: the hang knob never settles, so both arms were structurally unfalsifiable until a DELAYED-settle knob existed.
+- **the late-SUCCESS arm's guard is inverted** — Fires *COMPLETED after its deadline* on every ordinary supersede — alert fatigue on the happy path, and the reason the arm needs a prohibition as well as an assertion. Deleting the arm outright is the milder mutation; inverting it is the one a reader would call a typo.
+- **`logDegeneratePredicate` fires for every verb, not only `supersede`** — A `retract` or a vouch would then log *superseded a claim whose predicate normalizes away* about a verb that superseded nothing. The guard is the whole content of the line.
+- **`logDegeneratePredicate`'s call is removed** — The case is legal and permanent (`identityKey`'s ⚠️), produces no proposal, and without this line produces no record either — a supersede that vanished.
 - **the proposer runs INSIDE the correction's transaction** — Stands in for the placement change rather than reproducing it literally (the real one cannot be expressed as a local edit). What it removes is the proposer's access to the committed `supersedes` edge — which is why the placement is post-commit rather than a `SAVEPOINT`.

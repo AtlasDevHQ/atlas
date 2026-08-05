@@ -271,6 +271,54 @@ human behind it.
       note: "Round 1's own defect, respelled as the edit that reproduces it: a `finally` attached to the TIMER PROMISE settles only when the timer fires, so `clearTimeout` was always a no-op and the fast path left a 5s timer armed per correction. Round 2 published this row as an honest `0` (`bun test` force-exits); round 3 falsified it with the technique already in `correction-audit.test.ts`, which had stayed green only because it drives `pin` — a verb that never reaches the proposer.",
     },
     {
+      label: "the post-deadline continuation is deleted",
+      edits: [
+        {
+          file: CORRECTION,
+          oldString: "    void pending\n",
+          newString: "    void 0 && pending\n",
+        },
+      ],
+      note: "`Promise.race` marks the loser's rejection HANDLED, so a store error arriving after the deadline is dropped with no line and not even an unhandled rejection — while the only record an operator holds says the statement *may still commit*. Round 3 wrote this block and shipped nothing that could reach it: the hang knob never settles, so both arms were structurally unfalsifiable until a DELAYED-settle knob existed.",
+    },
+    {
+      label: "the late-SUCCESS arm's guard is inverted",
+      edits: [
+        {
+          file: CORRECTION,
+          oldString: `        () => {
+          if (!timedOut) return;`,
+          newString: `        () => {
+          if (timedOut) return;`,
+        },
+      ],
+      note: "Fires *COMPLETED after its deadline* on every ordinary supersede — alert fatigue on the happy path, and the reason the arm needs a prohibition as well as an assertion. Deleting the arm outright is the milder mutation; inverting it is the one a reader would call a typo.",
+    },
+    {
+      label: "`logDegeneratePredicate` fires for every verb, not only `supersede`",
+      edits: [
+        {
+          file: CORRECTION,
+          oldString: '    if (verb === "supersede") {\n      logDegeneratePredicate(',
+          newString: "    if (true) {\n      logDegeneratePredicate(",
+        },
+      ],
+      note: "A `retract` or a vouch would then log *superseded a claim whose predicate normalizes away* about a verb that superseded nothing. The guard is the whole content of the line.",
+    },
+    {
+      label: "`logDegeneratePredicate`'s call is removed",
+      edits: [
+        {
+          file: CORRECTION,
+          oldString: `    if (verb === "supersede") {
+      logDegeneratePredicate({ workspaceId: ctx.workspaceId, factId: result.factId, requestId });
+    }`,
+          newString: "    void verb;",
+        },
+      ],
+      note: "The case is legal and permanent (`identityKey`'s ⚠️), produces no proposal, and without this line produces no record either — a supersede that vanished.",
+    },
+    {
       label: "the proposer runs INSIDE the correction's transaction",
       edits: [
         {

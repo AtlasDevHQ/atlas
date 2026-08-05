@@ -497,12 +497,16 @@ describe("promoteBrainFacts — the tier guard states what it held back (#5033)"
     expect(line?.payload).toMatchObject({ statement: "TIER_HELD_BACK_COUNT_SQL" });
   });
 
-  it("survives the cardinality count failing outright — its own savepoint, its own warn", async () => {
-    // The second `advisoryCount` call site's failure path, unmodelled until now:
-    // `uncuratedFails` was a declared-and-unused option in the sibling double,
-    // and the EXPLODE sentinel here sat behind the tier branch. So the whole
-    // reason the two diagnostics have SEPARATE savepoints was proven in one
-    // direction only.
+  it("survives the cardinality count failing outright, and warns about IT", async () => {
+    // The second `advisoryCount` call site's failure path: the EXPLODE sentinel
+    // here sat behind the tier branch, so this site's `onFailure` warn was
+    // unmodelled.
+    //
+    // This double records savepoint STATEMENTS and models no `25P02`, so the
+    // savepoint-independence claim is NOT what this test checks — that lives in
+    // `brain-facts.test.ts`'s "the SECOND diagnostic can fail independently",
+    // which asserts the savepoint sequence directly against the sibling double.
+    // What is new here is that the failure is ATTRIBUTED to the right statement.
     const report = await run(
       promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], 2, [], EXPLODE), "ws-1"),
     );

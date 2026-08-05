@@ -4,7 +4,7 @@
 -- ## What this replaces, and why it was worse than the empty column everyone
 -- ## believed it was
 --
--- `brain_facts.predicate_cardinality` (0180) was believed unpopulated. It is
+-- `brain_facts.predicate_cardinality` (0180) was believed unpopulated. It was
 -- not: `brain/extract.ts` wrote the MODEL's per-claim guess and
 -- `brain/correction.ts` inherited it onto every replacement. The publish gate's
 -- collision rule then required `'single'` on BOTH sides
@@ -55,7 +55,7 @@
 --      so a queued proposal vetoed a decision. Here the "slot" is one canonical
 --      predicate, and a pending proposal for `reports to` SHOULD block a second
 --      concurrent proposal for `reports to` — that is idempotence, not a veto,
---      and the SAME slot carries the rejection memory once the row is decided.
+--      and the SAME slot carries the rejection memory once the row is REJECTED.
 --   2. **A proposal would be indistinguishable to the closure rebuild.** There,
 --      `recomputeEffectiveTargets` reads the edge table wholesale and would
 --      compose an unapproved merge into the closure. Here there is no closure

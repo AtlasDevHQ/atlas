@@ -57,6 +57,26 @@ void mock.module("@atlas/api/lib/logger", () => ({
 
 const warns = () => logCalls.filter((c) => c.level === "warn");
 
+/**
+ * Poll until a condition holds — for the two POST-DEADLINE continuation arms,
+ * which by construction land after `correctFact` has already returned.
+ *
+ * Same shape as `correction-audit.test.ts`'s, which tests the same ordering on
+ * the audit write beside this one.
+ */
+async function waitFor(predicate: () => void, capMs = 2_000): Promise<void> {
+  const deadline = Date.now() + capMs;
+  for (;;) {
+    try {
+      predicate();
+      return;
+    } catch (err) {
+      if (Date.now() > deadline) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+}
+
 beforeEach(() => {
   logCalls.length = 0;
 });
@@ -239,6 +259,18 @@ class FakeCorrectionStore {
    * rejects. Only a deadline turns this into an error.
    */
   hangCardinalityProposal = false;
+  /**
+   * Settle the repeat-gate COUNT only AFTER this many ms — the ordering the
+   * hang knob cannot produce.
+   *
+   * `hangCardinalityProposal` never settles, so with it alone the two
+   * post-deadline continuation arms are structurally unreachable and deleting
+   * all 28 lines of them is green. This is what makes "the losing branch is not
+   * discarded" a claim a test can check rather than a paragraph.
+   */
+  delayCardinalityProposalMs: number | null = null;
+  /** With {@link delayCardinalityProposalMs}, settle by REJECTING. */
+  delayedProposalRejects = false;
   /** Every statement executed, in order — the identity assertions read this. */
   readonly executed: string[] = [];
   /**
@@ -513,6 +545,19 @@ class FakeCorrectionStore {
     // Postgres — stubbing it here would be a fixture that agrees with itself.
     if (sql === CORRECTION_REPEAT_COUNT_SQL) {
       if (this.hangCardinalityProposal) return new Promise<never>(() => {});
+      if (this.delayCardinalityProposalMs !== null) {
+        const delay = this.delayCardinalityProposalMs;
+        const rejects = this.delayedProposalRejects;
+        return new Promise((resolve, reject) =>
+          setTimeout(
+            () =>
+              rejects
+                ? reject(new Error("repeat gate failed late"))
+                : resolve({ rows: [{ n: 0 }] }),
+            delay,
+          ),
+        );
+      }
       const subjects = new Set(
         this.edges
           .filter((e) => e.edgeType === "supersedes")
@@ -1654,6 +1699,134 @@ describe("cardinality proposer", () => {
     expect(gateWarns[0]?.message).not.toContain("did NOT land");
     expect(gateWarns[0]?.payload).toMatchObject({ timedOut: true });
   }, 5_000);
+
+  test("a proposal that FAILS after the deadline still surfaces its real cause", async () => {
+    // The post-deadline continuation, which nothing could reach before: the hang
+    // knob never settles, so both arms were unfalsifiable and deleting all 28
+    // lines of them was green. `Promise.race` marks the loser's rejection
+    // HANDLED, so without the continuation a `42P01` arriving two seconds late
+    // is dropped with no line and not even an unhandled rejection — and the only
+    // record an operator holds says "may still commit".
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    store.delayCardinalityProposalMs = 120;
+    store.delayedProposalRejects = true;
+
+    const outcome = await correctFact(
+      {
+        ctx: admin(),
+        vocabulary: identityVocabulary,
+        factId: "old",
+        verb: "supersede",
+        replacement: { object: "Bo" },
+      },
+      {
+        withTransaction: store.runner,
+        now: () => NOW,
+        newCorrectionId: () => "test-uuid",
+        auditWriteTimeoutMs: 30,
+      },
+    );
+    expect(outcome.kind).toBe("corrected");
+
+    // The deadline line lands first; the cause follows once the query settles.
+    await waitFor(() =>
+      expect(
+        warns().filter((c) => c.message.includes("FAILED after its deadline")),
+      ).toHaveLength(1),
+    );
+    const late = warns().find((c) => c.message.includes("FAILED after its deadline"));
+    expect(late?.message).toContain("underlying cause");
+    expect(late?.message).toContain("no proposal landed");
+  }, 5_000);
+
+  test("a proposal that SUCCEEDS after the deadline says so — and stays silent when it wins", async () => {
+    // The other continuation arm, and the reason it needs its own test: with the
+    // guard INVERTED (`if (timedOut) return`) this line would fire on every
+    // ordinary supersede — alert fatigue on the happy path, which is the defect
+    // the sibling logging suite guards with its own "stays silent" test. Both
+    // halves are asserted here because either alone is satisfiable by a
+    // permanently silent arm.
+    const late = new FakeCorrectionStore();
+    late.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    late.seedFact({ id: "old", object: "Ana", status: "published" });
+    late.delayCardinalityProposalMs = 120;
+
+    await correctFact(
+      {
+        ctx: admin(),
+        vocabulary: identityVocabulary,
+        factId: "old",
+        verb: "supersede",
+        replacement: { object: "Bo" },
+      },
+      {
+        withTransaction: late.runner,
+        now: () => NOW,
+        newCorrectionId: () => "test-uuid",
+        auditWriteTimeoutMs: 30,
+      },
+    );
+    await waitFor(() =>
+      expect(warns().filter((c) => c.message.includes("COMPLETED after its deadline"))).toHaveLength(
+        1,
+      ),
+    );
+
+    // …and the prohibition: a supersede that beats its deadline logs NOTHING
+    // from the proposer.
+    logCalls.length = 0;
+    const prompt = new FakeCorrectionStore();
+    prompt.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    prompt.seedFact({ id: "old", object: "Ana", status: "published" });
+    await run(prompt, { factId: "old", verb: "supersede", replacement: { object: "Bo" } });
+    expect(warns().filter((c) => c.message.includes("cardinality repeat gate"))).toEqual([]);
+  }, 5_000);
+
+  test("a supersede whose predicate NORMS AWAY leaves a trace, and no other verb does", async () => {
+    // `logDegeneratePredicate`'s whole reason for existing, and it was
+    // unobserved in both directions: deleting the call was green, and so was
+    // removing its `verb === "supersede"` guard so it fired for all four.
+    //
+    // The predicate `---` normalizes to nothing, so `slotKey` answers `null` —
+    // the same `null` the other three verbs send — and the proposer is skipped.
+    // Without the line that is a supersede producing no proposal and no record
+    // at all.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", predicate: "---", object: "Ana", status: "published" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+    expect(outcome.kind).toBe("corrected");
+    expect(
+      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
+    ).toHaveLength(1);
+    // …and the proposer was not reached, which is the behaviour the line
+    // documents rather than merely accompanies.
+    expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
+  });
+
+  test.each(["retract", "re-authority", "pin"] as const)(
+    "%s never leaves that trace — only a supersede is evidence about cardinality",
+    async (verb) => {
+      // The prohibition half. Without it, removing the `verb === \"supersede\"`
+      // guard is green: every verb would log "superseded a claim whose predicate
+      // normalizes away", including the ones that superseded nothing.
+      const store = new FakeCorrectionStore();
+      store.seedFact({ id: "old", predicate: "---", object: "Ana", status: "published" });
+
+      await run(store, { factId: "old", verb });
+
+      expect(
+        logCalls.filter((c) => c.message.includes("normalizes away")),
+        `${verb} claimed it superseded a claim — that line is a supersede's alone`,
+      ).toEqual([]);
+    },
+  );
 
   test("a failed proposal never reaches the caller — the correction is already committed", async () => {
     const store = new FakeCorrectionStore();

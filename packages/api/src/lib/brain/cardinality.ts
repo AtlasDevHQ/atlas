@@ -49,9 +49,10 @@
  * refusal: unlike `cardinality`, an out-of-vocabulary `source_class` arriving
  * through a cast reaches the INSERT and comes back as a thrown `23514`. Stated
  * rather than fixed, because the tuple has no untyped producer today — #5042 and
- * #5025 are both TS call sites — and a refusal arm nothing can reach is a fifth
- * thing to keep in step. Revisit if a source class ever arrives from a request
- * body. The three sources:
+ * #5025 are both TS call sites — and a refusal arm nothing can reach is one more
+ * spelling of this vocabulary to keep in step with the tuple and the CHECK.
+ * Revisit if a source class ever arrives from a request body. The three
+ * sources:
  *
  *   1. `warehouse_structural` — a dimension of one row is `single` BY
  *      CONSTRUCTION (ADR-0037 §3(d)1). Authoritative, not a hint. Its producer
@@ -273,10 +274,12 @@ export function cardinalitySingleSql(alias: string): string {
  *
  * ⚠️ `null` means ABSENT-**or-unreadable**, never "readable and `multi`". Two
  * drift arms below also answer `null` — a row this module cannot narrow, and a
- * row with no usable author — and the second is dangerous enough to carry its
- * own warning: the publish gate does not read `proposed_by`, so such a row can
- * still supersede while this reports no entry. A caller that reads `null` as
- * *uncurated* is making the exact inference those warnings exist to prevent.
+ * row with no usable author. Both warn; the second's warning is about the
+ * PUBLISH GATE rather than about this reader, and that is what makes it the
+ * dangerous one: `cardinalitySingleSql` never consults `proposed_by`, so such a
+ * row can still stamp `valid_to` while this reports no entry. A caller that
+ * reads `null` as *uncurated* is making the exact inference it exists to
+ * prevent.
  *
  * For DISPLAY and for a proposer's own pre-check. The publish gate does not call
  * it — it reads {@link cardinalitySingleSql} inside its own statement, because a
@@ -296,12 +299,14 @@ export async function readPredicateCardinality(
   // Guarded on the VALUE, never cast. `CardinalityExecutor` is satisfied by a
   // test literal BY DESIGN — that is what lets the mutators take a `tx` and this
   // reader take a pool — so nothing in the type stops `{ rows: [{}] }` or
-  // `{ rows: [null] }` reaching here. A bare `rows[0] as Record<…>` hands back a
-  // `PredicateCardinalityRecord` whose `readonly cardinality` is `undefined` on
-  // the first, violating the record's own invariant at its single construction
-  // point — and on the second it passes `=== undefined` and then throws a raw
-  // TypeError on the first field read, from the one function whose job is
-  // legibility.
+  // `{ rows: [null] }` reaching here, and the two go wrong differently. A bare
+  // `rows[0] as Record<…>` passes `=== undefined` on the NULL row and then
+  // throws a raw TypeError on the first field read — from the one function
+  // whose job is legibility. And the shorter cast a reader is likelier to
+  // write, `rows[0] as PredicateCardinalityRecord`, skips the per-field
+  // narrowers below entirely and hands back a record whose `readonly
+  // cardinality` is `undefined`: the type's own invariant violated at its
+  // single construction point.
   const first = rows[0];
   const row: Record<string, unknown> | undefined =
     typeof first === "object" && first !== null ? (first as Record<string, unknown>) : undefined;
@@ -461,13 +466,16 @@ export async function proposePredicateCardinality(
   }
   if (input.proposedBy === "") return unattributed(predicateKey);
   // `CardinalityProposalInput` narrows this to `"single"`, so the branch is dead
-  // for a typed caller — that IS the guarantee, and the `as string` is what lets
-  // it be written without a `@ts-expect-error`. It is not dead for a caller that
+  // for a typed caller — that IS the guarantee. The `as string` buys legibility
+  // rather than compilability (`!== "single"` against a `"single"` type compiles
+  // clean; only a comparison with NO overlap is an error): it says out loud that
+  // this arm serves untyped callers, and keeps the block from narrowing to
+  // `never` for the next reader. It is not dead for a caller that
   // arrived through a cast, `JSON.parse`, or a producer's config, and those
   // yield ARBITRARY strings: `!==` rather than `=== "multi"` is what keeps
-  // `"Multi"`, `"sometimes"` and `""` inside the refusal contract instead of
-  // letting them reach the INSERT and return as a thrown 23514 from
-  // `ck_brain_predicate_cardinality_value`. `cardinality.test.ts` drives all
+  // `"Multi"`, `"sometimes"`, `"SINGLE"` and `""` inside the refusal contract
+  // instead of letting them reach the INSERT and return as a thrown 23514 from
+  // `ck_brain_predicate_cardinality_value`. `cardinality.test.ts` drives those
   // four, because a fixture of `"multi"` alone is refused by the OLD predicate
   // too and cannot falsify the widening.
   if ((input.cardinality as string) !== "single") {

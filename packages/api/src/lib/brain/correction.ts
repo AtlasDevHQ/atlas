@@ -699,7 +699,10 @@ async function proposeUnderDeadline(
       // be able to take down the worker.
       .catch(() => {
         // intentionally ignored: best-effort observability on a detached
-        // promise; the only way here is the logger itself throwing.
+        // promise. The only ways here are the logger itself throwing and the
+        // `String(cause)` coercion above on a hostile rejection value (a
+        // `Symbol`, a throwing `toString`) — neither of which a committed
+        // correction's bookkeeping may take the worker down for.
       });
 
     await Promise.race([
@@ -724,13 +727,22 @@ async function proposeUnderDeadline(
     // `withTransaction` had definitively rolled it back. A lying disclosure, in
     // the helper written to stop one.
     log.warn(
-      { ...meta, timedOut, err: err instanceof Error ? err.message : String(err) },
+      // `pgErrorFields` + the Error object, not a bare message, on
+      // `emitCorrectionAudit`'s precedent: this arm's own copy ends "diff
+      // CORRECTION_REPEAT_COUNT_SQL", and the two failures it is most likely to
+      // be reporting are a missing relation (`42P01` — diff the statement) and
+      // pool exhaustion (`53300` — the statement is fine). Without the code
+      // those read identically, and the message sends an operator to the wrong
+      // one half the time.
+      { ...meta, timedOut, ...pgErrorFields(err), err: err instanceof Error ? err : new Error(String(err)) },
       timedOut
         ? "brain correction: the cardinality repeat gate did not answer within its deadline — the " +
             "correction itself is COMMITTED and unaffected. The proposal's own fate is UNKNOWN: the " +
-            "statement is not cancelled and may still commit, and a follow-up line for this requestId " +
-            "will say which. Either way the next supersede on this predicate re-derives the count from " +
-            "the corpus rather than from a lost counter"
+            "statement is not cancelled and may still commit. IF it settles, a follow-up line for this " +
+            "requestId says which — but the failure this deadline exists for is a database that is " +
+            "reachable and not answering, which may never produce one, so treat a missing follow-up as " +
+            "the statement still being in flight. Either way the next supersede on this predicate " +
+            "re-derives the count from the corpus rather than from a lost counter"
         : "brain correction: the cardinality repeat gate FAILED — the correction itself is COMMITTED " +
             "and unaffected, and the proposal did NOT land. The next supersede on this predicate " +
             "re-derives the count from the corpus; diff CORRECTION_REPEAT_COUNT_SQL",
@@ -1201,6 +1213,11 @@ export async function correctFact(
           if (replacement === null) {
             throw new Error("brain correction: supersede reached dispatch without a replacement");
           }
+          // Read into a `const` before the argument list rather than inline: the
+          // value is the FIRST argument to `withSupersededPredicate` and
+          // `applySupersede(...)` is the second, so inlining puts a derivation
+          // and a transaction-mutating call in one expression whose evaluation
+          // order a reader has to work out.
           const supersededKey = slotKey(target.predicate, vocabulary.predicate);
           // The canonical predicate travels out with the response, for the
           // post-commit cardinality proposer (#5027). Derived HERE because this
@@ -1212,10 +1229,6 @@ export async function correctFact(
           // A NULL answer is legal and permanent (`identityKey`'s ⚠️) and is
           // reported POST-COMMIT — see `logDegeneratePredicate`, which cannot
           // truthfully say "the correction is committed" from in here.
-          //
-          // Hoisted to a `const` rather than derived twice: the logged case and
-          // the propagated case must be one derivation, or a future edit can
-          // make them disagree about which slot this verb closed.
           return withSupersededPredicate(
             supersededKey,
             applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
@@ -1302,8 +1315,9 @@ export async function correctFact(
   // Guarded, so the three verbs that are not evidence about cardinality do not
   // pay a pool checkout for a call that returns immediately. The case the guard
   // used to HIDE — a `supersede` whose predicate surface norms away, which
-  // reaches here as the same `null` — is reported at the dispatch that knows it
-  // is a supersede, because this site cannot tell the two apart.
+  // arrives as the same `null` — is reported in the other arm below: `verb` is
+  // in scope here, so this site CAN tell the two apart, and only a post-commit
+  // line can truthfully say the correction is committed.
   //
   // BOUNDED, because `internalQuery` bypasses the circuit breaker and the
   // internal pool sets no `statement_timeout`: a DEGRADED internal DB —
@@ -1315,11 +1329,11 @@ export async function correctFact(
   // the two post-commit writes cannot drift into having different answers to
   // one hazard.
   if (supersededPredicate === null) {
-    // A `supersede` that closed no canonical slot — the one case the guard
-    // below would otherwise swallow. Reported here rather than at the dispatch
-    // because only a post-commit line can say the correction is committed, and
-    // only `verb` distinguishes it from the three verbs that legitimately send
-    // `null`.
+    // A `supersede` that closed no canonical slot — the one case the proposer
+    // guard's `null` arm would otherwise swallow. Reported here rather than at
+    // the dispatch because only a post-commit line can say the correction is
+    // committed, and only `verb` distinguishes this from the three verbs that
+    // legitimately send `null`.
     if (verb === "supersede") {
       logDegeneratePredicate({ workspaceId: ctx.workspaceId, factId: result.factId, requestId });
     }

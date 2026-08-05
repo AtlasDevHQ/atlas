@@ -28,34 +28,22 @@
  *
  * ## MUTATIONS THIS CATCHES
  *
- * MEASURED on the final tree, one at a time, against this file alone. Counts
- * are what the runner reported, not what the assertions look like they should
- * catch.
+ * **Generated — see `packages/api/scripts/mutations/object-cmp.md`.** The
+ * mutation list is `packages/api/scripts/mutations/object-cmp.mutations.ts`,
+ * and the table is produced by running each mutation against this suite:
  *
- * | Mutation | Dies on |
- * |---|---|
- * | `DECIMAL_RE` loses its anchors (`^…$`) | 22 |
- * | `parseSurface` returns `{tag:"number", payload: trimmed}` for any unmatched surface — the raw-surface collapse | 13 |
- * | `canonicalCurrency` loses its upper-case fold | 4 |
- * | `canonicalCurrency` drops the `ISO_4217` membership test (back to any three letters) | 4 |
- * | `canonicalInstant` loses its calendar round-trip | 2 |
- * | `canonicalDate` loses its calendar round-trip | 2 |
- * | `canonicalDecimal` loses its trailing-zero trim | 2 |
- * | a declaration OVERRIDES the surface instead of narrowing it | 3 |
- * | `comparableValueWithReason` collapses `declaration-rejected` into `abstained` | 2 |
- * | `MONEY_RE` back to `\s+` (a newline separates the tokens) | 1 |
- * | `canonicalDecimal` loses its `-0` fold | 1 |
- * | `comparableTag` loses its `boundary === -1` arm (`moneys` reads as `money`) | 1 |
- * | `comparableValue` prefers the surface parse over `entityId` | 1 |
- * | `comparableDifferentSql` loses its `split_part` tag equality arm | **1, and it is LEXICAL** — see below |
- * | `comparableDifferentSql` loses its known-tag `IN` arm | **0 here** — see below |
- * | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | **0 here** — see below |
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/object-cmp.mutations.ts
  *
- * ⚠️ **Regenerated in ONE pass on the final tree, and four rows had gone
- * stale** — 20→22, 11→13, 3→4, 2→3 — because a later review round appended
- * tests to this file and edited the prose above the table without re-running
- * it. That is exactly the failure the ROADMAP records against slice B, twice.
- * The remedy is mechanical: regenerate the whole table, never edit a row.
+ * The numbers used to live here, by hand, and they did not survive contact
+ * with the review rounds: four rows had already gone stale (20→22, 11→13,
+ * 3→4, 2→3) because a later round appended tests to this file and edited the
+ * prose above the table without re-running anything. Regenerating found two
+ * more — one cell stale, one that depended on a spelling of the mutation the
+ * prose never recorded. Both are written up in the generated file's notes.
+ *
+ * Add a test to this file and the table is wrong until it is regenerated;
+ * nothing here can tell you that, which is precisely why the numbers are no
+ * longer stored in this docstring.
  *
  * ⚠️ **Three SQL arms have no behavioural falsifier in this file, and none can
  * have one.** {@link agree} is the TypeScript twin; deleting a SQL arm does not
@@ -63,10 +51,10 @@
  * bottom. All three are covered elsewhere:
  *
  *   - the **`split_part` tag equality arm** — `identity-consumers-pg.test.ts`'s
- *     `cross-type-rival` (1) and `object-cmp-pg.test.ts`'s per-row parity tests
- *     (2, via `cross-type` and `date-vs-instant`).
+ *     `cross-type-rival`, and `object-cmp-pg.test.ts`'s per-row parity tests
+ *     via `cross-type` and `date-vs-instant`.
  *   - the **known-tag `IN` arm** and the **`strpos` separator arms** —
- *     `object-cmp-pg.test.ts`'s unknown-tag test (1 each). Both were written
+ *     `object-cmp-pg.test.ts`'s unknown-tag test. Both were written
  *     BECAUSE the mutations measured zero deaths across the whole suite: nothing
  *     can produce an unknown or separator-less tag today, so they guard a
  *     population that only exists once #5035 makes the region importer a second

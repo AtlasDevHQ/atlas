@@ -1,10 +1,11 @@
 /**
  * Tests for the shared connection-group display helpers.
  *
- * The util is consumed from four admin surfaces (env-picker, the admin
- * connections page + columns, scheduled-tasks task-form-dialog, and the
- * /admin/connections/groups environment page) so a regression here leaks
- * raw migration shapes into user-facing copy across the product. Pin both
+ * The util is consumed from three admin surfaces (env-picker, the admin
+ * connections page + columns, and scheduled-tasks task-form-dialog) so a
+ * regression here leaks raw migration shapes into user-facing copy across
+ * the product. The `/admin/connections/groups` environment page was a
+ * fourth until the 0096 cutover (#2744 / ADR-0007) deleted it. Pin both
  * branches and the disambiguation rule that distinguishes auto-backfilled
  * `g_<connId>` singletons from `g_<random>` user-created groups.
  */

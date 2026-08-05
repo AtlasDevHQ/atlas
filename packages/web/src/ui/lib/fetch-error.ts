@@ -214,6 +214,27 @@ export function friendlyErrorOrNull(err: FetchError | null | undefined): string 
 }
 
 /**
+ * The message the *server* authored, or `undefined` when it authored none.
+ *
+ * `extractFetchError` substitutes `HTTP {status}` when the response body
+ * carried no `message` field, so a bare truthiness check on `err.message`
+ * hands that synthetic string to any surface that treats a message as server
+ * copy — "HTTP 403" rendered where a gate's canned explanation belongs. This
+ * is the same precedence {@link friendlyError} applies before falling back to
+ * its status copy, factored out so the gated surfaces (`FeatureGate`,
+ * `EnterpriseUpsell`) draw the identical distinction instead of each
+ * re-deriving the sentinel.
+ *
+ * A `FetchError` with no `status` never got an HTTP response at all (network
+ * failure) or failed client-side (non-JSON body, schema mismatch), so it has
+ * no server message by definition.
+ */
+export function serverMessage(err: FetchError): string | undefined {
+  if (err.status === undefined) return undefined;
+  return isHttpStatusFallback(err.message, err.status) ? undefined : err.message;
+}
+
+/**
  * Convert a FetchError into a user-friendly message.
  *
  * Precedence: a non-empty server-typed message wins over the canned
@@ -255,9 +276,8 @@ export function friendlyError(err: FetchError): string {
   // populates `message` from a non-empty body field, so any string here is a
   // real server-typed message — render it. Canned text below covers the
   // empty-body path where the message was substituted to `HTTP {status}`.
-  if (err.status !== undefined && !isHttpStatusFallback(err.message, err.status)) {
-    return appendRequestId(err.message, err.requestId);
-  }
+  const authored = serverMessage(err);
+  if (authored) return appendRequestId(authored, err.requestId);
 
   let msg: string;
   if (err.status === 401) msg = "Not authenticated. Please sign in.";

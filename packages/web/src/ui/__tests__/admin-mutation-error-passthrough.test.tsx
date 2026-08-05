@@ -16,6 +16,13 @@ import type { FetchError } from "../lib/fetch-error";
  *   (requires `error.code` to survive the hook's catch).
  * - Render the `friendlyError`-translated copy on 401/403/404/503 (requires
  *   `error.status` to survive), not the raw `HTTP 4xx` string.
+ *
+ * Since #5068 the gated statuses carry two more fields the wrapper must
+ * forward: the server's own `message` and the `requestId`. The bodies below
+ * are the envelopes the API actually emits (`middleware.ts`,
+ * `admin-router.ts`) rather than invented one-word strings — a fixture whose
+ * message reads "Forbidden" cannot distinguish "the server's words reached
+ * the screen" from "the canned copy did", because neither contains it.
  */
 
 const stubAuthClient: AtlasAuthClient = {
@@ -145,28 +152,42 @@ describe("admin mutation error passthrough", () => {
     expect(utils.container.textContent).not.toContain("HTTP 403");
   });
 
-  test("403 (no enterprise code) renders friendlyError admin-role copy, not 'HTTP 403'", async () => {
-    mockFailure(403, { message: "Forbidden" });
+  test("403 (no enterprise code) renders the server's role message, not 'HTTP 403'", async () => {
+    // `middleware.ts` sends "Platform admin role required." for the platform
+    // routers — the exact case the canned copy ("You need the admin role")
+    // gets WRONG, by naming a role that would not have unlocked the page.
+    mockFailure(403, {
+      error: "forbidden_role",
+      message: "Platform admin role required.",
+      requestId: "req-403-abc",
+    });
 
     let utils!: ReturnType<typeof render>;
     await act(async () => {
       utils = render(<MutationHarness feature="Users" />, { wrapper: Wrapper });
     });
 
-    // Either the FeatureGate access-denied copy or the friendlyError fallback
-    // is acceptable — both prove `error.status` reached the component, which
-    // is the property that would have been lost under a flattened error.
+    // The status-derived headline proves `error.status` survived the hook's
+    // catch; the description proves the server's own sentence did.
     await waitFor(() => {
-      const text = utils.container.textContent ?? "";
-      expect(
-        text.includes("Access denied") || text.includes("admin role"),
-      ).toBe(true);
+      expect(utils.container.textContent).toContain("Access denied");
     });
+    expect(utils.container.textContent).toContain("Platform admin role required.");
+    // The role the server did NOT ask for. Before #5068 this line was the
+    // whole description, on a refusal only a platform admin could clear.
+    expect(utils.container.textContent).not.toContain(
+      "You need the admin role to access this page.",
+    );
+    expect(utils.container.textContent).toContain("req-403-abc");
     expect(utils.container.textContent).not.toContain("HTTP 403");
   });
 
-  test("401 surfaces friendlyError 'sign in' copy, not 'HTTP 401'", async () => {
-    mockFailure(401, { message: "Unauthorized" });
+  test("401 surfaces the server's message, not 'HTTP 401'", async () => {
+    mockFailure(401, {
+      error: "auth_error",
+      message: "Your session expired. Sign in again to continue.",
+      requestId: "req-401-abc",
+    });
 
     let utils!: ReturnType<typeof render>;
     await act(async () => {
@@ -174,16 +195,24 @@ describe("admin mutation error passthrough", () => {
     });
 
     await waitFor(() => {
-      const text = utils.container.textContent ?? "";
-      expect(
-        text.includes("Authentication required") || text.includes("sign in"),
-      ).toBe(true);
+      expect(utils.container.textContent).toContain("Authentication required");
     });
+    expect(utils.container.textContent).toContain(
+      "Your session expired. Sign in again to continue.",
+    );
+    expect(utils.container.textContent).toContain("req-401-abc");
     expect(utils.container.textContent).not.toContain("HTTP 401");
   });
 
-  test("404 surfaces friendlyError feature-not-enabled copy, not 'HTTP 404'", async () => {
-    mockFailure(404, { message: "Not found" });
+  test("404 surfaces the server's message, not 'HTTP 404'", async () => {
+    // `requireOrgContext()`'s NO_INTERNAL_DB_MESSAGE — the motivating case in
+    // #5068. The self-hosted operator on /admin/brain used to be told only to
+    // "enable this feature in your server configuration", which names nothing.
+    mockFailure(404, {
+      error: "not_available",
+      message: "No internal database configured.",
+      requestId: "req-404-abc",
+    });
 
     let utils!: ReturnType<typeof render>;
     await act(async () => {
@@ -191,14 +220,24 @@ describe("admin mutation error passthrough", () => {
     });
 
     await waitFor(() => {
-      const text = utils.container.textContent ?? "";
-      expect(text).toContain("Scheduled Tasks not enabled");
+      expect(utils.container.textContent).toContain("Scheduled Tasks not enabled");
     });
+    expect(utils.container.textContent).toContain("No internal database configured.");
+    expect(utils.container.textContent).toContain("req-404-abc");
     expect(utils.container.textContent).not.toContain("HTTP 404");
   });
 
-  test("503 surfaces friendlyError service-unavailable copy, not 'HTTP 503'", async () => {
-    mockFailure(503, { message: "Unavailable" });
+  test("503 surfaces the server's message and drops the database guess with it", async () => {
+    // `permissions_unavailable` (admin-router.ts) is a 503 that has nothing to
+    // do with DATABASE_URL. Rendering it under "Internal database not
+    // configured" sent an operator to check a variable that was already set,
+    // so the headline gives way alongside the description.
+    mockFailure(503, {
+      error: "permissions_unavailable",
+      message:
+        "Authorization service is temporarily unavailable. Retry in a moment; if this persists, contact an operator.",
+      requestId: "req-503-abc",
+    });
 
     let utils!: ReturnType<typeof render>;
     await act(async () => {
@@ -206,9 +245,54 @@ describe("admin mutation error passthrough", () => {
     });
 
     await waitFor(() => {
-      const text = utils.container.textContent ?? "";
-      expect(text).toContain("Internal database not configured");
+      expect(utils.container.textContent).toContain("Authorization service is temporarily unavailable");
     });
+    expect(utils.container.textContent).toContain("Custom Domains is unavailable");
+    expect(utils.container.textContent).not.toContain("Internal database not configured");
+    expect(utils.container.textContent).not.toContain("DATABASE_URL");
+    expect(utils.container.textContent).toContain("req-503-abc");
     expect(utils.container.textContent).not.toContain("HTTP 503");
+  });
+
+  test("an EMPTY gated body keeps the canned copy and never renders the placeholder", async () => {
+    // The complement of every arm above, and the one that makes them mean
+    // something: `extractFetchError` substitutes `HTTP {status}` when the body
+    // carries no message, so a wrapper that forwarded `error.message` instead
+    // of `serverMessage(error)` would pass all four — and replace the gate's
+    // only guidance with a status echo exactly here.
+    mockFailure(404, {});
+
+    let utils!: ReturnType<typeof render>;
+    await act(async () => {
+      utils = render(<MutationHarness feature="Scheduled Tasks" />, { wrapper: Wrapper });
+    });
+
+    await waitFor(() => {
+      expect(utils.container.textContent).toContain("Scheduled Tasks not enabled");
+    });
+    expect(utils.container.textContent).toContain(
+      "Enable this feature in your server configuration to use this page.",
+    );
+    expect(utils.container.textContent).not.toContain("HTTP 404");
+    // No id in the body, so no id line — an empty "Request ID:" label would
+    // be worse than none.
+    expect(utils.container.textContent).not.toContain("Request ID");
+  });
+
+  test("an EMPTY enterprise_required body keeps the upsell's own copy", async () => {
+    // Same placeholder hazard on the sibling surface: `EnterpriseUpsell` also
+    // renders its `message` prop verbatim as the description.
+    mockFailure(403, { error: "enterprise_required" });
+
+    let utils!: ReturnType<typeof render>;
+    await act(async () => {
+      utils = render(<MutationHarness feature="SSO" />, { wrapper: Wrapper });
+    });
+
+    await waitFor(() => {
+      expect(utils.container.textContent).toContain("SSO requires an enterprise plan");
+    });
+    expect(utils.container.textContent).toContain("contact sales");
+    expect(utils.container.textContent).not.toContain("HTTP 403");
   });
 });

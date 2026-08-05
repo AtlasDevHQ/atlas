@@ -242,12 +242,23 @@ describe("Company Brain overview — counts are never fabricated (#5066)", () =>
     // The generic banner and its dead Retry button are what must NOT appear.
     expect(view.container.querySelector('[role="alert"]')).toBeNull();
     expect((view.container.textContent ?? "").toLowerCase()).not.toContain("retry");
-    // `expectNoCounts` only, no raw digit sweep: `FeatureGate` currently drops
-    // the server `message`/`requestId`, and a whole-container digit assertion
-    // would silently depend on that — then fail as a "fabricated count" the day
-    // the gate starts rendering the correlation id. The unlabelled-count hazard
-    // is covered on the 500 arm, which is the one that renders alongside the page.
+    // Routing to the gate is not enough on its own: the gate used to render
+    // only its canned "enable this feature in your server configuration"
+    // line, which names nothing an operator can go set. Since #5068 the
+    // server's own sentence and the correlation id both reach the screen.
+    expect(view.container.textContent ?? "").toContain(NO_INTERNAL_DB.message);
+    expect(view.container.textContent ?? "").toContain(REQUEST_ID);
     expectNoCounts(view.container);
+    // The digit sweep this arm had to drop while the gate rendered no id.
+    // Same shape as the 500 arm: strip the one element whose digits are
+    // legitimate, then no digit may remain — which is what catches an
+    // UNLABELLED bare count that `expectNoCounts` cannot see. Throws rather
+    // than `?.remove()` so a silent no-op strip can't leave this green.
+    const outsideId = view.container.cloneNode(true) as HTMLElement;
+    const idLine = outsideId.querySelector('[data-testid="feature-gate-request-id"]');
+    if (!idLine) throw new Error("no request-id line to strip — the 404 gate surface changed");
+    idLine.remove();
+    expect(outsideId.textContent ?? "").not.toMatch(/\d/);
   });
 
   test("a PENDING summary renders no number either", async () => {

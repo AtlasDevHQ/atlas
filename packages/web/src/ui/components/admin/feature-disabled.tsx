@@ -1,6 +1,7 @@
 "use client";
 
-import { Ban, Cloud, DatabaseZap, ShieldCheck, ShieldX } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { Ban, Cloud, DatabaseZap, ServerOff, ShieldCheck, ShieldX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   isSaasExclusiveFeature,
@@ -100,66 +101,124 @@ export function EnterpriseUpsell({
 }
 
 /**
+ * The shared body of every {@link FeatureGate} arm: icon, headline, one line
+ * of description, and — when the response carried one — the correlation id.
+ *
+ * Extracted so the id renders identically on all four statuses. Before #5068
+ * each arm was its own copy of this markup and the id had nowhere to go.
+ */
+function GateBody({
+  icon: Icon,
+  title,
+  description,
+  requestId,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+  requestId?: string;
+}) {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <div className="max-w-sm text-center">
+        <Icon className="mx-auto size-10 text-muted-foreground/50" aria-hidden="true" />
+        <p className="mt-3 text-sm font-medium">{title}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        {requestId && (
+          // A gate an operator did not expect (a 403 they believe they should
+          // pass, a 404 on a feature they configured) is un-diagnosable
+          // without this — `ErrorBanner` has appended it to every non-gated
+          // error for as long as it has existed.
+          <p
+            data-testid="feature-gate-request-id"
+            className="mt-2 font-mono text-[11px] text-muted-foreground/70"
+          >
+            Request ID: {requestId}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * Shown when an admin page gets a 401/403/404/503 status.
  *
  * Evaluation order (matches code):
- * - 503 → internal database not configured (DATABASE_URL missing)
+ * - 503 → service unavailable (internal database missing, authz outage, …)
  * - 404 → feature not enabled (enterprise config)
  * - 401 → authentication required
  * - 403 → insufficient role
+ *
+ * Every arm prefers the server's own `message` over its canned copy: the
+ * canned line is a guess at the cause from the status alone, and the server
+ * knows. The canned copy remains the fallback for an empty response body —
+ * which is why callers must pass `serverMessage(err)` rather than
+ * `err.message` (see that helper: the latter is `HTTP {status}` on an empty
+ * body, and rendering it would replace real guidance with a status echo).
  */
 export function FeatureGate({
   status,
   feature,
   message,
+  requestId,
 }: {
   status: 401 | 403 | 404 | 503;
   feature: FeatureName;
-  /** Optional override for the description text. */
+  /** The server's description of *this* refusal. Pass `serverMessage(err)`. */
   message?: string;
+  /** Correlation id from the response body, for log lookup. */
+  requestId?: string;
 }) {
   if (status === 503) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-center">
-          <DatabaseZap className="mx-auto size-10 text-muted-foreground/50" />
-          <p className="mt-3 text-sm font-medium">Internal database not configured</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Set DATABASE_URL to enable {feature}.
-          </p>
-        </div>
-      </div>
+    // Missing DATABASE_URL is one cause of a 503 here; `permissions_unavailable`
+    // (the authz service being down) is another, and "Internal database not
+    // configured" is simply false for it. So when the server explained itself
+    // the headline drops its guess too — not just the description. With no
+    // message the DATABASE_URL hint stays: it is still the likeliest cause and
+    // the only actionable thing we can say.
+    return message ? (
+      <GateBody
+        icon={ServerOff}
+        title={`${feature} is unavailable`}
+        description={message}
+        requestId={requestId}
+      />
+    ) : (
+      <GateBody
+        icon={DatabaseZap}
+        title="Internal database not configured"
+        description={`Set DATABASE_URL to enable ${feature}.`}
+        requestId={requestId}
+      />
     );
   }
 
   if (status === 404) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-center">
-          <Ban className="mx-auto size-10 text-muted-foreground/50" />
-          <p className="mt-3 text-sm font-medium">{feature} not enabled</p>
-          <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-            {message ?? "Enable this feature in your server configuration to use this page."}
-          </p>
-        </div>
-      </div>
+      <GateBody
+        icon={Ban}
+        title={`${feature} not enabled`}
+        description={
+          message ?? "Enable this feature in your server configuration to use this page."
+        }
+        requestId={requestId}
+      />
     );
   }
 
   return (
-    <div className="flex h-full items-center justify-center">
-      <div className="text-center">
-        <ShieldX className="mx-auto size-10 text-muted-foreground/50" />
-        <p className="mt-3 text-sm font-medium">
-          {status === 401 ? "Authentication required" : "Access denied"}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {status === 401
-            ? "Please sign in to access the admin console."
-            : "You need the admin role to access this page."}
-        </p>
-      </div>
-    </div>
+    <GateBody
+      icon={ShieldX}
+      title={status === 401 ? "Authentication required" : "Access denied"}
+      description={
+        message ??
+        (status === 401
+          ? "Please sign in to access the admin console."
+          : "You need the admin role to access this page.")
+      }
+      requestId={requestId}
+    />
   );
 }
 

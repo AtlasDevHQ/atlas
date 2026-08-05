@@ -63,29 +63,72 @@ describe("MutationErrorSurface", () => {
   });
 
   test("FeatureGate status codes route to FeatureGate (banner variant)", () => {
-    const error: FetchError = { message: "Forbidden", status: 403 };
+    // The status-derived headline is what proves the routing; the description
+    // now belongs to the server (#5068), so it can't stand in as the marker.
+    const error: FetchError = {
+      message: "Admin role required.",
+      status: 403,
+      code: "forbidden_role",
+    };
     const { container } = render(
       <MutationErrorSurface error={error} feature="SCIM" />,
     );
     expect(container.textContent).toContain("Access denied");
-    expect(container.textContent).toContain("admin role");
+    expect(container.textContent).toContain("Admin role required.");
   });
 
   test("401 routes to FeatureGate sign-in copy", () => {
-    const error: FetchError = { message: "Unauthorized", status: 401 };
+    const error: FetchError = { message: "No user ID in session.", status: 401 };
     const { container } = render(
       <MutationErrorSurface error={error} feature="SCIM" />,
     );
     expect(container.textContent).toContain("Authentication required");
   });
 
-  test("503 routes to FeatureGate internal-db copy", () => {
-    const error: FetchError = { message: "Unavailable", status: 503 };
+  test("503 with no server message keeps the internal-db copy", () => {
+    // `HTTP 503` is what `extractFetchError` leaves behind on an empty body —
+    // the only shape that legitimately falls back. Writing an invented
+    // one-word message here instead would assert the fallback on an input that
+    // no longer takes it, and pass for the wrong reason.
+    const error: FetchError = { message: "HTTP 503", status: 503 };
     const { container } = render(
       <MutationErrorSurface error={error} feature="Custom Domains" />,
     );
     expect(container.textContent).toContain("Internal database not configured");
     expect(container.textContent).toContain("Custom Domains");
+  });
+
+  test("503 with a server message routes to FeatureGate carrying it (#5068)", () => {
+    const error: FetchError = {
+      message: "Authorization service is temporarily unavailable.",
+      status: 503,
+      code: "permissions_unavailable",
+      requestId: "req-503-mut",
+    };
+    const { container } = render(
+      <MutationErrorSurface error={error} feature="Custom Domains" />,
+    );
+    expect(container.textContent).toContain(
+      "Authorization service is temporarily unavailable.",
+    );
+    expect(container.textContent).not.toContain("Internal database not configured");
+    expect(container.textContent).toContain("req-503-mut");
+  });
+
+  test("inline enterprise upsell drops the HTTP placeholder rather than reading it out", () => {
+    // The inline variant renders its message inline with the headline, so an
+    // empty `enterprise_required` body used to produce
+    // "SSO requires Enterprise. HTTP 403 Learn more".
+    const error: FetchError = {
+      message: "HTTP 403",
+      status: 403,
+      code: "enterprise_required",
+    };
+    const { container } = render(
+      <MutationErrorSurface error={error} feature="SSO" variant="inline" />,
+    );
+    expect(container.textContent).toContain("SSO requires Enterprise.");
+    expect(container.textContent).not.toContain("HTTP 403");
   });
 
   test("enterprise_required without a status still routes to EnterpriseUpsell", () => {

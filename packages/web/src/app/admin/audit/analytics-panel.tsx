@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { serverMessage } from "@/ui/lib/fetch-error";
 import {
   AuditVolumeResponseSchema,
   AuditSlowResponseSchema,
@@ -123,7 +124,14 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
   // Gate: auth/availability errors surface as FeatureGate
   const gateError = findGateError(volumeError, slowError, frequentError, errorsError, userError);
   if (gateError?.status && [401, 403, 404].includes(gateError.status)) {
-    return <FeatureGate status={gateError.status as 401 | 403 | 404} feature="Query Analytics" />;
+    return (
+      <FeatureGate
+        status={gateError.status as 401 | 403 | 404}
+        feature="Query Analytics"
+        message={serverMessage(gateError)}
+        requestId={gateError.requestId}
+      />
+    );
   }
 
   return (

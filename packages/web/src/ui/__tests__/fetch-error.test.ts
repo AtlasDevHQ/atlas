@@ -4,6 +4,7 @@ import {
   extractFetchError,
   friendlyError,
   friendlyErrorOrNull,
+  serverMessage,
 } from "../lib/fetch-error";
 
 function mockResponse(status: number, body?: unknown, headers?: Record<string, string>): Response {
@@ -196,6 +197,44 @@ describe("extractFetchError", () => {
     });
     const err = await extractFetchError(res);
     expect(err.stale).toBeUndefined();
+  });
+});
+
+describe("serverMessage", () => {
+  // The distinction `FeatureGate` / `EnterpriseUpsell` need and that a
+  // truthiness check on `.message` cannot make: did the SERVER write this
+  // string, or did `extractFetchError` synthesize it from the status?
+  test("returns the body's message when the server sent one", () => {
+    expect(
+      serverMessage({ message: "No internal database configured.", status: 404 }),
+    ).toBe("No internal database configured.");
+  });
+
+  test("returns undefined for the placeholder extractFetchError actually substitutes", async () => {
+    // Round-tripped through `extractFetchError` rather than hand-written, so
+    // the sentinel here is whatever that function really produces. A literal
+    // `"HTTP 404"` fixture would keep passing if the substitution changed
+    // shape, and then every gate would start rendering the new spelling.
+    const err = await extractFetchError(mockResponse(404));
+    expect(serverMessage(err)).toBeUndefined();
+  });
+
+  test("does not swallow a real message that merely mentions its own status", () => {
+    expect(
+      serverMessage({ message: "HTTP 404 responses are cached upstream.", status: 404 }),
+    ).toBe("HTTP 404 responses are cached upstream.");
+  });
+
+  test("only the MATCHING status/message pair is treated as synthetic", () => {
+    // "HTTP 404" on a 403 was written by a person; the substitution can only
+    // ever produce the status it is attached to.
+    expect(serverMessage({ message: "HTTP 404", status: 403 })).toBe("HTTP 404");
+  });
+
+  test("returns undefined when there is no status — nothing reached a server", () => {
+    // The network-failure / non-JSON-body / schema-mismatch path. Its message
+    // is client-authored, so a gate must not present it as the server's word.
+    expect(serverMessage({ message: "Network error" })).toBeUndefined();
   });
 });
 

@@ -48,7 +48,7 @@ export interface ConnectionInfo {
   groupId?: string | null;
   /**
    * Display name of the group, denormalized so list responses can render
-   * a badge without a second round-trip to `/admin/connections/groups`.
+   * a badge without a second round-trip for the group record.
    * Same three-state semantics as {@link groupId}.
    */
   groupName?: string | null;

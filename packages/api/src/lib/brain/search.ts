@@ -682,7 +682,7 @@ interface FactRow {
  * user-visible disclosure rather than an admin-queue one: `searchBrain` feeds
  * agent chat answers, so a widened fact reaching an org reader here would hand
  * them a private channel's first speaker without anyone opening
- * `/admin/brain-facts`.
+ * `/admin/brain/facts`.
  */
 function toFactResult(
   row: FactRow,

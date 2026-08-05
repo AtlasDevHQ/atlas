@@ -11,6 +11,13 @@ import { describe, it, expect, afterEach } from "bun:test";
  *
  * `redirects()` reads process.env at call time, so the var is set/restored
  * inside the test body — no top-level env mutation.
+ *
+ * These assertions were exact-array (`toEqual([...])`) until #5066 added an
+ * unconditional legacy-admin redirect alongside this one. They now assert
+ * presence and absence of the security.txt entry specifically, so an unrelated
+ * redirect joining the list doesn't fail this file — while "unset means NO
+ * security.txt route" stays falsifiable, which was the point of the second
+ * test. The legacy-admin entries have their own file.
  */
 
 import nextConfig from "../../../next.config";
@@ -27,20 +34,23 @@ describe("next.config redirects() — security.txt (#4467)", () => {
   it("adds a temporary redirect for /.well-known/security.txt when ATLAS_SECURITY_TXT_URL is set", async () => {
     process.env.ATLAS_SECURITY_TXT_URL = TARGET;
     const redirects = await nextConfig.redirects?.();
-    expect(redirects).toEqual([
-      {
-        source: "/.well-known/security.txt",
-        destination: TARGET,
-        permanent: false,
-      },
-    ]);
+    expect(redirects).toContainEqual({
+      source: "/.well-known/security.txt",
+      destination: TARGET,
+      permanent: false,
+    });
   });
 
-  it("adds no route when the var is unset or blank (self-hosted default)", async () => {
+  it("adds no security.txt route when the var is unset or blank (self-hosted default)", async () => {
+    const hasSecurityTxt = async () =>
+      ((await nextConfig.redirects?.()) ?? []).some(
+        (r) => r.source === "/.well-known/security.txt",
+      );
+
     delete process.env.ATLAS_SECURITY_TXT_URL;
-    expect(await nextConfig.redirects?.()).toEqual([]);
+    expect(await hasSecurityTxt()).toBe(false);
 
     process.env.ATLAS_SECURITY_TXT_URL = "   ";
-    expect(await nextConfig.redirects?.()).toEqual([]);
+    expect(await hasSecurityTxt()).toBe(false);
   });
 });

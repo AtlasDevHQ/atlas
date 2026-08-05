@@ -23,7 +23,7 @@
  * Every other surface here is workspace-scoped and that is the whole story —
  * an entity or a prompt has no audience narrower than the org. A brain fact
  * does: `visible_to` can name a private channel's audience, and the review
- * queue at `/admin/brain-facts` refuses to show an admin claims from a channel
+ * queue at `/admin/brain/facts` refuses to show an admin claims from a channel
  * they were never in (ADR-0036 — a platform role confers no brain grant).
  *
  * This preview used to select `subject || predicate || object` for every draft
@@ -150,7 +150,7 @@ const PublishPreviewSchema = z.object({
    * A workspace-wide COUNT, unscoped like `brainFactsWithheld`'s other half
    * and content-free like it — the modal is the confirm surface, so silence
    * here would be silent supersession for any admin who publishes without
-   * visiting `/admin/brain-facts`, where the per-pair disclosure lives
+   * visiting `/admin/brain/facts`, where the per-pair disclosure lives
    * (`willSupersede` on the oversight response).
    */
   brainFactsWillSupersede: z.number().int().nonnegative(),

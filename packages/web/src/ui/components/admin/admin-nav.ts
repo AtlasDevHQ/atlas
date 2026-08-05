@@ -6,6 +6,7 @@ import {
   Globe,
   Settings,
   Shield,
+  Sparkles,
   Users,
 } from "lucide-react";
 
@@ -42,21 +43,34 @@ export const navGroups: NavGroup[] = [
     items: [
       { href: "/admin/semantic", label: "Semantic Layer" },
       { href: "/admin/semantic/improve", label: "Improve Layer" },
-      // One entry covers both raw connections and environment groupings —
-      // the page hosts a `?groupBy=type|environment` toggle and the legacy
-      // `/admin/connections/groups` URL server-side-redirects in.
       { href: "/admin/connections", label: "Connections" },
       { href: "/admin/knowledge", label: "Knowledge Base", prefixMatch: true },
       { href: "/admin/cache", label: "Cache" },
     ],
   },
+  // Not a pillar and not a member of Intelligence (CONTEXT.md, "Company
+  // Brain"). The brain is a DERIVED layer — it owns no catalog row of its own
+  // (its ingest sources do, on the knowledge pillar), and it yields to the
+  // warehouse Datasource wherever the two overlap. Its surfaces are one
+  // curation workflow over one substrate, so they group with each other rather
+  // than sitting as siblings of "Prompt Library". `/admin/brain` is the group
+  // landing page; every leaf lives under it.
+  {
+    title: "Company Brain",
+    icon: Brain,
+    items: [
+      { href: "/admin/brain", label: "Overview" },
+      { href: "/admin/brain/facts", label: "Facts" },
+    ],
+  },
   {
     title: "Intelligence",
-    icon: Brain,
+    // Sparkles, not Brain — the Brain glyph moved to the Company Brain group
+    // above, and two groups sharing an icon reads as one split in half.
+    icon: Sparkles,
     items: [
       { href: "/admin/model-config", label: "AI Provider" },
       { href: "/admin/learned-patterns", label: "Learned Patterns" },
-      { href: "/admin/brain-facts", label: "Brain Facts" },
       { href: "/admin/prompts", label: "Prompt Library" },
       { href: "/admin/starter-prompts", label: "Starter Prompts" },
       { href: "/admin/actions", label: "Actions" },

@@ -156,7 +156,7 @@ deliberate, and the pairing is the decision.**
 
 `promoteBrainFacts(tx, orgId)` takes no reader and `DRAFT_FACTS_SQL` carries no
 ACL clause, so publishing promotes every live draft in the workspace — including
-ones the admin who pressed the button was never shown. `/admin/brain-facts`
+ones the admin who pressed the button was never shown. `/admin/brain/facts`
 composes `aclVisibilityClause` and shows only what that reader may see. So
 `queue < what publish promotes` is the **correct** state, not a bug.
 

@@ -21,6 +21,13 @@ if (fs.existsSync(monorepoEnv)) {
   }
 }
 
+/**
+ * The array type `redirects()` must return. Named so both arrays in that
+ * method can be annotated without restating it — see the note there on why an
+ * unannotated literal loses excess-property checking.
+ */
+type RedirectList = Awaited<ReturnType<NonNullable<NextConfig["redirects"]>>>;
+
 const nextConfig: NextConfig = {
   reactCompiler: true,
   experimental: {
@@ -209,15 +216,67 @@ const nextConfig: NextConfig = {
   // (the self-hosted default) adds no route: Atlas's security contact is not
   // the operator's, and an operator with their own policy can set the var.
   async redirects() {
+    // Retired admin URLs come in two shapes, and this repo has one mechanism
+    // for each. A legacy URL whose query or fragment has to be RESHAPED gets a
+    // stub `page.tsx` calling `redirect()`: `/admin/action-log` and
+    // `/admin/token-usage` fold their filters onto a `?tab=`, and
+    // `/admin/settings/mcp` appends an anchor. All three are pinned by
+    // `src/ui/__tests__/admin-redirects.test.ts`. This one is a pure path
+    // rename — `?status=draft` means the same thing on either side, and config
+    // redirects merge the source query into the destination untouched, so
+    // there is nothing for a server component to compute. Config is then
+    // strictly better: it runs before routing, costs one header instead of a
+    // rendered RSC payload, and does not re-create the `admin/brain-facts/`
+    // directory this move exists to retire. Add to the stub set instead if a
+    // future retirement needs to reshape its params.
+    //
+    // `permanent: true` (308) because the old URL is gone, not parked — the
+    // docs portal and any bookmark should re-point rather than keep resolving
+    // through a hop. It is the one redirect class where browser caching is the
+    // desired outcome.
+    //
+    // ⚠️ Both arrays are annotated, and BOTH need it. `redirects()` carries no
+    // return-type annotation, so its return type is INFERRED from the body, and
+    // object-literal freshness ("excess property") checking does not survive
+    // that inference into the later assignability check against `NextConfig`.
+    // Unannotated, a typo'd OPTIONAL key (`basePathh: false`,
+    // `statusCodee: 301`) type-checks and is silently dropped at runtime; only
+    // required-key typos are caught.
+    //
+    // Annotating the METHOD instead is not a substitute — measured, not
+    // assumed: `async redirects(): Promise<RedirectList>` covers a literal
+    // returned inline but still misses one inside an unannotated intermediate
+    // `const`, which is the shape this body needs. So the annotation lives on
+    // the arrays.
+    //
+    // These are checked at all only because `tsconfig.json`'s `include` does
+    // not cover this file — it reaches the type program via the two redirect
+    // test files importing it, i.e. through `tsconfig.test-check.json`, the
+    // second half of `bun run type`. Plain `tsgo --noEmit` never sees it.
+    const legacyAdmin: RedirectList = [
+      {
+        // Order is load-bearing only against the early return below: an
+        // unconditional entry placed after the `if (!securityTxtUrl)` return
+        // silently vanishes on every self-hosted deploy. That is the shape
+        // `legacy-admin-redirects.test.ts` pins with the var deleted.
+        source: "/admin/brain-facts",
+        destination: "/admin/brain/facts",
+        permanent: true,
+      },
+    ];
+
     const securityTxtUrl = process.env.ATLAS_SECURITY_TXT_URL?.trim();
-    if (!securityTxtUrl) return [];
-    return [
+    if (!securityTxtUrl) return legacyAdmin;
+
+    const withSecurityTxt: RedirectList = [
+      ...legacyAdmin,
       {
         source: "/.well-known/security.txt",
         destination: securityTxtUrl,
         permanent: false,
       },
     ];
+    return withSecurityTxt;
   },
   // When NEXT_PUBLIC_ATLAS_API_URL is set, the frontend talks directly to the API
   // (cross-origin), so no server-side rewrite is needed. When unset, Next.js proxies

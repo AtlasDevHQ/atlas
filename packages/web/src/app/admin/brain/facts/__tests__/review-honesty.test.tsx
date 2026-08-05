@@ -5,7 +5,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
 import type { BrainFactTensionVisible } from "@/ui/lib/types";
+import { navGroups } from "@/ui/components/admin/admin-nav";
 import { resolvedTensionBadge, statusBadge, tensionBadge } from "../columns";
+
+/**
+ * The sidebar location of this page, spelled the way user-facing copy spells
+ * it ("Company Brain → Facts"). Built from `navGroups` so copy that points an
+ * admin at the sidebar breaks when the sidebar moves — see the publish-modal
+ * assertion in "will-supersede disclosure (#4912)".
+ */
+function sidebarPathToFacts(): string {
+  const target = "/admin/brain/facts";
+  for (const group of navGroups) {
+    for (const item of group.items) {
+      if (item.href === target) return `${group.title} → ${item.label}`;
+    }
+  }
+  throw new Error(`no nav entry for ${target} — the page moved without its sidebar entry`);
+}
 
 /**
  * What the review gate must SAY, not just fetch (#4772, ADR-0036).
@@ -23,7 +40,7 @@ import { resolvedTensionBadge, statusBadge, tensionBadge } from "../columns";
  */
 
 void mock.module("next/navigation", () => ({
-  usePathname: () => "/admin/brain-facts",
+  usePathname: () => "/admin/brain/facts",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -1941,8 +1958,21 @@ describe("will-supersede disclosure (#4912)", () => {
     await waitFor(() =>
       expect(document.body.textContent).toContain("Publishing will supersede 3 published facts"),
     );
-    // Scope statement, not a scare: it points at the per-pair disclosure.
-    expect(document.body.textContent).toContain("Brain facts");
+    // Scope statement, not a scare: it points at the per-pair disclosure, by
+    // the sidebar path an admin can actually follow. DERIVED from `navGroups`
+    // rather than hardcoded (#5066): the copy names a sidebar location, and a
+    // literal here would keep passing after someone renamed the group — the
+    // modal would then send an admin hunting for something the sidebar no
+    // longer shows, which is the exact failure this file is named for.
+    // ⚠️ ANCHORED on the surrounding copy ("under … in the admin sidebar"),
+    // not on the bare path. `toContain` is a substring test, and every
+    // plausible rename of this group is a SUFFIX of the current title —
+    // renaming "Company Brain" to "Brain" yields "Brain → Facts", which is
+    // still contained in "Company Brain → Facts", so the unanchored form
+    // stayed green against exactly the drift it was written to catch.
+    expect(document.body.textContent).toContain(
+      `under ${sidebarPathToFacts()} in the admin sidebar`,
+    );
   });
 });
 

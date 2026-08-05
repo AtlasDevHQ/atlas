@@ -1381,7 +1381,7 @@ describe("in-tension-with — the conflict cluster (#4913)", () => {
  * `searchBrain` is what makes #4836 a user-visible disclosure rather than an
  * admin-queue one: it feeds agent chat answers, so a widened fact reaching an
  * org reader here hands them a private channel's first speaker without anybody
- * opening `/admin/brain-facts`. That is why this suite covers it and not only
+ * opening `/admin/brain/facts`. That is why this suite covers it and not only
  * `candidates.test.ts`.
  *
  * The reader-visible SELECT is deliberately NOT what is asserted — the row came

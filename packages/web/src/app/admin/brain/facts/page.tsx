@@ -296,7 +296,7 @@ export default function BrainFactsPage() {
       <div className="p-6">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Brain Facts</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Facts</h1>
             <p className="text-sm text-muted-foreground">
               Review what Atlas has learned before it becomes something the agent will repeat
             </p>
@@ -473,7 +473,7 @@ export default function BrainFactsPage() {
               error={error}
               isEmpty={candidates.length === 0}
               onRetry={refetch}
-              feature="Brain Facts"
+              feature="Company Brain"
               loadingMessage="Loading fact candidates..."
               emptyState={{
                 icon: Brain,

@@ -1086,7 +1086,7 @@ export function brainFactsCountSql(orgParam: string): string {
  * workspace and that is deliberate — a reader-scoped promote would strand a
  * private channel's facts forever, with no resolvable reviewer to publish them.
  * But an unscoped LABEL query is a different thing entirely: it hands an admin
- * the exact claims `/admin/brain-facts` had just refused to show them, one
+ * the exact claims `/admin/brain/facts` had just refused to show them, one
  * modal over. That is what this SQL used to be, and it is what `aclVisibilityClause`
  * on the caller's side now stops.
  *

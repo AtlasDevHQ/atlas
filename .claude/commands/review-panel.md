@@ -95,6 +95,52 @@ The test for (b) is *"does the smallest correct fix add a new thing?"* — not *
 
 So the point is not fewer rounds. It is that a fix which triples the diff should be a **visible decision with a recorded reason**, made when the growth is proposed rather than discovered three rounds later — and a PR that grew that way should say so, because the reviewer's read of it changes.
 
+**Step 6: Every must-fix's FIX needs a falsifier before the round is closed**
+
+A fix is not closed when it is written. It is closed when something can tell you
+it stopped working.
+
+For each must-fix you resolved, name one of three:
+
+- a test that fails without the fix,
+- a row in a `scripts/mutations/*.mutations.ts` spec, or
+- an explicit *"this is unfalsifiable, and here is the measurement instead"* —
+  carried in the docstring, not in your head.
+
+⚠️ **This is the rule that makes the round cap converge, and its absence is what
+made #5027 take four rounds.** Rounds 1 and 2 there shipped ~500 lines of fixes
+with none of the above. A reviewer probed eleven of them and got **eleven
+zeros** — so every fix was unreviewable, and each round's defect survived into
+the next:
+
+- **R1** bounded an unbounded post-commit await with a timer whose `.finally()`
+  was attached to the **timer promise** — which settles only when the timer
+  fires, so `clearTimeout` was unconditionally a no-op and the fast path left a
+  5s timer armed per correction.
+- **R2**'s replacement then logged a fast `42P01` as *"could not be evaluated
+  within its deadline … may still commit"* when no deadline event had happened
+  and the transaction had definitively rolled back — **a lying disclosure in the
+  helper written to stop one.**
+- **R3**'s own continuation was unreachable by any test, so deleting all 28
+  lines of it stayed green.
+
+The tell is one question, and it is cheap: **if you cannot say what would go
+red, you have not closed the finding — you have moved it one round later, where
+it costs more.**
+
+**A `0` in a mutation table is a CLAIM, not a note.** #5027's round 2 published
+one as honest — *"invisible to a test suite; `bun test` force-exits"*. The
+technique that falsifies it was already in `correction-audit.test.ts`, one file
+over, guarding the same defect in the same module; it stayed green only because
+it drove a verb that never reached the code under test. Before writing a `0`,
+grep the sibling suites for the thing you are about to declare untestable.
+
+**Cost, stated honestly:** for (a) local defects this is usually one assertion.
+It is the expensive half for anything touching timing, concurrency or
+post-commit ordering — #5027 needed a delayed-settle fake and a `setTimeout`
+handle recorder to reach two of its arms. Pay it there especially; those are the
+arms nothing else can see.
+
 **Rules:**
 - Read-only. The panel reports; it never edits code.
 - Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps.

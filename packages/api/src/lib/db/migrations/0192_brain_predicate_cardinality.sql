@@ -5,7 +5,7 @@
 -- ## believed it was
 --
 -- `brain_facts.predicate_cardinality` (0180) was believed unpopulated. It is
--- not: `brain/extract.ts` writes the MODEL's per-claim guess and
+-- not: `brain/extract.ts` wrote the MODEL's per-claim guess and
 -- `brain/correction.ts` inherited it onto every replacement. The publish gate's
 -- collision rule then required `'single'` on BOTH sides
 -- (`content-mode/adapters/brain-facts.ts`), and the two sides come from two
@@ -54,8 +54,8 @@
 --      `(workspace, position, from_norm)` IS the at-most-one-parent invariant,
 --      so a queued proposal vetoed a decision. Here the "slot" is one canonical
 --      predicate, and a pending proposal for `reports to` SHOULD block a second
---      concurrent proposal for `reports to` — that is the rejection memory, not
---      a veto.
+--      concurrent proposal for `reports to` — that is idempotence, not a veto,
+--      and the SAME slot carries the rejection memory once the row is decided.
 --   2. **A proposal would be indistinguishable to the closure rebuild.** There,
 --      `recomputeEffectiveTargets` reads the edge table wholesale and would
 --      compose an unapproved merge into the closure. Here there is no closure

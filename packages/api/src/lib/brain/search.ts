@@ -424,8 +424,9 @@ function factStatus(value: unknown, rowId: string, workspaceId: string) {
 /**
  * Cardinality off `pg`. `multi` is the conservative fallback — hence the log.
  *
- * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3): cardinality is a property of the
- * CANONICAL PREDICATE now, read live from `brain_predicate_cardinality` at the
+ * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.**
+ *
+ * Cardinality is a property of the CANONICAL PREDICATE now, read live from `brain_predicate_cardinality` at the
  * publish gate. `brain_facts.predicate_cardinality` stopped being written, so
  * every fact ingested since the migration reports `multi` however its predicate
  * is curated, and every earlier one carries the extractor's stale LLM guess.

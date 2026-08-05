@@ -40,11 +40,18 @@
  * The accepted cost, stated rather than discovered: `single` will be rare and
  * slow to accumulate, so supersession stays mostly unfired for a long time.
  *
- * ## Three sources, and this slice implements exactly one
+ * ## Three sources, and this slice ships exactly one PRODUCER
  *
- * {@link CARDINALITY_SOURCE_CLASSES} is the allowlist, enforced by a CHECK as
- * well as by {@link proposePredicateCardinality}'s refusals — a fourth producer
- * must earn its arm in a migration rather than inherit one:
+ * {@link CARDINALITY_SOURCE_CLASSES} is the allowlist — a fourth producer must
+ * earn its arm in a migration rather than inherit one.
+ *
+ * Enforced by the CHECK, and by the TS tuple at compile time. NOT by a runtime
+ * refusal: unlike `cardinality`, an out-of-vocabulary `source_class` arriving
+ * through a cast reaches the INSERT and comes back as a thrown `23514`. Stated
+ * rather than fixed, because the tuple has no untyped producer today — #5042 and
+ * #5025 are both TS call sites — and a refusal arm nothing can reach is a fifth
+ * thing to keep in step. Revisit if a source class ever arrives from a request
+ * body. The three sources:
  *
  *   1. `warehouse_structural` — a dimension of one row is `single` BY
  *      CONSTRUCTION (ADR-0037 §3(d)1). Authoritative, not a hint. Its producer
@@ -109,9 +116,10 @@ const log = createLogger("brain-cardinality");
  *
  * Declared locally rather than imported so this module's public surface names
  * no vocabulary type: a caller of the cardinality store should not have to
- * reason about the alias closure to satisfy it. The two must stay
- * interchangeable, because `correction.ts` hands this module the same `tx` it
- * hands `reconcileFacts`.
+ * reason about the alias closure to satisfy it. A `reconcile.ts` `tx` must
+ * always satisfy this one, because `correction.ts` hands this module the same
+ * `tx` it hands `reconcileFacts` — that direction is pinned below. The reverse
+ * is neither needed nor checked.
  */
 export interface CardinalityExecutor {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
@@ -261,7 +269,14 @@ export function cardinalitySingleSql(alias: string): string {
 }
 
 /**
- * One predicate's entry, or `null` when the workspace has never adjudicated it.
+ * One predicate's entry, or `null`.
+ *
+ * ⚠️ `null` means ABSENT-**or-unreadable**, never "readable and `multi`". Two
+ * drift arms below also answer `null` — a row this module cannot narrow, and a
+ * row with no usable author — and the second is dangerous enough to carry its
+ * own warning: the publish gate does not read `proposed_by`, so such a row can
+ * still supersede while this reports no entry. A caller that reads `null` as
+ * *uncurated* is making the exact inference those warnings exist to prevent.
  *
  * For DISPLAY and for a proposer's own pre-check. The publish gate does not call
  * it — it reads {@link cardinalitySingleSql} inside its own statement, because a
@@ -278,16 +293,15 @@ export async function readPredicateCardinality(
       WHERE workspace_id = $1 AND predicate_key = $2`,
     [workspaceId, predicateKey],
   );
-  // NARROWED, not cast-and-dereferenced. `CardinalityExecutor` is satisfied by
-  // a test literal BY DESIGN — that is what lets the mutators take a `tx` and
-  // this reader take a pool — so nothing in the type stops `{ rows: [{}] }`
-  // reaching here, and a cast would hand back a `PredicateCardinalityRecord`
-  // whose `readonly cardinality: PredicateCardinality` is `undefined`. The
-  // record's own invariant would be violated at its single construction point.
-  // Guarded on the VALUE, not cast. An executor satisfied by a test literal can
-  // hand back `{ rows: [null] }`, which `row === undefined` does not catch — the
-  // next field read would be a raw TypeError from the one function whose job is
-  // legibility. Same shape as the sibling read below.
+  // Guarded on the VALUE, never cast. `CardinalityExecutor` is satisfied by a
+  // test literal BY DESIGN — that is what lets the mutators take a `tx` and this
+  // reader take a pool — so nothing in the type stops `{ rows: [{}] }` or
+  // `{ rows: [null] }` reaching here. A bare `rows[0] as Record<…>` hands back a
+  // `PredicateCardinalityRecord` whose `readonly cardinality` is `undefined` on
+  // the first, violating the record's own invariant at its single construction
+  // point — and on the second it passes `=== undefined` and then throws a raw
+  // TypeError on the first field read, from the one function whose job is
+  // legibility.
   const first = rows[0];
   const row: Record<string, unknown> | undefined =
     typeof first === "object" && first !== null ? (first as Record<string, unknown>) : undefined;
@@ -446,19 +460,16 @@ export async function proposePredicateCardinality(
     };
   }
   if (input.proposedBy === "") return unattributed(predicateKey);
-  // `as string`, and the cast is the point: {@link CardinalityProposalInput}
-  // narrows this to `"single"`, so TypeScript can see the branch is dead for a
-  // typed caller — which is the guarantee. It is not dead for a caller that
-  // reached here through a cast, from `JSON.parse`, or from a future producer
-  // whose config carries the value, and the CHECK's allowlist has to hold for
-  // those too. A `// @ts-expect-error`-free way of saying "the type prevents
-  // this; the runtime still refuses it".
-  // `!== "single"`, not `=== "multi"`. The cast below says this arm exists for a
-  // caller that arrived through `JSON.parse` or a producer's config — and those
-  // yield ARBITRARY strings. `=== "multi"` let `"Multi"`, `"sometimes"` and `""`
-  // through to the INSERT, where `ck_brain_predicate_cardinality_value` refuses
-  // them as a THROWN 23514 — breaking this module's "every arm is a REFUSAL"
-  // contract for exactly the population the cast is protecting.
+  // `CardinalityProposalInput` narrows this to `"single"`, so the branch is dead
+  // for a typed caller — that IS the guarantee, and the `as string` is what lets
+  // it be written without a `@ts-expect-error`. It is not dead for a caller that
+  // arrived through a cast, `JSON.parse`, or a producer's config, and those
+  // yield ARBITRARY strings: `!==` rather than `=== "multi"` is what keeps
+  // `"Multi"`, `"sometimes"` and `""` inside the refusal contract instead of
+  // letting them reach the INSERT and return as a thrown 23514 from
+  // `ck_brain_predicate_cardinality_value`. `cardinality.test.ts` drives all
+  // four, because a fixture of `"multi"` alone is refused by the OLD predicate
+  // too and cannot falsify the widening.
   if ((input.cardinality as string) !== "single") {
     return {
       ok: false,

@@ -138,6 +138,49 @@ describe("proposePredicateCardinality — the producer door", () => {
     expect(sql).toEqual([]);
   });
 
+  it.each(["Multi", "sometimes", "", "SINGLE"])(
+    "refuses ANY non-`single` cardinality (%p) — not just the literal `multi`",
+    async (value) => {
+      // The population the guard was WIDENED for, and the reason the previous
+      // fixture could not falsify the widening: `"multi"` is refused by the old
+      // `=== "multi"` predicate too, so reverting `!== "single"` left every test
+      // green. These are the shapes a `JSON.parse` body or a producer's config
+      // actually yields, and under the old spelling each one reached the INSERT
+      // and came back as a THROWN 23514 from
+      // `ck_brain_predicate_cardinality_value` — breaking this module's
+      // "every arm is a REFUSAL" contract for exactly the callers the runtime
+      // check exists to serve.
+      const { exec, sql } = executor();
+      const result = await proposePredicateCardinality(exec, WS, {
+        predicateKey: KEY,
+        cardinality: value as "single",
+        sourceClass: "correction_event",
+        proposedBy: CORRECTION_EVENT_PRODUCER,
+      });
+
+      expect(result).toMatchObject({ ok: false, refusal: "producer-proposed-multi" });
+      expect(sql).toEqual([]);
+    },
+  );
+
+  it("refuses a write that names no author, without issuing a statement", async () => {
+    // `proposed_by` is the first column an audit of a retroactive re-key reads,
+    // and `NOT NULL` alone admits `''` — an unattributed row wearing the shape
+    // of an attributed one. Refused at the door as well as by
+    // `ck_brain_predicate_cardinality_author_present`, because a thrown 23502/23514
+    // is not a refusal.
+    const { exec, sql } = executor();
+    const result = await proposePredicateCardinality(exec, WS, {
+      predicateKey: KEY,
+      cardinality: "single",
+      sourceClass: "correction_event",
+      proposedBy: "",
+    });
+
+    expect(result).toMatchObject({ ok: false, refusal: "unattributed" });
+    expect(sql).toEqual([]);
+  });
+
   it.each([null, ""])("refuses a degenerate key (%p) without issuing a statement", async (key) => {
     // An entry under an empty key would describe EVERY degenerate predicate in
     // the workspace at once — and on a `single` row that is a workspace-wide
@@ -216,6 +259,21 @@ describe("declarePredicateCardinality — the human door", () => {
     expect(result).toMatchObject({ ok: false, refusal: "degenerate-key" });
     expect(sql).toEqual([]);
   });
+
+  it("refuses an unattributed declaration — this door's whole authority is that a person took it", async () => {
+    // `CardinalityDeclarationInput.authoredBy` says so outright, and this path
+    // writes `approved` in ONE step: an unattributed row here immediately makes
+    // every existing published pair in the slot supersedable, with nobody
+    // recorded as having asked for it.
+    const { exec, sql } = executor();
+    const result = await declarePredicateCardinality(exec, WS, {
+      predicateKey: KEY,
+      cardinality: "single",
+      authoredBy: "",
+    });
+    expect(result).toMatchObject({ ok: false, refusal: "unattributed" });
+    expect(sql).toEqual([]);
+  });
 });
 
 describe("decidePredicateCardinality", () => {
@@ -270,6 +328,21 @@ describe("readPredicateCardinality — every degradation is toward LESS authorit
 
   it("answers `null` for a predicate with no entry", async () => {
     expect(await readPredicateCardinality(executor().exec, WS, KEY)).toBeNull();
+  });
+
+  it("answers `null` for a row it cannot narrow at all — never a raw TypeError", async () => {
+    // `CardinalityExecutor` is satisfied by a test literal BY DESIGN, so
+    // `{ rows: [null] }` is a shape nothing upstream prevents. A bare
+    // `rows[0] as Record<string, unknown>` passes `=== undefined` and then
+    // throws on the first field read — from the one function whose job is
+    // legibility.
+    expect(
+      await readPredicateCardinality(
+        executor([{ match: "SELECT", rows: [null] }]).exec,
+        WS,
+        KEY,
+      ),
+    ).toBeNull();
   });
 
   it("does not project the predicate key — the record cannot carry one", async () => {

@@ -239,38 +239,44 @@ human behind it.
         {
           file: CORRECTION,
           oldString: `    await proposeUnderDeadline(
-      withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),
+      () => withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),
       resolveAuditDeadline(deps.auditWriteTimeoutMs),
       { workspaceId: ctx.workspaceId, factId: result.factId, requestId },
     );`,
-          newString: `    await withTransaction((tx) =>
-      proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
-    );`,
+          newString: `    try {
+      await withTransaction((tx) =>
+        proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
+      );
+    } catch {
+      // intentionally ignored: the mutation removes the deadline, not the absorb
+    }`,
         },
       ],
       note: "A DEGRADED internal DB — reachable, not answering — never throws, so the catch never runs and `correctFact` never returns. The caller's own timeout then reports *\"nothing was changed — retry\"* about a correction that IS committed, and the retry mints a second correction episode for one human decision. Unbounded is worse than failing, and `Promise.race` with a REJECTING timer is what routes it into the existing catch.",
     },
     {
-      label: "the deadline's timer is cleared by the timer promise's own `finally`",
+      label: "the deadline's timer is never cleared",
       edits: [
         {
           file: CORRECTION,
           oldString: `  } finally {
-    // Around the RACE, so it runs whoever wins. This is the whole fix.
+    // Around the RACE, so it runs whoever wins. This is the whole fix: a
+    // \`finally\` on the TIMER PROMISE settles only when the timer fires, so
+    // \`clearTimeout\` was always a no-op and the fast path left it armed.
     if (timer !== undefined) clearTimeout(timer);
   }`,
           newString: `  }`,
         },
       ],
-      note: "The round-1 fix's own defect, kept as a row because it is INVISIBLE to a test suite: a `finally` attached to the timer promise settles only when the timer fires, so `clearTimeout` is always a no-op and the fast path leaves a 5s timer armed per correction. `bun test` force-exits, so nothing here catches it — a 0 in this row is honest and is the reason the docstring carries the measurement instead.",
+      note: "Round 1's own defect, respelled as the edit that reproduces it: a `finally` attached to the TIMER PROMISE settles only when the timer fires, so `clearTimeout` was always a no-op and the fast path left a 5s timer armed per correction. Round 2 published this row as an honest `0` (`bun test` force-exits); round 3 falsified it with the technique already in `correction-audit.test.ts`, which had stayed green only because it drives `pin` — a verb that never reaches the proposer.",
     },
     {
       label: "the proposer runs INSIDE the correction's transaction",
       edits: [
         {
           file: CORRECTION,
-          oldString: `      withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),`,
-          newString: `      proposeFromCorrectionEvents({ query: async () => ({ rows: [] }) }, ctx.workspaceId, supersededPredicate),`,
+          oldString: `      () => withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),`,
+          newString: `      () => proposeFromCorrectionEvents({ query: async () => ({ rows: [] }) }, ctx.workspaceId, supersededPredicate),`,
         },
       ],
       note: "Stands in for the placement change rather than reproducing it literally (the real one cannot be expressed as a local edit). What it removes is the proposer's access to the committed `supersedes` edge — which is why the placement is post-commit rather than a `SAVEPOINT`.",

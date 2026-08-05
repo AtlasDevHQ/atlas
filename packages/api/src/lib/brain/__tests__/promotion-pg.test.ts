@@ -2159,11 +2159,13 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     //   cd packages/api && bun run scripts/mutate.ts scripts/mutations/tier-guard.mutations.ts
     //
     // ⚠️ It used to be a hand-typed table right here, and #5027 is why it is
-    // not. That slice added ONE test to this block that asserts a stamp, which
-    // moved the `absent-key disjunct removed` row from 8 to 9 and falsified the
-    // prose paragraph that enumerated the 8 — without touching the guard. Three
-    // sites had to agree about one number and two of them were wrong for a
-    // slice. That is the failure mode #5060 built the runner for: a
+    // not. That slice REWROTE a test in the #4912 supersession block so its
+    // control now asserts a stamp, moving the `absent-key disjunct removed` row
+    // from 8 to 9 and falsifying the prose paragraph that enumerated the 8 —
+    // without touching the guard. (The test it ADDED asserts no stamp and moved
+    // nothing, so "a slice added a test" is the wrong lesson: ANY edit to the
+    // population a cell counts can invalidate it.) Three sites had to agree
+    // about one number and two of them were wrong for a slice. That is the failure mode #5060 built the runner for: a
     // hand-measured cell is a claim nothing can falsify, published under a
     // comment that reads as measurement.
     //

@@ -635,9 +635,12 @@ export function supersessionCollisionPredicate(d: string, p: string): string {
  * spellings of that available were (a) copy the arms, which
  * {@link supersessionCollisionJoin}'s header forbids at length, or (b) split the
  * predicate at the one seam that makes the question expressible. This is (b) —
- * so the shipped guard is `core AND tier(p) AND tier(d)` and the diagnostic is
- * `core AND (tier(p) AND tier(d)) IS NOT TRUE`, both built from ONE spelling of
- * the core and ONE of the tier. The negation is spelled `IS NOT TRUE` and never
+ * so the shipped guard is `core AND card AND tier(p) AND tier(d)` and the
+ * diagnostic is `core AND card AND (tier(p) AND tier(d)) IS NOT TRUE`, both
+ * built from ONE spelling of each piece. (`core` became a real function name in
+ * #5027 — {@link collisionCorePredicate}, which EXCLUDES the cardinality arm —
+ * so this formula names `card` separately where an earlier version folded it
+ * into an informal "core".) The negation is spelled `IS NOT TRUE` and never
  * `NOT (…)` — see {@link TIER_HELD_BACK_COUNT_SQL}'s ⚠️, which is not a style
  * note.
  *
@@ -1243,7 +1246,9 @@ function advisoryCount(
 }
 
 /**
- * Read {@link TIER_HELD_BACK_COUNT_SQL}'s single column.
+ * Read a held-back count's single column — {@link TIER_HELD_BACK_COUNT_SQL}
+ * (#5033) or {@link CARDINALITY_HELD_BACK_COUNT_SQL} (#5027). WHICH one is the
+ * `statement` parameter's business; see it for why that is not decoration.
  *
  * Degrades to `null` — *unknown* — never to 0. Throwing would fail the publish
  * over a diagnostic (CLAUDE.md's *prefer errors over silent fallbacks* governs

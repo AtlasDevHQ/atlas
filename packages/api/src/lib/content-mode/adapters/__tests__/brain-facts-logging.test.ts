@@ -132,7 +132,7 @@ function tx(
    * every publish that has a promotable draft and a double that refused it
    * would fail every test in the file for a reason unrelated to what it asserts.
    */
-  uncurated = 0,
+  uncurated: number | string | null = 0,
 ): ModeTxClient {
   return {
     query: async (sql, params = []) => {
@@ -152,7 +152,10 @@ function tx(
       // handed the tier fixture's value, including its EXPLODE sentinel, and
       // every assertion in this block would be about the wrong statement.
       if (sql.includes("held_back")) {
-        if (!sql.includes("IS NOT TRUE")) return { rows: [{ held_back: uncurated }] };
+        if (!sql.includes("IS NOT TRUE")) {
+          if (uncurated === EXPLODE) throw new Error("uncurated count exploded");
+          return { rows: [{ held_back: uncurated }] };
+        }
         // The sentinel: any other string is a driver-shape case the reader
         // must degrade on, so the failure needs a value no real driver returns.
         if (heldBack === EXPLODE) throw new Error("held-back count exploded");
@@ -441,8 +444,10 @@ describe("promoteBrainFacts — the tier guard states what it held back (#5033)"
     // Without this line "supersession stopped completely" is indistinguishable
     // from "the cardinality read is broken" — and it silently neutralized the
     // tier line one commit earlier, which reads a constant 0 while the
-    // vocabulary is empty (the cardinality arm sits inside the collision core
-    // both counts join on).
+    // vocabulary is empty: the TIER count joins on `collisionIdentityPredicate`
+    // (core AND cardinality), so a pair the cardinality arm excluded never
+    // reaches it. This count joins on the CORE, which is what lets it see that
+    // population at all.
     const report = await run(
       promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], 0, [], 3), "ws-1"),
     );
@@ -465,6 +470,48 @@ describe("promoteBrainFacts — the tier guard states what it held back (#5033)"
     // of a permanent tier refusal; a count that is large-and-shrinking for every
     // workspace during the vocabulary's first months does not belong in one.
     expect(report.supersessionHeldBack).toBe(0);
+  });
+
+  it("names the CARDINALITY statement when ITS count drifts, not the tier one", async () => {
+    // `readHeldBackCount` is shared by two statements, and its drift warning
+    // used to be hard-coded to `TIER_HELD_BACK_COUNT_SQL`. That sends an
+    // operator to diff a provably-fine statement at the exact moment the only
+    // trace of supersession having stopped workspace-wide has gone missing.
+    //
+    // Round 2 parameterized it and shipped no instrument that could see it: both
+    // call sites could pass the same literal and every test stayed green. This
+    // is that instrument, and it reads the `statement` field rather than the
+    // prose so a reworded message does not silently un-test the pairing.
+    await run(promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], 0, [], null), "ws-1"));
+
+    const line = warns().find((c) => c.message.includes("did not read back"));
+    expect(line?.payload).toMatchObject({ statement: "CARDINALITY_HELD_BACK_COUNT_SQL" });
+  });
+
+  it("…and the TIER statement when the tier count drifts — the positive control", async () => {
+    // Without this, the assertion above is satisfied by a reader hard-coded to
+    // the CARDINALITY statement, which is the same defect facing the other way.
+    await run(promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], null), "ws-1"));
+
+    const line = warns().find((c) => c.message.includes("did not read back"));
+    expect(line?.payload).toMatchObject({ statement: "TIER_HELD_BACK_COUNT_SQL" });
+  });
+
+  it("survives the cardinality count failing outright — its own savepoint, its own warn", async () => {
+    // The second `advisoryCount` call site's failure path, unmodelled until now:
+    // `uncuratedFails` was a declared-and-unused option in the sibling double,
+    // and the EXPLODE sentinel here sat behind the tier branch. So the whole
+    // reason the two diagnostics have SEPARATE savepoints was proven in one
+    // direction only.
+    const report = await run(
+      promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], 2, [], EXPLODE), "ws-1"),
+    );
+
+    // The publish commits, and the FIRST diagnostic's answer survives.
+    expect(report.promoted).toBe(1);
+    expect(report.supersessionHeldBack).toBe(2);
+    const line = warns().find((c) => c.message.includes("uncurated-cardinality count could not be"));
+    expect(line, "the second diagnostic failed with no warn at all").toBeDefined();
   });
 
   it("stays silent when nothing was held back for want of curation", async () => {

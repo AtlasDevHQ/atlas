@@ -705,10 +705,12 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(calls[13].sql).toContain("SAVEPOINT brain_tier_held_back");
     expect(calls[14].sql).toContain("IS NOT TRUE");
     expect(calls[15].sql).toContain("SAVEPOINT brain_cardinality_held_back");
-    // Identified by `NOT EXISTS` rather than by the table name: calls 12 and 14
-    // both contain `brain_predicate_cardinality` too, because the collision core
-    // they share carries `cardinalitySingleSql`. Pinning on the table name would
-    // pass if this statement were replaced by a second copy of the tier count.
+    // Identified by `NOT EXISTS` rather than by the table name: calls 12, 14 AND
+    // 16 all name `brain_predicate_cardinality` — the first two join on
+    // `collisionIdentityPredicate`, which carries `cardinalitySingleSql`, and
+    // this one negates it. Pinning on the table name would pass if this
+    // statement were replaced by a second copy of the tier count; `NOT EXISTS`
+    // is what distinguishes them.
     expect(calls[16].sql).toContain("NOT EXISTS");
     expect(calls[16].sql).not.toContain("IS NOT TRUE");
     expect(calls[17].sql).toContain("brain_edges");

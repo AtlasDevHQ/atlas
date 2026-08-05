@@ -3930,7 +3930,8 @@ export const brainVocabularyProposal = pgTable(
 // ONE relation with a `status`, unlike 0190's third-relation split, and the
 // difference is principled rather than convenient — neither of 0190's two
 // reasons reaches here. A pending row occupying the predicate's only slot is
-// the REJECTION MEMORY (#4507), not a queue entry vetoing a decision; and there
+// idempotence rather than a queue entry vetoing a decision, and that same slot
+// carries the REJECTION MEMORY (#4507) once decided; and there
 // is no closure rebuild to confuse a proposal with a decision, only one reader,
 // which filters `status = 'approved'` explicitly. See migration 0192's header.
 //

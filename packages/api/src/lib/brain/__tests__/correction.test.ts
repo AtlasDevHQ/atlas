@@ -20,8 +20,52 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
-import {
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+// --- logger: every VALUE export stubbed (mock-all-exports) -----------------
+//
+// Added by #5027's third review round, for one reason: the post-commit
+// cardinality proposer's ONLY operator-facing output is a log line, and its two
+// arms say materially different things — "the gate FAILED and the proposal did
+// NOT land" versus "it timed out and the statement may still commit". An
+// unbranched line shipped in round 2 saying the second on a `42P01` that had
+// definitively rolled back, and nothing in this file could see it.
+//
+// A PARTIAL mock is the hazard here (a new export in `lib/logger` breaks every
+// consumer of a partial stub), so this is the same complete block
+// `correction-audit.test.ts` carries, copied deliberately rather than trimmed.
+type LogCall = { level: "error" | "warn" | "info" | "debug"; payload: unknown; message: string };
+const logCalls: LogCall[] = [];
+const recorder = {
+  error: (payload: unknown, message: string) => logCalls.push({ level: "error", payload, message }),
+  warn: (payload: unknown, message: string) => logCalls.push({ level: "warn", payload, message }),
+  info: (payload: unknown, message: string) => logCalls.push({ level: "info", payload, message }),
+  debug: (payload: unknown, message: string) => logCalls.push({ level: "debug", payload, message }),
+};
+void mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => recorder,
+  getLogger: () => ({ ...recorder, level: "info" }),
+  setLogLevel: () => true,
+  getRequestContext: () => ({ requestId: "req-test", user: { id: "admin-1" } }),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (obj: unknown) => obj,
+  hashShareToken: (token: string) => token,
+}));
+
+const warns = () => logCalls.filter((c) => c.level === "warn");
+
+beforeEach(() => {
+  logCalls.length = 0;
+});
+// DYNAMIC, and it has to be: `mock.module` above only reaches a module that
+// has not been evaluated yet, and a static `import` is hoisted above every
+// statement in this file — so the logger stub would apply to nothing and the
+// log assertions below would silently read an empty array. This is the same
+// shape `correction-audit.test.ts` uses, and for the same reason.
+const {
   CORRECTION_EPISODE_INSERT_SQL,
   CORRECTION_REFUSAL_REASONS,
   CORRECTION_VERBS,
@@ -34,8 +78,8 @@ import {
   correctFact,
   correctionTargetSql,
   isWarehouseDerived,
-  type CorrectionRequest,
-} from "@atlas/api/lib/brain/correction";
+} = await import("@atlas/api/lib/brain/correction");
+import type { CorrectionRequest } from "@atlas/api/lib/brain/correction";
 import {
   EPISODE_SOURCES,
   SLACK_SOURCE,
@@ -1501,6 +1545,114 @@ describe("cardinality proposer", () => {
     expect(outcome.kind).toBe("corrected");
     expect(store.fact("old").validTo).toBe(NOW.toISOString());
     expect(store.cardinalityProposals).toEqual([]);
+  }, 5_000);
+
+  test("a SUPERSEDE clears the proposer's deadline timer instead of leaving it armed", async () => {
+    // The mutation table published this row as a `0` with the note "invisible to
+    // a test suite — `bun test` force-exits". That was wrong, and the technique
+    // that falsifies it was already in `correction-audit.test.ts`, one file over,
+    // guarding the SAME defect in the SAME module — it stays green under this
+    // mutation only because it drives `pin`, which never reaches the proposer.
+    //
+    // The defect it catches is round 1's own: a `finally` attached to the TIMER
+    // PROMISE settles only when the timer fires, so `clearTimeout` is always a
+    // no-op and the fast path leaves a 5s timer armed on every supersede. Every
+    // other assertion in this file is blind to it, because the race has already
+    // settled on the winning branch.
+    type SetTimeoutFn = typeof globalThis.setTimeout;
+    type ClearTimeoutFn = typeof globalThis.clearTimeout;
+    const realSetTimeout: SetTimeoutFn = globalThis.setTimeout;
+    const realClearTimeout: ClearTimeoutFn = globalThis.clearTimeout;
+    const created = new Set<ReturnType<SetTimeoutFn>>();
+    const cleared = new Set<unknown>();
+    globalThis.setTimeout = ((...args: Parameters<SetTimeoutFn>) => {
+      const handle = realSetTimeout(...args);
+      created.add(handle);
+      return handle;
+    }) as SetTimeoutFn;
+    globalThis.clearTimeout = ((handle: Parameters<ClearTimeoutFn>[0]) => {
+      cleared.add(handle);
+      realClearTimeout(handle);
+    }) as ClearTimeoutFn;
+
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    try {
+      await run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } });
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
+
+    // Every timer armed during a correction must be disarmed by the time it
+    // returns. Stated that way rather than "the deadline timer specifically",
+    // so the assertion survives a second timer being added.
+    expect(created.size).toBeGreaterThan(0);
+    expect([...created].filter((h) => !cleared.has(h))).toEqual([]);
+  });
+
+  test("a FAST store failure is reported as a failure, not as a timeout", async () => {
+    // The catch branches on `timedOut`, and this is the arm that says so. An
+    // unbranched line — the first cut — told an operator a `42P01` thrown in 2ms
+    // "could not be evaluated within its deadline" (no deadline event happened)
+    // and that the statement "may still commit" (`withTransaction` had rolled it
+    // back). A lying disclosure in the helper written to stop one.
+    //
+    // Also asserts there is exactly ONE line: the pre-race continuation is
+    // guarded on `timedOut` too, and without that guard this single event
+    // produces two warns whose `err` strings are identical — double-counting any
+    // alert built on it.
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    store.failCardinalityProposal = true;
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+    expect(outcome.kind).toBe("corrected");
+
+    const gateWarns = warns().filter((c) => c.message.includes("cardinality repeat gate"));
+    expect(gateWarns).toHaveLength(1);
+    expect(gateWarns[0]?.message).toContain("did NOT land");
+    expect(gateWarns[0]?.message).not.toContain("may still commit");
+    expect(gateWarns[0]?.message).not.toContain("within its deadline");
+    expect(gateWarns[0]?.payload).toMatchObject({ timedOut: false });
+  });
+
+  test("a TIMED-OUT proposal says its fate is unknown, and does not claim it failed", async () => {
+    // The other arm. `Promise.race` does not cancel the query, so the statement
+    // may still commit — and a line claiming otherwise would be the same lie in
+    // the opposite direction.
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+    store.hangCardinalityProposal = true;
+
+    const outcome = await correctFact(
+      {
+        ctx: admin(),
+        vocabulary: identityVocabulary,
+        factId: "old",
+        verb: "supersede",
+        replacement: { object: "Bo" },
+      },
+      {
+        withTransaction: store.runner,
+        now: () => NOW,
+        newCorrectionId: () => "test-uuid",
+        auditWriteTimeoutMs: 50,
+      },
+    );
+    expect(outcome.kind).toBe("corrected");
+
+    const gateWarns = warns().filter((c) => c.message.includes("cardinality repeat gate"));
+    expect(gateWarns).toHaveLength(1);
+    expect(gateWarns[0]?.message).toContain("may still commit");
+    expect(gateWarns[0]?.message).not.toContain("did NOT land");
+    expect(gateWarns[0]?.payload).toMatchObject({ timedOut: true });
   }, 5_000);
 
   test("a failed proposal never reaches the caller — the correction is already committed", async () => {

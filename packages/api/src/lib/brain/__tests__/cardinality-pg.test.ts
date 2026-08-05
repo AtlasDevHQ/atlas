@@ -60,6 +60,7 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import {
+  CARDINALITY_HELD_BACK_COUNT_SQL,
   supersedingDraftPredicate,
   supersessionCollisionPredicate,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
@@ -540,6 +541,28 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
     );
 
     it(
+      "the author column is enforced by the DATABASE too — `NOT NULL` alone admits `''`",
+      async () => {
+        // The write paths refuse it, but they are not the only writer this table
+        // will have: #5025's route and #5042's producer are still to come, and a
+        // CHECK is what holds for a hand-written INSERT or a region importer. An
+        // approved `single` row with no author supersedes at the gate — which
+        // never reads `proposed_by` — while `readPredicateCardinality` reports
+        // it absent, so the row is load-bearing and invisible at once.
+        const ws = "ws-5027-author-check";
+        await expect(
+          pool.query(
+            `INSERT INTO brain_predicate_cardinality
+               (workspace_id, predicate_key, cardinality, status, source_class, proposed_by)
+             VALUES ($1, 'reports to', 'single', 'approved', 'human', '')`,
+            [ws],
+          ),
+        ).rejects.toThrow(/ck_brain_predicate_cardinality_author_present/);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
       "the source-class allowlist is enforced by the DATABASE, not only by the caller",
       async () => {
         // ADR-0037 §3(d) names three sources and no others, and a fourth
@@ -773,6 +796,123 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
       PG_TEST_TIMEOUT_MS,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // The operator's trace: what curation would unlock
+  // -------------------------------------------------------------------------
+
+  it(
+    "CARDINALITY_HELD_BACK_COUNT_SQL counts the pairs curation would make supersedable",
+    async () => {
+      // ⚠️ This statement runs behind `advisoryCount`'s savepoint and is
+      // deliberately kept OUT of `PromotionReport`, so a failure degrades to
+      // `null`, logs a warn, and the publish commits — which means a broken
+      // statement is invisible to every publish-path suite. Verified: appending
+      // `AND d.no_such_column = 1` left all four of them green.
+      //
+      // Its docstring calls it *required rather than nice to have*: it is the
+      // only thing distinguishing "supersession stopped workspace-wide because
+      // nothing is curated" from "the cardinality read is broken". A diagnostic
+      // carrying that job with no test of even its EXECUTABILITY would ship dead
+      // and produce exactly the ambiguity it was added to remove.
+      //
+      // Executed DIRECTLY here rather than observed through a log, which proves
+      // executability and arithmetic in one pass and needs no logger mock in a
+      // `-pg` suite.
+      const ws = "ws-5027-held-back";
+      const ep = await seedEpisode(ws, "held-back");
+      const published = await seedFact(
+        ws,
+        ep,
+        { subject: "business tier", predicate: "priced at", object: "499 USD" },
+        { status: "published", rowCardinality: "multi" },
+      );
+      const draft = await seedFact(
+        ws,
+        ep,
+        { subject: "business tier", predicate: "priced at", object: "599 USD" },
+        { status: "draft", rowCardinality: "multi" },
+      );
+      // A SECOND slot at an unrelated predicate, so the count is a real
+      // selection rather than "every promotable draft".
+      await seedFact(
+        ws,
+        ep,
+        { subject: "acme", predicate: "renews on", object: "700 USD" },
+        { status: "published", rowCardinality: "multi" },
+      );
+      const other = await seedFact(
+        ws,
+        ep,
+        { subject: "acme", predicate: "renews on", object: "800 USD" },
+        { status: "draft", rowCardinality: "multi" },
+      );
+
+      const heldBack = async () => {
+        const { rows } = await pool.query<{ held_back: number }>(CARDINALITY_HELD_BACK_COUNT_SQL, [
+          ws,
+          [draft, other],
+        ]);
+        return rows[0]!.held_back;
+      };
+
+      // Nothing curated: BOTH provable collisions are held back, and the number
+      // is what tells an operator there is something to curate.
+      expect(await heldBack()).toBe(2);
+      expect(await collisionCount(ws)).toBe(0);
+      void published;
+
+      // Curating ONE predicate moves exactly one pair from held-back to
+      // stamped. The two numbers partition, which is the property the
+      // statement's docstring claims and the only way to read either safely.
+      await curate(ws, "priced at", "single");
+      expect(await heldBack()).toBe(1);
+      expect(await collisionCount(ws)).toBe(1);
+
+      await curate(ws, "renews on", "single");
+      expect(await heldBack()).toBe(0);
+      expect(await collisionCount(ws)).toBe(2);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "…and does NOT count a pair the TIER guard blocks — the two diagnostics partition",
+    async () => {
+      // The named gap in the statement's own docstring, asserted rather than
+      // left as prose: a pair blocked by BOTH cardinality and tier appears in
+      // neither count, deliberately, because reporting it as "curate this and it
+      // will supersede" would be false — the tier refusal is permanent.
+      const ws = "ws-5027-held-back-tier";
+      const ep = await seedEpisode(ws, "held-back-tier");
+      await pool.query(
+        `INSERT INTO brain_facts
+           (workspace_id, subject, predicate, object, source_episode_id, provenance,
+            visible_to, status, predicate_cardinality,
+            subject_key, predicate_key, object_key, object_cmp)
+         VALUES ($1, 'business tier', 'priced at', '499 USD', $2,
+                 '{"source":"warehouse"}'::jsonb, ARRAY['org'], 'published', 'multi',
+                 'business tier', 'priced at', '499 usd', 'money:USD:499')`,
+        [ws, ep],
+      );
+      const draft = await seedFact(
+        ws,
+        ep,
+        { subject: "business tier", predicate: "priced at", object: "599 USD" },
+        { status: "draft", rowCardinality: "multi" },
+      );
+
+      const { rows } = await pool.query<{ held_back: number }>(CARDINALITY_HELD_BACK_COUNT_SQL, [
+        ws,
+        [draft],
+      ]);
+      expect(
+        rows[0]!.held_back,
+        "the uncurated count reported a pair the TIER guard blocks permanently — curating the predicate would NOT make it supersede, so the number is a false promise",
+      ).toBe(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
 
   // -------------------------------------------------------------------------
   // The key is the CANONICAL predicate

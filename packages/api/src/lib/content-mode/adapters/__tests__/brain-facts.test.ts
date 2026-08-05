@@ -1279,6 +1279,32 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(updates(calls)).toHaveLength(1);
   });
 
+  it("the SECOND diagnostic can fail independently — which is why they are two savepoints (#5027)", async () => {
+    // The other direction, and without it the two-savepoint decision is proven
+    // one way only. A SHARED savepoint would leave the transaction aborted after
+    // the first diagnostic failed, so the second would fail for a reason that
+    // has nothing to do with it — and here the first SUCCEEDS, so a shared
+    // savepoint would look fine until the day the tier count is the one that
+    // breaks.
+    const { tx, calls, savepoints } = txWithDrafts([singleDraft("a")], {
+      supersessions: [],
+      heldBack: 2,
+      uncuratedFails: true,
+    });
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+
+    // The publish COMMITS, and the FIRST diagnostic's answer survives the
+    // second one's failure — a shared savepoint would have rolled it back.
+    expect(report.promoted).toBe(1);
+    expect(report.supersessionHeldBack).toBe(2);
+    expect(savepoints).toEqual([
+      "SAVEPOINT brain_tier_held_back",
+      "SAVEPOINT brain_cardinality_held_back",
+      "ROLLBACK TO SAVEPOINT brain_cardinality_held_back",
+    ]);
+    expect(updates(calls)).toHaveLength(1);
+  });
+
   it("collides on the identity keys and on no surface column (#5020)", () => {
     // The pivot, asserted as a REPLACEMENT rather than an addition. Matching
     // both would let a surface arm survive beside a key arm, which is the one

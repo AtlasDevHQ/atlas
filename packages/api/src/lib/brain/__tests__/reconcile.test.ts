@@ -805,10 +805,15 @@ describe("advisory contradiction edges", () => {
     });
     expect(store.bindsFor("tensionScan")).toHaveLength(1);
 
+    const landed = store.facts.length;
     await run(store, {
       episode: episode({ id: "ep-hint-multi" }),
       candidates: [candidate({ predicateCardinality: "multi", object: "Alan" })],
     });
+    // The `multi` claim LANDED — asserted first, because "no new scan" is
+    // equally satisfied by a second pass that wrote nothing at all, and a
+    // prohibition whose premise never happened proves nothing.
+    expect(store.facts).toHaveLength(landed + 1);
     expect(
       store.bindsFor("tensionScan"),
       "the cardinality hint stopped gating the tension scan — either it lost its last consumer (and `ExtractionSchema.cardinality` is now dead weight the model is still asked for) or it gained one that ignores it",

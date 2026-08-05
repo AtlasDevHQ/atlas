@@ -163,7 +163,18 @@ CREATE TABLE IF NOT EXISTS brain_predicate_cardinality (
   -- degenerate predicate in the workspace under one entry — which, for a
   -- `single` row, is a workspace-wide licence to supersede.
   CONSTRAINT ck_brain_predicate_cardinality_key_present
-    CHECK (predicate_key <> '')
+    CHECK (predicate_key <> ''),
+  -- `NOT NULL` alone admits `''`, which is an unattributed row wearing the
+  -- shape of an attributed one. This column is the first thing an audit of a
+  -- retroactive re-key reads, and a `single` entry makes every existing
+  -- published pair in its slot supersedable at the next publish — so a row
+  -- nobody can be shown to have asked for is not a row this table stores.
+  --
+  -- Enforced here as well as at both write paths because the store is not the
+  -- only writer this table will ever have: #5025's route and #5042's producer
+  -- are still to come, and a CHECK is what holds for a hand-written INSERT.
+  CONSTRAINT ck_brain_predicate_cardinality_author_present
+    CHECK (proposed_by <> '')
 );
 
 -- The queue read: one workspace's undecided proposals, newest first. The PK

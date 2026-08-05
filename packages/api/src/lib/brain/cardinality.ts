@@ -178,6 +178,15 @@ export type CardinalityRefusal =
   | "degenerate-key"
   /** A producer proposed `multi`, which asserts nothing and occupies the slot. */
   | "producer-proposed-multi"
+  /**
+   * The write named no author.
+   *
+   * A separate arm rather than a silent default, because `proposed_by` is what
+   * an audit of a retroactive re-key reads first (migration 0192) and
+   * {@link CardinalityDeclarationInput.authoredBy} says the human path's entire
+   * authority is that a person took it. An unattributed row is not that.
+   */
+  | "unattributed"
   /** The predicate already has an entry — pending, approved, or rejected. */
   | "already-decided";
 
@@ -275,12 +284,34 @@ export async function readPredicateCardinality(
   // reaching here, and a cast would hand back a `PredicateCardinalityRecord`
   // whose `readonly cardinality: PredicateCardinality` is `undefined`. The
   // record's own invariant would be violated at its single construction point.
-  const row = rows[0] as Record<string, unknown> | undefined;
-  if (row === undefined) return null;
+  // Guarded on the VALUE, not cast. An executor satisfied by a test literal can
+  // hand back `{ rows: [null] }`, which `row === undefined` does not catch — the
+  // next field read would be a raw TypeError from the one function whose job is
+  // legibility. Same shape as the sibling read below.
+  const first = rows[0];
+  const row: Record<string, unknown> | undefined =
+    typeof first === "object" && first !== null ? (first as Record<string, unknown>) : undefined;
+  if (row === undefined) {
+    if (rows.length > 0) {
+      log.warn(
+        { workspaceId, predicateKey, row: typeof first },
+        "brain cardinality: the entry read returned a row this module cannot narrow — reading it as ABSENT; the projection drifted",
+      );
+    }
+    return null;
+  }
   if (typeof row.proposed_by !== "string" || row.proposed_by === "") {
     log.warn(
       { workspaceId, predicateKey, proposedBy: row.proposed_by },
-      "brain cardinality: entry has no usable author — reading it as ABSENT, so the predicate stays uncurated and supersedes nothing; the projection drifted",
+      // Says what THIS reader does, not what the publish gate does.
+      // `cardinalitySingleSql` filters on `cardinality` and `status` and never
+      // reads `proposed_by`, so an approved `single` row with no author still
+      // stamps `valid_to` while this answers ABSENT — the
+      // disclosure-lists-one-set-while-the-transaction-stamps-another hazard,
+      // arriving from the reader side. Both write paths refuse an empty author
+      // and 0192 CHECKs it, so reaching this arm means a row was written around
+      // all three.
+      "brain cardinality: entry has no usable author — this reader answers ABSENT, but the publish gate does NOT consult `proposed_by`, so an approved `single` row can still supersede while a reviewer sees no entry. Repair the row",
     );
     return null;
   }
@@ -316,11 +347,21 @@ function narrowStatus(
   if (typeof raw === "string" && (CARDINALITY_STATUSES as readonly string[]).includes(raw)) {
     return raw as CardinalityStatus;
   }
+  // `pending`, NOT `rejected`, and this is the same correction `narrowSourceClass`
+  // below already carries. `rejected` reads to #5025's reviewer as "a human
+  // adjudicated this predicate and declined" — authority nobody exercised — and
+  // it drops the row out of the queue that would resolve it. `pending` is the
+  // least authoritative value: nobody has decided.
+  //
+  // Neither arm risks a stamp, and the earlier justification ("neither
+  // supersedes nor re-proposes") was not this function's to make: supersession
+  // is decided by `cardinalitySingleSql`, which never calls this reader, and
+  // re-proposal is stopped by the primary key's `ON CONFLICT DO NOTHING`.
   log.warn(
     { ...meta, status: raw },
-    "brain cardinality: entry carries a status outside the vocabulary — reading it as `rejected`, which neither supersedes nor re-proposes",
+    "brain cardinality: entry carries a status outside the vocabulary — reading it as `pending`, so a reviewer is never told a decision was made that nobody made",
   );
-  return "rejected";
+  return "pending";
 }
 
 function narrowSourceClass(
@@ -404,6 +445,7 @@ export async function proposePredicateCardinality(
         "written under an empty key would describe EVERY degenerate predicate in the workspace at once.",
     };
   }
+  if (input.proposedBy === "") return unattributed(predicateKey);
   // `as string`, and the cast is the point: {@link CardinalityProposalInput}
   // narrows this to `"single"`, so TypeScript can see the branch is dead for a
   // typed caller — which is the guarantee. It is not dead for a caller that
@@ -411,12 +453,19 @@ export async function proposePredicateCardinality(
   // whose config carries the value, and the CHECK's allowlist has to hold for
   // those too. A `// @ts-expect-error`-free way of saying "the type prevents
   // this; the runtime still refuses it".
-  if ((input.cardinality as string) === "multi") {
+  // `!== "single"`, not `=== "multi"`. The cast below says this arm exists for a
+  // caller that arrived through `JSON.parse` or a producer's config — and those
+  // yield ARBITRARY strings. `=== "multi"` let `"Multi"`, `"sometimes"` and `""`
+  // through to the INSERT, where `ck_brain_predicate_cardinality_value` refuses
+  // them as a THROWN 23514 — breaking this module's "every arm is a REFUSAL"
+  // contract for exactly the population the cast is protecting.
+  if ((input.cardinality as string) !== "single") {
     return {
       ok: false,
       refusal: "producer-proposed-multi",
       message:
-        `A producer may not propose \`multi\` for "${predicateKey}": absent from this table already MEANS ` +
+        `A producer may propose only \`single\` for "${predicateKey}", and this asked for ` +
+        `\`${String(input.cardinality)}\`. Absent from this table already MEANS ` +
         "`multi`, so the row asserts nothing while occupying the predicate's only slot — blocking the " +
         "`single` proposal that would carry information. A stored `multi` is a human declining the " +
         "question, and only direct authoring may record it.",
@@ -443,6 +492,26 @@ export async function proposePredicateCardinality(
     };
   }
   return { ok: true, cardinality: input.cardinality };
+}
+
+/**
+ * The shared refusal for a write that named no author.
+ *
+ * One spelling, two callers, because the two paths differ only in which field
+ * was empty and the operator-facing consequence is identical — a row that
+ * licenses (or proposes) an irreversible, retroactive change with nobody
+ * recorded as having asked for it.
+ */
+function unattributed(predicateKey: string): CardinalityWriteResult {
+  return {
+    ok: false,
+    refusal: "unattributed",
+    message:
+      `A cardinality entry for "${predicateKey}" needs an author. \`proposed_by\` is the first column ` +
+      "an audit of a retroactive re-key reads, and a `single` entry makes every existing published pair " +
+      "in that slot supersedable at the next publish — a change nobody can be shown to have asked for is " +
+      "not one this store will record. Pass a user id, a producer id, or `local-operator`.",
+  };
 }
 
 /** {@link declarePredicateCardinality}'s inputs. */
@@ -496,6 +565,7 @@ export async function declarePredicateCardinality(
         "predicate in the workspace at once.",
     };
   }
+  if (input.authoredBy === "") return unattributed(predicateKey);
 
   await executor.query(
     `INSERT INTO brain_predicate_cardinality

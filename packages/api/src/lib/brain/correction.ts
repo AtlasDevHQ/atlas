@@ -610,37 +610,116 @@ export const REPLACEMENT_ROW_SQL = `SELECT f.id::text AS id,
 // ---------------------------------------------------------------------------
 
 /**
- * A rejecting timer for the post-commit cardinality proposal, cleared in a
- * `finally` so the fast path never leaves one armed.
+ * Run the post-commit cardinality proposal under a deadline, and REPORT
+ * whichever way it ends.
  *
- * Its own function rather than an inline `new Promise`, for one reason worth
- * stating: without the `finally` the timer keeps the event loop alive for the
- * full bound on EVERY correction, which is exactly the defect
- * `AUDIT_WRITE_TIMEOUT_MS`'s docstring records its two hand-rolled precedents
- * having ("they leave a timer armed for the full bound on every fast path.
- * This is the side to keep.").
+ * ## Why the timer is cleared here and not by the timer promise's own `.finally`
  *
- * Rejects rather than resolves, so the caller's existing catch — which already
- * says the correction is committed and unaffected — is the one place the
- * outcome is reported. A resolving race would silently continue past a hung
- * query with no line at all.
+ * The first cut of this was `new Promise(…).finally(() => clearTimeout(timer))`,
+ * and it did nothing: that `finally` is attached to the TIMER PROMISE, which
+ * settles only when the timer fires — so `clearTimeout` ran after the timeout
+ * had already elapsed and was unconditionally a no-op. On the fast path the
+ * promise never settled at all, the callback never ran, and a 5s timer stayed
+ * armed on every supersede correction, holding the event loop open.
+ *
+ * That is the EXACT defect `AUDIT_WRITE_TIMEOUT_MS`'s docstring records its two
+ * hand-rolled precedents having, in a helper whose stated reason for existing
+ * was to avoid it. Measured under bun: race settled at 52ms, `finally` ran at
+ * 3080ms. The `finally` has to wrap the RACE, which is what
+ * {@link emitCorrectionAudit} does 700 lines down and is the shape to copy.
+ *
+ * ## The losing branch is not discarded
+ *
+ * `Promise.race` does not CANCEL the query, and it marks the loser's rejection
+ * as handled — so a real store error arriving after the deadline is dropped
+ * with no line and not even an unhandled rejection. `emitCorrectionAudit` says
+ * so in as many words and installs a continuation for it; this does the same.
+ * Without it the only line an operator ever sees is "timed out", about a
+ * statement that failed with a `42P01` two seconds later.
+ *
+ * ## What "timed out" does and does not mean for the proposal
+ *
+ * The transaction keeps running, so a slow proposal usually COMMITS after this
+ * returns. The caller's message must not claim otherwise — the honest statement
+ * is that the correction is unaffected and the proposal's fate is unknown,
+ * which is what it says.
+ *
+ * NEVER THROWS: every outcome is logged and absorbed here, because the caller
+ * is post-commit and its own error copy says "nothing was changed — retry".
  */
-function cardinalityProposalDeadline(ms: number): Promise<never> {
+async function proposeUnderDeadline(
+  work: Promise<unknown>,
+  ms: number,
+  meta: { readonly workspaceId: string; readonly factId: string; readonly requestId: string | undefined },
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  return new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new Error(
-            `the cardinality repeat gate did not answer within ${ms}ms — the internal database is ` +
-              "reachable but not responding, or CORRECTION_REPEAT_COUNT_SQL is scanning without an index",
-          ),
-        ),
-      ms,
+  let timedOut = false;
+  // Installed BEFORE the race, so a rejection arriving after the deadline still
+  // lands somewhere. `void` because the race, not this, is what is awaited.
+  void work.catch((cause: unknown) => {
+    log.warn(
+      { ...meta, err: cause instanceof Error ? cause.message : String(cause), timedOut },
+      timedOut
+        ? "brain correction: the cardinality repeat gate failed AFTER its deadline had already been reported — this is the real cause; the timeout line above is a symptom"
+        : "brain correction: the cardinality repeat gate failed",
     );
-  }).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
   });
+  try {
+    await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(
+            new Error(
+              `the cardinality repeat gate did not answer within ${ms}ms — the internal database is ` +
+                "reachable but not responding, or CORRECTION_REPEAT_COUNT_SQL is scanning without an index",
+            ),
+          );
+        }, ms);
+      }),
+    ]);
+  } catch (err) {
+    log.warn(
+      {
+        ...meta,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "brain correction: the cardinality repeat gate could not be evaluated within its deadline — the " +
+        "correction itself is COMMITTED and unaffected. The proposal's own fate is unknown: the " +
+        "statement is not cancelled and may still commit. Either way the next supersede on this " +
+        "predicate re-derives the count from the corpus rather than from a lost counter",
+    );
+  } finally {
+    // Around the RACE, so it runs whoever wins. This is the whole fix.
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Report a `supersede` whose predicate has no canonical form — the one case the
+ * proposer's call-site guard would otherwise swallow.
+ *
+ * Separate from the proposer's own degenerate-key arm because the two know
+ * different things: `proposeFromCorrectionEvents` knows a key is unusable but
+ * not which verb sent it, and the call site knows the verb but receives the same
+ * `null` for "not a supersede". Only the dispatch has both.
+ */
+function logDegeneratePredicate(
+  // Named `canonical`, not `predicateKey`, and the rename is the guard's own
+  // first remedy rather than a style choice: `keys-not-on-the-wire.test.ts`
+  // scans this file in the Drizzle spelling, and `correction.ts` IS a read
+  // surface — it serves `BrainFactCorrectionResponse` — so exempting it would
+  // switch the scan off for the one module that must never grow a key field.
+  canonical: string | null,
+  workspaceId: string,
+  target: TargetRow,
+): void {
+  if (canonical !== null) return;
+  log.debug(
+    { workspaceId, factId: target.id, predicate: target.predicate },
+    "brain correction: superseded a claim whose predicate normalizes away, so there is no canonical predicate to propose a cardinality against — the correction stands and nothing else is affected",
+  );
 }
 
 /**
@@ -651,6 +730,16 @@ function cardinalityProposalDeadline(ms: number): Promise<never> {
  * SAYING this verb is not evidence about cardinality; an omitted field would be
  * a caller who did not think about it, and the two are indistinguishable in a
  * diff. A sixth verb has to pick one.
+ *
+ * ⚠️ **Naming, not typing.** `noSupersededPredicate` returns the `null` LITERAL
+ * so it is not assignable where a key is required, but nothing stops a caller
+ * reaching for {@link withSupersededPredicate} on the wrong verb — the earlier
+ * version of this docstring claimed the shape enforced *only a `supersede` sets
+ * this*, and it does not. `scripts/mutations/cardinality.mutations.ts` is the
+ * proof: the "`retract` feeds the proposer too" row COMPILES and is caught by
+ * two tests. The invariant is test-enforced, and saying so is the point of this
+ * paragraph. Tagging the outcome on the verb would make it structural; that is
+ * worth doing when a fifth verb arrives, not before.
  */
 async function withSupersededPredicate(
   supersededPredicate: string | null,
@@ -661,7 +750,7 @@ async function withSupersededPredicate(
 
 async function noSupersededPredicate(
   response: Promise<BrainFactCorrectionResponse>,
-): Promise<{ response: BrainFactCorrectionResponse; supersededPredicate: string | null }> {
+): Promise<{ response: BrainFactCorrectionResponse; supersededPredicate: null }> {
   return { response: await response, supersededPredicate: null };
 }
 
@@ -1066,6 +1155,18 @@ export async function correctFact(
           // vocabulary are in hand — `BrainFactCorrectionResponse` carries no
           // claim text, and widening it to carry one would put a key one step
           // from the wire, which `keys-not-on-the-wire.test.ts` refuses.
+          //
+          // A NULL answer is reported HERE and nowhere else. It reaches the
+          // proposer's call site as the same `null` the other three verbs send,
+          // so that site cannot tell "this verb is not evidence" from "this verb
+          // IS evidence and the surface norms away" — and the second is a
+          // supersede that produces no proposal and, without this line, no trace
+          // at all. Permanent and legal (`identityKey`'s ⚠️), so `debug`.
+          logDegeneratePredicate(
+            slotKey(target.predicate, vocabulary.predicate),
+            ctx.workspaceId,
+            target,
+          );
           return withSupersededPredicate(
             slotKey(target.predicate, vocabulary.predicate),
             applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
@@ -1149,37 +1250,27 @@ export async function correctFact(
   //
   // It PROPOSES. Nothing is superseded by this write, now or ever: the row
   // lands `pending`, and `cardinalitySingleSql` reads only `approved` ones.
+  // Guarded, so the three verbs that are not evidence about cardinality do not
+  // pay a pool checkout for a call that returns immediately. The case the guard
+  // used to HIDE — a `supersede` whose predicate surface norms away, which
+  // reaches here as the same `null` — is reported at the dispatch that knows it
+  // is a supersede, because this site cannot tell the two apart.
+  //
+  // BOUNDED, because `internalQuery` bypasses the circuit breaker and the
+  // internal pool sets no `statement_timeout`: a DEGRADED internal DB —
+  // reachable, not answering — never throws, so an unbounded await here would
+  // never settle, `correctFact` would never return, and the caller's own
+  // timeout would report *"nothing was changed — retry"* about a correction
+  // that IS committed. The retry then mints a SECOND correction episode for one
+  // human decision. Same deadline and same knob as the audit write above, so
+  // the two post-commit writes cannot drift into having different answers to
+  // one hazard.
   if (supersededPredicate !== null) {
-    try {
-      // BOUNDED, on `emitCorrectionAudit`'s reasoning one paragraph stronger.
-      // `internalQuery` bypasses the circuit breaker and the internal pool sets
-      // no `statement_timeout`, so a DEGRADED internal DB — reachable, not
-      // answering — never throws and this await never settles. The catch would
-      // not run, `correctFact` would not return, and the caller's own timeout
-      // would report *"nothing was changed — retry"* about a correction that IS
-      // committed: a retry then mints a SECOND correction episode for one human
-      // decision, which is exactly what the audit deadline above exists to
-      // prevent. Same deadline, same knob, so the two post-commit writes cannot
-      // drift into having different answers to the same hazard.
-      await Promise.race([
-        withTransaction((tx) =>
-          proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
-        ),
-        cardinalityProposalDeadline(resolveAuditDeadline(deps.auditWriteTimeoutMs)),
-      ]);
-    } catch (err) {
-      log.warn(
-        {
-          workspaceId: ctx.workspaceId,
-          factId: result.factId,
-          requestId,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        "brain correction: the cardinality repeat gate could not be evaluated — the correction itself is " +
-          "committed and unaffected, and the next supersede on this predicate re-derives the count from " +
-          "the corpus rather than from a lost counter",
-      );
-    }
+    await proposeUnderDeadline(
+      withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),
+      resolveAuditDeadline(deps.auditWriteTimeoutMs),
+      { workspaceId: ctx.workspaceId, factId: result.factId, requestId },
+    );
   }
   return { kind: "corrected", result };
 }

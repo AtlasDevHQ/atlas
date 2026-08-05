@@ -25,14 +25,15 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the rejection memory is dropped (`ON CONFLICT DO NOTHING` → `DO UPDATE`) | 1 | 1 | 1 | 0 | 0 |
 | the repeat gate counts CORRECTIONS instead of distinct subjects | 1 | 2 | 0 | 0 | 0 |
 | the repeat gate drops its provable-difference arm | 1 | 1 | 0 | 0 | 0 |
-| the repeat gate counts machine supersessions too | 7 | 1 | 0 | 0 | 0 |
-| the repeat threshold drops to 1 | 1 | 0 | 0 | 0 | 0 |
-| `INSERT_FACT_SQL` feeds `predicate_cardinality` again | 0 | 0 | 1 | 0 | 1 |
+| the repeat gate counts machine supersessions too | 1 | 1 | 0 | 0 | 0 |
+| the repeat threshold drops to 1 | 1 | 1 | 0 | 0 | 0 |
+| `INSERT_FACT_SQL` feeds `predicate_cardinality` again | 0 | 0 | 4 | 0 | 8 |
 | `retract` feeds the proposer too | 0 | 0 | 2 | 0 | 0 |
-| the post-commit proposer loses its deadline | 0 | 0 | 1 | 0 | 0 |
+| the post-commit proposer loses its deadline | 0 | 0 | 2 | 0 | 0 |
+| the deadline's timer is cleared by the timer promise's own `finally` | 0 | 0 | 0 | 0 | 0 |
 | the proposer runs INSIDE the correction's transaction | 0 | 0 | 3 | 0 | 0 |
 
-Suite sizes: **cardinality-pg.test.ts** 20 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 30 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 52 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 59 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 47 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **cardinality-pg.test.ts** 20 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 31 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 52 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 47 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 
@@ -44,9 +45,10 @@ Suite sizes: **cardinality-pg.test.ts** 20 tests (`src/lib/brain/__tests__/cardi
 - **the rejection memory is dropped (`ON CONFLICT DO NOTHING` → `DO UPDATE`)** — #4507's memory. Without it the next producer run re-proposes what a human rejected, and the vocabulary stops being reversible for exactly the population the proposer adds.
 - **the repeat gate counts CORRECTIONS instead of distinct subjects** — A reviewer fixing one slot repeatedly is most likely correcting their own typing. Counting corrections makes the loudest evidence the least informative kind, and it is the single change that reopens the typo risk ADR-0037 §3(d) carries.
 - **the repeat gate drops its provable-difference arm** — The other half of the typo defence, and the half only real Postgres can exercise: two entity-valued names are `unknown`, never *different*. Without it three `Bob` → `Bobby` fixes across three subjects propose a workspace-wide `single`.
-- **the repeat gate counts machine supersessions too** — Closes the loop on itself: an approved `single` produces `supersedes` edges at the publish gate, and the gate would report the system's own arbitrations back to it as human evidence.
+- **the repeat gate counts machine supersessions too** — Closes the loop on itself: an approved `single` produces `supersedes` edges at the publish gate, and the gate would report the system's own arbitrations back to it as human evidence. The tautology keeps `$3` bound so the statement still PARSES — what is removed is the source filter and nothing else.
 - **the repeat threshold drops to 1** — One correction is an anecdote. It is a proposal either way, so this is the least costly row here — but a queue that proposes on every first supersede is a queue nobody reads.
-- **`INSERT_FACT_SQL` feeds `predicate_cardinality` again** — Half of the revert: with the column fed again, restoring the both-sides clause becomes a working change rather than a silent no-op. Bound to a literal here so the mutation is isolated to the statement.
+- **`INSERT_FACT_SQL` feeds `predicate_cardinality` again** — The other half of the revert, and the half that makes restoring the both-sides clause a WORKING change rather than a silent no-op. Caught by parameter COUNT in two suites — the only instrument that sees it, since the mutated statement is valid SQL that writes an unchanged-looking row.
 - **`retract` feeds the proposer too** — The realistic drift — a later reader wiring one more verb into the gate. Retracting a claim WITHDRAWS it and says nothing about how many values could have coexisted, so counting it turns "this was wrong" into evidence that the slot holds one value.
 - **the post-commit proposer loses its deadline** — A DEGRADED internal DB — reachable, not answering — never throws, so the catch never runs and `correctFact` never returns. The caller's own timeout then reports *"nothing was changed — retry"* about a correction that IS committed, and the retry mints a second correction episode for one human decision. Unbounded is worse than failing, and `Promise.race` with a REJECTING timer is what routes it into the existing catch.
+- **the deadline's timer is cleared by the timer promise's own `finally`** — The round-1 fix's own defect, kept as a row because it is INVISIBLE to a test suite: a `finally` attached to the timer promise settles only when the timer fires, so `clearTimeout` is always a no-op and the fast path leaves a 5s timer armed per correction. `bun test` force-exits, so nothing here catches it — a 0 in this row is honest and is the reason the docstring carries the measurement instead.
 - **the proposer runs INSIDE the correction's transaction** — Stands in for the placement change rather than reproducing it literally (the real one cannot be expressed as a local edit). What it removes is the proposer's access to the committed `supersedes` edge — which is why the placement is post-commit rather than a `SAVEPOINT`.

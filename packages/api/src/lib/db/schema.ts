@@ -3979,6 +3979,10 @@ export const brainPredicateCardinality = pgTable(
     // coercing that to `''` would file every degenerate predicate under one
     // entry — which, on a `single` row, is a workspace-wide licence to supersede.
     check("ck_brain_predicate_cardinality_key_present", sql`predicate_key <> ''`),
+    // `NOT NULL` alone admits `''` — an unattributed row wearing the shape of
+    // an attributed one, on the column an audit of a retroactive re-key reads
+    // first.
+    check("ck_brain_predicate_cardinality_author_present", sql`proposed_by <> ''`),
     // The queue read. The PK leads with `workspaceId` but continues on
     // `predicateKey`, so it is not an access path for a status-filtered scan.
     // Partial, because decided rows are read by IDENTITY through the PK — the

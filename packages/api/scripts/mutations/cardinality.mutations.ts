@@ -102,7 +102,7 @@ human behind it.
       edits: [
         {
           file: CARDINALITY,
-          oldString: '  if ((input.cardinality as string) === "multi") {',
+          oldString: '  if ((input.cardinality as string) !== "single") {',
           newString: "  if (false) {",
         },
       ],
@@ -150,11 +150,21 @@ human behind it.
       edits: [
         {
           file: CARDINALITY,
+          // ⚠️ Spelled to KEEP `$3` referenced. Deleting the arm outright leaves
+          // the caller binding three parameters against a two-parameter
+          // statement, which Postgres refuses at Bind — so every test in the
+          // repeat-gate block dies on a crash rather than on the semantics, and
+          // the cell reads 7 where the honest figure is 1. That is
+          // `mutation-core.ts`'s own recorded whole-suite trap (an untyped
+          // parameter making the count 51 where the truth was 1) wearing a
+          // different parameter error, and the runner cannot see it: its
+          // WHOLE_SUITE_WARN_RATIO is measured against the FILE, and this kills
+          // one describe block.
           oldString: "     AND ep.source = $3\n",
-          newString: "",
+          newString: "     AND ($3::text = $3::text)\n",
         },
       ],
-      note: "Closes the loop on itself: an approved `single` produces `supersedes` edges at the publish gate, and the gate would report the system's own arbitrations back to it as human evidence.",
+      note: "Closes the loop on itself: an approved `single` produces `supersedes` edges at the publish gate, and the gate would report the system's own arbitrations back to it as human evidence. The tautology keeps `$3` bound so the statement still PARSES — what is removed is the source filter and nothing else.",
     },
     {
       label: "the repeat threshold drops to 1",
@@ -172,6 +182,15 @@ human behind it.
       edits: [
         {
           file: RECONCILE,
+          // The REALISTIC revert: the column back in the list AND back on the
+          // bind, with the candidate's value flowing into it again. An earlier
+          // spelling bound the literal `'multi'` "to isolate the mutation" —
+          // which made the note below false (with every row forced to `multi`,
+          // restoring the both-sides clause is still a silent no-op) and, worse,
+          // never exercised the two assertions whose own comments call a
+          // PARAMETER COUNT the only thing that catches this. A statement that
+          // is still valid SQL with an unchanged row is precisely the shape a
+          // lexical assertion misses.
           oldString: `          source_episode_id, provenance, visible_to,
           subject_key, predicate_key, object_key, object_cmp)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
@@ -182,11 +201,19 @@ human behind it.
           subject_key, predicate_key, object_key, object_cmp)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
                $7::uuid, $8::jsonb,
-               ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), 'multi',
-               $10, $11, $12, $13)`,
+               ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), $10,
+               $11, $12, $13, $14)`,
+        },
+        {
+          file: RECONCILE,
+          oldString: `    JSON.stringify(ctx.grantTokens),
+    ...agreementBinds(item.keys, item.comparable),`,
+          newString: `    JSON.stringify(ctx.grantTokens),
+    item.candidate.predicateCardinality ?? "multi",
+    ...agreementBinds(item.keys, item.comparable),`,
         },
       ],
-      note: "Half of the revert: with the column fed again, restoring the both-sides clause becomes a working change rather than a silent no-op. Bound to a literal here so the mutation is isolated to the statement.",
+      note: "The other half of the revert, and the half that makes restoring the both-sides clause a WORKING change rather than a silent no-op. Caught by parameter COUNT in two suites — the only instrument that sees it, since the mutated statement is valid SQL that writes an unchanged-looking row.",
     },
     {
       label: "`retract` feeds the proposer too",
@@ -211,25 +238,39 @@ human behind it.
       edits: [
         {
           file: CORRECTION,
-          oldString: "        cardinalityProposalDeadline(resolveAuditDeadline(deps.auditWriteTimeoutMs)),\n",
-          newString: "",
+          oldString: `    await proposeUnderDeadline(
+      withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),
+      resolveAuditDeadline(deps.auditWriteTimeoutMs),
+      { workspaceId: ctx.workspaceId, factId: result.factId, requestId },
+    );`,
+          newString: `    await withTransaction((tx) =>
+      proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
+    );`,
         },
       ],
       note: "A DEGRADED internal DB — reachable, not answering — never throws, so the catch never runs and `correctFact` never returns. The caller's own timeout then reports *\"nothing was changed — retry\"* about a correction that IS committed, and the retry mints a second correction episode for one human decision. Unbounded is worse than failing, and `Promise.race` with a REJECTING timer is what routes it into the existing catch.",
+    },
+    {
+      label: "the deadline's timer is cleared by the timer promise's own `finally`",
+      edits: [
+        {
+          file: CORRECTION,
+          oldString: `  } finally {
+    // Around the RACE, so it runs whoever wins. This is the whole fix.
+    if (timer !== undefined) clearTimeout(timer);
+  }`,
+          newString: `  }`,
+        },
+      ],
+      note: "The round-1 fix's own defect, kept as a row because it is INVISIBLE to a test suite: a `finally` attached to the timer promise settles only when the timer fires, so `clearTimeout` is always a no-op and the fast path leaves a 5s timer armed per correction. `bun test` force-exits, so nothing here catches it — a 0 in this row is honest and is the reason the docstring carries the measurement instead.",
     },
     {
       label: "the proposer runs INSIDE the correction's transaction",
       edits: [
         {
           file: CORRECTION,
-          oldString: `        withTransaction((tx) =>
-          proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate),
-        ),`,
-          newString: `        proposeFromCorrectionEvents(
-          { query: async () => ({ rows: [] }) },
-          ctx.workspaceId,
-          supersededPredicate,
-        ),`,
+          oldString: `      withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),`,
+          newString: `      proposeFromCorrectionEvents({ query: async () => ({ rows: [] }) }, ctx.workspaceId, supersededPredicate),`,
         },
       ],
       note: "Stands in for the placement change rather than reproducing it literally (the real one cannot be expressed as a local edit). What it removes is the proposer's access to the committed `supersedes` edge — which is why the placement is post-commit rather than a `SAVEPOINT`.",

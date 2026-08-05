@@ -2017,4 +2017,36 @@ describe("staleness decay is surfaced, never alarming (#4914)", () => {
     await waitFor(() => expect(document.body.textContent).toContain("Staleness"));
     expect(document.body.textContent).toContain("Age unknown");
   });
+
+  test("makes NO supersession claim from the row's cardinality (#5027)", async () => {
+    // The detail sheet used to render "one value expected — a new value would
+    // supersede this" from `candidate.predicateCardinality`, and this file —
+    // named review-honesty, opening this exact sheet with a fixture whose
+    // cardinality is `single` (see `candidate()`) — never asserted the sentence.
+    // That is how a false claim about an irreversible write shipped on the
+    // screen where a reviewer decides to make it.
+    //
+    // Since #5027 the row column decides nothing: cardinality is a property of
+    // the canonical predicate, so every fact ingested after the migration
+    // reports `multi` however its predicate is curated, and every fact ingested
+    // before it carries the extractor's stale LLM guess. The claim was wrong in
+    // BOTH directions, which is why it was deleted rather than repointed — a
+    // truthful version needs the vocabulary entry and #5025's preview.
+    //
+    // Asserted as a prohibition because the repoint is the tempting fix: reading
+    // the vestigial field again is one line and would be green everywhere else.
+    const view = await renderPage([candidate({})]);
+    fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
+    await waitFor(() => expect(document.body.textContent).toContain("Claim"));
+    const text = document.body.textContent ?? "";
+    expect(
+      text,
+      "the review sheet is claiming a supersession from the row's cardinality again — that column decides nothing since #5027, so the claim is false for every fact ingested after the migration",
+    ).not.toContain("would supersede this");
+    expect(text).not.toContain("many values may coexist");
+    expect(text).not.toContain("one value expected");
+    // The positive control: the sheet DID render, so the prohibition is about
+    // an absent sentence rather than an absent sheet.
+    expect(text).toContain("corroborating");
+  });
 });

@@ -280,7 +280,20 @@ describe("readPredicateCardinality — every degradation is toward LESS authorit
     const { exec, sql } = executor([{ match: "SELECT", rows: [healthy] }]);
     const record = await readPredicateCardinality(exec, WS, KEY);
     expect(record).not.toHaveProperty("predicateKey");
-    expect(sql[0]).not.toContain("SELECT predicate_key");
+    // Read on the PROJECTION SPAN, not on the whole statement and not on its
+    // first column: `predicate_key` is legitimately in the WHERE clause, and
+    // `not.toContain("SELECT predicate_key")` would fire only if the key were
+    // projected FIRST — where the realistic drift appends it. This assertion is
+    // the file-local replacement for the repo-wide scan arm that
+    // `keys-not-on-the-wire.test.ts` exempts this module from, so it has to
+    // cover the whole span or the exemption is unbacked.
+    const projection = sql[0]!.split(/\bFROM\b/)[0]!;
+    expect(projection).not.toContain("predicate_key");
+    // Positive control: the pattern DOES see a projected key, so the assertion
+    // above is evidence rather than a split that happens to match nothing.
+    expect("SELECT cardinality, predicate_key FROM x".split(/\bFROM\b/)[0]).toContain(
+      "predicate_key",
+    );
   });
 
   it("reads an out-of-vocabulary cardinality as `multi` — the arm that never supersedes", async () => {
@@ -289,8 +302,14 @@ describe("readPredicateCardinality — every degradation is toward LESS authorit
     });
   });
 
-  it("reads an out-of-vocabulary status as `rejected` — neither supersedes nor re-proposes", async () => {
-    expect(await read({ ...healthy, status: "applying" })).toMatchObject({ status: "rejected" });
+  it("reads an out-of-vocabulary status as `pending`, NOT `rejected`", async () => {
+    // Same direction as the source class below, and it was wrong here first.
+    // `rejected` reads to #5025's reviewer as "a human adjudicated this and
+    // declined" — authority nobody exercised — and it drops the row out of the
+    // queue that would resolve it. `pending` is the least authoritative value:
+    // nobody has decided. Neither arm risks a stamp, because
+    // `cardinalitySingleSql` never calls this reader at all.
+    expect(await read({ ...healthy, status: "applying" })).toMatchObject({ status: "pending" });
   });
 
   it("reads an out-of-vocabulary source class as `correction_event`, NOT `human`", async () => {
@@ -369,7 +388,7 @@ describe("proposeFromCorrectionEvents", () => {
     // is the only layer that knows the correction is already committed.
     // Swallowing here would also make the tests unable to tell a refused
     // proposal from a broken one.
-    expect(proposeFromCorrectionEvents(throwing, WS, KEY)).rejects.toThrow(/unreachable/);
+    await expect(proposeFromCorrectionEvents(throwing, WS, KEY)).rejects.toThrow(/unreachable/);
   });
 });
 
@@ -409,5 +428,18 @@ describe("the arms that decide an irreversible write", () => {
       "human",
     ]);
     expect([...CARDINALITY_STATUSES]).toEqual(["pending", "approved", "rejected"]);
+  });
+
+  it("pins the repeat threshold at 3 — the ADR argued the number, so a test should hold it", () => {
+    // Every other assertion in this file is RELATIVE to the constant
+    // (`CORRECTION_REPEAT_THRESHOLD - 1`), which is right for testing the gate
+    // and useless for testing the VALUE: dropping it to 1 leaves them all green.
+    // Its only other pin lives in a suite that skips silently without
+    // `TEST_DATABASE_URL`, which is the "green on my machine" hazard the -pg
+    // split exists to avoid, entered from the other side.
+    //
+    // ADR-0037 §3(d) argues the number: one subject is an anecdote, two is a
+    // coincidence a single confused reviewer can produce in an afternoon.
+    expect(CORRECTION_REPEAT_THRESHOLD).toBe(3);
   });
 });

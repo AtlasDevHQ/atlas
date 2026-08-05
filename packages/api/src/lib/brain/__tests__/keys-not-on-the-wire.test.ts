@@ -96,8 +96,22 @@ const DECLARATION_SITES = new Set([
   // fact-shaped TYPE growing a key field, and that is closed structurally
   // rather than by this exemption: neither `PredicateCardinalityRecord` nor
   // `CardinalityWriteResult` carries the key (the caller supplied it), and both
-  // say so in their own docstrings. Every remaining hit is a parameter name or
-  // a WHERE-clause bind, and #5025's review UI must render the SURFACE.
+  // say so in their own docstrings. #5025's review UI must render the SURFACE.
+  //
+  // ⚠️ **What this exemption COSTS, stated because the first version of this
+  // comment got it wrong.** It claimed "every remaining hit is a parameter name
+  // or a WHERE-clause bind". It is not: `CORRECTION_REPEAT_COUNT_SQL` has
+  // `COUNT(DISTINCT n.subject_key)` in PROJECTION position, so exempting the
+  // file switches off the SELECT/RETURNING arm as well as the ORM one — for the
+  // single module keyed on `predicate_key`. An aggregate over a key is not a
+  // projection OF a key (the same distinction `STAR_PROJECTION`'s lookahead
+  // draws for `COUNT(*)`), so nothing is wrong today; what is switched off is
+  // the guard against a FUTURE `RETURNING predicate_key` there.
+  //
+  // The compensating pin is `cardinality.test.ts`'s "does not project the
+  // predicate key", which reads the projection SPAN of the statement rather
+  // than its first column. That is the file-local replacement for what this
+  // line turns off, and it is why the exemption is affordable.
   "packages/api/src/lib/brain/cardinality.ts",
   // A MUTATION SPEC — a test fixture that happens to live outside `__tests__`,
   // so the scan's non-test filter does not reach it. Its `predicate_key`

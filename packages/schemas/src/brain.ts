@@ -346,6 +346,19 @@ export const BrainFactCandidateSchema = z.object({
   predicate: z.string(),
   object: z.string(),
   status: z.enum(BRAIN_FACT_REVIEW_STATUSES),
+  /**
+   * ⚠️ VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.
+   *
+   * Cardinality is a property of the CANONICAL PREDICATE now, read live from
+   * `brain_predicate_cardinality` at the publish gate. The row column stopped
+   * being written, so this reports `multi` for every fact ingested since the
+   * migration and a stale LLM guess for every earlier one.
+   *
+   * Annotated HERE as well as on the two `@useatlas/types` copies because this
+   * package is the route-validation SSOT and is where #5028's removal lands — a
+   * reader auditing the field should not find one annotated copy and one silent
+   * one.
+   */
   predicateCardinality: z.enum(["single", "multi"]),
   visibleTo: z.array(z.string()),
   malformedGrantIndices: z.array(z.number().int().nonnegative()),

@@ -3,10 +3,17 @@
  * table in `promotion-pg.test.ts` by #5027.
  *
  * The table this replaces was correct when it was written and went stale one
- * slice later: #5027 added a test to `promotion-pg.test.ts` that asserts a
- * STAMP, which moved the population of the `absent-key disjunct removed` row
- * from 8 to 9 and falsified the prose paragraph that enumerated the 8. Nobody
- * touched the guard.
+ * slice later. Precisely: #5027 REWROTE `promotion-pg.test.ts`'s
+ * `a "multi" predicate coexists` test — which lives in the #4912 supersession
+ * block, not the tier block — so that it now asserts a STAMP on its control.
+ * That moved the `absent-key disjunct removed` row from 8 to 9 and falsified the
+ * prose paragraph enumerating the 8. Nobody touched the guard.
+ *
+ * The test that slice ADDED to the same block, `an UNCURATED predicate
+ * coexists`, asserts no stamp and moved the cell not at all — worth stating,
+ * because "a slice added a test" is the wrong lesson to carry away. Any edit to
+ * the population a cell counts can invalidate it, including a rewrite three
+ * describe-blocks from the code under measurement.
  *
  * That is the whole argument for the runner (#5060). A hand-measured cell is a
  * claim nothing can falsify: add a test and N cells silently become false, under

@@ -1265,7 +1265,18 @@ function advisoryCount(
  * `oversight.ts`'s will-supersede total keeps one: driver-shape defence on a
  * number no caller can re-derive.
  */
-function readHeldBackCount(raw: unknown, workspaceId: string): number | null {
+function readHeldBackCount(
+  raw: unknown,
+  workspaceId: string,
+  // PARAMETERIZED since #5027, and it is not decoration: there are two
+  // statements shaped like this now, and a reader hard-coded to one of them
+  // reports a drift in the CARDINALITY count as a tier-guard problem — sending
+  // an operator to diff a statement that is provably fine, at the moment the
+  // only trace of supersession having stopped workspace-wide has gone missing.
+  // The `onFailure` messages were parameterized per call site from the start;
+  // this one was the half that got left behind.
+  statement: { readonly name: string; readonly withheldBecause: string },
+): number | null {
   const value = isJsonObject(raw) ? raw.held_back : undefined;
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -1276,8 +1287,8 @@ function readHeldBackCount(raw: unknown, workspaceId: string): number | null {
     // `heldBackRaw`, deliberately NOT `heldBack`: that key carries a number on
     // the info line, and one field with two types is a structured alert that
     // mis-fires or silently no-ops.
-    { workspaceId, heldBackRaw: value },
-    "brain publish: the tier-held-back count did not read back as a non-negative integer — pairs may have been withheld from supersession on tier grounds with no trace; diff TIER_HELD_BACK_COUNT_SQL",
+    { workspaceId, heldBackRaw: value, statement: statement.name },
+    `brain publish: a held-back count did not read back as a non-negative integer — pairs may have been withheld from supersession ${statement.withheldBecause} with no trace; diff ${statement.name}`,
   );
   return null;
 }
@@ -1635,7 +1646,11 @@ export function promoteBrainFacts(
           savepoint: "brain_tier_held_back",
           sql: TIER_HELD_BACK_COUNT_SQL,
           params: [orgId, offeredIds],
-          read: (row) => readHeldBackCount(row, orgId),
+          read: (row) =>
+            readHeldBackCount(row, orgId, {
+              name: "TIER_HELD_BACK_COUNT_SQL",
+              withheldBecause: "on tier grounds",
+            }),
           onFailure: (cause) =>
             log.warn(
               { workspaceId: orgId, err: cause instanceof Error ? cause.message : String(cause) },
@@ -1663,7 +1678,11 @@ export function promoteBrainFacts(
           savepoint: "brain_cardinality_held_back",
           sql: CARDINALITY_HELD_BACK_COUNT_SQL,
           params: [orgId, offeredIds],
-          read: (row) => readHeldBackCount(row, orgId),
+          read: (row) =>
+            readHeldBackCount(row, orgId, {
+              name: "CARDINALITY_HELD_BACK_COUNT_SQL",
+              withheldBecause: "for want of a vocabulary entry",
+            }),
           onFailure: (cause) =>
             log.warn(
               { workspaceId: orgId, err: cause instanceof Error ? cause.message : String(cause) },

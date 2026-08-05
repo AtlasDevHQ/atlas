@@ -6,6 +6,7 @@ import { Search } from "lucide-react";
 import {
   EnterpriseUpsell,
   FeatureGate,
+  isGateStatus,
   MfaRequiredPlaceholder,
 } from "@/ui/components/admin/feature-disabled";
 import type { FeatureName } from "@/ui/components/admin/feature-registry";
@@ -13,6 +14,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { gateProps } from "@/ui/lib/fetch-error";
 
 /**
  * Detect an `EnterpriseError` that was serialized over HTTP.
@@ -75,7 +77,7 @@ export function AdminContentWrapper({
     // Render a distinct upsell so non-EE admins see "this feature needs an
     // enterprise plan" rather than a generic "Access denied" or error banner.
     if (isEnterpriseRequired(error)) {
-      return <EnterpriseUpsell feature={feature} message={error.message} />;
+      return <EnterpriseUpsell feature={feature} {...gateProps(error)} />;
     }
     // #2486 — MFA-required 403s used to render the misleading
     // "You need the admin role" copy from the generic 403 path because
@@ -83,10 +85,15 @@ export function AdminContentWrapper({
     // to a neutral placeholder; the layout-level full-screen gate
     // overlays this on every /admin/* route except the enrollment page.
     if (isMfaRequired(error)) {
-      return <MfaRequiredPlaceholder feature={feature} />;
+      return <MfaRequiredPlaceholder feature={feature} requestId={error.requestId} />;
     }
-    if (error.status && [401, 403, 404, 503].includes(error.status)) {
-      return <FeatureGate status={error.status as 401 | 403 | 404 | 503} feature={feature} />;
+    if (isGateStatus(error.status)) {
+      // #5068 — the gate used to take status + feature only, discarding the
+      // server's own explanation and the correlation id on every gated
+      // response. `gateProps`, not `error.message`: the latter is a
+      // synthesized placeholder on an empty body, which would displace the
+      // gate's canned copy with a status echo.
+      return <FeatureGate status={error.status} feature={feature} {...gateProps(error)} />;
     }
   }
 

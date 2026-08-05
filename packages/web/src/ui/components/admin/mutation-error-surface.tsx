@@ -4,10 +4,11 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import {
   EnterpriseUpsell,
   FeatureGate,
+  isGateStatus,
 } from "@/ui/components/admin/feature-disabled";
 import { InlineError } from "@/ui/components/admin/compact";
 import type { FeatureName } from "@/ui/components/admin/feature-registry";
-import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
+import { friendlyError, gateProps, serverMessage, type FetchError } from "@/ui/lib/fetch-error";
 
 type Variant = "banner" | "inline";
 
@@ -84,10 +85,14 @@ export function MutationErrorSurface({
   if (!error) return null;
 
   const isEnterpriseRequired = error.code === "enterprise_required";
+  // The server's own words, or undefined when the body carried none. Never
+  // `error.message` directly: that is `HTTP {status}` on an empty body, and
+  // every consumer below treats this value as prose written for the user.
+  const authored = serverMessage(error);
 
   if (variant === "inline") {
     if (isEnterpriseRequired) {
-      // Pass `error.message` through when the server sent one. Banner variant
+      // Pass the server's message through when it sent one. Banner variant
       // gives it to `EnterpriseUpsell.message`; the inline variant has to
       // render it inline or the server's context-specific copy ("Enterprise
       // tier required on hosted plans — contact sales@…") is lost. The fixed
@@ -97,7 +102,7 @@ export function MutationErrorSurface({
           <span className="font-semibold">
             {feature} requires Enterprise.
           </span>{" "}
-          {error.message && <>{error.message} </>}
+          {authored && <>{authored} </>}
           <a
             href="https://www.useatlas.dev/enterprise"
             target="_blank"
@@ -122,16 +127,11 @@ export function MutationErrorSurface({
   }
 
   if (isEnterpriseRequired) {
-    return <EnterpriseUpsell feature={feature} message={error.message} />;
+    return <EnterpriseUpsell feature={feature} {...gateProps(error)} />;
   }
 
-  if (error.status && [401, 403, 404, 503].includes(error.status)) {
-    return (
-      <FeatureGate
-        status={error.status as 401 | 403 | 404 | 503}
-        feature={feature}
-      />
-    );
+  if (isGateStatus(error.status)) {
+    return <FeatureGate status={error.status} feature={feature} {...gateProps(error)} />;
   }
 
   return <ErrorBanner message={friendlyError(error)} onRetry={onRetry} />;

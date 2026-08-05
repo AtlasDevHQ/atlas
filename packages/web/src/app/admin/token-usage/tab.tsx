@@ -15,6 +15,8 @@ import dynamic from "next/dynamic";
 import { useQueryStates } from "nuqs";
 import { tokenUsageSearchParams } from "./search-params";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { friendlyError } from "@/ui/lib/fetch-error";
+import { isGateStatus, type GateStatus } from "@/ui/components/admin/feature-disabled";
 import { TokenSummarySchema, TrendsResponseSchema, TokenUserResponseSchema } from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { formatISODate, formatNumber, parseISODate } from "@/lib/format";
@@ -51,9 +53,27 @@ function buildQS(from: string, to: string): string {
   return parts.length > 0 ? `?${parts.join("&")}` : "";
 }
 
+/**
+ * The first of the three tab fetches whose failure is a gate rather than a
+ * fault. Promoted to `AdminContentWrapper`, so it replaces the whole tab.
+ *
+ * Same narrowing, and the same reason, as `audit/analytics-panel.tsx`: 503 is
+ * excluded because it is the one gated status that can fail *one* of several
+ * parallel requests (a restarting replica, an unhealthy proxy) rather than
+ * being a verdict on all of them. Those keep their per-section banner.
+ *
+ * Derived from the shared `GATE_STATUSES` rather than the inline
+ * `[401, 403, 404]` this used to hold — the last of five hand-written copies,
+ * and one of the three that spelled it without 503 while two spelled it with,
+ * so an accidental omission and a reasoned one looked identical (#5068).
+ */
+function isTabGateStatus(status: number | undefined): status is Exclude<GateStatus, 503> {
+  return isGateStatus(status) && status !== 503;
+}
+
 function findGateError(...errors: (FetchError | null)[]): FetchError | null {
   for (const err of errors) {
-    if (err?.status && [401, 403, 404].includes(err.status)) return err;
+    if (err && isTabGateStatus(err.status)) return err;
   }
   return null;
 }
@@ -139,7 +159,7 @@ export function TokenUsageTab() {
         </Card>
 
         {summaryError ? (
-          <ErrorBanner message={summaryError.message} />
+          <ErrorBanner message={friendlyError(summaryError)} />
         ) : summaryLoading ? (
           <LoadingState message="Loading summary..." />
         ) : summary ? (
@@ -283,7 +303,7 @@ export function TokenUsageTab() {
           </CardHeader>
           <CardContent>
             {trendsError ? (
-              <ErrorBanner message={trendsError.message} />
+              <ErrorBanner message={friendlyError(trendsError)} />
             ) : trendsLoading ? (
               <div className="flex h-64 items-center justify-center">
                 <LoadingState message="Loading trends..." />
@@ -305,7 +325,7 @@ export function TokenUsageTab() {
           </CardHeader>
           <CardContent>
             {usersError ? (
-              <ErrorBanner message={usersError.message} />
+              <ErrorBanner message={friendlyError(usersError)} />
             ) : usersLoading ? (
               <div className="flex h-40 items-center justify-center">
                 <LoadingState message="Loading..." />

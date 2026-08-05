@@ -4,6 +4,10 @@ import {
   extractFetchError,
   friendlyError,
   friendlyErrorOrNull,
+  gateProps,
+  isPlaceholderMessage,
+  serverMessage,
+  unexplainedFailure,
 } from "../lib/fetch-error";
 
 function mockResponse(status: number, body?: unknown, headers?: Record<string, string>): Response {
@@ -199,6 +203,140 @@ describe("extractFetchError", () => {
   });
 });
 
+describe("serverMessage", () => {
+  // The distinction `FeatureGate` / `EnterpriseUpsell` need and that a
+  // truthiness check on `.message` cannot make: did the SERVER write this
+  // string, or did `extractFetchError` synthesize it from the status?
+  test("returns the body's message when the server sent one", () => {
+    expect(
+      serverMessage({ message: "No internal database configured.", status: 404 }),
+    ).toBe("No internal database configured.");
+  });
+
+  test("returns undefined for the placeholder extractFetchError actually substitutes", async () => {
+    // Round-tripped through `extractFetchError` rather than hand-written, so
+    // the sentinel here is whatever that function really produces. A literal
+    // `"HTTP 404"` fixture would keep passing if the substitution changed
+    // shape, and then every gate would start rendering the new spelling.
+    const err = await extractFetchError(mockResponse(404));
+    expect(serverMessage(err)).toBeUndefined();
+  });
+
+  test("does not swallow a real message that merely mentions its own status", () => {
+    expect(
+      serverMessage({ message: "HTTP 404 responses are cached upstream.", status: 404 }),
+    ).toBe("HTTP 404 responses are cached upstream.");
+  });
+
+  test("only the MATCHING status/message pair is treated as synthetic", () => {
+    // "HTTP 404" on a 403 was written by a person; the substitution can only
+    // ever produce the status it is attached to.
+    expect(serverMessage({ message: "HTTP 404", status: 403 })).toBe("HTTP 404");
+  });
+
+  test("returns undefined when there is no status — nothing reached a server", () => {
+    // The network-failure / non-JSON-body / schema-mismatch path. Its message
+    // is client-authored, so a gate must not present it as the server's word.
+    expect(serverMessage({ message: "Network error" })).toBeUndefined();
+  });
+
+  test("recognizes buildFetchError's placeholder too, not just extractFetchError's", () => {
+    // The module mints TWO synthetic messages that keep their status, and a
+    // predicate that knows one is fooled by the other. This spelling is
+    // `buildFetchError`'s production substitute; treating it as server copy
+    // puts "Request failed (403)" where the gate's canned guidance belongs —
+    // the same defect, through the other door.
+    expect(serverMessage({ message: "Request failed (403)", status: 403 })).toBeUndefined();
+    // Same mismatched-status boundary as the `HTTP {status}` spelling.
+    expect(serverMessage({ message: "Request failed (404)", status: 403 })).toBe(
+      "Request failed (404)",
+    );
+  });
+
+  test("a whitespace-only server message reaches the placeholder path in production", async () => {
+    // Not a hypothetical: `extractFetchError` admits "   " (it tests
+    // `length > 0`, untrimmed), `buildFetchError` trims it to empty, and in
+    // production substitutes `Request failed ({status})` with the status
+    // preserved. Dev throws instead, so this arm is the only warning a
+    // production build ever gets.
+    // Next's types declare NODE_ENV readonly; write through a widened view,
+    // as the `buildFetchError` block below already does.
+    const mutableEnv = process.env as Record<string, string | undefined>;
+    const prev = mutableEnv.NODE_ENV;
+    mutableEnv.NODE_ENV = "production";
+    try {
+      const err = await extractFetchError(mockResponse(404, { message: "   " }));
+      expect(err.message).toBe("Request failed (404)");
+      expect(err.status).toBe(404);
+      expect(serverMessage(err)).toBeUndefined();
+    } finally {
+      mutableEnv.NODE_ENV = prev;
+    }
+  });
+
+  test("recognizes a PADDED placeholder — the distinction is drawn on the trimmed string", () => {
+    // Every sibling guard on this path trims; this is the one that decides
+    // provenance, so a padded `"  HTTP 403  "` slipping through would read as
+    // server prose to the gate. Defensive rather than live (`buildFetchError`
+    // trims), but it is the fourth site of a distinction that has been drawn
+    // inconsistently twice, and each time that produced a defect.
+    expect(serverMessage({ message: "  HTTP 403  ", status: 403 })).toBeUndefined();
+    expect(
+      serverMessage({ message: "  Request failed (403)  ", status: 403 }),
+    ).toBeUndefined();
+  });
+
+  test("recognizes the status-less spelling too, at the one arm that can reach it", () => {
+    // `buildFetchError`'s third placeholder. `serverMessage` never sees it
+    // (it early-returns on a missing status), but `friendlyError`'s catch-all
+    // does, and it would otherwise render as if a human had written it.
+    expect(isPlaceholderMessage({ message: "Request failed (unknown)" })).toBe(true);
+    expect(friendlyError({ message: "Request failed (unknown)" })).toBe(
+      unexplainedFailure(undefined),
+    );
+    // Not every status-less message is a placeholder — the complement.
+    expect(isPlaceholderMessage({ message: "Network error" })).toBe(false);
+  });
+
+  test("treats a blank message as no message rather than passing '' through", () => {
+    // A caller writing `message ?? canned` would render an empty <p> — icon
+    // and headline over nothing. `buildFetchError` refuses to construct this,
+    // but `FetchError` is a bare interface anything can build.
+    expect(serverMessage({ message: "", status: 403 })).toBeUndefined();
+    expect(serverMessage({ message: "   ", status: 403 })).toBeUndefined();
+  });
+
+  test("trims the message it does return", () => {
+    expect(serverMessage({ message: "  Admin role required.  ", status: 403 })).toBe(
+      "Admin role required.",
+    );
+  });
+});
+
+describe("gateProps", () => {
+  // The pairing the three gated placeholders take. It exists so "which two
+  // fields, derived how" is decided once rather than per call site — #5068 was
+  // one call site forgetting, and the review then found a second with no test.
+  test("derives the server message and the id together", () => {
+    expect(
+      gateProps({
+        message: "No internal database configured.",
+        status: 404,
+        requestId: "req-1",
+      }),
+    ).toEqual({ message: "No internal database configured.", requestId: "req-1" });
+  });
+
+  test("passes NO message through when the body carried none", () => {
+    // The whole reason the helper exists: a spread of `{message: err.message}`
+    // would put "HTTP 404" where the placeholder's canned guidance belongs.
+    expect(gateProps({ message: "HTTP 404", status: 404, requestId: "req-2" })).toEqual({
+      message: undefined,
+      requestId: "req-2",
+    });
+  });
+});
+
 describe("friendlyError", () => {
   test("server message wins on 401 (typed body)", () => {
     // After the #2081 precedence flip, a server-authored body message reaches
@@ -255,9 +393,9 @@ describe("friendlyError", () => {
     );
   });
 
-  test("falls back to canned 503 copy when body is empty", () => {
+  test("falls back to the unexplained-outage copy on an empty-bodied 503", () => {
     expect(friendlyError({ message: "HTTP 503", status: 503 })).toBe(
-      "A required service is unavailable. Check server configuration.",
+      unexplainedFailure(503),
     );
   });
 
@@ -290,6 +428,77 @@ describe("friendlyError", () => {
         requestId: "req-mfa",
       }),
     ).toBe("Two-factor required. (Request ID: req-mfa)");
+  });
+
+  test("an empty-bodied 500 gets actionable copy, not the status echo", () => {
+    // The arm a `.trim()` guard alone could never reach: an empty body arrives
+    // as the placeholder `"HTTP 500"`, which is non-blank, so the banner
+    // rendered "HTTP 500". The placeholder is caught by `isPlaceholderMessage`
+    // and the blank by the `.trim()` — NOT by `serverMessage`, which would
+    // also discard the client-authored status-less messages this arm exists to
+    // show. (That regression was live for one edit; see the arm's comment.)
+    expect(friendlyError({ message: "HTTP 500", status: 500, requestId: "req-y" })).toBe(
+      "The server returned an error (500) with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs. (Request ID: req-y)",
+    );
+  });
+
+  test("an unexplained 4xx does NOT get the restarting-replica guess", () => {
+    // The 503 arm's original sin was diagnosing one cause from the status
+    // alone. Extending its copy to the catch-all would reintroduce that a
+    // level up: a 409 conflict is deterministic (retrying reproduces it), a
+    // 429 came from a rate limiter that is working, and a 400 is a client
+    // fault. Edge-generated 4xx with no JSON body is this arm's real
+    // population.
+    for (const status of [400, 409, 429]) {
+      const msg = friendlyError({ message: `HTTP ${status}`, status });
+      expect(msg).toContain(`(${status})`);
+      expect(msg).not.toContain("restarting");
+      expect(msg).not.toContain("Retry in a moment");
+    }
+    // 5xx keeps it — the boundary is the point, so assert both sides.
+    expect(friendlyError({ message: "HTTP 502", status: 502 })).toContain("restarting");
+  });
+
+  test("unexplainedFailure never renders the word 'undefined' at a reader", () => {
+    // Reachable: a hand-built `{ message: "   " }` with no status routes here,
+    // and a naive `(${status})` interpolation produced "an error (undefined)".
+    // Status-less also means no response was read, so "the server returned"
+    // would be a claim about something that never happened.
+    expect(unexplainedFailure(undefined)).not.toContain("undefined");
+    expect(unexplainedFailure(undefined)).not.toContain("The server returned");
+    expect(friendlyError({ message: "   " })).toBe(unexplainedFailure(undefined));
+  });
+
+  test("a real message on an unmapped status still passes through verbatim", () => {
+    // The complement — without it, an arm that returned the generic
+    // unconditionally would pass the test above.
+    expect(friendlyError({ message: "Rate limit exceeded.", status: 429 })).toBe(
+      "Rate limit exceeded.",
+    );
+  });
+
+  test("the 503 copy matches the gate's, so one status has one diagnosis", () => {
+    // These lived one file apart and disagreed: the gate had been corrected to
+    // stop blaming DATABASE_URL for a restarting replica while this still said
+    // "Check server configuration".
+    expect(friendlyError({ message: "HTTP 503", status: 503 })).toBe(unexplainedFailure(503));
+    expect(friendlyError({ message: "HTTP 503", status: 503 })).not.toContain(
+      "Check server configuration",
+    );
+  });
+
+  test("a blank message falls through to canned copy instead of a blank banner", () => {
+    // Behaviour this gained when the precedence check moved into
+    // `serverMessage`: the old `!isHttpStatusFallback(...)` test was true for
+    // `""`, so `ErrorBanner` rendered alert chrome with no copy —
+    // indistinguishable from a successful render. Pinned here so a refactor
+    // back to a bare `message !== undefined` check can't quietly restore it.
+    expect(friendlyError({ message: "", status: 403 })).toBe(
+      "Access denied. You may need additional permissions to view this page.",
+    );
+    expect(friendlyError({ message: "   ", status: 404 })).toBe(
+      "This feature is not enabled on this server.",
+    );
   });
 
   test("routes schema_mismatch to a version-drift specific message", () => {

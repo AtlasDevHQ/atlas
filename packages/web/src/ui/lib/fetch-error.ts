@@ -48,6 +48,47 @@ export interface FetchError {
 }
 
 /**
+ * The two messages this module mints when a response body supplies none.
+ *
+ * Functions rather than inline template literals so {@link isSynthesizedMessage}
+ * can be written in terms of the same builders the constructors use. Held
+ * apart as string literals, the predicate and its constructors were one
+ * careless edit away from disagreeing — and the whole `serverMessage` design
+ * rests on them agreeing.
+ */
+const httpStatusMessage = (status: number | string) => `HTTP ${status}`;
+const requestFailedMessage = (status: number | string) => `Request failed (${status})`;
+
+/**
+ * What to say when the server refused and explained nothing.
+ *
+ * Exported so `FeatureGate`'s 503 arm and `friendlyError` give one answer
+ * rather than two. They disagreed for two commits — the gate had been
+ * corrected to stop blaming DATABASE_URL for a restarting replica while this
+ * file still said "Check server configuration", so the same status read as two
+ * different diagnoses one file apart.
+ *
+ * The restarting/proxy guess is 5xx-only, and that boundary is the point. An
+ * unexplained 409 is a conflict, which retrying in a moment reproduces; an
+ * unexplained 429 came from a rate limiter that is working; an unexplained 400
+ * is a client fault, and sending that operator to the API service logs is the
+ * same misdiagnosis-from-status-alone this whole change removed from the 503
+ * arm — one level up. Edge- and proxy-generated 4xx with no JSON body are
+ * exactly the population reaching the caller, so 4xx gets the neutral line.
+ */
+export function unexplainedFailure(status: number | undefined): string {
+  // No status means no HTTP response was parsed at all, so "the server
+  // returned" would be a claim about something that never happened.
+  if (status === undefined) {
+    return "The request failed and no response could be read. Check your network connection; if it persists, check the API service logs.";
+  }
+  if (status >= 500) {
+    return `The server returned an error (${status}) with no explanation — it may be restarting or behind an unhealthy proxy. Retry in a moment; if it persists, check the API service logs.`;
+  }
+  return `The server rejected the request (${status}) with no explanation. If it persists, check the API service logs.`;
+}
+
+/**
  * Construct a {@link FetchError} with an empty-message invariant.
  *
  * `MutationErrorSurface` / `ErrorBanner` / `InlineError` render `error.message`
@@ -74,7 +115,7 @@ export function buildFetchError(input: {
 }): FetchError {
   const message = input.message?.trim();
   if (!message) {
-    const fallback = `Request failed (${input.status ?? "unknown"})`;
+    const fallback = requestFailedMessage(input.status ?? "unknown");
     if (process.env.NODE_ENV !== "production") {
       throw new Error(
         `[buildFetchError] refused to construct FetchError with empty message. ` +
@@ -186,7 +227,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
   // always non-empty here (either the body field or the `HTTP ${status}`
   // fallback below), so the dev-throw branch never fires on happy paths.
   return buildFetchError({
-    message: message ?? `HTTP ${res.status}`,
+    message: message ?? httpStatusMessage(res.status),
     status: res.status,
     code,
     requestId,
@@ -214,14 +255,95 @@ export function friendlyErrorOrNull(err: FetchError | null | undefined): string 
 }
 
 /**
+ * The message the *server* authored, or `undefined` when it authored none.
+ *
+ * This module mints two placeholder messages of its own when a body carries
+ * none, and both keep the status alongside them (see
+ * {@link isSynthesizedMessage}). So a bare truthiness check on `err.message`
+ * hands a placeholder to any surface that treats a message as server copy —
+ * "HTTP 403" rendered where a gate's canned explanation belongs. This is the
+ * same precedence {@link friendlyError} applies before falling back to its
+ * status copy, factored out so the gated surfaces (`FeatureGate`,
+ * `EnterpriseUpsell`) draw the identical distinction instead of each
+ * re-deriving the sentinels.
+ *
+ * A `FetchError` with no `status` never got an HTTP response at all (network
+ * failure) or failed client-side (non-JSON body, schema mismatch), so it has
+ * no server message by definition.
+ *
+ * Blank is treated as absent. `buildFetchError` refuses to construct one, but
+ * `FetchError` is a bare interface that anything can build — and a caller that
+ * renders `message ?? canned` would put an empty `<p>` on screen, which is the
+ * blank-chrome failure that helper exists to prevent.
+ */
+export function serverMessage(err: FetchError): string | undefined {
+  // `status === undefined` means no HTTP response was parsed, and every
+  // status-less producer in this codebase authors its own message client-side
+  // (the network catch, the non-JSON-body fallback, `schema_mismatch`, the
+  // hand-built errors in `use-admin-mutation` / `use-config-form` /
+  // `query-utils`). So a status-less error never carries server prose — which
+  // holds regardless of `code`. `schema_mismatch` in particular IS status-less
+  // *with* a code, and returning `undefined` for it is right, not a gap.
+  if (err.status === undefined) return undefined;
+  if (isSynthesizedMessage(err.message, err.status)) return undefined;
+  return err.message.trim() || undefined;
+}
+
+/**
+ * The two fields every gated placeholder — `FeatureGate`, `EnterpriseUpsell`,
+ * `MfaRequiredPlaceholder` — takes from a {@link FetchError}, derived once.
+ *
+ * Spread it: `<FeatureGate status={s} feature={f} {...gateProps(err)} />`.
+ *
+ * The placeholders stay purely presentational (plain props, unit-testable
+ * without a `FetchError`), but the decision of *which* two fields and *how*
+ * they are derived stops being replicated per call site. #5068 was one call
+ * site forgetting; the panel review then found a second call site with no test
+ * at all, whose narrower status set turned out to be correct but was
+ * indistinguishable from an accident.
+ */
+export interface GateErrorProps {
+  message?: string;
+  requestId?: string;
+}
+
+export function gateProps(err: FetchError): GateErrorProps {
+  return { message: serverMessage(err), requestId: err.requestId };
+}
+
+/**
+ * Is this error's `message` a placeholder this module minted, rather than
+ * text worth showing or transforming?
+ *
+ * The narrower sibling of {@link serverMessage}, for the one caller that must
+ * distinguish "synthesized" from "not the server's" — `combineMutationErrors`
+ * decorates a message with a "+N more" suffix, and a *client*-authored message
+ * ("Network error", a schema-mismatch sentence) is perfectly good to decorate
+ * even though no server wrote it. Only the placeholders are not: suffixing one
+ * yields `"HTTP 403 (+1 more)"`, which no longer matches the sentinels and so
+ * reads as server prose to every surface downstream.
+ */
+export function isPlaceholderMessage(err: FetchError): boolean {
+  if (err.status === undefined) {
+    // `serverMessage` never sees this case (it early-returns on a missing
+    // status), but `friendlyError`'s catch-all arm does, and it is where
+    // `buildFetchError`'s third spelling lands: a status-less empty message
+    // becomes `Request failed (unknown)`, which would otherwise render as if
+    // a human had written it.
+    return err.message.trim() === requestFailedMessage("unknown");
+  }
+  return isSynthesizedMessage(err.message, err.status);
+}
+
+/**
  * Convert a FetchError into a user-friendly message.
  *
  * Precedence: a non-empty server-typed message wins over the canned
  * status copy. `extractFetchError` only populates `message` from a real
  * body field, so any string here is server-authored — render it verbatim.
- * The status-code branches are the empty-body fallback;
- * `extractFetchError` substitutes `HTTP {status}` there, which
- * `isHttpStatusFallback` round-trips back to the friendly text.
+ * The status-code branches are the empty-body fallback, which
+ * {@link isSynthesizedMessage} recognizes and round-trips back to the
+ * friendly text.
  */
 export function friendlyError(err: FetchError): string {
   // Schema mismatch only wins for client-side parse failures (status undefined),
@@ -255,9 +377,8 @@ export function friendlyError(err: FetchError): string {
   // populates `message` from a non-empty body field, so any string here is a
   // real server-typed message — render it. Canned text below covers the
   // empty-body path where the message was substituted to `HTTP {status}`.
-  if (err.status !== undefined && !isHttpStatusFallback(err.message, err.status)) {
-    return appendRequestId(err.message, err.requestId);
-  }
+  const authored = serverMessage(err);
+  if (authored) return appendRequestId(authored, err.requestId);
 
   let msg: string;
   if (err.status === 401) msg = "Not authenticated. Please sign in.";
@@ -265,14 +386,51 @@ export function friendlyError(err: FetchError): string {
     msg = "Access denied. You may need additional permissions to view this page.";
   else if (err.status === 404)
     msg = "This feature is not enabled on this server.";
-  else if (err.status === 503)
-    msg = "A required service is unavailable. Check server configuration.";
-  else msg = err.message;
+  else if (err.status === 503) msg = unexplainedFailure(503);
+  // Every status without a friendly mapping — 500, 409, 429 — plus the
+  // status-less client failures.
+  //
+  // `isPlaceholderMessage`, not a bare `.trim()` and not `serverMessage`.
+  //
+  // A trim check could never fire for the statuses this arm was written for:
+  // an empty-bodied 500 arrives as the placeholder `"HTTP 500"`, which is
+  // non-blank, so the banner rendered the status echo. But `serverMessage` is
+  // too strong here — it discards every status-less message, and those are
+  // client-authored ("Network error", the schema-mismatch sentence) and are
+  // exactly what this arm should show. Only the placeholder and the blank are
+  // worth replacing.
+  else msg = (isPlaceholderMessage(err) ? "" : err.message.trim()) || unexplainedFailure(err.status);
   return appendRequestId(msg, err.requestId);
 }
 
-function isHttpStatusFallback(message: string, status: number): boolean {
-  return message === `HTTP ${status}`;
+/**
+ * Is this message one *this module* synthesized from the status, rather than
+ * anything the server said?
+ *
+ * There are two spellings and they must be recognized together, or a surface
+ * branching on "did the server explain itself" catches one and is fooled by
+ * the other. Both are built by the functions above, which is the point: the
+ * predicate calls the same builders its constructors do, so the two cannot
+ * drift. A placeholder this predicate stops recognizing goes straight back to
+ * being rendered as if a human had written it.
+ *
+ * `Request failed ({status})` looks unreachable and is not: `extractFetchError`
+ * admits a whitespace-only body `message` (it tests `length > 0`, untrimmed),
+ * which `buildFetchError` then trims to empty and substitutes. In development
+ * that path throws instead, so this spelling only ever reaches a user in
+ * production — where the dev-throw cannot warn anyone.
+ *
+ * A third spelling, `Request failed (unknown)`, exists for a status-less
+ * `buildFetchError`. It is covered by {@link serverMessage}'s
+ * `status === undefined` guard rather than by this predicate — relax that
+ * guard and this needs to grow.
+ */
+function isSynthesizedMessage(message: string, status: number): boolean {
+  // Trimmed, because every sibling guard on this path trims and this is the
+  // one that decides provenance. A padded `"  HTTP 403  "` slipping through
+  // reads as server prose to the gate — the defect, one space over.
+  const m = message.trim();
+  return m === httpStatusMessage(status) || m === requestFailedMessage(status);
 }
 
 function appendRequestId(message: string, requestId: string | undefined): string {

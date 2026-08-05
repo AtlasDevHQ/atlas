@@ -3300,6 +3300,35 @@ export const brainFacts = pgTable(
     subjectKey: text("subject_key"),
     predicateKey: text("predicate_key"),
     objectKey: text("object_key"),
+    // The comparable value — the column that can prove DIFFERENCE, where the
+    // three keys above prove only SAMENESS (#5030, ADR-0037 §2, migration
+    // 0191). A typed canonical value, tagged (`money:USD:499`, `number:499`,
+    // `entity:01J…`), parsed FAIL-CLOSED by `lib/brain/object-cmp.ts`.
+    //
+    //   same      — (object_key equal OR both object_cmp non-null and equal)
+    //               AND not provably different (`objectSameSql`'s veto)
+    //   different — both object_cmp non-null, same tag, unequal
+    //   unknown   — everything else → tension only, never a `valid_to` stamp
+    //
+    // NULLABLE PERMANENTLY, and for a different reason than the three keys
+    // above: NULL is how `unknown` is SPELLED, a first-class verdict rather
+    // than an unwritten-yet state. There is no `SET NOT NULL` waiting on a
+    // writer here, and a sentinel for "cannot be compared" would compare equal
+    // to every other unparseable object — the `DEFAULT ''` hazard 0187 rejects,
+    // arriving where its consequence is a stamp instead of a missed join.
+    //
+    // NEVER BACKFILLED. Giving existing rows a value retroactively manufactures
+    // positive evidence of difference on pairs a reviewer already saw as
+    // `unknown`, and unlike a cardinality flip there is no gate to hang a
+    // preview on. 0191's header is the argument; this is the summary.
+    //
+    // Only the OBJECT gets one. Subject and predicate are join arms, never
+    // compared for difference — `subject_cmp` is #5032's and has INVERTED
+    // polarity (it suppresses rather than enables), so it is not this column
+    // mirrored and must not be built by copying it.
+    //
+    // Never projected to the wire, on the keys' terms — `keys-not-on-the-wire.test.ts`.
+    objectCmp: text("object_cmp"),
     // Bi-temporal, invalidate-never-delete. `validFrom`/`validTo` are VALID
     // time (when the claim held in the world); `validTo` is stamped by a HUMAN
     // promotion — there is no autonomous supersession, and staleness decay

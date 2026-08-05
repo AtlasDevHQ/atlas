@@ -348,7 +348,7 @@ Ada Lovelace: ${MARKER.opsReview}
 
 2
 00:00:05.000 --> 00:00:09.000
-Ada Lovelace: the Q3 revenue target is 4.2 million and the deploy window is Thursdays
+Ada Lovelace: the Q3 revenue target is 4.2 million and the deploy window is 2026-07-02
 
 3
 00:00:10.000 --> 00:00:14.000
@@ -407,7 +407,7 @@ const MSG_RIVAL = outlookMessage({
   receivedDateTime: "2026-07-16T09:00:00Z",
   from: address(EMAIL_OF["user-bo"]),
   toRecipients: [address(EMAIL_OF["user-admin"])],
-  bodyText: `${MARKER.deployChange} to Fridays, starting this week.`,
+  bodyText: `${MARKER.deployChange} to 2026-07-03, starting this week.`,
 });
 
 /** 2026-07-14T10:00:00Z, as a Slack ts. */
@@ -553,11 +553,23 @@ const CORROBORATED_CLAIM: Candidate = {
  *
  * Both deploy-window claims are `single`: that cardinality, on BOTH sides, is
  * what arms the tension pass and the gate's supersession collision.
+ *
+ * ⚠️ **The two deploy-window claims name DATES rather than weekdays, and that is
+ * load-bearing since #5030.** Supersession now needs positive evidence of
+ * difference — both sides carrying a comparable `object_cmp` of the same type
+ * that disagree. `Thursdays` and `Fridays`, which this fixture used to say,
+ * abstain into tension: nothing on either row proves two weekday names denote
+ * different things, so the gate stamps nothing and step 6 below would have no
+ * supersession to walk. A date parses, so the pair genuinely contradicts.
+ *
+ * The abstain band itself is asserted directly in `promotion-pg.test.ts`
+ * (`ws-5030-abstain`) and by the corpus's `unproven-rival` relation. This file
+ * needs a loop that reaches the end, not a second copy of that proof.
  */
 const EXTRACTIONS: Partial<Record<(typeof MARKER)[keyof typeof MARKER], readonly Candidate[]>> = {
   [MARKER.opsReview]: [
     CORROBORATED_CLAIM,
-    { subject: "deploy window", predicate: "is", object: "Thursdays", cardinality: "single" },
+    { subject: "deploy window", predicate: "is", object: "2026-07-02", cardinality: "single" },
     { subject: "hiring plan", predicate: "is", object: "frozen", cardinality: "multi" },
   ],
   [MARKER.pricingRecap]: [
@@ -565,7 +577,7 @@ const EXTRACTIONS: Partial<Record<(typeof MARKER)[keyof typeof MARKER], readonly
     { subject: "vendor contract", predicate: "renews", object: "March", cardinality: "multi" },
   ],
   [MARKER.deployChange]: [
-    { subject: "deploy window", predicate: "is", object: "Fridays", cardinality: "single" },
+    { subject: "deploy window", predicate: "is", object: "2026-07-03", cardinality: "single" },
   ],
   [MARKER.officeMove]: [
     { subject: "office move", predicate: "is", object: "June", cardinality: "multi" },
@@ -1321,7 +1333,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // the four unrelated claims. Only a total catches both directions.
       expect(rows).toHaveLength(5);
       const q3 = factByClaim(rows, CORROBORATED_CLAIM.subject, CORROBORATED_CLAIM.object);
-      const thursdays = factByClaim(rows, "deploy window", "Thursdays");
+      const earlyWindow = factByClaim(rows, "deploy window", "2026-07-02");
       const hiring = factByClaim(rows, "hiring plan", "frozen");
       const vendor = factByClaim(rows, "vendor contract", "March");
       const officeMove = factByClaim(rows, "office move", "June");
@@ -1370,12 +1382,12 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
         hiring: hiring.visible_to,
         vendor: vendor.visible_to,
         officeMove: officeMove.visible_to,
-        thursdays: thursdays.visible_to,
+        earlyWindow: earlyWindow.visible_to,
       }).toEqual({
         hiring: [MEETING_ALPHA_GRANT],
         vendor: [RECAP_GRANT],
         officeMove: ["org"],
-        thursdays: [MEETING_ALPHA_GRANT],
+        earlyWindow: [MEETING_ALPHA_GRANT],
       });
 
       // ---- 3. the gate publishes, and the cross-class evidence WIDENS ------
@@ -1402,7 +1414,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // plausible over-application — dies here rather than in a leak report.
       expect(factByClaim(rows, "hiring plan", "frozen").pre_widening_visible_to).toBeNull();
       expect(factByClaim(rows, "vendor contract", "March").pre_widening_visible_to).toBeNull();
-      expect(factByClaim(rows, "deploy window", "Thursdays").pre_widening_visible_to).toBeNull();
+      expect(factByClaim(rows, "deploy window", "2026-07-02").pre_widening_visible_to).toBeNull();
 
       // ---- 4. per-class ACL isolation under the heterogeneous grant set ----
       // The MEMBERSHIP premise first, written by the connectors' own reconciles.
@@ -1538,11 +1550,11 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       });
 
       rows = await facts();
-      const fridays = factByClaim(rows, "deploy window", "Fridays");
+      const lateWindow = factByClaim(rows, "deploy window", "2026-07-03");
       // A DRAFT, on its own message's audience — a second email audience, not
       // the recap's: the email class's grain is per MESSAGE, so two mails
       // between overlapping people are two audiences.
-      expect(fridays).toMatchObject({
+      expect(lateWindow).toMatchObject({
         status: "draft",
         predicate_cardinality: "single",
         visible_to: [RIVAL_GRANT],
@@ -1563,17 +1575,17 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // rule a regression that wrote BOTH `supersedes` directions would surface
       // as one of them until fixed, then the other. Together they diff at once.
       expect({
-        tensionForward: await edgeCount("in-tension-with", fridays.id, { factId: thursdays.id }),
-        tensionReverse: await edgeCount("in-tension-with", thursdays.id, { factId: fridays.id }),
-        supersedesForward: await edgeCount("supersedes", fridays.id, { factId: thursdays.id }),
-        supersedesReverse: await edgeCount("supersedes", thursdays.id, { factId: fridays.id }),
+        tensionForward: await edgeCount("in-tension-with", lateWindow.id, { factId: earlyWindow.id }),
+        tensionReverse: await edgeCount("in-tension-with", earlyWindow.id, { factId: lateWindow.id }),
+        supersedesForward: await edgeCount("supersedes", lateWindow.id, { factId: earlyWindow.id }),
+        supersedesReverse: await edgeCount("supersedes", earlyWindow.id, { factId: lateWindow.id }),
       }).toEqual({
         tensionForward: 1,
         tensionReverse: 0,
         supersedesForward: 0,
         supersedesReverse: 0,
       });
-      const stillLive = factByClaim(rows, "deploy window", "Thursdays");
+      const stillLive = factByClaim(rows, "deploy window", "2026-07-02");
       expect(stillLive).toMatchObject({
         status: "published",
         valid_to: null,
@@ -1604,7 +1616,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       const adminContested = await search(adminLive);
       // The draft rival is not itself served in published mode; it reaches the
       // reader only as the incumbent's counterpart.
-      expect(deployObjectsOf(adminContested.results)).toEqual(["Thursdays"]);
+      expect(deployObjectsOf(adminContested.results)).toEqual(["2026-07-02"]);
       const adminIncumbent = factNamed(adminContested.results, "deploy window");
       if (adminIncumbent === undefined) {
         throw new Error("the admin was served no deploy-window fact — the cluster assertion would be vacuous");
@@ -1618,11 +1630,11 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // counterparts would be green everywhere except here.
       expect(adminIncumbent.tensions[0]).toMatchObject({
         visible: true,
-        factId: fridays.id,
+        factId: lateWindow.id,
         // The edge points newer → incumbent, so from the incumbent's side the
         // counterpart sits on the `from` end.
         edgeDirection: "from",
-        object: "Fridays",
+        object: "2026-07-03",
         status: "draft",
         invalidatedAt: null,
         validTo: null,
@@ -1639,7 +1651,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // as "nothing contradicts this".
       const adaContested = await search(adaCtx);
       const adaIncumbent = factNamed(adaContested.results, "deploy window");
-      expect(adaIncumbent).toMatchObject({ object: "Thursdays", status: "published" });
+      expect(adaIncumbent).toMatchObject({ object: "2026-07-02", status: "published" });
       expect(adaIncumbent?.tensions).toEqual([{ visible: false, withheldCount: 1 }]);
 
       // The mirror image, and the fail-closed direction: `bo` OWNS the rival's
@@ -1661,8 +1673,8 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       const queue = await loadFactCandidates(pool, { ctx: adminLive, limit: 50, offset: 0 });
       expect(queue.total).toBe(1);
       expect(queue.candidates[0]).toMatchObject({
-        id: fridays.id,
-        object: "Fridays",
+        id: lateWindow.id,
+        object: "2026-07-03",
         provenance: {
           source: OUTLOOK_MAIL_SOURCE,
           attribution: { visible: true, actor: `${OUTLOOK_MAIL_SOURCE}:${EMAIL_OF["user-bo"]}` },
@@ -1671,9 +1683,9 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       expect(queue.candidates[0]?.tensions).toEqual([
         expect.objectContaining({
           visible: true,
-          factId: thursdays.id,
+          factId: earlyWindow.id,
           edgeDirection: "to",
-          object: "Thursdays",
+          object: "2026-07-02",
           status: "published",
           provenance: expect.objectContaining({
             source: ZOOM_TRANSCRIPT_SOURCE,
@@ -1693,11 +1705,11 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       const gate = await publish();
       expect(gate.promoted).toBe(1);
       expect(gate.refused).toEqual([]);
-      expect(gate.superseded).toEqual([{ rowId: fridays.id, superseded: [thursdays.id] }]);
+      expect(gate.superseded).toEqual([{ rowId: lateWindow.id, superseded: [earlyWindow.id] }]);
 
       rows = await facts();
-      const loser = factByClaim(rows, "deploy window", "Thursdays");
-      const winner = factByClaim(rows, "deploy window", "Fridays");
+      const loser = factByClaim(rows, "deploy window", "2026-07-02");
+      const winner = factByClaim(rows, "deploy window", "2026-07-03");
       // The stamp closed the loser's window and ONLY its window: still
       // published (the review verdict stands), still not retracted.
       expect(loser.valid_to).not.toBeNull();
@@ -1712,7 +1724,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       // ⭐ SUPERSESSION IS GRANT-BLIND, AND NOW ACROSS A CLASS BOUNDARY. The
       // collision join never reads `visible_to`, so a mail nobody in the meeting
       // can read has just retired the meeting's belief for them: `ada`'s current
-      // answer for the deploy window is not "Thursdays" and not "Fridays" — it
+      // answer for the deploy window is not "2026-07-02" and not "2026-07-03" — it
       // simply ENDS. That is a real consequence of two decisions that are each
       // correct alone, no ADR states it, and it is pinned here so a change to it
       // has to argue with a test. Paired with a positive, so this is a lost
@@ -1733,8 +1745,8 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       }).toEqual({
         adaDeploy: [],
         adaStillReads: ["Q3 revenue target", "hiring plan", "office move"].toSorted(byText),
-        boDeploy: ["Fridays"],
-        adminDeploy: ["Fridays"],
+        boDeploy: ["2026-07-03"],
+        adminDeploy: ["2026-07-03"],
       });
 
       // ---- 8. the point read, at the bound the GATE stamped ----------------
@@ -1765,15 +1777,15 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
         justAfter: deployObjectsOf(justAfter.results),
         justBefore: deployObjectsOf(justBefore.results),
       }).toEqual({
-        justAfter: ["Fridays"],
-        justBefore: ["Fridays", "Thursdays"],
+        justAfter: ["2026-07-03"],
+        justBefore: ["2026-07-02", "2026-07-03"],
       });
       // The point read rewinds the FACTS, never the grants of a class the
       // reader never held: `bo` gets the mail-granted winner at both instants
       // and never the meeting-granted loser, so `asOf` is not a way around the
       // per-class isolation of step 4.
       const boJustBefore = await search(boLive, { asOf: new Date(stampMs - 1).toISOString() });
-      expect(deployObjectsOf(boJustBefore.results)).toEqual(["Fridays"]);
+      expect(deployObjectsOf(boJustBefore.results)).toEqual(["2026-07-03"]);
 
       // ---- 9. the extraction-lag window ------------------------------------
       // A fourth episode lands in a class whose earlier episodes are all
@@ -1862,7 +1874,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
 
       // ⭐ LABELLED, NOT BLOCKING. The same call still served the facts — the
       // read did not degrade, stall, or narrow because an episode was queued.
-      expect(deployObjectsOf(adminLagged.results)).toEqual(["Fridays"]);
+      expect(deployObjectsOf(adminLagged.results)).toEqual(["2026-07-03"]);
       expect(subjectsOf(adminLagged.results)).toEqual(
         [
           "Q3 revenue target",

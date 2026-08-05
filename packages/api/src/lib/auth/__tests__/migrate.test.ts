@@ -575,6 +575,7 @@ describe("migrateAuthTables", () => {
             // creates one new brain table and touches nothing Better Auth
             // owns — same reasoning as 0187–0189 above.
             { name: "0190_brain_vocabulary_proposal.sql" },
+            { name: "0191_brain_fact_object_cmp.sql" },
           ],
         };
       }

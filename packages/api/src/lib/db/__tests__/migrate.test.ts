@@ -282,7 +282,14 @@ describe("runMigrations", () => {
     //   pair for all time, so `approved → rejected` (a removal) is what stops a
     //   producer re-emitting the edge a human just removed, #5023 /
     //   ADR-0037 §6) = 191.
-    expect(count).toBe(191);
+    //   Plus 0191 (brain_fact_object_cmp — the comparable value: the column
+    //   that can prove two claims' objects are DIFFERENT, where the three keys
+    //   above prove only SAMENESS. Nullable and NEVER backfilled: giving
+    //   existing rows a value would retroactively manufacture positive evidence
+    //   of difference on pairs a reviewer already saw as `unknown`, and unlike a
+    //   cardinality flip there is no gate to hang a preview on, #5030 /
+    //   ADR-0037 §2) = 192.
+    expect(count).toBe(192);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -502,6 +509,7 @@ describe("runMigrations", () => {
         "0188_rekey_unkeyed_brain_facts.sql",
         "0189_brain_vocabulary.sql",
         "0190_brain_vocabulary_proposal.sql",
+        "0191_brain_fact_object_cmp.sql",
       ],
     });
 

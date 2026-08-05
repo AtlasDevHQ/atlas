@@ -20,6 +20,7 @@ import { Pool } from "pg";
 import { zipSync, strToU8 } from "fflate";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
@@ -961,19 +962,29 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     const episodeId = epRows[0]!.id;
     const seedFact = async (object: string, status: "draft" | "published") => {
       const { rows } = await pool.query<{ id: string }>(
-        // Keyed like an ingested row (#5020): `supersessionCollisionJoin`
-        // matches on `subject_key`/`predicate_key`/`object_key`, and `=` and
-        // `<>` are both UNKNOWN against NULL — so an unkeyed seed collides with
-        // nothing, `collectSupersessions` returns `[]`, and this test's whole
-        // chain reads as an adapter-registration drift. Derived through
-        // `slotKey`, the same function `reconcile.ts` calls when binding
-        // `INSERT_FACT_SQL`.
+        // Keyed AND given a comparable value, like an ingested row. The slot
+        // keys (#5020) are what makes `supersessionCollisionPredicate` match at
+        // all — `=` is UNKNOWN against NULL, so an unkeyed seed collides with
+        // nothing. `object_cmp` (#5030) is what makes the collision FIRE:
+        // supersession now needs positive evidence of difference, and two
+        // unparseable surfaces (`bob` / `carol`) have none, so without it
+        // `collectSupersessions` returns `[]` and this test's whole chain reads
+        // as an adapter-registration drift when nothing drifted.
+        //
+        // Both derived through the real functions — `slotKey` and
+        // `comparableValue`, the two `reconcile.ts` calls when binding
+        // `INSERT_FACT_SQL` — rather than hand-written beside the surface,
+        // where the fixture and the producer could quietly disagree. The
+        // `entityId` models a resolved entity store (#5031); the shipped
+        // `passthroughEntityResolver` supplies none, and the abstain that
+        // produces is `promotion-pg.test.ts`'s `ws-5030-abstain` to prove, not
+        // this file's — what THIS file needs is a supersession to project.
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
             provenance, status, visible_to, predicate_cardinality,
-            subject_key, predicate_key, object_key)
+            subject_key, predicate_key, object_key, object_cmp)
          VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}', 'single',
-                 $5, $6, $7)
+                 $5, $6, $7, $8)
          RETURNING id`,
         [
           wsPromote,
@@ -983,6 +994,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
           slotKey("alice", identityAlias),
           slotKey("manager", identityAlias),
           slotKey(object, identityAlias),
+          comparableValue({ surface: object, entityId: `ent:${object}` }),
         ],
       );
       return rows[0]!.id;

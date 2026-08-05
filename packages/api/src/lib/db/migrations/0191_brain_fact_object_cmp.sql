@@ -1,0 +1,129 @@
+-- 0191 — The comparable value: `brain_facts.object_cmp` (#5030, ADR-0037 §2
+-- "One relation, three-valued agreement").
+--
+-- The slot keys 0187 added prove SAMENESS. This column is the one that can
+-- prove DIFFERENCE: a typed canonical value (`money:USD:499`, `number:499`,
+-- `date:2026-08-04`, `time:…Z`, `bool:true`, `entity:01J…`), parsed fail-closed
+-- by `lib/brain/object-cmp.ts` and NULL wherever the parse is not certain.
+--
+--   same      — (object_key equal OR both object_cmp non-null and equal)
+--               AND not provably different — the veto in `objectSameSql`
+--   different — both object_cmp non-null, same tag, unequal
+--   unknown   — everything else → tension only, never a stamp
+--
+-- `same` and `different` are not complements, which is why this is a second
+-- column rather than a second reading of `object_key`. Made total it would say
+-- `$499` and `499 USD` are different, and publish would stamp `valid_to` over a
+-- spelling. Made the only column it would say byte-identical `Business tier` is
+-- unknown, and corroboration would stop firing on exact repeats. ADR-0037 §2
+-- carries both worked cases.
+--
+-- ## ⚠️ THIS COLUMN IS NEVER BACKFILLED. That is the whole DDL and the whole
+-- design decision
+--
+-- 0187 was `ADD COLUMN` + `UPDATE`, and the absence of the second statement here
+-- is deliberate, load-bearing, and the thing most likely to be "finished" by a
+-- later reader who notices the asymmetry. It is not an omission:
+--
+--   * A backfill would retroactively manufacture positive evidence of
+--     DIFFERENCE on rows a reviewer already saw as `unknown`. Those rows are
+--     currently tension-only — flagged, coexisting, waiting for a human. Give
+--     them comparable values in a migration and the next publish stamps
+--     `valid_to` across pairs nobody arbitrated, at boot, unattended.
+--   * Unlike a cardinality flip there is NO GATE to hang a preview on. The
+--     publish preview discloses what THIS publish will supersede; it cannot
+--     disclose that a migration changed what supersedes what three deploys ago.
+--     An auto-approved producer run has no reviewer in it at all.
+--   * The slot keys had neither problem, which is why 0187 could backfill: a
+--     key proves sameness, so a backfilled key can only ever cause a
+--     CORROBORATION or a tension edge — the recoverable direction. This column
+--     is on the irreversible one.
+--
+-- So existing rows keep NULL permanently — `unknown`, tension-only — until the
+-- claim lands in a FRESH ROW, which is a narrower escape hatch than it sounds
+-- and is stated exactly because the obvious reading is wrong: a re-observation
+-- of the same claim CORROBORATES onto the legacy row and leaves the NULL in
+-- place (corroboration writes nothing to the fact — pinned by
+-- `object-cmp-pg.test.ts`). The row gains a comparable value only if its
+-- `object_key` changes — a re-key, or a differently-spelled surface. A producer
+-- that STARTS declaring `objectType` on an already-stored claim never gives that
+-- row one. That is the accepted cost recorded in #5030 and in the ADR: the
+-- corpus becomes permanently two-tier, and nothing on a row says which tier it
+-- is in. Do not add a marker column to fix that — the marker would be a filter
+-- that has been fooled the moment the corpus turns over.
+--
+-- `object_cmp IS NULL` is therefore NOT a work queue. It matches every honest
+-- abstain too (`Enterprise tier` has no comparable value and never will, at any
+-- age), so a re-key sweep that used it would rewrite rows it must leave alone.
+-- #5031 gives `provenance.provisional` the job of marking rows whose keys are
+-- worth recomputing; that marker, not this column's nullability, is the handle.
+--
+-- ## NULLABLE, permanently, unlike the slot keys
+--
+-- 0187's header enumerates three prerequisites for flipping `subject_key` et al
+-- to `NOT NULL`. None of them applies here, and no future issue inherits a
+-- constraint flip for this column: NULL is the SPELLING of `unknown`, a
+-- first-class verdict in the three-valued agreement, not a transient
+-- unwritten-yet state. A `NOT NULL` here would have to invent a value for
+-- "cannot be compared", and every candidate for that value is a sentinel that
+-- compares equal to every other unparseable object — the corpus-corrupting
+-- over-match 0187 rejects `DEFAULT ''` for, arriving at the position where its
+-- consequence is a `valid_to` stamp rather than a missed join.
+--
+-- ## No CHECK constraint, and it is DEFERRED rather than decided against
+--
+-- The column is a bare `TEXT`, so nothing at the database stops a malformed
+-- value — `'entity'` with no payload, `'entity:'` with an empty one, `'foo:1'`
+-- with a head this module does not know. Every such value is unreachable
+-- today: `INSERT_FACT_SQL` is the sole writer and `comparableValue` always
+-- emits `<known tag>:<non-empty payload>`.
+--
+-- It stops being unreachable at #5035, which makes the region importer a
+-- SECOND writer whose whole job is deciding which tags to carry and which to
+-- null. The reading arms currently enumerate the malformed shapes defensively
+-- (`comparableDifferentSql` carries a known-tag membership test AND a
+-- `strpos(v, ':') > 0` arm on both operands, each closing a measured hole), and
+-- that enumeration is the wrong long-term shape: `comparableSameSql` has no
+-- equivalent, so two byte-identical truncated values still corroborate.
+--
+--   CHECK (object_cmp IS NULL OR object_cmp ~ '^(money|number|date|time|bool|entity):.+')
+--
+-- would close the class at the column and turn an importer bug into a failed
+-- INSERT instead of a silent `valid_to` stamp. NOT added here: it belongs with
+-- the writer it constrains, the tag vocabulary would then be spelled a fifth
+-- time in a place no test generates it from, and a constraint landing ahead of
+-- #5035 could reject a bundle that issue has not yet been written against.
+-- Recorded so it is a deferral with a named owner rather than an omission.
+--
+-- ## No index, and this is pinned rather than merely omitted
+--
+-- The `object_key = … OR (object_cmp …)` disjunction is btree-hostile and will
+-- look, to whoever reads the resulting statements, like it demands a second
+-- index or a UNION rewrite. It does not. A `(workspace_id, subject_key,
+-- predicate_key)` slot holds a handful of live rows — for `single` cardinality
+-- essentially one — and `idx_brain_facts_subject` (0187) already seeks that
+-- prefix. The object arm is a FILTER over a tiny set, never a seek, so
+-- three-valued agreement is free at the index level. ADR-0037 §1 records the
+-- zero-net-new-indexes result this preserves.
+--
+-- ## The FTS vector is untouched, and so are the surface columns
+--
+-- `brain_facts.fts` keeps reading `subject`/`predicate`/`object` (0181).
+-- Retrieval wants what people said; identity wants what they meant. `object`
+-- itself is never rewritten — the canonical value lands BESIDE the surface for
+-- the same reason 0187's keys did, and it is the surface that makes a
+-- re-derivation possible when the parser changes.
+--
+-- ## Scale
+--
+-- Two catalog writes (the column and its comment). `ADD COLUMN` with no
+-- default has NEVER rewritten the table — PG 11's change was about `ADD COLUMN
+-- … DEFAULT`, and citing a version here makes the safety look newer than it is.
+-- So this holds the migration runner's advisory
+-- lock for the length of an `ALTER TABLE` and nothing more — the one operational
+-- difference from 0187, which took two full-table passes.
+
+ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS object_cmp TEXT;
+
+COMMENT ON COLUMN brain_facts.object_cmp IS
+  'Typed canonical value of the object, tagged (`money:USD:499`, `entity:01J…`), parsed fail-closed by lib/brain/object-cmp.ts. NULL means UNKNOWN — the agreement abstains and the pair falls to tension only, never a supersession stamp. Never backfilled: see migration 0191.';

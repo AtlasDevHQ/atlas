@@ -533,16 +533,20 @@ run_fixture "Drizzle .insert().onConflictDoUpdate({set:{objectKey}}) fails" fail
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { objectKey: k } });'
 
-# The `_cmp` arms are gated ahead of the column existing (#5032), so nothing in
-# the tree can hold them yet. These fixtures are the only thing that does —
-# without them the alternations could be deleted and every other test here would
-# still pass. Both spellings, because ADR-0037 §2's column table defines
-# both, and `subject_cmp` (#5032) is the INVERTED one.
-run_fixture "UPDATE … SET subject_cmp fails (gated before the column exists, #5032)" fail \
+# The two `_cmp` arms are at DIFFERENT stages, and the fixture names say which.
+# `subject_cmp` is gated ahead of its column (#5032), so nothing in the tree can
+# hold that arm yet and this fixture is the only thing that does — without it
+# the alternation could be deleted and every other test here would still pass.
+# `object_cmp` exists as of #5030 / migration 0191 and `INSERT_FACT_SQL` writes
+# it, so its arm now guards a real column against a real re-key; that is the
+# stronger statement, and worth saying rather than leaving both labelled as
+# pre-schema. ADR-0037 §2's column table defines both; `subject_cmp` is the
+# INVERTED one.
+run_fixture "UPDATE … SET subject_cmp fails (gated ahead of the column, #5032)" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.query(`UPDATE brain_facts SET subject_cmp = $2 WHERE workspace_id = $1`);'
 
-run_fixture "UPDATE … SET object_cmp fails (gated before the column exists, #5032)" fail \
+run_fixture "UPDATE … SET object_cmp fails (the column EXISTS since #5030)" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.query(`UPDATE brain_facts SET object_cmp = $2 WHERE workspace_id = $1`);'
 

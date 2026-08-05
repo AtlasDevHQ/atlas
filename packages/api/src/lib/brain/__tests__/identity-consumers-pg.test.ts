@@ -5,11 +5,23 @@
  * consumes it. Corroboration (`CORROBORATION_LOOKUP_SQL`), the advisory rival
  * scan (`TENSION_CANDIDATES_SQL`), and the publish gate's
  * `supersessionCollisionJoin` each read the same materialized
- * `(subject_key, predicate_key, object_key)` triple, and each turns it into a
- * different verdict — *same*, *different-and-coexisting*, *different-and-stamping*.
- * Running all three over one fixture set is what stops them drifting into
- * disagreeing about what collides, which three private fixture sets could not
- * detect by construction.
+ * `(subject_key, predicate_key, object_key, object_cmp)` tuple, and each turns
+ * it into a different verdict — *same*, *different-and-coexisting*,
+ * *different-and-stamping*. Running all three over one fixture set is what stops
+ * them drifting into disagreeing about what collides, which three private
+ * fixture sets could not detect by construction.
+ *
+ * ## ⚠️ Since #5030 the three consumers no longer partition the corpus
+ *
+ * Agreement is THREE-VALUED, so the consumers take non-complementary halves of
+ * it: corroboration fires on *same*, supersession on *different*, and the band
+ * between them — *unknown* — reaches tension and nothing else. The corpus grew a
+ * fourth relation to express that, and the two rival classes are what make the
+ * band visible: `unproven-rival` earns a tension edge and NO stamp,
+ * `proven-rival` earns both. A corpus with only one rival class cannot tell an
+ * abstaining implementation from a stamping one, which is the risk ADR-0037 §9
+ * names — the band has to be produced honestly, and a canonicalizer returning
+ * the raw surface collapses it to empty while looking like it worked.
  *
  * Every expectation below is COMPUTED from `VERDICTS[pair.relation]` rather than
  * written beside the assertion, so the table is the single definition of what
@@ -29,7 +41,7 @@
  * assertions in the identity slice now live in the slower, WSL2-flakier lane,
  * and a `--affected` run over `lib/brain/` no longer covers them without
  * `TEST_DATABASE_URL`. The one-corpus design bounds that rather than removing
- * it — eight pairs, three consumers, not three suites.
+ * it — thirteen pairs, three consumers, not three suites.
  *
  * ## Every prohibition has a positive control, in its own `test()`
  *
@@ -59,37 +71,76 @@
  *
  * | Mutation | Dies on |
  * |---|---|
- * | `CORROBORATION_LOOKUP_SQL` repointed at the surface columns | 6 — all three consumers, via both `same-claim` pairs |
- * | `TENSION_CANDIDATES_SQL` repointed at the surface columns | consumer 2's control, via `rival-through-phrasing` |
- * | `supersessionCollisionJoin` repointed at the surface columns | consumer 3's control, via `rival-through-phrasing` |
- * | the corroboration call site binds raw surfaces instead of `item.keys.*` | 6 here — **and 3 in `reconcile.test.ts`**, which is the bind half it can still see |
- * | the tension call site binds raw surfaces | consumer 2's control |
- * | `subject_key =` neutralized in the rival scan / dropped from the collision join | consumers 2 and 3, via `subject-differs` |
- * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | consumers 2 and 3, via `predicate-differs` |
+ * | `lexicalNorm` loses its ASCII case fold | 9 |
+ * | `CORROBORATION_LOOKUP_SQL` repointed at the surface columns | 6 |
+ * | the corroboration call site binds raw surfaces instead of `item.keys.*` | 6 — **and 3 in `reconcile.test.ts`**, which is the bind half it can still see |
+ * | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 5 — the edge DIRECTION is what the review queue renders |
+ * | `CORROBORATION_LOOKUP_SQL`'s `object_key = $4` arm neutralized | 6 — via both key-equal `same-claim` pairs |
+ * | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 — via `same-through-value` |
+ * | `objectSameSql` loses its difference VETO | 3 — via `sign-flip-rival` |
+ * | `objectNotSameSql` loses its `OR comparableDifferentSql(…)` disjunct | 1 — `sign-flip-rival`, consumer 2 |
+ * | `supersessionCollisionPredicate` back on `object_key <> object_key` | 3 — `rival-through-phrasing`, `cross-type-rival`, `sign-flip-rival` |
+ * | `lexicalNorm` loses its edge trim | 3 — via `separator-edges` |
  * | `identityAlias` given a global rule (`/^is /` stripped) | 3 — all three PROHIBITIONS, via `copula-pair` |
- * | `lexicalNorm` loses its edge trim | 3 — all three consumers, via `separator-edges` |
- * | `lexicalNorm` loses its ASCII case fold | 8, across all three consumers |
- * | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | consumer 2's control — the edge direction is what the review queue renders |
+ * | `TENSION_CANDIDATES_SQL` repointed at the surface columns | 2 |
+ * | the tension call site binds raw surfaces | 2 |
+ * | `supersessionCollisionJoin` repointed at the surface columns | 1 — via `priced-rival` |
+ * | `subject_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `subject-differs` |
+ * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `predicate-differs` |
+ * | `comparableDifferentSql` loses its `split_part` tag arm | 1 — `cross-type-rival` (`object-cmp-pg.test.ts`'s parity tests catch it too, at the SQL level) |
+ * | `objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)` | **1 — `rival-through-phrasing`** |
+ *
+ * ⚠️ **EVERY count above was re-measured on this tree, one mutation at a time,
+ * and several MOVED** — the case fold 8→9, both tension-repoint rows 1→2, the
+ * tension-edge direction 1→5, because #5030 added five corpus entries.
+ *
+ * The `objectNotSameSql` disjunct row is the least obvious arm in the slice and
+ * the one a reader would delete as redundant: it is what carries a key-equal,
+ * provably-different pair into TENSION after the veto has kept it out of
+ * corroboration. Without it `sign-flip-rival` mints a second row and then earns
+ * no edge — worse than either verdict alone. Said
+ * explicitly, and the numbers regenerated in one pass rather than edited row by
+ * row, because slice B's table carried numbers forward twice under a header
+ * claiming they had been re-measured.
  *
  * Three rows widen what collides rather than narrowing it — `identityAlias`,
- * which widens the KEY FUNCTION, and the two arm mutations, which widen the
+ * which widens the KEY FUNCTION, and the two key-arm mutations, which widen the
  * JOINS. All three are caught EXCLUSIVELY by prohibitions, because
  * `copula-pair`, `subject-differs` and `predicate-differs` are all
- * `different-claim` entries. Every other row is caught by a positive control.
- * Delete either half and a whole direction of failure stops being visible.
+ * `different-claim` entries. Delete either half of the corpus and a whole
+ * direction of failure stops being visible.
  *
  * The two STATEMENT-repoint rows for the rival scan and the collision join
  * survived until BOTH sides of `rival-through-phrasing` were spelled off normal
  * form. A pair with one already-normalized side is blind to either the statement
- * repoint or the call-site bind, depending which side is clean — see that
- * entry's `why`.
+ * repoint or the call-site bind, depending which side is clean.
  *
- * NOT in the table, and stated because its absence is load-bearing: the
- * `object_key <>` arm of either join is NOT falsifiable from this corpus. The
- * shape that would catch it is `subject =, predicate =, object =` presented as
- * TWO rows, and `reconcileFacts` cannot produce that — corroboration collapses
- * it first. That arm's real-schema owner is `promotion-pg.test.ts`, which seeds
- * both rows directly. Do not consolidate that suite into this one.
+ * The last row is the one worth pausing on. `NOT (object_cmp = $5)` reads as
+ * the same thing and is NULL whenever either side is unparseable; a WHERE
+ * clause treats NULL as false, so the entire `unknown` population silently
+ * stops earning tension edges — the abstain band would exist in the
+ * documentation and nowhere else. It is caught by ONE test.
+ *
+ * The two corroboration rows are a matched pair, and the second was added
+ * because the first measured ZERO behavioural deaths: with only key-equal
+ * `same-claim` entries, neutralizing the `object_cmp` arm killed nothing but a
+ * lexical assertion in `reconcile.test.ts`. `same-through-value` is what
+ * reaches that arm alone. Both arms of a disjunction need an entry that
+ * exercises each in isolation, or one of them is decoration.
+ *
+ * NOT in the table, and stated because its absence is load-bearing: the rival
+ * scan's `object_key <> $4` arm is NOT falsifiable from this corpus. The shape
+ * that would catch it is `subject =, predicate =, object =` presented as TWO
+ * rows, and `reconcileFacts` cannot produce that — corroboration collapses it
+ * first.
+ *
+ * ⚠️ It has NO real-schema owner anywhere, and an earlier version of this
+ * sentence named `promotion-pg.test.ts` — which owned it only through the
+ * COLLISION join, and #5030 deleted that join's `object_key` arm entirely.
+ * `promotion-pg.test.ts` does not reference `TENSION_CANDIDATES_SQL` at all.
+ * What bounds the gap: since #5030 the arm is a DISJUNCT, so deleting it
+ * NARROWS rather than widens, and `unproven-rival` catches that direction. A
+ * TRUE-substitution — the widening one — is still unowned.
  *
  * Two entries — `inverse-relations` and `entity-alias` — are not falsified by
  * any mutation above, and that is stated rather than hidden: no rule reachable
@@ -135,7 +186,7 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 // ---------------------------------------------------------------------------
 //
 // This needs no database, and it is what licenses every prohibition/control
-// pairing below. `for (const pair of pairsWhere("rival-claim"))` over an empty
+// pairing below. `for (const pair of pairsWhere("proven-rival"))` over an empty
 // array registers ZERO `it()` blocks and reports success, so deleting the last
 // entry of a relation silently deletes three tests across three consumers. If
 // this guard sat inside `describeIfPg` it would be skipped in exactly the lane
@@ -378,7 +429,8 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
     // corpus entry that no consumer reads. Same in the two consumers below.
     const TITLES: Record<SlotRelation, string> = {
       "same-claim": "⭐ strengthens instead of forking",
-      "rival-claim": "does not absorb a different VALUE in the same slot",
+      "unproven-rival": "does not absorb a different VALUE in the same slot",
+      "proven-rival": "does not absorb a provably different VALUE either",
       "different-claim": "does not collide a different SLOT",
     };
 
@@ -420,7 +472,8 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
 
   describe("consumer 2 — the rival scan says *different-and-coexisting*", () => {
     const TITLES: Record<SlotRelation, string> = {
-      "rival-claim": "⭐ flags a contradiction the phrasing used to hide",
+      "unproven-rival": "⭐ flags a contradiction it CANNOT prove — the abstain band",
+      "proven-rival": "⭐ flags a contradiction it can prove",
       "same-claim": "does not put one claim in tension with itself",
       "different-claim": "does not flag two claims that share no slot",
     };
@@ -470,7 +523,9 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
 
   describe("consumer 3 — the publish gate says *different-and-stamping*", () => {
     const TITLES: Record<SlotRelation, string> = {
-      "rival-claim": "⭐ stamps the incumbent it genuinely contradicts",
+      "proven-rival": "⭐ stamps the incumbent it can PROVE it contradicts",
+      "unproven-rival":
+        "stamps nothing when it cannot PROVE the contradiction — tension only (#5030)",
       "same-claim": "stamps nothing when the draft merely restates the incumbent",
       "different-claim": "stamps nothing across two slots — the irreversible direction",
     };

@@ -42,6 +42,7 @@ import {
   resolvePrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
 import { FACT_REFUSAL_REASONS } from "@atlas/api/lib/brain/promotion";
 import { CORROBORATION_LOOKUP_SQL } from "@atlas/api/lib/brain/reconcile";
 import { loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
@@ -1264,8 +1265,48 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
        * 0187 and #5020 looked like before 0188's backfill repeat.
        */
       unkeyed?: boolean;
+      /**
+       * The entity id a store resolved this object to, which is what makes the
+       * object COMPARABLE and therefore what the publish gate now reads (#5030).
+       *
+       * Defaults to one id per distinct normalized object surface — i.e. these
+       * rows behave as though a real entity store had resolved every object,
+       * which is what #5031 wires up. Pass `null` to model the SHIPPED default
+       * (`passthroughEntityResolver` resolves nothing) and land an object that
+       * cannot be compared at all.
+       *
+       * ⚠️ **Why a default and not a per-call-site value.** Supersession now
+       * requires POSITIVE evidence of difference — `object_key <> object_key`
+       * proves only that two surfaces did not normalize together, which is also
+       * true of `$499` and `499 USD`. Every test in this block predates that and
+       * is about the SLOT, the cardinality gate, the ACL withholding or the
+       * disclosure, none of which changed; without a comparable object they
+       * would all silently stop exercising supersession at all and pass as
+       * prohibitions. Deriving the id from the KEY rather than the raw surface
+       * is what keeps `bob`/`Bob` reading as one entity, so the object-slot test
+       * below still proves what it says it does.
+       *
+       * The cost, recorded rather than hidden: with the default in force
+       * `object_cmp` mirrors `object_key` for every row here, so this file can
+       * no longer tell the two columns apart. It is not the file that ever
+       * could — `identity-consumers-pg.test.ts` runs one corpus past all three
+       * consumers and owns that proof, and `the abstain band` test below is what
+       * keeps THIS file from being blind to the change it is adapting to.
+       */
+      entityId?: string | null;
     }): Promise<string> {
       const predicate = opts.predicate ?? "manager";
+      const objectKey = slotKey(opts.object, identityAlias);
+      // `objectKey === null` — a surface that norms away (`-`, `___`) — resolves
+      // to NO entity, and the arm is load-bearing rather than defensive: without
+      // it the default mints the id `ent:` for every degenerate object, so two
+      // unrelated placeholder claims become one provably-different pair and the
+      // partially-keyed test below starts stamping `valid_to`. A surface that
+      // asserts nothing cannot name an entity.
+      const resolvedEntity =
+        opts.entityId === undefined
+          ? (objectKey === null ? undefined : `ent:${objectKey}`)
+          : (opts.entityId ?? undefined);
       // Keyed like an ingested row (#5020): the collision join and the
       // corroboration lookup both match on `*_key`, so a seed that omitted them
       // would be an UNKEYED row — a legitimate corpus state (0187's interval,
@@ -1279,9 +1320,9 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
             provenance, status, visible_to, predicate_cardinality,
-            subject_key, predicate_key, object_key)
+            subject_key, predicate_key, object_key, object_cmp)
          VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, $6, $11::text[], $7,
-                 $8, $9, $10)
+                 $8, $9, $10, $12)
          RETURNING id`,
         [
           opts.workspaceId,
@@ -1293,8 +1334,15 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           opts.cardinality ?? "single",
           opts.unkeyed === true ? null : slotKey(opts.subject, identityAlias),
           opts.unkeyed === true ? null : slotKey(predicate, identityAlias),
-          opts.unkeyed === true ? null : slotKey(opts.object, identityAlias),
+          opts.unkeyed === true ? null : objectKey,
           opts.visibleTo ?? ["org"],
+          // Through `comparableValue`, the same function `reconcile.ts` calls,
+          // rather than a hand-written `entity:…` literal beside the surface —
+          // a fixture that spelled the tag itself would agree with a producer
+          // that stopped emitting one.
+          opts.unkeyed === true
+            ? null
+            : comparableValue({ surface: opts.object, entityId: resolvedEntity }),
         ],
       );
       return rows[0]!.id;
@@ -1507,11 +1555,19 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         // SLOT KEYS, not the surfaces (#5020). "alice manager bob" flips back:
         // the superseded row must NOT absorb the evidence — it is hidden from
         // every as-of-now read, so corroborating it would swallow the flip.
+        //
+        // FOUR binds since #5030 — the three slot keys and the comparable value
+        // — and the last one is not optional padding: `reconcile.ts` corroborates
+        // on `object_key = $4 OR object_cmp = $5`, so a re-observation whose
+        // typed value matches would corroborate through the second arm even when
+        // the keys disagree. Binding only the keys here would test a statement
+        // this repo does not run.
         const back = await pool.query(CORROBORATION_LOOKUP_SQL, [
           ws,
           slotKey("alice", identityAlias),
           slotKey("manager", identityAlias),
           slotKey("bob", identityAlias),
+          comparableValue({ surface: "bob", entityId: "ent:bob" }),
         ]);
         expect(back.rows).toEqual([]);
         // The CURRENT claim still corroborates normally.
@@ -1520,6 +1576,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           slotKey("alice", identityAlias),
           slotKey("manager", identityAlias),
           slotKey("carol", identityAlias),
+          comparableValue({ surface: "carol", entityId: "ent:carol" }),
         ]);
         expect(current.rows.map((r) => r.id)).toEqual([draft]);
       },
@@ -1667,6 +1724,110 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         expect((await factState(old)).valid_to).toBeNull();
         expect((await factState(draft)).valid_to).toBeNull();
         expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "does NOT supersede a rival it cannot PROVE it differs from — the abstain band (#5030)",
+      async () => {
+        // The shipped configuration, and the one every other test in this block
+        // now opts OUT of via `seedFact`'s default. `passthroughEntityResolver`
+        // supplies no entity id, `bob` and `carol` parse to no typed value, so
+        // both `object_cmp`s are NULL and the agreement is UNKNOWN — a human can
+        // see two managers, and nothing on either row proves it.
+        //
+        // Supersession therefore abstains. Not a gap: the pair already carries
+        // the advisory `in-tension-with` edge `reconcile.ts` wrote, the publish
+        // preview says there is nothing to stamp, and a reviewer arbitrates. The
+        // alternative is inferring difference from two strings failing to match,
+        // which is the same inference that reads `$499` and `499 USD` as a
+        // contradiction — and there is no un-supersede verb to walk it back.
+        //
+        // ⚠️ This is the test that stops the seeder's convenience default from
+        // hiding the change. Delete it and every remaining supersession case in
+        // this file runs with comparable objects, so an implementation that
+        // stamped on `object_key <>` again would pass the whole block.
+        const ws = "ws-5030-abstain";
+        const ep = await seedEpisode(ws, "abstain");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+          entityId: null,
+        });
+        const draft = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+          entityId: null,
+        });
+
+        // The disclosure agrees with the transaction, which is the #4912
+        // invariant this arm has to keep as much as any other.
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        expect(await loadSupersessionPreview(pool, reader)).toMatchObject({
+          total: 0,
+          withheld: 0,
+          pairs: [],
+        });
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(1);
+        expect(report.superseded).toEqual([]);
+        expect((await factState(old)).valid_to).toBeNull();
+        expect((await factState(draft)).valid_to).toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "…and DOES stamp once a store resolved the same two surfaces — the positive control (#5030)",
+      async () => {
+        // Its own `it()`, sharing nothing with the prohibition above. In a long
+        // proof the first failure hides the rest, so a control living in the
+        // prohibition's body never runs on the one run where it matters — and
+        // then "supersession over-fires" and "supersession is broken entirely"
+        // are indistinguishable, which is the single distinction this pair
+        // exists to make.
+        //
+        // Same two surfaces, same slot, same cardinality as `ws-5030-abstain`.
+        // The ONLY difference is that a store resolved them, so the difference
+        // is evidence instead of an inference from two strings failing to match.
+        const ws = "ws-5030-abstain-control";
+        const ep = await seedEpisode(ws, "abstain-control");
+        const old = await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "bob",
+          status: "published",
+        });
+        await seedFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "alice",
+          object: "carol",
+        });
+
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u1",
+          resolvedRole: { role: "owner", orgId: ws },
+        });
+        expect(await loadSupersessionPreview(pool, reader)).toMatchObject({ total: 1 });
+        expect((await publish(ws)).superseded).toHaveLength(1);
+        expect((await factState(old)).valid_to).not.toBeNull();
       },
       PG_TEST_TIMEOUT_MS,
     );

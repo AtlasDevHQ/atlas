@@ -522,32 +522,166 @@ describe("block: malformed claim", () => {
 // ---------------------------------------------------------------------------
 
 describe("flag: entity resolution", () => {
-  const failingResolver: EntityResolver = (surface, { role }) =>
-    role === "object" ? null : { canonical: surface };
+  // ⚠️ EVERY prohibition below must be run against a store that ANSWERS.
+  // `passthroughEntityResolver` returns an empty map, so "the resolver did not
+  // rewrite the surface" and "no key contains an id" pass vacuously against it —
+  // there is no surface to rewrite and no id to leak. That is the fixture trap
+  // #5011 §3 names, and the double below is the remedy: it answers every surface
+  // it is asked about, with an id that shares no characters with the surface's
+  // norm, so a leak is visible rather than merely absent.
+  const ENTITY_ID_MARKER = "ent-";
 
-  test("an unresolved object is written as a provisional draft, never dropped", async () => {
+  /**
+   * The double's id for a surface: stable, and deliberately sharing no
+   * characters with the surface's norm so a leak into a key SHOWS rather than
+   * merely being absent.
+   */
+  function adversarialId(surface: string): string {
+    let hash = 0;
+    for (const char of surface) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) % 100_000;
+    return `${ENTITY_ID_MARKER}${String(hash).padStart(5, "0")}`;
+  }
+
+  /** An adversarial entity store: answers everything, records every batch. */
+  class AnsweringStore {
+    /** One entry per CALL — the assertion that the seam is episode-level. */
+    readonly batches: ReadonlySet<string>[] = [];
+
+    readonly resolve: EntityResolver = (surfaces) => {
+      this.batches.push(new Set(surfaces));
+      return new Map([...surfaces].map((s) => [s, { entityId: adversarialId(s) }]));
+    };
+  }
+
+  test("a store that ANSWERS does not alter the stored surfaces", async () => {
+    // The prohibition. Retention is what makes an alias reversible: re-deriving
+    // identity from the surface the producer wrote is the only way back from a
+    // bad vocabulary entry, and a canonical form written into the SPO columns
+    // would be irreversible at the entity position (ADR-0037 §5).
     const store = new FakeBrainStore();
-    const report = await run(store, { resolveEntity: failingResolver });
+    await run(store, {
+      candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
+      resolveEntity: new AnsweringStore().resolve,
+    });
 
-    expect(report.created).toBe(1);
-    expect(report.provisional).toBe(1);
-    expect(report.outcomes[0]).toMatchObject({ kind: "created", provisional: true });
-
-    const fact = store.facts[0];
-    expect(fact).toBeDefined();
-    // The reviewer needs to know WHICH side is unsettled — "provisional" alone
-    // would send them re-reading both.
-    expect(fact?.provenance.provisional).toBe(true);
-    expect(fact?.provenance.unresolved).toEqual(["object"]);
-    // And the unresolved surface form is preserved, so there is something to
-    // resolve rather than a hole.
-    expect(fact?.object).toBe("Thursdays");
+    expect(store.facts[0]?.subject).toBe("Deploy_Window");
+    expect(store.facts[0]?.object).toBe("Acme Corp");
   });
 
-  test("a resolver that THROWS flags rather than blocking the episode", async () => {
-    // A resolver is injected code — a future one will call a store and can time
-    // out. Letting the throw escape would turn a quality failure into a block
-    // for every candidate on the episode, inverting the asymmetry.
+  test("…and no key it produced contains the entity id", async () => {
+    // The second prohibition, on the same fixture. Ids at a slot would silently
+    // orphan the corpus: a workspace's live facts keyed `acme corp` stop
+    // colliding with anything new the moment the store starts answering an id —
+    // #5000 re-caused by the fix for #5000.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
+      resolveEntity: new AnsweringStore().resolve,
+    });
+
+    const keys = store.keyBindsFor("insertFact")[0];
+    // Exactly `alias(lexicalNorm(surface))` at all three positions — the same
+    // keys the passthrough default would have produced.
+    expect(keys).toMatchObject({
+      subject: "deploy window",
+      predicate: "is",
+      object: "acme corp",
+    });
+    for (const position of ["subject", "predicate", "object"] as const) {
+      expect(keys?.[position], `${position} key leaked an entity id`).not.toContain(
+        ENTITY_ID_MARKER,
+      );
+    }
+  });
+
+  test("POSITIVE CONTROL: the store's answer did reach the row — at `object_cmp`", async () => {
+    // Without this, both prohibitions above are satisfied by a stage that
+    // ignores the resolver entirely, which is exactly what they are supposed to
+    // catch. One side of the assertion is a value the SYSTEM produced: the id
+    // the double minted, read back off the bind the stage actually made.
+    const answering = new AnsweringStore();
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
+      resolveEntity: answering.resolve,
+    });
+
+    // Not a literal: the id comes from the double's own rule, so the two sides
+    // are one fact rather than a coincidence between two strings.
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBe(
+      `entity:${adversarialId("Acme Corp")}`,
+    );
+  });
+
+  test("ONE call per episode, over the deduplicated subject AND object surfaces", async () => {
+    // Dedup is a CORRECTNESS property, not a saving: two lookups for one surface
+    // can straddle a store write and key differently within a single episode.
+    // And the batch covers BOTH positions — the subject-side id has no
+    // destination column until #5032, which is why a test is the only thing
+    // holding the subject in the set.
+    // ⚠️ The fixture has to make the two positions DISTINGUISHABLE. A corpus
+    // where every subject also appears at some object position is satisfied by
+    // an object-only batch — the set comes out identical and the test proves
+    // nothing. So `Beta Inc` is subject-only and `Grace` object-only, and each
+    // one alone falsifies one direction of the mutation.
+    const answering = new AnsweringStore();
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [
+        candidate({ subject: "Acme Corp", predicate: "employs", object: "Ada" }),
+        candidate({ subject: "Beta Inc", predicate: "employs", object: "Grace" }),
+        // `Acme Corp` and `Ada` again, positions swapped: role-invariance is why
+        // that is one lookup per surface and not two.
+        candidate({ subject: "Ada", predicate: "works for", object: "Acme Corp" }),
+        // Refused by the blank-trim pass, so its subject is never looked up.
+        candidate({ subject: "Never Stored", object: "   " }),
+      ],
+      resolveEntity: answering.resolve,
+    });
+
+    expect(answering.batches).toHaveLength(1);
+    // Four surfaces drawn from six populated positions.
+    expect(answering.batches[0]).toEqual(new Set(["Acme Corp", "Beta Inc", "Ada", "Grace"]));
+  });
+
+  test("an honest abstain does NOT flag the candidate provisional", async () => {
+    // A store that answers "no entry" is not a failure. The claim still keys
+    // totally, still corroborates, still earns tension edges; it declines only
+    // to prove DIFFERENCE, which `object_cmp` NULL already says. Flagging it
+    // would set the marker on every entity-valued object forever under the
+    // shipped default, defeating #4772's filter on the key's presence.
+    const store = new FakeBrainStore();
+    const report = await run(store, { resolveEntity: () => new Map() });
+
+    expect(report.created).toBe(1);
+    expect(report.provisional).toBe(0);
+    expect(store.facts[0]?.provenance.provisional).toBeUndefined();
+    expect(store.facts[0]?.provenance.unresolved).toBeUndefined();
+    // The surface is retained, so there is something to resolve later rather
+    // than a hole.
+    expect(store.facts[0]?.object).toBe("Thursdays");
+  });
+
+  test("an abstain on ONE surface leaves the other's id intact", async () => {
+    // Absence is per-KEY, not per-batch: a store with an entry for the object
+    // and none for the subject answers both honestly in one map.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      resolveEntity: () => new Map([["Thursdays", { entityId: "ent-day-4" }]]),
+    });
+
+    expect(report.provisional).toBe(0);
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBe("entity:ent-day-4");
+  });
+
+  test("a store that THROWS flags rather than blocking the episode", async () => {
+    // A resolver is injected code — a real one calls a store and can time out.
+    // Letting the throw escape would turn a quality failure into a block for
+    // every candidate on the episode, inverting the asymmetry.
+    //
+    // This is the outcome the flag now exists for, and ONLY this one: an outage
+    // changes on replay and there is no key-based way to find its rows, because
+    // `object_cmp IS NULL` matches every honest abstain too.
     const store = new FakeBrainStore();
     const report = await run(store, {
       resolveEntity: () => {
@@ -557,7 +691,28 @@ describe("flag: entity resolution", () => {
 
     expect(report.created).toBe(1);
     expect(report.provisional).toBe(1);
+    expect(store.facts[0]?.provenance.provisional).toBe(true);
+    // Always both sides. One batch covered both positions, so a failure has no
+    // per-role granularity to report — #4772's review surface reads the array
+    // and gets the honest answer rather than a guess about which side failed.
     expect(store.facts[0]?.provenance.unresolved).toEqual(["subject", "object"]);
+  });
+
+  test("a failed batch still writes the claim, with its surfaces and keys intact", async () => {
+    // The flag is a MARKER, never a degradation: an outage costs the object's
+    // comparability and nothing else. A stage that also dropped the keys would
+    // make an outage silently un-corroboratable, which no replay repairs.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ subject: "Deploy_Window" })],
+      resolveEntity: () => Promise.reject(new Error("timeout")),
+    });
+
+    expect(store.facts[0]?.subject).toBe("Deploy_Window");
+    expect(store.keyBindsFor("insertFact")[0]).toMatchObject({
+      subject: "deploy window",
+      comparable: null,
+    });
   });
 
   test("the default resolver marks nothing provisional", async () => {
@@ -570,15 +725,21 @@ describe("flag: entity resolution", () => {
     expect(store.facts[0]?.provenance.provisional).toBeUndefined();
   });
 
-  test("a resolver's canonical form is what lands in the fact", async () => {
+  test("a resolver returning a non-Map is a failed batch, not an escaped TypeError", async () => {
+    // The seam is typed, so this is untrusted-input handling: a JS caller (or a
+    // resolver that forgot an `await`) returning something else would otherwise
+    // throw on the first `.get`, OUTSIDE the catch, and block the whole episode
+    // — the same inversion by a different route.
     const store = new FakeBrainStore();
-    await run(store, {
-      resolveEntity: (surface, { role }) =>
-        role === "subject" ? { canonical: "Deploy Window", entityId: "e-7" } : { canonical: surface },
+    const report = await run(store, {
+      // The cast IS the test: nothing in the type system can stop a JS caller,
+      // and the seam is the one place untyped input arrives.
+      resolveEntity: (() => null) as unknown as EntityResolver,
     });
 
-    expect(store.facts[0]?.subject).toBe("Deploy Window");
-    expect(store.facts[0]?.provenance.entityIds).toEqual({ subject: "e-7" });
+    expect(report.created).toBe(1);
+    expect(report.provisional).toBe(1);
+    expect(store.facts[0]?.provenance.unresolved).toEqual(["subject", "object"]);
   });
 });
 
@@ -1010,19 +1171,26 @@ describe("the draft candidate", () => {
     }
   });
 
-  test("keys are derived AFTER entity resolution, off the surface actually stored", async () => {
-    // A key must describe the row that was written. Deriving it from the raw
-    // candidate would key a fact under a name that appears nowhere in it — and
-    // every resolved fact would then be unreachable by its own identity.
+  test("keys are derived off the RETAINED surface, which the resolver cannot move", async () => {
+    // A key must describe the row that was written — and since #5031 that is
+    // structural rather than a discipline, because the surface a fact stores is
+    // the one the producer wrote, always. The entity store moves a claim's slot
+    // through the VOCABULARY (a re-keyable, reviewed alias edge) or not at all;
+    // the resolver reaches `object_cmp` and nothing else.
+    //
+    // The store answering here is what stops this passing vacuously — see the
+    // `flag: entity resolution` block, which owns the prohibition in full.
     const store = new FakeBrainStore();
     await run(store, {
       candidates: [candidate({ subject: "deploy-01" })],
-      resolveEntity: (surface, { role }) =>
-        role === "subject" ? { canonical: "The Deploy Box" } : { canonical: surface },
+      resolveEntity: (surfaces) =>
+        new Map([...surfaces].map((s) => [s, { entityId: "ent-00042" }])),
     });
 
-    expect(store.facts[0]?.subject).toBe("The Deploy Box");
-    expect(store.keyBindsFor("insertFact")[0]).toMatchObject({ subject: "the deploy box" });
+    // The surface verbatim; the key its lexical norm — separators folded, and
+    // no trace of the id the store just supplied.
+    expect(store.facts[0]?.subject).toBe("deploy-01");
+    expect(store.keyBindsFor("insertFact")[0]).toMatchObject({ subject: "deploy 01" });
   });
 
   test("the workspace's vocabulary reaches every slot", async () => {

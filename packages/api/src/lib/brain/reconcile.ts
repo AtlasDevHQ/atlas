@@ -48,12 +48,18 @@
  *     fourth this module adds, `MALFORMED_CLAIM` — a proposal that is not a
  *     claim at all. See {@link RECONCILE_BLOCK_REASONS} for why it blocks
  *     rather than flags.
- *   - **Flag provisional** — a QUALITY failure. Subject or object entity
- *     resolution failed. The claim is still written as a draft, with
- *     `provenance.provisional = true` naming the unresolved side, because the
- *     reviewer is exactly the right person to settle "is `the deploy box` the
- *     same entity as `deploy-01`?". Dropping it instead would make this stage a
- *     silent fact-dropper, which the issue forbids in both directions.
+ *   - **Flag provisional** — a QUALITY failure. The entity store did not ANSWER:
+ *     it threw, timed out, or was unavailable. The claim is still written as a
+ *     draft, with `provenance.provisional = true`, because dropping it instead
+ *     would make this stage a silent fact-dropper, which the issue forbids in
+ *     both directions.
+ *
+ *     Since #5031 the flag means one narrow thing — *this row's keys are worth
+ *     recomputing* — and a store that answers "no entry" does NOT set it. That
+ *     abstain is honest, it is represented at rest already (`object_cmp` NULL →
+ *     `unknown` → tension only), and it will not change on replay; an outage
+ *     will, and nothing else in the design can find those rows afterwards. See
+ *     {@link resolveEntitiesForEpisode}.
  *
  * ### Why the grant check is `parseGrant(...).principals.length === 0`
  *
@@ -94,7 +100,7 @@
  * on the keys it would make a tension between two live objects structurally
  * unrepresentable.
  *
- * Identity is the materialized SLOT KEY of the trimmed, resolved SPO —
+ * Identity is the materialized SLOT KEY of the trimmed SPO —
  * `alias(lexicalNorm(surface))`, computed by `lib/brain/identity.ts`'s
  * {@link slotKey} once per candidate here and stored on the row (#5020,
  * ADR-0037 §1). It REPLACED a byte-exact comparison of the surface columns, and
@@ -103,14 +109,14 @@
  * corroborates. The retained surface is still exactly what the producer said —
  * only what COUNTS AS THE SAME CLAIM moved.
  *
- * What did NOT move is the entity resolver's job. The lexical layer folds ASCII
- * case and separators and does nothing semantic (no stemming — the corpus
- * carries `led_by` and `leads`, which are INVERSE relations), so deciding that
- * `the deploy box` and `deploy-01` are one entity is still the resolver's
- * decision, made per workspace at a seam built for it. Anything beyond the
- * lexical layer that WOULD take a decision from the resolver arrives as curated
- * vocabulary with a reviewer behind it, never as a rule here — which is why
- * `is priced at` and `priced at` still do not unify.
+ * The lexical layer folds ASCII case and separators and does nothing semantic
+ * (no stemming — the corpus carries `led_by` and `leads`, which are INVERSE
+ * relations), so deciding that `the deploy box` and `deploy-01` are one entity
+ * is not its call. Nor, since #5031, is it the ENTITY RESOLVER's: that decision
+ * arrives as curated vocabulary with a reviewer behind it, at every position,
+ * which is why `is priced at` and `priced at` still do not unify. What the
+ * resolver decides is narrower and lives off the join arms entirely — whether
+ * two objects are provably DIFFERENT (`object_cmp`). See {@link EntityResolver}.
  *
  * The keys are written at `INSERT_FACT_SQL` and READ by the two lookups below.
  * No PRODUCER outside this stage derives one (ADR-0037 §8 — a region import
@@ -176,10 +182,11 @@
  *   - Dedupe is still only as good as the producer's determinism, just at a
  *     coarser grain. Two passes that phrase one claim differently ("is" vs "is
  *     on") remain two claims — that pair is a vocabulary ENTRY, not a
- *     normalization rule — and a pass whose entity resolution CHANGES between
- *     runs still misses its own earlier row. The reviewer collapses those;
- *     nothing in this stage can. `extract.ts` pins its model call to
- *     `temperature: 0` for exactly this reason.
+ *     normalization rule. The reviewer collapses those; nothing in this stage
+ *     can. `extract.ts` pins its model call to `temperature: 0` for exactly this
+ *     reason. What can no longer cause that particular miss is the ENTITY
+ *     RESOLVER: since #5031 it reaches no key at any position, so a store that
+ *     answers differently between two runs cannot move a claim's slot.
  *
  * ## What this slice does NOT do
  *
@@ -346,41 +353,120 @@ export interface FactCandidate {
   readonly detail?: Record<string, unknown>;
 }
 
-/** A resolved entity. `canonical` is what lands in the fact's SPO column. */
+/**
+ * A resolved entity: a stable store id, and nothing else (#5031).
+ *
+ * It USED to carry a `canonical` surface that replaced what the producer said.
+ * Both of that field's jobs are gone, and they were taken by different
+ * decisions (ADR-0037 §5):
+ *
+ *   - **Writing the SPO column** — forbidden outright. The surface columns keep
+ *     the producer's raw text unconditionally, resolver or not, because
+ *     retention is what makes an alias REVERSIBLE. A resolver that overwrites
+ *     the surface reintroduces at the entity position exactly the
+ *     irreversibility the key design spent its effort removing.
+ *   - **Feeding the slot key** — taken by the vocabulary. A store's slot-side
+ *     contribution is an ordinary approved alias edge (`lib/brain/vocabulary.ts`),
+ *     so a key stays `alias(lexicalNorm(surface))` at every position and an id
+ *     never appears in one. Ids at the slot would silently orphan the existing
+ *     corpus: a workspace's hundred live facts keyed `acme corp` stop colliding
+ *     with anything new the moment the store starts answering `ent_7f3`.
+ *
+ * What is left is a COMPARISON value, which is why the shape collapsed to an id
+ * and absence became the abstain. The id reaches `object_cmp` through
+ * {@link comparableValueWithReason} and reaches no join arm at all.
+ *
+ * ⚠️ **Ids must be GLOBALLY unique** (ULID/UUID) — a store contract clause, not
+ * an implementation note. Deterministic and workspace-scoped does NOT imply
+ * globally unique, and a derived id (`dim_plan:7`) that collides across regions
+ * for two DIFFERENT rows produces a false `same` at the publish gate: two
+ * distinct entities merged, with no inverse.
+ */
 export interface ResolvedEntity {
-  readonly canonical: string;
-  /** Stable id, when the resolver has one. Recorded in provenance. */
-  readonly entityId?: string;
+  readonly entityId: string;
 }
 
 /**
  * Subject/object entity resolution — an injected seam, not a hardcoded step.
  *
- * M1 ships {@link passthroughEntityResolver} as the default: there is no entity
- * store yet, so the surface form IS the canonical form. The seam exists now
- * because the FAILURE SEMANTICS are what this slice is pinning — a resolver
- * that returns `null` (or throws) flags the candidate provisional rather than
- * dropping it — and retrofitting that asymmetry after a real resolver lands
- * would mean changing behaviour under live data instead of adding a resolver.
+ * Answers `surface → stable id`, or abstains. **An absent key IS the abstain**,
+ * and it is honest rather than degraded: the object lands `unknown`
+ * (`object_cmp` NULL), the claim still keys totally, still corroborates, still
+ * earns tension edges, and declines only to prove DIFFERENCE.
  *
- * Invoked BEFORE the transaction opens (one `Promise.all` per candidate), which
- * is load-bearing for the DB-backed resolver this seam anticipates: it may check
- * out its own connection safely, whereas doing so inside the reconcile
- * transaction is the bounded-pool starvation deadlock
- * {@link withBrainTransaction} warns about.
+ * ## One call per EPISODE, over the deduplicated surface set
+ *
+ * Not one call per surface, and the difference is CORRECTNESS rather than a
+ * saving. One Slack thread yields `Business tier / price / $499` beside
+ * `Business tier / owner / Alice`; two lookups for that one surface can straddle
+ * a store write and key the two rows differently **within a single episode**.
+ * Batching makes intra-episode consistency structural — the same
+ * materialize-once argument the slot keys are built on.
+ *
+ * The batch covers the deduplicated SUBJECT and OBJECT surfaces together, in one
+ * call. Today only the object's id has a destination column; the subject's is
+ * resolved and carried with no consumer until #5032 adds `subject_cmp` (see
+ * {@link PreparedCandidate.subjectEntityId}). That is expected, not an oversight
+ * — the seam that serves two positions is this issue's, and building it
+ * object-only would have to be unbuilt.
+ *
+ * Invoked ONCE, BEFORE the transaction opens, which is load-bearing for the
+ * DB-backed resolver this seam anticipates: it may check out its own connection
+ * safely, whereas doing so inside the reconcile transaction is the bounded-pool
+ * starvation deadlock {@link withBrainTransaction} warns about. Per-candidate
+ * resolution used to make that docstring quietly mean "N times" — the call sat
+ * inside the candidate loop and awaited once per candidate, so a 20-candidate
+ * episode was 20 serialized round trips against any real store.
+ *
+ * ## `role` is deliberately absent from the context
+ *
+ * Resolution is role-INVARIANT: a store that answered differently by position
+ * could make `Acme Corp` a different entity as a subject than as an object.
+ * Rather than pin that as a contract property and test it, the argument is
+ * deleted — the invariant now holds by TYPE and needs no test and no adversarial
+ * double (ADR-0037, T7 §4). Do not add it back. `role` survives where it
+ * describes an outcome rather than an input: {@link BrainFactProvenance.unresolved}.
+ *
+ * ## The store may do nothing clever at read time — a PROHIBITION
+ *
+ * No fuzzy matching, no embedding lookup, no LLM disambiguation behind this
+ * call. Every equivalence a store reports is a precomputed, APPROVED edge. This
+ * makes the seam less powerful than the phrase "entity resolution" normally
+ * promises, and it is stated as a prohibition because someone will propose
+ * read-time matching later; the same posture already refuses stemming in the
+ * lexical layer and near-miss detection in the proposal query.
+ *
+ * Nor may a store read tier-1 LIVE — the semantic layer and the warehouse are
+ * its highest-quality INPUT, never the store itself (ADR-0037 §5). A live
+ * customer-warehouse query here would make a key irreproducible offline, make
+ * resolution success a property of a datasource being up, and put
+ * `ConnectionRegistry` egress on the pre-transaction path.
  */
 export type EntityResolver = (
-  surface: string,
+  /** Deduplicated across the whole episode, both positions, already trimmed. */
+  surfaces: ReadonlySet<string>,
   context: {
     readonly workspaceId: string;
-    readonly role: EntityRole;
   },
-) => Promise<ResolvedEntity | null> | ResolvedEntity | null;
+) =>
+  | Promise<ReadonlyMap<string, ResolvedEntity>>
+  | ReadonlyMap<string, ResolvedEntity>;
 
-/** The M1 default: every non-blank surface form resolves to itself. */
-export const passthroughEntityResolver: EntityResolver = (surface) => ({
-  canonical: surface,
-});
+/**
+ * The shipped default: abstain on everything, because there is no entity store.
+ *
+ * Still a one-liner, which T5 §4 predicted it would stop being ("it becomes an
+ * identity map-builder") — that prediction assumed a `canonical` field the
+ * id-or-absent collapse removed. An empty map is now the whole passthrough, and
+ * it is the HONEST answer rather than a stub: with no store, Atlas genuinely
+ * cannot prove `Grace` and `Alan` are two different people, so every
+ * entity-valued object stays `unknown` and reaches a reviewer as tension instead
+ * of superseding something.
+ *
+ * It abstains; it does not FAIL. Nothing it returns flags a candidate
+ * provisional — see {@link resolveEntitiesForEpisode}.
+ */
+export const passthroughEntityResolver: EntityResolver = () => new Map();
 
 export interface ReconcileRequest {
   readonly episode: ReconcileEpisodeRef;
@@ -422,8 +508,9 @@ export interface ReconcileRequest {
    * is the seam where a claim's keys are MATERIALIZED, so a caller that silently
    * defaulted would key its rows under a different identity function than every
    * other row in the workspace — an under-match spread corpus-wide, invisible at
-   * rest, unfixable without a re-key. A failed entity resolution flags one
-   * candidate provisional; a forgotten vocabulary is silent and corpus-wide.
+   * rest, unfixable without a re-key. A failed entity resolution flags an
+   * episode's candidates provisional, which is a signal someone reads; a
+   * forgotten vocabulary is silent and corpus-wide.
    * Every call site therefore names its vocabulary out loud, which is what let
    * #5023 wire the loader into ingest without missing one: the four sites that
    * needed it were `grep identityVocabulary`, and a fifth would not compile.
@@ -870,8 +957,13 @@ export async function reconcileFacts(
     return { created: 0, corroborated: 0, provisional: 0, blocked, outcomes: [] };
   }
 
-  // ── Per-candidate preparation (no database) ───────────────────────────
-  const prepared: PreparedEntry[] = [];
+  // ── Blank-trim pass (no database, no resolver) ────────────────────────
+  //
+  // Split out from preparation so the episode's surface set is knowable BEFORE
+  // the one resolver call below: trimming needs no I/O, and resolving a surface
+  // belonging to a claim that is about to be blocked would be work spent on a
+  // row that will never exist.
+  const trimmed: TrimmedEntry[] = [];
   for (const candidate of candidates) {
     const subject = candidate.subject.trim();
     const predicate = candidate.predicate.trim();
@@ -889,46 +981,66 @@ export async function reconcileFacts(
         "brain reconcile: blocked a candidate with a blank subject, predicate, or object — a claim with an empty column asserts nothing",
       );
       blocked.MALFORMED_CLAIM++;
-      prepared.push({ kind: "blocked", reason: RECONCILE_BLOCK_REASONS.malformedClaim });
+      trimmed.push({ kind: "blocked", reason: RECONCILE_BLOCK_REASONS.malformedClaim });
       continue;
     }
+    trimmed.push({ kind: "trimmed", subject, predicate, object, candidate });
+  }
 
-    const [resolvedSubject, resolvedObject] = await Promise.all([
-      tryResolve(resolveEntity, subject, episode.workspaceId, "subject", episode.id),
-      tryResolve(resolveEntity, object, episode.workspaceId, "object", episode.id),
-    ]);
+  // ── The ONE entity-resolution call (no database of ours) ──────────────
+  const resolution = await resolveEntitiesForEpisode(resolveEntity, trimmed, episode);
 
-    const unresolved: EntityRole[] = [];
-    if (resolvedSubject === null) unresolved.push("subject");
-    if (resolvedObject === null) unresolved.push("object");
+  // ── Per-candidate preparation (no database) ───────────────────────────
+  const prepared: PreparedEntry[] = [];
+  for (const entry of trimmed) {
+    if (entry.kind === "blocked") {
+      prepared.push(entry);
+      continue;
+    }
+    const { subject, predicate, object, candidate } = entry;
 
-    const storedSubject = resolvedSubject?.canonical ?? subject;
-    const storedObject = resolvedObject?.canonical ?? object;
+    // Both positions, from the one batch. An absent entry is an abstain, and an
+    // abstain is not a failure: only `resolution.kind === "failed"` — the store
+    // threw, timed out, or was unavailable — flags anything.
+    const subjectEntityId = storeId(resolution, subject);
+    const objectEntityId = storeId(resolution, object);
+    // Always BOTH positions or neither. A batch failure has no per-role
+    // granularity — one call covered both sides — and an abstain populates
+    // nothing at all, so this is the only shape the array can take.
+    const unresolved: readonly EntityRole[] = resolution.kind === "failed" ? BOTH_ROLES : [];
 
-    // Materialized ONCE, here, off the RESOLVED surfaces — the strings that land
+    // Materialized ONCE, here, off the RETAINED surfaces — the strings that land
     // in the SPO columns, so the stored key always describes the stored row.
     // Computing it later, per statement, is how the corroboration lookup and the
     // INSERT would start disagreeing about which slot a claim is in.
+    //
+    // The resolver reaches none of this (#5031). It cannot rewrite a surface and
+    // it cannot put an id in a key; its answer reaches the row at `object_cmp`
+    // and nowhere else. A store's slot-side contribution travels as vocabulary
+    // instead, which is what makes it re-keyable in place.
     const keys: SlotKeys = {
-      subject: slotKey(storedSubject, vocabulary.subject),
+      subject: slotKey(subject, vocabulary.subject),
       predicate: slotKey(predicate, vocabulary.predicate),
-      object: slotKey(storedObject, vocabulary.object),
+      object: slotKey(object, vocabulary.object),
     };
     // The comparable value, materialized beside the keys and for the same
     // reason: computing it per statement is how the corroboration lookup and
     // the INSERT would start disagreeing about what a claim's value IS.
     //
-    // Off the RESOLVED surface, matching the keys above — but note the resolved
+    // Off the RETAINED surface, matching the keys above — but note the resolved
     // ENTITY ID takes precedence over any parse of it, because the store is
     // strictly better evidence than the text. `passthroughEntityResolver`
-    // supplies no id, so under the SHIPPED default resolver this is the surface
-    // parse — `ReconcileRequest.resolveEntity` is an injectable seam, so that is
-    // a statement about the default and not about every deployment;
-    // #5031 is what makes the first arm live.
+    // abstains on everything, so under the SHIPPED default resolver this is the
+    // surface parse — `ReconcileRequest.resolveEntity` is an injectable seam, so
+    // that is a statement about the default and not about every deployment.
+    //
+    // THIS is the resolver's one destination on the row. `object_cmp` is a
+    // COMPARED value, never a join arm, so an id here costs nothing; at a slot
+    // it would cost the whole existing corpus.
     const { value: comparable, reason: comparableReason } = comparableValueWithReason({
-      surface: storedObject,
+      surface: object,
       declared: candidate.objectType,
-      entityId: resolvedObject?.entityId,
+      entityId: objectEntityId,
     });
     // A REJECTED declaration is an operator-actionable defect, and the reason
     // code is what separates it from the abstain it otherwise looks identical
@@ -973,16 +1085,13 @@ export async function reconcileFacts(
     }
     prepared.push({
       kind: "prepared",
-      subject: storedSubject,
+      subject,
       predicate,
-      object: storedObject,
+      object,
       keys,
       comparable,
       unresolved,
-      entityIds: {
-        ...(resolvedSubject?.entityId !== undefined ? { subject: resolvedSubject.entityId } : {}),
-        ...(resolvedObject?.entityId !== undefined ? { object: resolvedObject.entityId } : {}),
-      },
+      subjectEntityId,
       candidate,
     });
   }
@@ -995,7 +1104,12 @@ export async function reconcileFacts(
         producer,
         provisional: unresolvedCount(prepared),
       },
-      "brain reconcile: flagged candidates provisional — entity resolution failed, so the reviewer decides",
+      // Names the batch, because that is now the unit that failed and the unit
+      // worth re-running. An honest abstain never reaches this line — it is not
+      // a failure, it changes nothing on replay, and logging one per
+      // entity-valued object would be a line per claim forever under the shipped
+      // default resolver.
+      "brain reconcile: flagged this episode's candidates provisional — the entity store did not answer the batch, so their keys are worth recomputing once it does",
     );
   }
 
@@ -1134,20 +1248,59 @@ interface PreparedCandidate {
    * is exactly the statement that those are different jobs.
    */
   readonly comparable: ComparableValue;
-  /** Empty when both sides resolved. */
+  /**
+   * Both roles when the resolver batch FAILED, empty otherwise — never one
+   * side. An abstain is not listed here: it is honest, it will not change on
+   * replay, and flagging it would fire on every entity-valued object until a
+   * store exists (ADR-0037 §5).
+   */
   readonly unresolved: readonly EntityRole[];
-  readonly entityIds: Partial<Record<EntityRole, string>>;
+  /**
+   * The subject's store id — **resolved, carried, and read by nothing yet.**
+   *
+   * Deliberate, and load-bearing for the issue after this one: the resolver
+   * serves BOTH positions (that is what makes the batch's surface set the whole
+   * episode's), while only the object has a `_cmp` column to land in today.
+   * #5032 adds `subject_cmp` and binds this; dropping the value here would mean
+   * unbuilding the two-position batch to rebuild it.
+   *
+   * ⚠️ It is NOT a candidate for a slot key, then or ever — see
+   * {@link ResolvedEntity}.
+   */
+  readonly subjectEntityId: string | undefined;
   readonly candidate: FactCandidate;
 }
+
+/** A candidate past the blank-trim pass, before any resolution. */
+interface TrimmedCandidate {
+  readonly kind: "trimmed";
+  readonly subject: string;
+  readonly predicate: string;
+  readonly object: string;
+  readonly candidate: FactCandidate;
+}
+
+/** A refusal, carried in candidate order so outcomes stay 1:1 with the input. */
+interface BlockedEntry {
+  readonly kind: "blocked";
+  readonly reason: ReconcileBlockReason;
+}
+
+type TrimmedEntry = TrimmedCandidate | BlockedEntry;
 
 /**
  * A discriminated union rather than an `in`-probed pair: the transaction loop
  * switches on `kind`, so a third preparation outcome is a compile error there
  * instead of a silently-skipped candidate.
  */
-type PreparedEntry =
-  | PreparedCandidate
-  | { readonly kind: "blocked"; readonly reason: ReconcileBlockReason };
+type PreparedEntry = PreparedCandidate | BlockedEntry;
+
+/**
+ * Both roles, frozen — the only value {@link PreparedCandidate.unresolved} ever
+ * takes besides empty. Shared rather than rebuilt per candidate so a reader can
+ * see at a glance that a batch failure has no per-role granularity.
+ */
+const BOTH_ROLES: readonly EntityRole[] = Object.freeze(["subject", "object"]);
 
 function unresolvedCount(prepared: readonly PreparedEntry[]): number {
   return prepared.filter((p) => p.kind === "prepared" && p.unresolved.length > 0).length;
@@ -1217,36 +1370,111 @@ export function classifyEpisodeForReconcile(
 }
 
 /**
- * Resolve one side, converting BOTH a `null` return and a thrown resolver into
- * the same provisional flag.
+ * What the episode's one resolver call produced — an ANSWER, or a FAILURE.
  *
- * A resolver is injected code: a lookup can time out, a future one will call a
- * store. Letting it throw would abort the whole episode over a QUALITY problem
- * and turn the flag path into a block — inverting the asymmetry this stage
- * exists to hold. Logged (never swallowed) with a narrowed error.
+ * The two used to share a branch. `tryResolve` collapsed a `null` return and a
+ * thrown resolver into one provisional flag on purpose, and that was right while
+ * `provisional` was the only way to say "we don't know". It is not any more:
+ * abstention has a first-class representation at rest (`object_cmp` NULL →
+ * `unknown` → tension only), so the flag is free to mean the one thing nothing
+ * else can express.
  */
-async function tryResolve(
+type EntityResolution =
+  | { readonly kind: "answered"; readonly ids: ReadonlyMap<string, ResolvedEntity> }
+  | { readonly kind: "failed" };
+
+/** The id a store gave for `surface`, or `undefined` for an abstain. */
+function storeId(resolution: EntityResolution, surface: string): string | undefined {
+  if (resolution.kind === "failed") return undefined;
+  // Read defensively for `object_cmp`'s sake, not the type's: an entry whose id
+  // is blank (or, from untyped JS, not a string at all) would otherwise tag a
+  // comparable value with nothing and make two unrelated objects provably the
+  // SAME. An unusable entry is an abstain, which is the fail-closed direction.
+  const id = resolution.ids.get(surface)?.entityId;
+  return typeof id === "string" && id.trim() !== "" ? id.trim() : undefined;
+}
+
+/**
+ * Resolve every surface this episode will store, in ONE call.
+ *
+ * The batch is the deduplicated union of the SUBJECT and OBJECT surfaces of
+ * every candidate that survived the blank-trim pass — see {@link EntityResolver}
+ * for why the unit is the episode and why the set covers both positions.
+ *
+ * ## Failure is caught here, and it means something narrow
+ *
+ * A resolver is injected code: a lookup can time out, a real one calls a store.
+ * Letting it throw would abort the whole episode over a QUALITY problem and turn
+ * the flag path into a block — inverting the asymmetry this stage exists to
+ * hold. Logged (never swallowed) with a narrowed error.
+ *
+ * What the resulting flag MEANS is now one thing: *this row's keys are worth
+ * recomputing.* An honest abstain will not change on replay, and when the store
+ * later gains the entry the affected rows are findable by key with no marker at
+ * all. An OUTAGE will change on replay and there is no key-based way to find
+ * those rows — `object_cmp IS NULL` matches every honest abstain too. That is
+ * the marker's entire remaining purpose, and the batch unit reinforces it: an
+ * outage fails the whole batch, and the whole batch is exactly what wants
+ * re-running.
+ *
+ * Nothing here ever BLOCKS. {@link RECONCILE_BLOCK_REASONS} gains nothing from
+ * this seam, in either outcome.
+ */
+async function resolveEntitiesForEpisode(
   resolver: EntityResolver,
-  surface: string,
-  workspaceId: string,
-  role: EntityRole,
-  episodeId: string,
-): Promise<ResolvedEntity | null> {
+  trimmed: readonly TrimmedEntry[],
+  episode: ReconcileEpisodeRef,
+): Promise<EntityResolution> {
+  // Kept per position for the failure line below, then unioned: a surface seen
+  // at BOTH positions is one lookup (that is the point of role-invariance) and
+  // counts in both tallies (that is what the tallies are for).
+  const subjects = new Set<string>();
+  const objects = new Set<string>();
+  for (const entry of trimmed) {
+    if (entry.kind !== "trimmed") continue;
+    subjects.add(entry.subject);
+    objects.add(entry.object);
+  }
+  const surfaces = new Set([...subjects, ...objects]);
+
+  // An episode whose every candidate was refused has nothing to look up, and a
+  // real resolver would spend a connection checkout answering about nothing.
+  // Skipping cannot change a verdict: there is no prepared candidate left for a
+  // failure to flag.
+  if (surfaces.size === 0) return { kind: "answered", ids: new Map() };
+
   try {
-    const resolved = await resolver(surface, { workspaceId, role });
-    if (resolved === null || resolved.canonical.trim() === "") return null;
-    return { ...resolved, canonical: resolved.canonical.trim() };
+    const ids = await resolver(surfaces, { workspaceId: episode.workspaceId });
+    // The seam is typed, so this is untrusted-input handling rather than a type
+    // check: a resolver returning something that is not a Map would throw on the
+    // first `.get` — inside the preparation loop, OUTSIDE this catch, which is
+    // the quality-failure-becomes-a-block inversion again by a different route.
+    if (!(ids instanceof Map)) {
+      log.warn(
+        { workspaceId: episode.workspaceId, episodeId: episode.id, surfaces: surfaces.size },
+        "brain reconcile: entity resolver returned something other than a Map — treating the batch as failed and flagging this episode's candidates provisional",
+      );
+      return { kind: "failed" };
+    }
+    return { kind: "answered", ids };
   } catch (err) {
     log.warn(
       {
-        workspaceId,
-        episodeId,
-        role,
+        workspaceId: episode.workspaceId,
+        episodeId: episode.id,
+        // What `role` used to carry, at the grain the call now has. A per-call
+        // role argument is gone (resolution is role-invariant BY TYPE), so what
+        // is worth recording is which positions the failed set was drawn from —
+        // a property of the surface set, not of any one lookup. The surfaces
+        // themselves are claim content and stay out of the line.
+        surfaces: surfaces.size,
+        subjectSurfaces: subjects.size,
+        objectSurfaces: objects.size,
         err: errorMessage(err),
       },
-      "brain reconcile: entity resolver threw — treating the entity as unresolved and flagging the candidate provisional",
+      "brain reconcile: entity resolver threw — treating the batch as failed and flagging this episode's candidates provisional",
     );
-    return null;
+    return { kind: "failed" };
   }
 }
 
@@ -1327,7 +1555,11 @@ async function writeCandidate(
     occurredAt: isoOrNull(episode.occurredAt),
     extractedAt: isoOrNull(ctx.extractedAt),
     reconciledAt: ctx.now().toISOString(),
-    ...entityIdFragment(item.entityIds),
+    // No `entityIds` (#5031). The object's id is a COLUMN now — `object_cmp`,
+    // where the publish gate can actually compare it — and the subject's has no
+    // consumer until #5032. A jsonb copy of a column is a second truth nothing
+    // reads and nothing keeps in step.
+    //
     // Present ONLY when it is true, so a reviewer's filter on the key is not
     // fooled by every fact carrying `provisional: false`.
     ...provisionalFragment(provisional, item.unresolved),
@@ -1438,7 +1670,7 @@ async function writeCandidate(
 }
 
 /**
- * The two optional halves of the payload, built through ANNOTATED helpers.
+ * The optional half of the payload, built through an ANNOTATED helper.
  *
  * Not inlined as `...(cond ? { … } : {})`. A conditional spread is exempt from
  * excess-property checking, so `satisfies BrainFactProvenance` on the enclosing
@@ -1451,12 +1683,6 @@ function provisionalFragment(
   unresolved: readonly EntityRole[],
 ): Pick<BrainFactProvenance, "provisional" | "unresolved"> {
   return provisional ? { provisional: true, unresolved } : {};
-}
-
-function entityIdFragment(
-  entityIds: Partial<Record<EntityRole, string>>,
-): Pick<BrainFactProvenance, "entityIds"> {
-  return Object.keys(entityIds).length > 0 ? { entityIds } : {};
 }
 
 function rowId(row: unknown): string | null {

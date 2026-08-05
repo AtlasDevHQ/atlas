@@ -516,8 +516,9 @@ function supersedableTierSql(alias: string): string {
  * `passthroughEntityResolver` shipped as the default, an entity-valued object
  * (`Ada / reports to / Grace` vs `Alan`) has no comparable value on either side
  * and NEVER supersedes. Only parseable values do — money with an explicit
- * currency, plain numbers, dates, instants, booleans — plus resolved entity ids
- * once a real store lands (#5031). That is `passthroughEntityResolver` behaving
+ * currency, plain numbers, dates, instants, booleans — plus resolved entity ids,
+ * for which #5031 built the batched seam and which arrive the day a workspace
+ * injects a real store. That is `passthroughEntityResolver` behaving
  * honestly rather than pretending: with no entity store the system genuinely
  * cannot prove `Grace` and `Alan` are different people, and inferring it from
  * two strings failing to match is the guess that costs a belief.

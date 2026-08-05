@@ -320,13 +320,42 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       candidates: [candidate()],
       producer: "extraction:v1",
       extractedAt: new Date(),
-      resolveEntity: (surface, { role }) => (role === "object" ? null : { canonical: surface }),
+      // A store OUTAGE, which since #5031 is the only thing that sets the flag.
+      // An abstain ("no entry") is honest and writes nothing here.
+      resolveEntity: () => {
+        throw new Error("entity store unreachable");
+      },
     });
 
     const stored = await facts();
-    expect(stored[0]!.provenance).toMatchObject({ provisional: true, unresolved: ["object"] });
+    expect(stored[0]!.provenance).toMatchObject({
+      provisional: true,
+      // Both sides: one batch covers both positions, so a failure has no
+      // per-role granularity to record.
+      unresolved: ["subject", "object"],
+    });
     // Still a draft, still reviewable — flagged, not dropped.
     expect(stored[0]!.status).toBe("draft");
+  });
+
+  it("an honest abstain stores no provisional marker at all", async () => {
+    // The other arm of #5031's split, at rest — and the one that runs on every
+    // deployment, since `passthroughEntityResolver` abstains on everything. A
+    // marker written here would be present on every entity-valued object
+    // forever, which is precisely what defeats #4772's filter on its PRESENCE.
+    const episode = await insertEpisode({ sourceId: "C01:abstain" });
+    await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode,
+      candidates: [candidate()],
+      producer: "extraction:v1",
+      extractedAt: new Date(),
+      resolveEntity: () => new Map(),
+    });
+
+    const stored = await facts();
+    expect(stored[0]!.provenance).not.toHaveProperty("provisional");
+    expect(stored[0]!.provenance).not.toHaveProperty("unresolved");
   });
 
   it("corroborates a re-observed claim instead of duplicating it", async () => {
@@ -372,7 +401,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     return rows;
   }
 
-  it("materializes all three keys on a new fact, off the RESOLVED surfaces", async () => {
+  it("materializes all three keys on a new fact, off the RETAINED surfaces", async () => {
     const episode = await insertEpisode({ sourceId: "C01:key-1" });
     await reconcileFacts({
       vocabulary: identityVocabulary,
@@ -380,18 +409,51 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       candidates: [candidate({ subject: "Deploy_Window", predicate: "Ships  On" })],
       producer: "p",
       extractedAt: new Date(),
-      // The key must describe the row that was STORED, so it is derived after
-      // resolution — not from the candidate's raw surface.
-      resolveEntity: (surface) =>
-        surface === "Deploy_Window" ? { canonical: "The Deploy Box" } : { canonical: surface },
+      // An ANSWERING store, deliberately: against `passthroughEntityResolver`
+      // this test would pass while proving nothing, because there would be no
+      // id to leak into a key and no canonical form to overwrite a surface with
+      // (#5011 §3). The prohibition itself is owned by `reconcile.test.ts`;
+      // what this adds is that the columns AT REST agree with it.
+      resolveEntity: (surfaces) =>
+        new Map([...surfaces].map((s) => [s, { entityId: `ent-${s.length}-01J7X` }])),
     });
 
     expect(await slots()).toEqual([
-      { subject_key: "the deploy box", predicate_key: "ships on", object_key: "thursdays" },
+      { subject_key: "deploy window", predicate_key: "ships on", object_key: "thursdays" },
     ]);
-    // The retained surface is the resolver's canonical form, untouched by the
-    // fold — identity moved, the record of the claim did not.
-    expect((await facts())[0]).toMatchObject({ subject: "The Deploy Box" });
+    // The surface is what the PRODUCER wrote, untouched by the fold and by the
+    // store — identity moved, the record of the claim did not.
+    expect((await facts())[0]).toMatchObject({ subject: "Deploy_Window" });
+  });
+
+  it("lands the store's id at `object_cmp` and nowhere else", async () => {
+    // The positive control for the test above: without it, both hold against a
+    // stage that ignores the resolver entirely. The id has exactly one
+    // destination on the row, and `object_cmp` is a COMPARED value rather than
+    // a join arm — which is why a second namespace there costs nothing and at a
+    // slot would cost the whole corpus (ADR-0037 §5).
+    const episode = await insertEpisode({ sourceId: "C01:key-cmp" });
+    await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode,
+      candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
+      producer: "p",
+      extractedAt: new Date(),
+      resolveEntity: (surfaces) =>
+        new Map([...surfaces].map((s) => [s, { entityId: `ent-${s.length}-01J7X` }])),
+    });
+
+    const { rows } = await pool.query<{
+      subject_key: string | null;
+      object_key: string | null;
+      object_cmp: string | null;
+    }>(`SELECT subject_key, object_key, object_cmp FROM brain_facts`);
+    // `"Acme Corp".length` — the double's own rule, not a hand-copied literal.
+    expect(rows[0]!.object_cmp).toBe("entity:ent-9-01J7X");
+    // …and the subject's id, which the batch also resolved, reached NOTHING.
+    // #5032 gives it `subject_cmp`; until then a leak would show up here.
+    expect(rows[0]!.subject_key).toBe("deploy window");
+    expect(rows[0]!.object_key).toBe("acme corp");
   });
 
   // The three collide/don't-collide cases that used to sit here — a phrasing

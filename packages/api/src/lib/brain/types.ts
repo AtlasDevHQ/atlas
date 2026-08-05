@@ -176,9 +176,20 @@ export interface BrainFactProvenance {
   /** ISO-8601 of the extraction pass; null for an authored claim. */
   readonly extractedAt: string | null;
   readonly reconciledAt: string;
-  /** Present only for the sides a resolver returned an id for. */
-  readonly entityIds?: Partial<Record<EntityRole, string>>;
+  /**
+   * Written ONLY when the entity store failed to answer the episode's batch —
+   * never for an honest "no entry" (#5031). It means exactly *this row's keys
+   * are worth recomputing*: an abstain will not change on replay and its rows
+   * are findable by key, while an outage will change and its rows are findable
+   * by nothing else (`object_cmp IS NULL` matches every honest abstain too).
+   */
   readonly provisional?: true;
+  /**
+   * Both roles whenever {@link provisional} is set, and absent otherwise. One
+   * batch covers both positions, so a failure has no per-role granularity —
+   * the array survives for #4772's review surface, which reads it, not because
+   * the two sides can fail apart.
+   */
   readonly unresolved?: readonly EntityRole[];
   readonly [key: string]: unknown;
 }

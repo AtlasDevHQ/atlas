@@ -87,10 +87,10 @@ describe("the episode-source vocabulary", () => {
 
   test("narrows an arbitrary stored value, and refuses the vendor names a warehouse connector would reach for", () => {
     // `isEpisodeSource` is the runtime gate `registerBrainSourceConnector`
-    // applies to a connector arriving as data. Three of these four are legal
+    // applies to a connector arriving as data. All but the last are legal
     // `SOURCE_SLUG` values, so the pattern check waves them through and only
-    // the vocabulary stops them — that is the concrete regression. The fourth,
-    // `warehouse:prod`, is caught one gate EARLIER by the slug pattern (the
+    // the vocabulary stops them — that is the concrete regression.
+    // `warehouse:prod` is caught one gate EARLIER by the slug pattern (the
     // colon); it is here because a narrowing predicate should refuse it too,
     // not because the slug check would miss it.
     for (const vendor of ["snowflake", "bigquery", "warehouse-prod", "warehouse:prod"]) {

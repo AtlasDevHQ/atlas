@@ -81,7 +81,7 @@ const GRANTS: ReadonlyArray<{
   // NULL` excludes the row. Both are legal at rest (0180's CHECK counts
   // non-NULL non-empty elements; one survivor is enough), both parse to zero
   // principals, and `grantProblem` admits `["everyone", null]` from an import
-  // bundle today. Without these two fixtures the cross-check below passes
+  // bundle today. Without these NULL-bearing fixtures the cross-check below passes
   // vacuously — the only other NULL fixture, `padded-org`, carries `org` and is
   // shed for the right reason.
   { label: "malformed-with-null", visibleTo: ["everyone", null], malformed: true },

@@ -988,7 +988,7 @@ describe("the draft candidate", () => {
     // The vocabulary seam, through the stage. `ReconcileRequest.vocabulary` is
     // REQUIRED since #5022, so it can no longer be dropped silently — but the
     // three `slotKey` calls can still be handed the wrong lookup, or the same
-    // one three times, and that is what this and the two tests below catch.
+    // one three times, and that is what this and the tests below catch.
     //
     // #5000's pair, closed by an ENTRY rather than by a normalization rule,
     // which is the whole reason the seam exists (ADR-0037 §6 / #5016). That the

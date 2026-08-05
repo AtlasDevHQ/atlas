@@ -29,7 +29,7 @@
  *
  * ## ⚠️ And since #5033 a fifth relation varies something that is NOT identity
  *
- * `tier-guarded-rival` holds five pairs whose subject, predicate and object are
+ * `tier-guarded-rival` holds pairs whose subject, predicate and object are
  * byte-identical to `priced-rival`'s. Only the episode's stored `source` differs
  * — the value `reconcile.ts` copies into `provenance.source`, which no arm of
  * any consumer's MATCHING reads. Consumers 1 and 2 must therefore answer exactly
@@ -124,7 +124,7 @@
  * re-measured — and the first cut of THIS slice reproduced that exact defect,
  * updating this paragraph while leaving four cells above it stale.
  *
- * The five tier rows are what #5033 buys, and three of them are worth reading
+ * The tier rows are what #5033 buys, and they are worth reading
  * as a set. Two aliases carry the same guard, so "it is present" is not the
  * assertion — *which side* it is present on is, and the one-sided mutations die
  * on DISJOINT fixtures (the two `*-draft` entries versus the two `*-incumbent`
@@ -338,7 +338,7 @@ describe("the identity corpus itself (#5021)", () => {
       ).toEqual([identityOf(control!.a), identityOf(control!.b)]);
     }
 
-    // …and the five entries present five DISTINCT tier shapes. Without this,
+    // …and the entries present pairwise DISTINCT tier shapes. Without this,
     // dropping `source: "warehouse"` from `warehouse-both`'s `b` side leaves
     // every other invariant and all three consumers green — while deleting the
     // only `-pg` test that kills the weakening `warehouse-both` exists to pin

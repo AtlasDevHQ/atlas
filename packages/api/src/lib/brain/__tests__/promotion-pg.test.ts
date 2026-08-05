@@ -2062,9 +2062,9 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     // at all, and that shape is precisely the one the guard's first disjunct
     // exists for. It needs a direct INSERT, which is what this file has.
     //
-    // The four tests below are three prohibitions and the control they share,
-    // differing in ONE field (the fourth prohibition additionally proves the
-    // count is per-PAIR rather than per-workspace). Separate `test()` bodies rather than arms of one,
+    // The tests below are the prohibitions and the control they share,
+    // differing in ONE field; the last additionally proves the count is
+    // per-PAIR rather than per-workspace. Separate `test()` bodies rather than arms of one,
     // for the reason `identity-consumers-pg.test.ts` states: in a long proof the
     // first failure hides the rest, and a broken control would silently mask the
     // prohibitions it licenses.
@@ -2248,7 +2248,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     it(
       "counts PAIRS, not workspaces — two held-back collisions report 2",
       async () => {
-        // The two tests above only ever prove 0 or 1, so a count that collapsed
+        // The prohibitions above only ever prove 0 or 1, so a count that collapsed
         // pairs — `COUNT(DISTINCT d.id)`, or anything `LIMIT 1`-shaped — is
         // green in both. An operator reading "1 held back" when three
         // authoritative beliefs were defended is a quieter version of the

@@ -226,6 +226,34 @@ export interface PromotionReport {
    * grounds as {@link PromotionReport.refused}.
    */
   readonly superseded?: readonly FactSupersession[];
+  /**
+   * Provable collisions this publish DECLINED to supersede on trust-tier
+   * grounds (#5033) — one side warehouse-derived, or carrying a source kind
+   * the region cannot classify.
+   *
+   * A COUNT, where {@link PromotionReport.superseded} carries ids, and the
+   * asymmetry is deliberate: a supersession permanently changed which claim
+   * answers as-of-now reads, so its record has to name rows, while a held-back
+   * pair left BOTH claims live and separately addressable through the fact's
+   * `in-tension-with` cluster. (Not the draft review queue — after the publish
+   * both rows are `published`. And the edge is not guaranteed for every
+   * held-back pair, which is the other half of why the count is not redundant
+   * with it.) What the number buys is the distinction the
+   * rest of the report cannot express — `superseded: []` alone reads identically
+   * to "nothing collided", and this says which of the two happened.
+   *
+   * THREE states, and all three are meaningful:
+   *
+   *   - absent — this adapter has no supersession concept at all (same
+   *     distinguishability grounds as {@link PromotionReport.refused});
+   *   - a number — the count ran; `0` means it found nothing to hold back;
+   *   - `null` — the count could NOT be computed (the statement failed, or its
+   *     result drifted). Not folded into `0`, because a durable record saying
+   *     "nothing was held back" on no evidence re-creates the ambiguity this
+   *     field exists to remove — and statement drift is persistent, so it would
+   *     be a standing lie rather than one bad row.
+   */
+  readonly supersessionHeldBack?: number | null;
 }
 
 /**

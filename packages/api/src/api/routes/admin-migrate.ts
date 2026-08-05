@@ -1140,10 +1140,14 @@ export async function importBundle(
         // than the database is at rest — the rule `lib/brain/acl.ts`'s header
         // states for GRANTS, holding here for the same reason, and with all-or-nothing bundle validation one episode
         // from a newer region would strand the entire workspace, at cutover.
-        // Instead `correction.ts`'s `unrecognizedSourceKind` refuses to CORRECT
-        // a fact whose kind cannot be classified. The episode imports, reads and
-        // searches normally; only the path that would act on an undecided tier
-        // is shut, and it reopens when this region learns the kind.
+        // Instead the two gates that would ACT on an undecided tier are shut,
+        // and only those: `correction.ts`'s `unrecognizedSourceKind` refuses to
+        // CORRECT such a fact, and since #5033 the publish gate's tier guard
+        // refuses to stamp `valid_to` on or with it
+        // (`content-mode/adapters/brain-facts.ts`). The episode imports, reads
+        // and searches normally. Both reopen when this region learns the kind —
+        // unless it learns it as a WAREHOUSE-CLASS member, in which case the
+        // refusals stay and change their reason, which is the right answer.
         //
         // Note the two columns are not the same one: that quarantine reads each
         // FACT's `provenance.source`, restored verbatim in the fact loop below
@@ -1153,7 +1157,7 @@ export async function importBundle(
         // bundle can quarantine facts this log never named, and vice versa.
         log.warn(
           { orgId, episodeId: episode.id, source: episode.source, vocabulary: EPISODE_SOURCES },
-          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design; any fact whose OWN provenance.source carries this kind is correction-quarantined until this deployment's vocabulary includes it. This route does not verify that the bundle's facts carry the same value",
+          "Imported a brain episode whose source kind is outside the vocabulary — restored verbatim by design; any fact whose OWN provenance.source carries this kind is BOTH correction-quarantined and held back from publish-time supersession until this deployment's vocabulary includes it. This route does not verify that the bundle's facts carry the same value",
         );
       }
       await client.query(

@@ -866,6 +866,23 @@ export function willSupersedePairsSql(
  * invisible by construction afterwards, so this preview is the one moment the
  * replacement can be seen as a pair.
  *
+ * ⚠️ *Collides* is narrower than it was, twice over, and this preview inherits
+ * both narrowings for free because it is built from
+ * `supersessionCollisionJoin`. Since #5030 a pair must be PROVABLY different,
+ * not merely differently-keyed; since #5033 neither side may be tier-1 or carry
+ * a source kind the region cannot classify. So a pair held back on either
+ * ground correctly does not appear here — the disclosure and the transaction
+ * agree, which is the property #4912 actually requires. It is NOT the same as
+ * the pair being gone: BOTH claims stay live and current, related by the
+ * `in-tension-with` edge `reconcile.ts` writes at ingest, and the publish logs
+ * and audits a count of what it withheld. Note where the pair is NOT: after
+ * this publish both rows are `published`, so neither appears in the review
+ * queue's default `status = 'draft'` view — a reviewer reaches them through the
+ * fact's tension cluster. And the edge is not guaranteed for every held-back
+ * pair (a post-ingest re-key writes none, and `TENSION_EDGE_CAP` bounds the
+ * fan-out), which is why the count exists rather than being redundant with
+ * it.
+ *
  * Two statements, one request: the unscoped total (a number, never content)
  * and the reader-scoped pairs. `withheld` is their difference — supersessions
  * that will happen regardless, listing rows this reader may not read.

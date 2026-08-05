@@ -141,6 +141,12 @@ const PublishPreviewSchema = z.object({
    * fact stamps the old fact's `valid_to` atomically with the promotion, and
    * as-of-now reads then hide it.
    *
+   * The count flows through `WILL_SUPERSEDE_TOTAL_SQL` →
+   * `supersessionCollisionJoin`, so it inherits every narrowing of what
+   * *collides*: provable difference (#5030) and the trust-tier guard (#5033).
+   * A pair held back on either ground is correctly absent from this number —
+   * publish will not stamp it either.
+   *
    * A workspace-wide COUNT, unscoped like `brainFactsWithheld`'s other half
    * and content-free like it — the modal is the confirm surface, so silence
    * here would be silent supersession for any admin who publishes without

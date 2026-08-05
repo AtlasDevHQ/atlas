@@ -40,6 +40,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import {
   CONTENT_MODE_TABLES,
   collectSupersessions,
+  countSupersessionsHeldBack,
   makeService,
   type SupersessionRecord,
 } from "@atlas/api/lib/content-mode";
@@ -354,6 +355,24 @@ export async function ingestDocuments(
           // line SAMPLES at 20 ids, so discarding the report truncates it. See
           // `promoted.ts`.
           superseded = collectSupersessions(reports);
+          // #5033's complement, on the same terms as the sweep above — and it
+          // is LOGGED here rather than returned, because unlike `superseded`
+          // this seam's callers have no field to put it in. `null` (could not
+          // be computed) is distinguished from 0 for the reason `port.ts`
+          // gives: this path keeps no durable record, so the log line is all
+          // there is and it must not claim a number it does not have.
+          const heldBack = countSupersessionsHeldBack(reports);
+          if (heldBack === null) {
+            log.warn(
+              { workspaceId },
+              "Upload & publish committed, but the tier-held-back count could not be computed — if any collisions were withheld on trust-tier grounds, nothing records them",
+            );
+          } else if (heldBack > 0) {
+            log.warn(
+              { workspaceId, heldBack },
+              "Upload & publish committed and DECLINED to supersede one or more provable collisions — one side is warehouse-derived (tier-1) or carries an unclassifiable source kind, so both claims stay current and in tension; this path keeps no audit row",
+            );
+          }
         }
         return {
           report: ingestReport,

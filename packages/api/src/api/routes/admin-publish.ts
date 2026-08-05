@@ -43,6 +43,7 @@ import {
   CONTENT_MODE_TABLES,
   collectRefusals,
   collectSupersessions,
+  countSupersessionsHeldBack,
   collectWidenings,
   type SupersessionRecord,
   type WidenedGrantRecord,
@@ -269,6 +270,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     let refusals: RefusalSweep;
     let widenedGrants: readonly WidenedGrantRecord[];
     let supersededFacts: readonly SupersessionRecord[];
+    let supersessionsHeldBack: number | null;
     let deletedEntityCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
@@ -367,6 +369,13 @@ adminPublish.openapi(publishRoute, async (c) =>
       // click), and the durable record is what answers "why did the agent stop
       // saying X?" months later.
       supersededFacts = collectSupersessions(tx.reports);
+      // …and its complement (#5033): collisions this publish PROVED and then
+      // declined to act on, because one side is warehouse-derived (tier-1) or
+      // carries a source kind this region cannot classify. Recorded for the
+      // same reason as the sweep above and one sharper: with only
+      // `supersededFacts`, a publish that defended three authoritative beliefs
+      // and one that found nothing to arbitrate write the same audit row.
+      supersessionsHeldBack = countSupersessionsHeldBack(tx.reports);
       deletedEntityCount =
         tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;
       archivedConnectionCount = tx.archived.connections;
@@ -436,6 +445,15 @@ adminPublish.openapi(publishRoute, async (c) =>
         // afterwards — this row is where "what replaced what, and when" lives.
         supersededFacts,
         supersededFactCount: supersededFacts.length,
+        // A COUNT, where the two fields above are records — both claims are
+        // still live and published, so the durable question this answers is
+        // "was there something to arbitrate", not "what was retired". Always written, and
+        // all three states are distinct: a number (the count ran), `0` (it ran
+        // and found nothing), `null` (it could not be computed — the statement
+        // failed or drifted, and the accompanying `log.warn` is the detail).
+        // Omitting the field would instead mean "a publish predating the
+        // guard", which is a fourth claim and not one this route can make.
+        supersessionsHeldBack,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,

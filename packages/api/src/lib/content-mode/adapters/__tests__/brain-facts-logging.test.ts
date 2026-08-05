@@ -6,8 +6,8 @@
  * before the module under test is imported, and the sibling adapter suite
  * deliberately runs with no module mocking at all.
  *
- * Why it is worth a file. Both log lines here are the ONLY artifact of their
- * event, and both could be deleted with every other suite staying green:
+ * Why it is worth a file. Every log line here is the ONLY artifact of its
+ * event, and each could be deleted with every other suite staying green:
  *
  *   - `logGrantAnomalies` is what makes a partly-malformed grant OBSERVABLE.
  *     Such a grant is promotable (its one valid token does real work), so no
@@ -20,6 +20,18 @@
  *     assumption has broken. Rows in that state are neither promoted-and-counted
  *     nor refused-and-reported: the exact silent under-report this adapter
  *     exists to prevent.
+ *   - The tier-guard held-back line (#5033) reports a collision that was found,
+ *     proven, and then deliberately NOT acted on. Nothing else records it: the
+ *     pair is filtered inside the collision predicate, so it reaches neither the
+ *     `PromotionReport` nor the shortfall warn, and an empty `superseded` reads
+ *     identically to "nothing collided". It is `info`, not `warn`, because the
+ *     guard working is not a fault — but it must be SOMETHING, because the
+ *     alternative is the only irreversible operation in the product having a
+ *     refusal mode that emits nothing at all.
+ *   - `readHeldBackCount`'s drift warn, and the advisory-count failure warn
+ *     beside it, are the strongest instances of this file's own thesis: they
+ *     fire when the line above STOPS being able to fire, and nothing else in
+ *     the repo would notice a diagnostic that quietly went blind.
  *
  * Every VALUE export of `lib/logger.ts` is stubbed, per the mock-all-exports
  * rule — a partial factory works until some module in the import graph reaches
@@ -65,6 +77,9 @@ type ModeTxClient = import("@atlas/api/lib/content-mode/port").ModeTxClient;
 
 const EPISODE = "22222222-2222-4222-8222-222222222222";
 
+/** Makes the held-back COUNT statement throw, as a timeout or deadlock would. */
+const EXPLODE = "explode";
+
 function draft(id: string, over: Record<string, unknown> = {}) {
   return {
     id,
@@ -88,9 +103,48 @@ function tx(
   drafts: readonly unknown[],
   rowCountFor: (ids: readonly string[]) => number,
   evidence: readonly unknown[] = [],
+  /**
+   * `TIER_HELD_BACK_COUNT_SQL`'s single column (#5033), when a test drives a
+   * `single`-cardinality draft and therefore reaches the supersession block.
+   * `undefined` keeps the statement unrecognised, which is what every
+   * pre-#5033 test in this file wants: their drafts are `multi`, `singleIds` is
+   * empty, and the block is never entered — so a double that answered it
+   * anyway would hide a regression that started issuing it unconditionally.
+   */
+  // `string` covers the `"explode"` sentinel below — spelling the literal in the
+  // union as well is `no-redundant-type-constituents`, and the extra arm would
+  // buy nothing anyway: a string is exactly what a drifting driver hands back,
+  // which is the OTHER thing this parameter models.
+  heldBack?: number | string | null,
+  /**
+   * `SUPERSESSION_TARGETS_SQL` rows. Empty by default — this file is about the
+   * held-back count, and the two numbers on that log line must be sourced
+   * independently or `superseding` is 0 by construction.
+   */
+  targets: readonly { draft_id: string; superseded_id: string }[] = [],
 ): ModeTxClient {
   return {
     query: async (sql, params = []) => {
+      // Transaction control for the advisory count, matched on the statement
+      // PREFIX and placed first. ⚠️ It has to come before the `held_back` arm:
+      // the savepoint is named `brain_tier_held_back`, so a substring match
+      // would answer `SAVEPOINT …` with a COUNT row and the savepoint path
+      // would be modelled by nothing while every test stayed green.
+      if (/^\s*SAVEPOINT /i.test(sql) || /^\s*ROLLBACK TO SAVEPOINT /i.test(sql)) {
+        return { rows: [] };
+      }
+      if (heldBack !== undefined && sql.includes("held_back")) {
+        // The sentinel: any other string is a driver-shape case the reader
+        // must degrade on, so the failure needs a value no real driver returns.
+        if (heldBack === EXPLODE) throw new Error("held-back count exploded");
+        return { rows: [{ held_back: heldBack }] };
+      }
+      if (heldBack !== undefined && sql.includes("superseded_id")) return { rows: [...targets] };
+      // The supersedes-edge batch insert RETURNs one id per inserted edge.
+      if (/^\s*INSERT/i.test(sql)) {
+        const pairs = JSON.parse(String(params[1])) as readonly unknown[];
+        return { rows: pairs.map((_, i) => ({ id: `edge-${i}` })) };
+      }
       // The identity-mutation advisory lock (#5024) — void, and nothing here
       // reads it. The sibling double records it; this one does not need to,
       // since every assertion in this file is about log output.
@@ -102,6 +156,13 @@ function tx(
         return { rows: [] };
       }
       if (/^\s*UPDATE/i.test(sql)) {
+        // The supersession stamp RETURNs the ids it actually stamped; confirm
+        // every one asked for, so a driven target does not additionally trip
+        // the shortfall warn and pollute the assertions in this file.
+        if (sql.includes("valid_to = now()")) {
+          const asked = params[1] as readonly string[];
+          return { rows: asked.map((id) => ({ id })), rowCount: asked.length };
+        }
         // The plain promote binds an id array; the widening one binds a jsonb
         // string of `{id, grant}` entries. Both report a row per target.
         const target = params[1];
@@ -342,5 +403,123 @@ describe("promoteBrainFacts — grant widening is stated out loud (#4823)", () =
       widenedExpected: 1,
       widenedActual: 0,
     });
+  });
+});
+
+describe("promoteBrainFacts — the tier guard states what it held back (#5033)", () => {
+  /** A `single` draft — the only cardinality that reaches the supersession block. */
+  const single = (id: string) => draft(id, { predicate_cardinality: "single" });
+  const infos = () => logCalls.filter((c) => c.level === "info");
+
+  it("says a provable collision was withheld on tier grounds, and why", async () => {
+    // ⭐ The only artifact of the event. The pair is filtered inside the
+    // collision predicate, so it never reaches `supersessionPairs`, never
+    // reaches the shortfall warn, and leaves `report.superseded` empty — which
+    // is byte-identical to "nothing collided". Without this line an operator
+    // cannot tell an authoritative fact was defended from nothing having
+    // happened.
+    const report = await run(
+      promoteBrainFacts(
+        tx([single("a"), single("b")], (ids) => ids.length, [], 2, [
+          { draft_id: "a", superseded_id: "old-1" },
+        ]),
+        "ws-1",
+      ),
+    );
+    // The publish itself is UNAFFECTED — the guard withholds a consequence, not
+    // a promotion. Asserted here because a line that fired while also blocking
+    // the publish would be a different, much worse bug.
+    expect(report.promoted).toBe(2);
+    expect(report.superseded).toEqual([{ rowId: "a", superseded: ["old-1"] }]);
+
+    const line = infos().find((c) => c.message.includes("were NOT superseded"));
+    // `superseding` is sourced INDEPENDENTLY of `heldBack` — from the targets
+    // SELECT, which this case answers with one pair. Asserting it as 0 beside a
+    // double that returns no targets would be 0 by construction, and a mutation
+    // replacing `supersessionPairs.length` with a literal would survive. The
+    // number is what lets an operator read "2 held back OUT OF 3 collisions".
+    expect(line?.payload).toMatchObject({ workspaceId: "ws-1", heldBack: 2, superseding: 1 });
+    // Both refusal reasons are named. An operator reading "tier-1" alone would
+    // go looking for a warehouse producer that does not exist yet, when the
+    // likelier cause today is a region-imported source kind this region cannot
+    // classify.
+    expect(line?.message).toContain("warehouse-derived");
+    expect(line?.message).toContain("cannot classify");
+    // …and it points at where the pair actually IS, which is the whole reason
+    // a count is enough.
+    expect(line?.message).toContain("in-tension-with");
+  });
+
+  it("stays silent when nothing was held back", async () => {
+    // The prohibition half. A line that fired on every publish would be noise
+    // an operator learns to skim, which is the same as not logging it.
+    await run(
+      promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], 0), "ws-1"),
+    );
+    expect(infos().some((c) => c.message.includes("were NOT superseded"))).toBe(false);
+    expect(
+      warns().some((c) => c.message.includes("did not read back as a non-negative integer")),
+    ).toBe(false);
+  });
+
+  it("warns when the count itself does not read back — a diagnostic that stopped diagnosing", async () => {
+    // `readHeldBackCount` degrades to 0 rather than inventing a number, because
+    // the value drives one advisory line. But degrading SILENTLY would mean
+    // pairs withheld with no trace and no trace of the missing trace — so the
+    // drift gets its own warn, and the publish still commits.
+    const report = await run(
+      promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], null), "ws-1"),
+    );
+    expect(report.promoted).toBe(1);
+    // Drift is UNKNOWN too, and for the sharper reason: it is persistent, so a
+    // fabricated 0 here would be a standing lie in every later audit row rather
+    // than one bad record.
+    expect(report.supersessionHeldBack).toBeNull();
+    const drift = warns().find((c) =>
+      c.message.includes("did not read back as a non-negative integer"),
+    );
+    // `heldBackRaw`, not `heldBack`: the info line carries a NUMBER under
+    // `heldBack`, and one structured field with two types is an alert that
+    // mis-fires or silently no-ops.
+    expect(drift?.payload).toMatchObject({ workspaceId: "ws-1", heldBackRaw: null });
+    // Degraded to 0, so the advisory line does NOT also fire with a fabricated
+    // count beside the warning that says the count is untrustworthy.
+    expect(infos().some((c) => c.message.includes("were NOT superseded"))).toBe(false);
+  });
+
+  it("warns — and still commits the publish — when the count STATEMENT fails", async () => {
+    // The savepoint's whole reason. `admin-publish.ts` runs every adapter in
+    // one transaction, so an unguarded failure here would roll back a complete,
+    // correct publish because a diagnostic could not be computed — telemetry
+    // destroying the operation it describes. The reachable causes are ordinary:
+    // a statement timeout, a deadlock against `reconcile.ts`, statement drift.
+    const report = await run(
+      promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], EXPLODE), "ws-1"),
+    );
+    expect(report.promoted).toBe(1);
+    // UNKNOWN, not 0 — the audit row must not claim a number nobody computed.
+    expect(report.supersessionHeldBack).toBeNull();
+
+    // Never silent — and the message says the publish is FINE, because the
+    // operator's first question on seeing it is whether they lost a publish.
+    const lost = warns().find((c) => c.message.includes("could not be computed"));
+    expect(lost?.payload).toMatchObject({ workspaceId: "ws-1" });
+    expect(JSON.stringify(lost?.payload)).toContain("exploded");
+    expect(lost?.message).toContain("NO trace");
+    expect(lost?.message).toContain("publish itself is unaffected");
+    // …and it does NOT also emit the held-back line with a fabricated 0.
+    expect(infos().some((c) => c.message.includes("were NOT superseded"))).toBe(false);
+  });
+
+  it("accepts the count as a string — `pg` may hand an aggregate back that way", async () => {
+    await run(
+      promoteBrainFacts(tx([single("a")], (ids) => ids.length, [], "3"), "ws-1"),
+    );
+    expect(
+      warns().some((c) => c.message.includes("did not read back as a non-negative integer")),
+    ).toBe(false);
+    expect(
+      infos().find((c) => c.message.includes("were NOT superseded"))?.payload,
+    ).toMatchObject({ heldBack: 3 });
   });
 });

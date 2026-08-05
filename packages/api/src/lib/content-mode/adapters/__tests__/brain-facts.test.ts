@@ -18,6 +18,7 @@ import {
   SUPERSEDE_STAMP_EXPLICIT_SQL,
   SUPERSEDE_STAMP_SQL,
   SUPERSESSION_TARGETS_SQL,
+  TIER_HELD_BACK_COUNT_SQL,
   brainFactStatusClause,
   brainFactsCountSql,
   promoteBrainFacts,
@@ -30,6 +31,7 @@ import {
   IDENTITY_MUTATION_LOCK_SQL,
   IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
 } from "@atlas/api/lib/brain/identity";
+import { NON_WAREHOUSE_SOURCES, isWarehouseDerivedSource } from "@atlas/api/lib/brain/sources";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { PublishPhaseError, type ModeTxClient } from "@atlas/api/lib/content-mode/port";
 
@@ -77,6 +79,15 @@ function txWithDrafts(
     readonly stampConfirms?: readonly string[];
     /** Make the identity-mutation lock raise `55P03`, as the bound's expiry does. */
     readonly lockTimesOut?: boolean;
+    /**
+     * `TIER_HELD_BACK_COUNT_SQL`'s single column (#5033). Defaults to 0 — the
+     * overwhelmingly common answer, and the one that keeps every pre-#5033 test
+     * in this file asserting exactly what it asserted before. Pass a string or
+     * `null` to model the driver drift `readHeldBackCount` degrades on.
+     */
+    readonly heldBack?: number | string | null;
+    /** Make the held-back COUNT itself fail, as a timeout or deadlock would. */
+    readonly heldBackFails?: boolean;
   } = {},
 ): {
   tx: ModeTxClient;
@@ -84,11 +95,13 @@ function txWithDrafts(
   locks: LockCall[];
   bounds: BoundCall[];
   resets: BoundCall[];
+  savepoints: string[];
 } {
   const calls: Call[] = [];
   const locks: LockCall[] = [];
   const bounds: BoundCall[] = [];
   const resets: BoundCall[] = [];
+  const savepoints: string[] = [];
   const tx: ModeTxClient = {
     query: async (sql, params = []) => {
       // The identity-mutation advisory lock (#5024) is recorded SEPARATELY, and
@@ -116,6 +129,22 @@ function txWithDrafts(
         // so the only way to reach the `55P03` branch is to make the DRIVER
         // raise what Postgres would raise when the bound expires.
         if (opts.lockTimesOut) throw Object.assign(new Error("canceling statement due to lock timeout"), { code: "55P03" });
+        return { rows: [] };
+      }
+      // Transaction-control for #5033's advisory count. Matched on the
+      // STATEMENT PREFIX and placed ahead of `calls`, on the advisory lock's
+      // reasoning: these say nothing about a table, so folding them into
+      // `calls` would force every "…on every statement" loop below to grow an
+      // exemption.
+      //
+      // ⚠️ Ahead of the `held_back` arm too, and that ordering is load-bearing
+      // rather than tidy: the savepoint is NAMED `brain_tier_held_back`, so
+      // `sql.includes("held_back")` matches `SAVEPOINT brain_tier_held_back`
+      // as well. Until this arm existed the double answered the savepoint with
+      // a COUNT row and every supersession test passed while modelling neither
+      // statement — a double agreeing with itself.
+      if (/^\s*SAVEPOINT /i.test(sql) || /^\s*ROLLBACK TO SAVEPOINT /i.test(sql)) {
+        savepoints.push(sql.trim());
         return { rows: [] };
       }
       calls.push({ sql, params });
@@ -146,6 +175,13 @@ function txWithDrafts(
         const pairs = JSON.parse(String(params[1])) as readonly unknown[];
         return { rows: pairs.map((_, i) => ({ id: `edge-${i}` })) };
       }
+      // #5033's held-back diagnostic — a COUNT, answered before the targets
+      // arm below because both statements carry the collision join and only
+      // this one names `held_back`.
+      if (sql.includes("held_back")) {
+        if (opts.heldBackFails) throw new Error("held-back count exploded");
+        return { rows: [{ held_back: opts.heldBack ?? 0 }] };
+      }
       if (sql.includes("superseded_id")) return { rows: [...(opts.supersessions ?? [])] };
       if (sql.includes("brain_edges")) return { rows: [...(opts.evidence ?? [])] };
       if (sql.includes("FOR UPDATE")) return { rows: [...drafts] };
@@ -154,7 +190,7 @@ function txWithDrafts(
       throw new Error(`unrecognised statement in the tx double: ${sql}`);
     },
   };
-  return { tx, calls, locks, bounds, resets };
+  return { tx, calls, locks, bounds, resets, savepoints };
 }
 
 /** The UPDATE statements the adapter issued, in order. */
@@ -205,6 +241,11 @@ describe("promoteBrainFacts", () => {
       refused: [],
       widened: [],
       superseded: [],
+      // `0`, not absent (#5033) — this table HAS the concept, and the
+      // distinction is the whole point of the field. These drafts are `multi`,
+      // so the supersession block is never entered and the accumulator keeps
+      // its declared value; the `-pg` suite is where a non-zero one is proven.
+      supersessionHeldBack: 0,
     });
     // draft SELECT → evidence SELECT → one UPDATE (nothing widened).
     expect(calls).toHaveLength(3);
@@ -253,18 +294,25 @@ describe("promoteBrainFacts", () => {
       refused: [],
       widened: [],
       superseded: [],
+      supersessionHeldBack: 0,
     });
     expect(calls).toHaveLength(1);
   });
 
-  it("reports `refused: []` / `widened: []` / `superseded: []` rather than omitting them", async () => {
-    // `undefined` means "this table has no such concept"; `[]` means "it does,
-    // and nothing happened this run". `admin-publish.ts` distinguishes them.
+  it("reports `refused: []` / `widened: []` / `superseded: []` / `heldBack: 0` rather than omitting them", async () => {
+    // `undefined` means "this table has no such concept"; `[]` (or `0`) means
+    // "it does, and nothing happened this run". `admin-publish.ts`
+    // distinguishes them.
     const { tx } = txWithDrafts([draft("ok")]);
     const report = await run(promoteBrainFacts(tx, "ws-1"));
     expect(report.refused).toEqual([]);
     expect(report.widened).toEqual([]);
     expect(report.superseded).toEqual([]);
+    // #5033's axis. `0` rather than absent is what lets a caller say "this
+    // publish held nothing back" as distinct from "this table cannot hold
+    // anything back" — and a publish that DID hold a pair back is otherwise
+    // indistinguishable from one that found no collision at all.
+    expect(report.supersessionHeldBack).toBe(0);
   });
 
   it("takes the draft-selection lock — read-then-write needs FOR UPDATE", async () => {
@@ -948,6 +996,190 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(SUPERSESSION_TARGETS_SQL).toContain(
       "AND (p.object_cmp <> d.object_cmp\n      AND split_part(",
     );
+  });
+
+  it("guards the TIER on both sides, as an allowlist over the vocabulary (#5033)", () => {
+    // The behavioural proof is `identity-consumers-pg.test.ts`'s
+    // `tier-guarded-rival` block, which runs this join against a real schema
+    // over five fixtures. These assertions pin the two properties that block
+    // cannot see, because a corpus entry can only exercise the vocabulary that
+    // exists today.
+    //
+    // 1. BOTH aliases. The guard is symmetric (ADR-0037 §4): a warehouse draft
+    //    must not stamp an extracted incumbent either. Applying it to `p` alone
+    //    is the natural half-implementation, and it reads as complete.
+    for (const alias of ["p", "d"]) {
+      expect(
+        SUPERSESSION_TARGETS_SQL,
+        `the tier guard is missing for alias \`${alias}\` — supersession is symmetric, and half a guard admits the direction ADR-0037 §4 calls autonomous supersession with the sympathetic side winning`,
+      ).toContain(`${alias}.provenance->>'source' = ANY (ARRAY[`);
+    }
+
+    // 2. An ALLOWLIST, not `<> 'warehouse'`. The list is derived from the
+    //    vocabulary's declared classes, so this is also what keeps a future
+    //    warehouse-class member (`snowflake`) out of it without a second edit —
+    //    and the derivation is asserted in `brain/__tests__/sources.test.ts`.
+    //    The non-emptiness check is not ceremony: an empty list would make the
+    //    loop below assert nothing while `ARRAY[]::text[]` still satisfies the
+    //    `= ANY (ARRAY[` match above, so the whole assertion would go vacuous
+    //    in the one direction that also silently disables supersession.
+    expect(NON_WAREHOUSE_SOURCES.length).toBeGreaterThan(0);
+    for (const source of NON_WAREHOUSE_SOURCES) {
+      expect(SUPERSESSION_TARGETS_SQL).toContain(`'${source}'`);
+    }
+    // No warehouse-CLASS member may be in the array — its absence IS the guard.
+    // Asserted on the DERIVATION rather than by grepping the statement for
+    // `warehouse`: a legitimately non-warehouse future member spelled
+    // `warehouse_notes` (declared `class: "human"`) belongs in the allowlist,
+    // and a string grep would fail it with a message accusing the author of
+    // deleting the guard.
+    for (const source of NON_WAREHOUSE_SOURCES) {
+      expect(
+        [source, isWarehouseDerivedSource(source)],
+        "a warehouse-class source is in the collision join's allowlist — that is the tier guard deleted, spelled as an addition",
+      ).toEqual([source, false]);
+    }
+
+    // 3. The absent-key carve-out, which is the arm a reader would delete as
+    //    redundant. `provenance->>'source'` is NULL for a row with no `source`
+    //    key, and `NULL = ANY (…)` is NULL — so without this disjunct the guard
+    //    silently stops such a row superseding OR being superseded. That shape
+    //    predates the tier lane and no import ever touched it;
+    //    `correction.ts`'s `unrecognizedSourceKind` makes exactly the same
+    //    carve-out, in as many words, and calls closing it *a regression
+    //    dressed as a fix*. `promotion-pg.test.ts` is where it is falsified.
+    for (const alias of ["p", "d"]) {
+      expect(SUPERSESSION_TARGETS_SQL).toContain(`NOT jsonb_exists(${alias}.provenance, 'source')`);
+    }
+
+    // 4. The IRREVERSIBLE statement carries the guard too, asserted DIRECTLY
+    //    rather than through the builder. The test below proves the stamp's
+    //    re-check `toContain(supersessionCollisionPredicate("d","p"))` — but
+    //    both sides of that comparison come from one builder, so it moves with
+    //    any change to it. Concretely: hoist the tier arms out of
+    //    `supersessionCollisionPredicate` and into `supersessionCollisionJoin`
+    //    — a plausible tidy-up, since the docstring calls this the collision
+    //    JOIN's guard — and the targets SELECT keeps them, every `-pg` fixture
+    //    keeps passing (the stamp only ever sees rows the targets SELECT
+    //    already filtered), the builder comparison keeps passing, and the
+    //    re-check silently loses its tier arm.
+    for (const alias of ["p", "d"]) {
+      expect(
+        SUPERSEDE_STAMP_SQL,
+        `the \`valid_to\` stamp's collision re-check lost the tier guard for alias \`${alias}\` — the statement that actually writes the irreversible column must re-ask the whole question, not a subset of it`,
+      ).toContain(`${alias}.provenance->>'source' = ANY (ARRAY[`);
+    }
+  });
+
+  it("the held-back diagnostic is the collision's COMPLEMENT, not a second copy of it (#5033)", () => {
+    // The statement exists because a tier-blocked pair otherwise leaves no
+    // trace at all. What it must not become is a second spelling of "what
+    // collides" — the drift `supersessionCollisionJoin`'s header forbids at
+    // length — so it is built from the same two pieces as the shipped
+    // predicate: the identity core, plus the same tier arms, negated.
+    //
+    // Asserted by CONSTRUCTION rather than by re-listing arms: every arm of the
+    // targets SELECT's join that is not a tier arm must appear here verbatim.
+    for (const arm of [
+      "p.subject_key = d.subject_key",
+      "p.predicate_key = d.predicate_key",
+      "p.object_cmp <> d.object_cmp",
+      "p.predicate_cardinality = 'single'",
+      "d.predicate_cardinality = 'single'",
+      "p.status = 'published'",
+      "p.valid_to IS NULL",
+    ]) {
+      expect(
+        TIER_HELD_BACK_COUNT_SQL,
+        `the held-back count and the collision join disagree about \`${arm}\` — the diagnostic would then report pairs the transaction never considered, or miss ones it did`,
+      ).toContain(arm);
+    }
+
+    // It runs before the promote UPDATEs, so it carries the draft-side
+    // predicate exactly as the targets SELECT does — the two must ask about the
+    // same rows for their answers to partition the collisions.
+    expect(TIER_HELD_BACK_COUNT_SQL).toContain(supersedingDraftPredicate("d"));
+    // …and it is scoped to the SAME draft id list the targets SELECT was given.
+    // Measured: replacing this arm with a param-preserving no-op broke no test
+    // in any of the four suites, and the consequence is a false alarm in a
+    // durable record — held-back pairs counted for drafts this publish never
+    // offered (classifier-refused ones, or leftovers from a prior batch),
+    // reported as "provable collisions were NOT superseded".
+    expect(TIER_HELD_BACK_COUNT_SQL).toContain("d.id = ANY($2::uuid[])");
+
+    // …and the OTHER direction, which the arm list above cannot give: the
+    // shipped predicate must be the core PLUS the two tier arms and NOTHING
+    // else. Without this, an arm added directly to
+    // `supersessionCollisionPredicate` — a plausible place to put one — breaks
+    // the partition silently: the diagnostic would then count pairs that never
+    // would have collided anyway and report them as "provable collisions were
+    // NOT superseded", a false alarm claiming beliefs were withheld when
+    // nothing was.
+    //
+    // Asserted arm by arm rather than as a PREFIX. A prefix match catches only
+    // an arm inserted between the core and the first tier arm; appending one
+    // AFTER the tier arms — the natural place to append — was measured to break
+    // nothing in any of the four suites.
+    const tierArm = (alias: string) => `(NOT jsonb_exists(${alias}.provenance, 'source')`;
+    const shippedArms = supersessionCollisionPredicate("d", "p")
+      .split("\n     AND ")
+      .map((arm) => arm.trim());
+    for (const arm of shippedArms) {
+      // The two tier arms are the ONLY ones the count may not share — it
+      // negates them. Everything else must appear verbatim.
+      if (arm.startsWith(tierArm("p")) || arm.startsWith(tierArm("d"))) continue;
+      expect(
+        TIER_HELD_BACK_COUNT_SQL,
+        `the collision predicate carries an arm the held-back count does not (\`${arm}\`) — the two no longer partition the collisions, so the diagnostic will report pairs the transaction never considered`,
+      ).toContain(arm);
+    }
+    // The tier arms really are exactly two, so the skip above cannot silently
+    // swallow a third arm someone spelled to look like one.
+    expect(
+      shippedArms.filter((arm) => arm.startsWith(tierArm("p")) || arm.startsWith(tierArm("d"))),
+    ).toHaveLength(2);
+
+    // ⚠️ `IS NOT TRUE`, never `NOT (…)`. `supersedableTierSql` is SQL NULL — not
+    // false — for a `{"source": null}` provenance, so `NOT (…)` drops exactly
+    // the population the guard is subtlest about and the diagnostic would go
+    // blind to it. This repo has already paid for the same distinction once, in
+    // `objectNotSameSql`.
+    expect(TIER_HELD_BACK_COUNT_SQL).toContain(") IS NOT TRUE");
+    expect(
+      /AND NOT \(\(NOT jsonb_exists/.test(TIER_HELD_BACK_COUNT_SQL),
+      "the held-back count negates the tier guard with `NOT (…)` — that is NULL for a null-valued `source`, so the one population this diagnostic most needs to see disappears from it",
+    ).toBe(false);
+  });
+
+  it("the held-back count runs behind a SAVEPOINT and cannot fail the publish (#5033)", async () => {
+    // The statement produces one log line and one report field. Everything else
+    // in this transaction is the publish, and `admin-publish.ts` runs every
+    // adapter inside ONE transaction — so an unguarded failure here would roll
+    // back a complete, correct publish because a diagnostic could not be
+    // computed. Postgres also aborts the whole transaction on any statement
+    // error (`25P02`), which is why a bare catch is not enough and the
+    // savepoint is.
+    const { tx, calls, savepoints } = txWithDrafts([singleDraft("a")], {
+      supersessions: [],
+      heldBackFails: true,
+    });
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+
+    // The publish COMMITS, and reports the promotion it really performed.
+    expect(report.promoted).toBe(1);
+    // `null` — UNKNOWN, never a fabricated 0 and never a failure. A durable
+    // record saying "nothing was held back" on no evidence would re-create the
+    // ambiguity the field exists to remove.
+    expect(report.supersessionHeldBack).toBeNull();
+    // The savepoint was taken and rolled back to, in that order. Without the
+    // ROLLBACK the transaction stays aborted and every later statement fails,
+    // so its presence is the whole mechanism rather than a detail.
+    expect(savepoints).toEqual([
+      "SAVEPOINT brain_tier_held_back",
+      "ROLLBACK TO SAVEPOINT brain_tier_held_back",
+    ]);
+    // …and the promote UPDATE still ran AFTER the rollback.
+    expect(updates(calls)).toHaveLength(1);
   });
 
   it("collides on the identity keys and on no surface column (#5020)", () => {

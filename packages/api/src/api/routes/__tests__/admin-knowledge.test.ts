@@ -16,7 +16,10 @@ import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 // Imported from the leaf module, not the `content-mode` barrel this file mocks:
 // the barrel re-exports the registry and every adapter, and pulling that graph
 // in for one pure projection helper is what the leaf import avoids.
-import { collectSupersessions } from "@atlas/api/lib/content-mode/promoted";
+import {
+  collectSupersessions,
+  countSupersessionsHeldBack,
+} from "@atlas/api/lib/content-mode/promoted";
 import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
 // Type-only import — erased at compile time, so it coexists with the
 // mock.module() of the same path below.
@@ -330,6 +333,10 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
   // publish" records what it superseded through the SAME helper the other two
   // publish surfaces use (#4937), which a stub would not prove.
   collectSupersessions,
+  // Re-exported through the real implementation like its sibling: this seam
+  // now sweeps it too (#5033), and a stub would let the wiring test's property
+  // hold while the value it produces was fiction.
+  countSupersessionsHeldBack,
 }));
 
 // Full mock of every ingest-limits export (mock-all-exports): `mirror.ts` —

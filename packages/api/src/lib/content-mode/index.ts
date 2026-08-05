@@ -37,6 +37,7 @@ export type { InferDraftCounts, InferPromotedCounts } from "./infer";
 export {
   collectRefusals,
   collectSupersessions,
+  countSupersessionsHeldBack,
   collectWidenings,
   promotedCountsFromReports,
   type RefusalSweep,

@@ -182,6 +182,43 @@ export function collectSupersessions(
 }
 
 /**
+ * Total supersessions DECLINED on trust-tier grounds across every adapter
+ * (#5033) — {@link collectSupersessions}'s complement.
+ *
+ * A number rather than records, because that is what the reports carry and why:
+ * a held-back pair left BOTH claims live and separately addressable through the
+ * fact's `in-tension-with` cluster, where a performed supersession hid one of
+ * them. What the total
+ * buys the audit row is the distinction an empty `supersededFacts` cannot make
+ * — "nothing collided" versus "a collision was proven and its consequence
+ * withheld".
+ *
+ * Swept with the same shape as its sibling so a second adapter growing a tier
+ * guard is picked up here rather than at a call site — today only `brain_facts`
+ * reports the field.
+ *
+ * @returns the total, or `null` when ANY reporting adapter could not compute
+ * its own count — see the loop for why that is not summed as 0.
+ */
+export function countSupersessionsHeldBack(
+  reports: ReadonlyArray<PromotionReport>,
+): number | null {
+  let total = 0;
+  for (const report of reports) {
+    const held = report.supersessionHeldBack;
+    // `null` — an adapter that could not compute its count — POISONS the total
+    // rather than contributing 0. A sum that silently dropped it would report a
+    // confident workspace-wide number built from a partial answer, which is the
+    // failure the per-adapter `null` exists to prevent, re-introduced by the
+    // sweep. `undefined` is different and contributes nothing: that adapter has
+    // no supersession concept, so there was never anything to count.
+    if (held === null) return null;
+    total += held ?? 0;
+  }
+  return total;
+}
+
+/**
  * One promoted count per registered entry, keyed by the entry's wire key
  * (`key` for simple entries, `promotedKey` for exotic adapters), looked up by
  * the entry's physical table name in the reports.

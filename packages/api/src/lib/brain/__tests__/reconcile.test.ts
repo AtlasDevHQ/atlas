@@ -28,7 +28,7 @@
  * it does with a lookup result once it has one.
  *
  * *Does this pair of claims collide?* is answered in
- * `identity-consumers-pg.test.ts`, where thirteen claim pairs are read by all
+ * `identity-consumers-pg.test.ts`, where one corpus of claim pairs is read by all
  * three consumers — corroboration, the rival scan, and the publish gate's
  * collision join — against a real schema. The lexical backstop at the bottom of this file
  * is the cheap tripwire for a repoint, not the proof.
@@ -81,7 +81,7 @@ import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
 // `scriptRivals` — as a premise about the world, and then asserts what the
 // STAGE does about it. Which claims actually share a slot is a question about
 // SQL against a real schema, and it lives in `identity-consumers-pg.test.ts`,
-// where thirteen claim pairs are read by all three consumers.
+// where one corpus of claim pairs is read by all three consumers.
 //
 // The two edge inserts still model their `NOT EXISTS` guards. That is a
 // deliberate line, not an oversight: those guards compare opaque uuids for

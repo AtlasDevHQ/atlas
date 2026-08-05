@@ -45,6 +45,8 @@ import {
   isEpisodeSource,
   isEpisodeSourceClass,
   isWarehouseDerivedSource,
+  EPISODE_SOURCE_SLUG,
+  NON_WAREHOUSE_SOURCES,
   type EpisodeSource,
   type EpisodeSourceSpec,
 } from "@atlas/api/lib/brain/sources";
@@ -380,6 +382,61 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     }
     for (const nonString of [null, undefined, 42, { source: WAREHOUSE_SOURCE }, [WAREHOUSE_SOURCE]]) {
       expect(isWarehouseDerivedSource(nonString)).toBe(false);
+    }
+  });
+
+  test("NON_WAREHOUSE_SOURCES is the CLASS complement, so a new warehouse member leaves it", () => {
+    // #5033's tier guard is an allowlist built from this list, so a
+    // warehouse-class member that stayed in it would be stampable by an
+    // LLM-extracted draft — the exact invariant the guard exists to hold.
+    //
+    // Asserted as the class complement rather than against a written-out list:
+    // a literal `['slack','zoom','outlook','human']` here would agree with a
+    // derivation that stopped consulting the class map at all, which is #4938's
+    // failure one list over.
+    expect([...NON_WAREHOUSE_SOURCES]).toEqual(
+      EPISODE_SOURCES.filter((source) => episodeSourceClass(source) !== WAREHOUSE_CLASS),
+    );
+    // …and the value anchor, on the same terms as the member-by-member test
+    // above: with only the derivation asserted, renaming the class in the spec
+    // map passes.
+    expect(NON_WAREHOUSE_SOURCES).not.toContain("warehouse");
+    expect(NON_WAREHOUSE_SOURCES.length).toBeGreaterThan(0);
+  });
+
+  test("every stored source is a bare slug — the tier guard splices these into SQL", () => {
+    // ⚠️ **Be honest about what this can and cannot fail on.** `sources.ts`
+    // enforces the same rule over the same list at MODULE LOAD, and this file
+    // imports it — so a member like `o'brien-crm` makes the import throw and
+    // this body never runs. The loop below therefore cannot fail; it is a NAMED
+    // LANDING PLACE, so an author meets the rule as a test with a reason
+    // attached rather than as a stack trace at boot. The `throw` is the gate.
+    //
+    // What IS falsifiable here is the pattern itself, which is why the hostile
+    // inputs below are the substance of the test: they pin what
+    // `EPISODE_SOURCE_SLUG` refuses, independently of which members happen to
+    // exist today. `content-mode/adapters/brain-facts.ts` splices
+    // `NON_WAREHOUSE_SOURCES` into an `ARRAY['…']::text[]` literal unquoted, and
+    // this pattern is the whole of what makes that safe.
+    //
+    // `EPISODE_SOURCE_SLUG` is IMPORTED, not respelled: the enforcement and the
+    // assertion must not be able to loosen independently. A looser regex in
+    // `sources.ts` beside a stricter one here stays green right up until it is
+    // a boot failure.
+    for (const source of EPISODE_SOURCES) {
+      expect([source, EPISODE_SOURCE_SLUG.test(source)]).toEqual([source, true]);
+    }
+    for (const hostile of [
+      "o'brien-crm",
+      "warehouse'); DROP TABLE brain_facts--",
+      "a b",
+      "Slack",
+      "1x",
+      "-slack",
+      "_slack",
+      "",
+    ]) {
+      expect([hostile, EPISODE_SOURCE_SLUG.test(hostile)]).toEqual([hostile, false]);
     }
   });
 

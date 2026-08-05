@@ -34,6 +34,7 @@ import {
   collectRefusals,
   collectSupersessions,
   collectWidenings,
+  countSupersessionsHeldBack,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
@@ -353,6 +354,30 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
       log.warn(
         { orgId, supersededCount: superseded.length, superseded },
         "Publish committed and SUPERSEDED one or more published facts — their valid_to is stamped and as-of-now reads now hide them; on this seam no audit row records it",
+      );
+    }
+
+    // …and its complement (#5033): collisions this publish proved and then
+    // DECLINED to act on, because one side is warehouse-derived (tier-1) or
+    // carries a source kind this region cannot classify. Swept here for the
+    // same reason as the two above — `publish-caller-supersession-wiring.test.ts`
+    // exists because #4912's new report field was inherited-and-discarded by a
+    // caller outside its own diff, and this is a second such field.
+    //
+    // `null` means the count could not be computed, which is a different claim
+    // from 0 and is logged as such: on this seam the log line is the ONLY
+    // record, so folding the two together would leave "we could not tell"
+    // indistinguishable from "there was nothing".
+    const heldBack = countSupersessionsHeldBack(reports);
+    if (heldBack === null) {
+      log.warn(
+        { orgId },
+        "Publish committed, but the tier-held-back count could not be computed — if any collisions were withheld on trust-tier grounds this publish, nothing records them",
+      );
+    } else if (heldBack > 0) {
+      log.warn(
+        { orgId, heldBack },
+        "Publish committed and DECLINED to supersede one or more provable collisions — one side is warehouse-derived (tier-1) or carries an unclassifiable source kind, so both claims stay current and in tension; on this seam no audit row records it",
       );
     }
 

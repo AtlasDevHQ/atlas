@@ -85,6 +85,29 @@ export interface Claim {
   readonly predicate: string;
   readonly object: string;
   /**
+   * The SOURCE KIND stamped on the evidence behind this claim (#5033) — the
+   * episode's `source`, which `reconcile.ts` copies into
+   * `provenance.source` and which the tier guard reads.
+   *
+   * Omitted by every entry that does not need it; the consumer defaults it to
+   * the ordinary extracted case.
+   *
+   * ⚠️ It is the ONLY field on a `Claim` that no consumer's MATCHING reads —
+   * and that uniqueness is the whole design, so do not read it as "another
+   * `objectType`". {@link objectType} very much changes what collides:
+   * `cross-type-rival` exists because declaring `money:USD` on one side turns a
+   * `<>`-different verdict into `unknown` and stops the stamp. `source` changes
+   * only what a collision is allowed to DO.
+   *
+   * ⚠️ Deliberately `string`, not `EpisodeSource`. A value OUTSIDE the
+   * vocabulary is a real stored shape — the region import restores a bundle's
+   * `source` verbatim with no vocabulary gate (`lib/brain/sources.ts`'s header)
+   * — and it is the population the tier guard's allowlist exists for. Typing
+   * this to the union would make the corpus unable to express the case that
+   * distinguishes an allowlist from a denylist.
+   */
+  readonly source?: string;
+  /**
    * What the producer says its object IS (#5030) — omitted by every entry that
    * does not need it, which is the conservative default a producer gets.
    *
@@ -109,6 +132,7 @@ export const RELATIONS = [
   "same-claim",
   "unproven-rival",
   "proven-rival",
+  "tier-guarded-rival",
   "different-claim",
 ] as const;
 
@@ -127,6 +151,11 @@ export const RELATIONS = [
  *     an `object_cmp` of the same type and they disagree, so the difference is
  *     evidence rather than an inference from two strings failing to match. Only
  *     this class supersedes.
+ *   - `tier-guarded-rival` — a `proven-rival` in every respect EXCEPT that the
+ *     tier of one side (or both) is not provably below tier-1 (#5033,
+ *     ADR-0037 §4). The identity layer is unchanged — same slot, same
+ *     three-valued agreement, same tension edge — and only the CONSEQUENCE is
+ *     withheld. *Identity is source-agnostic; consequence is tier-ordered.*
  *   - `different-claim` — different slots. The claims may look near-identical
  *     to a lexical matcher and are not the same claim, so nothing may collide
  *     them. This is the direction where an over-match costs a `valid_to` stamp
@@ -192,11 +221,30 @@ export interface ClaimPair {
  * | `declared-rival`         | = | = | ≠ | different |
  * | `sign-flip-rival`        | = | = | **=** | different |
  * | `cross-type-rival`       | = | = | ≠ | unknown |
+ * | `warehouse-incumbent`    | = | = | ≠ | different |
+ * | `warehouse-draft`        | = | = | ≠ | different |
+ * | `warehouse-both`         | = | = | ≠ | different |
+ * | `unresolvable-incumbent` | = | = | ≠ | different |
+ * | `unresolvable-draft`     | = | = | ≠ | different |
  * | `subject-differs`        | ≠ | = | ≠ | different |
  * | `predicate-differs`      | = | ≠ | ≠ | different |
  * | `inverse-relations`      | ≠ | ≠ | ≠ | unknown |
  * | `copula-pair`            | = | ≠ | = | unknown |
  * | `entity-alias`           | ≠ | = | = | unknown |
+ *
+ * ## The tier dimension is NOT a fifth column (#5033)
+ *
+ * The five `tier-guarded-rival` entries are byte-identical to `priced-rival` in
+ * every field above — they vary only {@link Claim.source}, which no arm of any
+ * of the three consumers' matching reads. That is deliberate and it is the
+ * falsification ADR-0037 §4 asks for: hold the identity inputs fixed, vary the
+ * tier alone, and the only thing that may change is whether `valid_to` is
+ * stamped. If varying the source moved a KEY, the guard would be per-class
+ * matching rather than a consequence ordering, and the map forbids that.
+ *
+ * `priced-rival` is therefore doing double duty — it is the object-arm control
+ * AND the accepted-shape control for the tier guard. Deleting it takes both
+ * with it.
  */
 export const IDENTITY_CORPUS = [
   {
@@ -362,6 +410,128 @@ export const IDENTITY_CORPUS = [
     },
   },
   {
+    id: "warehouse-incumbent",
+    relation: "tier-guarded-rival",
+    why:
+      "⭐ #5033's headline case, and the reason the guard is a prerequisite for the warehouse " +
+      "producer rather than a follow-up to it. A draft LLM-extracted fact meets a PUBLISHED " +
+      "warehouse-derived fact in one slot with provably different prices — every other arm of " +
+      "the collision join is satisfied, and before the tier guard publish stamped `valid_to` on " +
+      "the authoritative row. Tier-1 has no correction path at all (`correction.ts` refuses " +
+      "every verb on a warehouse-derived target), so the reviewer who notices cannot undo it: " +
+      "an LLM guess irreversibly retires a fact that is authoritative by construction.\n" +
+      "  The claims are BYTE-IDENTICAL to `priced-rival` and the source is the only difference. " +
+      "That is the pairing ADR-0037 §4's falsification asks for: without a stamping control of " +
+      "the same shape, this entry passes green against a guard that dropped the pair from every " +
+      "statement, which is indistinguishable from a guard that works.",
+    a: {
+      subject: "Business_Tier",
+      predicate: "Priced At",
+      object: "499 USD",
+      source: "warehouse",
+    },
+    b: { subject: "business tier", predicate: "priced-at", object: "599 USD" },
+  },
+  {
+    id: "warehouse-draft",
+    relation: "tier-guarded-rival",
+    why:
+      "The SYMMETRIC direction, which the ticket did not expect and ADR-0037 §4 decides the " +
+      "same way: a newly-produced warehouse fact colliding with a published extracted fact " +
+      "also stops at tension. Auto-stamping here is autonomous supersession by ADR-0036's own " +
+      "definition, merely with the sympathetic side winning — and the warehouse row is a " +
+      "SNAPSHOT that may already be hours old, while a stale extracted fact in visible tension " +
+      "is recoverable and a stamp is not.\n" +
+      "  Falsifies the DRAFT-side arm alone: with only the entry above, deleting " +
+      "`supersedableTierSql(d)` from the collision predicate stays green.",
+    a: { subject: "Business_Tier", predicate: "Priced At", object: "499 USD" },
+    b: {
+      subject: "business tier",
+      predicate: "priced-at",
+      object: "599 USD",
+      source: "warehouse",
+    },
+  },
+  {
+    id: "warehouse-both",
+    relation: "tier-guarded-rival",
+    why:
+      "⚠️ WAREHOUSE↔WAREHOUSE RE-EMISSION — the producer re-runs, the price has moved, and the " +
+      "new snapshot collides with its own predecessor. Tension-only, like every other cell of " +
+      "this relation, and pinned HERE because it is the case a future reader is most likely to " +
+      "'fix' by weakening the guard to block only when EXACTLY ONE side is warehouse — i.e. " +
+      "warehouse↔warehouse may stamp. That weakening restores the stamp in the one direction " +
+      "#4759 §2 forbids by name: a machine invalidating a fact.\n" +
+      "  The consequence is real and was accepted with its eyes open — #5008's resolution " +
+      "records it as open Fog: the brain accumulates a reviewer prompt every time a number the " +
+      "warehouse already knows moves. The escape hatch (the producer stamps its own previous " +
+      "snapshot) is a producer-design decision that no milestone has scoped, not a hole in " +
+      "this guard.",
+    a: {
+      subject: "Business_Tier",
+      predicate: "Priced At",
+      object: "499 USD",
+      source: "warehouse",
+    },
+    b: {
+      subject: "business tier",
+      predicate: "priced-at",
+      object: "599 USD",
+      source: "warehouse",
+    },
+  },
+  {
+    id: "unresolvable-incumbent",
+    relation: "tier-guarded-rival",
+    why:
+      "⚠️ THE entry that separates an ALLOWLIST from a DENYLIST, and the only one that does. " +
+      "`warehouse:prod` is one of the three drift shapes `sources.ts` names, and it reaches " +
+      "`brain_facts` through the ONE producer with no vocabulary gate: the region import " +
+      "restores a bundle's `source` verbatim so a bundle written by a newer vocabulary still " +
+      "imports. `isWarehouseDerivedSource` answers `false` for it — so a guard spelled " +
+      "`source <> 'warehouse'` admits the stamp, and the fact this region cannot classify is " +
+      "retired by an LLM draft.\n" +
+      "  That is #4964's conclusion arriving one seam over. There it cost a lost correction " +
+      "refusal, recoverable by deploying the vocabulary that knows the kind; here it costs a " +
+      "`valid_to` stamp, recoverable by nothing. So WHEN `source` IS PRESENT the guard requires " +
+      "POSITIVE evidence of a sub-tier-1 kind, exactly as #5030 made supersession require " +
+      "positive evidence of difference. (An ABSENT `source` is the separate carve-out, which " +
+      "passes on no evidence at all — `promotion-pg.test.ts` owns it.)\n" +
+      "  Byte-identical to `warehouse-incumbent` but for the stored value, so the two are also " +
+      "each other's controls: a guard that resolved the class correctly but forgot the " +
+      "unresolvable case passes that entry and fails this one. (That pairing only means " +
+      "anything while `warehouse` really names a vocabulary member and `warehouse:prod` really " +
+      "does not — which the corpus-invariant test `the tier fixtures name what they claim to` " +
+      "asserts against `sources.ts`, since this module may not import it.)",
+    a: {
+      subject: "Business_Tier",
+      predicate: "Priced At",
+      object: "499 USD",
+      source: "warehouse:prod",
+    },
+    b: { subject: "business tier", predicate: "priced-at", object: "599 USD" },
+  },
+  {
+    id: "unresolvable-draft",
+    relation: "tier-guarded-rival",
+    why:
+      "The unresolvable kind on the DRAFT side — `unresolvable-incumbent` mirrored, for the " +
+      "reason `warehouse-draft` mirrors `warehouse-incumbent`. Without it the allowlist is " +
+      "falsified on one alias only: weaken the guard to a denylist on the `d` side ALONE and " +
+      "every other entry in the corpus stays green.\n" +
+      "  Production-reachable rather than symmetric-for-its-own-sake: the region import writes " +
+      "`status` verbatim (ADR-0024), so an imported row can arrive as a DRAFT carrying a source " +
+      "kind this region cannot classify, and that draft is then a candidate to stamp an " +
+      "ordinary extracted incumbent.",
+    a: { subject: "Business_Tier", predicate: "Priced At", object: "499 USD" },
+    b: {
+      subject: "business tier",
+      predicate: "priced-at",
+      object: "599 USD",
+      source: "warehouse:prod",
+    },
+  },
+  {
     id: "subject-differs",
     relation: "different-claim",
     why:
@@ -469,6 +639,14 @@ export const VERDICTS = {
   // One slot, two values, agreement DIFFERENT — both sides comparable, same
   // type, unequal. The only class that supersedes.
   "proven-rival": { corroborates: false, tension: true, supersedes: true },
+  // The same three-valued verdict as `proven-rival` — the identity layer does
+  // not branch on source and this row is byte-identical to the one above except
+  // in its last cell. That is the whole shape of #5033: the collision is found,
+  // the tension edge is written, the reviewer sees the pair, and only the
+  // irreversible CONSEQUENCE is withheld. A future edit that gave this row
+  // `supersedes: true` would not be simplifying a duplicate — it would be
+  // deleting the guard.
+  "tier-guarded-rival": { corroborates: false, tension: true, supersedes: false },
   // Two slots: every consumer must leave the pair entirely alone.
   "different-claim": { corroborates: false, tension: false, supersedes: false },
 } as const satisfies Record<SlotRelation, Verdict>;

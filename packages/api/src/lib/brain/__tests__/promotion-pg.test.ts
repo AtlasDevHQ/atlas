@@ -46,6 +46,7 @@ import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
 import { FACT_REFUSAL_REASONS } from "@atlas/api/lib/brain/promotion";
 import { CORROBORATION_LOOKUP_SQL } from "@atlas/api/lib/brain/reconcile";
 import { loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
+import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import { buildFactQuery } from "@atlas/api/lib/brain/search";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -242,6 +243,38 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
             [ws, ep],
           ),
         ).rejects.toThrow(/chk_brain_facts_provenance_nonempty/);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "a NON-OBJECT provenance cannot be inserted either — the half #5033's tier guard rests on",
+      async () => {
+        // `chk_brain_facts_provenance_nonempty` is TWO conjuncts, and the test
+        // above exercises only the second (`<> '{}'`). The FIRST —
+        // `jsonb_typeof(provenance) = 'object'` — is what makes the tier guard's
+        // `NOT jsonb_exists(p.provenance, 'source')` carve-out mean "no `source`
+        // key" rather than "any provenance that cannot have keys": a jsonb array
+        // has no `source` either, so if one were storable, a mangled
+        // warehouse-derived row would read as supersedable and the guard would
+        // fail OPEN on the irreversible column.
+        //
+        // Without this case the `jsonb_typeof` half could be dropped from the
+        // CHECK with every test in the repo staying green, which is exactly the
+        // dependency `supersedableTierSql`'s docstring says a future migration
+        // must trip over.
+        const ws = "ws-arrayprov";
+        const ep = await seedEpisode(ws, "arrayprov");
+        for (const notAnObject of ["[1]", '"a string"', "42"]) {
+          await expect(
+            pool.query(
+              `INSERT INTO brain_facts
+                 (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+               VALUES ($1, 's', 'is', 'o', $2, $3::jsonb, ARRAY['org'])`,
+              [ws, ep, notAnObject],
+            ),
+          ).rejects.toThrow(/chk_brain_facts_provenance_nonempty/);
+        }
       },
       PG_TEST_TIMEOUT_MS,
     );
@@ -1294,6 +1327,28 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
        * keeps THIS file from being blind to the change it is adapting to.
        */
       entityId?: string | null;
+      /**
+       * The stored `provenance`, whose `source` key #5033's tier guard reads.
+       *
+       * ⚠️ **The default carries NO `source` key, and that is load-bearing
+       * rather than laziness.** The guard is an allowlist over the source
+       * vocabulary with one carve-out: a provenance with no `source` at all is
+       * still supersedable, because that shape predates the tier lane, nothing
+       * structurally guarantees the key, and retiring it would break
+       * supersession for facts no region import ever touched.
+       * `correction.ts`'s `unrecognizedSourceKind` makes the identical
+       * carve-out for the correction path and calls closing it *a regression
+       * dressed as a fix*.
+       *
+       * So six prior tests in this block assert a STAMP through a `source`-less
+       * provenance, and the ACL-withheld preview test and the carve-out test at
+       * the end reach the same default — eight in all, which is the carve-out's
+       * coverage and the number the mutation table below records. Do not "fix" this
+       * default by adding a source: it would leave the carve-out asserted
+       * nowhere, and the tier guard's absent-key disjunct would become
+       * unfalsifiable.
+       */
+      provenance?: Record<string, unknown>;
     }): Promise<string> {
       const predicate = opts.predicate ?? "manager";
       const objectKey = slotKey(opts.object, identityAlias);
@@ -1321,7 +1376,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
            (workspace_id, subject, predicate, object, source_episode_id,
             provenance, status, visible_to, predicate_cardinality,
             subject_key, predicate_key, object_key, object_cmp)
-         VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, $6, $11::text[], $7,
+         VALUES ($1, $2, $3, $4, $5, $13::jsonb, $6, $11::text[], $7,
                  $8, $9, $10, $12)
          RETURNING id`,
         [
@@ -1343,6 +1398,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           opts.unkeyed === true
             ? null
             : comparableValue({ surface: opts.object, entityId: resolvedEntity }),
+          JSON.stringify(opts.provenance ?? { actor: "test" }),
         ],
       );
       return rows[0]!.id;
@@ -1993,6 +2049,232 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         expect(preview.total).toBe(1);
         expect(preview.pairs).toEqual([]);
         expect(preview.withheld).toBe(1);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    // ── the tier guard's absent-`source` carve-out (#5033) ─────────────────
+    //
+    // `identity-consumers-pg.test.ts`'s `tier-guarded-rival` block owns the
+    // guard's five vocabulary fixtures, and every one of them lands through
+    // `reconcileFacts` — which spreads `source: episode.source` onto every fact
+    // it writes. So the corpus CANNOT produce a provenance with no `source` key
+    // at all, and that shape is precisely the one the guard's first disjunct
+    // exists for. It needs a direct INSERT, which is what this file has.
+    //
+    // The four tests below are three prohibitions and the control they share,
+    // differing in ONE field (the fourth prohibition additionally proves the
+    // count is per-PAIR rather than per-workspace). Separate `test()` bodies rather than arms of one,
+    // for the reason `identity-consumers-pg.test.ts` states: in a long proof the
+    // first failure hides the rest, and a broken control would silently mask the
+    // prohibitions it licenses.
+    //
+    // MUTATIONS THIS FILE CATCHES on the tier guard — measured one at a time
+    // against this file on the final tree, beside the same five measured
+    // against the corpus suite. Every mutation is spelled out, because two of
+    // them have more than one plausible spelling and the numbers differ between
+    // them (the first cut of this table measured a denylist as
+    // `IS DISTINCT FROM 'warehouse'` here and `<> 'warehouse'` there, and
+    // published a cell that was true of neither file):
+    //
+    // | Mutation | here | corpus suite |
+    // |---|---|---|
+    // | the tier guard deleted entirely | 3 | 5 |
+    // | the tier guard applied to the PUBLISHED side only | 0 | 2 |
+    // | the tier guard applied to the DRAFT side only | 3 | 2 |
+    // | the allowlist arm replaced by `<> 'warehouse'`, disjunct kept | 0 | 2 |
+    // | the absent-key disjunct removed | **8** | **0** |
+    // | the carve-out simplified to `->>'source' IS NULL` | **1** | **0** |
+    // | `TIER_HELD_BACK_COUNT_SQL`'s `IS NOT TRUE` → `NOT (…)` | **1** | **0** |
+    // | `TIER_HELD_BACK_COUNT_SQL` hard-wired to `SELECT 0` | **4** | **0** |
+    //
+    // The four bold rows are why both files carry tier coverage, and they are
+    // this file's ENTIRE unique contribution — every other row is covered
+    // better next door. The corpus cannot reach any of them: it lands every
+    // pair through `reconcileFacts`, which always writes `source`, and it never
+    // reads `PromotionReport.supersessionHeldBack`. Delete this block and four
+    // arms of the guard become unfalsifiable while the corpus suite stays green.
+    //
+    // The two zeros in the `here` column are honest rather than missing. All
+    // three prohibitions below put the offending provenance on the PUBLISHED
+    // side, so the `p` arm alone still blocks them — the corpus's `*-draft`
+    // entries cover that direction. And `<> 'warehouse'` is SQL NULL for a
+    // null-valued `source`, so the denylist leaves the `{"source": null}` pair
+    // blocked exactly as the allowlist does; the corpus's `warehouse:prod`
+    // fixtures are the only denylist coverage in the slice, on either side.
+    //
+    // The 8 is: the six prior tests in this block that assert a STAMP, the
+    // ACL-withheld preview test (which dies because the COLLISION vanishes
+    // rather than the stamp), and the carve-out test below. Every one of them
+    // reaches the guard through the `source`-less default, which is the reason
+    // `seedFact`'s `provenance` default carries the warning it does.
+
+    async function seedTierPair(ws: string, publishedProvenance?: Record<string, unknown>) {
+      const ep = await seedEpisode(ws, `tier-${ws}`);
+      const old = await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "alice",
+        object: "bob",
+        status: "published",
+        provenance: publishedProvenance,
+      });
+      const draft = await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "alice",
+        object: "carol",
+      });
+      return { old, draft };
+    }
+
+    async function previewTotalFor(ws: string): Promise<number> {
+      const reader = await resolvePrincipalContext(pool, {
+        workspaceId: ws,
+        mode: "managed",
+        userId: "owner",
+        resolvedRole: { role: "owner", orgId: ws },
+      });
+      return (await loadSupersessionPreview(pool, reader)).total;
+    }
+
+    it(
+      "⭐ still supersedes a published fact whose provenance names NO source — the carve-out",
+      async () => {
+        // The accepted shape, and the control that keeps the prohibition below
+        // honest: without it, a guard that refused EVERY pair passes that test
+        // green. Deliberately spelled out even though every other test in this
+        // block relies on the same default, because an emergent property of a
+        // fixture default is not a contract — the next author to add
+        // `source: "slack"` to `seedFact` would delete the only coverage the
+        // disjunct has without a red test anywhere.
+        const ws = "ws-5033-carveout";
+        const { old, draft } = await seedTierPair(ws, { actor: "test" });
+
+        expect(await previewTotalFor(ws)).toBe(1);
+        const report = await publish(ws);
+        expect(report.superseded).toEqual([{ rowId: draft, superseded: [old] }]);
+        expect((await factState(old)).valid_to).not.toBeNull();
+        expect(await supersedesEdges(ws)).toEqual([{ f: draft, t: old }]);
+        // …and NOTHING was held back. The report's fourth axis is what lets a
+        // caller tell "no collision" from "a collision whose consequence was
+        // withheld", so a control that only asserted the stamp would leave a
+        // diagnostic that always answered 1 indistinguishable from a correct one.
+        expect(report.supersessionHeldBack).toBe(0);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "refuses to stamp a published WAREHOUSE-derived fact — tier-1 has no correction path",
+      async () => {
+        // The same two claims as the control above; `source` is the only field
+        // that differs. Everything else about the collision is unchanged — the
+        // slot matches, the objects are provably different, both sides are
+        // `single` — so a stamp here would be an LLM guess irreversibly
+        // retiring a fact that is authoritative by construction, with no verb
+        // anywhere able to undo it (`correction.ts` refuses every verb on a
+        // warehouse-derived target, and `supersede` refuses a closed window).
+        const ws = "ws-5033-warehouse";
+        const { old, draft } = await seedTierPair(ws, {
+          actor: "test",
+          source: WAREHOUSE_SOURCE,
+        });
+
+        // The disclosure agrees with the transaction — it is built from the
+        // same join, so an admin is never shown a supersession that will not
+        // happen.
+        expect(await previewTotalFor(ws)).toBe(0);
+        const report = await publish(ws);
+        // The DRAFT still publishes. The guard withholds the consequence, not
+        // the review: both claims end up live and in visible tension, which is
+        // the recoverable state ADR-0037 §4 chooses.
+        expect(report.promoted).toBe(1);
+        expect(report.superseded).toEqual([]);
+        expect((await factState(old)).valid_to).toBeNull();
+        expect((await factState(draft)).status).toBe("published");
+        expect(await supersedesEdges(ws)).toEqual([]);
+        // ⭐ The pair was HELD BACK, not absent. Asserted on the report rather
+        // than only on the absence of a stamp, because those two states are
+        // byte-identical everywhere else — and because it is the only assertion
+        // in the slice that can falsify the diagnostic's VALUE. Hard-coding
+        // `TIER_HELD_BACK_COUNT_SQL` to `SELECT 0` leaves every other test in
+        // every suite green.
+        expect(report.supersessionHeldBack).toBe(1);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "refuses to stamp a published fact whose `source` is PRESENT but null — not the carve-out",
+      async () => {
+        // The third population, and the one that separates the two spellings of
+        // the carve-out. `NOT jsonb_exists(p.provenance, 'source')` is FALSE
+        // here (the key exists), so the row is refused; the obvious
+        // "simplification" to `p.provenance->>'source' IS NULL` reads as the
+        // same thing, is behaviourally identical on every OTHER fixture in this
+        // slice, and ADMITS this one — a `valid_to` stamp on a row whose tier
+        // nothing can establish.
+        //
+        // Reachable through exactly one lane, which is the lane the whole
+        // allowlist exists for: `admin-migrate.ts` validates bundle provenance
+        // as "a non-empty object" and restores it verbatim, so
+        // `{"source": null, "producer": "…"}` imports. `correction.ts` refuses
+        // the same shape under `malformedSourceKind`, and this is that refusal's
+        // supersession-side twin.
+        //
+        // Its positive control is the carve-out test two above — same claims,
+        // same seeder, `source` key absent instead of null.
+        const ws = "ws-5033-null-source";
+        const { old, draft } = await seedTierPair(ws, { actor: "test", source: null });
+
+        expect(await previewTotalFor(ws)).toBe(0);
+        const report = await publish(ws);
+        expect(report.promoted).toBe(1);
+        expect(report.superseded).toEqual([]);
+        expect((await factState(old)).valid_to).toBeNull();
+        expect((await factState(draft)).status).toBe("published");
+        expect(await supersedesEdges(ws)).toEqual([]);
+        // Held back, and COUNTED — which additionally pins the diagnostic's own
+        // `IS NOT TRUE`. A `NOT (…)` there is NULL for exactly this provenance,
+        // so the count would read 0 while the pair really was withheld: the
+        // guard working and the diagnostic blind, reported as "nothing
+        // collided".
+        expect(report.supersessionHeldBack).toBe(1);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "counts PAIRS, not workspaces — two held-back collisions report 2",
+      async () => {
+        // The two tests above only ever prove 0 or 1, so a count that collapsed
+        // pairs — `COUNT(DISTINCT d.id)`, or anything `LIMIT 1`-shaped — is
+        // green in both. An operator reading "1 held back" when three
+        // authoritative beliefs were defended is a quieter version of the
+        // silence the count was added to remove.
+        const ws = "ws-5033-two-pairs";
+        const ep = await seedEpisode(ws, "two-pairs");
+        for (const [subject, incumbent, challenger] of [
+          ["alice", "bob", "carol"],
+          ["dave", "erin", "frank"],
+        ]) {
+          await seedFact({
+            workspaceId: ws,
+            episodeId: ep,
+            subject: subject!,
+            object: incumbent!,
+            status: "published",
+            provenance: { actor: "test", source: WAREHOUSE_SOURCE },
+          });
+          await seedFact({ workspaceId: ws, episodeId: ep, subject: subject!, object: challenger! });
+        }
+
+        const report = await publish(ws);
+        expect(report.promoted).toBe(2);
+        expect(report.superseded).toEqual([]);
+        expect(report.supersessionHeldBack).toBe(2);
+        expect(await previewTotalFor(ws)).toBe(0);
       },
       PG_TEST_TIMEOUT_MS,
     );

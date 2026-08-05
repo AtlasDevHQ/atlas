@@ -15,7 +15,10 @@ import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 // Imported from the leaf module, not the `content-mode` barrel this file mocks:
 // the barrel re-exports the registry and every adapter, and pulling that graph
 // in for one pure projection helper is what the leaf import avoids.
-import { collectSupersessions } from "@atlas/api/lib/content-mode/promoted";
+import {
+  collectSupersessions,
+  countSupersessionsHeldBack,
+} from "@atlas/api/lib/content-mode/promoted";
 import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
 
 let MAX_DOCS = 100;
@@ -139,6 +142,10 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
   // the same helper `admin-publish.ts` and the MCP seam do (#4937), so stubbing
   // it would assert only that the seam calls something.
   collectSupersessions,
+  // Re-exported through the real implementation like its sibling: this seam
+  // now sweeps it too (#5033), and a stub would let the wiring test's property
+  // hold while the value it produces was fiction.
+  countSupersessionsHeldBack,
 }));
 
 void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({

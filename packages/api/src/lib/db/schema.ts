@@ -3180,6 +3180,17 @@ export const brainEpisodes = pgTable(
     // the column stay open below. Nothing queries this column for the refusal
     // itself. Plain `text` rather than an enum on purpose: the region import
     // restores a bundle's value verbatim, and no CHECK constrains it.
+    //
+    // ⚠️ Since #5033 this value decides a SECOND consequence, and the heavier
+    // one: the publish gate's tier guard refuses to stamp `valid_to` unless
+    // NEITHER side is tier-1 or carries a source kind this region cannot
+    // classify — not merely across a boundary; two warehouse-derived facts do
+    // not supersede each other either. It reads the same `provenance.source`
+    // copy through
+    // `NON_WAREHOUSE_SOURCES`. A lost correction refusal is recoverable by a
+    // deploy that teaches the region the kind; a `valid_to` stamp is recoverable
+    // by nothing. Weigh a change to this column, or to the vocabulary behind it,
+    // against both.
     source: text("source").notNull(),
     // The source's own stable id — the dedupe key. Per-connector obligation:
     // stable across BOTH the webhook fast-path and the polling path.

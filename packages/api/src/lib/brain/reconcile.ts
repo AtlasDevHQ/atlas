@@ -182,10 +182,13 @@
  *     re-runnable backfill in THIS deploy to close exactly that window — the
  *     correctness need arrives here, not at the constraint flip, because here is
  *     where the consumers start depending on the column.
- *   - Every row a region import lands is likewise unkeyed until #5035 carries
- *     keys verbatim on the v3 bundle, and 0188 cannot help: it runs at boot and
- *     an import runs whenever an admin triggers one. Those facts are inert in
- *     all three consumers in the meantime — fail-closed, and #5035's to fix.
+ *   - A region import used to land every row unkeyed, and 0188 could not help:
+ *     it runs at boot, an import runs whenever an admin triggers one. **Closed
+ *     by #5035** — a v3 bundle carries the keys verbatim and a v1/v2 bundle's
+ *     facts are keyed once at import. What survives is narrower: a carried key
+ *     can name a norm THIS region's vocabulary cannot produce, so it collides
+ *     with nothing until a human curates. Under-match, and the recoverable
+ *     direction ADR-0037 §8 chose deliberately.
  *   - Dedupe is still only as good as the producer's determinism, just at a
  *     coarser grain. Two passes that phrase one claim differently ("is" vs "is
  *     on") remain two claims — that pair is a vocabulary ENTRY, not a
@@ -792,18 +795,26 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * JSON scalars, `null` included: a surface that norms away has no key, and a
  * sentinel would file every such claim under one slot.
  *
- * `object_cmp` (#5030) is derived here on the same terms and is the ONLY write
- * path that ever produces one — migration 0191 deliberately does not backfill,
- * so a row predating this statement keeps NULL forever and stays `unknown`.
- * That is why the column is on the guard's UPDATE-only list beside the keys: a
- * second writer re-deriving it changes what a claim is provably different from,
- * and difference is what stamps `valid_to`.
+ * `object_cmp` (#5030) is derived here on the same terms, and this is the only
+ * path that DERIVES one — migration 0191 deliberately does not backfill, so a
+ * row predating this statement keeps NULL forever and stays `unknown`. That is
+ * why the column is on the guard's UPDATE-only list beside the keys: a second
+ * writer re-deriving it changes what a claim is provably different from, and
+ * difference is what stamps `valid_to`.
  *
- * `subject_cmp` (#5032) joins it on identical terms — sole writer, migration
- * 0193, no backfill, UPDATE-gated — and for the INVERTED reason: re-deriving one
- * changes what a claim is provably NOT the same subject as, and that suppresses
- * corroboration. A second writer stamping subject ids onto the existing corpus
- * would silently split live beliefs apart.
+ * `subject_cmp` (#5032) joins it on identical terms — same sole DERIVER,
+ * migration 0193, no backfill, UPDATE-gated — and for the INVERTED reason:
+ * re-deriving one changes what a claim is provably NOT the same subject as, and
+ * that suppresses corroboration. A second writer stamping subject ids onto the
+ * existing corpus would silently split live beliefs apart.
+ *
+ * ⚠️ **Since #5035 there IS a second writer of both columns, and the wording
+ * above narrowed to say so.** The region importer INSERTs them
+ * (`admin-migrate.ts`), which is a row COPY rather than a derivation — ADR-0037
+ * §8's rule — and it carries only what `regionPortableComparable` judged
+ * portable, nulling every store-local id. So "sole writer" was false from that
+ * commit; "sole deriver" is what the argument above actually needs, and it still
+ * holds.
  *
  * `RETURNING id` and nothing else. A key must never reach a consumer that could
  * branch on it — that is what makes an alias un-removable — and

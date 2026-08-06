@@ -72,18 +72,31 @@ export async function handleMigrateImport(
     version: number;
     counts: Record<string, number>;
   };
-  // Mirror the server: the current version plus legacy v1 (pre-#4460 bundles
-  // without the dashboards/knowledge/tasks/memory sections) both import.
+  // Mirror the server: every version the importer accepts, oldest still
+  // supported. v1 = pre-#4460 (no dashboards/knowledge/tasks/memory sections),
+  // v2 = pre-#5035 (brain facts carry no identity), v3 = current.
   // Local constants (not `EXPORT_BUNDLE_VERSION` from @useatlas/types) so a
   // CLI built against an older published types package can't silently shrink
   // the accept set — same rationale as the server's admin-migrate.ts. The
-  // `satisfies` tether (type-only, scaffold-safe) pins both to the wire union.
-  const LEGACY_BUNDLE_VERSION = 1 satisfies import("@useatlas/types").SupportedBundleVersion;
-  const CURRENT_BUNDLE_VERSION = 2 satisfies import("@useatlas/types").SupportedBundleVersion;
-  if (manifest.version !== CURRENT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
+  // `satisfies` tether (type-only, scaffold-safe) pins them to the wire union.
+  //
+  // ⚠️ And deliberately NO exhaustiveness pin, unlike `admin-migrate.ts`, which
+  // has one. The asymmetry is the point: a pin here would force this list to
+  // cover the union of whatever `@useatlas/types` version got installed, so a
+  // CLI built against a NEWER package would claim to read a version its own code
+  // has never seen. Drift in the other direction — this list falling behind the
+  // server's — is what actually costs a cutover, and that is guarded lexically
+  // by `bundle-identity-v3.test.ts`'s CLI-parity arm.
+  const SUPPORTED_BUNDLE_VERSIONS = [1, 2, 3] as const satisfies readonly import("@useatlas/types").SupportedBundleVersion[];
+  // The version at which the #4460 pillar sections appear, which is what the
+  // summary below is really asking about. Deliberately not "the current
+  // version": reading it that way would stop printing the pillar counts for
+  // every bundle newer than v2.
+  const PILLAR_SECTIONS_FROM_VERSION = 2 satisfies import("@useatlas/types").SupportedBundleVersion;
+  if (!(SUPPORTED_BUNDLE_VERSIONS as readonly number[]).includes(manifest.version)) {
     console.error(
       pc.red(
-        `Unsupported bundle version: ${manifest.version}. This CLI supports versions ${LEGACY_BUNDLE_VERSION} and ${CURRENT_BUNDLE_VERSION}.`,
+        `Unsupported bundle version: ${manifest.version}. This CLI supports versions ${SUPPORTED_BUNDLE_VERSIONS.join(", ")}.`,
       ),
     );
     process.exit(1);
@@ -103,7 +116,7 @@ export async function handleMigrateImport(
     `  Patterns:      ${manifest.counts.learnedPatterns}`,
   );
   console.log(`  Settings:      ${manifest.counts.settings}`);
-  if (manifest.version >= CURRENT_BUNDLE_VERSION) {
+  if (manifest.version >= PILLAR_SECTIONS_FROM_VERSION) {
     console.log(`  Dashboards:    ${manifest.counts.dashboards ?? 0}`);
     console.log(`  Knowledge:     ${manifest.counts.knowledgeDocuments ?? 0}`);
     console.log(`  Sched. tasks:  ${manifest.counts.scheduledTasks ?? 0}`);

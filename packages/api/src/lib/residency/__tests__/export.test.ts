@@ -32,13 +32,43 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
+/**
+ * Captured `warn` payloads, so the identity-drift line can be asserted
+ * BEHAVIOURALLY (#5035, panel round 2).
+ *
+ * The first cut of that assertion grepped `textOrNull`'s source for the
+ * substrings `value === null` and `log.warn` — and the INVERTED implementation
+ * (loud on the honest abstain, silent on the drift) contains both, so the pin
+ * passed for the exact defect it named. A pin derived from source text cannot
+ * falsify a change in what that text means.
+ */
+const warns: { payload: unknown; message: string }[] = [];
+
+// ⚠️ ALL TEN value exports of `lib/logger`. The partial factory this replaces
+// (`{ createLogger }` alone) is the trap this repo has recorded: `mock.module`
+// swaps the WHOLE module, so a missing export becomes `undefined` for every file
+// in the process. Reproduced by #5035's panel — running this suite in the same
+// bun process as `migrate-identity-logging.test.ts` fails with
+// `Export named 'getRequestContext' not found`, in a file with nothing to do
+// with this one. The isolated runner masks it; a plain `bun test` does not.
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
-    warn: () => {},
+    warn: (payload: unknown, message?: unknown) =>
+      warns.push({ payload, message: typeof message === "string" ? message : String(payload) }),
     error: () => {},
     debug: () => {},
+    level: "info",
   }),
+  getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
+  setLogLevel: () => true,
+  getRequestContext: () => undefined,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (obj: unknown) => obj,
+  hashShareToken: (token: string) => token,
 }));
 
 // ── Import after mocks ──────────────────────────────────────────────
@@ -53,6 +83,10 @@ function resetMocks() {
   }
   mockPoolQueryError = null;
   recordedQueries.length = 0;
+  // Reset with the rest. Without it a `toHaveLength(1)` further down is correct
+  // only because the test happens to clear the sink by hand, and the next test
+  // added in between false-fails it.
+  warns.length = 0;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -63,7 +97,7 @@ describe("exportWorkspaceBundle", () => {
   it("exports an empty bundle for a workspace with no data", async () => {
     const bundle = await exportWorkspaceBundle("org-1");
 
-    expect(bundle.manifest.version).toBe(2);
+    expect(bundle.manifest.version).toBe(3);
     expect(bundle.manifest.source.label).toBe("region-migration");
     expect(bundle.manifest.counts.conversations).toBe(0);
     expect(bundle.manifest.counts.messages).toBe(0);
@@ -459,7 +493,11 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
       status: "published",
       visible_to: ["audience:chat-channel:slack:C-FOUNDERS", "org"],
       pre_widening_visible_to: preWidening,
-      predicate_cardinality: "single",
+      subject_key: "acme",
+      predicate_key: "uses",
+      object_key: "postgres",
+      subject_cmp: "entity:01JSRC7X",
+      object_cmp: "money:USD:49",
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:05:00Z",
     };
@@ -529,5 +567,151 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
       seed(drift);
       expect((await exportedFact()).preWideningVisibleTo).toEqual([]);
     }
+  });
+
+  // ── the identity columns (#5035, ADR-0037 §8) ──────────────────────────
+
+  it("carries all five identity columns onto the wire", async () => {
+    seed(null);
+    const fact = await exportedFact();
+    expect(fact.subjectKey).toBe("acme");
+    expect(fact.predicateKey).toBe("uses");
+    expect(fact.objectKey).toBe("postgres");
+    // Both `_cmp` values travel from the EXPORTER. The entity-tagged one is
+    // dropped by the IMPORTER, not here — a bundle that omitted it could not be
+    // told apart from one whose source region had no entity store.
+    expect(fact.subjectCmp).toBe("entity:01JSRC7X");
+    expect(fact.objectCmp).toBe("money:USD:49");
+  });
+
+  it("degrades a non-string identity value to null rather than casting it", async () => {
+    // The `preWideningVisibleTo` argument at five more positions, and it lands
+    // harder here: the slot keys are join arms and `object_cmp` feeds the arm
+    // that stamps `valid_to`, so a value of the wrong runtime shape is not inert
+    // once it reaches the destination. `null` is already a legal, common value
+    // at all five, so the degraded state is one the destination handles — it
+    // costs an under-match, never a false claim of difference.
+    // All FIVE positions, not a representative one: they are five separate call
+    // sites with five separate arguments, and a copy-paste that passed the wrong
+    // column to one of them is exactly the defect a single-position loop cannot
+    // see.
+    const positions = [
+      ["subject_key", "subjectKey"],
+      ["predicate_key", "predicateKey"],
+      ["object_key", "objectKey"],
+      ["subject_cmp", "subjectCmp"],
+      ["object_cmp", "objectCmp"],
+    ] as const;
+
+    for (const [column, field] of positions) {
+      for (const drift of [undefined, 49, {}, ["postgres"]]) {
+        resetMocks();
+        mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+          rows: [
+            {
+              id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
+              body: "…", locator: null, occurred_at: null,
+              ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
+              visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
+            },
+          ],
+        };
+        mockPoolQueryResults["FROM brain_facts f"] = {
+          rows: [{ ...factRow(null), [column]: drift }],
+        };
+        const fact = await exportedFact();
+        expect(fact[field], `${column} drift (${String(drift)}) was not degraded`).toBeNull();
+      }
+    }
+  });
+
+  const driftWarn = () => warns.find((w) => w.message.includes("identity columns did not decode"));
+
+  it("is SILENT for a SQL null and LOUD for anything else", async () => {
+    // The three-state distinction the first cut of `textOrNull` did not make.
+    // An honest abstain arrives as `null` — a surface that norms away has no
+    // key, and NULL is how `unknown` is spelled at a `_cmp` — while a dropped
+    // column arrives as `undefined`. Folding them into one silence hides a
+    // corpus-wide degradation behind the ordinary case.
+    //
+    // ⚠️ Both directions, because only the PAIR distinguishes the shipped
+    // implementation from its inversion. A test that asserted only "drift
+    // warns" passes for a function that warns on everything, which is the
+    // shape that trains an operator to ignore the line.
+    // ⚠️ SQL NULLs at the identity positions, explicitly. `factRow` sets all
+    // five to non-empty strings, so `seed(null)` alone never reaches
+    // `textOrNull`'s `value === null` branch at all — and the "warns on
+    // EVERYTHING" implementation the paragraph above rules out would have
+    // survived this arm. Measured (#5035, panel round 3).
+    resetMocks();
+    mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+      rows: [
+        {
+          id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
+          body: "…", locator: null, occurred_at: null,
+          ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
+          visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+    };
+    mockPoolQueryResults["FROM brain_facts f"] = {
+      rows: [{ ...factRow(null), subject_key: null, object_key: null, subject_cmp: null, object_cmp: null }],
+    };
+    await exportWorkspaceBundle("org-1");
+    expect(
+      driftWarn(),
+      "an honest abstain warned — every fact with no key or an `unknown` comparable value now produces a line, which is most of them",
+    ).toBeUndefined();
+
+    resetMocks();
+    warns.length = 0;
+    mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+      rows: [
+        {
+          id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
+          body: "…", locator: null, occurred_at: null,
+          ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
+          visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+    };
+    // `undefined` — the column dropped out of the projection, at TWO positions
+    // and on two facts, so the payload's per-column counts are observable.
+    const dropped = { ...factRow(null) };
+    delete (dropped as Record<string, unknown>).subject_key;
+    delete (dropped as Record<string, unknown>).object_cmp;
+    mockPoolQueryResults["FROM brain_facts f"] = {
+      rows: [dropped, { ...dropped, id: "fact-2" }],
+    };
+    await exportWorkspaceBundle("org-1");
+
+    const warn = driftWarn();
+    expect(
+      warn,
+      "a dropped column is silent. It exports `null` for every fact, the destination accepts it (null is legitimate at all five positions), and the whole imported corpus lands unkeyed with a green 200 at both ends",
+    ).toBeDefined();
+    // ONE line for the corpus, naming the columns and their counts — not one
+    // per row. Five call sites over a 200k-fact workspace would otherwise be a
+    // million records inside a single export call.
+    expect(warns.filter((w) => w.message.includes("identity columns did not decode"))).toHaveLength(1);
+    // Keyed by column AND decoded type, so the line can tell "the SELECT
+    // dropped the column" (`undefined`) from "the driver stopped decoding it"
+    // (some other type) — two causes the message names and two different
+    // remediations.
+    expect(warn!.payload).toMatchObject({
+      columns: { "subject_key:undefined": 2, "object_cmp:undefined": 2 },
+      brainFacts: 2,
+    });
+  });
+
+  it("no longer SELECTs predicate_cardinality", async () => {
+    // v3 dropped it (#5027 moved cardinality onto the canonical predicate; the
+    // per-row values are LLM guesses). Asserted on the STATEMENT rather than on
+    // the exported object, because a column that is still selected and merely
+    // not mapped is still on the wire for #5028 to trip over.
+    seed(null);
+    await exportWorkspaceBundle("org-1");
+    const factQuery = recordedQueries.find((q) => q.sql.includes("FROM brain_facts f"));
+    expect(factQuery!.sql).not.toContain("predicate_cardinality");
   });
 });

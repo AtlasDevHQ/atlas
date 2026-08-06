@@ -175,10 +175,14 @@ export type DeclaredObjectType =
  * SURFACE into a column whose comparisons stamp `valid_to`. Under this type it
  * does not compile.
  *
- * It does NOT stop a hand-written `"money:garbage"` literal. That would need a
- * brand plus a `parseStoredComparable` entry point for values read back OUT of
- * the column — which #5035 will need anyway, and is the right time to add it.
- * The template literal is the part that is free today.
+ * It does NOT stop a hand-written `"money:garbage"` literal. #5035 added
+ * {@link regionPortableComparable} for the one caller that reads values it did
+ * not write — the region importer — and that is where a foreign value is
+ * re-admitted or refused. It is the module's ONLY export that hands out a
+ * comparable read back off the wire, deliberately: an exported second one is a
+ * producer the importer's destination type accepts, which is how #5032's brand
+ * was bypassed one column over. The template literal is the part that is free
+ * today.
  */
 export type TaggedComparable = `${ComparableTag}${typeof TAG_SEPARATOR}${string}`;
 
@@ -381,7 +385,21 @@ function canonicalInstant(raw: string): string | null {
   if (canonicalDate(`${year}-${month}-${day}`) === null) return null;
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toISOString();
+  const iso = parsed.toISOString();
+  // ⚠️ NOT a fixpoint otherwise, and #5035's panel measured the one input that
+  // proves it: `9999-12-31T23:00:00-05:00` is accepted by `INSTANT_RE` (which
+  // requires a 4-digit year) and canonicalizes to `+010000-01-01T04:00:00.000Z`,
+  // because `toISOString` switches to the EXPANDED-year form once the offset
+  // pushes the instant past year 9999.
+  //
+  // That matters beyond tidiness: the region importer re-admits a stored value
+  // only if it is a fixpoint of this function, so an expanded-year instant this
+  // very function produced would be refused on the way back in and reported to
+  // an operator as *"the source region wrote a payload this deployment cannot
+  // read — check whether the two regions are on compatible releases"*, with both
+  // regions on the same release. `f(f(x)) === f(x)` is the property the whole
+  // canonicalization layer rests on; this is where it was one input short.
+  return /^\d{4}-/.test(iso) ? iso : null;
 }
 
 /**
@@ -615,7 +633,11 @@ export interface ComparableInput {
  *     unparseable majority. Pinned by `object-cmp.test.ts`.
  *
  * Split because a warn on the first is noise per claim and buries the second.
- * `reconcile.ts` is the only caller that needs it; #5035 will want it too.
+ * `reconcile.ts` is still the only caller. The prediction that #5035 would want
+ * it too was WRONG, and the reason is worth keeping: the region importer does
+ * not PARSE a surface, it re-admits a value another region already parsed —
+ * a different question, answered by {@link regionPortableComparable}. The two
+ * paths share the tag reader and nothing else.
  */
 export type ComparableReason = "resolved" | "abstained" | "declaration-rejected";
 
@@ -727,10 +749,10 @@ function applyDeclaration(
  * what the separate `strpos` arm is for, and its docstring records the measured
  * failure it closes.
  *
- * This function has no production consumer. It exists for the agreement oracle
- * in `object-cmp-corpus.ts`, and from #5035 for the null-at-import decision,
- * where a mis-tag means a store-local id travels verbatim as counterfeit
- * evidence of difference.
+ * Its production consumer since #5035 is {@link regionPortableComparable}, the
+ * null-at-import decision, where a mis-tag means a store-local id travels
+ * verbatim as counterfeit evidence of difference. It also serves the agreement
+ * oracle in `object-cmp-corpus.ts`.
  */
 export function comparableTag(value: string): ComparableTag | null {
   const boundary = value.indexOf(TAG_SEPARATOR);
@@ -742,6 +764,271 @@ export function comparableTag(value: string): ComparableTag | null {
   if (boundary === -1) return null;
   const head = value.slice(0, boundary);
   return (COMPARABLE_TAGS as readonly string[]).includes(head) ? (head as ComparableTag) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Reading a value back OUT of the column (#5035, ADR-0037 §8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Does a value of this tag MEAN the same thing in another region?
+ *
+ * The table the null-at-import rule branches on, and it is separate from
+ * {@link PAYLOAD_IS_CANONICAL} because the two answer different questions and
+ * only one of them is irreversible when answered wrong. That one is this one: a
+ * `store-local` value carried into another region is counterfeit positive
+ * evidence of DIFFERENCE and buys an autonomous `valid_to` stamp, where a
+ * payload-grammar mistake costs a missed supersession.
+ *
+ * ⚠️ It exists as a `Record` over the FULL tag union — `entity` included — for
+ * exactly one reason: a second store-local tag is a plausible future (`person:`,
+ * `account:`) and the carry decision must be where it lands as a compile error.
+ * Round 2 of #5035's panel measured the alternative: with the branch spelled
+ * `tag === ENTITY_TAG ? drop : carry`, a new tag hits the payload table first,
+ * takes the natural entry for an opaque store id — `person: () => true` — and
+ * then travels verbatim, which is the defect this whole slice exists to prevent
+ * reached by adding a tag.
+ */
+const REGION_PORTABILITY: Readonly<Record<ComparableTag, "region-invariant" | "store-local">> = {
+  // The parse read a SURFACE and no store, so the same input produces the same
+  // bytes in either region.
+  money: "region-invariant",
+  number: "region-invariant",
+  date: "region-invariant",
+  time: "region-invariant",
+  bool: "region-invariant",
+  // An id minted by THIS workspace's entity store. Non-null and, by
+  // construction, unequal to every id another region mints for the same real
+  // entity.
+  entity: "store-local",
+};
+
+/**
+ * Is this payload a FIXPOINT of the canonicalizer that owns its tag?
+ *
+ * One entry per non-entity tag, each CALLING the canonicalizer rather than
+ * re-stating its grammar — the same relationship `parseSurface` has to them, so
+ * a rule tightened in one place tightens here in the same commit. `entity` has
+ * no entry: its payload is a store id, opaque by design, and it never reaches
+ * this table because {@link regionPortableComparable} drops the tag outright.
+ *
+ * A `Record` keyed on the tag union, so adding a member to {@link COMPARABLE_TAGS}
+ * is a COMPILE ERROR here rather than a value that silently falls through to
+ * "admitted". Note what that compile error does and does not force: a decision
+ * about the tag's GRAMMAR. The PORTABILITY decision — the irreversible one — is
+ * forced separately by {@link REGION_PORTABILITY}, because answering only the
+ * grammar question is how a new store-local tag ends up travelling.
+ */
+const PAYLOAD_IS_CANONICAL: Readonly<
+  Record<Exclude<ComparableTag, typeof ENTITY_TAG>, (payload: string) => boolean>
+> = {
+  number: (p) => canonicalDecimal(p) === p,
+  date: (p) => canonicalDate(p) === p,
+  time: (p) => canonicalInstant(p) === p,
+  bool: (p) => canonicalBool(p) === p,
+  // `USD:499` — the currency and the amount, split on the FIRST separator so an
+  // amount containing one cannot smuggle a currency past the check.
+  money: (p) => {
+    const boundary = p.indexOf(TAG_SEPARATOR);
+    if (boundary === -1) return false;
+    return (
+      canonicalCurrency(p.slice(0, boundary)) === p.slice(0, boundary) &&
+      canonicalDecimal(p.slice(boundary + TAG_SEPARATOR.length)) === p.slice(boundary + TAG_SEPARATOR.length)
+    );
+  },
+};
+
+/**
+ * Why a stored comparable value was refused, or that it was not.
+ *
+ * MODULE-PRIVATE. {@link regionPortableComparable} is the only export, because
+ * every exported function that returns a `ComparableValue` is a producer the
+ * importer's destination type accepts — which is how #5032's brand was bypassed
+ * one column over, and how round 2 of this slice's panel found this one.
+ *
+ * The `unreadable` arm carries no reason code. Three were written (`no-tag`,
+ * `empty-payload`, `payload`) and nothing read them: `regionPortableComparable`
+ * folds them into one outcome and the operator log folds that again. A field
+ * three values wide that collapses before anything observes it is a field a
+ * mutation cannot kill.
+ */
+type StoredComparableVerdict =
+  | { readonly kind: "absent" }
+  /** Well-formed and readable by this region. */
+  | { readonly kind: "admitted"; readonly value: TaggedComparable; readonly tag: ComparableTag }
+  /** No known tag, an empty payload, or a payload this region cannot read. */
+  | { readonly kind: "unreadable" };
+
+/**
+ * Re-admit a value read back out of `object_cmp` / `subject_cmp`, or refuse it.
+ *
+ * The entry point {@link TaggedComparable}'s docstring anticipated: the template
+ * literal stops a raw SURFACE being bound into the column, and stops nothing at
+ * all about a `"money:garbage"` that arrives from OUTSIDE this process. The one
+ * caller that reads stored values it did not write is the region importer, so
+ * this is where the re-admission check lives.
+ *
+ * Three checks, and the third exists because the first version of this function
+ * skipped it on an argument that was **wrong** (#5035, panel round 1):
+ *
+ *   - a KNOWN tag ({@link comparableTag}, which refuses a separator-less value
+ *     rather than reading `moneys` as `money`);
+ *   - a non-empty payload. `entity:` with nothing after it is the
+ *     truncated-import shape `comparableDifferentSql`'s `strpos` arms refuse,
+ *     and a value the SQL refuses has no business being stored;
+ *   - the payload is a **fixpoint of this region's canonicalizer for that tag**
+ *     ({@link PAYLOAD_IS_CANONICAL}).
+ *
+ * ⚠️ **The retracted argument, recorded because it is the plausible one.** The
+ * first cut admitted any non-empty payload, reasoning that a value this module
+ * would no longer produce — a grammar tightened between the two regions'
+ * releases — *"compares unequal to everything and proves nothing"*, so refusing
+ * it would silently drop evidence. **That is false, and it is false in the
+ * direction that stamps.** *Different* is `a <> b AND same tag`, so an
+ * unreadable payload proves DIFFERENCE against every honest local value of its
+ * own type. Worked: region A on an older release exports `date:2026-02-31` (the
+ * calendar round-trip in {@link canonicalDate} is what refuses that, and it was
+ * added by a review round — so rows predating it are producible). Region B
+ * imports it, later observes the same claim as `date:2026-03-01`, and the pair
+ * is same-tag and unequal: **provably different**, `valid_to` stamped
+ * autonomously on the one write ADR-0036 reserves for a human. The regions are
+ * independently deployed and the bundle version does not track this grammar, so
+ * the skew is ordinary rather than exotic.
+ *
+ * Refusing costs a missed supersession — `unknown`, tension, a human. Admitting
+ * costs a stamp with no inverse. Every judgement call in this module resolves
+ * toward `null` for that reason, and this one was the exception by accident.
+ *
+ * Returns a VERDICT rather than a bare value, on {@link comparableValueWithReason}'s
+ * precedent one screen up: the importer has to tell an expected `entity:` drop
+ * from *"the source region wrote something this region cannot read"*, and those
+ * are the same `null` without it.
+ */
+function readStoredComparable(value: string | null | undefined): StoredComparableVerdict {
+  if (typeof value !== "string" || value === "") return { kind: "absent" };
+  const tag = comparableTag(value);
+  if (tag === null) return { kind: "unreadable" };
+  const payload = value.slice(tag.length + TAG_SEPARATOR.length);
+  if (payload === "") return { kind: "unreadable" };
+  // `entity` has no canonicalizer — a store id is opaque, and the caller drops
+  // the tag before the value is ever stored, so the only property that matters
+  // here is that the payload exists.
+  if (tag !== ENTITY_TAG && !PAYLOAD_IS_CANONICAL[tag](payload)) {
+    return { kind: "unreadable" };
+  }
+  return { kind: "admitted", value: value as TaggedComparable, tag };
+}
+
+/**
+ * What survives a region hop — the null-at-import rule, ADR-0037 §8.
+ *
+ * ⚠️ **An `entity:`-tagged value is nulled, and this is the whole point.** A
+ * store-local id has no meaning in the destination region: it is non-null and,
+ * by construction, unequal to every id the destination mints for the SAME real
+ * entity. At `object_cmp` that is counterfeit positive evidence of DIFFERENCE —
+ * *different* is "both non-null, same tag, unequal", the arm that becomes
+ * `supersessionCollisionJoin` — so promoting a destination draft about the same
+ * entity stamps `valid_to` on the imported claim, autonomously, on the one write
+ * ADR-0036 reserves for a human. **A verbatim-carried entity id is strictly
+ * worse than NULL**: NULL is `unknown`, which surfaces as tension and reaches a
+ * reviewer.
+ *
+ * Every other tag travels verbatim. `money:USD:499`, `number:499`,
+ * `date:2026-08-04`, `time:…Z` and `bool:true` are region-invariant — the parse
+ * that produced them read a surface and no store — so nulling them would throw
+ * away real evidence for no hazard.
+ *
+ * **Applied at BOTH positions, one rule.** T12's inverted polarity makes a
+ * foreign id at the SUBJECT fail safe rather than destructively (it reads as
+ * *different* → suppress → a missed corroboration, recoverable), but suppression
+ * would be TOTAL for the migrated corpus, so nulling restores `unknown` at both
+ * positions — which is exactly the pre-migration behaviour. At the subject the
+ * effect is "NULL for every value the column's own writer can produce", since
+ * `subjectComparableValue` emits nothing but `entity:`; the rule is stated by
+ * tag rather than by position so the two cannot drift about what a store-local
+ * id is.
+ *
+ * A row whose value this drops is marked `provenance.provisional` by the caller
+ * — the marker's one job, *this row's comparable value is worth recomputing*,
+ * and what makes the null-out recoverable rather than merely safe.
+ *
+ * The three refusals are kept APART in the return value and folded together
+ * only by the column, because they mean different things to an operator:
+ * `store-local` is the rule working, and `unreadable` is the two regions
+ * disagreeing about what a comparable value looks like — a drift the caller
+ * logs, since nothing else in the system would ever mention it.
+ */
+declare const regionPortableBrand: unique symbol;
+
+/**
+ * A comparable value that came from {@link regionPortableComparable} — the ONLY
+ * shape the region importer may bind into `subject_cmp` / `object_cmp`.
+ *
+ * ⚠️ **A brand, and the third time this slice has needed one at this column.**
+ * #5032 branded `subject-cmp.ts`'s parameter, then had to brand its OUTPUT
+ * because an exported sibling producer satisfied the destination with no cast.
+ * #5035 round 1 typed the importer's destination `ComparableValue`, which closed
+ * `fact.subjectCmp ?? null`; round 2 deleted `parseStoredComparable`, which
+ * closed one more spelling. Round 3 measured what was left and found SEVEN
+ * cast-free reintroductions still compiling — `entityComparable(x)`,
+ * `comparableValue({…})`, `comparableValueWithReason({…}).value`,
+ * `subjectComparableValue(id)`, a bare `"entity:01J…"` literal, and a template
+ * built from `ENTITY_TAG`.
+ *
+ * Those producers are all LEGITIMATE for other destinations — `entityComparable`
+ * is `comparableValueWithReason`'s first arm and `subject-cmp.ts`'s only source;
+ * `comparableValue` is `reconcile.ts`'s — so deleting them is not available and
+ * a third deletion round would not converge. `ComparableValue` says *"shaped
+ * like `<tag>:<payload>`"*, which is the half a sibling can forge; this says
+ * *"was judged portable by the region rule"*, which is a provenance claim and is
+ * what the rule is actually about.
+ *
+ * The `null` abstain stays plain and constructible anywhere, deliberately: it
+ * carries nothing and forges nothing.
+ */
+export type RegionPortableComparable =
+  | (TaggedComparable & { readonly [regionPortableBrand]: true })
+  | null;
+
+export type RegionCarryOutcome =
+  | { readonly reason: "carried"; readonly value: NonNullable<RegionPortableComparable> }
+  | { readonly reason: "absent" | "store-local" | "unreadable"; readonly value: null };
+
+export function regionPortableComparable(stored: string | null | undefined): RegionCarryOutcome {
+  const verdict = readStoredComparable(stored);
+  switch (verdict.kind) {
+    case "absent":
+      return { value: null, reason: "absent" };
+    case "unreadable":
+      return { value: null, reason: "unreadable" };
+    case "admitted":
+      // Branched on the PORTABILITY table, never on `tag === ENTITY_TAG`. The
+      // literal comparison is what lets a second store-local tag travel: it
+      // answers "is this the one store-local tag we had in 2026" rather than
+      // "is this value portable".
+      // THE seam. The cast is sound here and only here: `verdict.value` reached
+      // this line through `readStoredComparable`'s tag, payload and fixpoint
+      // arms, and this branch is the portability judgement itself — which is
+      // exactly the provenance {@link RegionPortableComparable} asserts.
+      return REGION_PORTABILITY[verdict.tag] === "store-local"
+        ? { value: null, reason: "store-local" }
+        : {
+            value: verdict.value as NonNullable<RegionPortableComparable>,
+            reason: "carried",
+          };
+    default: {
+      // Throws rather than falling through to a value: a new verdict arm
+      // reaching here unhandled would otherwise take the CARRY branch by
+      // default, which is the irreversible direction.
+      // `.kind` only. The verdict carries the claim's own comparable VALUE, and
+      // `admin-migrate.ts` echoes `err.message` into the 500 body — customer
+      // claim content in an error response, for no diagnostic gain.
+      const exhaustive: never = verdict;
+      throw new Error(
+        `regionPortableComparable: unhandled verdict kind ${String((exhaustive as { kind?: unknown }).kind)}`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -781,10 +1068,14 @@ export function comparableTag(value: string): ComparableTag | null {
  * where the disagreement costs a `valid_to` stamp.
  *
  * Unreachable from `comparableValue`, which always emits a separator — and that
- * is precisely the point: #5035 makes the region importer a SECOND writer of
- * this column, and an importer that nulls a store-local id by writing the
+ * is precisely the point: since #5035 the region importer IS a second writer of
+ * this column, and an importer that nulled a store-local id by writing the
  * discriminator alone, or any truncation that drops a payload, produces exactly
- * `'entity'`. It agrees with
+ * `'entity'`. That writer refuses the shape at its own end too
+ * ({@link regionPortableComparable}'s empty-payload arm), so the two are belt
+ * and braces rather than one guard: this arm is what keeps the column safe
+ * against a THIRD writer, and against a row already at rest when this one
+ * shipped. It agrees with
  * {@link comparableTag} on bytes rather than on a shared parser, which is the
  * same two-implementations-must-agree shape migration 0187 records for
  * `lexicalNorm` — and `object-cmp-pg.test.ts` compares them row by row for the
@@ -905,6 +1196,8 @@ export function comparableSameSql(a: string, b: string): string {
 // Not fixed by adding a third arm here. Enumerating malformed shapes in two SQL
 // builders is the wrong shape for the class, and migration 0191's header
 // records the right one — a `CHECK` on the column, which makes every reader
-// safe against any second writer and is sequenced with #5035, the issue that
-// creates one. Unreachable from `comparableValue`, which is the only writer
-// until then.
+// safe against any second writer. #5035 created that second writer (the region
+// importer) and closed the shape at its own end with
+// {@link regionPortableComparable} rather than with a constraint, so the `CHECK` is
+// still unwritten and still the right answer for the next writer after it.
+// Unreachable from `comparableValue`, and unreachable from the importer.

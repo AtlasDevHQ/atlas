@@ -561,9 +561,13 @@ function supersedableTierSql(alias: string): string {
  *
  *   - Rows written between migration 0187 and #5020 — closed by 0188, which
  *     repeats 0187's re-runnable backfill in #5020's own deploy.
- *   - Rows a region import lands, until #5035 carries keys verbatim on the v3
- *     bundle (`admin-migrate.ts`'s 18-column INSERT names no key column). A
- *     backfill cannot own this one: it runs at boot, the import runs on demand.
+ *   - Rows a region import landed before #5035, when `admin-migrate.ts`'s INSERT
+ *     named no key column. A backfill cannot own this one — it runs at boot, an
+ *     import runs on demand — so #5035 fixed it at the writer: a v3 bundle
+ *     carries the keys verbatim, and a v1/v2 bundle's facts are keyed once at
+ *     import against this region's post-merge vocabulary. An imported row can
+ *     still key to a norm this vocabulary cannot produce, which is an
+ *     under-match rather than an absent key, and ADR-0037 §8's chosen direction.
  *   - A surface that norms away (`-`, `___`) — PERMANENT and legal, per
  *     `identityKey`'s ⚠️. No backfill repairs it; `reconcile.ts` warns at
  *     ingest, which is the only signal such a claim ever produces.

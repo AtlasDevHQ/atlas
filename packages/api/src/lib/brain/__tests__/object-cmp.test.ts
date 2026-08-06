@@ -75,7 +75,9 @@ import {
   comparableTag,
   comparableValue,
   comparableValueWithReason,
+  regionPortableComparable,
   type DeclaredObjectType,
+  type TaggedComparable,
 } from "@atlas/api/lib/brain/object-cmp";
 // The corpus and the agreement oracle live in a non-`.test.ts` sibling so this
 // suite and `object-cmp-pg.test.ts` can share them without the isolated runner
@@ -525,6 +527,202 @@ describe("the tag is a contract (#5035 reads it)", () => {
       "entityx",
     ]) {
       expect(comparableTag(value), `\`${value}\` read as tagged`).toBeNull();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reading a value back out of the column (#5035, ADR-0037 §8)
+// ---------------------------------------------------------------------------
+
+describe("what survives a region hop", () => {
+  /**
+   * One well-formed stored value per REGION-INVARIANT tag.
+   *
+   * Typed rather than left as a bare `string[]` so the fixtures are checked
+   * against the shape the column actually holds, and shared between the two
+   * tests below so the "every tag is decided" assertion cannot pass over a
+   * shorter list than the carry assertion used.
+   */
+  const VALUE_TYPED: readonly TaggedComparable[] = [
+    "money:USD:499",
+    "number:499",
+    "date:2026-08-04",
+    "time:2026-08-04T08:00:00.000Z",
+    "bool:true",
+  ];
+
+  test("re-admits a well-formed value and refuses the rest", () => {
+    // ⚠️ Asserted through `regionPortableComparable`, which is the module's ONLY
+    // export that hands out a comparable read back off the wire. Round 2 of
+    // #5035's panel found the reason it has to be: an exported
+    // `parseStoredComparable` returned a `ComparableValue` and admitted
+    // `entity:` verbatim, so `subjectCmp: parseStoredComparable(fact.subjectCmp)`
+    // compiled with NO CAST and reintroduced the whole defect — #5032's
+    // sibling-producer bypass, one column over. It was deleted; the re-admission
+    // arms are asserted through the survivor.
+    //
+    // `reason` is what separates the two `null`s: `unreadable` (refused) from
+    // `store-local` (the rule) and `absent` (nothing arrived).
+    for (const value of VALUE_TYPED) {
+      expect(regionPortableComparable(value), `\`${value}\` was refused`).toMatchObject({
+        value,
+        reason: "carried",
+      });
+    }
+    // An entity id is well-formed and re-admitted — then dropped as store-local.
+    expect(regionPortableComparable("entity:01J").reason).toBe("store-local");
+    for (const bad of [
+      null,
+      undefined,
+      // No tag at all — a raw surface that reached the column somehow.
+      "499",
+      "Enterprise tier",
+      // A tag this module does not know.
+      "currency:USD:499",
+      // ⚠️ The truncated-import shapes. `entity:` with an empty payload is
+      // exactly what `subjectNotDifferentSql`'s SQL arms refuse, and a value the
+      // SQL refuses has no business being stored — otherwise a truncated import
+      // lands a row whose comparisons the database and this module disagree on.
+      "entity:",
+      "money:",
+      "",
+      ":",
+    ]) {
+      expect(regionPortableComparable(bad).reason, `\`${String(bad)}\` was admitted`).not.toBe(
+        "carried",
+      );
+    }
+  });
+
+  test("REFUSES a payload this region cannot re-derive", () => {
+    // ⚠️ The first cut of this function ADMITTED these, reasoning that an
+    // unreadable payload "compares unequal to everything and proves nothing".
+    // That is false in the direction that stamps: *different* is `a <> b AND
+    // same tag`, so an unreadable payload proves DIFFERENCE against every honest
+    // local value of its own type, and the publish gate stamps `valid_to` on it
+    // with no human. Region skew produces exactly these — the two regions are
+    // independently deployed and the bundle version does not track this grammar.
+    for (const bad of [
+      // The impossible calendar day `canonicalDate`'s round-trip refuses. A
+      // region predating that check could have written it; here it would read as
+      // provably different from a genuine `date:2026-03-01`.
+      "date:2026-02-31",
+      // THREE letters, not ISO-4217 — the shape `CURRENCY_SHAPE_RE` accepts and
+      // the membership set refuses. (An earlier fixture here was `ZZZ9`, four
+      // characters, which never reaches the membership arm its comment named.)
+      "money:ZZZ:499",
+      "money:MOS:12",
+      // A payload that is not a fixpoint of its own canonicalizer.
+      "number:0499",
+      "number:1,499",
+      "bool:TRUE",
+      "time:2026-08-04T08:00:00+02:00",
+      // Money with no currency/amount split at all.
+      "money:499",
+    ]) {
+      expect(regionPortableComparable(bad), `\`${bad}\` was admitted`).toMatchObject({
+        value: null,
+        reason: "unreadable",
+      });
+    }
+
+    // …and the positive control on the same axis: a payload this region WOULD
+    // produce is admitted, so the refusals above are a grammar check rather than
+    // a blanket refusal of every money/date value.
+    const CANONICAL: readonly TaggedComparable[] = [
+      "date:2026-03-01",
+      "money:USD:499",
+      "number:499",
+      "bool:true",
+    ];
+    for (const good of CANONICAL) {
+      expect(regionPortableComparable(good), `\`${good}\` was refused`).toMatchObject({
+        value: good,
+        reason: "carried",
+      });
+    }
+  });
+
+  test("the fixpoint check CALLS the canonicalizers rather than re-stating them", () => {
+    // The property that keeps the import path and the ingest path from drifting:
+    // a value this region's own parser produces from a surface must survive a
+    // round-trip through the stored-value reader. Asserted over the corpus the
+    // parser is already tested against, so a grammar change tightened in one
+    // place cannot leave the other admitting what it now refuses.
+    for (const surface of ["499 USD", "499", "2026-08-04", "2026-08-04T08:00:00Z", "true"]) {
+      const produced = comparableValue({ surface });
+      expect(produced, `\`${surface}\` stopped parsing`).not.toBeNull();
+      expect(
+        // `String(...)` because the carried value is BRANDED — deliberately not
+        // assignable from `comparableValue`'s output, which is the guard itself
+        // (round 3 measured `comparableValue({…})` as one of seven cast-free
+        // spellings that satisfied the unbranded destination). The bytes are
+        // what this test is about.
+        String(regionPortableComparable(produced).value),
+        `\`${produced}\` is produced by comparableValue but refused on the way back in — the two are now different grammars`,
+        // `produced!` rather than `String(produced)`: the assertion above proves
+        // it is non-null, and `String(null)` would make this pass vacuously if
+        // it ever were.
+      ).toBe(produced!);
+    }
+  });
+
+  test("drops an entity id and carries every value-typed tag", () => {
+    // THE rule. A store-local id is non-null and, by construction, unequal to
+    // every id the destination mints for the same real entity — at `object_cmp`
+    // that is counterfeit positive evidence of DIFFERENCE, which is the arm that
+    // stamps `valid_to`. Strictly worse than the NULL it replaces, because NULL
+    // is `unknown` and reaches a human.
+    expect(regionPortableComparable("entity:01JSOURCE7X")).toMatchObject({
+      value: null,
+      reason: "store-local",
+    });
+    // Not a length or a prefix test: an entity id whose payload happens to look
+    // like money is still an entity id.
+    expect(regionPortableComparable("entity:USD:499").value).toBeNull();
+
+    // Region-invariant parses travel. These read a SURFACE and no store, so the
+    // same input produces the same bytes in either region.
+    for (const value of VALUE_TYPED) {
+      expect(regionPortableComparable(value), `\`${value}\` was dropped`).toMatchObject({
+        value,
+        reason: "carried",
+      });
+    }
+
+    // Every tag is covered by one arm or the other, and the split is checked
+    // against the vocabulary rather than against this test's own list — a tag
+    // added to COMPARABLE_TAGS with no decision here would otherwise fall
+    // silently into the "travels" arm, which is the carry direction.
+    const decided = new Set<string>([ENTITY_TAG, ...VALUE_TYPED.map((v) => comparableTag(v)!)]);
+    expect([...COMPARABLE_TAGS].filter((t) => !decided.has(t))).toEqual([]);
+  });
+
+  test("a malformed stored value is dropped, not carried — and says so distinctly", () => {
+    // The fail-closed direction, and it is the one that matters: an unreadable
+    // value is same-tag-and-unequal against every honest local value of its
+    // type, so carrying one manufactures difference out of a string nobody can
+    // interpret.
+    //
+    // The REASON is asserted, not just the null. `store-local` is the design
+    // working and `unreadable` is two regions disagreeing about what a
+    // comparable value looks like — the importer logs the second and an operator
+    // acts on it, so collapsing them into one `null` is the silent failure this
+    // return shape exists to prevent.
+    for (const bad of ["499", "entity:", "wat:1", "money:ZZZ9:499", "date:2026-02-31"]) {
+      expect(regionPortableComparable(bad), `\`${bad}\` was carried`).toMatchObject({
+        value: null,
+        reason: "unreadable",
+      });
+    }
+    // …and a genuinely absent value is neither: nothing was lost, so nothing is
+    // worth recomputing and the row must not be marked `provisional`.
+    for (const absent of [null, undefined, ""]) {
+      expect(regionPortableComparable(absent), `\`${String(absent)}\``).toMatchObject({
+        value: null,
+        reason: "absent",
+      });
     }
   });
 });

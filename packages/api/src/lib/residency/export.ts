@@ -85,6 +85,65 @@ function preWideningGrant(value: unknown, factId: unknown): string[] | null {
 }
 
 /**
+ * A nullable `text` column, degraded to `null` for anything that is not a
+ * string. The five identity columns (#5035, ADR-0037 §8) go through it.
+ *
+ * Not a cast, and not decoration. `preWideningGrant` above makes the same call
+ * for the same reason: the destination BRANCHES on these values — the slot keys
+ * are join arms and `object_cmp` feeds the arm that stamps `valid_to` — so a
+ * value of the wrong runtime shape is not inert once it lands. `null` is already
+ * a legitimate, common value at all five positions (a surface that norms away
+ * has no key; NULL is how `unknown` is spelled at a `_cmp`), so the degraded
+ * state is one the destination already handles, and it costs an under-match
+ * rather than a false claim of difference.
+ *
+ * ⚠️ **THREE states, not two, and it warns on the third** — `preWideningGrant`'s
+ * structure, one column family over. A SQL `NULL` is an honest abstain and is
+ * silent; ANYTHING else non-string means the SELECT dropped the column or the
+ * driver stopped decoding it, and that is not evidence of an abstain.
+ *
+ * The first cut of this function was silent on both, on the reasoning that
+ * *"a log line per drift would be indistinguishable from a log line per honest
+ * abstain"*. **That reasoning was wrong** (#5035, panel round 1): an abstain
+ * arrives as `null` and a dropped column arrives as `undefined`, so the two are
+ * trivially separable — and `preWideningGrant`, eight lines up and cited by that
+ * comment as making the same call, already separates them. The failure the
+ * silence hid is corpus-wide: `f.subject_key` stops arriving → every fact
+ * exports `null` → the destination accepts it (null is legitimate) → the whole
+ * imported corpus lands UNKEYED, which is the exact pre-#5035 state this slice
+ * exists to end, with a green `200` at both ends. The destination's
+ * `provisional` marker does not cover it either — that reads only the two `_cmp`
+ * positions.
+ *
+ * ⚠️ It COUNTS rather than logging, and the caller emits one line (#5035, panel
+ * round 2). `preWideningGrant`'s per-row warn is affordable because its drift is
+ * per-row; this one's is not. The trigger named above is a projection or driver
+ * change, so it fires on **every row at every column** — five call sites × a
+ * 200k-fact workspace is a million `warn` records inside one export call, which
+ * is the "trains an operator to skim" failure the importer's own aggregate warn
+ * argues against 400 lines away.
+ */
+function textOrNull(
+  value: unknown,
+  // A literal union, not `string`: five call sites pass five spellings that must
+  // match the vocabulary an operator reads in the log, and a typo would create a
+  // drift counter nobody can find.
+  column: "subject_key" | "predicate_key" | "object_key" | "subject_cmp" | "object_cmp",
+  drift: Record<string, number>,
+): string | null {
+  if (value === null) return null;
+  if (typeof value === "string") return value;
+  // Keyed by column AND decoded type. The message names two causes — the SELECT
+  // dropped the column, or the driver stopped decoding it — and they have
+  // different remediations (revert a query change vs redeploy). Keyed on the
+  // column alone the line cannot tell an operator which, which is what the
+  // per-row `actualType` used to carry before this became an aggregate.
+  const key = `${column}:${value === undefined ? "undefined" : typeof value}`;
+  drift[key] = (drift[key] ?? 0) + 1;
+  return null;
+}
+
+/**
  * Org scoping for a bundle export. The region-migration executor always
  * passes a concrete org id; the `atlas-operator export` CLI passes `null`
  * for a no-auth self-hosted instance whose rows carry `org_id IS NULL`.
@@ -294,12 +353,40 @@ export async function exportWorkspaceBundle(
     // The two scopings agree because `fk_brain_facts_episode` is a composite
     // FK on (workspace_id, source_episode_id): a fact hanging off another
     // workspace's episode is unrepresentable, so the join can't widen scope.
+    //
+    // ⚠️ The five IDENTITY columns are projected here and NOWHERE ELSE in the
+    // tree (#5035, ADR-0037 §8, bundle v3). `keys-not-on-the-wire.test.ts` makes
+    // that prohibition structural and names this file as one of the three
+    // row-copy sites §8 exempts; read its ROW_COPY_SITES entry before adding a
+    // sixth reader.
+    //
+    // Keys travel VERBATIM. The failure directions are what settle it, not a
+    // preference: carrying fails to UNDER-match (an imported row keys to a norm
+    // the destination's vocabulary cannot produce, so it collides with nothing
+    // until a human curates — #5000 at a region boundary), while re-deriving at
+    // the destination fails to OVER-match (a destination alias the source lacks
+    // merges imported facts into a slot they never belonged to, and publish then
+    // stamps `valid_to` across the merge). Only one of those is recoverable.
+    //
+    // The `_cmp` columns are projected but NOT unconditionally kept: the
+    // importer nulls every `entity:`-tagged value, because a store-local id is
+    // counterfeit positive evidence of difference in another region
+    // (`regionPortableComparable`). They travel rather than being dropped from
+    // the format because the null-out is the IMPORTER's decision, and a bundle
+    // that omitted them could not be told from one whose source had no store.
+    //
+    // `predicate_cardinality` is GONE from v3. #5027 moved cardinality onto the
+    // canonical predicate, and the per-row values are LLM guesses — carrying one
+    // forward would restore a guess as a curated decision. #5028 drops the
+    // column itself.
     pool.query(
       `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
+              f.subject_key, f.predicate_key, f.object_key,
+              f.subject_cmp, f.object_cmp,
               f.valid_from, f.valid_to, f.ingested_at, f.invalidated_at,
               f.extracted_at, f.provenance, f.status, f.visible_to,
               f.pre_widening_visible_to,
-              f.predicate_cardinality, f.created_at, f.updated_at
+              f.created_at, f.updated_at
        FROM brain_facts f
        JOIN brain_episodes e ON e.id = f.source_episode_id
        WHERE ${scopeClause("e.workspace_id", orgScope)}
@@ -568,6 +655,10 @@ export async function exportWorkspaceBundle(
   // Facts nest under their episode, mirroring links-under-documents above:
   // the nesting IS the FK ordering the importer needs, so it can never write a
   // fact before the episode its NOT NULL provenance FK points at.
+  // Per-column drift counts for the five identity columns, aggregated across the
+  // whole corpus and reported once below — see {@link textOrNull} for why a
+  // per-row line is the wrong shape here specifically.
+  const identityDrift: Record<string, number> = {};
   const factsByEpisode = new Map<string, ExportedBrainFact[]>();
   for (const f of brainFactResult.rows) {
     const episodeId = f.source_episode_id as string;
@@ -607,10 +698,39 @@ export async function exportWorkspaceBundle(
       // which overlaps no reader token and therefore withholds from everyone:
       // over-withholding is recoverable, disclosure is not.
       preWideningVisibleTo: preWideningGrant(f.pre_widening_visible_to, f.id),
-      predicateCardinality: f.predicate_cardinality as ExportedBrainFact["predicateCardinality"],
+      // The identity slot and the two comparable values (#5035, ADR-0037 §8).
+      //
+      // `textOrNull` rather than a cast, and the reason is the same one
+      // `preWideningVisibleTo` gives one line up: the importer's behaviour
+      // BRANCHES on these, so a value of the wrong runtime shape is not inert
+      // here. A cast would put whatever the driver returned into a column the
+      // destination's collision join reads with `=` and `<>` — and at
+      // `object_cmp` the arm it feeds stamps `valid_to`. Degrading to `null`
+      // costs an under-match a human can repair; anything else is the
+      // irreversible direction.
+      //
+      // v3 REQUIRES all five, and `null` is a legitimate value at every one of
+      // them: a surface that norms away has no key, permanently, and NULL is how
+      // `unknown` is spelled at a `_cmp`.
+      subjectKey: textOrNull(f.subject_key, "subject_key", identityDrift),
+      predicateKey: textOrNull(f.predicate_key, "predicate_key", identityDrift),
+      objectKey: textOrNull(f.object_key, "object_key", identityDrift),
+      subjectCmp: textOrNull(f.subject_cmp, "subject_cmp", identityDrift),
+      objectCmp: textOrNull(f.object_cmp, "object_cmp", identityDrift),
       createdAt: toISO(f.created_at),
       updatedAt: toISO(f.updated_at),
     });
+  }
+
+  // ONE line for the whole corpus, naming the COLUMN and the COUNT — strictly
+  // more actionable than a line per row, because the operator's question is
+  // *which projection broke and how much of the corpus did it take*, and a
+  // million identical lines answer neither.
+  if (Object.keys(identityDrift).length > 0) {
+    log.warn(
+      { orgScope, columns: identityDrift, brainFacts: brainFactResult.rows.length },
+      "region export: identity columns did not decode as text — exported `null`, which the target reads as 'no key' / 'unknown'. That is the recoverable direction (an under-match a human can repair) rather than a false claim of difference, but it is DRIFT, not an abstain: a SQL NULL never reaches this counter. A count approaching the fact total means the SELECT dropped the column or the driver stopped decoding it, and the target region will land the whole corpus UNKEYED (#5035)",
+    );
   }
 
   let totalBrainFacts = 0;

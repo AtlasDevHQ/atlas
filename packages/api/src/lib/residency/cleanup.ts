@@ -218,8 +218,10 @@ export const CLEANUP_TABLE_RULES = {
   // phase-indifferent, like the queue above: no FK points at it in either
   // direction. bundle-scope.ts records what this deletion costs — the curated
   // `single` entries and the producers' rejection memory — and why carrying
-  // them is DEFERRED rather than refused: the importer lands its facts unkeyed
-  // today, so an entry would arrive beside rows it cannot match (#5035, #5036).
+  // them is DEFERRED rather than refused. The blocker #5035 removed — imported
+  // facts are keyed now, so a carried entry would have rows to match — but the
+  // MERGE against a destination that already holds its own entries is still
+  // unspecified, and that is what #5036 owns.
   brain_predicate_cardinality: { kind: "column", column: "workspace_id" },
   // Scheduling state for the audience re-verifiers (#4971) — "this audience has
   // had its turn", read by nothing but the scan's ORDER BY. Workspace-scoped and

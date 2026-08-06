@@ -15,16 +15,42 @@ import type { LearnedPattern } from "./learned-pattern";
  * The new sections are REQUIRED on a v2 bundle (so a producer that claims v2
  * but drops a section fails validation loudly instead of silently stranding
  * data), while importers keep accepting v1 bundles from pre-#4460 producers.
+ *
+ * v3 (#5035, ADR-0037 §8) puts a brain fact's IDENTITY on the wire: the three
+ * slot keys and the two comparable values ({@link ExportedBrainFact}). It is a
+ * version bump rather than an additive field because the importer's behaviour
+ * DIFFERS by version — a v3 fact's keys are carried verbatim, a v1/v2 fact's
+ * are computed once at import against the destination's vocabulary — and the
+ * discriminator has to be the manifest rather than field presence. Field
+ * presence would make a v3 producer that dropped a key indistinguishable from a
+ * legacy bundle, and the legacy arm RE-DERIVES: the over-match direction §8
+ * exists to refuse. It also DROPS `predicateCardinality`, which #5027 moved to
+ * the vocabulary and whose per-row values are LLM guesses.
+ *
+ * The bundle version bumps exactly once across the M4 arc; #5028 drops the
+ * database column and is told not to touch the format.
+ *
+ * ⚠️ **A version bump is a DEPLOY-ORDERING constraint across regions, and this
+ * is the only place it is written down.** A source region that deploys first
+ * exports v3 into a destination still running v2 code, which refuses the whole
+ * bundle with *"Unsupported bundle version: 3"*. That is the correct
+ * fail-loud direction — the alternative is a destination silently dropping
+ * fields it does not know — but it means **every destination region must be on
+ * the new release before any source region is**, and a cutover attempted in the
+ * window fails at the import call rather than corrupting anything. Importers
+ * only ever gain versions ({@link SupportedBundleVersion}), so the reverse
+ * direction (old bundle, new destination) needs no coordination at all.
  */
-export const EXPORT_BUNDLE_VERSION = 2;
+export const EXPORT_BUNDLE_VERSION = 3;
 
 /**
  * Bundle versions an importer accepts. v1 = the pre-#4460 four-pillar bundle
  * (conversations, semantic entities, learned patterns, settings) with the
- * newer sections absent. Type-only so scaffold-bound consumers don't need a
- * new published value symbol.
+ * newer sections absent. v2 = pre-#5035, so brain facts carry no identity.
+ * Type-only so scaffold-bound consumers don't need a new published value
+ * symbol.
  */
-export type SupportedBundleVersion = 1 | 2;
+export type SupportedBundleVersion = 1 | 2 | 3;
 
 /** Metadata header for an export bundle. */
 export interface ExportManifest {
@@ -371,7 +397,80 @@ export interface ExportedBrainFact {
    * new one.
    */
   preWideningVisibleTo: string[] | null;
-  predicateCardinality: "single" | "multi";
+  /**
+   * The claim's identity slot — `alias(lexicalNorm(surface))` (#5019).
+   *
+   * **v3 and later only, and REQUIRED there** (`null` is a legitimate value: a
+   * surface that norms away to nothing has no key, permanently). Absent on a
+   * v1/v2 bundle, whose facts are keyed ONCE at import against the
+   * destination's post-merge vocabulary.
+   *
+   * The one place a key is projected to the wire, and the exception is granted
+   * by ADR-0037 §8 rather than assumed: *a row-copy path carries keys verbatim.*
+   * Re-deriving at the destination fails to OVER-match — a destination alias the
+   * source lacks merges imported facts into a slot they never belonged to, and
+   * publish then stamps `valid_to` across the merge, irreversibly. Carrying
+   * fails to UNDER-match: a key the destination's vocabulary cannot produce
+   * collides with nothing until a human curates. Recoverable, so it is the
+   * direction to fail in.
+   *
+   * `keys-not-on-the-wire.test.ts` holds the prohibition everywhere else and
+   * names this file as a row-copy site.
+   */
+  subjectKey?: string | null;
+  /** The predicate slot — see {@link ExportedBrainFact.subjectKey}. v3+, required there. */
+  predicateKey?: string | null;
+  /** The object slot — see {@link ExportedBrainFact.subjectKey}. v3+, required there. */
+  objectKey?: string | null;
+  /**
+   * The object's comparable value — a tagged canonical (`money:USD:499`,
+   * `number:499`, `entity:01J…`), the column that can prove DIFFERENCE (#5030).
+   *
+   * **v3 and later only, and REQUIRED there** (`null` is the `unknown` verdict,
+   * a first-class value). It rides the wire, but it does NOT all survive the
+   * import: an `entity:`-tagged value is a STORE-LOCAL id, which is non-null and
+   * by construction unequal to every id the destination mints for the same real
+   * entity — counterfeit positive evidence of difference, strictly worse than
+   * the NULL it replaces, because NULL reads as `unknown` and reaches a human
+   * while a foreign id reads as `different` and stamps `valid_to` autonomously.
+   * The importer nulls those and marks the row `provisional`.
+   *
+   * Value-typed tags travel verbatim: money-with-currency, number, date, time
+   * and bool are region-invariant parses. The TAG is the discriminator, which is
+   * why #5030 made it a prefix rather than a guess (`lib/brain/object-cmp.ts`).
+   */
+  objectCmp?: string | null;
+  /**
+   * The subject's comparable value (#5032) — see
+   * {@link ExportedBrainFact.objectCmp}. v3+, required there.
+   *
+   * Only a resolved store id can ever reach this column, so in practice EVERY
+   * non-null value here is nulled at import. It travels anyway rather than being
+   * dropped from the format: the null-out is the IMPORTER's rule, and a bundle
+   * that silently omitted the column could not be told apart from one whose
+   * source region had no store.
+   */
+  subjectCmp?: string | null;
+  /**
+   * @deprecated v1/v2 only. Absent from v3 and IGNORED by the importer.
+   *
+   * #5027 moved cardinality onto the canonical predicate
+   * (`brain_predicate_cardinality`), and the per-row values this field carried
+   * are LLM guesses — so carrying them forward would restore a guess as though
+   * it were a curated decision. #5028 drops the database column.
+   *
+   * ⚠️ **Optional rather than REMOVED, and it is still a breaking change for
+   * READERS.** A consumer that *writes* the field keeps compiling; one that
+   * *reads* it does not, because the type widened from `"single" | "multi"` to
+   * `… | undefined` — a direct assignment or an exhaustive `switch` now fails
+   * under strict mode. Keeping the declaration buys the write side and the
+   * migration path, not source compatibility outright, so the changelog line is
+   * *"reading `predicateCardinality` now requires handling `undefined`"*. (An
+   * earlier version of this comment justified it as *"a consumer built against
+   * an older `@useatlas/types` keeps compiling"* — that consumer is not
+   * resolving this package at all, so the sentence described nobody.)
+   */
+  predicateCardinality?: "single" | "multi";
   createdAt: string;
   updatedAt: string;
 }

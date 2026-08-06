@@ -149,10 +149,11 @@ export interface BrainFactProvenanceView {
    * Which sides were left unresolved. Empty unless `provisional`.
    *
    * Since #5031 a flagged row names BOTH sides: one batched call covers both
-   * positions, so a failure has no per-role granularity. ⚠️ Rows written before
-   * it can name exactly one — back then the positions were resolved by separate
-   * calls and could fail apart — so a reader must still handle a one-element
-   * array, and it means something different (that side alone did not resolve).
+   * positions, so a failure has no per-role granularity, and a reader should not
+   * build copy around which side it was. (Before #5031 the two positions were
+   * resolved separately and could fail apart, but the only resolver ever shipped
+   * was the passthrough, which never produced this flag — so there are no
+   * one-sided rows in any corpus.)
    */
   readonly unresolved: readonly BrainEntityRole[];
   /**

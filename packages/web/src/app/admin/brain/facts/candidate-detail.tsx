@@ -265,22 +265,27 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
       {provenance.provisional && (
         <Alert>
           <AlertTriangle className="size-4" aria-hidden />
-          <AlertTitle>{provisionalBadge.label} entity resolution</AlertTitle>
-          {/* Reworded for #5031's abstain/failure split. The flag no longer
-              means "Atlas looked and could not pin this entity" — that outcome
-              (the store has no entry) is honest, is recorded as an absent
-              comparison, and is now deliberately UNFLAGGED. What survives is the
-              narrow case: the entity store did not answer at all, so the claim's
-              object was never compared to anything.
+          <AlertTitle>{provisionalBadge.label} entity comparison</AlertTitle>
+          {/* Reworded for #5031's abstain/failure split, and the per-side branch
+              DELETED with it.
 
-              The one/two-sided branch is kept for rows written BEFORE #5031,
-              which could genuinely fail one side at a time; every row written
-              since names both. */}
+              The flag no longer means "Atlas looked and could not pin this
+              entity" — that outcome (the store has no entry) is honest, is
+              already recorded as an absent comparison, and is deliberately
+              UNFLAGGED. `@useatlas/types` states the prohibition on presenting
+              it that way. What survives is the narrow case: the entity store did
+              not ANSWER, so this claim's object was never compared to anything.
+
+              The old copy named which SIDE was unresolved. There is no such
+              thing now — one batched call covers both positions, so a failure
+              names both — and there are no legacy rows to preserve it for: the
+              only resolver ever shipped was the passthrough, which returned a
+              canonical form for every non-blank surface and therefore never
+              produced this flag at all. */}
           <AlertDescription>
-            {provenance.unresolved.length === 1
-              ? `Atlas could not pin the ${provenance.unresolved[0]} of this claim to a known entity, so it was recorded against a provisional one.`
-              : "Atlas couldn't reach the entity store while recording this claim, so its object was never compared against anything Atlas already believes."}{" "}
-            Publishing it is a decision that the entity is right, not just the claim.
+            Atlas couldn&apos;t reach the entity store while recording this claim, so its
+            object was never compared against anything Atlas already believes. Publishing
+            it is a decision that the claim is right without that check.
           </AlertDescription>
         </Alert>
       )}

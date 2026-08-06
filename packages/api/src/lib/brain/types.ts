@@ -195,9 +195,10 @@ export interface BrainFactProvenance {
    * the array survives for #4772's review surface, which reads it, not because
    * the two sides can fail apart.
    *
-   * ⚠️ Rows written BEFORE #5031 can carry a single role: back then the two
-   * positions were resolved by separate calls and could fail apart. A reader
-   * must still handle a one-element array.
+   * There are no legacy one-sided rows to handle. Before #5031 the positions
+   * were resolved by separate calls and COULD fail apart — but the only
+   * resolver ever shipped was the passthrough, which returned a canonical form
+   * for every non-blank surface and so never produced this flag at all.
    */
   readonly unresolved?: readonly EntityRole[];
   readonly [key: string]: unknown;

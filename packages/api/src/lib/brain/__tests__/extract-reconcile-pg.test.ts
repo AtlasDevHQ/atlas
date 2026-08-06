@@ -173,7 +173,12 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
    * leak. Separator-free so `lexicalNorm` cannot launder it out of a key.
    */
   function adversarialId(surface: string): string {
-    return `entid${surface.length}01J7X`;
+    // Derived from the whole surface, not its LENGTH — the seam's own contract
+    // says ids must be globally unique, and a length-keyed id silently gives two
+    // 9-character surfaces one identity, which is a false `same` at the publish
+    // gate. A fixture that violates the rule it is testing under is one rename
+    // away from proving the opposite.
+    return `entid${surface.replaceAll(/[^a-zA-Z0-9]/g, "")}01J7X`;
   }
 
   const answerEverySurface: EntityResolver = (surfaces) =>
@@ -352,6 +357,53 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     });
     // Still a draft, still reviewable — flagged, not dropped.
     expect(stored[0]!.status).toBe("draft");
+  });
+
+  it("an outage does NOT merge a value into its own negation", async () => {
+    // ⚠️ Only a live schema settles this, because the veto lives in SQL. A
+    // failed entity batch withholds the comparable value from the ROW — so an
+    // outage can never write a value that out-proves the answer it did not get
+    // — but it must NOT withhold it from the two lookups. `objectSameSql` is
+    // `(key match OR value match) AND NOT provably-different`, and a NULL bind
+    // makes that veto NULL, which `IS NOT TRUE` swallows: corroboration
+    // collapses to bare key equality.
+    //
+    // `lexicalNorm` strips a leading `-`, so `-499` and `499` key IDENTICALLY.
+    // With the veto disabled, the second claim merges into the first: no new
+    // row, no tension edge, and — because corroboration writes no provenance —
+    // no marker anywhere. Atlas would silently record one more piece of evidence
+    // for the opposite-signed belief.
+    const first = await insertEpisode({ sourceId: "C01:margin-1" });
+    await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode: first,
+      candidates: [candidate({ subject: "q3 margin", predicate: "is", object: "499" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    const second = await insertEpisode({ sourceId: "C01:margin-2" });
+    const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode: second,
+      candidates: [candidate({ subject: "q3 margin", predicate: "is", object: "-499" })],
+      producer: "p",
+      extractedAt: new Date(),
+      resolveEntity: () => {
+        throw new Error("entity store unreachable");
+      },
+    });
+
+    expect(report.corroborated).toBe(0);
+    expect(report.created).toBe(1);
+    const stored = await facts();
+    expect(stored.map((f) => f.object)).toEqual(["499", "-499"]);
+    // The outage's own half, at rest: the new row carries NO comparable value,
+    // so it can never stamp `valid_to` at publish either.
+    const { rows } = await pool.query<{ object: string; object_cmp: string | null }>(
+      `SELECT object, object_cmp FROM brain_facts ORDER BY ingested_at, id`,
+    );
+    expect(rows.map((r) => r.object_cmp)).toEqual(["number:499", null]);
   });
 
   it("an honest abstain stores no provisional marker at all", async () => {

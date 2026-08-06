@@ -1041,23 +1041,38 @@ export async function reconcileFacts(
       declared: candidate.objectType,
       entityId: objectEntityId,
     });
-    // ⚠️ A FAILED batch withholds the comparable value entirely, and this is the
-    // one place the outage has to be spent rather than absorbed.
+    // ⚠️ A FAILED batch withholds the comparable value FROM THE ROW, and keeps it
+    // for the two lookups. Those are different jobs and an outage hits them in
+    // opposite directions — this is the one place the value is not one value.
     //
-    // The rule above is that a store id BEATS any parse of the surface, because
-    // the store is strictly better evidence than the text. During an outage the
-    // fallback is that inferior evidence — and it can be MORE proving, not less.
-    // A `499` that is an entity in the store compares `entity:…` against a
-    // sibling's `number:99`: different tags, so `unknown`, so tension only. With
-    // the store down it parses as `number:499` against `number:99` — same tag,
-    // unequal, *provably different* — and the publish gate stamps `valid_to` on
-    // a belief a healthy store would only have flagged for a human.
+    // AT REST it must be withheld. The rule above is that a store id beats any
+    // parse of the surface, because the store is strictly better evidence than
+    // the text; during an outage the fallback is that inferior evidence, and it
+    // can be MORE proving, not less. A `499` that is an entity in the store
+    // compares `entity:…` against a sibling's `number:99` — different tags, so
+    // `unknown`, so tension only. Written as `number:499` it is the same tag,
+    // unequal, *provably different*, and the publish gate stamps `valid_to` on a
+    // belief a healthy store would only have flagged for a human. The stamp is
+    // decided between two STORED rows, so this bind is the only outage-time
+    // input to it, and supersession has no inverse verb anywhere in the product.
     //
-    // Supersession has no inverse verb anywhere in the product, so an outage
-    // must never be able to reach further than an answer would have. `unknown`
-    // is what "we did not learn what this object IS" already means, and the
-    // marker written beside it is what brings the row back for a recompute.
-    const comparable = resolution.kind === "failed" ? null : parsed;
+    // AT THE LOOKUPS it must be kept, and withholding it there was a defect in
+    // the first draft of this rule. `objectSameSql`'s difference VETO is what
+    // keeps *same* and *different* disjoint, and a NULL bind makes the veto NULL
+    // → `IS NOT TRUE` → **disabled**, collapsing corroboration to bare key
+    // equality. `lexicalNorm` strips a leading `-`, so `-499` and `499` key
+    // identically: with the veto off, an outage MERGES a value into its own
+    // negation — no new row, no tension edge, and (because corroboration writes
+    // no provenance) not even a marker to find it by. That is a worse outcome
+    // than the stamp this rule exists to prevent, reached by the arm nobody
+    // changed. See `object-cmp.ts`'s `objectSameSql`, which argues the veto.
+    //
+    // The result is conservative in every direction: during an outage the pair
+    // does not merge, the new claim mints its own row, that row carries a NULL
+    // `object_cmp` so it can never stamp at publish, and it earns its advisory
+    // tension edge for a human.
+    const comparableForLookups = parsed;
+    const comparableAtRest = resolution.kind === "failed" ? null : parsed;
     // A REJECTED declaration is an operator-actionable defect, and the reason
     // code is what separates it from the abstain it otherwise looks identical
     // to. `objectType` exists solely to make an ambiguous surface comparable,
@@ -1093,6 +1108,13 @@ export async function reconcileFacts(
           // slot is enough to locate a misconfigured producer without it.
           predicate,
           declaredKind: candidate.objectType?.kind,
+          // The reason code comes from a parse of the SURFACE, which is the
+          // evidence a healthy store would have overruled: `comparableValue`
+          // short-circuits on an id, so a resolvable object never reaches this
+          // branch at all. During an outage it does — so an operator sent after
+          // a producer needs to know the store was also down, or they will go
+          // looking for a misconfiguration that only shows up during outages.
+          entityStoreFailed: resolution.kind === "failed",
         },
         candidate.objectType?.kind === "money"
           ? "brain reconcile: a producer declared money but the declaration was rejected — the claim landed as `unknown` and will never supersede. Either the declared currency is not an ISO-4217 alphabetic code, or the surface names a DIFFERENT currency; a declaration may supply what the surface lacks but never contradict it"
@@ -1105,7 +1127,8 @@ export async function reconcileFacts(
       predicate,
       object,
       keys,
-      comparable,
+      comparableAtRest,
+      comparableForLookups,
       resolutionFailed: resolution.kind === "failed",
       subjectEntityId,
       candidate,
@@ -1118,14 +1141,22 @@ export async function reconcileFacts(
         workspaceId: episode.workspaceId,
         episodeId: episode.id,
         producer,
-        provisional: resolutionFailedCount(prepared),
+        // NOT named `provisional`: `ReconcileReport.provisional` counts CREATED
+        // rows and this counts prepared candidates, which is a different and
+        // larger number whenever one of them corroborates. Two spellings of one
+        // word with two values is how an operator learns to distrust both.
+        candidatesInFailedBatch: resolutionFailedCount(prepared),
       },
       // Names the batch, because that is now the unit that failed and the unit
       // worth re-running. An honest abstain never reaches this line — it is not
       // a failure, it changes nothing on replay, and logging one per
       // entity-valued object would be a line per claim forever under the shipped
       // default resolver.
-      "brain reconcile: flagged this episode's candidates provisional — the entity store did not answer the batch, so their object comparisons (`object_cmp`) are worth recomputing once it does. Their identity keys are unaffected: no resolver reaches a slot key",
+      //
+      // Emitted BEFORE the transaction, unlike the `unkeyed` warn below, and the
+      // prose is written to survive that: it claims a property of the BATCH,
+      // which is settled here, rather than of rows that may still roll back.
+      "brain reconcile: the entity store did not answer this episode's batch, so these candidates were reconciled with no object comparison (`object_cmp`) — worth recomputing once it does. Their identity keys are unaffected: no resolver reaches a slot key. The ones that CREATED a row carry `provenance.provisional`; the ones that corroborated carry no per-row trace at all, and this line is their only signal",
     );
   }
 
@@ -1242,6 +1273,15 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
  * `unknown[]`. The comparable value is the one member a swap would be caught on
  * at all, and only behaviourally: it is TAGGED, so bound at a key position it
  * matches nothing a `slotKey` ever produced.
+ *
+ * ⚠️ **The three call sites no longer pass the same comparable value**, and that
+ * is deliberate rather than drift: the two LOOKUPS bind
+ * {@link PreparedCandidate.comparableForLookups} and the INSERT binds
+ * {@link PreparedCandidate.comparableAtRest}, which differ only when the entity
+ * batch FAILED. They are two named fields for exactly this reason — so the
+ * divergence is declared at the seam that computes them and can never be a
+ * second derivation at a call site. See `comparableForLookups` for why an
+ * outage must not withhold the value from a lookup.
  */
 function agreementBinds(
   keys: SlotKeys,
@@ -1263,7 +1303,21 @@ interface PreparedCandidate {
    * proves difference and is a COMPARED value, and the three-valued agreement
    * is exactly the statement that those are different jobs.
    */
-  readonly comparable: ComparableValue;
+  /**
+   * What lands in `object_cmp` — NULL when the batch failed, so an outage can
+   * never write a value that out-proves the answer it did not get.
+   */
+  readonly comparableAtRest: ComparableValue;
+  /**
+   * What the two LOOKUPS compare against — always the parse, batch or no batch.
+   *
+   * ⚠️ Deliberately not the same value as {@link comparableAtRest}, and the one
+   * place this module lets those diverge. A NULL bind at the lookups disables
+   * `objectSameSql`'s difference veto (NULL → `IS NOT TRUE`), which is how an
+   * outage would silently corroborate `-499` into a live `499`. Withholding
+   * belongs on the ROW, where the irreversible stamp reads it, and nowhere else.
+   */
+  readonly comparableForLookups: ComparableValue;
   /**
    * The episode's resolver batch did not answer.
    *
@@ -1459,6 +1513,14 @@ function storeId(resolution: EntityResolution, surface: string): string | undefi
  * therefore miss re-observed claims; one built on `provisional OR object_cmp IS
  * NULL` covers everything at the cost of covering every honest abstain too.
  *
+ * And the recompute does not exist yet, in either shape. `INSERT_FACT_SQL` is
+ * the only writer that produces an `object_cmp`, and `object_cmp` is an
+ * UPDATE-GATED column (`scripts/check-brain-fact-promotion.sh`), so the sweep
+ * this marker is a handle FOR needs a second writer with an allowlist entry
+ * behind it. The marker is worth writing now — the rows are unfindable
+ * otherwise, and that is irreversible in a way a missing job is not — but
+ * nobody should read it as evidence that the repair is already possible.
+ *
  * ## What a resolver must do, that the type cannot say
  *
  * **The batch is ALL-OR-NOTHING.** A resolver that cannot answer for *some* of
@@ -1533,8 +1595,39 @@ async function resolveEntitiesForEpisode(
     // ways WITHIN one episode, the exact thing batching exists to prevent.
     const ids = new Map<string, string>();
     let unusable = 0;
+    let foreign = 0;
     for (const [surface, entity] of answer) {
-      const id = typeof entity?.entityId === "string" ? entity.entityId.trim() : "";
+      // BOUNDED by what we asked about. Round 1 traded `instanceof`'s O(1)
+      // rejection for an iteration driven entirely by injected code, and an
+      // infinite or enormous iterable — a generator, a lazy cursor — would spin
+      // here synchronously with no yield point, blocking the event loop rather
+      // than one episode. A resolver cannot legitimately answer about more
+      // surfaces than it was handed, so the count is the bound, and it is not a
+      // timer: no deadline, no timer handle, none of the failure modes a clock
+      // in this file would bring.
+      if (ids.size + unusable + foreign >= counts.surfaces) {
+        foreign++;
+        break;
+      }
+      // The KEY half of the contract, which the first draft of this loop left
+      // unchecked — and unchecked it is the worse hole of the two. A store that
+      // normalizes keys on the way out (lowercases, re-trims, NFC-folds) returns
+      // a full, well-formed map that misses on EVERY `storeId`: a total,
+      // permanent, unmarked abstain across every episode, with no log line
+      // anywhere. That is the all-or-nothing collapse this seam prohibits,
+      // arriving through the one arm the value check cannot see. An entry for a
+      // surface nobody asked about is not an abstain; it is garbage.
+      if (typeof surface !== "string" || !surfaces.has(surface)) {
+        foreign++;
+        continue;
+      }
+      // Read ONCE, through `unknown`. The declared type says this is a string,
+      // so the guard is vacuous to the compiler and a later "simplification" to
+      // `entity.entityId.trim()` would type-check — and a second read of a
+      // getter or a Proxy can return a different value than the one the guard
+      // approved, which is how a blank id would land past the blank check.
+      const raw: unknown = entity?.entityId;
+      const id = typeof raw === "string" ? raw.trim() : "";
       if (id === "") {
         unusable++;
         continue;
@@ -1547,10 +1640,20 @@ async function resolveEntitiesForEpisode(
     // one path where an infrastructure failure silently loses the marker that
     // makes its rows findable. Failing the batch is also the same verdict the
     // all-or-nothing rule above gives a partial answer, which this is.
-    if (unusable > 0) {
+    if (unusable > 0 || foreign > 0) {
       log.warn(
-        { workspaceId: episode.workspaceId, episodeId: episode.id, ...counts, unusable },
-        "brain reconcile: the entity store answered with blank or non-string ids — a contract violation rather than an abstain, so the batch is treated as failed and this episode's candidates flagged. An id must be a non-empty, GLOBALLY unique string; a blank one tags a comparable value with nothing and would make two unrelated objects read as provably the same",
+        {
+          workspaceId: episode.workspaceId,
+          episodeId: episode.id,
+          ...counts,
+          unusable,
+          foreign,
+          // Beside the two violation counts so `1 of 400` reads differently from
+          // `400 of 400`. The surfaces themselves are claim content and stay out
+          // of the line; `episodeId` is the handle for a replay.
+          answered: ids.size,
+        },
+        "brain reconcile: the entity store broke its contract — it answered with blank or non-string ids, or with keys that are not surfaces this episode asked about. That is not an abstain (an abstain will not change on replay; a store bug will), so the batch is treated as failed and this episode's candidates flagged. An id must be a non-empty, GLOBALLY unique string, and every key must be a surface from the requested set, byte-for-byte — a store that normalizes keys on the way out answers nothing at all",
       );
       return { kind: "failed" };
     }
@@ -1593,7 +1696,11 @@ async function writeCandidate(
 
   const existing = await tx.query(CORROBORATION_LOOKUP_SQL, [
     episode.workspaceId,
-    ...agreementBinds(item.keys, item.comparable),
+    // The LOOKUP value, which an outage does not withhold — see
+    // `PreparedCandidate.comparableForLookups`. Binding the at-rest NULL here
+    // would disable this statement's difference veto and merge `-499` into a
+    // live `499`.
+    ...agreementBinds(item.keys, item.comparableForLookups),
   ]);
   const existingId = firstId(existing.rows);
   if (existingId !== null) {
@@ -1673,7 +1780,9 @@ async function writeCandidate(
     episode.id,
     JSON.stringify(provenance),
     JSON.stringify(ctx.grantTokens),
-    ...agreementBinds(item.keys, item.comparable),
+    // The AT-REST value, the one bind an outage withholds: this is what the
+    // publish gate compares between two stored rows to stamp `valid_to`.
+    ...agreementBinds(item.keys, item.comparableAtRest),
   ]);
   const factId = firstId(inserted.rows);
   if (factId === null) {
@@ -1733,7 +1842,10 @@ async function writeCandidate(
   if ((item.candidate.predicateCardinality ?? "multi") === "single") {
     const rivals = await tx.query(TENSION_CANDIDATES_SQL, [
       episode.workspaceId,
-      ...agreementBinds(item.keys, item.comparable),
+      // The LOOKUP value again. The edges are ADVISORY, so the conservative
+      // direction here is to keep finding rivals during an outage rather than
+      // to go quiet — a spurious edge costs a reviewer a glance.
+      ...agreementBinds(item.keys, item.comparableForLookups),
       factId,
       TENSION_EDGE_CAP,
     ]);

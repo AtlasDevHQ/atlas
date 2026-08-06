@@ -526,8 +526,9 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // It is a second, independent falsifier for the two-position batch, at a
     // site the corpus does not cover: the corpus varies whether two claims
     // agree, this one asks where ONE resolved id lands. The pairing with the
-    // key assertions below is the whole point — the id reaches the `_cmp`
-    // column and NOT the key, which is #5000 re-caused by the fix for #5000.
+    // key assertions below is the whole point — the id must reach the `_cmp`
+    // column and NOT the key; putting it at the key would be #5000 re-caused by
+    // the fix for #5000.
     expect(rows[0]!.subject_cmp).toBe(`entity:${adversarialId("Deploy_Window")}`);
     expect(rows[0]!.subject_key).toBe("deploy window");
     expect(rows[0]!.object_key).toBe("acme corp");

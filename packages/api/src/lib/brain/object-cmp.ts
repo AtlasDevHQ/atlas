@@ -430,16 +430,21 @@ function tagged<T extends ComparableTag>(
  * A resolved entity id, tagged — the ONLY shape an entity-derived comparable
  * value can take, spelled as a type rather than as a promise in a docstring.
  *
- * ⚠️ This is what makes `agreementBinds`'s two comparable parameters
- * distinguishable to the compiler (#5032). They are adjacent, they mean OPPOSITE
- * things — the object's proven difference ENABLES a `valid_to` stamp, the
- * subject's SUPPRESSES every consumer — and while both were `ComparableValue` a
- * swap type-checked perfectly. `EntityComparable` is a strict subtype, so the
- * subject parameter refuses a general one and the swap is a compile error.
+ * ⚠️ This is the SHAPE half of what makes `agreementBinds`'s two comparable
+ * parameters distinguishable to the compiler (#5032). They are adjacent, they
+ * mean OPPOSITE things — the object's proven difference ENABLES a `valid_to`
+ * stamp, the subject's SUPPRESSES every consumer — and while both were
+ * `ComparableValue` a swap type-checked perfectly. A strict subtype fixes that.
  *
- * Not a brand: a template-literal type costs nothing, needs no minting site, and
- * is exactly as strong as the property being claimed. `subject-cmp.ts` is where
- * the "and never a parse of the surface" half is enforced.
+ * ⚠️ It is NOT what `agreementBinds` spells today. That parameter is a
+ * `SubjectComparable` — this type's non-null arm plus a brand — and the
+ * distinction is not academic: a template-literal type constrains SHAPE, and
+ * shape was measured insufficient. `entityComparable` below is exported and
+ * hands out a well-shaped value for any string, so while the subject position
+ * spelled `EntityComparable` a caller could satisfy it with a raw surface, no
+ * cast anywhere, and switch corroboration off for a homonym pair. `subject-cmp.ts`
+ * has the full account; the short version is that shape is the half a second
+ * producer can forge and PROVENANCE is the half that needs the brand.
  */
 export type EntityComparable = `${typeof ENTITY_TAG}${typeof TAG_SEPARATOR}${string}` | null;
 

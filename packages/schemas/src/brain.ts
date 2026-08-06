@@ -604,17 +604,19 @@ export const BrainFactWillSupersedeSchema = z.strictObject({
  * reader-ACL-scoped — and exactly because content is allowed, an extra key must
  * be refused rather than stripped.
  *
- * `added` is `.nonempty()`, which is the disclosure's design restated at the
- * wire: widening fires on legitimate corroboration too, so a notice that could
- * carry an empty `added` would be universal, and the reviewer learns to click
- * through it.
+ * `added` is NON-EMPTY, which is the disclosure's design restated at the wire:
+ * widening fires on legitimate corroboration too, so a notice that could carry
+ * an empty `added` would be universal, and the reviewer learns to click through
+ * it.
  *
- * ⚠️ It is NOT the enforcement, and reading it as one is the trap. Zod v4 infers
- * `string[]` from `.nonempty()`, so `satisfies z.ZodType<BrainFactWillWidenEntry, unknown>`
- * passes on that axis whatever the type says. The enforcement is
- * `readonly [string, ...string[]]` on the TYPE — which `widenGrantFromEvidence`
- * already produces — and this line is the backstop for a payload that reached
- * the wire some other way.
+ * ⚠️ It is spelled as a one-plus-rest TUPLE and NOT as `.nonempty()`, and the
+ * difference is the whole enforcement — see the note on the field. Zod v4 infers
+ * `string[]` from `.nonempty()`, so under that spelling
+ * `satisfies z.ZodType<BrainFactWillWidenEntry, unknown>` passes on this axis
+ * whatever the type says; the tuple is what makes the `satisfies` actually check
+ * it. Two guards, not one: the TYPE (`readonly [string, ...string[]]`, which
+ * `widenGrantFromEvidence` already produces) and this line checking itself
+ * against it.
  */
 export const BrainFactWillWidenEntrySchema = z.strictObject({
   factId: z.string(),

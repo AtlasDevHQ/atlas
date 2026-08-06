@@ -47,8 +47,10 @@
  *
  * ## ⚠️ And since #5032 a SIXTH relation refuses a pair every key arm ADMITS
  *
- * `proven-homonym` is the first relation whose prohibition is not reached
- * through a key. One surface, two ENTITIES: the subject key, the predicate key
+ * `proven-homonym` is refused by a residual filter rather than by a key — as
+ * `tier-guarded-rival`'s `supersedes: false` already is (`supersedableTierSql`,
+ * #5033), so it is the shape that is notable here and not the precedent. One
+ * surface, two ENTITIES: the subject key, the predicate key
  * and (for three of the four entries) the object key all match, so every
  * consumer WOULD collide the pair — and `subject_cmp` is a residual filter that
  * stops them. Its verdict row is byte-identical to `different-claim`'s and the

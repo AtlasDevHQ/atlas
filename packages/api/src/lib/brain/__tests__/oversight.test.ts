@@ -1156,12 +1156,10 @@ describe("loadWideningPreview (#5032)", () => {
           // …and the positive control beside them, so "everything was dropped"
           // and "the loader stopped working" are distinguishable.
           widenRow("f-3", ["audience:procurement"], ["org"]),
-          // The OTHER control, and the one that makes the arm above a real
-          // distinction rather than a restatement: a genuinely evidence-less
-          // draft. `null` must be KEPT — it counts toward the scan bound, which
-          // is the entire reason the joins are LEFT — while contributing no
-          // entry, since `widenGrantFromEvidence(grant, [])` widens nothing.
-          // Without this row, "null is not drift" is unfalsifiable prose.
+          // A keep-path row beside the drop-path rows, so the two shapes are
+          // visible together and nobody reads `f-2` as covering both. It kills
+          // nothing on its own — measured — and the falsifier for "null is not
+          // drift" is the dedicated test below, which stands alone.
           widenRow("f-4", ["audience:procurement"], ["org"], { evidence_grant: null }),
         ],
       }),
@@ -1323,10 +1321,15 @@ describe("loadWideningPreview (#5032)", () => {
     // draft in the window silently disables the cap detector, leaving the panel
     // to render a confident complete count over a tail it never evaluated.
     //
-    // Asserted lexically because the seam is the SQL: the reader double in this
-    // suite returns rows it is handed, so it cannot model a join that emits
-    // fewer. `identity-consumers-pg.test.ts` carries the behavioural half
-    // against a real schema; this is the arm that fails in the FAST lane.
+    // ⚠️ Asserted lexically because the lexical assertion is the WHOLE guard,
+    // and no behavioural counterpart is feasible — measured, not assumed.
+    // Against the real schema both INNER mutations leave `identity-consumers-pg`
+    // at 76/76: that suite seeds through `landCorroboratedPair`, so every draft
+    // it creates carries a `provenance` edge and the LEFT/INNER distinction is
+    // structurally invisible. It is invisible to any practical pg fixture, since
+    // the only wire consequence of an INNER join is the scan-cap count, which
+    // needs `WILL_WIDEN_DRAFT_SCAN_MAX` real drafts to reach. Do not "fix" this
+    // by adding a pg test; there isn't one.
     expect(
       sql,
       "the evidence join became INNER — an edge-less draft now vanishes and the scan cap stops firing",

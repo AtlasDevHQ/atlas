@@ -25,9 +25,13 @@
 -- MANUFACTURE a homonym that did not exist (`acme → acme corp`, workspace-wide,
 -- by indexed rewrite).
 --
--- Tension and supersession both require `single` cardinality on the canonical
--- predicate, and since #5027 `single` needs positive evidence. Corroboration is
--- gated by nothing:
+-- Supersession requires `single` cardinality on the CANONICAL predicate, which
+-- since #5027 needs positive evidence (`cardinalitySingleSql`, read at the
+-- publish gate). The tension scan is gated differently and more weakly — on the
+-- producer's per-claim hint, which defaults to `multi` (`reconcile.ts`,
+-- `predicateCardinality`). The two are worth keeping apart: they are separate
+-- gates with separate provenance, and only the first consults the store.
+-- Corroboration is gated by neither, i.e. by nothing:
 --
 --   CORROBORATION_LOOKUP_SQL    workspace + S/P/O. No grant arm, no cardinality
 --                               arm.

@@ -33,9 +33,10 @@
  * identity consumer with **no grant arm and no cardinality arm**: on a hit it
  * attaches a public episode as evidence to a private fact, and publish then
  * overwrites `visible_to` with the union of the evidence grants
- * (`widenGrantFromEvidence`). Tension and supersession are both gated on
- * `single` cardinality, which since #5027 needs positive evidence; corroboration
- * is gated by nothing.
+ * (`widenGrantFromEvidence`). Supersession is gated on `single` cardinality at
+ * the CANONICAL predicate, which since #5027 needs positive evidence; the
+ * tension scan is gated only on the producer's per-claim hint, which defaults to
+ * `multi`. Corroboration is gated by neither.
  *
  * So a homonym does not merely mislabel a claim — it discloses a private claim's
  * BODY to a wider audience. That is why the suppression covers corroboration
@@ -112,9 +113,11 @@ import {
  * unequal, *proven different* — and corroboration switches off for exactly the
  * pair the corpus was built around.
  *
- * `reconcile.ts`'s `resolveEntitiesForEpisode` is the ONE place a value is cast
- * into this type, because it is the one place an id is validated. Nowhere else
- * can a bare `string` become one.
+ * `reconcile.ts`'s `resolveEntitiesForEpisode` is the ONE place in production
+ * code that casts a value into this type, because it is the one place an id is
+ * validated. The only other mint in the tree is `subject-cmp.test.ts`'s
+ * `resolved()` helper — a deliberate, named exemption, since a test that pins
+ * the brand has to be able to construct one.
  *
  * ⚠️ **Guarding this parameter is only half the rule, and the half that does
  * less** (#5032, panel round 4). A brand on the INPUT stops
@@ -123,8 +126,10 @@ import {
  * {@link EntityComparable}, `entityComparable(subject)` — exported, unbranded,
  * one identifier away in an import list `reconcile.ts` already had — satisfied
  * every one of them with no cast and reintroduced the defect verbatim. That is
- * why {@link SubjectComparable} brands the OUTPUT: the two together mean the
- * value cannot be built except by passing a validated id through here.
+ * why {@link SubjectComparable} brands the OUTPUT: the two together mean no
+ * NON-NULL value can be built except by passing a validated id through here.
+ * The `null` abstain stays constructible anywhere, deliberately — it suppresses
+ * nothing, so there is no property to forge.
  */
 export type ResolvedEntityId = string & { readonly __resolvedEntityId: unique symbol };
 

@@ -770,11 +770,12 @@ export interface BrainFactWillWidenEntry {
    * where the widening was not a no-op — that is what keeps this notice from
    * firing on every ordinary corroboration — and `EvidenceWidenedGrant.added`
    * already carries the guarantee, so widening it back to `readonly string[]`
-   * here would discard a property the producer has. ⚠️ The schema's
-   * `.nonempty()` is NOT the enforcement: zod v4 infers `string[]` from it, so
-   * the `satisfies z.ZodType<…>` check passes vacuously on that axis and an
-   * empty `added` would only be caught at the wire, as a 500 on the whole
-   * oversight endpoint.
+   * here would discard a property the producer has. ⚠️ The schema mirrors this
+   * as `z.tuple([z.string()], z.string())` rather than
+   * `z.array(z.string()).nonempty()`, and deliberately: zod v4 infers `string[]`
+   * from `.nonempty()`, so under that spelling the schema's
+   * `satisfies z.ZodType<…>` passes vacuously on this axis and the two sides
+   * stop checking each other. The tuple is what keeps them in lockstep.
    */
   readonly added: readonly [string, ...string[]];
 }

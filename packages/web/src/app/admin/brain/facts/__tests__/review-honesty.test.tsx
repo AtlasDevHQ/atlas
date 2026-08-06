@@ -2026,6 +2026,53 @@ describe("will-widen disclosure (#5032)", () => {
     );
   });
 
+  test("does not contradict itself when the scan was incomplete", async () => {
+    // The `!incomplete` conjunct in the hedge's gate, which measured ZERO kills
+    // when it was written — the one line in the round-4 block that nothing could
+    // falsify. It is what keeps the hedge and `WillWidenNotice` mutually
+    // exclusive: without it, an incomplete scan with drafts outside the queue
+    // renders "Publishing may widen the audience of more facts than Atlas can
+    // list" directly above "No audience widening was found", which is a
+    // self-contradiction on the surface whose entire product is honest notice.
+    oversight = {
+      ...oversight,
+      workspaceTotals: { ...(oversight.workspaceTotals as object), awaitingReview: 9 },
+      reviewableAwaitingReview: 3,
+      willWiden: { total: 0, entries: [], truncated: false, incomplete: true },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("could not evaluate every draft"),
+    );
+    expect(
+      view.container.textContent ?? "",
+      "the incomplete notice and the all-clear hedge rendered together",
+    ).not.toContain("No audience widening was found");
+  });
+
+  test("renders the notice on a COUNT with no list — a count is still proof", async () => {
+    // The `total > 0` arm, mirroring the will-supersede gate. The schema's
+    // cross-check forbids only `entries.length > total`, so this skew is
+    // schema-valid; today's producer cannot emit it, but an entry-level filter
+    // applied after `total` is taken would. Gated on `entries.length` alone the
+    // panel renders no notice AND — with drafts outside the queue — an
+    // affirmative "no widening was found" over a payload saying five facts widen.
+    oversight = {
+      ...oversight,
+      workspaceTotals: { ...(oversight.workspaceTotals as object), awaitingReview: 9 },
+      reviewableAwaitingReview: 3,
+      willWiden: { total: 5, entries: [], truncated: false, incomplete: false },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("widen the audience of 5 facts"),
+    );
+    expect(
+      view.container.textContent ?? "",
+      "an all-clear rendered over a payload reporting five widenings",
+    ).not.toContain("No audience widening was found");
+  });
+
   test("…and stays quiet when the reader can see the whole backlog", async () => {
     // The control that keeps the two tests above from passing vacuously — and
     // the reason the hedge is gated at all. With `hidden === 0` and the counts

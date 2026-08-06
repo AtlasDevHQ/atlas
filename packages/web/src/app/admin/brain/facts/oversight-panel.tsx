@@ -174,12 +174,20 @@ export function OversightPanel() {
           in the direction nobody can report afterwards (you cannot notice that a
           fact became readable to somebody else).
 
+          `total > 0` is ORed in for the will-supersede gate's reason, which
+          applies here verbatim: a count without a list is still proof that
+          something widens, and the schema's cross-check only forbids the
+          OPPOSITE skew (`entries.length > total`). Today's producer cannot emit
+          it — `total` is `entries.length` before the slice — but it is one
+          entry-level filter away, and the sibling disclosure already pays for
+          the mirror shape.
+
           `truncated` is deliberately NOT in the gate: it is only ever set
           alongside a non-empty list. */}
       {data.willWiden &&
-        (data.willWiden.entries.length > 0 || data.willWiden.incomplete) && (
-          <WillWidenNotice willWiden={data.willWiden} />
-        )}
+        (data.willWiden.entries.length > 0 ||
+          data.willWiden.total > 0 ||
+          data.willWiden.incomplete) && <WillWidenNotice willWiden={data.willWiden} />}
 
       {/* ⚠️ The EMPTY-and-complete case, which had no disclosure at all until
           #5032's panel round 4 — and it is the fail-open one.
@@ -208,6 +216,7 @@ export function OversightPanel() {
           made `hidden > 0` true — would bury the finding under its own caveat. */}
       {data.willWiden &&
         data.willWiden.entries.length === 0 &&
+        data.willWiden.total === 0 &&
         !data.willWiden.incomplete &&
         (hidden > 0 || !data.countsConsistent) && (
           <p className="text-xs text-muted-foreground">

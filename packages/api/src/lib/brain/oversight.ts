@@ -1169,8 +1169,12 @@ export const WILL_WIDEN_DRAFT_SCAN_MAX = 5_000;
  * and edges independently (`admin-migrate.ts` iterates `bundle.brainEdges ?? []`),
  * so facts without provenance edges are storable.
  *
- * LEFT means every scoped draft yields at least one row, so `drafts.size` IS the
- * scanned count. `brain_episodes.visible_to` is `NOT NULL` (0180), so a SQL
+ * LEFT means every scoped draft yields at least one row, so `drafts.size` is the
+ * scanned count for every draft the loader can read at all. It is not an exact
+ * equality: a fact whose `fact_grant` drifts fails on every one of its rows (the
+ * column is constant per fact), so it is scanned and never counted — masked, like
+ * the poison sweep below, by that path also forcing `incomplete` through
+ * `droppedRows`. `brain_episodes.visible_to` is `NOT NULL` (0180), so a SQL
  * `null` in `evidence_grant` can only mean the join found nothing — which the
  * loader reads as "no evidence", NOT as drift.
  *
@@ -1390,15 +1394,21 @@ export async function loadWideningPreview(
   // has nothing to do with the cap. An undocumented coupling one edit from
   // breaking is not a guard.
   //
-  // ⚠️ **This line is UNFALSIFIABLE from the wire, and the measurement is here
-  // rather than in anybody's head.** Measured in round 4: reverting it to
-  // `drafts.size` at the point of use kills ZERO tests, while the seven
-  // mutations around it kill one each. That is not a missing fixture — it is the
-  // masking above, stated as a property: the only observable is `incomplete`,
-  // which deliberately FUSES "capped" and "dropped", and every input that makes
-  // the two readings differ has a drop in it and therefore reports `true` either
-  // way. No fixture can separate them without a new wire field, which this
-  // disclosure does not need and should not grow for a diagnostic.
+  // ⚠️ **This line is UNFALSIFIABLE from the wire, and that is a property rather
+  // than a missing fixture.** `poisoned.add` sits in the SAME branch as
+  // `droppedRows++` — there is exactly one such branch — so a non-empty `poisoned`
+  // implies `droppedRows > 0`. The sweep is the only thing that shrinks `drafts`
+  // between here and the use, so the two readings differ only when something was
+  // deleted, which requires a drop. `scanCapped` feeds nothing but
+  // `incomplete: droppedRows > 0 || scanCapped`, so the differing input reports
+  // `true` under both readings and there is no fourth wire field to leak through.
+  //
+  // Verified two ways rather than argued once: reverting this to `drafts.size` at
+  // the point of use kills zero tests, and the four sharpest candidate fixtures
+  // (`MAX` with 1 poisoned, with 10 poisoned, with a `fact_grant`-drift fact, and
+  // `MAX+5` with 10 poisoned) return byte-identical envelopes under both readings.
+  // Separating them needs a new wire field, which this disclosure does not need
+  // and should not grow for a diagnostic.
   //
   // So it is held by the argument above and by this note, and a future edit that
   // makes the two readings distinguishable — a `scanCapped` on the wire, a
@@ -1434,6 +1444,19 @@ export async function loadWideningPreview(
   // exactly is the only observable, and the honest reading of "we stopped
   // looking" is that there may be more.
   const scanCapped = scannedDrafts >= WILL_WIDEN_DRAFT_SCAN_MAX;
+  if (scanCapped) {
+    // LOUD, for the `droppedRows` warn's reason and with more force. Every other
+    // degradation in this file logs — bucket truncation, dropped bucket rows, the
+    // count inversion, dropped will-widen rows, will-supersede window drift — and
+    // this is the one that says *Atlas stopped looking at this workspace's
+    // drafts*, on the only pre-publish ACL disclosure there is. Reaching the wire
+    // as one bit of `incomplete` meant an operator could learn it only if an admin
+    // happened to render the page and reported the wording.
+    log.warn(
+      { workspaceId, requestId, scannedDrafts, cap: WILL_WIDEN_DRAFT_SCAN_MAX },
+      "brain oversight: the will-widen draft scan hit its cap — the widening notice UNDERSTATES what publish will widen for this workspace; the tail was never evaluated",
+    );
+  }
   return {
     total,
     // Capped AFTER the total is taken, so `total` is the real cardinality and

@@ -11,42 +11,60 @@ reverted to the alternative that was actually on the table in ADR-0037 §8, and
 each reads as an improvement rather than a regression when you meet it in a
 diff.
 
-No row is zero across every column, but that was not true of the first
-measurement: *`provisional` is written for EVERY imported row* killed nothing,
-because every fact in the corpus carried a store-local id and so was
-legitimately provisional. The two programs were the same program against those
-fixtures. Its note records the fixture that separates them.
+No row is zero across every column, and TWO of them were zero before the fixture
+that separates the programs existed — *`provisional` is written for EVERY
+imported row* and *the SUBJECT position is hardcoded to null*. In both cases the
+corpus, not the assertions, was the problem: every fact carried a store-local id,
+so "mark the dropped rows" and "mark every row" were one program, and so were
+"follow the tag rule at the subject" and "always null the subject". Each note
+records the fixture that split them.
 
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 
-| Mutation | roundtrip-pg | admin-migrate | export | object-cmp | v3 pin |
-|---|---|---|---|---|---|
-| the importer RE-DERIVES a v3 fact's keys instead of carrying them | 2 | 0 | 0 | 0 | 0 |
-| a store-local `entity:` id travels verbatim | 2 | 0 | 0 | 1 | 0 |
-| a LEGACY bundle's facts are left unkeyed | 1 | 0 | 0 | 0 | 0 |
-| the vocabulary is merged AFTER the brain again (the section reorder reverted) | 1 | 0 | 0 | 0 | 0 |
-| `provisional` is never written for a nulled row | 2 | 0 | 0 | 0 | 0 |
-| `provisional` is written for EVERY imported row | 1 | 0 | 0 | 0 | 0 |
-| `parseStoredComparable` admits an empty payload | 0 | 0 | 0 | 1 | 0 |
-| validation stops requiring the identity fields on a v3 fact | 0 | 2 | 0 | 0 | 0 |
-| the required-sections gate reads `=== CURRENT` again | 0 | 1 | 0 | 0 | 0 |
-| the exporter stops projecting the identity columns | 2 | 0 | 0 | 0 | 1 |
-| the exporter feeds identity values through a cast instead of `textOrNull` | 0 | 0 | 1 | 0 | 0 |
-| the importer writes `predicate_cardinality` again (from the legacy field) | 1 | 0 | 0 | 0 | 1 |
+| Mutation | roundtrip-pg | admin-migrate | export | object-cmp | v3 pin | logging |
+|---|---|---|---|---|---|---|
+| the importer RE-DERIVES a v3 fact's keys instead of carrying them | 2 | 0 | 0 | 0 | 0 | 0 |
+| a store-local `entity:` id travels verbatim | 2 | 0 | 0 | 1 | 0 | 1 |
+| a LEGACY bundle's facts are left unkeyed | 1 | 0 | 0 | 0 | 0 | 0 |
+| the legacy arm keys against an EMPTY vocabulary (the load deleted) | 1 | 0 | 0 | 0 | 0 | 2 |
+| `provisional` is never written for a nulled row | 2 | 0 | 0 | 0 | 0 | 0 |
+| `provisional` is written for EVERY imported row | 2 | 0 | 0 | 0 | 0 | 0 |
+| `readStoredComparable` skips the PAYLOAD fixpoint check | 0 | 0 | 0 | 2 | 0 | 1 |
+| the importer binds the ARRIVING `_cmp` straight through (the ComparableValue narrowing widened) | 2 | 0 | 0 | 0 | 0 | 0 |
+| the SUBJECT position is hardcoded to null instead of following the tag rule | 2 | 0 | 0 | 0 | 0 | 0 |
+| `textOrNull` goes silent again | 0 | 0 | 1 | 0 | 0 | 0 |
+| the identity-loss line is deleted | 0 | 0 | 0 | 0 | 0 | 2 |
+| the identity-loss line fires on every import (the `unreadable` split collapsed) | 0 | 0 | 0 | 0 | 0 | 2 |
+| the legacy READ runs without the workspace vocabulary lock | 0 | 0 | 0 | 0 | 0 | 1 |
+| a v3 import loads a vocabulary it never uses | 2 | 0 | 0 | 0 | 0 | 2 |
+| `readStoredComparable` admits an EMPTY payload | 0 | 0 | 0 | 2 | 0 | 0 |
+| validation stops requiring the identity fields on a v3 fact | 0 | 1 | 0 | 0 | 0 | 0 |
+| the required-sections gate reads `=== CURRENT` again | 0 | 1 | 0 | 0 | 0 | 0 |
+| the exporter stops projecting the identity columns | 2 | 0 | 0 | 0 | 1 | 0 |
+| the exporter feeds identity values through a cast instead of `textOrNull` | 0 | 0 | 1 | 0 | 0 | 0 |
+| the importer writes `predicate_cardinality` again (from the legacy field) | 1 | 0 | 0 | 0 | 1 | 0 |
 
-Suite sizes: **roundtrip-pg** 8 tests (`src/lib/residency/__tests__/migrate-roundtrip-pg.test.ts`) · **admin-migrate** 95 tests (`src/api/__tests__/admin-migrate.test.ts`) · **export** 23 tests (`src/lib/residency/__tests__/export.test.ts`) · **object-cmp** 63 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **v3 pin** 4 tests (`src/lib/residency/__tests__/bundle-identity-v3.test.ts`).
+Suite sizes: **roundtrip-pg** 8 tests (`src/lib/residency/__tests__/migrate-roundtrip-pg.test.ts`) · **admin-migrate** 95 tests (`src/api/__tests__/admin-migrate.test.ts`) · **export** 24 tests (`src/lib/residency/__tests__/export.test.ts`) · **object-cmp** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **v3 pin** 5 tests (`src/lib/residency/__tests__/bundle-identity-v3.test.ts`) · **logging** 6 tests (`src/lib/residency/__tests__/migrate-identity-logging.test.ts`).
 
 ## Notes
 
 - **the importer RE-DERIVES a v3 fact's keys instead of carrying them** — The direction ADR-0037 §8 refuses. It is the *recoverable-looking* revert — re-deriving reuses the destination's own curated vocabulary, which reads as respecting local decisions — and it is the irreversible one: a destination alias the source lacks merges imported facts into a slot they never belonged to.
 - **a store-local `entity:` id travels verbatim** — Counterfeit positive evidence of difference at `object_cmp`, which is the arm `supersessionCollisionJoin` becomes. Reads as *preserving data* and is strictly worse than the NULL it replaces: NULL is `unknown`, reaches a reviewer as tension, and stamps nothing.
 - **a LEGACY bundle's facts are left unkeyed** — The pre-#5035 behaviour, restored for the population that still arrives without keys. An unkeyed fact corroborates nothing, earns no tension edge, and can neither supersede nor be superseded — and the publish-time disclosure reports "nothing to supersede" without being able to say the check could not run.
-- **the vocabulary is merged AFTER the brain again (the section reorder reverted)** — Equivalent to keying before the arriving edges land, which is what the pre-#5035 section order forced. The legacy arm then composes only the destination's pre-existing decisions and discards the source's — the half of §8's merge that exists to be composed.
+- **the legacy arm keys against an EMPTY vocabulary (the load deleted)** — ⚠️ **Read the edit, not the old label.** This deletes the vocabulary LOAD; it does not move the section. An earlier version claimed to measure the reorder, and the equivalence it rested on held only while the legacy fixture's destination started EMPTY — which is no longer true, since that test now seeds a destination-side edge the imported fact must key through. What this row measures is that the legacy arm reads a real vocabulary at all; the reorder itself is covered by that assertion.
 - **`provisional` is never written for a nulled row** — The null-out stays SAFE and stops being RECOVERABLE. `object_cmp IS NULL` matches every honest abstain, so without the marker there is no key-based way to find the rows whose comparable value a migration discarded.
 - **`provisional` is written for EVERY imported row** — The opposite error, and the one that looks harmless. The marker stops meaning *this row's comparable value is worth recomputing* and starts meaning *was imported* — #4772's review filter then fills with rows that need no work, which is how a filter gets turned off. ⚠️ **This row killed NOTHING on the first measurement**, and the reason is the corpus rather than the assertions: both seeded facts carry a store-local id, so every imported row was legitimately `provisional` and the two programs were indistinguishable. The catch-up fact now arrives with both `_cmp` fields already NULL, which is the one fixture that can tell them apart.
-- **`parseStoredComparable` admits an empty payload** — A truncated `entity:` or `money:` is exactly what `comparableDifferentSql`'s well-formedness arms refuse, so admitting one stores a value the database and this module disagree about.
-- **validation stops requiring the identity fields on a v3 fact** — A v3 producer that dropped a key then imports "successfully" with that key NULL. The manifest claims identity and the row has none — which is the state the version discriminator exists to make impossible.
+- **`readStoredComparable` skips the PAYLOAD fixpoint check** — ⚠️ **The row this slice's review round exists for.** The first cut of the function did exactly this, on the reasoning that an unreadable payload *"compares unequal to everything and proves nothing"*. It is false in the direction that stamps: *different* is `a <> b AND same tag`, so an unreadable payload proves DIFFERENCE against every honest local value of its type. A region on an older release exports `date:2026-02-31`; the destination later observes `date:2026-03-01`; same tag, unequal, `valid_to` stamped with no human. Two regions are independently deployed and the bundle version does not track this grammar, so the skew is ordinary.
+- **the importer binds the ARRIVING `_cmp` straight through (the ComparableValue narrowing widened)** — The one-token copy-paste from the three key lines directly above it. Under `ImportedIdentity`'s narrowed `ComparableValue` fields the honest spelling (`fact.subjectCmp ?? null`) does not compile at all — this row has to add a cast to express it, which is itself the measurement: the type turned a silent reintroduction of the verbatim `entity:` carry into something a reviewer must write down.
+- **the SUBJECT position is hardcoded to null instead of following the tag rule** — ADR-0037 §8 states the rule by TAG, not by position, *"so the two cannot drift about what a store-local id is"*. ⚠️ This killed **zero** until `migrate-roundtrip-pg.test.ts` gained a fact with a VALUE-typed `subject_cmp`: every other fixture carries `entity:` or NULL there, and against that corpus the hardcode and the rule are the same program. Third time in this arc — a disjunction, a conditional, and now a positional rule each needed a fixture drawn from the population the mutation lives in.
+- **`textOrNull` goes silent again** — The retracted argument was that a warn here *"would be indistinguishable from a log line per honest abstain"*. An abstain arrives as `null` and a dropped column arrives as `undefined`, and `preWideningGrant` eight lines up already separates them. What the silence hid: `f.subject_key` stops arriving → every fact exports `null` → the destination accepts it (null is legitimate) → the whole corpus lands UNKEYED, green `200` at both ends.
+- **the identity-loss line is deleted** — An expected `entity:` drop, a tag vocabulary the two regions disagree about, and a corpus of surfaces that norm away all present as one `200` with healthy counts without it. `unreadable` is the count that means evidence was LOST rather than deferred, and nothing else in the system would ever mention it.
+- **the identity-loss line fires on every import (the `unreadable` split collapsed)** — The opposite error and the one that looks tidier: three reasons folded into one counter. `absent` then counts as a loss, so the line fires on every import that carries a fact with no comparable value — which is nearly all of them — and an operator learns to skim it. The `unreadable` count, the only one that means evidence was lost, disappears entirely.
+- **the legacy READ runs without the workspace vocabulary lock** — Section 9 takes the lock only when the bundle carries EDGES, and a legacy bundle usually carries none — which is exactly the arm that reads the vocabulary. Unlocked: this transaction reads the closure at t0; a concurrent `decideAliasProposal` approves, rebuilds and re-keys every row for the workspace, committing before we do; our rows commit with pre-approval keys. The corpus is split permanently — `vocabulary-decide.ts`'s own "a committed lie about what the corpus collides on".
+- **a v3 import loads a vocabulary it never uses** — The negative for the two rows above: they would both pass against an importer that locked and loaded unconditionally, which serializes every region import against every alias approval for no reason — and makes a corrupt destination vocabulary fail a v3 import that never consults one.
+- **`readStoredComparable` admits an EMPTY payload** — A truncated `entity:` or `money:` is exactly what `comparableDifferentSql`'s well-formedness arms refuse, so admitting one stores a value the database and this module disagree about.
+- **validation stops requiring the identity fields on a v3 fact** — A v3 producer that dropped a key then imports "successfully" with that key NULL. The manifest claims identity and the row has none — the state the version discriminator exists to make impossible. ⚠️ The edit neutralizes the INNER condition. An earlier version disabled the OUTER `if`, which fell through to the legacy-refusal arm and REJECTED a v3 fact that did carry its identity — the opposite behaviour, with one of its two kills spurious.
 - **the required-sections gate reads `=== CURRENT` again** — The bug a version bump introduces by looking unrelated to it: written as `=== CURRENT_BUNDLE_VERSION`, the #4460 pillar check silently stopped applying to v3 the moment the constant moved, and a producer dropping `dashboards` would strand a pillar without an error.
-- **the exporter stops projecting the identity columns** — The wire half. Every field reads `undefined`, `textOrNull` degrades it to `null`, and validation refuses the bundle — IF something asserts the projection. The interesting column is `v3 pin`, which is the file-local replacement for what the `keys-not-on-the-wire.test.ts` exemption switches off.
+- **the exporter stops projecting the identity columns** — The wire half. Every field reads `undefined` and `textOrNull` degrades it to `null` — and ⚠️ **validation ACCEPTS that bundle**, since `null` is legitimate at all five positions, so every fact imports UNKEYED. An earlier version of this note said validation refuses it; the table’s own `admin-migrate = 0` was the evidence against. Nothing at the seam catches it, which is why `v3 pin` exists: the file-local replacement for what the `keys-not-on-the-wire.test.ts` exemption switches off.
 - **the exporter feeds identity values through a cast instead of `textOrNull`** — A value of the wrong runtime shape reaches a column whose comparisons stamp `valid_to`. The same call `preWideningVisibleTo` makes one line up, at a position where the consequence is a false claim of difference rather than a disclosure.
 - **the importer writes `predicate_cardinality` again (from the legacy field)** — Restores a per-row LLM guess as though it were the curated decision #5027 moved to `brain_predicate_cardinality`. On a v3 bundle the field is absent, so this writes the schema default whether the importer honours it or not — the only population where the revert changes a stored value is a LEGACY bundle carrying `single`, which is why the legacy test asserts the column rather than the v3 path doing so.

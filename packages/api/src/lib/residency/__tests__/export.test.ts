@@ -3,6 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -557,25 +559,65 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
     // once it reaches the destination. `null` is already a legal, common value
     // at all five, so the degraded state is one the destination handles — it
     // costs an under-match, never a false claim of difference.
-    for (const drift of [undefined, 49, {}, ["postgres"]]) {
-      resetMocks();
-      mockPoolQueryResults["FROM brain_episodes WHERE"] = {
-        rows: [
-          {
-            id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
-            body: "…", locator: null, occurred_at: null,
-            ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
-            visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
-          },
-        ],
-      };
-      mockPoolQueryResults["FROM brain_facts f"] = {
-        rows: [{ ...factRow(null), object_key: drift, object_cmp: drift }],
-      };
-      const fact = await exportedFact();
-      expect(fact.objectKey).toBeNull();
-      expect(fact.objectCmp).toBeNull();
+    // All FIVE positions, not a representative one: they are five separate call
+    // sites with five separate arguments, and a copy-paste that passed the wrong
+    // column to one of them is exactly the defect a single-position loop cannot
+    // see.
+    const positions = [
+      ["subject_key", "subjectKey"],
+      ["predicate_key", "predicateKey"],
+      ["object_key", "objectKey"],
+      ["subject_cmp", "subjectCmp"],
+      ["object_cmp", "objectCmp"],
+    ] as const;
+
+    for (const [column, field] of positions) {
+      for (const drift of [undefined, 49, {}, ["postgres"]]) {
+        resetMocks();
+        mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+          rows: [
+            {
+              id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
+              body: "…", locator: null, occurred_at: null,
+              ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
+              visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
+            },
+          ],
+        };
+        mockPoolQueryResults["FROM brain_facts f"] = {
+          rows: [{ ...factRow(null), [column]: drift }],
+        };
+        const fact = await exportedFact();
+        expect(fact[field], `${column} drift (${String(drift)}) was not degraded`).toBeNull();
+      }
     }
+  });
+
+  it("is SILENT for a SQL null and LOUD for anything else", () => {
+    // The three-state distinction the first cut of `textOrNull` did not make.
+    // An honest abstain arrives as `null` — a surface that norms away has no
+    // key, and NULL is how `unknown` is spelled at a `_cmp` — while a dropped
+    // column arrives as `undefined`. Folding them into one silent `null` hides
+    // a corpus-wide degradation behind the ordinary case, which is the failure
+    // `preWideningGrant` eight lines up already refuses.
+    //
+    // Asserted on the SOURCE rather than by capturing the logger: the rule is
+    // "these two states take different branches", and a logger mock would pin
+    // the message rather than the split.
+    const source = readFileSync(
+      join(import.meta.dir, "..", "export.ts"),
+      "utf8",
+    );
+    const body = /function textOrNull\([\s\S]*?\n}/.exec(source);
+    expect(body, "textOrNull is gone — re-point this pin").not.toBeNull();
+    expect(
+      body![0].includes("value === null"),
+      "textOrNull no longer separates a SQL NULL from a dropped column, so an honest abstain and a corpus-wide projection failure produce the same silence",
+    ).toBe(true);
+    expect(
+      body![0].includes("log.warn"),
+      "textOrNull no longer warns on drift. A column that stops decoding then exports `null` for every fact, the destination accepts it (null is legitimate at all five positions), and the whole imported corpus lands unkeyed with a green 200 at both ends",
+    ).toBe(true);
   });
 
   it("no longer SELECTs predicate_cardinality", async () => {

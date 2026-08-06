@@ -97,15 +97,32 @@ function preWideningGrant(value: unknown, factId: unknown): string[] | null {
  * state is one the destination already handles, and it costs an under-match
  * rather than a false claim of difference.
  *
- * Silent on purpose, unlike `preWideningGrant`'s warn: `null` here is the
- * ordinary case for most rows, so a log line per drift would be
- * indistinguishable from a log line per honest abstain if the check ever fired
- * on a wide corpus. What makes the drift visible instead is the destination's
- * own behaviour — an unkeyed imported row collides with nothing, which is what
- * `provisional` and the round-trip pins are for.
+ * ⚠️ **THREE states, not two, and it warns on the third** — `preWideningGrant`'s
+ * structure, one column family over. A SQL `NULL` is an honest abstain and is
+ * silent; ANYTHING else non-string means the SELECT dropped the column or the
+ * driver stopped decoding it, and that is not evidence of an abstain.
+ *
+ * The first cut of this function was silent on both, on the reasoning that
+ * *"a log line per drift would be indistinguishable from a log line per honest
+ * abstain"*. **That reasoning was wrong** (#5035, panel round 1): an abstain
+ * arrives as `null` and a dropped column arrives as `undefined`, so the two are
+ * trivially separable — and `preWideningGrant`, eight lines up and cited by that
+ * comment as making the same call, already separates them. The failure the
+ * silence hid is corpus-wide: `f.subject_key` stops arriving → every fact
+ * exports `null` → the destination accepts it (null is legitimate) → the whole
+ * imported corpus lands UNKEYED, which is the exact pre-#5035 state this slice
+ * exists to end, with a green `200` at both ends. The destination's
+ * `provisional` marker does not cover it either — that reads only the two `_cmp`
+ * positions.
  */
-function textOrNull(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
+function textOrNull(value: unknown, factId: unknown, column: string): string | null {
+  if (value === null) return null;
+  if (typeof value === "string") return value;
+  log.warn(
+    { factId, column, actualType: value === undefined ? "undefined" : typeof value },
+    "region export: an identity column did not decode as text — exporting `null`, which the target reads as 'no key' / 'unknown'. That is the recoverable direction (an under-match a human can repair) rather than a false claim of difference, but it is DRIFT, not an abstain: a SQL NULL arrives as null and never reaches this line. Check the projection and the driver (#5035)",
+  );
+  return null;
 }
 
 /**
@@ -673,11 +690,11 @@ export async function exportWorkspaceBundle(
       // v3 REQUIRES all five, and `null` is a legitimate value at every one of
       // them: a surface that norms away has no key, permanently, and NULL is how
       // `unknown` is spelled at a `_cmp`.
-      subjectKey: textOrNull(f.subject_key),
-      predicateKey: textOrNull(f.predicate_key),
-      objectKey: textOrNull(f.object_key),
-      subjectCmp: textOrNull(f.subject_cmp),
-      objectCmp: textOrNull(f.object_cmp),
+      subjectKey: textOrNull(f.subject_key, f.id, "subject_key"),
+      predicateKey: textOrNull(f.predicate_key, f.id, "predicate_key"),
+      objectKey: textOrNull(f.object_key, f.id, "object_key"),
+      subjectCmp: textOrNull(f.subject_cmp, f.id, "subject_cmp"),
+      objectCmp: textOrNull(f.object_cmp, f.id, "object_cmp"),
       createdAt: toISO(f.created_at),
       updatedAt: toISO(f.updated_at),
     });

@@ -27,7 +27,11 @@ import {
   loadClaimVocabulary,
   recomputeEffectiveTargets,
 } from "@atlas/api/lib/brain/vocabulary";
-import { regionPortableComparable } from "@atlas/api/lib/brain/object-cmp";
+import {
+  regionPortableComparable,
+  type ComparableValue,
+  type RegionCarryOutcome,
+} from "@atlas/api/lib/brain/object-cmp";
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -171,6 +175,49 @@ const IDENTITY_FIELDS = [
   "subjectCmp",
   "objectCmp",
 ] as const satisfies readonly (keyof ExportedBrainFact)[];
+
+/**
+ * …and the other direction, which the `satisfies` above cannot express.
+ *
+ * `satisfies` proves every member is a real field; it does not prove the list
+ * COVERS the family. A sixth identity field added to `ExportedBrainFact` would
+ * drop silently out of the required-presence loop and import as NULL — the
+ * unkeyed state this slice exists to end, reached by adding a field.
+ *
+ * Keyed on the `Key`/`Cmp` naming convention the whole slice relies on, which is
+ * the same rule `bundle-identity-v3.test.ts` applies to the SQL column names one
+ * layer down. A type-level `never` check rather than a test, because the failure
+ * belongs at the edit site: whoever adds the field sees it.
+ */
+type _IdentityFieldsAreExhaustive =
+  Exclude<
+    Extract<keyof ExportedBrainFact, `${string}Key` | `${string}Cmp`>,
+    (typeof IDENTITY_FIELDS)[number]
+  > extends never
+    ? true
+    : ["identity field missing from IDENTITY_FIELDS"];
+const _identityFieldsAreExhaustive: _IdentityFieldsAreExhaustive = true;
+void _identityFieldsAreExhaustive;
+
+/**
+ * The accept set COVERS {@link SupportedBundleVersion}, not merely draws from it.
+ *
+ * `satisfies` on the array proves each member is a legal version. Without this,
+ * a `4` added to the union and forgotten here makes `isSupportedBundleVersion(4)`
+ * return false: fail-closed, so nothing corrupts, but a region that declares it
+ * supports v4 refuses a v4 bundle and strands the workspace.
+ *
+ * Deliberately NOT mirrored in `packages/cli/src/commands/migrate-import.ts`.
+ * That list is decoupled on purpose — a CLI built against a NEWER published
+ * types package must not silently claim to read a version its own code does not
+ * handle — and the asymmetry is recorded there.
+ */
+type _SupportedVersionsAreExhaustive =
+  Exclude<SupportedBundleVersion, (typeof SUPPORTED_BUNDLE_VERSIONS)[number]> extends never
+    ? true
+    : ["bundle version missing from SUPPORTED_BUNDLE_VERSIONS"];
+const _supportedVersionsAreExhaustive: _SupportedVersionsAreExhaustive = true;
+void _supportedVersionsAreExhaustive;
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -427,7 +474,15 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
         // key, permanently, and NULL is how `unknown` is spelled at a `_cmp` —
         // so this checks PRESENCE and TYPE, never truthiness.
         for (const field of IDENTITY_FIELDS) {
-          const present = field in f;
+          // `!== undefined` rather than `field in f`, and the difference is not
+          // academic: `in` reports true for an explicitly-`undefined` property,
+          // so an in-process caller building a legacy bundle by spreading a
+          // v3-shaped object (`{...v3fact, subjectKey: undefined}`) would be
+          // refused with "a version-2 bundle carries no identity". Over the
+          // wire the two coincide — `JSON.stringify` drops `undefined` — so this
+          // only ever matters to a caller inside this process, which is exactly
+          // the caller a confusing refusal costs the most.
+          const present = f[field] !== undefined;
           if (version >= IDENTITY_FROM_VERSION) {
             if (!present || (f[field] !== null && typeof f[field] !== "string")) {
               return { ok: false, error: `${at}.${field}: must be present, and a string or null (required from bundle version ${IDENTITY_FROM_VERSION}; null is legitimate — a surface that normalizes away has no key, and a null comparable value is the 'unknown' verdict).` };
@@ -765,10 +820,23 @@ const importRoute = createRoute({
 /**
  * Where an imported fact's identity comes from — carried, or computed here.
  *
- * The union is what makes the pairing structural: `carried: false` cannot exist
- * without the vocabulary the legacy arm keys against, so there is no shape in
- * which a whole corpus is keyed against the identity function because a load
- * silently produced nothing.
+ * The union makes ONE pairing structural: `carried: false` cannot exist without
+ * the vocabulary the legacy arm keys against, so no load that silently produced
+ * nothing can key a whole corpus against the identity function.
+ *
+ * ⚠️ Two things it does NOT enforce, stated because the first version of this
+ * docstring claimed the first of them (#5035, panel round 1):
+ *
+ *   - **It does not stop an EXPLICIT fallback.** `ClaimVocabulary` is
+ *     structural, and `identityVocabulary` satisfies the field — which is
+ *     exactly the substitution `bundle-identity.mutations.ts` performs to
+ *     measure the section reorder. Only the accident is closed, not the
+ *     decision.
+ *   - **It does not tie `carried: true` to a v3 manifest.** A LEGACY bundle
+ *     carrying no facts takes that arm, deliberately: keying nothing needs no
+ *     vocabulary, and loading one would fail the import over a destination
+ *     vocabulary the bundle never touches. The arm is vacuous there — no fact
+ *     reaches {@link importedIdentity} — rather than wrong.
  */
 type IdentitySource =
   | { readonly carried: true }
@@ -779,10 +847,34 @@ interface ImportedIdentity {
   readonly subjectKey: string | null;
   readonly predicateKey: string | null;
   readonly objectKey: string | null;
-  readonly subjectCmp: string | null;
-  readonly objectCmp: string | null;
+  /**
+   * ⚠️ {@link ComparableValue}, NOT `string | null`, and the narrowing is the
+   * whole guarantee this slice produces (#5035, panel round 1).
+   *
+   * `regionPortableComparable` is the only function that may decide what lands
+   * in `subject_cmp`/`object_cmp`. Under a `string | null` field the line
+   * `subjectCmp: fact.subjectCmp ?? null` compiles — a one-token copy-paste
+   * from the three key lines directly above it in the same object literal — and
+   * reintroduces the verbatim `entity:` carry, which is the autonomous
+   * `valid_to` stamp ADR-0037 §8 exists to prevent. Under this type it does
+   * not: `string` is not assignable to `` `${ComparableTag}:${string}` ``.
+   *
+   * This is #5032's lesson at the destination rather than the parameter: a
+   * branded input stops the wrong CALL, and only a narrowed output stops the
+   * caller who skips the function altogether.
+   */
+  readonly subjectCmp: ComparableValue;
+  readonly objectCmp: ComparableValue;
   /** A non-null comparable value was discarded, so the row is `provisional`. */
   readonly comparableDropped: boolean;
+  /**
+   * Why each position's value was dropped, for the caller's aggregate warn.
+   * `unreadable` is the one that is not the rule working — see
+   * {@link RegionCarryOutcome}.
+   */
+  readonly carryReasons: readonly RegionCarryOutcome["reason"][];
+  /** A key this import COMPUTED came out null — the surface norms away. */
+  readonly unkeyable: boolean;
 }
 
 /**
@@ -836,18 +928,28 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
     // land in exactly the state a locally-ingested row with no entity store
     // lands in.
     const { vocabulary } = source;
-    return {
+    const keys = {
       subjectKey: slotKey(fact.subject, vocabulary.subject),
       predicateKey: slotKey(fact.predicate, vocabulary.predicate),
       objectKey: slotKey(fact.object, vocabulary.object),
+    };
+    return {
+      ...keys,
       subjectCmp: null,
       objectCmp: null,
       comparableDropped: false,
+      carryReasons: [],
+      // `slotKey` is null for a surface that normalizes away (`-`, `___`), which
+      // is legal and permanent. The INGEST path warns about it and is described
+      // as "the only signal such a claim ever produces" — this is the second key
+      // writer, so it owes the same signal or an imported corpus loses one an
+      // identical locally-ingested corpus would have produced.
+      unkeyable: Object.values(keys).some((k) => k === null),
     };
   }
 
-  const subjectCmp = regionPortableComparable(fact.subjectCmp);
-  const objectCmp = regionPortableComparable(fact.objectCmp);
+  const subject = regionPortableComparable(fact.subjectCmp);
+  const object = regionPortableComparable(fact.objectCmp);
   return {
     // `?? null` normalizes ABSENT to NULL and is not a permissive fallback:
     // validation refuses a v3 fact missing any of the five, so the only shape
@@ -855,14 +957,20 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
     subjectKey: fact.subjectKey ?? null,
     predicateKey: fact.predicateKey ?? null,
     objectKey: fact.objectKey ?? null,
-    subjectCmp,
-    objectCmp,
-    // Compared against what ARRIVED, never against the null-ness of the result.
-    // A row that arrived NULL is unchanged; a row whose `entity:` id was
-    // discarded is not. Same final value, different fact about the row.
-    comparableDropped:
-      (fact.subjectCmp != null && subjectCmp === null) ||
-      (fact.objectCmp != null && objectCmp === null),
+    subjectCmp: subject.value,
+    objectCmp: object.value,
+    // Compared against the REASON, not against the null-ness of the result. A
+    // row that arrived NULL is unchanged and has nothing to recompute; a row
+    // whose value was dropped does. Same final value, different fact about the
+    // row — and reading the reason rather than re-testing `fact.subjectCmp !=
+    // null` keeps the two in one place.
+    comparableDropped: [subject.reason, object.reason].some(
+      (r) => r === "store-local" || r === "unreadable",
+    ),
+    carryReasons: [subject.reason, object.reason],
+    // A CARRIED key is never recomputed here, so this import cannot make one
+    // null — a null arrived null, and its cause belongs to the source region.
+    unkeyable: false,
   };
 }
 
@@ -1389,16 +1497,62 @@ export async function importBundle(
   //
   // A discriminated union rather than a nullable vocabulary, so the pairing is
   // structural: there is no shape in which the legacy arm runs without a
-  // vocabulary, and therefore no `?? identityVocabulary` fallback that would
-  // silently key a whole corpus against the identity function when a load
-  // failed. One query per legacy import — not per fact, and not at all on the
-  // common path. It runs even for a legacy bundle carrying no brain rows, which
-  // is the accepted cost of the union: the alternative is a lie in the type for
-  // a loop that never executes.
-  const identitySource: IdentitySource =
-    bundle.manifest.version >= IDENTITY_FROM_VERSION
-      ? { carried: true }
-      : { carried: false, vocabulary: await loadClaimVocabulary(client, orgId) };
+  // vocabulary, and therefore no IMPLICIT `?? identityVocabulary` fallback that
+  // would silently key a whole corpus against the identity function when a load
+  // failed. ⚠️ It does NOT stop an explicit one — `ClaimVocabulary` is
+  // structural and `identityVocabulary` satisfies the field, which is exactly
+  // the substitution `bundle-identity.mutations.ts` performs. The union closes
+  // the accident, not the decision. One query per legacy import, not per fact.
+  //
+  // Gated on the bundle actually carrying facts, and that is not an
+  // optimization: `loadClaimVocabulary` THROWS `VocabularyClosureError` when the
+  // DESTINATION's closure is half-rebuilt, and failing a conversations-and-
+  // dashboards migration over corruption in a subsystem it never touches is a
+  // refusal with no cause. When it does fire it is loud, rolls the whole import
+  // back, and is repairable with `recomputeEffectiveTargets` — the right shape
+  // for a corpus that genuinely cannot be keyed.
+  //
+  // ⚠️ THE LOCK IS TAKEN FOR THE READ, not only for the edge INSERTs above.
+  // Section 9 acquires it only when the bundle carries edges — and a legacy
+  // bundle usually carries NONE, since v1/v2 predate the vocabulary. That is
+  // precisely the arm that reads the vocabulary here. Without this acquisition:
+  // this transaction reads the closure at t0 unlocked; `decideAliasProposal`
+  // approves an edge, rebuilds, and runs `REKEY_DRIFTED_FACTS_SQL` over every
+  // row for the workspace, committing at t1 — it cannot see our uncommitted
+  // rows; we commit at t2 with pre-approval keys. The corpus is then split
+  // permanently, local rows keyed post-approval and imported rows pre-, which is
+  // `vocabulary-decide.ts`'s own "a committed lie about what the corpus collides
+  // on". `pg_advisory_xact_lock` is re-entrant, so this costs nothing when
+  // section 9 already took it.
+  const legacyKeying =
+    bundle.manifest.version < IDENTITY_FROM_VERSION &&
+    (bundle.brainEpisodes ?? []).some((e) => e.facts.length > 0);
+  if (legacyKeying) {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+  }
+  const identitySource: IdentitySource = legacyKeying
+    ? { carried: false, vocabulary: await loadClaimVocabulary(client, orgId) }
+    : { carried: true };
+
+  // Identity losses, aggregated for ONE warn at the end of the brain block
+  // rather than one per fact — a per-row line on a corpus-sized import trains an
+  // operator to skim, and skimming is how the one line that mattered is missed.
+  //
+  // Three counters, not one, because they mean different things and only two of
+  // them are the design working:
+  //
+  //   storeLocal — an `entity:` id dropped. ADR-0037 §8's rule, expected, and
+  //                the size of it is what tells an operator how much of the
+  //                corpus abstains until recomputed.
+  //   unreadable — the source region wrote a tag or a payload THIS region cannot
+  //                read. Real evidence lost, and the only symptom otherwise is
+  //                its absence. A version skew between two independently
+  //                deployed regions produces exactly this.
+  //   unkeyable  — a legacy surface that normalizes away, so no key exists.
+  //                Legal and permanent; the ingest path warns about it and calls
+  //                that "the only signal such a claim ever produces", and this
+  //                is the second key writer.
+  const identityLoss = { storeLocal: 0, unreadable: 0, unkeyable: 0 };
 
   // bundle episode id → the id it actually resolved to in the target. Only
   // populated on the adoption path (same source record, different uuid);
@@ -1538,6 +1692,11 @@ export async function importBundle(
       }
 
       const identity = importedIdentity(fact, identitySource);
+      for (const reason of identity.carryReasons) {
+        if (reason === "store-local") identityLoss.storeLocal++;
+        else if (reason === "unreadable") identityLoss.unreadable++;
+      }
+      if (identity.unkeyable) identityLoss.unkeyable++;
 
       await client.query(
         // `pre_widening_visible_to` travels or the target region re-opens the
@@ -1609,6 +1768,19 @@ export async function importBundle(
       );
       result.brainFacts.imported++;
     }
+  }
+
+  // The one identity-loss line, and it is not decoration: without it an expected
+  // `entity:` drop, a tag vocabulary the two regions disagree about, and a
+  // corpus of surfaces that norm away all present identically — a `200` with
+  // healthy counts. `unreadable > 0` is the one an operator must act on; it
+  // means the SOURCE region emitted something this one cannot read, and those
+  // rows lost real evidence rather than following a rule.
+  if (identityLoss.storeLocal > 0 || identityLoss.unreadable > 0 || identityLoss.unkeyable > 0) {
+    log.warn(
+      { orgId, bundleVersion: bundle.manifest.version, ...identityLoss },
+      "Region import nulled identity values (#5035, ADR-0037 §8). `storeLocal` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadable` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. `unkeyable` is a legacy surface that normalizes away to nothing, which is legal and permanent",
+    );
   }
 
   // Edges LAST — an endpoint can be a fact or an episode on either side, so

@@ -29,6 +29,17 @@ import type { LearnedPattern } from "./learned-pattern";
  *
  * The bundle version bumps exactly once across the M4 arc; #5028 drops the
  * database column and is told not to touch the format.
+ *
+ * ⚠️ **A version bump is a DEPLOY-ORDERING constraint across regions, and this
+ * is the only place it is written down.** A source region that deploys first
+ * exports v3 into a destination still running v2 code, which refuses the whole
+ * bundle with *"Unsupported bundle version: 3"*. That is the correct
+ * fail-loud direction — the alternative is a destination silently dropping
+ * fields it does not know — but it means **every destination region must be on
+ * the new release before any source region is**, and a cutover attempted in the
+ * window fails at the import call rather than corrupting anything. Importers
+ * only ever gain versions ({@link SupportedBundleVersion}), so the reverse
+ * direction (old bundle, new destination) needs no coordination at all.
  */
 export const EXPORT_BUNDLE_VERSION = 3;
 
@@ -446,9 +457,18 @@ export interface ExportedBrainFact {
    * #5027 moved cardinality onto the canonical predicate
    * (`brain_predicate_cardinality`), and the per-row values this field carried
    * are LLM guesses — so carrying them forward would restore a guess as though
-   * it were a curated decision. Still declared, and optional rather than
-   * removed, so a consumer built against an older `@useatlas/types` keeps
-   * compiling; #5028 drops the database column.
+   * it were a curated decision. #5028 drops the database column.
+   *
+   * ⚠️ **Optional rather than REMOVED, and it is still a breaking change for
+   * READERS.** A consumer that *writes* the field keeps compiling; one that
+   * *reads* it does not, because the type widened from `"single" | "multi"` to
+   * `… | undefined` — a direct assignment or an exhaustive `switch` now fails
+   * under strict mode. Keeping the declaration buys the write side and the
+   * migration path, not source compatibility outright, so the changelog line is
+   * *"reading `predicateCardinality` now requires handling `undefined`"*. (An
+   * earlier version of this comment justified it as *"a consumer built against
+   * an older `@useatlas/types` keeps compiling"* — that consumer is not
+   * resolving this package at all, so the sentence described nobody.)
    */
   predicateCardinality?: "single" | "multi";
   createdAt: string;

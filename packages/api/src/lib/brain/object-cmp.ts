@@ -755,7 +755,47 @@ export function comparableTag(value: string): ComparableTag | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Re-admit a value read back out of `object_cmp` / `subject_cmp`, or abstain.
+ * Is this payload a FIXPOINT of the canonicalizer that owns its tag?
+ *
+ * One entry per non-entity tag, each CALLING the canonicalizer rather than
+ * re-stating its grammar — the same relationship `parseSurface` has to them, so
+ * a rule tightened in one place tightens here in the same commit. `entity` has
+ * no entry: its payload is a store id, opaque by design, and it never reaches
+ * this table because {@link regionPortableComparable} drops the tag outright.
+ *
+ * A `Record` keyed on the tag union, so adding a member to {@link COMPARABLE_TAGS}
+ * is a COMPILE ERROR here rather than a value that silently falls through to
+ * "admitted". That direction matters: the fall-through is the carry direction.
+ */
+const PAYLOAD_IS_CANONICAL: Readonly<
+  Record<Exclude<ComparableTag, typeof ENTITY_TAG>, (payload: string) => boolean>
+> = {
+  number: (p) => canonicalDecimal(p) === p,
+  date: (p) => canonicalDate(p) === p,
+  time: (p) => canonicalInstant(p) === p,
+  bool: (p) => canonicalBool(p) === p,
+  // `USD:499` — the currency and the amount, split on the FIRST separator so an
+  // amount containing one cannot smuggle a currency past the check.
+  money: (p) => {
+    const boundary = p.indexOf(TAG_SEPARATOR);
+    if (boundary === -1) return false;
+    return (
+      canonicalCurrency(p.slice(0, boundary)) === p.slice(0, boundary) &&
+      canonicalDecimal(p.slice(boundary + TAG_SEPARATOR.length)) === p.slice(boundary + TAG_SEPARATOR.length)
+    );
+  },
+};
+
+/** Why a stored comparable value was refused, or that it was not. */
+export type StoredComparableVerdict =
+  | { readonly kind: "absent" }
+  /** Well-formed and readable by this region. */
+  | { readonly kind: "admitted"; readonly value: TaggedComparable; readonly tag: ComparableTag }
+  /** No known tag, an empty payload, or a payload this region cannot read. */
+  | { readonly kind: "unreadable"; readonly detail: "no-tag" | "empty-payload" | "payload" };
+
+/**
+ * Re-admit a value read back out of `object_cmp` / `subject_cmp`, or refuse it.
  *
  * The entry point {@link TaggedComparable}'s docstring anticipated: the template
  * literal stops a raw SURFACE being bound into the column, and stops nothing at
@@ -763,27 +803,67 @@ export function comparableTag(value: string): ComparableTag | null {
  * caller that reads stored values it did not write is the region importer, so
  * this is where the re-admission check lives.
  *
- * It checks two things and deliberately not a third:
+ * Three checks, and the third exists because the first version of this function
+ * skipped it on an argument that was **wrong** (#5035, panel round 1):
  *
- *   - the value carries a KNOWN tag ({@link comparableTag}, which refuses a
- *     separator-less value rather than reading `moneys` as `money`);
- *   - the payload after the separator is non-empty. `entity:` with nothing after
- *     it is the truncated-import shape `subjectNotDifferentSql`'s SQL arms
- *     refuse, and a value the SQL refuses has no business being stored.
+ *   - a KNOWN tag ({@link comparableTag}, which refuses a separator-less value
+ *     rather than reading `moneys` as `money`);
+ *   - a non-empty payload. `entity:` with nothing after it is the
+ *     truncated-import shape `comparableDifferentSql`'s `strpos` arms refuse,
+ *     and a value the SQL refuses has no business being stored;
+ *   - the payload is a **fixpoint of this region's canonicalizer for that tag**
+ *     ({@link PAYLOAD_IS_CANONICAL}).
  *
- * It does NOT re-parse the payload against the grammar that produced it. That
- * would be a second implementation of `canonicalDate` and friends running on the
- * import path, and the failure it would buy is the wrong direction: a payload
- * this module would no longer produce (a grammar tightened between the two
- * regions' releases) is still a value the DESTINATION's SQL compares by string
- * equality, exactly as it compares its own rows. Refusing it would silently
- * drop evidence; admitting it treats both regions' rows alike.
+ * ⚠️ **The retracted argument, recorded because it is the plausible one.** The
+ * first cut admitted any non-empty payload, reasoning that a value this module
+ * would no longer produce — a grammar tightened between the two regions'
+ * releases — *"compares unequal to everything and proves nothing"*, so refusing
+ * it would silently drop evidence. **That is false, and it is false in the
+ * direction that stamps.** *Different* is `a <> b AND same tag`, so an
+ * unreadable payload proves DIFFERENCE against every honest local value of its
+ * own type. Worked: region A on an older release exports `date:2026-02-31` (the
+ * calendar round-trip in {@link canonicalDate} is what refuses that, and it was
+ * added by a review round — so rows predating it are producible). Region B
+ * imports it, later observes the same claim as `date:2026-03-01`, and the pair
+ * is same-tag and unequal: **provably different**, `valid_to` stamped
+ * autonomously on the one write ADR-0036 reserves for a human. The regions are
+ * independently deployed and the bundle version does not track this grammar, so
+ * the skew is ordinary rather than exotic.
+ *
+ * Refusing costs a missed supersession — `unknown`, tension, a human. Admitting
+ * costs a stamp with no inverse. Every judgement call in this module resolves
+ * toward `null` for that reason, and this one was the exception by accident.
+ *
+ * Returns a VERDICT rather than a bare value, on {@link comparableValueWithReason}'s
+ * precedent one screen up: the importer has to tell an expected `entity:` drop
+ * from *"the source region wrote something this region cannot read"*, and those
+ * are the same `null` without it.
+ */
+export function readStoredComparable(value: string | null | undefined): StoredComparableVerdict {
+  if (typeof value !== "string" || value === "") return { kind: "absent" };
+  const tag = comparableTag(value);
+  if (tag === null) return { kind: "unreadable", detail: "no-tag" };
+  const payload = value.slice(tag.length + TAG_SEPARATOR.length);
+  if (payload === "") return { kind: "unreadable", detail: "empty-payload" };
+  // `entity` has no canonicalizer — a store id is opaque, and the caller drops
+  // the tag before the value is ever stored, so the only property that matters
+  // here is that the payload exists.
+  if (tag !== ENTITY_TAG && !PAYLOAD_IS_CANONICAL[tag](payload)) {
+    return { kind: "unreadable", detail: "payload" };
+  }
+  return { kind: "admitted", value: value as TaggedComparable, tag };
+}
+
+/**
+ * {@link readStoredComparable}'s value half — admitted, or `null`.
+ *
+ * Kept because the shape reads better where the reason is genuinely not wanted,
+ * and because a caller that wants only the value should not have to name the
+ * verdict's arms to get it.
  */
 export function parseStoredComparable(value: string | null | undefined): ComparableValue {
-  if (typeof value !== "string") return null;
-  const tag = comparableTag(value);
-  if (tag === null) return null;
-  return value.length > tag.length + TAG_SEPARATOR.length ? (value as TaggedComparable) : null;
+  const verdict = readStoredComparable(value);
+  return verdict.kind === "admitted" ? verdict.value : null;
 }
 
 /**
@@ -818,11 +898,37 @@ export function parseStoredComparable(value: string | null | undefined): Compara
  * A row whose value this drops is marked `provenance.provisional` by the caller
  * — the marker's one job, *this row's comparable value is worth recomputing*,
  * and what makes the null-out recoverable rather than merely safe.
+ *
+ * The three refusals are kept APART in the return value and folded together
+ * only by the column, because they mean different things to an operator:
+ * `store-local` is the rule working, and `unreadable` is the two regions
+ * disagreeing about what a comparable value looks like — a drift the caller
+ * logs, since nothing else in the system would ever mention it.
  */
-export function regionPortableComparable(stored: string | null | undefined): ComparableValue {
-  const parsed = parseStoredComparable(stored);
-  if (parsed === null) return null;
-  return comparableTag(parsed) === ENTITY_TAG ? null : parsed;
+export type RegionCarryOutcome = {
+  readonly value: ComparableValue;
+  readonly reason: "carried" | "absent" | "store-local" | "unreadable";
+};
+
+export function regionPortableComparable(stored: string | null | undefined): RegionCarryOutcome {
+  const verdict = readStoredComparable(stored);
+  switch (verdict.kind) {
+    case "absent":
+      return { value: null, reason: "absent" };
+    case "unreadable":
+      return { value: null, reason: "unreadable" };
+    case "admitted":
+      return verdict.tag === ENTITY_TAG
+        ? { value: null, reason: "store-local" }
+        : { value: verdict.value, reason: "carried" };
+    default: {
+      // Throws rather than falling through to a value: a new verdict arm
+      // reaching here unhandled would otherwise take the CARRY branch by
+      // default, which is the irreversible direction.
+      const exhaustive: never = verdict;
+      throw new Error(`regionPortableComparable: unhandled verdict ${JSON.stringify(exhaustive)}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

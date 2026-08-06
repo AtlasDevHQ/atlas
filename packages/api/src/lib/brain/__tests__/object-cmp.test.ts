@@ -578,16 +578,55 @@ describe("what survives a region hop", () => {
     }
   });
 
-  test("`parseStoredComparable` does NOT re-parse the payload against its grammar", () => {
-    // Deliberate, and the direction matters. A payload this module would no
-    // longer produce — a grammar tightened between the two regions' releases —
-    // is still a value the DESTINATION's SQL compares by plain string equality,
-    // exactly as it compares its own rows. Refusing it would silently drop
-    // evidence; admitting it treats both regions' rows alike. A regrettable
-    // payload compares unequal to everything and proves nothing, which is the
-    // recoverable direction.
-    expect(parseStoredComparable("date:2026-02-31")).toBe("date:2026-02-31");
-    expect(parseStoredComparable("money:ZZZ9:499")).toBe("money:ZZZ9:499");
+  test("`parseStoredComparable` REFUSES a payload this region cannot re-derive", () => {
+    // ⚠️ The first cut of this function ADMITTED these, reasoning that an
+    // unreadable payload "compares unequal to everything and proves nothing".
+    // That is false in the direction that stamps: *different* is `a <> b AND
+    // same tag`, so an unreadable payload proves DIFFERENCE against every honest
+    // local value of its own type, and the publish gate stamps `valid_to` on it
+    // with no human. Region skew produces exactly these — the two regions are
+    // independently deployed and the bundle version does not track this grammar.
+    for (const bad of [
+      // The impossible calendar day `canonicalDate`'s round-trip refuses. A
+      // region predating that check could have written it; here it would read as
+      // provably different from a genuine `date:2026-03-01`.
+      "date:2026-02-31",
+      // Three letters, not ISO-4217 — the shape `CURRENCY_RE` used to accept.
+      "money:ZZZ9:499",
+      "money:MOS:12",
+      // A payload that is not a fixpoint of its own canonicalizer.
+      "number:0499",
+      "number:1,499",
+      "bool:TRUE",
+      "time:2026-08-04T08:00:00+02:00",
+      // Money with no currency/amount split at all.
+      "money:499",
+    ]) {
+      expect(parseStoredComparable(bad), `\`${bad}\` was admitted`).toBeNull();
+    }
+
+    // …and the positive control on the same axis: a payload this region WOULD
+    // produce is admitted, so the refusals above are a grammar check rather than
+    // a blanket refusal of every money/date value.
+    for (const good of ["date:2026-03-01", "money:USD:499", "number:499", "bool:true"]) {
+      expect(parseStoredComparable(good), `\`${good}\` was refused`).toBe(good as TaggedComparable);
+    }
+  });
+
+  test("the fixpoint check CALLS the canonicalizers rather than re-stating them", () => {
+    // The property that keeps the import path and the ingest path from drifting:
+    // a value this region's own parser produces from a surface must survive a
+    // round-trip through the stored-value reader. Asserted over the corpus the
+    // parser is already tested against, so a grammar change tightened in one
+    // place cannot leave the other admitting what it now refuses.
+    for (const surface of ["499 USD", "499", "2026-08-04", "2026-08-04T08:00:00Z", "true"]) {
+      const produced = comparableValue({ surface });
+      expect(produced, `\`${surface}\` stopped parsing`).not.toBeNull();
+      expect(
+        parseStoredComparable(produced),
+        `\`${produced}\` is produced by comparableValue but refused on the way back in — the two are now different grammars`,
+      ).toBe(produced);
+    }
   });
 
   test("drops an entity id and carries every value-typed tag", () => {
@@ -596,15 +635,21 @@ describe("what survives a region hop", () => {
     // that is counterfeit positive evidence of DIFFERENCE, which is the arm that
     // stamps `valid_to`. Strictly worse than the NULL it replaces, because NULL
     // is `unknown` and reaches a human.
-    expect(regionPortableComparable("entity:01JSOURCE7X")).toBeNull();
+    expect(regionPortableComparable("entity:01JSOURCE7X")).toEqual({
+      value: null,
+      reason: "store-local",
+    });
     // Not a length or a prefix test: an entity id whose payload happens to look
     // like money is still an entity id.
-    expect(regionPortableComparable("entity:USD:499")).toBeNull();
+    expect(regionPortableComparable("entity:USD:499").value).toBeNull();
 
     // Region-invariant parses travel. These read a SURFACE and no store, so the
     // same input produces the same bytes in either region.
     for (const value of VALUE_TYPED) {
-      expect(regionPortableComparable(value), `\`${value}\` was dropped`).toBe(value);
+      expect(regionPortableComparable(value), `\`${value}\` was dropped`).toEqual({
+        value,
+        reason: "carried",
+      });
     }
 
     // Every tag is covered by one arm or the other, and the split is checked
@@ -615,14 +660,30 @@ describe("what survives a region hop", () => {
     expect([...COMPARABLE_TAGS].filter((t) => !decided.has(t))).toEqual([]);
   });
 
-  test("a malformed stored value is dropped, not carried", () => {
-    // The fail-closed direction, and it is the one that matters: an untagged
-    // value compares unequal to every honest value under `<>`, so carrying one
-    // manufactures difference out of a string nobody can interpret. Same
-    // outcome as NULL — `unknown` — which is what the destination already does
-    // with a value it cannot read.
-    for (const bad of [null, undefined, "499", "entity:", "wat:1"]) {
-      expect(regionPortableComparable(bad), `\`${String(bad)}\` was carried`).toBeNull();
+  test("a malformed stored value is dropped, not carried — and says so distinctly", () => {
+    // The fail-closed direction, and it is the one that matters: an unreadable
+    // value is same-tag-and-unequal against every honest local value of its
+    // type, so carrying one manufactures difference out of a string nobody can
+    // interpret.
+    //
+    // The REASON is asserted, not just the null. `store-local` is the design
+    // working and `unreadable` is two regions disagreeing about what a
+    // comparable value looks like — the importer logs the second and an operator
+    // acts on it, so collapsing them into one `null` is the silent failure this
+    // return shape exists to prevent.
+    for (const bad of ["499", "entity:", "wat:1", "money:ZZZ9:499", "date:2026-02-31"]) {
+      expect(regionPortableComparable(bad), `\`${bad}\` was carried`).toEqual({
+        value: null,
+        reason: "unreadable",
+      });
+    }
+    // …and a genuinely absent value is neither: nothing was lost, so nothing is
+    // worth recomputing and the row must not be marked `provisional`.
+    for (const absent of [null, undefined, ""]) {
+      expect(regionPortableComparable(absent), `\`${String(absent)}\``).toEqual({
+        value: null,
+        reason: "absent",
+      });
     }
   });
 });

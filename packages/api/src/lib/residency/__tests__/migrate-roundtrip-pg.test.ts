@@ -28,7 +28,8 @@ import { exportWorkspaceBundle } from "../export";
 import { approveAliasEdge, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { reconcileFacts } from "@atlas/api/lib/brain/reconcile";
-import { importBundle } from "../../../api/routes/admin-migrate";
+import { importBundle, validateBundle } from "../../../api/routes/admin-migrate";
+import { PROVISIONAL_PREDICATE } from "@atlas/api/lib/brain/candidates";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
 import type { ImportResult } from "@useatlas/types";
 
@@ -49,6 +50,8 @@ const TASK_ID = "66666666-6666-4666-8666-666666666666";
 const EPISODE_ID = "77777777-7777-4777-8777-777777777777";
 const FACT_ID = "88888888-8888-4888-8888-888888888888";
 const SUPERSEDED_FACT_ID = "99999999-9999-4999-8999-999999999999";
+/** Carries a VALUE-TYPED `subject_cmp` — the only fixture the subject-position rule can fail against (#5035). */
+const VALUE_SUBJECT_FACT_ID = "aaaaaaaa-5035-4000-8000-000000000003";
 
 describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => {
   let pool: Pool;
@@ -213,6 +216,29 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
                'acme:pro plan', 'unit price', 'thirty nine', 'entity:01JSRCOBJECT7X')`,
       [SUPERSEDED_FACT_ID, SOURCE_ORG, EPISODE_ID],
     );
+    // ⚠️ A VALUE-TYPED `subject_cmp`, and it is the only fixture that makes the
+    // subject-position rule falsifiable (#5035, panel round 1). Every other fact
+    // here carries `entity:` or NULL at the subject, so `subjectCmp: null`
+    // hardcoded in the importer and the shipped tag rule are the same program —
+    // the rule would be asserted nowhere.
+    //
+    // This region's own `subjectComparableValue` cannot produce this value, and
+    // that is exactly the point: the importer re-admits values ANOTHER region or
+    // a later release wrote, and what makes that safe is the TAG, not the
+    // position. ADR-0037 §8 says so in as many words — *"the rule is stated by
+    // tag rather than by position so the two cannot drift about what a
+    // store-local id is"* — and a rule stated only in prose is not a rule.
+    await pool.query(
+      `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from,
+                                ingested_at, source_episode_id, provenance,
+                                status, visible_to,
+                                subject_key, predicate_key, object_key, subject_cmp)
+       VALUES ($1, $2, 'acme:seat-count', 'billed_at', '12',
+               '2026-06-01T00:00:00Z', '2026-06-01T00:05:00Z', $3,
+               '{"actor":"U-carol"}'::jsonb, 'draft', ARRAY['org'],
+               'acme:seat count', 'billed at', 'twelve', 'number:7')`,
+      [VALUE_SUBJECT_FACT_ID, SOURCE_ORG, EPISODE_ID],
+    );
     await pool.query(
       `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
        VALUES ($1, 'supersedes', $2, $3)`,
@@ -289,6 +315,13 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     async () => {
       // ── Export: counts reflect the seeded source org ──
       const bundle = await exportWorkspaceBundle(SOURCE_ORG, "roundtrip-test");
+
+      // ⚠️ The ONE place a real exporter's output meets the validator. Every
+      // other test on both sides hand-builds its bundle, so an exporter that
+      // stopped emitting a field the validator requires would be caught by
+      // neither: `runImport` below calls `importBundle` directly. Cheap, and it
+      // is the seam a live cutover actually runs.
+      expect(validateBundle(bundle as unknown).ok).toBe(true);
       expect(bundle.manifest.counts).toEqual({
         conversations: 1, // the soft-deleted conversation is excluded
         messages: 2,
@@ -303,7 +336,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         scheduledTasks: 1,
         agentSessionMemory: 1, // the deleted conversation's slot is excluded
         brainEpisodes: 1,
-        brainFacts: 2, // the live claim AND the superseded/tombstoned one
+        // The live claim, the superseded/tombstoned one, and the fact whose
+        // `subject_cmp` is VALUE-typed (#5035's subject-position falsifier).
+        brainFacts: 3,
         brainEdges: 2,
         factAudienceMembers: 1,
         // The approved edges only. There is no `brainVocabularyTargets` count
@@ -342,7 +377,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(result.scheduledTasks).toEqual({ imported: 1, skipped: 0 });
       expect(result.agentSessionMemory).toEqual({ imported: 1, skipped: 0 });
       expect(result.brainEpisodes).toEqual({ imported: 1, skipped: 0 });
-      expect(result.brainFacts).toEqual({ imported: 2, skipped: 0 });
+      expect(result.brainFacts).toEqual({ imported: 3, skipped: 0 });
       expect(result.brainEdges).toEqual({ imported: 2, skipped: 0 });
       expect(result.factAudienceMembers).toEqual({ imported: 1, skipped: 0 });
       expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0 });
@@ -517,6 +552,37 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         provisional: true,
       });
 
+      // ⚠️ The rule is keyed on the TAG, not on the position — asserted at the
+      // subject, which is the only place it can fail. A value-typed
+      // `subject_cmp` must SURVIVE. Without this fixture, `subjectCmp: null`
+      // hardcoded in the importer passes every other assertion in this file:
+      // every other fact carries `entity:` or NULL there.
+      const valueSubject = (
+        await pool.query<{ subject_cmp: string | null; provenance: Record<string, unknown> }>(
+          `SELECT subject_cmp, provenance FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+          [VALUE_SUBJECT_FACT_ID, TARGET_ORG],
+        )
+      ).rows[0]!;
+      expect(valueSubject.subject_cmp).toBe("number:7");
+      // …and it is NOT provisional: nothing was dropped from this row, so there
+      // is nothing worth recomputing.
+      expect(valueSubject.provenance).toEqual({ actor: "U-carol" });
+
+      // The marker is read through the QUERY that consumes it, not only as a
+      // JSON key. The writer spells `jsonb_set(…, '{provisional}', …)` and the
+      // reader spells `jsonb_exists(f.provenance, 'provisional')` — two
+      // spellings of one contract, and nothing else compares them. Exactly the
+      // two rows whose comparable value was dropped.
+      const provisionalRows = await pool.query<{ id: string }>(
+        `SELECT f.id::text AS id FROM brain_facts f
+          WHERE f.workspace_id = $1 AND ${PROVISIONAL_PREDICATE}
+          ORDER BY f.id`,
+        [TARGET_ORG],
+      );
+      expect(provisionalRows.rows.map((r) => r.id).sort()).toEqual(
+        [FACT_ID, SUPERSEDED_FACT_ID].sort(),
+      );
+
       // Invalidate-never-delete survives: the tombstoned claim is still here,
       // still carrying the instant it stopped being true. Asserted as the
       // EXACT instant, not merely non-null — an importer that stamped
@@ -659,7 +725,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainEpisodes: { imported: 0, skipped: 1 },
         // Deduped on the FACT's own key, not the episode's — see the catch-up
         // case below for why that distinction is load-bearing.
-        brainFacts: { imported: 0, skipped: 2 },
+        brainFacts: { imported: 0, skipped: 3 },
         brainEdges: { imported: 0, skipped: 2 },
         factAudienceMembers: { imported: 0, skipped: 1 },
         // Skipped on the at-most-one-parent key. A re-import must never apply
@@ -694,7 +760,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       });
       const third = await runImport(catchUp);
       expect(third.brainEpisodes).toEqual({ imported: 0, skipped: 1 });
-      expect(third.brainFacts).toEqual({ imported: 1, skipped: 2 });
+      expect(third.brainFacts).toEqual({ imported: 1, skipped: 3 });
 
       const late = await pool.query<{
         object: string;
@@ -833,6 +899,31 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         ],
       };
 
+      // ⚠️ The destination is NOT empty. A fresh org would prove only *the
+      // arriving edges are visible*, which an implementation that built a
+      // closure from `bundle.brainVocabularyEdges` and never read the database
+      // would also satisfy. This edge is the destination's OWN prior decision,
+      // on a disjoint norm so nothing conflicts — the imported fact's
+      // `subject_key` has to come through it, which is only true if the load
+      // reads the merged table.
+      const seedClient = await pool.connect();
+      try {
+        await seedClient.query("BEGIN");
+        expect(
+          (
+            await approveAliasEdge(seedClient, LEGACY_ORG, {
+              position: "subject",
+              fromNorm: "acme:pro plan",
+              toNorm: "acme pro",
+              approvedBy: "target-admin",
+            })
+          ).ok,
+        ).toBe(true);
+        await seedClient.query("COMMIT");
+      } finally {
+        seedClient.release();
+      }
+
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -872,10 +963,13 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // Computed, not carried, and computed through the vocabulary that arrived
       // in the same transaction.
       expect(keyed.rows[0].predicate_key).toBe("unit price");
-      // The two positions the vocabulary does NOT touch are still keyed — a
-      // lexical norm of the retained surface, which is what `slotKey` reduces to
-      // when the alias lookup is the identity.
-      expect(keyed.rows[0].subject_key).toBe("acme:pro plan");
+      // …and through the DESTINATION's own pre-existing edge at the subject.
+      // `acme:pro-plan` norms to `acme:pro plan`, which the edge approved above
+      // maps to `acme pro`. A load that read only the arriving edges — or that
+      // ran before the merge — lands the bare norm.
+      expect(keyed.rows[0].subject_key).toBe("acme pro");
+      // The one position no vocabulary touches: a lexical norm of the retained
+      // surface, which is what `slotKey` reduces to when the lookup is identity.
       expect(keyed.rows[0].object_key).toBe("49");
       // A legacy bundle carries no comparable value at all, so there is nothing
       // to drop — and nothing to recompute. `provisional` must NOT be set, or
@@ -1556,10 +1650,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         expect(await countIn(`SELECT count(*)::int AS n FROM brain_edges WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM fact_audience_member WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         // The TARGET org's imported brain is untouched — the sweep is scoped
-        // to the migrated-away workspace, not to the tables. Three facts: the
-        // live one, the tombstoned one, and the catch-up fact from the
-        // round-trip block above.
-        expect(await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG])).toBe(3);
+        // to the migrated-away workspace, not to the tables. Four facts: the
+        // live one, the tombstoned one, the value-typed-subject one, and the
+        // catch-up fact from the round-trip block above.
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG])).toBe(4);
 
         // Survivors: platform settings row, unattributable cache row, the
         // TARGET org's imported data (seeded by the round-trip test above —

@@ -62,6 +62,30 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
 }
 
+/**
+ * Every identity column named in a `SELECT`/`RETURNING` projection OTHER than
+ * the one ADR-0037 §8 grants.
+ *
+ * This is the arm `keys-not-on-the-wire.test.ts` used to provide for these
+ * files and no longer does. It is scoped to PROJECTIONS rather than to the raw
+ * file text because a row mapper legitimately reads `f.subject_key` off a
+ * result and passes `"subject_key"` as a log label; neither puts a key anywhere
+ * a consumer can reach. A second SQL statement does.
+ *
+ * `granted` is the projection span the caller already validated, removed before
+ * the sweep so the exception is subtracted exactly once.
+ */
+function strayProjections(source: string, granted: string): string[] {
+  const rest = source.replace(granted, " ");
+  const spans = [
+    ...rest.matchAll(/\bSELECT((?:(?!SELECT)[\s\S])*?)\bFROM\b/gi),
+    ...rest.matchAll(/\bRETURNING\b([^`;]*)/gi),
+  ].map((m) => m[1]!);
+  return spans.flatMap((span) =>
+    IDENTITY_COLUMNS.filter((c) => new RegExp(`\\b${c}\\b`).test(span)),
+  );
+}
+
 describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)", () => {
   it("is version 3", () => {
     // The version is what the importer discriminates its two key arms on, so a
@@ -77,8 +101,17 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
     // rather than by line number, and asserted to be unique — a second query
     // over the same table would be a second projection this file is not
     // looking at, which is precisely the hole the file-wide exemption opens.
+    //
+    // ⚠️ `(?:(?!SELECT)[\s\S])*?` rather than `[\s\S]*?`, and the difference was
+    // measured (#5035, panel round 1). A plain lazy wildcard anchors at the
+    // FILE's first `SELECT` and runs to the first `FROM brain_facts`, so the
+    // captured "projection" was 185 lines covering 13 unrelated queries: every
+    // `includes` below was satisfied by a string appearing anywhere in that
+    // span, and the `not.toContain` would have false-failed on any other query
+    // naming the column. The tempered form starts at the LAST `SELECT` before
+    // the table, which is the statement.
     const factQueries = [
-      ...source.matchAll(/SELECT\b([\s\S]*?)\bFROM brain_facts\b/gi),
+      ...source.matchAll(/SELECT((?:(?!SELECT)[\s\S])*?)FROM brain_facts\b/gi),
     ].map((m) => m[1]!);
     expect(
       factQueries.length,
@@ -111,6 +144,19 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
     // ignores it" passes every behavioural assertion while leaving the field on
     // the wire for #5028 to trip over.
     expect(projection).not.toContain("predicate_cardinality");
+
+    // ⚠️ The arm the exemption switches off that the check above cannot reach:
+    // a key projected off a DIFFERENT table. `keys-not-on-the-wire.test.ts`
+    // scanned every projection in this file; the exemption stopped that, and
+    // `SELECT bf.object_key FROM brain_fact_alias bf` is invisible to
+    // everything above because it never names `brain_facts`. So EVERY OTHER
+    // projection in the file is swept for the family.
+    //
+    // Scoped to projections rather than to the whole file on purpose: the row
+    // mapper legitimately READS `f.subject_key` off the result and passes
+    // `"subject_key"` as a log label, and neither puts a key anywhere new.
+    // What §8 grants is one statement; what it does not grant is a second one.
+    expect(strayProjections(source, projection)).toEqual([]);
   });
 
   it("binds the same five in the importer's INSERT, and drops predicate_cardinality", () => {
@@ -182,5 +228,34 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
       lastDoc !== -1 && preceding.slice(lastDoc).includes("@deprecated"),
       "predicateCardinality is no longer marked @deprecated, so it reads as a supported field — while the exporter does not emit it and the importer ignores it.",
     ).toBe(true);
+
+    // ⚠️ The NEGATIVE arm, and it is the one `keys-not-on-the-wire.test.ts`'s
+    // ORM sweep used to provide for this whole file — that sweep existed
+    // precisely because "a fact-shaped TYPE growing a key field IS the leak",
+    // and the exemption turned it off. A SIXTH identity field, or a key field on
+    // any OTHER wire type in this file, is otherwise unguarded.
+    const granted = new Set(["subjectKey", "predicateKey", "objectKey", "subjectCmp", "objectCmp"]);
+    const declared = [...stripComments(source).matchAll(/^\s*(\w*(?:Key|Cmp))\??:/gm)].map(
+      (m) => m[1]!,
+    );
+    expect(
+      declared.filter((f) => !granted.has(f)),
+      "migration.ts declares a key- or cmp-shaped field ADR-0037 §8 does not grant. §8's exception is the three slot keys and the two comparable values ON A BRAIN FACT; a key field anywhere else on the wire is the leak the prohibition exists to stop.",
+    ).toEqual([]);
+  });
+
+  it("the importer names no identity column outside the one granted INSERT", () => {
+    // The third file the exemption covers, and the arm it loses: `admin-migrate.ts`
+    // genuinely reads `brain_facts` (the dedup SELECT), so a `SELECT … subject_key`
+    // added there would have been caught before and is not now. Swept the same
+    // way `export.ts` is — outside the INSERT the exception grants.
+    const source = stripComments(read("packages/api/src/api/routes/admin-migrate.ts"));
+    const insert = /INSERT INTO brain_facts\s*\(([^)]*)\)/i.exec(source);
+    expect(insert, "the fact INSERT is gone — re-point this pin").not.toBeNull();
+
+    expect(
+      strayProjections(source, insert![0]),
+      "admin-migrate.ts names an identity column in SQL outside the one granted `INSERT INTO brain_facts`. The row-copy exception is that statement; a SELECT that projects a key is an ordinary leak, and `keys-not-on-the-wire.test.ts` no longer scans this file.",
+    ).toEqual([]);
   });
 });

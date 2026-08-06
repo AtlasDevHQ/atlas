@@ -181,6 +181,42 @@ export function OversightPanel() {
           <WillWidenNotice willWiden={data.willWiden} />
         )}
 
+      {/* ⚠️ The EMPTY-and-complete case, which had no disclosure at all until
+          #5032's panel round 4 — and it is the fail-open one.
+
+          `loadWideningPreview` is READER-SCOPED and has no `withheld`
+          counterpart (its own docstring says an empty `entries` means "none that
+          you can see", never "none"). So an admin whose widening drafts all sit
+          in audiences they are not part of gets `{ total: 0, entries: [],
+          incomplete: false }` — a legitimately complete answer about *their*
+          scope, and a false all-clear about the workspace. The one sentence that
+          says so lives inside `WillWidenNotice`, which is exactly the component
+          that does not render here: the hedge was present whenever it was
+          redundant and absent whenever it was load-bearing.
+
+          Gated so it does not shout on a genuinely complete panel. `hidden > 0`
+          means drafts demonstrably sit outside this reader's queue, so the scan
+          demonstrably did not cover them; `!countsConsistent` means Atlas cannot
+          work out whether they do, which needs the same hedge for the same
+          reason. When both are clear the reader sees the whole backlog and an
+          empty result really does mean none — the one case that may stay silent.
+
+          NOT `role="alert"`: the sibling notices are findings, and this is the
+          absence of one. Announcing "nothing was found, in a scope that may be
+          partial" over the top of the hidden-backlog alert — which is already an
+          alert, already says publishing is workspace-wide, and is the thing that
+          made `hidden > 0` true — would bury the finding under its own caveat. */}
+      {data.willWiden &&
+        data.willWiden.entries.length === 0 &&
+        !data.willWiden.incomplete &&
+        (hidden > 0 || !data.countsConsistent) && (
+          <p className="text-xs text-muted-foreground">
+            No audience widening was found among the facts you can review. Publish is
+            workspace-wide, so drafts outside your queue were not checked and may still
+            widen when you publish.
+          </p>
+        )}
+
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
           <Button variant="ghost" size="sm" className="text-muted-foreground">

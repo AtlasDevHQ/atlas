@@ -1961,7 +1961,13 @@ describe("will-supersede disclosure (#4912)", () => {
     // hunting for private channels that do not exist.
     expect(view.container.textContent ?? "").not.toContain("audiences you are not part of");
   });
+});
 
+// Split out of the #4912 block in panel round 4: these are the WIDENING
+// disclosure, and nesting them under will-supersede made every failure here
+// report as `will-supersede disclosure (#4912) > …` — a wrong attribution on a
+// surface whose whole product is saying accurately what is about to happen.
+describe("will-widen disclosure (#5032)", () => {
   test("stays silent when nothing widens — including on an older API", async () => {
     // The default oversight fixture carries NO `willWiden` at all, which is what
     // an older API sends during a deploy window. The panel renders the pre-#5032
@@ -1973,6 +1979,68 @@ describe("will-supersede disclosure (#4912)", () => {
       expect(view.container.textContent ?? "").toContain("Workspace breakdown"),
     );
     expect(view.container.textContent ?? "").not.toContain("widen the audience");
+  });
+
+  test("⚠️ hedges an EMPTY result when drafts sit outside the reader's queue", async () => {
+    // The fail-open case, and the one this disclosure had no answer for until
+    // panel round 4. `loadWideningPreview` is reader-scoped with no `withheld`
+    // counterpart, so `{ total: 0, entries: [], incomplete: false }` is a
+    // truthful answer about THIS reader's scope and a false all-clear about the
+    // workspace — and publish is workspace-wide. Rendered nothing at all, the
+    // admin publishes an ACL change they were never shown, in the direction
+    // nobody can report afterwards.
+    oversight = {
+      ...oversight,
+      workspaceTotals: { ...(oversight.workspaceTotals as object), awaitingReview: 9 },
+      reviewableAwaitingReview: 3,
+      willWiden: { total: 0, entries: [], truncated: false, incomplete: false },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("were not checked"),
+    );
+    const text = view.container.textContent ?? "";
+    // It must NOT borrow the `incomplete` copy. Nothing failed here — the scan
+    // completed, over a scope that is smaller than the publish. Calling that an
+    // Atlas fault would send the admin to diff a query that is working.
+    expect(text).not.toContain("could not evaluate every draft");
+    // …and it must not state a count, which would read as "0 facts will widen"
+    // — the confident wrong answer this whole notice exists to avoid.
+    expect(text).not.toContain("widen the audience of 0");
+  });
+
+  test("hedges an EMPTY result when Atlas cannot tell whether drafts sit outside the queue", async () => {
+    // `countsConsistent: false` means the hidden-backlog delta is unknowable, so
+    // `hidden > 0` cannot be the only trigger: "we don't know" needs the same
+    // hedge as "we know there are some", for the same reason. Clamping the
+    // unknown to a reassuring silence is #4825's defect, and the panel already
+    // refuses to do it one alert above.
+    oversight = {
+      ...oversight,
+      countsConsistent: false,
+      willWiden: { total: 0, entries: [], truncated: false, incomplete: false },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("were not checked"),
+    );
+  });
+
+  test("…and stays quiet when the reader can see the whole backlog", async () => {
+    // The control that keeps the two tests above from passing vacuously — and
+    // the reason the hedge is gated at all. With `hidden === 0` and the counts
+    // consistent, the scan covered every draft awaiting review, so an empty
+    // result really does mean none and a caveat would be noise on the surface
+    // whose credibility depends on only speaking when it has something to say.
+    oversight = {
+      ...oversight,
+      willWiden: { total: 0, entries: [], truncated: false, incomplete: false },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("Workspace breakdown"),
+    );
+    expect(view.container.textContent ?? "").not.toContain("were not checked");
   });
 
   test("names the claim and the audiences it will gain, and warns about the homonym", async () => {
@@ -2032,6 +2100,39 @@ describe("will-supersede disclosure (#4912)", () => {
     // exists, is yours, and is counted. All false on this path. One boolean
     // carrying both facts is what made that sentence ship.
     expect(text).not.toContain("did not fit in one response");
+  });
+
+  test("…and states the clipped page on `truncated`, without claiming drafts went unevaluated", async () => {
+    // The positive control for the prohibition above, added in panel round 4.
+    // Without it that `not.toContain` passed trivially — the fixture beside it
+    // has `truncated: false`, so the assertion held over a branch that never
+    // rendered, and deleting the entire truncation block from the widen notice
+    // killed zero tests. The will-supersede notice has had this control since
+    // #4912; the widen one shipped without it.
+    oversight = {
+      ...oversight,
+      willWiden: {
+        total: 105,
+        entries: Array.from({ length: 100 }, (_, i) => ({
+          factId: `f${i}`,
+          label: `acme corp status active ${i}`,
+          added: ["org"],
+        })),
+        truncated: true,
+        incomplete: false,
+      },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("did not fit in one response"),
+    );
+    const text = view.container.textContent ?? "";
+    // The headline counts the REMAINDER too — `total`, not the clipped list.
+    expect(text).toContain("widen the audience of 105 facts");
+    // …and the inverse of the `incomplete` test: a clipped list is complete
+    // knowledge, so it must not tell the reviewer Atlas failed to evaluate
+    // something. The two flags have different remedies and different copy.
+    expect(text).not.toContain("could not evaluate every draft");
   });
 
   test("the publish modal states the workspace-wide count before the confirm button", async () => {

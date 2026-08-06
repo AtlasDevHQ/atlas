@@ -236,7 +236,6 @@ import {
   objectNotSameSql,
   objectSameSql,
   type ComparableValue,
-  type EntityComparable,
   type DeclaredObjectType,
 } from "@atlas/api/lib/brain/object-cmp";
 // The SUBJECT's comparable value, and its ONE arm. A separate module because
@@ -250,6 +249,7 @@ import {
   subjectComparableValue,
   subjectNotDifferentSql,
   type ResolvedEntityId,
+  type SubjectComparable,
 } from "@atlas/api/lib/brain/subject-cmp";
 import type {
   BrainFactProvenance,
@@ -1346,9 +1346,10 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
  * difference to ENABLE a stamp; the subject's proves difference to SUPPRESS
  * every consumer at once — see `subject-cmp.ts` for the polarity table.
  *
- * A swap is a COMPILE ERROR since the panel round on #5032: the subject
- * parameter is an `EntityComparable`, a strict subtype, so a general
- * `ComparableValue` does not satisfy it. It was not before, and prose was all
+ * A swap is a COMPILE ERROR since the panel rounds on #5032: the subject
+ * parameter is a `SubjectComparable`, which only `subjectComparableValue` can
+ * produce, so neither a general `ComparableValue` nor a same-shaped
+ * `entityComparable(…)` satisfies it. It was not before, and prose was all
  * that stood in the way. Two behavioural falsifiers back it up in the FAST lane
  * (`reconcile.test.ts` asserts, at all three statements, that the subject bind
  * carries the id AND the object bind is `null` — a swap flips both), so this is
@@ -1408,13 +1409,13 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
 function agreementBinds(
   keys: SlotKeys,
   objectComparable: ComparableValue,
-  subjectComparable: EntityComparable,
+  subjectComparable: SubjectComparable,
 ): readonly [
   string | null,
   string | null,
   string | null,
   ComparableValue,
-  EntityComparable,
+  SubjectComparable,
 ] {
   return [keys.subject, keys.predicate, keys.object, objectComparable, subjectComparable];
 }
@@ -1486,8 +1487,12 @@ interface PreparedCandidate {
    *
    * ⚠️ The id is NOT a candidate for a slot key, then or ever — see
    * {@link ResolvedEntity}. It reaches the row here and nowhere else.
+   *
+   * Typed {@link SubjectComparable} and not `EntityComparable`: the narrower
+   * type is the one `entityComparable(surface)` cannot satisfy, and this field
+   * is where that bypass would have landed.
    */
-  readonly subjectComparable: EntityComparable;
+  readonly subjectComparable: SubjectComparable;
   readonly candidate: FactCandidate;
 }
 

@@ -36,6 +36,7 @@ import {
   OVERSIGHT_BUCKET_MAX,
   OVERSIGHT_TOTALS_SQL,
   WILL_SUPERSEDE_PAIR_MAX,
+  WILL_WIDEN_DRAFT_SCAN_MAX,
   WILL_WIDEN_ENTRY_MAX,
   classifyToken,
   loadConfiguredChannels,
@@ -1139,14 +1140,29 @@ describe("loadWideningPreview (#5032)", () => {
     // fabricated disclosure; an empty EVIDENCE grant would make a real widening
     // vanish — a false all-clear. Neither is better than the other, so neither
     // is guessed.
+    // ⚠️ `f-2`'s override is a non-array STRING, not `null` (#5032, panel round
+    // 4). It read `evidence_grant: null` under a comment calling it the "empty
+    // EVIDENCE grant" case, but `null` is defined one file over as explicitly
+    // NOT drift — it is the LEFT JOIN reporting an edge-less draft. So the
+    // fixture exercised the keep path while asserting the drop path, and both
+    // measured zero: removing the evidence-side drift arm killed nothing, and so
+    // did hardwiring `noEvidence = false`. A negative drawn from a population
+    // the bug does not live in, which is this repo's recorded failure shape.
     const result = await loadWideningPreview(
       reader({
         willWidenRows: [
           widenRow("f-1", ["audience:procurement"], ["org"], { fact_grant: "org" }),
-          widenRow("f-2", ["audience:procurement"], ["org"], { evidence_grant: null }),
+          widenRow("f-2", ["audience:procurement"], ["org"], { evidence_grant: "org" }),
           // …and the positive control beside them, so "everything was dropped"
           // and "the loader stopped working" are distinguishable.
           widenRow("f-3", ["audience:procurement"], ["org"]),
+          // The OTHER control, and the one that makes the arm above a real
+          // distinction rather than a restatement: a genuinely evidence-less
+          // draft. `null` must be KEPT — it counts toward the scan bound, which
+          // is the entire reason the joins are LEFT — while contributing no
+          // entry, since `widenGrantFromEvidence(grant, [])` widens nothing.
+          // Without this row, "null is not drift" is unfalsifiable prose.
+          widenRow("f-4", ["audience:procurement"], ["org"], { evidence_grant: null }),
         ],
       }),
       ctx(),
@@ -1162,6 +1178,113 @@ describe("loadWideningPreview (#5032)", () => {
     expect(result.incomplete, "a dropped row left the response looking complete").toBe(true);
     expect(result.truncated, "a dropped row was reported as a clipped page").toBe(false);
     expect(result.total).toBe(1);
+  });
+
+  it("⚠️ POISONS the whole fact when one of its rows drops, never just that row", async () => {
+    // The rule the drop arm's own 14-line comment states, and which had no
+    // falsifier until panel round 4: no fixture had a fact with one GOOD row and
+    // one BAD row, so `poisoned` was behaviourally indistinguishable from a bare
+    // `continue` — measured, deleting the whole poisoning mechanism killed zero
+    // tests.
+    //
+    // It matters because `fact_grant` is constant per fact but `evidence_grant`
+    // is one value PER ROW. Keep the good row and drop the bad one, and the
+    // draft is evaluated against a PARTIAL evidence list: it still gets LISTED,
+    // with an `added` that is a SUBSET of what publish will actually widen. That
+    // is worse than omitting it — the reviewer reads a specific, confident,
+    // short list of audiences and approves — and it is exactly what
+    // `BrainFactWillWiden.incomplete` promises does not happen ("that draft is
+    // missing from `entries` AND from `total`").
+    const result = await loadWideningPreview(
+      reader({
+        willWidenRows: [
+          // f-1, row 1: a clean widening. On its own this lists `org`.
+          widenRow("f-1", ["audience:procurement"], ["org"]),
+          // f-1, row 2: drift. The fact is now unevaluable, and the entry the
+          // first row would have produced is the under-stated one.
+          widenRow("f-1", ["audience:procurement"], ["org"], { evidence_grant: 42 }),
+          // …and a second evidence episode that WOULD have widened further, so
+          // the subset is a real subset rather than a coincidence: without
+          // poisoning, `added` reads `[org]` when the truth is `[everyone, org]`.
+          widenRow("f-1", ["audience:procurement"], ["everyone"]),
+          // The positive control, so "the loader returned nothing" and "the
+          // loader correctly withheld f-1" stay distinguishable.
+          widenRow("f-2", ["audience:procurement"], ["org"]),
+        ],
+      }),
+      ctx(),
+    );
+    expect(
+      result.entries.map((e) => e.factId),
+      "a fact with a dropped row was LISTED, and its `added` under-states what publish will widen",
+    ).toEqual(["f-2"]);
+    // …and missing from the COUNT too, which is the half a per-row skip would
+    // still get wrong while looking right in the list.
+    expect(result.total, "a poisoned fact was still counted in `total`").toBe(1);
+    expect(result.incomplete).toBe(true);
+  });
+
+  it("keeps an evidence-less draft — a `null` evidence grant is the LEFT JOIN, not drift", async () => {
+    // The distinction `oversight.ts` calls out as load-bearing, asserted here
+    // for the first time in panel round 4. `visible_to` is `NOT NULL` (0180), so
+    // a SQL `null` in `evidence_grant` can only mean the join found no
+    // `provenance` edge — an ordinary, common shape. Treating it as drift would
+    // drop those drafts, and the scan-cap detector counts what survives, so the
+    // bound would silently stop firing.
+    //
+    // ⚠️ `incomplete === false` is the whole assertion, and the only observable
+    // that separates the two readings: `incomplete` deliberately fuses "capped"
+    // and "dropped", so any fixture where the draft is dropped reports `true`
+    // for the other reason and proves nothing. That is why this test has no
+    // drift row in it — adding one would make it unfalsifiable.
+    const result = await loadWideningPreview(
+      reader({
+        willWidenRows: [
+          widenRow("f-1", ["audience:procurement"], ["org"], { evidence_grant: null }),
+          widenRow("f-2", ["audience:procurement"], ["org"], { evidence_grant: null }),
+          // A real widening beside them, so a loader that returned nothing at
+          // all would fail this test rather than pass it.
+          widenRow("f-3", ["audience:procurement"], ["org"]),
+        ],
+      }),
+      ctx(),
+    );
+    expect(result.entries.map((e) => e.factId)).toEqual(["f-3"]);
+    expect(result.total).toBe(1);
+    expect(
+      result.incomplete,
+      "an evidence-less draft was counted as query drift — the scan-cap detector now under-counts",
+    ).toBe(false);
+    // …and it contributes no ENTRY, which is the other half: an empty evidence
+    // list widens nothing, so keeping the draft must not invent a disclosure.
+    expect(result.entries).toHaveLength(1);
+  });
+
+  it("flags `incomplete` when the DRAFT SCAN hits its cap, with nothing dropped", async () => {
+    // `scanCapped` had no falsifier at all until panel round 4 — measured,
+    // `const scanCapped = false` killed zero tests, as did deleting `||
+    // scanCapped` from `incomplete`. `WILL_WIDEN_DRAFT_SCAN_MAX` is exported
+    // precisely so a test can reach it.
+    //
+    // Every row is a NO-OP widening (the evidence grant equals the fact grant),
+    // which is what makes this test work: `total` stays 0 and `droppedRows`
+    // stays 0, so `incomplete` can only be true for the CAP reason. Any fixture
+    // that drops a row would satisfy `incomplete` through the other arm and
+    // assert nothing.
+    const rows = Array.from({ length: WILL_WIDEN_DRAFT_SCAN_MAX }, (_, i) =>
+      widenRow(`f-${i}`, ["org"], ["org"]),
+    );
+    const result = await loadWideningPreview(reader({ willWidenRows: rows }), ctx());
+    expect(result.total, "a no-op widening was disclosed as an ACL change").toBe(0);
+    expect(result.entries).toHaveLength(0);
+    expect(
+      result.incomplete,
+      "the scan stopped at its cap and the response still claimed to be complete",
+    ).toBe(true);
+    // …and NOT `truncated`: nothing was clipped from the list. The pair is what
+    // keeps the panel from telling a reviewer "the rest did not fit in one
+    // response" about drafts Atlas never looked at.
+    expect(result.truncated, "a capped SCAN was reported as a clipped LIST").toBe(false);
   });
 
   it("scopes the projection to the reader's own ACL and to draft, live rows", async () => {
@@ -1189,6 +1312,29 @@ describe("loadWideningPreview (#5032)", () => {
     // `EVIDENCE_GRANTS_SQL` narrows to the same edge type, and widening off a
     // `derives-from` edge would let a lineage relationship move an ACL.
     expect(sql).toContain("e.edge_type = 'provenance'");
+    // ⚠️ BOTH joins are LEFT, and that is what makes the scan cap observable —
+    // the property the statement's own ⚠️ section argues for at length and which
+    // measured ZERO falsifiers until panel round 4 (reverting either to an INNER
+    // join killed no test in any suite).
+    //
+    // With INNER joins a draft carrying no `provenance` edge produces no row at
+    // all, so the draft population the loader counts becomes "drafts with
+    // surviving evidence" rather than "drafts scanned" — and one evidence-less
+    // draft in the window silently disables the cap detector, leaving the panel
+    // to render a confident complete count over a tail it never evaluated.
+    //
+    // Asserted lexically because the seam is the SQL: the reader double in this
+    // suite returns rows it is handed, so it cannot model a join that emits
+    // fewer. `identity-consumers-pg.test.ts` carries the behavioural half
+    // against a real schema; this is the arm that fails in the FAST lane.
+    expect(
+      sql,
+      "the evidence join became INNER — an edge-less draft now vanishes and the scan cap stops firing",
+    ).toContain("LEFT JOIN brain_edges");
+    expect(
+      sql,
+      "the episode join became INNER — same failure, one join later",
+    ).toContain("LEFT JOIN brain_episodes");
     // Workspace-scoped on BOTH joins, like the statement it mirrors: the
     // composite FKs make a cross-tenant edge unstorable, and this is the query
     // whose output describes an ACL change.

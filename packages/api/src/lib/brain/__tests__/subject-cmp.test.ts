@@ -34,8 +34,9 @@ import {
   subjectComparableValue,
   subjectNotDifferentSql,
   type ResolvedEntityId,
+  type SubjectComparable,
 } from "@atlas/api/lib/brain/subject-cmp";
-import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
+import { comparableValue, entityComparable } from "@atlas/api/lib/brain/object-cmp";
 
 /**
  * The one cast in this file, and it stands in for `resolveEntitiesForEpisode`'s.
@@ -46,9 +47,49 @@ import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
  */
 const resolved = (id: string): ResolvedEntityId => id as ResolvedEntityId;
 
+/**
+ * Widens a {@link SubjectComparable} back to a plain string for comparison.
+ *
+ * `expect(x).toBe(literal)` infers the expected type from the received one, so
+ * the OUTPUT brand (#5032, panel round 4) makes every string literal in this
+ * file a type error. Widening the RECEIVED side rather than casting the expected
+ * side keeps each assertion byte-identical at runtime — the brand is a
+ * compile-time claim and must not be able to change what these tests check.
+ */
+const stored = (value: SubjectComparable): string | null => value;
+
+describe("the brand — compile-time (⚠️ the `@ts-expect-error` IS the assertion)", () => {
+  // Both halves pinned, because #5032's round-4 finding was that guarding only
+  // the parameter left the rule holding for callers who used the function and
+  // not for the ones who reached past it. An unused `@ts-expect-error` is itself
+  // an error, so widening EITHER guard turns this file red — which is the whole
+  // reason to spend four lines here rather than trust a docstring.
+  test("neither half can be widened without this file going red", () => {
+    const surface: string = "Acme Corp";
+
+    // HALF 1 — a bare surface is not a `ResolvedEntityId`. Without this the raw,
+    // un-normalized surface becomes the payload and `Acme Corp` / `acme-corp`
+    // read as two entities, switching corroboration off for the exact pair the
+    // corpus is built around.
+    // @ts-expect-error #5032 — a surface is not a ResolvedEntityId
+    subjectComparableValue(surface);
+
+    // HALF 2 — the destination type cannot be satisfied by going around this
+    // function. `entityComparable` is exported and unbranded, so while the
+    // subject position spelled `EntityComparable` this line compiled and WAS
+    // the round-1 defect, with no cast anywhere.
+    // @ts-expect-error #5032 — only subjectComparableValue produces a SubjectComparable
+    const bypass: SubjectComparable = entityComparable(surface);
+    // …and the runtime half of the same point: the bypass produces a perfectly
+    // well-SHAPED value. The shape was never in doubt — provenance was, which is
+    // why the brand claims provenance and not shape.
+    expect(stored(bypass)).toBe("entity:Acme Corp");
+  });
+});
+
 describe("subjectComparableValue", () => {
   test("tags a resolved id as `entity:<id>`", () => {
-    expect(subjectComparableValue(resolved("01J8ZK"))).toBe("entity:01J8ZK");
+    expect(stored(subjectComparableValue(resolved("01J8ZK")))).toBe("entity:01J8ZK");
   });
 
   test("abstains on no id, and on an id that is blank once trimmed", () => {
@@ -62,7 +103,7 @@ describe("subjectComparableValue", () => {
   });
 
   test("trims a padded id rather than tagging the padding", () => {
-    expect(subjectComparableValue(resolved("  01J8ZK  "))).toBe("entity:01J8ZK");
+    expect(stored(subjectComparableValue(resolved("  01J8ZK  ")))).toBe("entity:01J8ZK");
   });
 
   test("⭐ NEVER parses the surface — the value is a store id or nothing", () => {
@@ -89,7 +130,7 @@ describe("subjectComparableValue", () => {
       // deliberate act rather than an accident, and this is the behavioural
       // half of the same guard.
       expect(
-        subjectComparableValue(resolved(surface)),
+        stored(subjectComparableValue(resolved(surface))),
         `the subject surface \`${surface}\` was parsed — only a store id may land in subject_cmp`,
       ).toBe(`entity:${surface}`);
     }

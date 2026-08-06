@@ -1289,6 +1289,22 @@ export async function loadWideningPreview(
   /** Facts whose evidence list is known-incomplete — see the drop arm below. */
   const poisoned = new Set<string>();
   for (const raw of result.rows) {
+    // ⚠️ These two arms drop WITHOUT poisoning, and the asymmetry against the
+    // grant arm below is forced rather than chosen: poisoning needs a `fact_id`
+    // to poison, and these are exactly the rows that failed to produce one. So
+    // the "poison the whole fact, never just the row" rule stated below holds
+    // for the arm that can identify its fact and CANNOT hold here.
+    //
+    // The residue is real and bounded: if one row of a multi-row fact lands here
+    // while its siblings survive, that fact is evaluated against a partial
+    // evidence list and its `added` is a SUBSET of the truth. What keeps it from
+    // being the defect the poisoning exists to prevent is that `incomplete` is
+    // still set (every arm increments `droppedRows`), so the panel drops the
+    // confident headline and tells the reviewer to treat publishing as widening
+    // more than is shown — the user-visible answer stays honest even though this
+    // entry does not. Reachability is the other half: `fact_id` and `label` come
+    // off the CTE and are constant per fact, so from Postgres this arm takes
+    // either all of a fact's rows or none of them.
     if (typeof raw !== "object" || raw === null) {
       droppedRows++;
       continue;
@@ -1333,7 +1349,10 @@ export async function loadWideningPreview(
       // there a short list publishes the fact NARROWER, which is fail-closed. In
       // a PREVIEW the sign flips — it under-states a widening the transaction
       // will then perform in full.
-      if (typeof r.fact_id === "string") poisoned.add(r.fact_id);
+      // No `typeof` re-check: the arm above already `continue`d on a non-string
+      // `fact_id` and TS has narrowed it here. Re-testing read as if the
+      // invariant were uncertain at the one place it is proven.
+      poisoned.add(r.fact_id);
       continue;
     }
     const existing = drafts.get(r.fact_id);
@@ -1354,6 +1373,37 @@ export async function loadWideningPreview(
       evidence: evidence === null ? [] : [evidence],
     });
   }
+  // The SCANNED count, read BEFORE the poison sweep below — which is the whole
+  // reason it is a separate variable and not `drafts.size` at the point of use
+  // (#5032, panel round 4).
+  //
+  // `scanCapped` asks "did the CTE return its whole `LIMIT`", and the LEFT JOINs
+  // above exist so that `drafts` answers it. The sweep then makes `drafts.size`
+  // mean something else — drafts scanned MINUS drafts poisoned — so reading it
+  // afterwards re-broke the detector the joins were changed to fix: at exactly
+  // `WILL_WIDEN_DRAFT_SCAN_MAX` scanned drafts with one poisoned, `scanCapped`
+  // was `false` and the panel rendered a confident complete count over an
+  // unevaluated tail. One variable later, the same defect, in the fix for it.
+  //
+  // It was masked rather than harmless: `incomplete` ORs in `droppedRows`, and
+  // every poisoning implies a drop, so the wire looked right for a reason that
+  // has nothing to do with the cap. An undocumented coupling one edit from
+  // breaking is not a guard.
+  //
+  // ⚠️ **This line is UNFALSIFIABLE from the wire, and the measurement is here
+  // rather than in anybody's head.** Measured in round 4: reverting it to
+  // `drafts.size` at the point of use kills ZERO tests, while the seven
+  // mutations around it kill one each. That is not a missing fixture — it is the
+  // masking above, stated as a property: the only observable is `incomplete`,
+  // which deliberately FUSES "capped" and "dropped", and every input that makes
+  // the two readings differ has a drop in it and therefore reports `true` either
+  // way. No fixture can separate them without a new wire field, which this
+  // disclosure does not need and should not grow for a diagnostic.
+  //
+  // So it is held by the argument above and by this note, and a future edit that
+  // makes the two readings distinguishable — a `scanCapped` on the wire, a
+  // per-reason `incomplete` — should add the fixture at the same time.
+  const scannedDrafts = drafts.size;
   // Applied AFTER the loop, so a fact poisoned by its third row is removed even
   // though its first two built a plausible entry.
   for (const factId of poisoned) drafts.delete(factId);
@@ -1383,7 +1433,7 @@ export async function loadWideningPreview(
   // than `>` because the statement cannot exceed its own `LIMIT` — hitting it
   // exactly is the only observable, and the honest reading of "we stopped
   // looking" is that there may be more.
-  const scanCapped = drafts.size >= WILL_WIDEN_DRAFT_SCAN_MAX;
+  const scanCapped = scannedDrafts >= WILL_WIDEN_DRAFT_SCAN_MAX;
   return {
     total,
     // Capped AFTER the total is taken, so `total` is the real cardinality and

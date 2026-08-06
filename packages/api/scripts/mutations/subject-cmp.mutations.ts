@@ -197,6 +197,22 @@ mutation cannot reach — and the notes say which.
       note: "ADR-0037 §5's *the extractor can never supply one, for any subject, ever* made false in the tree — the same class of defect this slice corrects one file over. Mutated at the CALL SITE, because `subjectComparableValue` does not take a surface: the signature is itself part of the guard, and the only faithful way to break the rule is to route around it. ⚠️ **0 in the corpus column, and that is honest rather than a gap in the FIXTURES**: every subject there is a name (`Acme Corp`, `Ada`, `business tier`), so a surface parse yields NULL and changes no verdict. The owner is `reconcile.test.ts`'s refusal test, whose subjects (`499`, `true`) are chosen to parse — a corpus entry with a numeric SUBJECT would be a claim nobody makes.",
     },
     {
+      label: "the subject's comparable value built by BYPASSING the guarded seam",
+      edits: [
+        {
+          file: RECONCILE,
+          oldString: "    const subjectComparable = subjectComparableValue(subjectEntityId);",
+          newString: "    const subjectComparable = entityComparable(subject);",
+        },
+        {
+          file: RECONCILE,
+          oldString: "  comparableValueWithReason,\n  objectNotSameSql,",
+          newString: "  comparableValueWithReason,\n  entityComparable,\n  objectNotSameSql,",
+        },
+      ],
+      note: "⭐ **The spelling the round-3 panel MISSED, and the reason there was a round 4.** Round 1 branded `subjectComparableValue`'s PARAMETER, and the panel then measured the spelling the compiler rejects — `subjectComparableValue(surface)` — and published it as closed. This is the one it accepts: `entityComparable` is exported and unbranded, so while the subject position's destination types spelled `EntityComparable` this compiled with no cast and reproduced round 1's defect verbatim (the raw surface as payload ⇒ `entity:Acme Corp` vs `entity:acme-corp` ⇒ proven-different ⇒ corroboration off for the exact corpus pair). Round 4 branded the OUTPUT, so this no longer type-checks — but `mutate.ts` transpiles without type-checking, which is what lets this row keep MEASURING the behaviour after the compiler stopped permitting it. Both halves are pinned at compile time too, by the `@ts-expect-error` pair in `subject-cmp.test.ts`; those are self-falsifying, since widening either guard makes the directive unused and therefore an error.",
+    },
+    {
       label: "the tension scan's trailing placeholders left un-renumbered",
       edits: [
         {

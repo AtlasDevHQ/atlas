@@ -629,13 +629,34 @@ export const BrainFactWillWidenEntrySchema = z.strictObject({
   added: z.tuple([z.string()], z.string()),
 }) satisfies z.ZodType<BrainFactWillWidenEntry, unknown>;
 
-export const BrainFactWillWidenSchema = z
-  .strictObject({
-    total: z.number().int().nonnegative(),
-    entries: z.array(BrainFactWillWidenEntrySchema),
-    truncated: z.boolean(),
-    incomplete: z.boolean(),
-  })
+/**
+ * The envelope WITHOUT the cross-check, which is what the client gets.
+ *
+ * Split out in #5032's panel round 4. The refinement below is right on the
+ * server and wrong on the client, for the reason stated 60 lines down about
+ * `countsConsistent` — and until the split it rode onto the client anyway via
+ * `.optional()`, which defends the field being ABSENT and does nothing about the
+ * field being present and failing a refinement.
+ *
+ * The consequence was specific: a producer-side arithmetic bug — the thing the
+ * refinement exists to catch — made `safeParse` fail on the whole oversight
+ * envelope, and `useAdminFetch` hard-throws `schema_mismatch` on that. So a
+ * headline that would have UNDER-stated a widening instead took down the
+ * hidden-backlog alert, the supersession preview and the widening notice at
+ * once, in one request. Failing the entire surface closed over somebody else's
+ * already-shipped bug is the trade this codebase declines everywhere else.
+ *
+ * Still `strictObject`: unknown-key rejection is a leak guard, not a
+ * cross-check, and it is the half the client should keep.
+ */
+const BrainFactWillWidenEnvelopeSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  entries: z.array(BrainFactWillWidenEntrySchema),
+  truncated: z.boolean(),
+  incomplete: z.boolean(),
+});
+
+export const BrainFactWillWidenSchema = BrainFactWillWidenEnvelopeSchema
   .superRefine((value, ctx) => {
     // `total` is taken BEFORE the cap, so it can never be smaller than the list
     // it summarizes. A producer that got this wrong would render a headline
@@ -748,5 +769,12 @@ export const BrainFactOversightClientSchema = z.object({
   // window an older API omits it and the panel renders no widening notice —
   // the pre-#5032 behaviour — rather than losing the whole oversight surface
   // and with it the hidden-backlog alert.
-  willWiden: BrainFactWillWidenSchema.optional(),
+  //
+  // ⚠️ And the UN-refined envelope, which is the other half of that same
+  // sentence. `.optional()` alone covers the field being absent; it does nothing
+  // when the field is present and trips a cross-check, which would fail the
+  // whole envelope for a producer bug that can only ever under-state one
+  // headline. The refinements are server-side on purpose — see
+  // `BrainFactWillWidenEnvelopeSchema`.
+  willWiden: BrainFactWillWidenEnvelopeSchema.optional(),
 }) satisfies z.ZodType<BrainFactOversight, unknown>;

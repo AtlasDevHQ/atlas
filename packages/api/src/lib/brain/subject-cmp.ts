@@ -115,8 +115,41 @@ import {
  * `reconcile.ts`'s `resolveEntitiesForEpisode` is the ONE place a value is cast
  * into this type, because it is the one place an id is validated. Nowhere else
  * can a bare `string` become one.
+ *
+ * ⚠️ **Guarding this parameter is only half the rule, and the half that does
+ * less** (#5032, panel round 4). A brand on the INPUT stops
+ * `subjectComparableValue(surface)`; it does not stop a caller skipping this
+ * function altogether. While the subject position's destination types spelled
+ * {@link EntityComparable}, `entityComparable(subject)` — exported, unbranded,
+ * one identifier away in an import list `reconcile.ts` already had — satisfied
+ * every one of them with no cast and reintroduced the defect verbatim. That is
+ * why {@link SubjectComparable} brands the OUTPUT: the two together mean the
+ * value cannot be built except by passing a validated id through here.
  */
 export type ResolvedEntityId = string & { readonly __resolvedEntityId: unique symbol };
+
+declare const subjectComparableBrand: unique symbol;
+
+/**
+ * A subject's comparable value — `entity:<id>` off a validated store id, or
+ * `null` for an abstain. The type `brain_facts.subject_cmp` is written from and
+ * the type all three identity consumers bind.
+ *
+ * ⚠️ **Deliberately NOT {@link EntityComparable}, and the difference is the
+ * guard.** `EntityComparable` says *"shaped like `entity:…`"*, which the object
+ * position also satisfies and which `entityComparable(anyString)` hands out on
+ * request. This says *"came from {@link subjectComparableValue}"* — a provenance
+ * claim, unforgeable without a cast, and provenance is what the rule is about.
+ * The shape was never the thing in doubt: the round-1 defect produced a
+ * perfectly well-shaped `entity:Acme Corp`.
+ *
+ * Derived from `EntityComparable` rather than respelled so the two cannot drift
+ * on the shape axis; `NonNullable` because a branded `null` is `never`, and the
+ * abstain has to stay a plain `null` for every consumer that tests it.
+ */
+export type SubjectComparable =
+  | (NonNullable<EntityComparable> & { readonly [subjectComparableBrand]: true })
+  | null;
 
 /**
  * What lands in `brain_facts.subject_cmp` — a resolved entity id, or `null`.
@@ -127,21 +160,33 @@ export type ResolvedEntityId = string & { readonly __resolvedEntityId: unique sy
  * inlined call is a line someone widens; a function with this docstring is a
  * claim they have to argue with.
  *
- * The claim is now also enforced twice over rather than asserted: the parameter
- * is a {@link ResolvedEntityId}, which a surface cannot satisfy, and the return
- * is an {@link EntityComparable}, which cannot be swapped with the object's
- * comparable at `agreementBinds`. `subject-cmp.test.ts` pins the runtime
- * behaviour — including the refusal of surfaces that DO parse at the object
- * position, which is what makes it a real refusal rather than a restatement of
- * "unparseable surfaces abstain".
+ * The claim is enforced at BOTH ends rather than asserted, and it needs both
+ * (#5032, panel round 4). The parameter is a {@link ResolvedEntityId}, which a
+ * surface cannot satisfy — that closes `subjectComparableValue(surface)`. The
+ * return is a {@link SubjectComparable}, which nothing else can produce — that
+ * closes the bypass, where a caller reaches past this function to
+ * `entityComparable(surface)` and satisfies the destination type anyway. With
+ * only the first, the rule held for callers who used this function and not for
+ * the ones who didn't, which is the wrong half.
+ *
+ * The cast is the seam. It is the single point where "shaped like `entity:…`"
+ * becomes "came from a validated store id", and it is sound HERE and only here
+ * because the parameter type is what makes it so.
+ *
+ * `subject-cmp.test.ts` pins both halves at compile time with `@ts-expect-error`
+ * — the repo's idiom for a brand, and self-falsifying, since an unused
+ * `@ts-expect-error` is itself an error the moment either guard is widened. It
+ * pins the runtime behaviour too, including the refusal of surfaces that DO
+ * parse at the object position, which is what makes it a real refusal rather
+ * than a restatement of "unparseable surfaces abstain".
  *
  * `null` here means *unknown*, which suppresses nothing. It is the honest answer
  * for every extractor-produced claim and will stay the answer for them forever.
  */
 export function subjectComparableValue(
   entityId: ResolvedEntityId | undefined,
-): EntityComparable {
-  return entityComparable(entityId);
+): SubjectComparable {
+  return entityComparable(entityId) as SubjectComparable;
 }
 
 /**

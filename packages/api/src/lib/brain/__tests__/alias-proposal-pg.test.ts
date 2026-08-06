@@ -561,7 +561,10 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
       // The two candidates differ on `directed`, so this is also the only place
       // that cross-field claim is exercised per ROW within one batch rather
       // than one candidate at a time.
-      expect(rows.map((r) => r.directed).sort()).toEqual([false, true]);
+      expect(rows.map((r) => r.directed).sort((a, b) => Number(a) - Number(b))).toEqual([
+        false,
+        true,
+      ]);
     },
     PG_TEST_TIMEOUT_MS,
   );

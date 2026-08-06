@@ -52,7 +52,7 @@ const debugs: Captured[] = [];
  * missing mock. The factory is SYNCHRONOUS, because an async one deadlocks
  * `bun:test`.
  */
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const record = (sink: Captured[]) => (payload: unknown, message?: unknown) =>
     sink.push({ payload, message: typeof message === "string" ? message : String(payload) });
   const capture = {

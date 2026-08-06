@@ -95,9 +95,14 @@ import { withBrainTransaction } from "@atlas/api/lib/brain/reconcile";
 const log = createLogger("brain-alias-proposal");
 
 /**
- * The minimal executor this module needs — `cardinality.ts`'s shape, so a
- * `reconcile.ts` `tx` satisfies it without either module importing the other's
- * concrete runner.
+ * The minimal executor this module needs — `cardinality.ts`'s shape.
+ *
+ * Declared locally so this module's PUBLIC SURFACE names no `reconcile.ts`
+ * type: a caller supplying its own executor need not reach for one. That is
+ * the narrower claim `cardinality.ts:119` makes, and it is the true one here —
+ * an earlier version said "without either module importing the other's concrete
+ * runner", which the value import of `withBrainTransaction` a few lines up
+ * falsifies.
  */
 export interface AliasProposalExecutor {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
@@ -107,12 +112,17 @@ export interface AliasProposalExecutor {
  * Compile-time pin: a `reconcile.ts` `tx` must satisfy this module's executor.
  *
  * ⚠️ Spelled through `Assert<…>` with a `: false` else-branch, and BOTH halves
- * are load-bearing. The first cut was `ReconcileExecutor extends
- * AliasProposalExecutor ? true : never`, assigned to an unused alias — which
- * pins nothing twice over: an unused type alias is never checked, and `never`
- * is a legal type for one to resolve to. A reviewer compiled it against a
- * deliberately drifted `AliasProposalExecutor` and `tsc --strict` exited 0. It
- * was a comment wearing a type's clothes, which is the #5068 shape.
+ * are load-bearing: an unused type alias is never checked, and `never extends
+ * true` is vacuously true, so the first cut (`? true : never`, assigned to an
+ * unused alias) pinned nothing twice over — the #5068 shape.
+ *
+ * ⚠️ **Be exact about what that cost, because the first version of this note was
+ * not.** It claimed the broken form let drift through entirely. It did not:
+ * `proposeAliasesFromCorpus`'s own `bounded((tx) => loadAliasCandidates(tx, …))`
+ * checks the same assignability, so drift was caught there — with a message
+ * pointing at a call site rather than at the contract. What this pin buys is a
+ * named error, and survival if that call site ever changes shape. Both were
+ * measured against a deliberately drifted executor.
  *
  * `: false` rather than `: never` because `never extends true` is vacuously
  * true, so the `never` spelling would stay dead even inside the assertion.
@@ -430,8 +440,13 @@ export interface AliasCandidate {
  * ⚠️ **It is a RANK on structural evidence already found, and NEVER a
  * candidate.** {@link hintedRank} is the only function that ever sees a hint and
  * it returns a `number`, so nothing that reads a hint has a list-shaped result
- * to append to; the caller is `candidates.map(…)`, whose signature IS the
- * length-preservation guarantee.
+ * to append to; the caller is the `candidates.map(…)` CALL in
+ * {@link applyHintRanks}'s body, which is what preserves the length.
+ *
+ * ⚠️ Not its SIGNATURE — an earlier version said that and it is false three
+ * lines above its own retraction. `map<U>(cb) => U[]` relates the result to
+ * nothing, and `[...candidates, ...minted].map(…)` has the identical signature;
+ * that is the mutation row's own spelling.
  *
  * ⚠️ **Be precise about how strong that is, because an earlier version of this
  * docstring was not.** It said *"it cannot append, and the type says so"* — and
@@ -558,6 +573,27 @@ export interface RankedAliasCandidate {
   readonly candidate: AliasCandidate;
   readonly confidence: number;
 }
+
+/**
+ * The two type facts rounds 1–2 established, pinned so a refactor cannot quietly
+ * undo them.
+ *
+ * ⚠️ Unlike the executor pin above, these have NO live call site behind them —
+ * nothing in the tree writes `applyHintRanks(applyHintRanks(…))` or
+ * `applyHintRanks(candidates, candidates)`, so a type-shape widening breaks no
+ * test and fires no mutation row (mutation rows are source edits measured
+ * against tests; a widened interface simply admits more). They are exactly the
+ * facts that need a compile-time guard, and the executor pin — which a call
+ * site already checks — is the one that did not.
+ *
+ *   - Adding `fromNorm`/`toNorm` to {@link RankedAliasCandidate} "for
+ *     convenience" reopens the double-bonus defect its docstring records.
+ *   - Restoring `fromNorm`/`toNorm` on {@link AliasRankHint} — the shape it USED
+ *     to have — makes `applyHintRanks(candidates, candidates)` legal again and
+ *     gives every candidate the bonus.
+ */
+type _RankedIsNotACandidate = Assert<RankedAliasCandidate extends AliasCandidate ? false : true>;
+type _HintIsNotACandidate = Assert<AliasRankHint extends AliasCandidate ? false : true>;
 
 /**
  * The rank ONE candidate earns, given the hints — the only function in the
@@ -781,26 +817,36 @@ export const ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '5s'`;
 /**
  * Wrap a transaction runner so every statement inside it is bounded.
  *
- * ⚠️ **This is the guard against wedging the extraction fiber, and a JS-side
- * deadline is NOT an equivalent substitute.** The trigger is `await`ed inside
- * `extract.ts`'s per-episode `applyRow`, which runs under
- * `Effect.forEach(concurrency: 1)` with no per-tick timeout — so a call that
- * never SETTLES stops the whole brain-extraction drain forever, and a
- * `try`/`catch` cannot fire on a promise that never settles. The failure mode
- * that produces it is the one that throws nothing: an internal database that is
- * reachable and not answering.
+ * ⚠️ **This is ONE OF TWO bounds and it is not the anti-wedge one.** Read
+ * `extract.ts`'s `proposeAliasesAfterCommit` before changing either; an earlier
+ * version of this docstring claimed a JS-side deadline was not an equivalent
+ * substitute, and that claim was wrong in the direction that matters.
  *
- * `SET LOCAL` rather than `correction.ts`'s `proposeUnderDeadline` race, and the
- * difference is not stylistic. That helper's own docstring records the property
- * that decides it: *"`Promise.race` does not CANCEL the query"* — it abandons a
- * statement that goes on holding a pooled connection out of a pool bounded at 5.
- * `statement_timeout` cancels it. A second reason: `proposeUnderDeadline` is
- * private to `correction.ts` and `cardinality.mutations.ts` anchors a mutation
- * on its call site, so lifting it out would break a generated table's anchor to
- * buy a weaker bound.
+ * The division of labour:
  *
- * The remaining unbounded step is the connection CHECKOUT, and it is already
- * bounded: the internal pool sets `connectionTimeoutMillis`.
+ *   - **This bound RECLAIMS THE CONNECTION.** `Promise.race` does not CANCEL
+ *     anything — `correction.ts`'s `proposeUnderDeadline` records the property —
+ *     so a JS deadline alone abandons a statement that goes on holding one of
+ *     five pooled connections. `statement_timeout` cancels it; `lock_timeout`
+ *     does the same for a wait on the workspace vocabulary lock.
+ *   - **`ALIAS_PROPOSAL_DEADLINE_MS` LETS THE DRAIN ADVANCE**, and only it can:
+ *     `withBrainTransaction` issues `BEGIN` *before* the callback runs, so
+ *     `BEGIN` and the first `SET LOCAL` are two unbounded round trips and these
+ *     settings **cannot bound their own arrival**. Against the failure they are
+ *     both written for — an internal database that is reachable and not
+ *     answering — the pair never lands at all.
+ *
+ * So neither is sufficient. The connection checkout ahead of both is bounded by
+ * the pool's `connectionTimeoutMillis`; the two round trips after it are not,
+ * which is why the deadline exists and why `extract.ts` trips a per-tick
+ * breaker when it fires (a stall that precedes the first `SET LOCAL` leaks the
+ * connection it was holding, and the drain advancing is what would otherwise
+ * leak one per episode).
+ *
+ * `proposeUnderDeadline` itself is not reused: it is private to `correction.ts`
+ * and `cardinality.mutations.ts` anchors a mutation on its call site, so lifting
+ * it would break a generated table's anchor. `extract.ts` carries its own clone,
+ * written against the two bugs that helper's docstring records.
  *
  * `LOCAL`, so both settings revert at COMMIT or ROLLBACK and no pooled
  * connection carries them to the next borrower.

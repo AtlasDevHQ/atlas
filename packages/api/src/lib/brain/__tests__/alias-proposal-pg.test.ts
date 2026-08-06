@@ -57,6 +57,7 @@ import {
   SEAM_PROPOSAL_PRODUCER,
   loadAliasCandidates,
   proposeAliasesFromCorpus,
+  type SubjectCount,
 } from "@atlas/api/lib/brain/alias-proposal";
 import { decideAliasProposal } from "@atlas/api/lib/brain/vocabulary-decide";
 import { withBrainTransaction } from "@atlas/api/lib/brain/reconcile";
@@ -534,10 +535,29 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
       expect([capped[0]!.fromNorm, capped[0]!.toNorm].sort()).toEqual(
         [normOf("founded"), normOf("incorporated")].sort(),
       );
-      // `toEqual` rather than `toBe`: `subjects` is branded, and the brand's
-      // whole point is that a bare `number` is not one. The value is what is
-      // being asserted, not the brand.
-      expect(capped[0]!.subjects).toEqual(3 as never);
+      // Cast to the BRAND, never to `never`. `bun:test` types `toEqual` to the
+      // actual, so a cast is genuinely required — but `as never` is assignable
+      // to everything, so `toEqual("three" as never)` would compile too. `as
+      // SubjectCount` still rejects a string or `undefined`, which is the whole
+      // check this line exists for.
+      expect(capped[0]!.subjects).toEqual(3 as SubjectCount);
+
+      // ⭐ …and the PRODUCER queues BOTH, which nothing else in the slice shows.
+      // Every other queue assertion is `kase.proposes.length`, which is 1 for
+      // all 14 corpus cases — so `proposeAliasEdges(ws, inputs.slice(0, 1), …)`
+      // survived the whole suite: a silent truncation to the first candidate,
+      // with `log.info` honestly reporting `candidates: 1` and no operator
+      // signal that the rest were dropped.
+      const counters = await proposeAliasesFromCorpus(workspaceId);
+      expect(counters.queued).toBe(2);
+      const { rows } = await pool.query<{ directed: boolean }>(
+        "SELECT directed FROM brain_vocabulary_proposal WHERE workspace_id = $1",
+        [workspaceId],
+      );
+      // The two candidates differ on `directed`, so this is also the only place
+      // that cross-field claim is exercised per ROW within one batch rather
+      // than one candidate at a time.
+      expect(rows.map((r) => r.directed).sort()).toEqual([false, true]);
     },
     PG_TEST_TIMEOUT_MS,
   );

@@ -741,6 +741,17 @@ export interface BrainExtractionDeps {
    * whether the trigger fired without one.
    */
   readonly proposeAliases?: (workspaceId: string) => Promise<unknown>;
+  /**
+   * Test seam for {@link ALIAS_PROPOSAL_DEADLINE_MS}, on `correction.ts`'s
+   * `auditWriteTimeoutMs` precedent. Exists so the timeout arm is reachable in
+   * under a second instead of never — the arm's whole point is a producer that
+   * does not settle, and a suite cannot wait 15s for one.
+   *
+   * RANGE-GUARDED at the read, not here: a `setTimeout` delay past 2^31-1
+   * fires IMMEDIATELY, so an out-of-range override would silently make every
+   * run time out rather than none.
+   */
+  readonly aliasProposalDeadlineMs?: number;
   /** Test clock. */
   readonly now?: () => Date;
 }
@@ -783,6 +794,16 @@ export function runBrainExtractionCycle(
   const loadVocabulary = deps.loadVocabulary ?? loadWorkspaceVocabulary;
   const proposeAliases =
     deps.proposeAliases ?? ((workspaceId: string) => proposeAliasesFromCorpus(workspaceId));
+  // `Number.isInteger` AND the upper bound, both load-bearing: a delay past
+  // 2^31-1 fires immediately, which would turn an override meant to shorten a
+  // test into one that times out every run in production.
+  const aliasProposalDeadlineMs =
+    typeof deps.aliasProposalDeadlineMs === "number" &&
+    Number.isInteger(deps.aliasProposalDeadlineMs) &&
+    deps.aliasProposalDeadlineMs > 0 &&
+    deps.aliasProposalDeadlineMs <= 2_147_483_647
+      ? deps.aliasProposalDeadlineMs
+      : ALIAS_PROPOSAL_DEADLINE_MS;
   const now = deps.now ?? (() => new Date());
 
   // `Effect.suspend` so the per-tick mutable state below is allocated per RUN
@@ -807,6 +828,11 @@ export function runBrainExtractionCycle(
     // ONE binding, threaded into both halves — `extractEpisode` reads it and
     // `tallyEpisode` writes it, and they have to be the same object.
     const failures = failureLedger;
+    // The alias-proposal circuit breaker, allocated PER RUN so it resets every
+    // tick. See `proposeAliasesAfterCommit`: a producer stall leaks the pooled
+    // connection it was holding, and without this the drain — which the
+    // deadline exists to keep advancing — would leak one per episode.
+    const proposalStall = { stalled: false };
     const charged: { episodeId: string; workspaceId: string }[] = [];
     /**
      * How many episodes the scan EXCLUDED as backing-off, this tick.
@@ -924,6 +950,8 @@ export function runBrainExtractionCycle(
           reconcile,
           loadVocabulary,
           proposeAliases,
+          proposalStall,
+          aliasProposalDeadlineMs,
           now,
           failures,
         }),
@@ -940,6 +968,18 @@ interface ApplyDeps {
   readonly reconcile: typeof reconcileFacts;
   readonly loadVocabulary: (workspaceId: string) => Promise<ClaimVocabulary>;
   readonly proposeAliases: (workspaceId: string) => Promise<unknown>;
+  /**
+   * The per-tick circuit breaker for the alias-proposal trigger — see
+   * {@link proposeAliasesAfterCommit}'s "one stall per tick, not one per
+   * episode".
+   *
+   * Cycle-scoped, like `failures` above and for a sharper reason: it must reset
+   * between ticks, or one bad minute would retire the producer for the lifetime
+   * of the process. THE SAME object is bound into both halves in
+   * `runBrainExtractionCycle`.
+   */
+  readonly proposalStall: { stalled: boolean };
+  readonly aliasProposalDeadlineMs: number;
   readonly now: () => Date;
   /**
    * Consecutive-failure ledger — see the quarantine note. THE SAME map the
@@ -1203,8 +1243,35 @@ export const ALIAS_PROPOSAL_DEADLINE_MS = 15_000;
  * standing between that failure and a wedged fiber.
  *
  * The converse is also true, which is why both are kept: `Promise.race` does
- * not CANCEL anything, so without the `SET LOCAL` pair a timed-out run would go
- * on holding one of five pooled connections indefinitely.
+ * not CANCEL anything, so a timed-out run whose statements DID arrive is
+ * reclaimed by `statement_timeout` and not by anything here.
+ *
+ * ## One stall per TICK, not one per episode — and why that is required
+ *
+ * ⚠️ **In the headline case the connection is NOT reclaimed, and the deadline is
+ * what makes that matter.** If the stall precedes the first `SET LOCAL` — which
+ * is precisely the reachable-but-not-answering case — then `withBrainTransaction`
+ * is parked on `BEGIN`, its callback never runs, and `client.release()` never
+ * runs either. `idleTimeoutMillis` does not apply to a checked-out client, so the
+ * connection is gone from a pool bounded at **5** until the socket dies.
+ *
+ * Before the deadline that cost exactly one connection, because the fiber wedged
+ * behind it. With the deadline the drain ADVANCES — which is the whole point —
+ * so the next comparable-creating episode would check out another, and
+ * `BATCH_SIZE` of them would exhaust the pool and take down every unrelated
+ * internal query in the process: auth, audit, settings, and this drain's own
+ * `DRAIN_EPISODES_SQL` and `stampExtracted`.
+ *
+ * So the first timeout in a tick trips {@link ApplyDeps.proposalStall} and every
+ * later episode in that tick skips the trigger. The leak is bounded at one
+ * connection per cycle, the drain still advances, and the breaker resets next
+ * tick because it is allocated per run — a process-lifetime flag would retire
+ * the producer permanently on one bad minute.
+ *
+ * The skipped episodes lose nothing a completed run would have kept: the
+ * producer re-derives its whole candidate set from the corpus and holds no
+ * cursor. What they lose is the same thing a failed run loses, on the same
+ * terms as the paragraph below.
  *
  * ## ⚠️ What "re-derived next run" is and is NOT worth
  *
@@ -1238,6 +1305,7 @@ async function proposeAliasesAfterCommit(
   deps: ApplyDeps,
 ): Promise<void> {
   if (report.comparable === 0) return;
+  if (deps.proposalStall.stalled) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   try {
@@ -1265,7 +1333,7 @@ async function proposeAliasesAfterCommit(
           if (!timedOut) return;
           log.warn(
             { workspaceId: episode.workspaceId, episodeId: episode.id, err: errorMessage(cause) },
-            "brain extraction: the alias-proposal producer FAILED after its deadline had already been reported — this is the underlying cause behind the earlier timeout line, and no proposal landed",
+            "brain extraction: the alias-proposal producer FAILED after its deadline had already been reported — this is the underlying cause behind the earlier timeout line. ⚠️ It does NOT mean nothing was written: `proposeAliasEdge` commits per candidate, so a failure part way through a batch leaves every earlier proposal in place, and the producer's own counters line says how many",
           );
         },
       )
@@ -1286,13 +1354,17 @@ async function proposeAliasesAfterCommit(
           timedOut = true;
           reject(
             new Error(
-              `the alias-proposal producer did not answer within ${ALIAS_PROPOSAL_DEADLINE_MS}ms — the internal database is reachable but not responding`,
+              `the alias-proposal producer did not answer within ${deps.aliasProposalDeadlineMs}ms — most likely an internal database that is reachable but not responding, or a batch spending its budget waiting on the workspace vocabulary lock, which ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL treats as an expected outcome`,
             ),
           );
-        }, ALIAS_PROPOSAL_DEADLINE_MS);
+        }, deps.aliasProposalDeadlineMs);
       }),
     ]);
   } catch (err) {
+    // TRIP THE BREAKER, and only on the timeout arm. An ordinary failure
+    // released its connection on the way out; a timeout did not, and the next
+    // episode would leak another.
+    if (timedOut) deps.proposalStall.stalled = true;
     log.warn(
       {
         workspaceId: episode.workspaceId,
@@ -1307,8 +1379,8 @@ async function proposeAliasesAfterCommit(
         timedOut,
       },
       timedOut
-        ? "brain extraction: the alias-proposal producer did not answer within its deadline — the facts and the stamp are COMMITTED and unaffected, and the extraction drain is free to advance, which is what this deadline exists for. The producer's own fate is UNKNOWN: the race does not cancel it, though `SET LOCAL statement_timeout` bounds each statement it had already reached. If it settles, a follow-up line for this episode says which"
-        : "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and no vocabulary changed. The candidates are re-derived from the corpus by the NEXT episode in this workspace that creates a comparable object; this trigger is the producer's only caller, so if no such episode arrives they stay unproposed until one does",
+        ? "brain extraction: the alias-proposal producer did not answer within its deadline — the facts and the stamp are COMMITTED and unaffected, and the extraction drain is free to advance, which is what this deadline exists for. The producer's own fate is UNKNOWN: the race does not cancel it, though `SET LOCAL statement_timeout` bounds each statement it had already reached. If it settles, a follow-up line for this episode says which — but the failure this deadline exists for may never produce one, so treat a MISSING follow-up as the run still being in flight rather than as recovered"
+        : "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and no vocabulary EDGE changed — though proposals queued before the failure are present, since `proposeAliasEdge` commits per candidate. The remaining candidates are re-derived from the corpus by the NEXT episode in this workspace that creates a comparable object; this trigger is the producer's only caller, so if no such episode arrives they stay unproposed until one does",
     );
   } finally {
     // Around the RACE, so it runs whoever wins. A `finally` on the TIMER

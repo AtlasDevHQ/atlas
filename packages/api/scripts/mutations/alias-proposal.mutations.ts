@@ -16,10 +16,25 @@
  * several SQL rows below are 0 in the fast lane and several TypeScript rows are
  * 0 in the `-pg` one — neither column is a superset of the other.
  *
- * Every mutation LISTED below dies in at least one column — and the word is
- * deliberate: the list is curated, not exhaustive, so it is evidence about the
- * suites' reach and never a proof that nothing else survives. The zeros that
- * remain are all of one kind — a SQL mutation invisible to a lane that never runs SQL, or a
+ * Every mutation LISTED below dies in at least one column, with ONE stated
+ * exception — and "listed" is deliberate: the list is curated, not exhaustive,
+ * so it is evidence about the suites' reach and never a proof that nothing else
+ * survives.
+ *
+ * ⚠️ The exception is *the post-deadline continuation is deleted*, and it is a
+ * named gap rather than an untestable one: falsifying it needs the logger mocked
+ * on the extract path (an `extract-logging.test.ts` on `acl-logging.test.ts`'s
+ * pattern), which this slice does not add. Read its note before treating that
+ * `0` as evidence of anything.
+ *
+ * ⚠️ **Three rows in this file have shipped as measured NO-OPS across the review
+ * rounds** — one splicing `${…}` as literal text into a module importing
+ * neither, one appending a duplicate `pending` to a `Promise.race`, one leaving a
+ * `new Promise` executor in place so `setTimeout` still ran. Each published a
+ * `0` that measured nothing. Before believing a zero, read the edit and ask what
+ * the mutant actually does.
+ *
+ * The remaining zeros are all of one kind — a SQL mutation invisible to a lane that never runs SQL, or a
  * TypeScript one invisible to a lane whose assertions are about which rows
  * matched — and none of them is a mutation nothing catches.
  *
@@ -61,6 +76,13 @@ const spec: MutationSpec = {
       env: PG_ENV,
     },
     { name: "alias-proposal.test.ts", file: "src/lib/brain/__tests__/alias-proposal.test.ts" },
+    {
+      // The OPERATOR-LINE column. Two of this module's log statements are the
+      // only thing separating states that are byte-identical to every caller,
+      // and both were deletable-green before this suite existed.
+      name: "alias-proposal-logging.test.ts",
+      file: "src/lib/brain/__tests__/alias-proposal-logging.test.ts",
+    },
     {
       // The WIRING's column, and it is mostly zeros by design: this suite owns
       // WHEN the producer is asked, not what it finds. The two rows at the
@@ -376,11 +398,85 @@ prohibits by name. None of them has a symptom at rest.
       edits: [
         {
           file: EXTRACT,
-          oldString: "    await Promise.race([\n      pending,",
-          newString: "    await Promise.race([\n      pending,\n      // eslint-disable-next-line\n      pending,",
+          // FAITHFUL: the whole race — timer arming included — collapses to a
+          // bare await. TWO earlier cuts of this row were semantic no-ops: the
+          // first appended a second `pending` to the race array (`Promise.race([p,
+          // p, timer])` ≡ `Promise.race([p, timer])`), and the second left the
+          // `new Promise` executor in place, so `setTimeout` still ran and the
+          // timer recorder still saw its timer. Both published `0` cells that
+          // measured nothing. #5033's lesson twice over: record the exact
+          // SPELLING, and a survivor means the mutation missed.
+          oldString: "    await Promise.race([\n      pending,\n      new Promise<never>((_resolve, reject) => {\n        timer = setTimeout(() => {\n          timedOut = true;\n          reject(\n            new Error(\n              `the alias-proposal producer did not answer within ${deps.aliasProposalDeadlineMs}ms \u2014 most likely an internal database that is reachable but not responding, or a batch spending its budget waiting on the workspace vocabulary lock, which ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL treats as an expected outcome`,\n            ),\n          );\n        }, deps.aliasProposalDeadlineMs);\n      }),\n    ]);\n",
+          newString: "    await pending;\n",
         },
       ],
-      note: "⚠️ MEASURED ZERO, and honest — a HANG is not a falsifier, which is exactly why the deadline exists. `withBrainTransaction` issues `BEGIN` before the callback, so the two `SET LOCAL`s cannot bound their own arrival and a database that is not answering wedges the drain with no error. Nothing short of a delayed-settle fake and a timer recorder can see this, and that machinery is not built here; the `-pg` bound test covers the DATABASE half, and this row records that the JS half is covered by argument.",
+      note: "⭐ The bound that lets the DRAIN advance, and the one the `SET LOCAL` pair cannot provide — `withBrainTransaction` issues `BEGIN` before the callback, so those settings cannot bound their own arrival. Killed WITHOUT a hang by the timer recorder in `extract-reconcile-pg.test.ts`, which asserts exactly one timer is armed at `ALIAS_PROPOSAL_DEADLINE_MS` and that the fast path disarms it — the second assertion independently guards the `finally`-on-the-timer-promise bug `correction.ts` shipped once. The technique was already in `correction.test.ts` guarding the identical defect; an earlier version of this note claimed that machinery was not built here, which was the other half of the same mistake.",
+    },
+    {
+      label: "the per-tick breaker never trips, so every stalled episode leaks a connection",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "    if (timedOut) deps.proposalStall.stalled = true;\n",
+          newString: "",
+        },
+      ],
+      note: "⭐ Round 3's finding, and it is a hazard the DEADLINE created: a stall preceding the first `SET LOCAL` leaves `withBrainTransaction` parked on `BEGIN` with a client checked out and never released, and a drain that now advances checks out another for every later episode in the tick — `BATCH_SIZE` of them exhausts a pool bounded at 5 and takes down every unrelated internal query in the process.",
+    },
+    {
+      label: "the breaker is consulted but never blocks",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "  if (deps.proposalStall.stalled) return;\n",
+          newString: "",
+        },
+      ],
+      note: "The read half of the same guard. Separated from the write half because a breaker that trips and is not read, and one that is read and never trips, fail identically from the outside and are two different edits.",
+    },
+    {
+      label: "the post-deadline continuation is deleted",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "    void pending\n      .then(",
+          newString: "    void (async () => {})().then(",
+        },
+      ],
+      note: "⚠️ MEASURED ZERO, and stated rather than hidden. `Promise.race` marks the LOSER's rejection handled, so a real store failure arriving after the deadline is dropped with no line and not even an unhandled rejection — while the timeout line an operator holds says the fate is unknown and a follow-up will say which. Falsifying it needs the LOGGER mocked on the extract path, i.e. an `extract-logging.test.ts` on `acl-logging.test.ts`'s pattern; that file does not exist and this slice does not add it. The technique is `correction.test.ts`'s late-settle fake — this is a named gap with a known closure, not an untestable one."
+    },
+    {
+      label: "the all-rows-dropped ERROR is silenced",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "  if (rows.length > 0 && candidates.length === 0) {",
+          newString: "  if (false) {",
+        },
+      ],
+      note: "The only line distinguishing *the reader has drifted from the statement* from *the corpus supports nothing* — two states byte-identical to every caller, and under drift the `debug` line below logs the FALSE one. `extract.ts` discards the counters, so nothing else could tell.",
+    },
+    {
+      label: "the truncation WARN is silenced",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "  if (rows.length >= cap) {",
+          newString: "  if (false) {",
+        },
+      ],
+      note: "The only line that makes a bounded run legible as bounded — `ALIAS_PROPOSAL_CANDIDATE_CAP`'s docstring sends an operator here when a proposal is missing, and without it \"25 candidates\" reads as a total rather than a floor.",
+    },
+    {
+      label: "the producer queues only the FIRST candidate",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "  return proposeAliasEdges(workspaceId, inputs, SEAM_PROPOSAL_PRODUCER, boundedDeps);",
+          newString: "  return proposeAliasEdges(workspaceId, inputs.slice(0, 1), SEAM_PROPOSAL_PRODUCER, boundedDeps);",
+        },
+      ],
+      note: "A silent truncation to one pair. Invisible to every corpus case, because all 14 expect exactly one proposal — only the two-pair cap workspace can see it, and `log.info` would honestly report `candidates: 1` with no signal that the rest were dropped.",
     },
     {
       label: "the trigger's DEFAULT producer is replaced with a no-op",

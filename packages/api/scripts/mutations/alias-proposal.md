@@ -14,39 +14,45 @@ prohibits by name. None of them has a symptom at rest.
 
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 
-| Mutation | alias-proposal-pg.test.ts | alias-proposal.test.ts | extract-reconcile-pg.test.ts |
-|---|---|---|---|
-| the object arm relaxes from EQUAL to both-present (`=` → `IS NOT NULL`) | 1 | 1 | 0 |
-| the subject arm is dropped | 1 | 1 | 0 |
-| the predicate arm weakens to `>=`, so every row joins itself | 15 | 1 | 0 |
-| the repeat gate counts EVIDENCE ROWS instead of distinct subjects | 1 | 1 | 0 |
-| the repeat gate is switched off (threshold 2 → 1) | 2 | 1 | 0 |
-| the direction rule fires when EITHER side is warehouse-derived | 1 | 1 | 0 |
-| the direction rule stops swapping, so the target is arrival order | 2 | 1 | 0 |
-| the direction arm is written as the NEGATED tier guard | 1 | 0 | 0 |
-| the direction fold is `bool_and` instead of `bool_or` | 1 | 0 | 0 |
-| the JOIN stops scoping to one workspace (the `WHERE` stays) | 1 | 0 | 0 |
-| a subject key graduates into the projection | 0 | 2 | 0 |
-| the cap stops ordering by evidence | 1 | 0 | 0 |
-| the object arm admits two NULLs as agreement (`=` → `IS NOT DISTINCT FROM`) | 1 | 1 | 0 |
-| the query stops scoping to one workspace | 25 | 0 | 1 |
-| the trigger gate reads only the FIRST candidate's comparable | 0 | 0 | 1 |
-| the query reads tombstoned and superseded rows as evidence | 1 | 0 | 0 |
-| an extractor hint may become a candidate | 1 | 1 | 0 |
-| the pair key joins on a SPACE instead of a NUL | 0 | 1 | 0 |
-| the reader defaults an unreadable repeat count instead of dropping the row | 0 | 1 | 0 |
-| the rank is a constant, so evidence stops ordering the queue | 0 | 1 | 0 |
-| the hint bonus can push a rank past the CHECK | 0 | 1 | 0 |
-| the statement bound is set to `0` — Postgres for NO timeout | 1 | 0 | 0 |
-| the bounds never reach the PROPOSE half | 1 | 0 | 0 |
-| the JS deadline around the trigger is removed | 0 | 0 | 0 |
-| the trigger's DEFAULT producer is replaced with a no-op | 0 | 0 | 1 |
-| `COALESCE` is dropped, so an all-NULL group reads as `null` | 1 | 0 | 0 |
-| the trigger runs on EVERY episode, gate or no gate | 0 | 0 | 1 |
-| the trigger is never reached at all | 0 | 0 | 2 |
-| a failed proposal run fails the episode that already committed | 0 | 0 | 1 |
+| Mutation | alias-proposal-pg.test.ts | alias-proposal.test.ts | alias-proposal-logging.test.ts | extract-reconcile-pg.test.ts |
+|---|---|---|---|---|
+| the object arm relaxes from EQUAL to both-present (`=` → `IS NOT NULL`) | 1 | 1 | 0 | 0 |
+| the subject arm is dropped | 1 | 1 | 0 | 0 |
+| the predicate arm weakens to `>=`, so every row joins itself | 15 | 1 | 0 | 0 |
+| the repeat gate counts EVIDENCE ROWS instead of distinct subjects | 1 | 1 | 0 | 0 |
+| the repeat gate is switched off (threshold 2 → 1) | 2 | 1 | 0 | 0 |
+| the direction rule fires when EITHER side is warehouse-derived | 1 | 1 | 0 | 0 |
+| the direction rule stops swapping, so the target is arrival order | 2 | 1 | 0 | 0 |
+| the direction arm is written as the NEGATED tier guard | 1 | 0 | 0 | 0 |
+| the direction fold is `bool_and` instead of `bool_or` | 1 | 0 | 0 | 0 |
+| the JOIN stops scoping to one workspace (the `WHERE` stays) | 1 | 0 | 0 | 0 |
+| a subject key graduates into the projection | 0 | 2 | 0 | 0 |
+| the cap stops ordering by evidence | 1 | 0 | 0 | 0 |
+| the object arm admits two NULLs as agreement (`=` → `IS NOT DISTINCT FROM`) | 1 | 1 | 0 | 0 |
+| the query stops scoping to one workspace | 25 | 0 | 0 | 1 |
+| the trigger gate reads only the FIRST candidate's comparable | 0 | 0 | 0 | 1 |
+| the query reads tombstoned and superseded rows as evidence | 1 | 0 | 0 | 0 |
+| an extractor hint may become a candidate | 1 | 1 | 0 | 0 |
+| the pair key joins on a SPACE instead of a NUL | 0 | 1 | 0 | 0 |
+| the reader defaults an unreadable repeat count instead of dropping the row | 0 | 1 | 1 | 0 |
+| the rank is a constant, so evidence stops ordering the queue | 0 | 1 | 0 | 0 |
+| the hint bonus can push a rank past the CHECK | 0 | 1 | 0 | 0 |
+| the statement bound is set to `0` — Postgres for NO timeout | 1 | 0 | 0 | 0 |
+| the bounds never reach the PROPOSE half | 1 | 0 | 0 | 0 |
+| the JS deadline around the trigger is removed | 0 | 0 | 0 | 2 |
+| the per-tick breaker never trips, so every stalled episode leaks a connection | 0 | 0 | 0 | 1 |
+| the breaker is consulted but never blocks | 0 | 0 | 0 | 1 |
+| the post-deadline continuation is deleted | 0 | 0 | 0 | 0 |
+| the all-rows-dropped ERROR is silenced | 0 | 0 | 1 | 0 |
+| the truncation WARN is silenced | 0 | 0 | 1 | 0 |
+| the producer queues only the FIRST candidate | 1 | 0 | 0 | 0 |
+| the trigger's DEFAULT producer is replaced with a no-op | 0 | 0 | 0 | 1 |
+| `COALESCE` is dropped, so an all-NULL group reads as `null` | 1 | 0 | 0 | 0 |
+| the trigger runs on EVERY episode, gate or no gate | 0 | 0 | 0 | 1 |
+| the trigger is never reached at all | 0 | 0 | 0 | 4 |
+| a failed proposal run fails the episode that already committed | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches |
 
-Suite sizes: **alias-proposal-pg.test.ts** 30 tests (`src/lib/brain/__tests__/alias-proposal-pg.test.ts`) · **alias-proposal.test.ts** 32 tests (`src/lib/brain/__tests__/alias-proposal.test.ts`) · **extract-reconcile-pg.test.ts** 37 tests (`src/lib/brain/__tests__/extract-reconcile-pg.test.ts`).
+Suite sizes: **alias-proposal-pg.test.ts** 30 tests (`src/lib/brain/__tests__/alias-proposal-pg.test.ts`) · **alias-proposal.test.ts** 32 tests (`src/lib/brain/__tests__/alias-proposal.test.ts`) · **alias-proposal-logging.test.ts** 4 tests (`src/lib/brain/__tests__/alias-proposal-logging.test.ts`) · **extract-reconcile-pg.test.ts** 39 tests (`src/lib/brain/__tests__/extract-reconcile-pg.test.ts`).
 
 ## Notes
 
@@ -73,9 +79,21 @@ Suite sizes: **alias-proposal-pg.test.ts** 30 tests (`src/lib/brain/__tests__/al
 - **the hint bonus can push a rank past the CHECK** — Unreachable from any corpus on today's curve — see the trigger rows below for the other half of the slice — — `structuralConfidence` is asymptotic to 1 and the bonus is 0.05, so a pair would need ~19 distinct subjects to cross — which is exactly why the fast lane reaches for the arithmetic directly rather than for a fixture. A hinted pair pushed past 1 does not queue at high confidence: `proposeAliasEdge` refuses it as `confidence-out-of-range` and it does not queue at all.
 - **the statement bound is set to `0` — Postgres for NO timeout** — ⭐ Invisible to a test that compares the issued statement against the constant that produced it — both sides move together. `0` restores the wedge: the extraction drain awaits this inside a `concurrency: 1` loop, and a hang is not a falsifier. The `-pg` bound test reads the value back out of the session, which is the only assertion that can see it.
 - **the bounds never reach the PROPOSE half** — `proposeAliasEdge` takes the workspace vocabulary lock; unbounded, the `lock_timeout` half is gone and a human mid-approval can block the producer indefinitely. The claim *every statement this producer causes is covered* was unproven until the `-pg` bound test asserted the settings inside the propose transactions too.
-- **the JS deadline around the trigger is removed** — ⚠️ MEASURED ZERO, and honest — a HANG is not a falsifier, which is exactly why the deadline exists. `withBrainTransaction` issues `BEGIN` before the callback, so the two `SET LOCAL`s cannot bound their own arrival and a database that is not answering wedges the drain with no error. Nothing short of a delayed-settle fake and a timer recorder can see this, and that machinery is not built here; the `-pg` bound test covers the DATABASE half, and this row records that the JS half is covered by argument.
+- **the JS deadline around the trigger is removed** — ⭐ The bound that lets the DRAIN advance, and the one the `SET LOCAL` pair cannot provide — `withBrainTransaction` issues `BEGIN` before the callback, so those settings cannot bound their own arrival. Killed WITHOUT a hang by the timer recorder in `extract-reconcile-pg.test.ts`, which asserts exactly one timer is armed at `ALIAS_PROPOSAL_DEADLINE_MS` and that the fast path disarms it — the second assertion independently guards the `finally`-on-the-timer-promise bug `correction.ts` shipped once. The technique was already in `correction.test.ts` guarding the identical defect; an earlier version of this note claimed that machinery was not built here, which was the other half of the same mistake.
+- **the per-tick breaker never trips, so every stalled episode leaks a connection** — ⭐ Round 3's finding, and it is a hazard the DEADLINE created: a stall preceding the first `SET LOCAL` leaves `withBrainTransaction` parked on `BEGIN` with a client checked out and never released, and a drain that now advances checks out another for every later episode in the tick — `BATCH_SIZE` of them exhausts a pool bounded at 5 and takes down every unrelated internal query in the process.
+- **the breaker is consulted but never blocks** — The read half of the same guard. Separated from the write half because a breaker that trips and is not read, and one that is read and never trips, fail identically from the outside and are two different edits.
+- **the post-deadline continuation is deleted** — ⚠️ MEASURED ZERO, and stated rather than hidden. `Promise.race` marks the LOSER's rejection handled, so a real store failure arriving after the deadline is dropped with no line and not even an unhandled rejection — while the timeout line an operator holds says the fate is unknown and a follow-up will say which. Falsifying it needs the LOGGER mocked on the extract path, i.e. an `extract-logging.test.ts` on `acl-logging.test.ts`'s pattern; that file does not exist and this slice does not add it. The technique is `correction.test.ts`'s late-settle fake — this is a named gap with a known closure, not an untestable one.
+- **the all-rows-dropped ERROR is silenced** — The only line distinguishing *the reader has drifted from the statement* from *the corpus supports nothing* — two states byte-identical to every caller, and under drift the `debug` line below logs the FALSE one. `extract.ts` discards the counters, so nothing else could tell.
+- **the truncation WARN is silenced** — The only line that makes a bounded run legible as bounded — `ALIAS_PROPOSAL_CANDIDATE_CAP`'s docstring sends an operator here when a proposal is missing, and without it "25 candidates" reads as a total rather than a floor.
+- **the producer queues only the FIRST candidate** — A silent truncation to one pair. Invisible to every corpus case, because all 14 expect exactly one proposal — only the two-pair cap workspace can see it, and `log.info` would honestly report `candidates: 1` with no signal that the rest were dropped.
 - **the trigger's DEFAULT producer is replaced with a no-op** — ⭐ The producer's ONE production call path. Every trigger test injects a fake and every pre-existing test has `comparable === 0`, so before the end-to-end default test this killed nothing — a wrong binding or an import cycle would have shipped green with the feature dead, and `extract.ts` catches and warns rather than failing the episode. #5022's *a store whose reader had no caller*, one indirection deeper.
 - **`COALESCE` is dropped, so an all-NULL group reads as `null`** — The population no corpus case can reach by construction: a row carrying NO `source` key at all, so `= ANY(…)` is unknown and `bool_or` over the group answers NULL. The reader's `typeof … !== "boolean"` arm then DROPS the candidate rather than mis-directing it — fail-closed, and the `-pg` test that strips `provenance -> source` by hand is what shows it.
 - **the trigger runs on EVERY episode, gate or no gate** — A corpus-wide self-join per episode, forever, on a workspace where the query provably cannot find anything — `object_cmp` is never backfilled and there is no entity store, so today that is very nearly every episode. It has no symptom beyond latency, which is the kind that is never found.
 - **the trigger is never reached at all** — The producer keeps its whole test suite and stops having a caller — #5022's *a store whose reader had no caller* one slice over, and the only column that can see it is this one.
 - **a failed proposal run fails the episode that already committed** — The facts are written and the episode is stamped before the producer is asked, so this charges the failure ledger a strike against evidence there is nothing left to retry — and enough strikes quarantine an episode that was processed perfectly.
+
+## ⚠️ Flagged
+
+A `whole-suite` flag means the count reached ~every test in the file. That is usually a mutation that broke SETUP rather than the behaviour under test, and the honest count is much smaller. An `ANCHOR` flag means nothing was mutated at all.
+
+- **a failed proposal run fails the episode that already committed** — alias-proposal-pg.test.ts: ANCHOR: 0 matches; alias-proposal.test.ts: ANCHOR: 0 matches; alias-proposal-logging.test.ts: ANCHOR: 0 matches; extract-reconcile-pg.test.ts: ANCHOR: 0 matches

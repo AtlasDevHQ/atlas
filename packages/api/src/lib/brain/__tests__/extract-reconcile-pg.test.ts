@@ -45,6 +45,7 @@ import {
   type ReconcileEpisodeRef,
 } from "@atlas/api/lib/brain/reconcile";
 import {
+  ALIAS_PROPOSAL_DEADLINE_MS,
   BATCH_SIZE,
   _resetBrainExtractionFailures,
   runBrainExtractionCycle,
@@ -1284,6 +1285,105 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       }),
     );
     expect(observed).toBe(1);
+  });
+
+  it("arms the drain deadline and DISARMS it on the fast path", async () => {
+    // ⭐ The falsifier for `ALIAS_PROPOSAL_DEADLINE_MS`, and it needs no hang.
+    //
+    // The mutation row for the deadline read `0 | 0 | 0` with a note saying
+    // nothing short of a delayed-settle fake and a timer recorder could see it,
+    // and "that machinery is not built here". Both halves were wrong: the timer
+    // recorder ALONE sees it, and the machinery is built one file over
+    // (`correction.test.ts`, guarding the identical defect in
+    // `proposeUnderDeadline`) — whose own comment records the repo making this
+    // exact mistake and correcting it. A `0` in a mutation table is a CLAIM.
+    //
+    // Filtering on the exported constant is what keeps `pg`'s own timers out of
+    // the count; a bare "some timer was armed" would pass in any `-pg` file.
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const armed: { ms: unknown; handle: unknown }[] = [];
+    const cleared = new Set<unknown>();
+    globalThis.setTimeout = ((fn: never, ms: never, ...rest: never[]) => {
+      const handle = realSet(fn, ms, ...rest);
+      armed.push({ ms, handle });
+      return handle;
+    }) as typeof globalThis.setTimeout;
+    globalThis.clearTimeout = ((handle: never) => {
+      cleared.add(handle);
+      realClear(handle);
+    }) as typeof globalThis.clearTimeout;
+    try {
+      await insertEpisode();
+      await Effect.runPromise(
+        runBrainExtractionCycle({
+          extract: () =>
+            Promise.resolve([candidate({ predicate: "priced at", object: "499 USD" })]),
+          resolveModel: async () => FAKE_MODEL,
+          proposeAliases: async () => undefined,
+        }),
+      );
+    } finally {
+      globalThis.setTimeout = realSet;
+      globalThis.clearTimeout = realClear;
+    }
+
+    const deadlines = armed.filter((t) => t.ms === ALIAS_PROPOSAL_DEADLINE_MS);
+    expect(deadlines, "no deadline was armed around the proposal run").toHaveLength(1);
+    // The second half, and it is a separate defect: a `finally` attached to the
+    // TIMER PROMISE rather than to the race settles only when the timer fires,
+    // so `clearTimeout` is unconditionally a no-op and every episode leaves a
+    // 15s timer armed. `correction.ts` shipped exactly that once.
+    expect(
+      deadlines.filter((t) => !cleared.has(t.handle)),
+      "the deadline timer was left armed on the fast path",
+    ).toEqual([]);
+  });
+
+  it("times out a stalled producer, keeps the episode, and trips the per-tick breaker", async () => {
+    // The three properties nothing could see, all reachable with a fake that
+    // SETTLES — so this test cannot hang even if the deadline is deleted; it
+    // fails on the missing warn instead.
+    //
+    // ⭐ The breaker is the round-3 finding: a stall that precedes the first
+    // `SET LOCAL` leaves `withBrainTransaction` parked on `BEGIN` with a client
+    // checked out and never released. Before the deadline that cost one
+    // connection, because the fiber wedged behind it; WITH the deadline the
+    // drain advances, so without a breaker every later episode in the tick
+    // leaks another into a pool bounded at five.
+    const asked: string[] = [];
+    for (let i = 0; i < 3; i++) await insertEpisode({ sourceId: `stall-${i}` });
+
+    // ⚠️ A DISTINCT SUBJECT per episode, and it is load-bearing. With the same
+    // triple three times the second and third CORROBORATE — `created` is 0, so
+    // `comparable` is 0 and the trigger never fires for them. The test then
+    // asserts `asked` is 1 whatever the breaker does, and both breaker mutations
+    // measured ZERO against it. Measured, not reasoned about.
+    let episodeIndex = 0;
+    const result = await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({
+              subject: `tier ${episodeIndex++}`,
+              predicate: "priced at",
+              object: "499 USD",
+            }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        aliasProposalDeadlineMs: 20,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        },
+      }),
+    );
+
+    // The episodes are unaffected: extracted, stamped, no strike.
+    expect(result).toMatchObject({ status: "success", inspected: 3, extracted: 3, failed: 0 });
+    // …and the producer was asked exactly ONCE across three stalling episodes.
+    // Without the breaker this is 3, which is three leaked connections.
+    expect(asked).toHaveLength(1);
   });
 
   it("a failing proposal run does not fail the episode that already committed", async () => {

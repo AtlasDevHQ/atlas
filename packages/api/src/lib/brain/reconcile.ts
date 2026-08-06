@@ -1322,10 +1322,24 @@ export async function reconcileFacts(
         // that `ReconcileReport.comparable`'s docstring says is a GATE. The
         // index lookup is what keeps the two definitions of "this row got a
         // comparable value" from becoming two.
+        //
+        // ⚠️ THROWS on a desync rather than under-counting, which is the same
+        // choice the `never` arm below makes and for a sharper reason. This
+        // number is not a statistic: it is the sole trigger for #5034's alias
+        // producer, so a silent under-count does not skew a metric, it RETIRES
+        // the producer repo-wide with no log line, no red test and no symptom —
+        // the one failure the mutation table calls out as invisible to
+        // everything else. The invariant is the one the compiler cannot check,
+        // so it is the one that needs the runtime assertion.
         const item = prepared[index];
-        if (item !== undefined && item.kind === "prepared" && item.comparableAtRest !== null) {
-          comparable++;
+        if (item === undefined || item.kind !== "prepared") {
+          throw new Error(
+            `brain reconcile: outcomes/prepared fell out of 1:1 at index ${index} — a "created" ` +
+              "outcome has no prepared candidate behind it. Refusing rather than under-counting " +
+              "`comparable`, which would silently switch off the alias-proposal producer (#5034).",
+          );
         }
+        if (item.comparableAtRest !== null) comparable++;
         break;
       }
       case "corroborated":

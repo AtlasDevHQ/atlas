@@ -1199,6 +1199,40 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect(asked).toEqual([]);
   });
 
+  it("counts `comparable` per candidate, not off the head of the batch", async () => {
+    // ⚠️ `reconcile.ts` reads `prepared[index]` alongside `outcomes[index]`,
+    // relying on a 1:1 correlation the compiler cannot check. Both trigger tests
+    // above use a ONE-candidate episode, so `prepared[index]` → `prepared[0]`
+    // survives them — and that failure is silent in the expensive direction:
+    // `comparable` reads 0, the trigger never fires, and the producer retires
+    // with a green suite.
+    //
+    // A mixed batch is what separates them. The blank candidate is BLOCKED
+    // (`MALFORMED_CLAIM`), so it consumes an index without producing a created
+    // outcome; the uncomparable one is created with a NULL `object_cmp`; only
+    // the third has a comparable object. Reading off the head would answer 0.
+    await insertEpisode();
+    let observed: number | undefined;
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "   ", predicate: "priced at", object: "499 USD" }),
+            candidate({ subject: "deploy window", predicate: "ships on", object: "Thursdays" }),
+            candidate({ subject: "Business tier", predicate: "priced at", object: "499 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        reconcile: async (request, deps) => {
+          const report = await reconcileFacts(request, deps);
+          observed = report.comparable;
+          return report;
+        },
+        proposeAliases: async () => undefined,
+      }),
+    );
+    expect(observed).toBe(1);
+  });
+
   it("a failing proposal run does not fail the episode that already committed", async () => {
     // The facts are written and the episode is stamped before the producer is
     // asked. Propagating here would return `failed` for an episode that was

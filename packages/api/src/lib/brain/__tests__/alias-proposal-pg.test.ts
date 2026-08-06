@@ -364,6 +364,127 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
+  // ── what the corpus rows actually carry ─────────────────────────────────
+
+  it(
+    "the two NULL-object cases really do abstain, and the firing control really does not",
+    async () => {
+      // ⚠️ Both `prod-5000-pair` and `inverse-relations`'s inverse rows are
+      // refused partly BECAUSE their objects parse to nothing — `499 a month` is
+      // three tokens where the money grammar takes two, and `Ana` is a name. That
+      // is incidental to what each case is named for, and it is silently
+      // conditional on the grammar never widening.
+      //
+      // Without this, a grammar change re-labels both cases: they keep passing
+      // for a third, different reason and the corpus's claims about the equality
+      // arm and about inverseness quietly stop being what is tested. Asserting
+      // the `object_cmp` the SYSTEM wrote makes that a red test instead.
+      const prod = await landCase(
+        ALIAS_PROPOSAL_CORPUS.find((k) => k.id === "prod-5000-pair")!,
+      );
+      const { rows: prodRows } = await pool.query<{ object_cmp: string | null }>(
+        "SELECT object_cmp FROM brain_facts WHERE workspace_id = $1",
+        [prod],
+      );
+      expect(prodRows.length).toBeGreaterThan(0);
+      expect(prodRows.every((r) => r.object_cmp === null)).toBe(true);
+
+      const inverse = await landCase(
+        ALIAS_PROPOSAL_CORPUS.find((k) => k.id === "inverse-relations")!,
+      );
+      // The inverse rows abstain…
+      const { rows: inverseRows } = await pool.query<{ object_cmp: string | null }>(
+        "SELECT object_cmp FROM brain_facts WHERE workspace_id = $1 AND predicate_key = ANY($2)",
+        [inverse, [normOf("led_by"), normOf("leads")]],
+      );
+      expect(inverseRows.length).toBeGreaterThan(0);
+      expect(inverseRows.every((r) => r.object_cmp === null)).toBe(true);
+      // …and the control rows in the SAME workspace do not, which is what makes
+      // "the query proposed only the control pair" a statement about the arms
+      // rather than about the whole workspace being uncomparable.
+      const { rows: controlRows } = await pool.query<{ object_cmp: string | null }>(
+        "SELECT object_cmp FROM brain_facts WHERE workspace_id = $1 AND predicate_key = $2",
+        [inverse, normOf("priced at")],
+      );
+      expect(controlRows.length).toBeGreaterThan(0);
+      expect(controlRows.every((r) => r.object_cmp !== null)).toBe(true);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a row with NO `source` key at all is not warehouse-derived",
+    async () => {
+      // The third population `warehouseDerivedSql` enumerates, and the only one
+      // no corpus case can reach: `reconcileFacts` always spreads
+      // `source: episode.source` into provenance, so a `source`-less row is a
+      // stored shape (rows predating that, and region imports) that this suite
+      // can only produce by hand.
+      //
+      // It is the population where `COALESCE(bool_or(…), false)` earns its keep:
+      // `provenance->>'source'` is SQL NULL, `= ANY(…)` is unknown, and `bool_or`
+      // over an all-NULL group answers NULL. Without the `COALESCE` the reader
+      // sees `null`, and the direction would then hinge on a JS truthiness check
+      // rather than on evidence.
+      const workspaceId = await landCase(
+        ALIAS_PROPOSAL_CORPUS.find((k) => k.id === "warehouse-target")!,
+      );
+      expect((await observe(workspaceId))[0]?.target).toBe(normOf("price"));
+
+      const { rowCount } = await pool.query(
+        "UPDATE brain_facts SET provenance = provenance - 'source' WHERE workspace_id = $1 AND predicate_key = $2",
+        [workspaceId, normOf("price")],
+      );
+      expect(rowCount, "stripping `source` matched no row — the assertion below is vacuous").toBeGreaterThan(0);
+
+      // Still a candidate — identity is source-agnostic — but no longer directed.
+      const observed = await observe(workspaceId);
+      expect(observed).toHaveLength(1);
+      expect(observed[0]!.target).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── ordering and the cap ────────────────────────────────────────────────
+
+  it(
+    "the cap keeps the STRONGEST evidence, not an arbitrary slice",
+    async () => {
+      // `ALIAS_PROPOSAL_CANDIDATE_CAP`'s correctness claim is *"a truncated run
+      // drops the weakest evidence"*, and that rests entirely on `ORDER BY
+      // COUNT(DISTINCT subject_key) DESC`. Nothing asserted it: every other case
+      // returns exactly one candidate and `observe()` re-sorts client-side, so
+      // deleting the `ORDER BY` — and passing `cap` at all — survived the suite.
+      //
+      // ⚠️ The two pairs are chosen so the ALPHABET DISAGREES with the evidence:
+      // the weak pair's leading norm (`amount`) sorts before the strong pair's
+      // (`founded`), so a query that lost `ORDER BY … DESC` and fell back to
+      // `from_norm, to_norm` returns the WEAK one. With a pair the alphabet
+      // happens to agree about, this test passes against no ordering at all —
+      // measured, and the first version of it did exactly that.
+      const workspaceId = "ws-alias-cap";
+      const strong = ALIAS_PROPOSAL_CORPUS.find((k) => k.id === "seen-thrice")!;
+      const weak = ALIAS_PROPOSAL_CORPUS.find((k) => k.id === "warehouse-target-swapped")!;
+      for (const [index, row] of [...strong.rows, ...weak.rows].entries()) {
+        await land(workspaceId, `cap-${index}`, row);
+      }
+
+      const uncapped = await withBrainTransaction((tx) => loadAliasCandidates(tx, workspaceId));
+      expect(uncapped, "both pairs must be present uncapped, or the cap proves nothing").toHaveLength(2);
+
+      const capped = await withBrainTransaction((tx) => loadAliasCandidates(tx, workspaceId, 1));
+      expect(capped).toHaveLength(1);
+      expect([capped[0]!.fromNorm, capped[0]!.toNorm].sort()).toEqual(
+        [normOf("founded"), normOf("incorporated")].sort(),
+      );
+      // `toEqual` rather than `toBe`: `subjects` is branded, and the brand's
+      // whole point is that a bare `number` is not one. The value is what is
+      // being asserted, not the brand.
+      expect(capped[0]!.subjects).toEqual(3 as never);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
   // ── the live set ────────────────────────────────────────────────────────
 
   it(
@@ -494,7 +615,18 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
           decision: "rejected",
           approver: {
             kind: "human",
-            ctx: { origin: "unauthenticated-local", userId: null, workspaceId, principals: [] },
+            // The spelling `vocabulary-decide-pg.test.ts` uses. The
+            // `unauthenticated-local` arm of `BrainPrincipalContext` requires
+            // `role` and `audienceIds` and has no `principals` — the
+            // discriminated union catches a hand-written principal, which is
+            // what it is for.
+            ctx: {
+              origin: "unauthenticated-local",
+              workspaceId,
+              userId: null,
+              role: null,
+              audienceIds: [],
+            },
           },
         });
         expect(decided.kind).toBe("rejected");
@@ -503,6 +635,74 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
       const again = await proposeAliasesFromCorpus(workspaceId);
       expect(again.queued).toBe(0);
       expect(again.rejected).toBe(kase.proposes.length);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "the DIRECTION reaches the stored row, not just the candidate",
+    async () => {
+      // ⚠️ The queue test above uses `firing()[0]`, which is UNDIRECTED — so it
+      // asserts `directed: false` and `directed: candidate.directed` →
+      // `directed: false` survived it. The whole direction rule was verified at
+      // `loadAliasCandidates` and never at the row a human approves.
+      //
+      // Both halves are asserted here for `warehouse-target-swapped`'s reason:
+      // the flag alone cannot see a target left in arrival order.
+      const kase = ALIAS_PROPOSAL_CORPUS.find((k) => k.id === "warehouse-target-swapped")!;
+      const workspaceId = await landCase(kase);
+      await proposeAliasesFromCorpus(workspaceId);
+
+      const { rows } = await pool.query<{ directed: boolean; from_norm: string; to_norm: string }>(
+        "SELECT directed, from_norm, to_norm FROM brain_vocabulary_proposal WHERE workspace_id = $1",
+        [workspaceId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        directed: true,
+        from_norm: normOf("is billed at"),
+        to_norm: normOf("amount"),
+      });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a MATCHING hint reaches the stored confidence",
+    async () => {
+      // The other half of the hint prohibition, and the half nothing asserted:
+      // every existing hint test passes a NON-matching hint, so
+      // `applyHintRanks(candidates, run.hints ?? [])` → `applyHintRanks(candidates, [])`
+      // survived the whole suite and no production caller supplies hints.
+      //
+      // Compared against the same run WITHOUT the hint rather than against a
+      // literal, so the `-pg` lane keeps its deliberate refusal to pin the
+      // curve — what is asserted is that the hint moved it, not where to.
+      const kase = controlCase();
+      const plainWorkspace = await landCase(kase);
+      await proposeAliasesFromCorpus(plainWorkspace);
+      const { rows: plain } = await pool.query<{ confidence: number }>(
+        "SELECT confidence FROM brain_vocabulary_proposal WHERE workspace_id = $1",
+        [plainWorkspace],
+      );
+
+      const hintedWorkspace = `${plainWorkspace}-hinted`;
+      for (const [index, row] of kase.rows.entries()) {
+        await land(hintedWorkspace, `${kase.id}-hinted-${index}`, row);
+      }
+      await proposeAliasesFromCorpus(hintedWorkspace, {
+        hints: [
+          { norms: [normOf(kase.proposes[0]!.predicates[0]), normOf(kase.proposes[0]!.predicates[1])] },
+        ],
+      });
+      const { rows: hinted } = await pool.query<{ confidence: number }>(
+        "SELECT confidence FROM brain_vocabulary_proposal WHERE workspace_id = $1",
+        [hintedWorkspace],
+      );
+
+      expect(plain).toHaveLength(1);
+      expect(hinted).toHaveLength(1);
+      expect(hinted[0]!.confidence).toBeGreaterThan(plain[0]!.confidence);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -525,7 +725,7 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
       );
 
       const counters = await proposeAliasesFromCorpus(workspaceId, {
-        hints: [{ fromNorm: normOf("led_by"), toNorm: normOf("leads") }],
+        hints: [{ norms: [normOf("led_by"), normOf("leads")] }],
       });
 
       const { rows } = await pool.query<{ from_norm: string; to_norm: string }>(

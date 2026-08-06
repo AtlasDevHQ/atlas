@@ -28,10 +28,16 @@
  */
 
 import type { MutationSpec } from "../mutation-spec";
+// Imported so the negated-tier-guard row splices the SAME list `supersedableTierSql`
+// does. A hand-typed `ARRAY['slack', …]` here would be a second spelling that goes
+// stale the day a source is added — and this row already shipped once measuring the
+// wrong list (#5060).
+import { episodeSourceArraySql, NON_WAREHOUSE_SOURCES } from "../../src/lib/brain/sources";
 
 const ALIAS = "src/lib/brain/alias-proposal.ts";
 const SOURCES = "src/lib/brain/sources.ts";
 const EXTRACT = "src/lib/brain/extract.ts";
+const RECONCILE = "src/lib/brain/reconcile.ts";
 const PG_ENV = {
   TEST_DATABASE_URL:
     process.env.TEST_DATABASE_URL ?? "postgresql://atlas:atlas@localhost:5433/brain_4771_scratch",
@@ -106,6 +112,11 @@ prohibits by name. None of them has a symptom at rest.
       edits: [
         {
           file: ALIAS,
+          oldString: "         COUNT(DISTINCT subject_key)::int   AS subjects,",
+          newString: "         COUNT(*)::int   AS subjects,",
+        },
+        {
+          file: ALIAS,
           oldString: "  HAVING COUNT(DISTINCT subject_key) >= $2",
           newString: "  HAVING COUNT(*) >= $2",
         },
@@ -152,11 +163,79 @@ prohibits by name. None of them has a symptom at rest.
           file: ALIAS,
           oldString:
             "  return `(${alias}.provenance->>'source' = ANY (${WAREHOUSE_SOURCE_ARRAY_SQL}))`;",
+          // ⚠️ SPELLED WITH `NON_WAREHOUSE_SOURCES`, which is what
+          // `supersedableTierSql` actually splices. The first cut of this row
+          // negated the WAREHOUSE list instead — that is a different mutation
+          // (it inverts the allowlist for in-vocabulary values) and it killed
+          // the two warehouse cases while `unclassifiable-source`, the case
+          // whose entire purpose is this row, survived it. #5060's lesson:
+          // record a mutation's exact SPELLING, because two defensible readings
+          // of one label produce two different numbers.
           newString:
-            "  return `(NOT (NOT jsonb_exists(${alias}.provenance, 'source')\n      OR ${alias}.provenance->>'source' = ANY (${WAREHOUSE_SOURCE_ARRAY_SQL})))`;",
+            "  return `(NOT (NOT jsonb_exists(${alias}.provenance, 'source')\n      OR ${alias}.provenance->>'source' = ANY (${episodeSourceArraySql(NON_WAREHOUSE_SOURCES)})))`;",
         },
       ],
-      note: "The tidy-looking simplification, and it is wrong in both directions: a kind this region cannot classify reads as warehouse-derived (evidence of nothing becoming evidence of a direction) while a genuine warehouse row reads as extracted. #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp.",
+      note: "The tidy-looking simplification, and it is wrong in both directions: a kind this region cannot classify reads as warehouse-derived (evidence of nothing becoming evidence of a direction) while a `source`-less row does too. #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp. Killed by `unclassifiable-source`, which exists for this row.",
+    },
+    {
+      label: "the direction fold is `bool_and` instead of `bool_or`",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "         COALESCE(bool_or(from_warehouse), false) AS from_warehouse,\n         COALESCE(bool_or(to_warehouse), false)   AS to_warehouse",
+          newString: "         COALESCE(bool_and(from_warehouse), false) AS from_warehouse,\n         COALESCE(bool_and(to_warehouse), false)   AS to_warehouse",
+        },
+      ],
+      note: "Invisible to a corpus whose provenance is uniform within every group, which every warehouse case was until `mixed-provenance` landed. Under `bool_and` one subject whose warehouse row has not arrived yet silently un-directs the pair and hands a human a choice the evidence could have made.",
+    },
+    {
+      label: "the JOIN stops scoping to one workspace (the `WHERE` stays)",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "        ON b.workspace_id = a.workspace_id\n",
+          newString: "        ON true\n",
+        },
+      ],
+      note: "The REALISTIC scope leak, and the one worth reading beside the `WHERE`-deleting row below: this one is valid SQL that returns wrong rows, where deleting the `WHERE` leaves `$1` unbound and every statement errors. A workspace-wide re-key proposed from a NEIGHBOURING TENANT'S claims.",
+    },
+    {
+      label: "a subject key graduates into the projection",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "  SELECT from_norm,\n         to_norm,\n         COUNT(DISTINCT subject_key)::int   AS subjects,",
+          newString: "  SELECT from_norm,\n         to_norm,\n         MAX(subject_key) AS subject_key,\n         COUNT(DISTINCT subject_key)::int   AS subjects,",
+        },
+      ],
+      note: "The row that measures what this module's `keys-not-on-the-wire.test.ts` exemption is worth. It dies in `alias-proposal.test.ts`'s exact-columns pin, which is the file-local replacement for the repo-wide guard the exemption switched off. ⚠️ It would NOT die in `keys-not-on-the-wire.test.ts` — that is the whole point of the exemption — but that is reasoning rather than a measured cell, since adding a fourth column to run every row against a scan this slice does not otherwise touch would cost more than it tells anyone.",
+    },
+    {
+      label: "the cap stops ordering by evidence",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "   ORDER BY COUNT(DISTINCT subject_key) DESC, from_norm, to_norm\n",
+          newString: "   ORDER BY from_norm, to_norm\n",
+        },
+      ],
+      note: "`ALIAS_PROPOSAL_CANDIDATE_CAP`'s whole correctness claim is *a truncated run drops the WEAKEST evidence*, and it rests entirely on this clause. Without it a bounded run drops an alphabetically arbitrary slice and the reviewer's attention is allocated by `from_norm`.",
+    },
+    {
+      label: "the object arm admits two NULLs as agreement (`=` → `IS NOT DISTINCT FROM`)",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: `       AND \${comparableSameSql("b.object_cmp", "a.object_cmp")}`,
+          newString: "       AND b.object_cmp IS NOT DISTINCT FROM a.object_cmp",
+        },
+        {
+          file: ALIAS,
+          oldString: "       AND a.object_cmp IS NOT NULL\n",
+          newString: "",
+        },
+      ],
+      note: "The NULL-safe spelling, which reads as a fix for the day-one zero-rows problem and is the widest possible widening: every predicate pair whose objects are both unparseable becomes a candidate. ⚠️ TWO edits, and the second is the finding: with `a.object_cmp IS NOT NULL` still in the `WHERE`, the rewrite returns nothing — the arm this module's docstring called redundant is redundant only under the `=` spelling. `prod-5000-pair` is what catches the full relaxation, which is the value that entry carries beyond the equality arm.",
     },
     {
       label: "the query stops scoping to one workspace",
@@ -167,7 +246,18 @@ prohibits by name. None of them has a symptom at rest.
           newString: "",
         },
       ],
-      note: "A workspace-wide re-key proposed from a NEIGHBOURING TENANT'S claims. The three arms are all intra-pair, so `workspace_id` is the only thing holding two tenants' predicates apart.",
+      note: "⚠️ **Read this count as a CRASH, not as detection.** Deleting the `WHERE` leaves `$1` unreferenced, so Postgres rejects the bind and every SQL-running test errors — which is why the number is nearly the whole file. The realistic scope leak is the `ON true` row above, which is valid SQL returning wrong rows; that one is genuinely detected, by the two-tenant test.",
+    },
+    {
+      label: "the trigger gate reads only the FIRST candidate's comparable",
+      edits: [
+        {
+          file: RECONCILE,
+          oldString: "        const item = prepared[index];",
+          newString: "        const item = prepared[0];",
+        },
+      ],
+      note: "`comparable` is the alias producer's sole trigger, and it is counted through a positional correlation the compiler cannot check. Invisible to a corpus of single-candidate episodes — which every trigger fixture was until a mixed batch landed — and the failure is silent in the expensive direction: the count reads 0, the trigger never fires, and the producer retires with a green suite.",
     },
     {
       label: "the query reads tombstoned and superseded rows as evidence",
@@ -190,9 +280,9 @@ prohibits by name. None of them has a symptom at rest.
       edits: [
         {
           file: ALIAS,
-          oldString: "  const hinted = new Set(hints.map((hint) => pairKey(hint.fromNorm, hint.toNorm)));",
+          oldString: "  return candidates.map((candidate) => ({\n    candidate,\n    confidence: hintedRank(candidate, hints),\n  }));",
           newString:
-            "  const hinted = new Set(hints.map((hint) => pairKey(hint.fromNorm, hint.toNorm)));\n  candidates = [\n    ...candidates,\n    ...hints.map((hint) => ({ ...hint, subjects: 2, directed: false })),\n  ];",
+            "  const minted = hints.map((hint) => ({\n    fromNorm: hint.norms[0],\n    toNorm: hint.norms[1],\n    subjects: 2 as never,\n    directed: false,\n  }));\n  return [...candidates, ...minted].map((candidate) => ({\n    candidate,\n    confidence: hintedRank(candidate, hints),\n  }));",
         },
       ],
       note: "⭐ ADR-0037 §4's prohibition, mutated directly. An extractor asked for a canonical predicate always produces one — it cannot abstain — so this fills the queue with confident, unfalsifiable noise, and `led_by`/`leads` is the first thing it queues.",
@@ -214,8 +304,8 @@ prohibits by name. None of them has a symptom at rest.
         {
           file: ALIAS,
           oldString:
-            "    typeof row.subjects !== \"number\" ||\n    !Number.isFinite(row.subjects)",
-          newString: "    false",
+            "    typeof row.subjects !== \"number\" ||\n    !Number.isInteger(row.subjects) ||\n    row.subjects < ALIAS_PROPOSAL_REPEAT_THRESHOLD ||",
+          newString: "",
         },
       ],
       note: "A statement that drifted from its reader would manufacture a repeat count nothing measured — `NaN` clears no threshold in SQL but reaches `confidence` as a value 0190's CHECK rejects, so the pair silently stops queuing while the producer reports success.",
@@ -236,10 +326,8 @@ prohibits by name. None of them has a symptom at rest.
       edits: [
         {
           file: ALIAS,
-          oldString:
-            "    const confidence = hinted.has(pairKey(candidate.fromNorm, candidate.toNorm))\n      ? Math.min(1, base + ALIAS_HINT_RANK_BONUS)\n      : base;",
-          newString:
-            "    const confidence = hinted.has(pairKey(candidate.fromNorm, candidate.toNorm))\n      ? base + ALIAS_HINT_RANK_BONUS\n      : base;",
+          oldString: "  return Math.min(1, isHinted ? base + ALIAS_HINT_RANK_BONUS : base);",
+          newString: "  return isHinted ? base + ALIAS_HINT_RANK_BONUS : base;",
         },
       ],
       note: "Unreachable from any corpus on today's curve — see the trigger rows below for the other half of the slice — — `structuralConfidence` is asymptotic to 1 and the bonus is 0.05, so a pair would need ~19 distinct subjects to cross — which is exactly why the fast lane reaches for the arithmetic directly rather than for a fixture. A hinted pair pushed past 1 does not queue at high confidence: `proposeAliasEdge` refuses it as `confidence-out-of-range` and it does not queue at all.",

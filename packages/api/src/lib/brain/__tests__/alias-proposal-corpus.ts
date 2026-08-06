@@ -35,10 +35,12 @@
  * | `prod-5000-pair` | nothing | ⭐ #5000's live rows, so nobody "fixes" the coverage gap |
  * | `seen-once` | nothing | the REPEAT GATE |
  * | `seen-twice` | the pair | the repeat gate's control — it is a threshold, not an off switch |
+ * | `seen-thrice` | the pair, 3 subjects | ⭐ the projected COUNT — the only expectation that is not the threshold |
  * | `one-subject-two-objects` | nothing | `COUNT(DISTINCT subject_key)` vs `COUNT(*)` |
  * | `warehouse-target` | the pair, DIRECTED | the direction rule, and which side is the target |
  * | `warehouse-target-swapped` | the pair, DIRECTED | the same rule with the norms in the OTHER byte order — the swap |
  * | `warehouse-both` | the pair, undirected | *exactly one* — kills `either side is warehouse ⇒ directed` |
+ * | `mixed-provenance` | the pair, DIRECTED | the `bool_or` fold — kills `bool_and` |
  * | `unclassifiable-source` | the pair, undirected | kills `directed = NOT supersedableTierSql(…)` |
  *
  * ## Two arms are deliberately NOT falsified here, and both are stated
@@ -308,6 +310,27 @@ export const ALIAS_PROPOSAL_CORPUS = [
     proposes: [{ predicates: ["founded", "incorporated"], target: null, subjects: 2 }],
   },
   {
+    id: "seen-thrice",
+    why:
+      "⭐ The ONLY case whose `subjects` is not 2, and it exists because a corpus in which " +
+      "every expectation equals the threshold cannot tell `COUNT(DISTINCT subject_key)` from " +
+      "the literal `2`. Measured: with only two-subject cases, replacing the projected count " +
+      "with a constant survived the whole suite — `HAVING` and `ORDER BY` carry their own " +
+      "`COUNT`, so every remaining assertion compared 2 against 2.\n" +
+      "  It is also the only fixture that gives `structuralConfidence` a non-constant input " +
+      "in the `-pg` lane, and the only one that lets the cap test below order two candidates " +
+      "by strength.",
+    rows: [
+      { subject: "Acme", predicate: "founded", object: "2019" },
+      { subject: "Acme", predicate: "incorporated", object: "2019" },
+      { subject: "Beta Industries", predicate: "founded", object: "2019" },
+      { subject: "Beta Industries", predicate: "incorporated", object: "2019" },
+      { subject: "Cedar Labs", predicate: "founded", object: "2021" },
+      { subject: "Cedar Labs", predicate: "incorporated", object: "2021" },
+    ],
+    proposes: [{ predicates: ["founded", "incorporated"], target: null, subjects: 3 }],
+  },
+  {
     id: "one-subject-two-objects",
     why:
       "⭐ The falsifier for DISTINCT SUBJECTS, and the only case where `COUNT(*)` and " +
@@ -383,6 +406,31 @@ export const ALIAS_PROPOSAL_CORPUS = [
       { subject: "Starter tier", predicate: "unit price", object: "199 USD", source: "warehouse" },
     ],
     proposes: [{ predicates: ["price", "unit price"], target: null, subjects: 2 }],
+  },
+  {
+    id: "mixed-provenance",
+    why:
+      "⚠️ The case that pins `bool_or` as the fold, and it is a genuine DECISION rather than " +
+      "an implementation detail. In every other warehouse case the provenance is uniform " +
+      "across the group, so `bool_or` and `bool_and` are indistinguishable — measured, and " +
+      "swapping them survived the whole suite.\n" +
+      "  Here `price` is warehouse-derived for ONE of the two subjects and ordinary chat for " +
+      "the other. The corpus claims `bool_or`: a predicate the warehouse emits AT ALL is a " +
+      "good canonical target, because what makes it one is that its space is closed, typed " +
+      "and described (ADR-0037 §4) — a property of the SCHEMA, which one honest row is enough " +
+      "to evidence. Under `bool_and` a single subject whose warehouse row had not landed yet " +
+      "would silently un-direct the pair and hand a human a choice the evidence could have " +
+      "made.\n" +
+      "  The cost of that reading, stated: one anomalous warehouse-sourced row among fifty " +
+      "directs the pair. The consequence is a proposed TARGET on a queue entry a human still " +
+      "has to approve, which is the recoverable direction.",
+    rows: [
+      { subject: "Business tier", predicate: "price", object: "499 USD", source: "warehouse" },
+      { subject: "Business tier", predicate: "is priced at", object: "499 USD" },
+      { subject: "Starter tier", predicate: "price", object: "199 USD" },
+      { subject: "Starter tier", predicate: "is priced at", object: "199 USD" },
+    ],
+    proposes: [{ predicates: ["is priced at", "price"], target: "price", subjects: 2 }],
   },
   {
     id: "unclassifiable-source",

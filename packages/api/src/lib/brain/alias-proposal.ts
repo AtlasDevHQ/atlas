@@ -103,9 +103,24 @@ export interface AliasProposalExecutor {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
 }
 
-/** Compile-time pin: a `reconcile.ts` `tx` must satisfy this module's executor. */
-type _ReconcileExecutorIsAnAliasProposalExecutor =
-  ReconcileExecutor extends AliasProposalExecutor ? true : never;
+/**
+ * Compile-time pin: a `reconcile.ts` `tx` must satisfy this module's executor.
+ *
+ * ⚠️ Spelled through `Assert<…>` with a `: false` else-branch, and BOTH halves
+ * are load-bearing. The first cut was `ReconcileExecutor extends
+ * AliasProposalExecutor ? true : never`, assigned to an unused alias — which
+ * pins nothing twice over: an unused type alias is never checked, and `never`
+ * is a legal type for one to resolve to. A reviewer compiled it against a
+ * deliberately drifted `AliasProposalExecutor` and `tsc --strict` exited 0. It
+ * was a comment wearing a type's clothes, which is the #5068 shape.
+ *
+ * `: false` rather than `: never` because `never extends true` is vacuously
+ * true, so the `never` spelling would stay dead even inside the assertion.
+ */
+type Assert<T extends true> = T;
+type _ReconcileExecutorIsAnAliasProposalExecutor = Assert<
+  ReconcileExecutor extends AliasProposalExecutor ? true : false
+>;
 
 /** The producer id recorded on every row this module proposes. */
 export const SEAM_PROPOSAL_PRODUCER = "brain:alias-proposal";
@@ -157,6 +172,15 @@ export const ALIAS_PROPOSAL_REPEAT_THRESHOLD = 2;
  * ordered by repeat count descending, so a truncated run drops the weakest
  * evidence and the next run re-derives the whole set from the corpus. Nothing is
  * lost permanently — this producer holds no cursor and no watermark.
+ *
+ * ⚠️ **It does not bound the query's COST, and reading it as if it did is the
+ * mistake worth naming.** `LIMIT` applies after `GROUP BY`/`HAVING`, so the
+ * self-join and the aggregate have already run in full; a hub subject with
+ * hundreds of live facts produces a quadratic number of pairs before a single
+ * row is dropped. {@link ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL} is what bounds
+ * the work, and the *"Cost: no new index"* section of
+ * {@link ALIAS_PROPOSAL_SQL} establishes only that the join is INDEXABLE, not
+ * that it is small.
  *
  * ⚠️ Truncation is LOGGED at `warn` ({@link loadAliasCandidates}), never silent.
  * A cap that binds quietly reads as *"this workspace has 25 agreeing pairs"* when
@@ -242,17 +266,27 @@ function warehouseDerivedSql(alias: string): string {
  * surface norms away therefore proposes nothing, in the direction that costs a
  * missing proposal rather than a wrong one.
  *
- * ## `a.object_cmp IS NOT NULL` is REDUNDANT, and it stays
+ * ## `a.object_cmp IS NOT NULL` is redundant TODAY and is a second line of defence
  *
  * `comparableSameSql` is `a = b`, which is NULL — and so excluded — whenever
- * either side is NULL. The arm is therefore already implied. It is written
- * anyway because it is the arm that states ADR-0037 §4's rule as the ADR spells
- * it (*non-null AND equal on both sides*), and because it is the arm that makes
- * this query's day-one behaviour legible: `object_cmp` is never backfilled, so
- * on a workspace with no entity store and no typed objects this predicate is
- * false for every row and the query returns zero candidates. Deleting it changes
- * no result and deletes that sentence. (The same reason migration 0187 carries
- * redundant parens: a redundant token whose job is to survive the next reader.)
+ * either side is NULL, so under the shipped spelling this arm changes no result.
+ * It is written anyway for three reasons, and the third was MEASURED rather than
+ * anticipated:
+ *
+ *   1. it states ADR-0037 §4's rule as the ADR spells it (*non-null AND equal on
+ *      both sides*) rather than leaving it implied by SQL's NULL semantics;
+ *   2. it makes the day-one behaviour legible — `object_cmp` is never
+ *      backfilled, so on a workspace with no entity store this predicate is
+ *      false for every row and the query returns zero candidates;
+ *   3. ⚠️ **it is the arm that survives the most likely relaxation.** Rewriting
+ *      the object arm as `IS NOT DISTINCT FROM` — the NULL-safe spelling, which
+ *      reads as a fix for the day-one zero-rows problem — makes two ABSENT
+ *      comparables count as agreement, which is the widest possible widening:
+ *      every predicate pair in the workspace whose objects are both unparseable
+ *      becomes a candidate. With this arm present that rewrite still returns
+ *      nothing. The mutation table's *admits two NULLs as agreement* row has to
+ *      delete BOTH to land, which is the honest measurement of what this arm is
+ *      worth: it does not stop the relaxation, it makes it take two edits.
  *
  * ## The object arm is the SHARED spelling
  *
@@ -330,17 +364,41 @@ export const ALIAS_PROPOSAL_SQL = `
 export interface AliasCandidate {
   readonly fromNorm: string;
   readonly toNorm: string;
-  /** Distinct subjects exhibiting the pair — the repeat gate's own number. */
-  readonly subjects: number;
   /**
-   * TRUE only when EXACTLY ONE side is warehouse-derived (ADR-0037 §4). When
-   * true, {@link toNorm} is that side: the warehouse norm is the proposed
-   * target, its space being closed, typed and described.
+   * Distinct subjects exhibiting the pair — the repeat gate's own number,
+   * checked at {@link toCandidate} and branded there so
+   * {@link structuralConfidence}'s codomain is provable from its signature.
+   */
+  readonly subjects: SubjectCount;
+  /**
+   * TRUE only when EXACTLY ONE side has warehouse-derived evidence (ADR-0037
+   * §4). When true, {@link toNorm} is that side: the warehouse norm is the
+   * proposed target, its space being closed, typed and described.
    *
    * When neither side is — or both are — the candidate is UNDIRECTED and
    * approval picks the target. Both-warehouse is undirected for the same reason
    * neither-warehouse is: the rule is *exactly one*, and with two closed spaces
    * nothing in the evidence prefers one over the other.
+   *
+   * ⚠️ **This is a cross-field claim and no type carries it.** `directed: true`
+   * asserts something about `toNorm`'s POSITION, and the correlation is
+   * established by one branch in {@link toCandidate} and re-checked nowhere —
+   * so a value built anywhere else can spell `directed: true` with no warehouse
+   * evidence at all, and downstream that becomes a proposal whose approval sets
+   * the target without a human supplying one. The falsifiers are the corpus's
+   * `warehouse-target` / `warehouse-target-swapped` pair (which assert the
+   * TARGET, not merely the flag) and the mutation row *the direction rule stops
+   * swapping*. A discriminated union with `aliasNorm`/`canonicalNorm` would put
+   * it in the type; it was weighed and declined because both arms carry
+   * identical fields and the mapping at the propose call would gain a `switch`
+   * for one boolean — but if a second construction site is ever added, that
+   * trade flips.
+   *
+   * ⚠️ It is also a claim about the GROUP, not about a row:
+   * {@link ALIAS_PROPOSAL_SQL} folds with `bool_or`, so one warehouse-derived
+   * row among fifty makes its side warehouse. That is deliberate (a predicate
+   * the warehouse also emits is a good canonical target however rarely it does)
+   * and the corpus's `mixed-provenance` case is what pins the reading.
    */
   readonly directed: boolean;
 }
@@ -348,31 +406,68 @@ export interface AliasCandidate {
 /**
  * An extractor's guess that two predicate spellings name one relation.
  *
- * ⚠️ **It is a RANK on a candidate structural evidence already found, and NEVER
- * a candidate.** {@link applyHintRanks} can only raise the confidence of a pair
- * {@link loadAliasCandidates} returned; a hint naming a pair with no structural
- * evidence produces no proposal at all, and there is no code path by which it
- * could.
+ * ⚠️ **It is a RANK on structural evidence already found, and NEVER a
+ * candidate.** {@link hintedRank} is the only function that ever sees a hint and
+ * it returns a `number`, so nothing that reads a hint has a list-shaped result
+ * to append to; the caller is `candidates.map(…)`, whose signature IS the
+ * length-preservation guarantee.
  *
- * The reason is T3 §1's reason for rejecting canonical-at-extraction, arriving
- * one layer down: **an extractor asked for a canonical predicate always produces
- * one — it cannot abstain.** Hint-only proposals would therefore fill the queue
- * with confident, unfalsifiable noise, and T3 §5 already argued that a signal
- * present on nearly everything is a filter that has been fooled. As a rank on a
- * pair the corpus already agreed about, it is genuinely useful: it is the only
- * input that can tell two equally-repeated pairs apart.
+ * ⚠️ **Be precise about how strong that is, because an earlier version of this
+ * docstring was not.** It said *"it cannot append, and the type says so"* — and
+ * the type did not: a reviewer compiled the counter-example. `candidates` is a
+ * reassignable parameter, and when this interface had `fromNorm`/`toNorm` a hint
+ * was a structural SUBSET of {@link AliasCandidate}, so
+ * `{ ...hint, subjects: 2, directed: false }` type-checked as one. TypeScript
+ * cannot express *"the same members"*, and branding the destination is not
+ * available either — `AliasProposalInput` must stay open for human-authored
+ * proposals. So the honest statement is: **the prohibition is enforced by
+ * `hintedRank`'s scalar return and by `candidates.map`, and it is FALSIFIED by
+ * the `an extractor hint may become a candidate` row in
+ * `scripts/mutations/alias-proposal.md`.** That mutation row is what holds this
+ * line; do not delete it as redundant with a type guarantee that is not there.
  *
- * Norms, not surfaces — {@link applyHintRanks} matches on the values
- * {@link ALIAS_PROPOSAL_SQL} returned, which are stored `predicate_key`s.
- * Unordered: a hint matches a candidate in either orientation, because the pair
- * identity `brain_vocabulary_proposal` enforces is unordered too and an
- * extractor's guess about direction is worth even less than its guess about
- * equivalence.
+ * `norms` as a TUPLE rather than two `fromNorm`/`toNorm` fields is the part the
+ * type does buy, and it is cheap: a hint is no longer structurally an
+ * `AliasCandidate`, so the spread above stops compiling and
+ * `applyHintRanks(candidates, candidates)` — which used to compile and would
+ * have given every candidate the bonus — stops too. Minting a candidate from a
+ * hint now takes explicitly naming `fromNorm:` and `toNorm:`, which is a
+ * deliberate act rather than a spread.
+ *
+ * The reason a hint may not be a candidate is T3 §1's reason for rejecting
+ * canonical-at-extraction, arriving one layer down: **an extractor asked for a
+ * canonical predicate always produces one — it cannot abstain.** Hint-only
+ * proposals would fill the queue with confident, unfalsifiable noise, and T3 §5
+ * already argued that a signal present on nearly everything is a filter that has
+ * been fooled. As a rank on a pair the corpus already agreed about, it is
+ * genuinely useful: it is the only input that can tell two equally-repeated
+ * pairs apart.
+ *
+ * Norms, not surfaces — matched against the values {@link ALIAS_PROPOSAL_SQL}
+ * returned, which are stored `predicate_key`s. UNORDERED: a hint matches a
+ * candidate either way round, because the pair identity
+ * `brain_vocabulary_proposal` enforces is unordered too and an extractor's guess
+ * about direction is worth even less than its guess about equivalence.
  */
 export interface AliasRankHint {
-  readonly fromNorm: string;
-  readonly toNorm: string;
+  readonly norms: readonly [string, string];
 }
+
+declare const SubjectCountBrand: unique symbol;
+
+/**
+ * A repeat count that has been checked: an integer, at least
+ * {@link ALIAS_PROPOSAL_REPEAT_THRESHOLD}.
+ *
+ * Branded so {@link structuralConfidence}'s codomain claim is provable from its
+ * signature rather than asserted in prose. {@link toCandidate} is the ONLY mint
+ * site, immediately after the guard that checks both properties — and unlike the
+ * hint prohibition one type up, there is no competing unbranded producer that
+ * could satisfy the destination, so the brand actually holds here. (That
+ * distinction is #5032's lesson: brand the OUTPUT, and check that no sibling
+ * producer reopens the defect.)
+ */
+export type SubjectCount = number & { readonly [SubjectCountBrand]: true };
 
 /**
  * The rank a candidate's own structural evidence earns — a monotone map from the
@@ -388,11 +483,19 @@ export interface AliasRankHint {
  * this climbs. That is what makes it safe for {@link ALIAS_HINT_RANK_BONUS} to
  * move it at all.
  */
-export function structuralConfidence(subjects: number): number {
+export function structuralConfidence(subjects: SubjectCount): number {
   // Saturating rather than linear: the interesting distinction is between two
-  // subjects and five, not between fifty and fifty-one, and the codomain has to
-  // stay inside 0190's `confidence <= 1` CHECK for every count a corpus can
-  // produce. `subjects` is a positive integer past the HAVING clause.
+  // subjects and five, not between fifty and fifty-one.
+  //
+  // The codomain claim — inside 0190's `confidence >= 0 AND confidence <= 1` —
+  // is a property of the DOMAIN, which is why the parameter is a
+  // {@link SubjectCount} rather than a `number`. Written against a bare `number`
+  // this function answers `2` for `-2` and `-Infinity` for `-1`, and both of
+  // those reach `proposeAliasEdge` as `confidence-out-of-range`: the pair
+  // silently never queues while the producer reports success. The earlier
+  // spelling carried the precondition as a COMMENT ("`subjects` is a positive
+  // integer past the HAVING clause"), which is an assumption about SQL held in
+  // the one place whose whole job is to distrust what SQL returned.
   return 1 - 1 / (subjects + 1);
 }
 
@@ -417,32 +520,95 @@ function pairKey(a: string, b: string): string {
 }
 
 /**
- * Raise the rank of candidates an extractor also guessed at — and ONLY those.
+ * A candidate paired with its queue rank.
  *
- * A pure function over the candidate list, which is what makes the prohibition
- * testable: it cannot append, and the type says so. A hint for a pair that is
- * not in `candidates` has no representable effect — the result is
- * `candidates.map(…)`, so it has the same length and the same members whatever
- * the hints say.
+ * A WRAPPER, not `AliasCandidate & { confidence }`. The intersection was the
+ * first spelling and it admitted a real defect: the ranked value was still an
+ * `AliasCandidate`, so `applyHintRanks(applyHintRanks(cs, hs), hs)` type-checked
+ * and applied the bonus twice — 0.10, which is more than one step of the
+ * structural curve at the low end and therefore exactly what
+ * {@link ALIAS_HINT_RANK_BONUS}'s docstring promises can never happen. The
+ * wrapper makes the result not-a-candidate, so re-entry stops compiling.
+ *
+ * `confidence` is in `[0, 1]` — migration 0190's CHECK — and this is the one
+ * place that promise lives.
+ */
+export interface RankedAliasCandidate {
+  readonly candidate: AliasCandidate;
+  readonly confidence: number;
+}
+
+/**
+ * The rank ONE candidate earns, given the hints — the only function in the
+ * module that reads an {@link AliasRankHint}.
+ *
+ * ⚠️ It returns a **number**. That is the design, not an implementation detail:
+ * nothing that reads a hint has a list-shaped result, so the "a hint became a
+ * candidate" edit has nowhere inside this function to be written. It is still
+ * writable at the call site — TypeScript cannot express *"the same members"* —
+ * which is why the mutation row is the falsifier of record.
+ */
+function hintedRank(candidate: AliasCandidate, hints: readonly AliasRankHint[]): number {
+  const base = structuralConfidence(candidate.subjects);
+  const key = pairKey(candidate.fromNorm, candidate.toNorm);
+  const isHinted = hints.some((hint) => pairKey(hint.norms[0], hint.norms[1]) === key);
+  // Clamped on BOTH arms, which the first cut was not: it clamped only the
+  // hinted branch, so the path with MORE arithmetic applied was the better
+  // protected one. `base` is inside `[0, 1)` by {@link SubjectCount}'s
+  // construction, so the clamp is now genuinely only about the bonus — but a
+  // one-sided clamp beside an unchecked domain is how a guard comes to describe
+  // something other than what it does.
+  return Math.min(1, isHinted ? base + ALIAS_HINT_RANK_BONUS : base);
+}
+
+/**
+ * Rank every candidate, raising the ones an extractor also guessed at.
+ *
+ * `candidates.map(…)`, so the result has the same length and the same members
+ * whatever the hints say. A hint for a pair that is not in `candidates` has no
+ * effect — see {@link AliasRankHint} for exactly how much of that the type
+ * carries and how much the mutation table carries.
  */
 export function applyHintRanks(
   candidates: readonly AliasCandidate[],
   hints: readonly AliasRankHint[],
-): readonly (AliasCandidate & { readonly confidence: number })[] {
-  const hinted = new Set(hints.map((hint) => pairKey(hint.fromNorm, hint.toNorm)));
-  return candidates.map((candidate) => {
-    const base = structuralConfidence(candidate.subjects);
-    // Clamped, so the bonus can never push a candidate outside 0190's
-    // `confidence <= 1` CHECK and turn a rank into a refused INSERT.
-    const confidence = hinted.has(pairKey(candidate.fromNorm, candidate.toNorm))
-      ? Math.min(1, base + ALIAS_HINT_RANK_BONUS)
-      : base;
-    return { ...candidate, confidence };
-  });
+): readonly RankedAliasCandidate[] {
+  return candidates.map((candidate) => ({
+    candidate,
+    confidence: hintedRank(candidate, hints),
+  }));
 }
 
-/** Narrow one raw row from {@link ALIAS_PROPOSAL_SQL}. */
+/**
+ * Narrow one raw row from {@link ALIAS_PROPOSAL_SQL}.
+ *
+ * ⚠️ Every one of the five columns is checked, and the DOMAIN of `subjects` is
+ * checked too — not merely its type. The first cut validated three columns
+ * strictly, read the two booleans with `=== true`, and accepted any finite
+ * `subjects`, which left three silent failures behind a branch whose own comment
+ * said *"dropped and named, never coerced"*:
+ *
+ *   - a driver or projection change delivering `"t"` for a boolean made
+ *     `directed` false for every candidate, forever, with no line — the whole
+ *     direction rule off, fail-closed but SILENTLY so;
+ *   - a negative or fractional `subjects` reached {@link structuralConfidence},
+ *     which answers `2` for `-2` and `-Infinity` for `-1`; both are refused
+ *     downstream as `confidence-out-of-range`, so the pair stops queuing while
+ *     the producer reports success;
+ *   - `raw` is typed `unknown` and this module advertises a hand-written
+ *     {@link AliasProposalExecutor} as a legal shape, so a `null` row
+ *     dereferenced instead of dropping.
+ */
 function toCandidate(raw: unknown, workspaceId: string): AliasCandidate | null {
+  // The guard `toProposalRow` opens with, for the same reason: `unknown`
+  // includes `null`, and dereferencing it throws where the contract says drop.
+  if (typeof raw !== "object" || raw === null) {
+    log.warn(
+      { workspaceId, received: raw === null ? "null" : typeof raw },
+      "brain alias proposal: a candidate row was not an object — dropped; the executor is not returning what ALIAS_PROPOSAL_SQL projects",
+    );
+    return null;
+  }
   const row = raw as {
     readonly from_norm?: unknown;
     readonly to_norm?: unknown;
@@ -454,23 +620,40 @@ function toCandidate(raw: unknown, workspaceId: string): AliasCandidate | null {
     typeof row.from_norm !== "string" ||
     typeof row.to_norm !== "string" ||
     typeof row.subjects !== "number" ||
-    !Number.isFinite(row.subjects)
+    !Number.isInteger(row.subjects) ||
+    row.subjects < ALIAS_PROPOSAL_REPEAT_THRESHOLD ||
+    typeof row.from_warehouse !== "boolean" ||
+    typeof row.to_warehouse !== "boolean"
   ) {
     // Dropped and named, never coerced. A row that does not read back is a
-    // statement that drifted from its reader, and the two permissive fallbacks
-    // are both wrong in the expensive direction: a defaulted `subjects` would
-    // manufacture a repeat count nothing measured, and a coerced norm would
-    // propose a re-key of a predicate nobody said.
+    // statement that drifted from its reader, and every permissive fallback is
+    // wrong in the expensive direction: a defaulted `subjects` manufactures a
+    // repeat count nothing measured, a coerced norm proposes a re-key of a
+    // predicate nobody said, and a coerced boolean retires the direction rule.
+    //
+    // The domain arm costs no false negatives: `COUNT(DISTINCT …)::int` past
+    // `HAVING >= $2` is always an integer at least the threshold, so this can
+    // only fire on drift.
+    //
+    // ⚠️ KEYS and TYPES, never the values. This branch fires precisely when the
+    // row's shape is UNKNOWN — that is what it is for — so it is the one call
+    // site that cannot know whether a value it prints is a predicate (loggable
+    // here, per `reconcile.ts`) or an object (never).
     log.warn(
-      { workspaceId, row },
+      {
+        workspaceId,
+        keys: Object.keys(row),
+        types: Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v])),
+      },
       "brain alias proposal: a candidate row did not read back with the columns ALIAS_PROPOSAL_SQL selects — dropped; diff ALIAS_PROPOSAL_SQL against this module's reader",
     );
     return null;
   }
+  const subjects = row.subjects as SubjectCount;
   // EXACTLY ONE side, spelled as inequality over two booleans. Both-warehouse is
   // undirected: see `AliasCandidate.directed`.
-  const fromWarehouse = row.from_warehouse === true;
-  const toWarehouse = row.to_warehouse === true;
+  const fromWarehouse = row.from_warehouse;
+  const toWarehouse = row.to_warehouse;
   const directed = fromWarehouse !== toWarehouse;
   // The warehouse norm is the TARGET, so the pair is swapped when the warehouse
   // side arrived first. `brain_vocabulary_proposal`'s pair identity is generated
@@ -478,9 +661,9 @@ function toCandidate(raw: unknown, workspaceId: string): AliasCandidate | null {
   // direction without changing which pair the row is or what the rejection
   // memory remembers.
   if (directed && fromWarehouse) {
-    return { fromNorm: row.to_norm, toNorm: row.from_norm, subjects: row.subjects, directed };
+    return { fromNorm: row.to_norm, toNorm: row.from_norm, subjects, directed };
   }
-  return { fromNorm: row.from_norm, toNorm: row.to_norm, subjects: row.subjects, directed };
+  return { fromNorm: row.from_norm, toNorm: row.to_norm, subjects, directed };
 }
 
 /**
@@ -498,6 +681,16 @@ export async function loadAliasCandidates(
   workspaceId: string,
   cap: number = ALIAS_PROPOSAL_CANDIDATE_CAP,
 ): Promise<readonly AliasCandidate[]> {
+  if (!Number.isInteger(cap) || cap < 1) {
+    // Thrown, not clamped. `cap` is exported API (`AliasProposalRun.cap`), and
+    // both bad values fail in ways that read as something else: `0` yields
+    // `LIMIT 0` AND a spurious "the cap bound this run" warn (`0 >= 0`), and a
+    // negative one is a Postgres error attributed to the statement rather than
+    // to its caller.
+    throw new Error(
+      `alias proposal: cap must be a positive integer; got ${cap}. A zero cap reads as "this workspace has no agreeing pairs" while also warning that it was truncated.`,
+    );
+  }
   const { rows } = await executor.query(ALIAS_PROPOSAL_SQL, [
     workspaceId,
     ALIAS_PROPOSAL_REPEAT_THRESHOLD,
@@ -518,7 +711,78 @@ export async function loadAliasCandidates(
     const candidate = toCandidate(raw, workspaceId);
     if (candidate !== null) candidates.push(candidate);
   }
+  if (rows.length > 0 && candidates.length === 0) {
+    // ERROR, and it is the difference between two states that are otherwise
+    // byte-identical to every caller: the corpus supports nothing, and the
+    // reader has drifted from the statement. `toCandidate` warns per row, but
+    // the SUMMARY a caller acts on is `candidates.length`, and
+    // `proposeAliasesFromCorpus` would otherwise log "no predicate pair agrees
+    // …" — which is false, and sits a level ABOVE the per-row warns that
+    // contradict it.
+    log.error(
+      { workspaceId, rows: rows.length },
+      "brain alias proposal: the query returned rows and NONE of them read back — this run proposed nothing because the reader has drifted from ALIAS_PROPOSAL_SQL, not because the corpus supports nothing; diff the statement's SELECT list against `toCandidate`",
+    );
+  }
   return candidates;
+}
+
+/**
+ * How long any one statement this producer causes may run.
+ *
+ * Sized against the work rather than against a feeling: the self-join is over
+ * one workspace's live facts filtered to non-null `object_cmp`, which is a small
+ * fraction of any real corpus, and every proposal statement after it is a
+ * single-row read or insert. Ten seconds is far past a healthy run and far short
+ * of a hung fiber.
+ */
+export const ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '10s'`;
+
+/**
+ * How long a proposal may wait for the workspace vocabulary lock.
+ *
+ * `identity.ts`'s `IDENTITY_MUTATION_LOCK_TIMEOUT_SQL`, at the other end of the
+ * same contention: a human approving an alias holds that lock, and this
+ * producer must yield to them rather than queue behind them indefinitely. A
+ * refused run is re-derived from the corpus next episode; a blocked one is not
+ * re-derived at all, because it never returns.
+ */
+export const ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '5s'`;
+
+/**
+ * Wrap a transaction runner so every statement inside it is bounded.
+ *
+ * ⚠️ **This is the guard against wedging the extraction fiber, and a JS-side
+ * deadline is NOT an equivalent substitute.** The trigger is `await`ed inside
+ * `extract.ts`'s per-episode `applyRow`, which runs under
+ * `Effect.forEach(concurrency: 1)` with no per-tick timeout — so a call that
+ * never SETTLES stops the whole brain-extraction drain forever, and a
+ * `try`/`catch` cannot fire on a promise that never settles. The failure mode
+ * that produces it is the one that throws nothing: an internal database that is
+ * reachable and not answering.
+ *
+ * `SET LOCAL` rather than `correction.ts`'s `proposeUnderDeadline` race, and the
+ * difference is not stylistic. That helper's own docstring records the property
+ * that decides it: *"`Promise.race` does not CANCEL the query"* — it abandons a
+ * statement that goes on holding a pooled connection out of a pool bounded at 5.
+ * `statement_timeout` cancels it. A second reason: `proposeUnderDeadline` is
+ * private to `correction.ts` and `cardinality.mutations.ts` anchors a mutation
+ * on its call site, so lifting it out would break a generated table's anchor to
+ * buy a weaker bound.
+ *
+ * The remaining unbounded step is the connection CHECKOUT, and it is already
+ * bounded: the internal pool sets `connectionTimeoutMillis`.
+ *
+ * `LOCAL`, so both settings revert at COMMIT or ROLLBACK and no pooled
+ * connection carries them to the next borrower.
+ */
+function boundedTransaction(runner: ReconcileTransactionRunner): ReconcileTransactionRunner {
+  return async <T>(fn: (tx: ReconcileExecutor) => Promise<T>): Promise<T> =>
+    runner(async (tx) => {
+      await tx.query(ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL);
+      await tx.query(ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL);
+      return fn(tx);
+    });
 }
 
 /** What one run may be told, beyond the workspace it runs over. */
@@ -549,16 +813,20 @@ export interface AliasProposalRun {
 export async function proposeAliasesFromCorpus(
   workspaceId: string,
   run: AliasProposalRun = {},
-  deps: AliasDecideDeps & { readonly withTransaction?: ReconcileTransactionRunner } = {},
+  deps: AliasDecideDeps = {},
 ): Promise<AliasProducerCounters> {
-  const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  const bounded = boundedTransaction(deps.withTransaction ?? withBrainTransaction);
   // The READ runs in its own transaction and commits before any proposal is
   // written, rather than wrapping the whole run: `proposeAliasEdge` takes the
   // workspace vocabulary lock per proposal, and holding a reader open across
   // that would serialize this producer against every approval for the length of
   // a batch. The candidate set is advisory and re-derived every run, so a pair
   // that appears between the read and the write is simply next run's.
-  const candidates = await withTransaction((tx) => loadAliasCandidates(tx, workspaceId, run.cap));
+  const candidates = await bounded((tx) => loadAliasCandidates(tx, workspaceId, run.cap));
+  // The bounded runner is threaded into the PROPOSE half too, not just the read.
+  // Every statement this producer causes — including `proposeAliasEdge`'s
+  // vocabulary lock — is then covered by the deadlines above.
+  const boundedDeps: AliasDecideDeps = { ...deps, withTransaction: bounded };
 
   if (candidates.length === 0) {
     // DEBUG, because it is the steady state and will be for as long as
@@ -572,13 +840,16 @@ export async function proposeAliasesFromCorpus(
   }
 
   const ranked = applyHintRanks(candidates, run.hints ?? []);
-  const inputs: AliasProposalInput[] = ranked.map((candidate) => ({
+  const inputs: AliasProposalInput[] = ranked.map(({ candidate, confidence }) => ({
     position: "predicate",
     fromNorm: candidate.fromNorm,
+    // The DIRECTION rule's whole content, spelled at the one place it crosses
+    // into the queue: `toNorm` is the target, and for a directed candidate
+    // `toCandidate` has already put the warehouse norm there.
     toNorm: candidate.toNorm,
     directed: candidate.directed,
     sourceClass: "seam",
-    confidence: candidate.confidence,
+    confidence,
     proposedBy: SEAM_PROPOSAL_PRODUCER,
   }));
 
@@ -586,11 +857,11 @@ export async function proposeAliasesFromCorpus(
     {
       workspaceId,
       candidates: inputs.length,
-      directed: ranked.filter((c) => c.directed).length,
+      directed: ranked.filter((r) => r.candidate.directed).length,
       threshold: ALIAS_PROPOSAL_REPEAT_THRESHOLD,
     },
     "brain alias proposal: predicate pairs agree about an object across enough distinct subjects — queueing them for review, and nothing re-keys until a human approves",
   );
 
-  return proposeAliasEdges(workspaceId, inputs, SEAM_PROPOSAL_PRODUCER, deps);
+  return proposeAliasEdges(workspaceId, inputs, SEAM_PROPOSAL_PRODUCER, boundedDeps);
 }

@@ -39,11 +39,15 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   ALIAS_HINT_RANK_BONUS,
   ALIAS_PROPOSAL_CANDIDATE_CAP,
+  ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL,
   ALIAS_PROPOSAL_REPEAT_THRESHOLD,
   ALIAS_PROPOSAL_SQL,
+  ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL,
   SEAM_PROPOSAL_PRODUCER,
   applyHintRanks,
   loadAliasCandidates,
@@ -51,6 +55,7 @@ import {
   structuralConfidence,
   type AliasCandidate,
   type AliasProposalExecutor,
+  type SubjectCount,
 } from "@atlas/api/lib/brain/alias-proposal";
 
 /** A row shaped as `ALIAS_PROPOSAL_SQL` selects it. */
@@ -79,13 +84,27 @@ function fakeExecutor(rows: readonly unknown[]): AliasProposalExecutor & {
   };
 }
 
+/**
+ * Mint a checked repeat count.
+ *
+ * `SubjectCount` is branded so `structuralConfidence`'s codomain is provable
+ * from its signature, and `toCandidate` is production's only mint site. A test
+ * that CONSTRUCTS a candidate is deliberately going round that check, so the
+ * cast is named once here rather than sprinkled — and the fact that it takes a
+ * named helper is the friction the brand exists to create.
+ */
+const subjectCount = (n: number): SubjectCount => n as SubjectCount;
+
 const candidate = (over: Partial<AliasCandidate> = {}): AliasCandidate => ({
   fromNorm: "is priced at",
   toNorm: "priced at",
-  subjects: 2,
+  subjects: subjectCount(2),
   directed: false,
   ...over,
 });
+
+/** A hint, in the tuple shape that stops one being spread into a candidate. */
+const hint = (a: string, b: string) => ({ norms: [a, b] as const });
 
 describe("the structural rank (#5034)", () => {
   it("stays inside migration 0190's confidence CHECK for every count a corpus can produce", () => {
@@ -95,7 +114,7 @@ describe("the structural rank (#5034)", () => {
     // low-confidence edge — it would queue NOTHING, and the refusal would be
     // logged as `confidence-out-of-range` on a producer that is behaving.
     for (const subjects of [ALIAS_PROPOSAL_REPEAT_THRESHOLD, 3, 10, 1_000, 1e9]) {
-      const confidence = structuralConfidence(subjects);
+      const confidence = structuralConfidence(subjectCount(subjects));
       expect(confidence).toBeGreaterThan(0);
       expect(confidence).toBeLessThanOrEqual(1);
     }
@@ -105,7 +124,7 @@ describe("the structural rank (#5034)", () => {
     // The ONLY property the rank promises. It is not calibrated and nothing may
     // read it as a probability — see `structuralConfidence`'s docstring — so
     // this is deliberately an ordering assertion and not a value one.
-    const ranks = [2, 3, 4, 8].map(structuralConfidence);
+    const ranks = [2, 3, 4, 8].map((n) => structuralConfidence(subjectCount(n)));
     expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
   });
 
@@ -115,7 +134,7 @@ describe("the structural rank (#5034)", () => {
     // a two-subject pair above a three-subject one. Measured against the SHIPPED
     // curve rather than asserted as a constant, so tuning either one without the
     // other turns this red.
-    const step = structuralConfidence(3) - structuralConfidence(2);
+    const step = structuralConfidence(subjectCount(3)) - structuralConfidence(subjectCount(2));
     expect(ALIAS_HINT_RANK_BONUS).toBeLessThan(step);
   });
 });
@@ -126,9 +145,9 @@ describe("an extractor hint ranks a candidate and can never be one (#5034)", () 
     // an `applyHintRanks` that ignores its `hints` argument entirely.
     const [ranked] = applyHintRanks(
       [candidate()],
-      [{ fromNorm: "is priced at", toNorm: "priced at" }],
+      [hint("is priced at", "priced at")],
     );
-    expect(ranked!.confidence).toBeGreaterThan(structuralConfidence(2));
+    expect(ranked!.confidence).toBeGreaterThan(structuralConfidence(subjectCount(2)));
   });
 
   it("matches a hint in either orientation", () => {
@@ -138,9 +157,9 @@ describe("an extractor hint ranks a candidate and can never be one (#5034)", () 
     // drop half the hints for a reason no producer could see.
     const [ranked] = applyHintRanks(
       [candidate()],
-      [{ fromNorm: "priced at", toNorm: "is priced at" }],
+      [hint("priced at", "is priced at")],
     );
-    expect(ranked!.confidence).toBeGreaterThan(structuralConfidence(2));
+    expect(ranked!.confidence).toBeGreaterThan(structuralConfidence(subjectCount(2)));
   });
 
   it("adds NOTHING for a pair with no structural evidence", () => {
@@ -150,10 +169,12 @@ describe("an extractor hint ranks a candidate and can never be one (#5034)", () 
     // the hint deliberately: it is the pair every similarity detector ranks
     // first and the one whose approval stamps `valid_to` across the manager
     // graph.
-    const ranked = applyHintRanks([candidate()], [{ fromNorm: "led_by", toNorm: "leads" }]);
+    const ranked = applyHintRanks([candidate()], [hint("led_by", "leads")]);
     expect(ranked).toHaveLength(1);
-    expect(ranked.map((r) => [r.fromNorm, r.toNorm])).toEqual([["is priced at", "priced at"]]);
-    expect(ranked[0]!.confidence).toBe(structuralConfidence(2));
+    expect(ranked.map((r) => [r.candidate.fromNorm, r.candidate.toNorm])).toEqual([
+      ["is priced at", "priced at"],
+    ]);
+    expect(ranked[0]!.confidence).toBe(structuralConfidence(subjectCount(2)));
   });
 
   it("does not let two DIFFERENT pairs share one key", () => {
@@ -172,17 +193,17 @@ describe("an extractor hint ranks a candidate and can never be one (#5034)", () 
     // the separator is what makes ruling it out unnecessary.
     const ranked = applyHintRanks(
       [candidate({ fromNorm: "has office in", toNorm: "located in" })],
-      [{ fromNorm: "has", toNorm: "office in located in" }],
+      [hint("has", "office in located in")],
     );
-    expect(ranked[0]!.confidence).toBe(structuralConfidence(2));
+    expect(ranked[0]!.confidence).toBe(structuralConfidence(subjectCount(2)));
   });
 
   it("clamps a hinted rank into the CHECK's range", () => {
     // A rank pushed past 1 is not a very confident proposal — it is a REFUSED
     // insert (`confidence-out-of-range`), so the pair silently never queues.
     const [ranked] = applyHintRanks(
-      [candidate({ subjects: Number.MAX_SAFE_INTEGER })],
-      [{ fromNorm: "is priced at", toNorm: "priced at" }],
+      [candidate({ subjects: subjectCount(Number.MAX_SAFE_INTEGER) })],
+      [hint("is priced at", "priced at")],
     );
     expect(ranked!.confidence).toBeLessThanOrEqual(1);
   });
@@ -214,7 +235,7 @@ describe("reading the query back (#5034)", () => {
     expect(found).toEqual({
       fromNorm: "is priced at",
       toNorm: "price",
-      subjects: 2,
+      subjects: subjectCount(2),
       directed: true,
     });
   });
@@ -258,11 +279,16 @@ describe("what the producer hands the queue (#5034)", () => {
                 proposed.push(params);
                 return { rows: [] };
               }
-              // The vocabulary lock, and the rejection-memory lookup that finds
-              // no prior row. Anything else is a statement this test does not
-              // know about, and answering it with an empty result would let a
-              // new arm land silently.
-              if (sql.includes("pg_advisory_xact_lock") || sql.includes("FROM brain_vocabulary_proposal")) {
+              // The per-transaction bounds, the vocabulary lock, and the
+              // rejection-memory lookup that finds no prior row. Anything else
+              // is a statement this test does not know about, and answering it
+              // with an empty result would let a new arm land silently.
+              if (
+                sql === ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL ||
+                sql === ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL ||
+                sql.includes("pg_advisory_xact_lock") ||
+                sql.includes("FROM brain_vocabulary_proposal")
+              ) {
                 return { rows: [] };
               }
               throw new Error(`unexpected statement: ${sql}`);
@@ -279,10 +305,17 @@ describe("what the producer hands the queue (#5034)", () => {
     expect(params[8]).toBe(SEAM_PROPOSAL_PRODUCER);
   });
 
-  it("issues no statement at all when the corpus supports nothing", async () => {
+  it("costs one bounded read and nothing more when the corpus supports nothing", async () => {
     // The steady state, and it must cost one SELECT rather than one SELECT plus
     // a lock per candidate. Asserted because `proposeAliasEdges` over an empty
     // list is a silent no-op that would look identical from the counters.
+    //
+    // ⚠️ It also pins the BOUNDS onto the read, which is the guard against
+    // wedging the extraction fiber — `extract.ts` awaits this inside a
+    // `concurrency: 1` loop with no per-tick timeout, so a statement that never
+    // returns stops the whole drain with no error to catch. Exact-list, so
+    // deleting either `SET LOCAL` turns this red rather than merely making the
+    // producer unbounded again.
     const seen: string[] = [];
     const counters = await proposeAliasesFromCorpus(
       "ws-1",
@@ -297,7 +330,11 @@ describe("what the producer hands the queue (#5034)", () => {
           }),
       },
     );
-    expect(seen).toEqual([ALIAS_PROPOSAL_SQL]);
+    expect(seen).toEqual([
+      ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL,
+      ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL,
+      ALIAS_PROPOSAL_SQL,
+    ]);
     expect(counters).toEqual({
       queued: 0,
       autoApproved: 0,
@@ -417,6 +454,27 @@ describe("no identity key graduates into the result (#5019, #5034)", () => {
       "from_warehouse",
       "to_warehouse",
     ]);
+  });
+
+  it("holds exactly ONE statement against `brain_facts`", () => {
+    // ⚠️ The `DECLARATION_SITES` entry removes this file from the repo-wide scan
+    // ENTIRELY, which switches off three arms — the key projection, the Drizzle
+    // spelling, and `SELECT *`. The assertions above restore the first for
+    // `ALIAS_PROPOSAL_SQL` and restore it more strictly (an exact column list
+    // beats a key-name regex), but they restore nothing for a SECOND statement
+    // added later.
+    //
+    // So the exemption's affordability rests on this module staying
+    // single-statement, and that is now a test rather than a property of the
+    // file's current length.
+    const source = readFileSync(
+      join(import.meta.dir, "..", "alias-proposal.ts"),
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//g, " ");
+    expect(
+      source.match(/FROM brain_facts/g) ?? [],
+      "`alias-proposal.ts` now holds more than one statement against `brain_facts`, and only the first is pinned here — either pin the new one or drop the `keys-not-on-the-wire.test.ts` exemption",
+    ).toHaveLength(1);
   });
 
   it("hands back no fact id and no claim surface", () => {

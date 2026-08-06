@@ -423,7 +423,7 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     expect(WAREHOUSE_SOURCES.length).toBeGreaterThan(0);
   });
 
-  test("the two source lists PARTITION the vocabulary — no member in both, none in neither", () => {
+  test("the two source lists PARTITION the vocabulary, checked against the SPEC MAP", () => {
     // The property that makes reading one list as the other's negation LOOK
     // safe, asserted here so the places that must not do it have something to
     // point at. Both consumers splice a list into SQL and read membership as
@@ -436,12 +436,35 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // value, and the distinction is the whole of #4964: `content-mode/adapters/
     // brain-facts.ts` refuses to stamp an unclassifiable row, and
     // `lib/brain/alias-proposal.ts` refuses to name it as a direction target.
-    const both = WAREHOUSE_SOURCES.filter((source) => NON_WAREHOUSE_SOURCES.includes(source));
-    expect(both, "a source is in both lists — one consumer's allowlist is now wrong").toEqual([]);
+    //
+    // ⚠️ Checked against `EPISODE_SOURCE_SPECS` rather than against the other
+    // list. Both lists are `EPISODE_SOURCES.filter(…)` over the same predicate,
+    // so "no member in both, none in neither" is a tautology of
+    // `Array.prototype.filter` — true for EVERY implementation of
+    // `isWarehouseDerivedSource` including one that returns a constant, and its
+    // own diagnostic would describe a state no edit to `sources.ts` can produce.
+    // Deriving one side from the declared `class` independently is what makes a
+    // spec-map rename break it.
+    // `Object.entries` widens the key to `string`, so both sides are compared
+    // as strings — the point is the MEMBERSHIP, and re-narrowing here would
+    // reintroduce the derivation this test exists to avoid.
+    const declaredWarehouse = Object.entries(EPISODE_SOURCE_SPECS)
+      .filter(([, spec]) => spec.class === WAREHOUSE_CLASS)
+      .map(([source]) => source)
+      .sort();
     expect(
-      [...WAREHOUSE_SOURCES, ...NON_WAREHOUSE_SOURCES].sort(),
-      "a source is in neither list — it would be invisible to the tier guard and to the direction rule at once",
-    ).toEqual([...EPISODE_SOURCES].sort());
+      [...WAREHOUSE_SOURCES].sort() as string[],
+      "`WAREHOUSE_SOURCES` no longer matches the kinds whose spec declares the warehouse class — the direction rule's allowlist and the spec map disagree",
+    ).toEqual(declaredWarehouse);
+    expect(
+      [...NON_WAREHOUSE_SOURCES].sort() as string[],
+      "`NON_WAREHOUSE_SOURCES` no longer matches the kinds whose spec declares anything else — the tier guard's allowlist and the spec map disagree",
+    ).toEqual(
+      Object.entries(EPISODE_SOURCE_SPECS)
+        .filter(([, spec]) => spec.class !== WAREHOUSE_CLASS)
+        .map(([source]) => source)
+        .sort(),
+    );
   });
 
   test("every stored source is a bare slug — the tier guard splices these into SQL", () => {

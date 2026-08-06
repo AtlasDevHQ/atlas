@@ -150,6 +150,14 @@ const DECLARATION_SITES = new Set([
   // surface, it ships in no bundle, and it is reached by this scan only because
   // the file it mutates says `brain_facts`.
   "packages/api/scripts/mutations/cardinality.mutations.ts",
+  // The same shape, one spec over (#5034). Its `subject_key` occurrences are the
+  // before/after strings of two rows — *the repeat gate counts EVIDENCE ROWS*
+  // and *a subject key graduates into the projection* — and the second of those
+  // is a deliberate quoted copy of a KEY PROJECTION, because measuring what this
+  // slice's exemption is worth requires writing the violation down. `mutate.ts`
+  // applies it and reverts it; it is not a read surface and it ships in no
+  // bundle.
+  "packages/api/scripts/mutations/alias-proposal.mutations.ts",
 ]);
 
 /**

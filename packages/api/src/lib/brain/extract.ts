@@ -1164,20 +1164,45 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
  * Throwing would return `failed` from {@link extractEpisode} for an episode
  * whose facts are committed and whose row is stamped — the drain would charge a
  * strike, and the strike would be against evidence that has already been fully
- * processed. Logged at `warn` with the error narrowed, never swallowed: the
- * producer re-derives its whole candidate set from the corpus on the next
- * episode in this workspace, so a lost run costs latency and nothing else.
+ * processed. Logged at `warn`, never swallowed.
  *
- * ## The gap this leaves, stated rather than discovered later
+ * ## A HANG is bounded in the database, not here
+ *
+ * A `try`/`catch` fires on a rejection and never on a call that does not settle,
+ * and this `await` sits inside `applyRow` under `Effect.forEach(concurrency: 1)`
+ * with no per-tick timeout — so an internal database that is REACHABLE AND NOT
+ * ANSWERING would stop the whole brain-extraction drain forever, with no error,
+ * no dead fiber, and not one line in the log. The bound is
+ * `alias-proposal.ts`'s `boundedTransaction`, which issues `SET LOCAL
+ * statement_timeout` and `SET LOCAL lock_timeout` so Postgres CANCELS the work
+ * and this `catch` gets something to report. Read that function before removing
+ * either statement; the failure it closes is the one that throws nothing.
+ *
+ * ## ⚠️ What "re-derived next run" is and is NOT worth
+ *
+ * The producer holds no cursor, so a lost run costs no state — but it is only
+ * re-run by ANOTHER episode in this workspace that creates a comparable row,
+ * because this trigger is `proposeAliasesFromCorpus`'s only caller. There is no
+ * scheduler fiber and no admin re-run verb. Under the day-one reality this
+ * function's gate describes — comparable rows are very nearly never — that next
+ * episode may not arrive, so a failed run's candidates can stay unproposed
+ * indefinitely.
+ *
+ * That is stated plainly rather than softened because an earlier version of this
+ * docstring and its log line both claimed *"nothing is permanently lost"*, which
+ * is a promise the wiring does not keep. The durable fix is a low-frequency
+ * `registerPeriodicFiber` sweep so a lost run has a floor; it is deliberately
+ * NOT in this slice — it is a second trigger with its own enablement, cadence
+ * and audit questions, and #5034's scope is the query.
+ *
+ * ## The other gap, same shape
  *
  * `correction.ts` is the other caller of `reconcileFacts` and is NOT wired here.
- * A human correction inherits the slot and derives the object fresh, so it can
- * introduce a comparable row this trigger never sees. That is a LATENCY gap and
- * not a correctness one — the query is corpus-wide and re-derived from scratch,
- * so the next extraction in that workspace finds the pair — and it is left that
- * way deliberately: a correction is one row, and hanging a workspace-wide
- * self-join off the human-facing verb buys a proposal sooner at the cost of
- * latency on the one path a person is waiting on.
+ * A correction inherits the slot and derives the object fresh, so it can
+ * introduce a comparable row this trigger never sees — and, per the paragraph
+ * above, "the next extraction finds it" is a hope rather than a guarantee.
+ * Deliberate: hanging a workspace-wide self-join off the human-facing verb buys
+ * a proposal sooner at the cost of latency on the one path a person waits on.
  */
 async function proposeAliasesAfterCommit(
   episode: ReconcileEpisodeRef,
@@ -1193,9 +1218,14 @@ async function proposeAliasesAfterCommit(
         workspaceId: episode.workspaceId,
         episodeId: episode.id,
         comparable: report.comparable,
-        err: err instanceof Error ? err.message : String(err),
+        // SCRUBBED, on `reconcile.ts`'s precedent and this file's own three
+        // existing uses. `error-scrub.ts` exists because pg error text sometimes
+        // echoes the connection string verbatim, and the error caught here comes
+        // from a pool checkout plus a query on the internal DB — the highest-
+        // probability source of a credentialed URL in this file.
+        err: errorMessage(err),
       },
-      "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and the candidate set is re-derived from the corpus on the next episode in this workspace, so nothing is permanently lost",
+      "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and no vocabulary changed. The candidates are re-derived from the corpus by the NEXT episode in this workspace that creates a comparable object; this trigger is the producer's only caller, so if no such episode arrives they stay unproposed until one does",
     );
   }
 }

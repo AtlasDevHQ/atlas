@@ -18,13 +18,19 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 |---|---|---|---|
 | the object arm relaxes from EQUAL to both-present (`=` → `IS NOT NULL`) | 1 | 1 | 0 |
 | the subject arm is dropped | 1 | 1 | 0 |
-| the predicate arm weakens to `>=`, so every row joins itself | 11 | 1 | 0 |
-| the repeat gate counts EVIDENCE ROWS instead of distinct subjects | 1 | 0 | 0 |
+| the predicate arm weakens to `>=`, so every row joins itself | 15 | 1 | 0 |
+| the repeat gate counts EVIDENCE ROWS instead of distinct subjects | 1 | 1 | 0 |
 | the repeat gate is switched off (threshold 2 → 1) | 2 | 0 | 0 |
 | the direction rule fires when EITHER side is warehouse-derived | 1 | 1 | 0 |
-| the direction rule stops swapping, so the target is arrival order | 1 | 1 | 0 |
-| the direction arm is written as the NEGATED tier guard | 2 | 0 | 0 |
-| the query stops scoping to one workspace | 18 | 0 | 0 |
+| the direction rule stops swapping, so the target is arrival order | 2 | 1 | 0 |
+| the direction arm is written as the NEGATED tier guard | 1 | 1 | 1 |
+| the direction fold is `bool_and` instead of `bool_or` | 1 | 0 | 0 |
+| the JOIN stops scoping to one workspace (the `WHERE` stays) | 1 | 0 | 0 |
+| a subject key graduates into the projection | 0 | 2 | 0 |
+| the cap stops ordering by evidence | 1 | 0 | 0 |
+| the object arm admits two NULLs as agreement (`=` → `IS NOT DISTINCT FROM`) | 1 | 1 | 0 |
+| the query stops scoping to one workspace | 24 | 0 | 0 |
+| the trigger gate reads only the FIRST candidate's comparable | 0 | 0 | 1 |
 | the query reads tombstoned and superseded rows as evidence | 1 | 0 | 0 |
 | an extractor hint may become a candidate | 1 | 1 | 0 |
 | the pair key joins on a SPACE instead of a NUL | 0 | 1 | 0 |
@@ -35,7 +41,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the trigger is never reached at all | 0 | 0 | 1 |
 | a failed proposal run fails the episode that already committed | 0 | 0 | 1 |
 
-Suite sizes: **alias-proposal-pg.test.ts** 22 tests (`src/lib/brain/__tests__/alias-proposal-pg.test.ts`) · **alias-proposal.test.ts** 23 tests (`src/lib/brain/__tests__/alias-proposal.test.ts`) · **extract-reconcile-pg.test.ts** 35 tests (`src/lib/brain/__tests__/extract-reconcile-pg.test.ts`).
+Suite sizes: **alias-proposal-pg.test.ts** 29 tests (`src/lib/brain/__tests__/alias-proposal-pg.test.ts`) · **alias-proposal.test.ts** 30 tests (`src/lib/brain/__tests__/alias-proposal.test.ts`) · **extract-reconcile-pg.test.ts** 36 tests (`src/lib/brain/__tests__/extract-reconcile-pg.test.ts`).
 
 ## Notes
 
@@ -46,8 +52,14 @@ Suite sizes: **alias-proposal-pg.test.ts** 22 tests (`src/lib/brain/__tests__/al
 - **the repeat gate is switched off (threshold 2 → 1)** — A lone coincidental object match becomes work: `Acme / founded / 2019` beside `Acme / incorporated / 2019` reaches a reviewer as a proposed synonym. ADR-0037 §4's own worked example of what the gate is for.
 - **the direction rule fires when EITHER side is warehouse-derived** — Two warehouse columns for one quantity would be directed at whichever side the byte ordering put second — a workspace-wide re-key chosen by `<` rather than by evidence.
 - **the direction rule stops swapping, so the target is arrival order** — `directed: true` with the ENGLISH side as the target re-keys the warehouse's own rows onto a phrase nobody's schema contains. A test asserting only the flag cannot see it, which is why the corpus asserts the target.
-- **the direction arm is written as the NEGATED tier guard** — The tidy-looking simplification, and it is wrong in both directions: a kind this region cannot classify reads as warehouse-derived (evidence of nothing becoming evidence of a direction) while a genuine warehouse row reads as extracted. #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp.
-- **the query stops scoping to one workspace** — A workspace-wide re-key proposed from a NEIGHBOURING TENANT'S claims. The three arms are all intra-pair, so `workspace_id` is the only thing holding two tenants' predicates apart.
+- **the direction arm is written as the NEGATED tier guard** — The tidy-looking simplification, and it is wrong in both directions: a kind this region cannot classify reads as warehouse-derived (evidence of nothing becoming evidence of a direction) while a `source`-less row does too. #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp. Killed by `unclassifiable-source`, which exists for this row.
+- **the direction fold is `bool_and` instead of `bool_or`** — Invisible to a corpus whose provenance is uniform within every group, which every warehouse case was until `mixed-provenance` landed. Under `bool_and` one subject whose warehouse row has not arrived yet silently un-directs the pair and hands a human a choice the evidence could have made.
+- **the JOIN stops scoping to one workspace (the `WHERE` stays)** — The REALISTIC scope leak, and the one worth reading beside the `WHERE`-deleting row below: this one is valid SQL that returns wrong rows, where deleting the `WHERE` leaves `$1` unbound and every statement errors. A workspace-wide re-key proposed from a NEIGHBOURING TENANT'S claims.
+- **a subject key graduates into the projection** — The row that measures what this module's `keys-not-on-the-wire.test.ts` exemption is worth. It dies in `alias-proposal.test.ts`'s exact-columns pin, which is the file-local replacement for the repo-wide guard the exemption switched off. ⚠️ It would NOT die in `keys-not-on-the-wire.test.ts` — that is the whole point of the exemption — but that is reasoning rather than a measured cell, since adding a fourth column to run every row against a scan this slice does not otherwise touch would cost more than it tells anyone.
+- **the cap stops ordering by evidence** — `ALIAS_PROPOSAL_CANDIDATE_CAP`'s whole correctness claim is *a truncated run drops the WEAKEST evidence*, and it rests entirely on this clause. Without it a bounded run drops an alphabetically arbitrary slice and the reviewer's attention is allocated by `from_norm`.
+- **the object arm admits two NULLs as agreement (`=` → `IS NOT DISTINCT FROM`)** — The NULL-safe spelling, which reads as a fix for the day-one zero-rows problem and is the widest possible widening: every predicate pair whose objects are both unparseable becomes a candidate. ⚠️ TWO edits, and the second is the finding: with `a.object_cmp IS NOT NULL` still in the `WHERE`, the rewrite returns nothing — the arm this module's docstring called redundant is redundant only under the `=` spelling. `prod-5000-pair` is what catches the full relaxation, which is the value that entry carries beyond the equality arm.
+- **the query stops scoping to one workspace** — ⚠️ **Read this count as a CRASH, not as detection.** Deleting the `WHERE` leaves `$1` unreferenced, so Postgres rejects the bind and every SQL-running test errors — which is why the number is nearly the whole file. The realistic scope leak is the `ON true` row above, which is valid SQL returning wrong rows; that one is genuinely detected, by the two-tenant test.
+- **the trigger gate reads only the FIRST candidate's comparable** — `comparable` is the alias producer's sole trigger, and it is counted through a positional correlation the compiler cannot check. Invisible to a corpus of single-candidate episodes — which every trigger fixture was until a mixed batch landed — and the failure is silent in the expensive direction: the count reads 0, the trigger never fires, and the producer retires with a green suite.
 - **the query reads tombstoned and superseded rows as evidence** — Both sides at once, because the two arms are one decision. A belief a human retired is not evidence of what this workspace's producers say NOW, and proposing a workspace-wide re-key off one resurrects a decision somebody already made. The arms are also what put both sides of the self-join on `idx_brain_facts_subject`, which is PARTIAL on exactly this predicate — ADR-0037 §4's *costing no new index* depends on them.
 - **an extractor hint may become a candidate** — ⭐ ADR-0037 §4's prohibition, mutated directly. An extractor asked for a canonical predicate always produces one — it cannot abstain — so this fills the queue with confident, unfalsifiable noise, and `led_by`/`leads` is the first thing it queues.
 - **the pair key joins on a SPACE instead of a NUL** — `lexicalNorm` unifies every separator to a single space, so norms are full of them: `{"is priced", "at cost"}` and `{"is", "priced at cost"}` would key identically and a hint for one would rank the other. Reachable with ordinary English predicates.

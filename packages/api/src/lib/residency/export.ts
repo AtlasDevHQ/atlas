@@ -85,6 +85,30 @@ function preWideningGrant(value: unknown, factId: unknown): string[] | null {
 }
 
 /**
+ * A nullable `text` column, degraded to `null` for anything that is not a
+ * string. The five identity columns (#5035, ADR-0037 §8) go through it.
+ *
+ * Not a cast, and not decoration. `preWideningGrant` above makes the same call
+ * for the same reason: the destination BRANCHES on these values — the slot keys
+ * are join arms and `object_cmp` feeds the arm that stamps `valid_to` — so a
+ * value of the wrong runtime shape is not inert once it lands. `null` is already
+ * a legitimate, common value at all five positions (a surface that norms away
+ * has no key; NULL is how `unknown` is spelled at a `_cmp`), so the degraded
+ * state is one the destination already handles, and it costs an under-match
+ * rather than a false claim of difference.
+ *
+ * Silent on purpose, unlike `preWideningGrant`'s warn: `null` here is the
+ * ordinary case for most rows, so a log line per drift would be
+ * indistinguishable from a log line per honest abstain if the check ever fired
+ * on a wide corpus. What makes the drift visible instead is the destination's
+ * own behaviour — an unkeyed imported row collides with nothing, which is what
+ * `provisional` and the round-trip pins are for.
+ */
+function textOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+/**
  * Org scoping for a bundle export. The region-migration executor always
  * passes a concrete org id; the `atlas-operator export` CLI passes `null`
  * for a no-auth self-hosted instance whose rows carry `org_id IS NULL`.
@@ -294,12 +318,40 @@ export async function exportWorkspaceBundle(
     // The two scopings agree because `fk_brain_facts_episode` is a composite
     // FK on (workspace_id, source_episode_id): a fact hanging off another
     // workspace's episode is unrepresentable, so the join can't widen scope.
+    //
+    // ⚠️ The five IDENTITY columns are projected here and NOWHERE ELSE in the
+    // tree (#5035, ADR-0037 §8, bundle v3). `keys-not-on-the-wire.test.ts` makes
+    // that prohibition structural and names this file as one of the three
+    // row-copy sites §8 exempts; read its ROW_COPY_SITES entry before adding a
+    // sixth reader.
+    //
+    // Keys travel VERBATIM. The failure directions are what settle it, not a
+    // preference: carrying fails to UNDER-match (an imported row keys to a norm
+    // the destination's vocabulary cannot produce, so it collides with nothing
+    // until a human curates — #5000 at a region boundary), while re-deriving at
+    // the destination fails to OVER-match (a destination alias the source lacks
+    // merges imported facts into a slot they never belonged to, and publish then
+    // stamps `valid_to` across the merge). Only one of those is recoverable.
+    //
+    // The `_cmp` columns are projected but NOT unconditionally kept: the
+    // importer nulls every `entity:`-tagged value, because a store-local id is
+    // counterfeit positive evidence of difference in another region
+    // (`regionPortableComparable`). They travel rather than being dropped from
+    // the format because the null-out is the IMPORTER's decision, and a bundle
+    // that omitted them could not be told from one whose source had no store.
+    //
+    // `predicate_cardinality` is GONE from v3. #5027 moved cardinality onto the
+    // canonical predicate, and the per-row values are LLM guesses — carrying one
+    // forward would restore a guess as a curated decision. #5028 drops the
+    // column itself.
     pool.query(
       `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
+              f.subject_key, f.predicate_key, f.object_key,
+              f.subject_cmp, f.object_cmp,
               f.valid_from, f.valid_to, f.ingested_at, f.invalidated_at,
               f.extracted_at, f.provenance, f.status, f.visible_to,
               f.pre_widening_visible_to,
-              f.predicate_cardinality, f.created_at, f.updated_at
+              f.created_at, f.updated_at
        FROM brain_facts f
        JOIN brain_episodes e ON e.id = f.source_episode_id
        WHERE ${scopeClause("e.workspace_id", orgScope)}
@@ -607,7 +659,25 @@ export async function exportWorkspaceBundle(
       // which overlaps no reader token and therefore withholds from everyone:
       // over-withholding is recoverable, disclosure is not.
       preWideningVisibleTo: preWideningGrant(f.pre_widening_visible_to, f.id),
-      predicateCardinality: f.predicate_cardinality as ExportedBrainFact["predicateCardinality"],
+      // The identity slot and the two comparable values (#5035, ADR-0037 §8).
+      //
+      // `textOrNull` rather than a cast, and the reason is the same one
+      // `preWideningVisibleTo` gives one line up: the importer's behaviour
+      // BRANCHES on these, so a value of the wrong runtime shape is not inert
+      // here. A cast would put whatever the driver returned into a column the
+      // destination's collision join reads with `=` and `<>` — and at
+      // `object_cmp` the arm it feeds stamps `valid_to`. Degrading to `null`
+      // costs an under-match a human can repair; anything else is the
+      // irreversible direction.
+      //
+      // v3 REQUIRES all five, and `null` is a legitimate value at every one of
+      // them: a surface that norms away has no key, permanently, and NULL is how
+      // `unknown` is spelled at a `_cmp`.
+      subjectKey: textOrNull(f.subject_key),
+      predicateKey: textOrNull(f.predicate_key),
+      objectKey: textOrNull(f.object_key),
+      subjectCmp: textOrNull(f.subject_cmp),
+      objectCmp: textOrNull(f.object_cmp),
       createdAt: toISO(f.created_at),
       updatedAt: toISO(f.updated_at),
     });

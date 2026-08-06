@@ -75,7 +75,10 @@ import {
   comparableTag,
   comparableValue,
   comparableValueWithReason,
+  parseStoredComparable,
+  regionPortableComparable,
   type DeclaredObjectType,
+  type TaggedComparable,
 } from "@atlas/api/lib/brain/object-cmp";
 // The corpus and the agreement oracle live in a non-`.test.ts` sibling so this
 // suite and `object-cmp-pg.test.ts` can share them without the isolated runner
@@ -525,6 +528,101 @@ describe("the tag is a contract (#5035 reads it)", () => {
       "entityx",
     ]) {
       expect(comparableTag(value), `\`${value}\` read as tagged`).toBeNull();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reading a value back out of the column (#5035, ADR-0037 §8)
+// ---------------------------------------------------------------------------
+
+describe("what survives a region hop", () => {
+  /**
+   * One well-formed stored value per REGION-INVARIANT tag.
+   *
+   * Typed rather than left as a bare `string[]` so the fixtures are checked
+   * against the shape the column actually holds, and shared between the two
+   * tests below so the "every tag is decided" assertion cannot pass over a
+   * shorter list than the carry assertion used.
+   */
+  const VALUE_TYPED: readonly TaggedComparable[] = [
+    "money:USD:499",
+    "number:499",
+    "date:2026-08-04",
+    "time:2026-08-04T08:00:00.000Z",
+    "bool:true",
+  ];
+
+  test("`parseStoredComparable` re-admits a well-formed value and refuses the rest", () => {
+    for (const value of [...VALUE_TYPED, "entity:01J" as TaggedComparable]) {
+      expect(parseStoredComparable(value), `\`${value}\` was refused`).toBe(value);
+    }
+    for (const bad of [
+      null,
+      undefined,
+      // No tag at all — a raw surface that reached the column somehow.
+      "499",
+      "Enterprise tier",
+      // A tag this module does not know.
+      "currency:USD:499",
+      // ⚠️ The truncated-import shapes. `entity:` with an empty payload is
+      // exactly what `subjectNotDifferentSql`'s SQL arms refuse, and a value the
+      // SQL refuses has no business being stored — otherwise a truncated import
+      // lands a row whose comparisons the database and this module disagree on.
+      "entity:",
+      "money:",
+      "",
+      ":",
+    ]) {
+      expect(parseStoredComparable(bad), `\`${String(bad)}\` was admitted`).toBeNull();
+    }
+  });
+
+  test("`parseStoredComparable` does NOT re-parse the payload against its grammar", () => {
+    // Deliberate, and the direction matters. A payload this module would no
+    // longer produce — a grammar tightened between the two regions' releases —
+    // is still a value the DESTINATION's SQL compares by plain string equality,
+    // exactly as it compares its own rows. Refusing it would silently drop
+    // evidence; admitting it treats both regions' rows alike. A regrettable
+    // payload compares unequal to everything and proves nothing, which is the
+    // recoverable direction.
+    expect(parseStoredComparable("date:2026-02-31")).toBe("date:2026-02-31");
+    expect(parseStoredComparable("money:ZZZ9:499")).toBe("money:ZZZ9:499");
+  });
+
+  test("drops an entity id and carries every value-typed tag", () => {
+    // THE rule. A store-local id is non-null and, by construction, unequal to
+    // every id the destination mints for the same real entity — at `object_cmp`
+    // that is counterfeit positive evidence of DIFFERENCE, which is the arm that
+    // stamps `valid_to`. Strictly worse than the NULL it replaces, because NULL
+    // is `unknown` and reaches a human.
+    expect(regionPortableComparable("entity:01JSOURCE7X")).toBeNull();
+    // Not a length or a prefix test: an entity id whose payload happens to look
+    // like money is still an entity id.
+    expect(regionPortableComparable("entity:USD:499")).toBeNull();
+
+    // Region-invariant parses travel. These read a SURFACE and no store, so the
+    // same input produces the same bytes in either region.
+    for (const value of VALUE_TYPED) {
+      expect(regionPortableComparable(value), `\`${value}\` was dropped`).toBe(value);
+    }
+
+    // Every tag is covered by one arm or the other, and the split is checked
+    // against the vocabulary rather than against this test's own list — a tag
+    // added to COMPARABLE_TAGS with no decision here would otherwise fall
+    // silently into the "travels" arm, which is the carry direction.
+    const decided = new Set<string>([ENTITY_TAG, ...VALUE_TYPED.map((v) => comparableTag(v)!)]);
+    expect([...COMPARABLE_TAGS].filter((t) => !decided.has(t))).toEqual([]);
+  });
+
+  test("a malformed stored value is dropped, not carried", () => {
+    // The fail-closed direction, and it is the one that matters: an untagged
+    // value compares unequal to every honest value under `<>`, so carrying one
+    // manufactures difference out of a string nobody can interpret. Same
+    // outcome as NULL — `unknown` — which is what the destination already does
+    // with a value it cannot read.
+    for (const bad of [null, undefined, "499", "entity:", "wat:1"]) {
+      expect(regionPortableComparable(bad), `\`${String(bad)}\` was carried`).toBeNull();
     }
   });
 });

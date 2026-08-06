@@ -26,6 +26,8 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { exportWorkspaceBundle } from "../export";
 import { approveAliasEdge, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
+import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { reconcileFacts } from "@atlas/api/lib/brain/reconcile";
 import { importBundle } from "../../../api/routes/admin-migrate";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
 import type { ImportResult } from "@useatlas/types";
@@ -159,26 +161,56 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
                '2026-06-01T00:00:00Z', '2026-06-01T00:05:00Z', ARRAY['org', 'audience:eng'])`,
       [EPISODE_ID, SOURCE_ORG],
     );
+    // The identity columns (#5035, ADR-0037 §8) are seeded with values chosen to
+    // be UN-DERIVABLE from the surfaces beside them, which is the only way a
+    // carry can be told from a re-derive:
+    //
+    //   `object_key = 'forty nine'` over the object `'49'`. Under §8's carry the
+    //   target holds `forty nine`; under any re-derive it holds `49`. No
+    //   vocabulary in either region can produce the former from the latter, so
+    //   the assertion has exactly one passing implementation.
+    //
+    //   `predicate_key = 'unit price'` is the vocabulary's answer for
+    //   `price per seat` in NEITHER region — it is what the seeded alias chain
+    //   maps `is priced at` to. It travels anyway, which is the accepted
+    //   under-match §8 names: a key the destination cannot explain, colliding
+    //   with nothing until a human curates.
+    //
+    // `object_cmp = 'money:USD:49'` is region-invariant and must SURVIVE;
+    // `subject_cmp = 'entity:…'` is a store-local id and must be NULLED. The two
+    // ride the same INSERT, so the null-out is provably a decision rather than a
+    // writer that never fills the column.
     await pool.query(
       `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from,
                                 ingested_at, extracted_at, source_episode_id, provenance,
                                 status, visible_to, pre_widening_visible_to,
-                                predicate_cardinality)
+                                predicate_cardinality,
+                                subject_key, predicate_key, object_key,
+                                subject_cmp, object_cmp)
        VALUES ($1, $2, 'acme:pro-plan', 'price_per_seat', '49',
                '2026-06-01T00:00:00Z', '2026-06-01T00:05:00Z', '2026-06-01T00:05:00Z', $3,
                '{"actor":"U-alice","episode":"C123/1700000000.1"}'::jsonb,
                'published', ARRAY['org'], ARRAY['audience:chat-channel:slack:C-FOUNDERS'],
-               'single')`,
+               'single',
+               'acme:pro plan', 'unit price', 'forty nine',
+               'entity:01JSRCSUBJECT7X', 'money:USD:49')`,
       [FACT_ID, SOURCE_ORG, EPISODE_ID],
     );
+    // The tombstoned twin carries an entity-tagged OBJECT comparable — the
+    // destructive position. A foreign id here is `different` under
+    // `comparableDifferentSql`, which is the arm that becomes
+    // `supersessionCollisionJoin`, so carrying it verbatim is what would let a
+    // destination draft about the same real entity stamp `valid_to`.
     await pool.query(
       `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to,
                                 ingested_at, invalidated_at, source_episode_id, provenance,
-                                status, visible_to, predicate_cardinality)
+                                status, visible_to, predicate_cardinality,
+                                subject_key, predicate_key, object_key, object_cmp)
        VALUES ($1, $2, 'acme:pro-plan', 'price_per_seat', '39',
                '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z',
                '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z', $3,
-               '{"actor":"U-bob"}'::jsonb, 'published', ARRAY['org'], 'single')`,
+               '{"actor":"U-bob"}'::jsonb, 'published', ARRAY['org'], 'single',
+               'acme:pro plan', 'unit price', 'thirty nine', 'entity:01JSRCOBJECT7X')`,
       [SUPERSEDED_FACT_ID, SOURCE_ORG, EPISODE_ID],
     );
     await pool.query(
@@ -394,13 +426,96 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(brainFact.rows[0].pre_widening_visible_to).toEqual([
         "audience:chat-channel:slack:C-FOUNDERS",
       ]);
+      // Verbatim, plus exactly one key: `provisional`, written by the
+      // `jsonb_set` in the import statement because this row's `subject_cmp`
+      // was a store-local id and got nulled (#5035 — asserted properly below,
+      // where the null-out itself is). A whole-object equality rather than
+      // `toMatchObject`, so a producer key dropped on the way through is
+      // visible.
       expect(brainFact.rows[0].provenance).toEqual({
         actor: "U-alice",
         episode: "C123/1700000000.1",
+        provisional: true,
       });
-      expect(brainFact.rows[0].predicate_cardinality).toBe("single");
+      // ⚠️ `predicate_cardinality` does NOT travel on v3, and the source row
+      // says `single`. #5027 moved cardinality onto the canonical predicate and
+      // the per-row values are LLM guesses, so honouring one here would restore
+      // a guess as though it were a curated decision. The column falls to its
+      // schema default — `multi`, the conservative arm, since coexisting is
+      // recoverable and wrongly superseding destroys a belief — and #5028 drops
+      // it. Asserted as the exact value rather than left unchecked: "the field
+      // was removed from the bundle" and "the field is silently still being
+      // written" both pass a `toBeDefined`.
+      expect(brainFact.rows[0].predicate_cardinality).toBe("multi");
       // FK re-resolved against the imported episode, UUID preserved.
       expect(brainFact.rows[0].source_episode_id).toBe(EPISODE_ID);
+
+      // ── Identity: keys carried verbatim, store-local ids nulled (#5035) ──
+      //
+      // Read against what the BUNDLE carried rather than against literals, so
+      // the claim is "these bytes are the ones that left the other region"
+      // rather than "these bytes match what this test also wrote". (The source
+      // rows are deleted above, on purpose — the import must not be able to
+      // reach them.) The seeded `object_key` — `forty nine`, over the object
+      // `49` — is un-derivable from any surface in play, so a re-deriving
+      // importer cannot satisfy this whatever vocabulary it consults.
+      const wireFact = bundle.brainEpisodes!.find((e) => e.id === EPISODE_ID)!
+        .facts.find((f) => f.id === FACT_ID)!;
+      const targetIdentity = (
+        await pool.query<Record<string, string | null>>(
+          `SELECT subject_key, predicate_key, object_key, subject_cmp, object_cmp
+             FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+          [FACT_ID, TARGET_ORG],
+        )
+      ).rows[0]!;
+
+      expect(targetIdentity.subject_key).toBe(wireFact.subjectKey!);
+      expect(targetIdentity.predicate_key).toBe(wireFact.predicateKey!);
+      expect(targetIdentity.object_key).toBe(wireFact.objectKey!);
+      // Spelled out as well, because "target equals wire" also holds if BOTH
+      // are null — which is the pre-#5035 behaviour this slice replaces.
+      expect(targetIdentity.object_key).toBe("forty nine");
+
+      // THE falsification target: an imported store-local id is NULL, with the
+      // value-typed sibling on the SAME row proving the writer does fill the
+      // column. Without that control, "NULL" is satisfied by an importer that
+      // never writes either `_cmp` at all.
+      //
+      // The wire assertion is what makes the null a DECISION rather than an
+      // exporter that never sent the value.
+      expect(wireFact.subjectCmp).toBe("entity:01JSRCSUBJECT7X");
+      expect(targetIdentity.subject_cmp).toBeNull();
+      expect(wireFact.objectCmp).toBe("money:USD:49");
+      expect(targetIdentity.object_cmp).toBe("money:USD:49");
+
+      // …and at the OBJECT, which is the destructive position: a foreign id
+      // there is non-null, same-tagged and unequal to every id this region
+      // mints, so `comparableDifferentSql` reads it as PROVEN DIFFERENT and the
+      // publish gate stamps `valid_to` on it without a human.
+      const supersededWire = bundle.brainEpisodes!.find((e) => e.id === EPISODE_ID)!
+        .facts.find((f) => f.id === SUPERSEDED_FACT_ID)!;
+      expect(supersededWire.objectCmp).toBe("entity:01JSRCOBJECT7X");
+      const supersededIdentity = (
+        await pool.query<{ object_key: string | null; object_cmp: string | null }>(
+          `SELECT object_key, object_cmp FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+          [SUPERSEDED_FACT_ID, TARGET_ORG],
+        )
+      ).rows[0]!;
+      expect(supersededIdentity.object_cmp).toBeNull();
+      expect(supersededIdentity.object_key).toBe("thirty nine");
+
+      // The tombstoned twin is `provisional` too — the marker's one job, *this
+      // row's comparable value is worth recomputing*, and what makes the
+      // null-out recoverable rather than merely safe. `PROVISIONAL_PREDICATE`
+      // reads it with `jsonb_exists`, so the key's PRESENCE is what matters.
+      const supersededProvenance = await pool.query<{ provenance: Record<string, unknown> }>(
+        `SELECT provenance FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+        [SUPERSEDED_FACT_ID, TARGET_ORG],
+      );
+      expect(supersededProvenance.rows[0].provenance).toEqual({
+        actor: "U-bob",
+        provisional: true,
+      });
 
       // Invalidate-never-delete survives: the tombstoned claim is still here,
       // still carrying the instant it stopped being true. Asserted as the
@@ -564,19 +679,276 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         ...catchUp.brainEpisodes![0].facts[0],
         id: LATE_FACT_ID,
         object: "59",
+        // ⚠️ The only v3 fact in this corpus with NOTHING to drop, and it is
+        // here on purpose. Both seeded facts carry a store-local id, so every
+        // imported row in the corpus is legitimately `provisional` — and against
+        // a corpus like that, "mark the row provisional" and "mark EVERY
+        // imported row provisional" are the same program. Measured: the
+        // every-row mutation killed nothing until this fixture existed.
+        //
+        // The distinction is the marker's whole meaning. `provisional` says
+        // *this row's comparable value is worth recomputing*, not *this row was
+        // imported* — and #4772's review filter reads it as the former.
+        subjectCmp: null,
+        objectCmp: null,
       });
       const third = await runImport(catchUp);
       expect(third.brainEpisodes).toEqual({ imported: 0, skipped: 1 });
       expect(third.brainFacts).toEqual({ imported: 1, skipped: 2 });
 
-      const late = await pool.query<{ object: string; source_episode_id: string }>(
-        `SELECT object, source_episode_id FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+      const late = await pool.query<{
+        object: string;
+        source_episode_id: string;
+        provenance: Record<string, unknown>;
+        object_key: string | null;
+      }>(
+        `SELECT object, source_episode_id, provenance, object_key
+           FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
         [LATE_FACT_ID, TARGET_ORG],
       );
       expect(late.rows).toHaveLength(1);
       expect(late.rows[0].object).toBe("59");
       // Attached to the episode the target already held.
       expect(late.rows[0].source_episode_id).toBe(EPISODE_ID);
+      // Nothing was dropped for this one, so it is NOT provisional — the arm
+      // that separates "worth recomputing" from "was imported". Its keys still
+      // travel verbatim, which is what keeps this a fact about `provisional`
+      // rather than about the fact having no identity at all.
+      //
+      // `U-bob` and `thirty nine`, not the live fact's values: the export
+      // orders facts by `ingested_at`, and the tombstoned twin was ingested
+      // first — so `facts[0]`, which this clone is spread from, is that one.
+      expect(late.rows[0].provenance).toEqual({ actor: "U-bob" });
+      expect(late.rows[0].object_key).toBe("thirty nine");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keys a LEGACY bundle's facts once at import, against the post-merge vocabulary (#5035)",
+    async () => {
+      // The other half of ADR-0037 §8: a v1/v2 bundle carries no identity, and
+      // its facts must be keyed ONCE here rather than left NULL. An unkeyed
+      // fact corroborates nothing, earns no tension edge, and can neither
+      // supersede nor be superseded — fail-closed and invisible, which is the
+      // state this slice ends.
+      const LEGACY_ORG = "org-migrate-legacy";
+      // Distinct from every other id in this file: the orphan assertions in the
+      // adoption test below query `brain_episodes` by id with NO workspace
+      // filter, so a shared uuid makes an unrelated test fail for a reason
+      // nothing in it explains. (Measured, not hypothesised — the first cut of
+      // this test reused `dddddddd-…000d`.)
+      const LEGACY_EPISODE_ID = "aaaaaaaa-5035-4000-8000-000000000001";
+      const LEGACY_FACT_ID = "aaaaaaaa-5035-4000-8000-000000000002";
+
+      // Hand-built rather than exported-then-downgraded: the source org's rows
+      // are deleted by the round-trip above, and a fixture that depends on
+      // another test's leftovers fails for a reason that has nothing to do with
+      // what it asserts. This is exactly what a pre-#5035 producer emitted —
+      // v2, brain sections present, no identity field anywhere. Their ABSENCE is
+      // what makes it legacy: validation refuses a v1/v2 fact that carries one,
+      // and the importer discriminates on the manifest.
+      //
+      // ⚠️ The predicate is `Is Priced At`, and that is the whole test. It norms
+      // to `is priced at`, which the vocabulary ARRIVING IN THIS BUNDLE maps
+      // `→ priced at → unit price`. The destination org is fresh, so its
+      // pre-merge vocabulary is empty: an importer that keyed the facts before
+      // merging the edges would land `is priced at`, and one that never keyed
+      // them would land NULL. Only keying against the post-merge closure
+      // produces `unit price`.
+      const legacy = {
+        manifest: {
+          version: 2 as const,
+          exportedAt: "2026-06-01T00:00:00Z",
+          source: { label: "legacy-arm-test" },
+          counts: {
+            conversations: 0, messages: 0, semanticEntities: 0,
+            learnedPatterns: 0, settings: 0,
+            dashboards: 0, dashboardCards: 0, dashboardUserDrafts: 0,
+            knowledgeDocuments: 0, knowledgeLinks: 0,
+            scheduledTasks: 0, agentSessionMemory: 0,
+            brainEpisodes: 1, brainFacts: 1, brainVocabularyEdges: 2,
+          },
+        },
+        conversations: [],
+        semanticEntities: [],
+        learnedPatterns: [],
+        settings: [],
+        dashboards: [],
+        knowledgeDocuments: [],
+        scheduledTasks: [],
+        agentSessionMemory: [],
+        brainEpisodes: [
+          {
+            id: LEGACY_EPISODE_ID,
+            source: "slack",
+            sourceId: "C-legacy/1700000000.1",
+            sourceActor: "U-alice",
+            body: "Pricing moved to $49/seat.",
+            locator: null,
+            occurredAt: "2026-06-01T00:00:00Z",
+            ingestedAt: "2026-06-01T00:00:00Z",
+            extractedAt: "2026-06-01T00:05:00Z",
+            visibleTo: ["org"],
+            createdAt: "2026-06-01T00:00:00Z",
+            facts: [
+              {
+                id: LEGACY_FACT_ID,
+                subject: "acme:pro-plan",
+                predicate: "Is Priced At",
+                object: "49",
+                validFrom: "2026-06-01T00:00:00Z",
+                validTo: null,
+                ingestedAt: "2026-06-01T00:05:00Z",
+                invalidatedAt: null,
+                extractedAt: "2026-06-01T00:05:00Z",
+                provenance: { actor: "U-alice", episode: "C-legacy/1700000000.1" },
+                status: "published" as const,
+                visibleTo: ["org"],
+                preWideningVisibleTo: null,
+                predicateCardinality: "single" as const,
+                createdAt: "2026-06-01T00:05:00Z",
+                updatedAt: "2026-06-01T00:05:00Z",
+              },
+            ],
+          },
+        ],
+        brainEdges: [],
+        factAudienceMembers: [],
+        brainVocabularyEdges: [
+          {
+            slotPosition: "predicate" as const,
+            fromNorm: "is priced at",
+            toNorm: "priced at",
+            approvedBy: "source-admin",
+            approvedAt: "2026-06-01T00:00:00Z",
+          },
+          {
+            slotPosition: "predicate" as const,
+            fromNorm: "priced at",
+            toNorm: "unit price",
+            approvedBy: null,
+            approvedAt: "2026-06-01T00:00:00Z",
+          },
+        ],
+      };
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await importBundle(
+          client,
+          legacy as unknown as Parameters<typeof importBundle>[1],
+          LEGACY_ORG,
+        );
+        await client.query("COMMIT");
+        expect(result.brainFacts).toEqual({ imported: 1, skipped: 0 });
+        expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0 });
+      } finally {
+        client.release();
+      }
+
+      const keyed = await pool.query<{
+        subject_key: string | null;
+        predicate_key: string | null;
+        object_key: string | null;
+        subject_cmp: string | null;
+        object_cmp: string | null;
+        provenance: Record<string, unknown>;
+        predicate_cardinality: string;
+      }>(
+        `SELECT subject_key, predicate_key, object_key, subject_cmp, object_cmp,
+                provenance, predicate_cardinality
+           FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+        [LEGACY_FACT_ID, LEGACY_ORG],
+      );
+      expect(keyed.rows).toHaveLength(1);
+      // The bundle says `single`; the row lands `multi`. This is the ONLY
+      // population where "accepted and ignored" changes a stored value — a v3
+      // bundle carries no such field, so the v3 path writes the schema default
+      // whether the importer honours the field or not, and an assertion there
+      // would pass against a build that still writes it.
+      expect(keyed.rows[0].predicate_cardinality).toBe("multi");
+      // Computed, not carried, and computed through the vocabulary that arrived
+      // in the same transaction.
+      expect(keyed.rows[0].predicate_key).toBe("unit price");
+      // The two positions the vocabulary does NOT touch are still keyed — a
+      // lexical norm of the retained surface, which is what `slotKey` reduces to
+      // when the alias lookup is the identity.
+      expect(keyed.rows[0].subject_key).toBe("acme:pro plan");
+      expect(keyed.rows[0].object_key).toBe("49");
+      // A legacy bundle carries no comparable value at all, so there is nothing
+      // to drop — and nothing to recompute. `provisional` must NOT be set, or
+      // the marker means "was imported" rather than "is worth recomputing" and
+      // #4772's review filter fills with rows that need no work.
+      expect(keyed.rows[0].subject_cmp).toBeNull();
+      expect(keyed.rows[0].object_cmp).toBeNull();
+      expect(keyed.rows[0].provenance).toEqual({
+        actor: "U-alice",
+        episode: "C-legacy/1700000000.1",
+      });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "positive control: this region's OWN writer does fill both _cmp columns (#5035)",
+    async () => {
+      // Without this, every `toBeNull()` above is satisfied by a build in which
+      // `object_cmp` and `subject_cmp` are never written by anyone — a green
+      // suite over a column that does nothing. The control has to be a LOCALLY
+      // written row, through the ordinary ingest path, in the same schema.
+      const CONTROL_ORG = "org-migrate-cmp-control";
+      const { rows: epRows } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_episodes (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
+         VALUES ($1, 'slack', 'C999/1700000000.9', 'U-ctl', 'Pro plan is 49 USD.', now(), ARRAY['org'])
+         RETURNING id`,
+        [CONTROL_ORG],
+      );
+      const episodeId = epRows[0]!.id;
+
+      const report = await reconcileFacts({
+        vocabulary: identityVocabulary,
+        episode: {
+          id: episodeId,
+          workspaceId: CONTROL_ORG,
+          source: "slack",
+          sourceId: "C999/1700000000.9",
+          sourceActor: "U-ctl",
+          occurredAt: new Date(),
+          visibleTo: ["org"],
+        },
+        candidates: [{ subject: "acme pro plan", predicate: "price per seat", object: "49 USD" }],
+        producer: "extraction:v1",
+        extractedAt: new Date(),
+        // An ANSWERING store, so the subject position has an id to carry. The
+        // shipped default abstains on everything, and against it "subject_cmp
+        // is null" would pass with no writer involved at all.
+        //
+        // It answers for the SUBJECT surface only, deliberately. A resolved id
+        // outranks any parse of the surface (`comparableValueWithReason`), so
+        // answering for `49 USD` too would put `entity:…` in `object_cmp` and
+        // the money control would be testing the resolver instead of the parser
+        // — the two shapes this slice discriminates between, collapsed into one.
+        resolveEntity: (surfaces) =>
+          new Map(
+            [...surfaces]
+              .filter((s) => s === "acme pro plan")
+              .map((s) => [s, { entityId: `01JCTL${s.replaceAll(/\W/g, "")}` }]),
+          ),
+      });
+      expect(report.created).toBe(1);
+
+      const control = await pool.query<{ subject_cmp: string | null; object_cmp: string | null }>(
+        `SELECT subject_cmp, object_cmp FROM brain_facts WHERE workspace_id = $1`,
+        [CONTROL_ORG],
+      );
+      expect(control.rows).toHaveLength(1);
+      // Both non-null, and the object's tag is the region-invariant one — the
+      // same shape that SURVIVES an import, which is what makes the entity-tag
+      // null-out a discrimination rather than a blanket wipe.
+      expect(control.rows[0].object_cmp).toBe("money:USD:49");
+      expect(control.rows[0].subject_cmp).toBe("entity:01JCTLacmeproplan");
     },
     PG_TEST_TIMEOUT_MS,
   );

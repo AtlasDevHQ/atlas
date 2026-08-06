@@ -63,7 +63,7 @@ describe("exportWorkspaceBundle", () => {
   it("exports an empty bundle for a workspace with no data", async () => {
     const bundle = await exportWorkspaceBundle("org-1");
 
-    expect(bundle.manifest.version).toBe(2);
+    expect(bundle.manifest.version).toBe(3);
     expect(bundle.manifest.source.label).toBe("region-migration");
     expect(bundle.manifest.counts.conversations).toBe(0);
     expect(bundle.manifest.counts.messages).toBe(0);
@@ -459,7 +459,11 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
       status: "published",
       visible_to: ["audience:chat-channel:slack:C-FOUNDERS", "org"],
       pre_widening_visible_to: preWidening,
-      predicate_cardinality: "single",
+      subject_key: "acme",
+      predicate_key: "uses",
+      object_key: "postgres",
+      subject_cmp: "entity:01JSRC7X",
+      object_cmp: "money:USD:49",
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:05:00Z",
     };
@@ -529,5 +533,59 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
       seed(drift);
       expect((await exportedFact()).preWideningVisibleTo).toEqual([]);
     }
+  });
+
+  // ── the identity columns (#5035, ADR-0037 §8) ──────────────────────────
+
+  it("carries all five identity columns onto the wire", async () => {
+    seed(null);
+    const fact = await exportedFact();
+    expect(fact.subjectKey).toBe("acme");
+    expect(fact.predicateKey).toBe("uses");
+    expect(fact.objectKey).toBe("postgres");
+    // Both `_cmp` values travel from the EXPORTER. The entity-tagged one is
+    // dropped by the IMPORTER, not here — a bundle that omitted it could not be
+    // told apart from one whose source region had no entity store.
+    expect(fact.subjectCmp).toBe("entity:01JSRC7X");
+    expect(fact.objectCmp).toBe("money:USD:49");
+  });
+
+  it("degrades a non-string identity value to null rather than casting it", async () => {
+    // The `preWideningVisibleTo` argument at five more positions, and it lands
+    // harder here: the slot keys are join arms and `object_cmp` feeds the arm
+    // that stamps `valid_to`, so a value of the wrong runtime shape is not inert
+    // once it reaches the destination. `null` is already a legal, common value
+    // at all five, so the degraded state is one the destination handles — it
+    // costs an under-match, never a false claim of difference.
+    for (const drift of [undefined, 49, {}, ["postgres"]]) {
+      resetMocks();
+      mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+        rows: [
+          {
+            id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
+            body: "…", locator: null, occurred_at: null,
+            ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
+            visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
+          },
+        ],
+      };
+      mockPoolQueryResults["FROM brain_facts f"] = {
+        rows: [{ ...factRow(null), object_key: drift, object_cmp: drift }],
+      };
+      const fact = await exportedFact();
+      expect(fact.objectKey).toBeNull();
+      expect(fact.objectCmp).toBeNull();
+    }
+  });
+
+  it("no longer SELECTs predicate_cardinality", async () => {
+    // v3 dropped it (#5027 moved cardinality onto the canonical predicate; the
+    // per-row values are LLM guesses). Asserted on the STATEMENT rather than on
+    // the exported object, because a column that is still selected and merely
+    // not mapped is still on the wire for #5028 to trip over.
+    seed(null);
+    await exportWorkspaceBundle("org-1");
+    const factQuery = recordedQueries.find((q) => q.sql.includes("FROM brain_facts f"));
+    expect(factQuery!.sql).not.toContain("predicate_cardinality");
   });
 });

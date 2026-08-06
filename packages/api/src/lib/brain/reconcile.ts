@@ -182,10 +182,13 @@
  *     re-runnable backfill in THIS deploy to close exactly that window — the
  *     correctness need arrives here, not at the constraint flip, because here is
  *     where the consumers start depending on the column.
- *   - Every row a region import lands is likewise unkeyed until #5035 carries
- *     keys verbatim on the v3 bundle, and 0188 cannot help: it runs at boot and
- *     an import runs whenever an admin triggers one. Those facts are inert in
- *     all three consumers in the meantime — fail-closed, and #5035's to fix.
+ *   - A region import used to land every row unkeyed, and 0188 could not help:
+ *     it runs at boot, an import runs whenever an admin triggers one. **Closed
+ *     by #5035** — a v3 bundle carries the keys verbatim and a v1/v2 bundle's
+ *     facts are keyed once at import. What survives is narrower: a carried key
+ *     can name a norm THIS region's vocabulary cannot produce, so it collides
+ *     with nothing until a human curates. Under-match, and the recoverable
+ *     direction ADR-0037 §8 chose deliberately.
  *   - Dedupe is still only as good as the producer's determinism, just at a
  *     coarser grain. Two passes that phrase one claim differently ("is" vs "is
  *     on") remain two claims — that pair is a vocabulary ENTRY, not a

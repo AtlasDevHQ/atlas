@@ -745,20 +745,30 @@ describe("validateBundle — v2 sections (#4460)", () => {
   });
 
   it("rejects an unknown future version", () => {
+    // 4, not 3 — v3 is now a version this importer reads (#5035). Named as the
+    // NEXT one so the assertion keeps meaning "a version we do not know" rather
+    // than drifting into "a version we happen not to have written yet".
     const bundle = validV2Bundle();
-    (bundle.manifest as unknown as Record<string, unknown>).version = 3;
+    (bundle.manifest as unknown as Record<string, unknown>).version = 4;
     const result = validateBundle(bundle);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("Unsupported bundle version");
   });
 
-  it("rejects a v2 bundle missing a required section (producer drift fails loudly)", () => {
-    for (const section of ["dashboards", "knowledgeDocuments", "scheduledTasks", "agentSessionMemory"] as const) {
-      const bundle = validV2Bundle();
-      delete (bundle as unknown as Record<string, unknown>)[section];
-      const result = validateBundle(bundle);
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error).toContain(section);
+  it("rejects a v2-or-later bundle missing a required section (producer drift fails loudly)", () => {
+    // Run at BOTH v2 and v3. The gate used to read `version === CURRENT`, which
+    // would have exempted every v3 bundle from the check the moment the constant
+    // moved — a pillar stranded in the source region, silently, by a version
+    // bump that looked unrelated.
+    for (const version of [2, 3]) {
+      for (const section of ["dashboards", "knowledgeDocuments", "scheduledTasks", "agentSessionMemory"] as const) {
+        const bundle = validV2Bundle();
+        (bundle.manifest as unknown as Record<string, unknown>).version = version;
+        delete (bundle as unknown as Record<string, unknown>)[section];
+        const result = validateBundle(bundle);
+        expect(result.ok, `v${version} bundle missing '${section}' was accepted`).toBe(false);
+        if (!result.ok) expect(result.error).toContain(section);
+      }
     }
   });
 
@@ -953,12 +963,100 @@ describe("validateBundle — company brain (#4767)", () => {
     }
   });
 
-  // ── content-mode + cardinality vocabularies ──────────────────────────────
-  it("rejects a fact with an unknown status or predicate cardinality", () => {
+  // ── content-mode vocabulary ──────────────────────────────────────────────
+  it("rejects a fact with an unknown status", () => {
     expectFactRejected((f) => { f.status = "live"; }, "status");
     expectFactRejected((f) => { delete f.status; }, "status");
-    expectFactRejected((f) => { f.predicateCardinality = "one"; }, "predicateCardinality");
-    expectFactRejected((f) => { delete f.predicateCardinality; }, "predicateCardinality");
+  });
+
+  it("accepts a fact with NO predicateCardinality, and one with a nonsense value (#5035)", () => {
+    // v3 dropped the field: #5027 moved cardinality onto the canonical
+    // predicate, and the per-row values were LLM guesses. The importer ignores
+    // it, so validation must not gate on it in either direction — refusing an
+    // absent one would reject every v3 bundle, and refusing a bad one would
+    // strand a legacy workspace over a field nothing reads.
+    for (const value of [undefined, "one", 7, null]) {
+      const bundle = brainBundle();
+      const fact = bundle.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>;
+      if (value === undefined) delete fact.predicateCardinality;
+      else fact.predicateCardinality = value;
+      expect(validateBundle(bundle).ok).toBe(true);
+    }
+  });
+
+  // ── identity on the wire (#5035, ADR-0037 §8) ────────────────────────────
+  //
+  // The importer discriminates its two key arms on the MANIFEST — carry at v3,
+  // compute below it — so validation has to make the manifest's claim true.
+  // Presence is checked in both directions, and the asymmetry in the two
+  // failures is why:
+  //
+  //   a v3 fact MISSING a key  → lands unkeyed, joins nothing, and the publish
+  //                              disclosure says "nothing to supersede" without
+  //                              being able to say the check could not run
+  //   a v2 fact CARRYING a key → the legacy arm recomputes it anyway, so the
+  //                              importer would hold two answers for one row
+
+  const IDENTITY_FIELDS = ["subjectKey", "predicateKey", "objectKey", "subjectCmp", "objectCmp"] as const;
+
+  /** `brainBundle()` at v3, with every identity field present. */
+  function v3BrainBundle(): ExportBundle {
+    const bundle = brainBundle();
+    (bundle.manifest as unknown as Record<string, unknown>).version = 3;
+    Object.assign(bundle.brainEpisodes![0].facts[0]!, {
+      subjectKey: "acme:pro",
+      predicateKey: "price per seat",
+      objectKey: "49",
+      subjectCmp: null,
+      objectCmp: "money:USD:49",
+    });
+    return bundle;
+  }
+
+  it("accepts a v3 fact carrying its identity, nulls included", () => {
+    expect(validateBundle(v3BrainBundle()).ok).toBe(true);
+
+    // `null` at EVERY position, which is a legal row and not a broken one: a
+    // surface that normalizes away has no key, permanently, and NULL is how
+    // `unknown` is spelled at a `_cmp`. A validator that tested truthiness
+    // instead of presence would refuse it.
+    const allNull = v3BrainBundle();
+    for (const field of IDENTITY_FIELDS) {
+      (allNull.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>)[field] = null;
+    }
+    expect(validateBundle(allNull).ok).toBe(true);
+  });
+
+  it("rejects a v3 fact missing an identity field, or carrying one of the wrong type", () => {
+    for (const field of IDENTITY_FIELDS) {
+      const missing = v3BrainBundle();
+      delete (missing.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>)[field];
+      const result = validateBundle(missing);
+      expect(result.ok, `a v3 fact with no '${field}' was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain(field);
+
+      // A non-string, non-null value would be bound straight into a `text`
+      // column the destination's collision join reads — and at `object_cmp`
+      // that join stamps `valid_to`.
+      const wrongType = v3BrainBundle();
+      (wrongType.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>)[field] = 49;
+      expect(validateBundle(wrongType).ok, `a numeric '${field}' was accepted`).toBe(false);
+    }
+  });
+
+  it("rejects a v1/v2 fact that carries identity it has no format for", () => {
+    for (const version of [1, 2]) {
+      for (const field of IDENTITY_FIELDS) {
+        const bundle = brainBundle();
+        (bundle.manifest as unknown as Record<string, unknown>).version = version;
+        // v1 has no required sections, so this is a valid bundle at either
+        // version once the field is removed again.
+        (bundle.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>)[field] = "smuggled";
+        const result = validateBundle(bundle);
+        expect(result.ok, `a v${version} fact carrying '${field}' was accepted`).toBe(false);
+        if (!result.ok) expect(result.error).toContain(field);
+      }
+    }
   });
 
   // ── NOT NULL timestamps ──────────────────────────────────────────────────

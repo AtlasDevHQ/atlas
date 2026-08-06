@@ -1088,9 +1088,12 @@ export async function correctFact(
         // state produced BY THIS SEAM has an approved edge disagreeing with the
         // corpus. Scoped deliberately: the region import commits approved edges
         // with no re-key at all — `admin-migrate.ts` inserts
-        // `brain_vocabulary_edge`, rebuilds the closure, and lands its facts
-        // UNKEYED by design — so after an import the two disagree by
-        // construction until #5035 carries keys verbatim. A
+        // `brain_vocabulary_edge`, rebuilds the closure, and (since #5035) lands
+        // its facts with keys the SOURCE region computed. So the two still
+        // disagree by construction after an import, for a different reason than
+        // before: not because the rows are unkeyed, but because a carried key is
+        // a fixpoint of the source's vocabulary and not necessarily of this
+        // one — ADR-0037 §8's accepted under-match. A
         // correction either reads keys written under the pre-approval vocabulary
         // and re-derives under the same one, or reads post-approval keys and
         // re-derives under that one. Both are self-consistent.

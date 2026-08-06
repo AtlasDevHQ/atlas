@@ -21,13 +21,16 @@
  * Retrieval and identity are decoupled on purpose — the FTS vector reads the
  * SURFACE so a vocabulary edit cannot silently re-rank `searchBrain`. Projecting
  * a key re-couples them through the consumer instead of through the index: an
- * agent, a UI, or a region bundle that can see `predicate_key` can branch on it,
- * and the moment anything downstream does, the vocabulary stops being an
- * internal join detail and becomes a compatibility surface — which is precisely
- * what makes an alias un-removable. The region bundle is the one deliberate
- * exception, and it is not this file's to grant: ADR-0037 §8 settles that keys
- * travel VERBATIM on a v3 bundle, and #5035 implements it. Until that lands, no
- * export projects a key, so the prohibition holds here too.
+ * agent or a UI that can see `predicate_key` can branch on it, and the moment
+ * anything downstream does, the vocabulary stops being an internal join detail
+ * and becomes a compatibility surface — which is precisely what makes an alias
+ * un-removable.
+ *
+ * The region bundle is the one deliberate exception, granted by ADR-0037 §8 —
+ * *a row-copy path carries keys verbatim* — and implemented on the v3 bundle by
+ * #5035. Its three files are listed in {@link ROW_COPY_SITES}, which records
+ * both why they are not the leak this guard exists to stop and what exempting
+ * them costs.
  *
  * ## What this can and cannot see
  *
@@ -161,6 +164,58 @@ const DECLARATION_SITES = new Set([
 ]);
 
 /**
+ * The region bundle — the ONE deliberate exception, and the one this file's
+ * header said was *"not this file's to grant"* until #5035 implemented it.
+ *
+ * ADR-0037 §8: **a row-copy path carries keys verbatim; a claim-supply path
+ * never supplies them.** Three files make that one path — the exporter's
+ * projection, the wire type, and the importer's INSERT — and they are listed
+ * separately from {@link DECLARATION_SITES} because the rationale is different
+ * in kind. Those files are exempt for naming a column they cannot avoid naming;
+ * these are exempt for genuinely putting keys on a wire, on purpose.
+ *
+ * ⚠️ **Why this is not the leak the prohibition exists to stop.** What re-couples
+ * retrieval to identity is a key reaching a CONSUMER that can branch on it: an
+ * agent, a UI, or a REST response that sees `predicate_key` beside `predicate`
+ * makes the vocabulary a compatibility surface, and an alias stops being
+ * removable. A region bundle has exactly one consumer — `importBundle`, which
+ * writes the value straight back into the column it came from — and it is not a
+ * read surface: no reader can request one, and nothing renders it. The
+ * alternative is strictly worse and was measured rather than assumed
+ * (`admin-migrate.ts`'s pre-#5035 comment records it): an imported fact landing
+ * UNKEYED corroborates nothing, earns no tension edge, and can neither supersede
+ * nor be superseded, while the publish-time disclosure reports "nothing to
+ * supersede" without being able to say the check could not run.
+ *
+ * ⚠️ **What the exemption COSTS, stated rather than implied.** It switches off
+ * BOTH arms for all three files, so a future `SELECT … f.object_key` added to
+ * `export.ts` for an unrelated read, or a key field added to a NON-brain wire
+ * type in `migration.ts`, is no longer caught here. The compensating pin is
+ * `bundle-identity-v3.test.ts`, which reads the projection span of the fact
+ * query and the bind list of the fact INSERT and asserts they carry exactly
+ * these five columns — file-local, and narrower than what this line turns off,
+ * which is the same trade `cardinality.ts` records above.
+ *
+ * The three files are named individually rather than by directory. A
+ * path-prefix exemption would cover every future file under `lib/residency`,
+ * and the next one will not be a row-copy path.
+ */
+const ROW_COPY_SITES = new Set([
+  // The projection. Five columns, in the one SELECT that reads `brain_facts`
+  // for a bundle.
+  "packages/api/src/lib/residency/export.ts",
+  // The wire type — `ExportedBrainFact`. Caught by the ORM arm rather than the
+  // SELECT arm, which is the arm that exists precisely because a fact-shaped
+  // TYPE growing a key field IS the leak.
+  "packages/types/src/migration.ts",
+  // The INSERT, and the null-at-import rule. This file is already allowlisted
+  // in `check-brain-fact-promotion.sh` for writing `status` verbatim, on the
+  // same row-copy rationale — so this extends an existing carve-out rather than
+  // inventing a second one.
+  "packages/api/src/api/routes/admin-migrate.ts",
+]);
+
+/**
  * Every non-test source file that speaks about `brain_facts` in either
  * spelling — discovered, never enumerated, so a new read surface is covered the
  * day it is written rather than the day somebody remembers this file.
@@ -229,7 +284,7 @@ function readSurfaceFiles(): string[] {
     }
     out = "";
   }
-  return out.split("\n").filter(Boolean).filter((f) => !DECLARATION_SITES.has(f));
+  return out.split("\n").filter(Boolean);
 }
 
 /** The same comment-stripping shape the promotion guard uses. */
@@ -322,7 +377,11 @@ const starsBrainFacts = (source: string): boolean =>
     (p) => READS_BRAIN_FACTS.test(p.from) && STAR_PROJECTION.test(p.columns),
   );
 
-const FILES = readSurfaceFiles();
+/** Everything the discovery grep found, exemptions included. */
+const DISCOVERED = readSurfaceFiles();
+
+/** The files the two arms below actually scan. */
+const FILES = DISCOVERED.filter((f) => !DECLARATION_SITES.has(f) && !ROW_COPY_SITES.has(f));
 
 describe("the identity keys are never projected to the wire (#5019)", () => {
   it("finds the read surfaces at all", () => {
@@ -336,16 +395,37 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
     for (const known of [
       "packages/api/src/lib/brain/search.ts",
       "packages/api/src/lib/brain/candidates.ts",
-      "packages/api/src/lib/residency/export.ts",
       "packages/api/src/lib/content-mode/adapters/brain-facts.ts",
       // The WIRE contracts specifically. An earlier cut pinned only
       // `packages/api` files, so the scan could stop reaching the types a key
       // would actually leak through and nothing would fail.
       "packages/types/src/brain.ts",
-      "packages/types/src/migration.ts",
       "packages/schemas/src/brain.ts",
     ]) {
       expect(FILES, `${known} is no longer discovered by the scan`).toContain(known);
+    }
+  });
+
+  it("still reaches every exempted file, so an exemption cannot go stale", () => {
+    // An exemption is a path STRING, and a path string survives the file being
+    // renamed or moved. It would then exempt nothing — harmless — but it would
+    // also mean the compensating pin named in its rationale is guarding a file
+    // the scan has stopped covering, and nothing would say so. Asserted against
+    // the UNFILTERED discovery so the sets are checked against the tree rather
+    // than against each other.
+    for (const exempt of [...DECLARATION_SITES, ...ROW_COPY_SITES]) {
+      expect(
+        DISCOVERED,
+        `${exempt} is exempted here but the discovery grep no longer finds it — either it moved (update the entry) or it stopped mentioning brain_facts (delete the entry). A stale exemption reads as a decision nobody is holding.`,
+      ).toContain(exempt);
+    }
+    // …and the two sets are disjoint. A file in both would be exempt for two
+    // different recorded reasons, and deleting either would look safe.
+    for (const site of ROW_COPY_SITES) {
+      expect(
+        DECLARATION_SITES.has(site),
+        `${site} is in BOTH exemption sets — one rationale, one entry.`,
+      ).toBe(false);
     }
   });
 
@@ -436,7 +516,7 @@ describe("the identity keys are never projected to the wire (#5019)", () => {
         const hit = KEY_RE.exec(span.columns);
         expect(
           hit?.[1],
-          `${file} projects \`${hit?.[1]}\`. Identity is a join detail: retrieval reads the SURFACE so a vocabulary edit cannot re-rank it, and a key on the wire re-couples the two through the consumer instead. Anything downstream that can branch on a key makes an alias un-removable. If this is a region bundle, ADR-0037 §8 already settles that keys travel verbatim — that is #5035's to implement, not this projection's to assume ahead of it.`,
+          `${file} projects \`${hit?.[1]}\`. Identity is a join detail: retrieval reads the SURFACE so a vocabulary edit cannot re-rank it, and a key on the wire re-couples the two through the consumer instead. Anything downstream that can branch on a key makes an alias un-removable. ADR-0037 §8's row-copy exception covers the region bundle and nothing else — its three files are in ROW_COPY_SITES above, and adding a fourth needs the same recorded rationale and a file-local pin to replace what the exemption switches off.`,
         ).toBeUndefined();
       }
     }

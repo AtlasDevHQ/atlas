@@ -3,12 +3,16 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { ExportBundle, ImportResult, ExportManifest, ExportedDashboard, ExportedKnowledgeDocument } from "../migration";
+import type { ExportBundle, ExportedBrainFact, ImportResult, ExportManifest, ExportedDashboard, ExportedKnowledgeDocument } from "../migration";
 import { EXPORT_BUNDLE_VERSION } from "../migration";
 
 describe("migration types", () => {
-  it("EXPORT_BUNDLE_VERSION is 2 (v2 widened the bundle to the post-v1 pillars, #4460)", () => {
-    expect(EXPORT_BUNDLE_VERSION).toBe(2);
+  it("EXPORT_BUNDLE_VERSION is 3 (v3 put a brain fact's identity on the wire, #5035)", () => {
+    // Pinned as a literal rather than compared to itself. The importer
+    // DISCRIMINATES on this number — carry the keys at v3, compute them below it
+    // — so a bump that reached the exporter and not this constant would route v3
+    // bundles through the re-derive arm ADR-0037 §8 exists to refuse.
+    expect(EXPORT_BUNDLE_VERSION).toBe(3);
   });
 
   it("a legacy v1 bundle (four sections, v2 sections absent) still type-checks", () => {
@@ -52,7 +56,64 @@ describe("migration types", () => {
     expect(bundle.conversations[0].messages).toHaveLength(1);
   });
 
-  it("a v2 bundle carries the #4460 sections with nested children", () => {
+  it("a brain fact carries its identity from v3, with null legitimate at every position", () => {
+    // The three states the wire has to express, and the reason the fields are
+    // OPTIONAL and NULLABLE rather than one or the other (#5035, ADR-0037 §8):
+    //
+    //   absent — a v1/v2 bundle. Its facts are keyed once at import.
+    //   null   — a v3 row that genuinely has no value there. A surface that
+    //            normalizes away has no key, permanently; NULL is how `unknown`
+    //            is spelled at a `_cmp`.
+    //   string — the carried value.
+    //
+    // Optionality alone would not do: a required `string | null` makes every
+    // legacy bundle unrepresentable. Nullability alone would not either: absent
+    // and "no key" would collapse, and the importer discriminates its two arms
+    // on the manifest precisely so they cannot.
+    const carried: ExportedBrainFact = {
+      id: "fact-1",
+      subject: "Business tier",
+      predicate: "bundled plan",
+      object: "49 USD",
+      validFrom: null,
+      validTo: null,
+      ingestedAt: "2026-08-06T00:00:00Z",
+      invalidatedAt: null,
+      extractedAt: null,
+      provenance: { producer: "extraction:v1" },
+      status: "published",
+      visibleTo: ["org"],
+      preWideningVisibleTo: null,
+      subjectKey: "business tier",
+      predicateKey: "bundled plan",
+      // The permanent-null case: a surface made only of separators.
+      objectKey: null,
+      subjectCmp: "entity:01J7X",
+      objectCmp: "money:USD:49",
+      createdAt: "2026-08-06T00:00:00Z",
+      updatedAt: "2026-08-06T00:00:00Z",
+    };
+    expect(carried.objectCmp).toBe("money:USD:49");
+    expect(carried.objectKey).toBeNull();
+
+    // …and the legacy shape, with every identity field absent, still typechecks
+    // — which is the property that keeps a months-old bundle importable.
+    const legacy: ExportedBrainFact = {
+      ...carried,
+      subjectKey: undefined,
+      predicateKey: undefined,
+      objectKey: undefined,
+      subjectCmp: undefined,
+      objectCmp: undefined,
+      // The field v3 dropped. Still declared, so a consumer that sets it keeps
+      // compiling; the importer ignores it.
+      predicateCardinality: "single",
+    };
+    expect(legacy.subjectKey).toBeUndefined();
+    expect(legacy.predicateCardinality).toBe("single");
+  });
+
+  it("a current bundle carries the #4460 sections with nested children", () => {
     const dashboard: ExportedDashboard = {
       id: "dash-1",
       ownerId: "user-1",
@@ -164,7 +225,7 @@ describe("migration types", () => {
       ],
     };
 
-    expect(bundle.manifest.version).toBe(2);
+    expect(bundle.manifest.version).toBe(EXPORT_BUNDLE_VERSION);
     expect(bundle.dashboards?.[0].cards).toHaveLength(1);
     expect(bundle.dashboards?.[0].drafts).toHaveLength(1);
     expect(bundle.knowledgeDocuments?.[0].links).toHaveLength(1);

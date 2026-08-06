@@ -3300,8 +3300,10 @@ export const brainFacts = pgTable(
     // NULLABLE, and for longer than one slice. `alias` is the identity function
     // until the vocabulary lands, so 0187 fills every existing row with
     // `identityKey(surface)`. `INSERT_FACT_SQL` names all three since #5020;
-    // the region import's 18-column INSERT still names none of them (#5035), so
-    // `NOT NULL` here would still refuse every import.
+    // the region import names all three since #5035 — carried verbatim on a v3
+    // bundle, computed once against the destination's post-merge vocabulary
+    // below it. BOTH writers are now in place; what still blocks `SET NOT NULL`
+    // is the third prerequisite, the ingest guard (#5047).
     //
     // NULL carries TWO meanings, and conflating them is how the constraint
     // plan goes wrong: "no writer has keyed this row yet" (transient, what

@@ -703,3 +703,55 @@ for (const source of EPISODE_SOURCES) {
 export const NON_WAREHOUSE_SOURCES: readonly EpisodeSource[] = Object.freeze(
   EPISODE_SOURCES.filter((source) => !isWarehouseDerivedSource(source)),
 );
+
+/**
+ * Every stored kind that IS warehouse-class — the vocabulary half of #5034's
+ * direction rule, derived on {@link NON_WAREHOUSE_SOURCES}'s terms exactly.
+ *
+ * ⚠️ **NOT the complement of that list as far as any consumer is concerned**,
+ * and the gap between them is the whole reason this is a second derivation
+ * rather than a `NOT (… = ANY (…))` at the call site. Three populations, not
+ * two: a member of this list, a member of that one, and a stored value in
+ * NEITHER — `warehouse:prod`, `snowflake`, a value a region import restored
+ * verbatim. Membership here is POSITIVE evidence that a row IS warehouse-derived
+ * and membership there is positive evidence that it is not; an unrecognised
+ * value is evidence of nothing and must fall out of both.
+ *
+ * The consequence at #5034's call site is smaller than the tier guard's and runs
+ * the other way. There an unresolvable kind must not be *stamped*; here it must
+ * not be treated as the canonical TARGET of an alias, because the whole reason a
+ * warehouse norm is the proposed target is that its space is closed, typed and
+ * described (ADR-0037 §4) — a kind this region cannot even classify has none of
+ * those properties. Falling out of both lists makes the candidate UNDIRECTED,
+ * which routes the decision to a human. That is the fail-closed direction: an
+ * approver picks the target instead of the producer guessing it.
+ *
+ * Inherits the same residual {@link NON_WAREHOUSE_SOURCES} records at length —
+ * a warehouse-shaped kind that declares a non-warehouse class is absent here and
+ * therefore never proposed as a target. Read that residual there; through THIS
+ * list its price is a proposal a human has to direct by hand, which is the
+ * cheapest of the three prices the residual carries.
+ */
+export const WAREHOUSE_SOURCES: readonly EpisodeSource[] = Object.freeze(
+  EPISODE_SOURCES.filter((source) => isWarehouseDerivedSource(source)),
+);
+
+/**
+ * A source vocabulary as a SQL `text[]` literal — the one spelling of the splice
+ * that {@link EPISODE_SOURCE_SLUG} makes safe.
+ *
+ * Lives beside the values rather than beside a consumer, because #5033's tier
+ * guard and #5034's direction rule now both splice a list and the escaping rule
+ * must not be re-derived per consumer. Nothing user-supplied reaches it: every
+ * element is a compile-time key of {@link EPISODE_SOURCE_SPECS}, validated at
+ * this module's load.
+ *
+ * An EMPTY list yields `ARRAY[]::text[]` — valid SQL, false for every row. Both
+ * consumers degrade fail-closed on that (the tier guard to *only a `source`-less
+ * row may supersede*, the direction rule to *every candidate is undirected*),
+ * and `__tests__/sources.test.ts` asserts non-emptiness on both lists so the
+ * degradation is a red test rather than a quiet narrowing.
+ */
+export function episodeSourceArraySql(sources: readonly EpisodeSource[]): string {
+  return `ARRAY[${sources.map((source) => `'${source}'`).join(", ")}]::text[]`;
+}

@@ -1149,4 +1149,75 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const result = await cycleWith(oneFact);
     expect(result).toMatchObject({ status: "success", inspected: 0, extracted: 0 });
   });
+
+  // ── the alias-proposal trigger (#5034) ──────────────────────────────────
+  //
+  // `alias-proposal-pg.test.ts` owns what the query MATCHES; these three own
+  // WHEN it is asked at all. The gate is `report.comparable`, and it is exact
+  // rather than a sample: `ALIAS_PROPOSAL_SQL` joins two rows on `object_cmp`
+  // non-null and equal, so a run that created no comparable row cannot have
+  // changed the candidate set. Getting that wrong in the permissive direction
+  // costs a corpus-wide self-join per episode forever; getting it wrong in the
+  // other direction silently retires the producer.
+
+  it("asks the alias-proposal producer once, after an episode created a comparable row", async () => {
+    await insertEpisode();
+    const asked: string[] = [];
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        // `499 USD` parses to `money:USD:499`, so this candidate lands with a
+        // non-null `object_cmp` — the ONE thing the gate reads.
+        extract: () =>
+          Promise.resolve([candidate({ predicate: "priced at", object: "499 USD" })]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+        },
+      }),
+    );
+    expect(asked).toEqual([WORKSPACE]);
+  });
+
+  it("does not ask when the episode created nothing the query could join on", async () => {
+    // The default candidate's object is `Thursdays`, which parses to no
+    // comparable value — the state of very nearly the whole corpus, since
+    // `object_cmp` is never backfilled and there is no entity store. The
+    // producer must therefore cost NOTHING on the ordinary episode, and the
+    // control above is what proves this assertion is not just "the wiring is
+    // absent".
+    await insertEpisode();
+    const asked: string[] = [];
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: oneFact,
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+        },
+      }),
+    );
+    expect(asked).toEqual([]);
+  });
+
+  it("a failing proposal run does not fail the episode that already committed", async () => {
+    // The facts are written and the episode is stamped before the producer is
+    // asked. Propagating here would return `failed` for an episode that was
+    // fully processed — the drain would charge a strike against evidence there
+    // is nothing left to retry, and enough strikes quarantine it. A proposal is
+    // advisory and the next episode in this workspace re-derives the whole
+    // candidate set from the corpus, so a lost run costs latency and nothing
+    // else.
+    const episode = await insertEpisode();
+    const result = await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([candidate({ predicate: "priced at", object: "499 USD" })]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: () => Promise.reject(new Error("proposal store unreachable")),
+      }),
+    );
+    expect(result).toMatchObject({ status: "success", extracted: 1, factsCreated: 1, failed: 0 });
+    expect(await extractedAtOf(episode.id)).not.toBeNull();
+    expect(await facts()).toHaveLength(1);
+  });
 });

@@ -128,6 +128,7 @@ import {
 } from "@atlas/api/lib/brain/reconcile";
 import type { ClaimVocabulary } from "@atlas/api/lib/brain/identity";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
+import { proposeAliasesFromCorpus } from "@atlas/api/lib/brain/alias-proposal";
 
 const log = createLogger("brain.extract");
 
@@ -730,6 +731,16 @@ export interface BrainExtractionDeps {
   readonly reconcile?: typeof reconcileFacts;
   /** Defaults to {@link loadWorkspaceVocabulary}. */
   readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
+  /**
+   * Defaults to `proposeAliasesFromCorpus` (#5034) — the alias-proposal
+   * producer, run after an episode commits and only when it created a row
+   * carrying a comparable object. See {@link proposeAliasesAfterCommit}.
+   *
+   * Injectable for the reason `reconcile` is: it opens its own transaction on
+   * the internal pool, and a unit test of the drain must be able to observe
+   * whether the trigger fired without one.
+   */
+  readonly proposeAliases?: (workspaceId: string) => Promise<unknown>;
   /** Test clock. */
   readonly now?: () => Date;
 }
@@ -770,6 +781,8 @@ export function runBrainExtractionCycle(
   const resolveModel = deps.resolveModel ?? resolveExtractionModel;
   const reconcile = deps.reconcile ?? reconcileFacts;
   const loadVocabulary = deps.loadVocabulary ?? loadWorkspaceVocabulary;
+  const proposeAliases =
+    deps.proposeAliases ?? ((workspaceId: string) => proposeAliasesFromCorpus(workspaceId));
   const now = deps.now ?? (() => new Date());
 
   // `Effect.suspend` so the per-tick mutable state below is allocated per RUN
@@ -905,7 +918,15 @@ export function runBrainExtractionCycle(
         return internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE, excluded]);
       },
       applyRow: (row) =>
-        extractEpisode(row, { extract, modelFor, reconcile, loadVocabulary, now, failures }),
+        extractEpisode(row, {
+          extract,
+          modelFor,
+          reconcile,
+          loadVocabulary,
+          proposeAliases,
+          now,
+          failures,
+        }),
       defectOutcome: (error) => ({ kind: "failed", error }),
       tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
       emitCycleAudit: settleAndAudit,
@@ -918,6 +939,7 @@ interface ApplyDeps {
   readonly modelFor: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
   readonly reconcile: typeof reconcileFacts;
   readonly loadVocabulary: (workspaceId: string) => Promise<ClaimVocabulary>;
+  readonly proposeAliases: (workspaceId: string) => Promise<unknown>;
   readonly now: () => Date;
   /**
    * Consecutive-failure ledger — see the quarantine note. THE SAME map the
@@ -1110,7 +1132,72 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
   // on why the reverse order is not merely slower but unsafe.
   await stampExtracted(episode);
   deps.failures.delete(episode.id);
+  await proposeAliasesAfterCommit(episode, report, deps);
   return { kind: "extracted", report };
+}
+
+/**
+ * Re-derive this workspace's alias proposals, after the episode has committed
+ * and been stamped (#5034, ADR-0037 §4).
+ *
+ * ## Gated on `report.comparable`, and that gate is exact rather than a heuristic
+ *
+ * `ALIAS_PROPOSAL_SQL` joins two rows on `object_cmp` non-null and equal, so its
+ * candidate set is a pure function of the rows that HAVE one. An episode that
+ * created none cannot have changed that set — a corroborating candidate writes
+ * no row at all, and a created row with a NULL comparable joins nothing on
+ * either side. So this is not sampling: skipping is provably lossless, and the
+ * corpus-wide self-join is spent only when the corpus grew evidence it could
+ * read. Today that is very nearly never, which is the honest shape of ADR-0037
+ * §4's *on day one it returns zero rows for want of populated `object_cmp`*.
+ *
+ * ## AFTER the stamp, and never inside the reconcile transaction
+ *
+ * `cardinality.ts`'s `proposeFromCorrectionEvents` exactly: a proposal is
+ * advisory and the extraction is real work, so a store failure here must not
+ * roll back facts already committed — and a `try`/`catch` inside that
+ * transaction could not deliver that however it were written, since a failed
+ * statement puts Postgres in `25P02` and takes the enclosing COMMIT with it.
+ *
+ * ## Caught here, not propagated
+ *
+ * Throwing would return `failed` from {@link extractEpisode} for an episode
+ * whose facts are committed and whose row is stamped — the drain would charge a
+ * strike, and the strike would be against evidence that has already been fully
+ * processed. Logged at `warn` with the error narrowed, never swallowed: the
+ * producer re-derives its whole candidate set from the corpus on the next
+ * episode in this workspace, so a lost run costs latency and nothing else.
+ *
+ * ## The gap this leaves, stated rather than discovered later
+ *
+ * `correction.ts` is the other caller of `reconcileFacts` and is NOT wired here.
+ * A human correction inherits the slot and derives the object fresh, so it can
+ * introduce a comparable row this trigger never sees. That is a LATENCY gap and
+ * not a correctness one — the query is corpus-wide and re-derived from scratch,
+ * so the next extraction in that workspace finds the pair — and it is left that
+ * way deliberately: a correction is one row, and hanging a workspace-wide
+ * self-join off the human-facing verb buys a proposal sooner at the cost of
+ * latency on the one path a person is waiting on.
+ */
+async function proposeAliasesAfterCommit(
+  episode: ReconcileEpisodeRef,
+  report: ReconcileReport,
+  deps: ApplyDeps,
+): Promise<void> {
+  if (report.comparable === 0) return;
+  try {
+    await deps.proposeAliases(episode.workspaceId);
+  } catch (err) {
+    log.warn(
+      {
+        workspaceId: episode.workspaceId,
+        episodeId: episode.id,
+        comparable: report.comparable,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and the candidate set is re-derived from the corpus on the next episode in this workspace, so nothing is permanently lost",
+    );
+  }
 }
 
 async function stampExtracted(episode: ReconcileEpisodeRef): Promise<void> {

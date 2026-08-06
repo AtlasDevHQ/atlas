@@ -113,6 +113,35 @@ const DECLARATION_SITES = new Set([
   // than its first column. That is the file-local replacement for what this
   // line turns off, and it is why the exemption is affordable.
   "packages/api/src/lib/brain/cardinality.ts",
+  // The alias-proposal query (#5034). It reads `predicate_key` off two
+  // `brain_facts` rows and SELECTS the pair — genuinely a projection, not an
+  // aggregate, so this exemption switches the SELECT arm off for the file
+  // rather than only the ORM one.
+  //
+  // ⚠️ Why that is not the leak this guard exists to stop. What the prohibition
+  // protects is a key BESIDE ITS CLAIM: `predicate_key` next to `predicate` on a
+  // fact read surface lets a consumer branch on a claim's identity, and the
+  // moment anything downstream does, the vocabulary stops being an internal join
+  // detail and an alias becomes un-removable. This query returns no claim at all
+  // — no fact id, no surface, no row. It returns two NORMS and a count, and a
+  // norm is what the vocabulary is MADE of: `brain_vocabulary_edge` has stored
+  // `from_norm`/`to_norm` since 0189 and `approveAliasEdge` takes norms, because
+  // a reviewer approving a merge has to be shown which two spellings merge.
+  // Norms on the vocabulary surface are settled design (ADR-0037 §6), not
+  // something this slice introduces.
+  //
+  // What it also does not do is re-couple retrieval to identity: nothing here
+  // reads or writes `fts`, and the query's output reaches exactly one
+  // destination — `brain_vocabulary_proposal`, through `proposeAliasEdges`.
+  //
+  // The compensating pin is `alias-proposal.test.ts`'s "projects no key but the
+  // two predicate norms", which reads the OUTER projection span of
+  // `ALIAS_PROPOSAL_SQL` and the shape of `AliasCandidate`. That is the
+  // file-local replacement for what this line turns off — `subject_key` and
+  // `object_cmp` DO appear inside the statement (a join arm and a
+  // `COUNT(DISTINCT …)` input), and the pin is what keeps them from graduating
+  // into the result.
+  "packages/api/src/lib/brain/alias-proposal.ts",
   // A MUTATION SPEC — a test fixture that happens to live outside `__tests__`,
   // so the scan's non-test filter does not reach it. Its `predicate_key`
   // occurrences are the before/after strings of the "`INSERT_FACT_SQL` feeds

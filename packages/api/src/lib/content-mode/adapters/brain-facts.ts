@@ -69,7 +69,7 @@ import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 // The tier vocabulary (#5033). Derived from `EPISODE_SOURCE_SPECS`'s declared
 // classes, so a future warehouse-class member inherits the guard below without
 // touching this file.
-import { NON_WAREHOUSE_SOURCES } from "@atlas/api/lib/brain/sources";
+import { episodeSourceArraySql, NON_WAREHOUSE_SOURCES } from "@atlas/api/lib/brain/sources";
 import {
   classifyFactForPromotion,
   isJsonObject,
@@ -362,14 +362,17 @@ export const WIDEN_AND_PROMOTE_FACTS_SQL = `
  * two ways. Nothing user-supplied reaches here: every element is a
  * compile-time key of `EPISODE_SOURCE_SPECS`.
  *
+ * ⚠️ The splice itself moved to `sources.ts` (`episodeSourceArraySql`) when
+ * #5034's direction rule became the second consumer of a source list. It is the
+ * same expression, byte for byte, relocated for the reason the paragraph above
+ * already gives: the rule that makes it safe belongs beside the values.
+ *
  * An EMPTY list (every member warehouse-class) yields `ARRAY[]::text[]` — valid
  * SQL, false for every row, so the guard degrades to "only a `source`-less row
  * may supersede". Fail-closed, and `brain/__tests__/sources.test.ts` asserts
  * non-emptiness so the degradation is a red test rather than a quiet narrowing.
  */
-const NON_WAREHOUSE_SOURCE_ARRAY_SQL = `ARRAY[${NON_WAREHOUSE_SOURCES.map(
-  (source) => `'${source}'`,
-).join(", ")}]::text[]`;
+const NON_WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(NON_WAREHOUSE_SOURCES);
 
 /**
  * The TIER GUARD (#5033, ADR-0037 §4) — *identity is source-agnostic;

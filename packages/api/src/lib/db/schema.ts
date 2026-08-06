@@ -3271,10 +3271,18 @@ export const brainFacts = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     workspaceId: text("workspace_id").notNull(),
-    // SPO. Plain text: entity resolution happens at the reconcile stage
-    // (#4771), and a failed subject/object resolution flags the candidate
-    // provisional rather than blocking it — so these must hold an unresolved
-    // surface form.
+    // SPO. Plain text, and RETAINED VERBATIM: these hold what the producer
+    // said, always. Entity resolution happens at the reconcile stage (#4771)
+    // and since #5031 it cannot reach these columns at all — its answer lands
+    // at `object_cmp`, a resolution FAILURE flags the candidate provisional
+    // rather than blocking it, and neither rewrites a surface.
+    //
+    // The retention is load-bearing, not incidental: re-deriving a claim's
+    // identity from the surface it was written with is the only way back from a
+    // bad vocabulary entry. A canonical form written HERE would be
+    // irreversible (ADR-0037 §5). The accepted cost, declined deliberately: the
+    // review UI never shows a merged canonical name, so `Acme Corp` and
+    // `Acme Corporation` stay visibly distinct even once they collide.
     subject: text("subject").notNull(),
     predicate: text("predicate").notNull(),
     object: text("object").notNull(),

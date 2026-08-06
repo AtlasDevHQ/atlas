@@ -223,10 +223,15 @@ export function identityKey(surface: string): string | null {
  *
  * ## A throwing alias is NOT caught, deliberately
  *
- * `reconcile.ts` catches a throwing `EntityResolver` and degrades the candidate
- * to provisional, and the opposite choice here is the point of the asymmetry: an
- * unresolved ENTITY is a quality failure a reviewer can repair, while a
- * vocabulary lookup that fails has no safe degraded answer. Falling back to the
+ * `reconcile.ts` catches a throwing `EntityResolver` and degrades that episode's
+ * candidates to provisional, and the opposite choice here is the point of the
+ * asymmetry: an entity the store could not name costs the object the store's
+ * id — it falls back to whatever the surface parses to, which for a name is
+ * nothing — and the row still keys and still corroborates.
+ * When the store did not ANSWER at all, the row is additionally marked, and the
+ * marker says only "recompute this object's comparison once it does" (#5031).
+ * A vocabulary lookup that fails has no such safe degraded answer. Falling back
+ * to the
  * un-aliased norm would key the row into the slot the vocabulary exists to move
  * it OUT of — an under-match today, and an over-match the moment an entry merges
  * two spellings — and neither is visible afterwards. So it propagates: a

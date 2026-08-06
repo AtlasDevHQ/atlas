@@ -176,9 +176,34 @@ export interface BrainFactProvenance {
   /** ISO-8601 of the extraction pass; null for an authored claim. */
   readonly extractedAt: string | null;
   readonly reconciledAt: string;
-  /** Present only for the sides a resolver returned an id for. */
-  readonly entityIds?: Partial<Record<EntityRole, string>>;
+  /**
+   * Written ONLY when the entity store failed to answer the episode's batch —
+   * never for an honest "no entry" (#5031). It means exactly *this row's
+   * `object_cmp` is worth recomputing*, and NOT that its keys are: no resolver
+   * reaches a slot key, so a replay recomputes those to the same bytes under the
+   * same vocabulary. An
+   * abstain will not change on replay and its rows are findable by key, while an
+   * outage will change and its rows are findable by nothing else
+   * (`object_cmp IS NULL` matches every honest abstain too).
+   *
+   * ⚠️ Not total: a candidate that CORROBORATES writes no provenance PAYLOAD, so
+   * it carries no flag of its own. It is not traceless — its `provenance` edge
+   * to the episode is written, and that edge is how those facts are found.
+   */
   readonly provisional?: true;
+  /**
+   * Both roles whenever {@link provisional} is set, and absent otherwise. One
+   * batch covers both positions, so a failure has no per-role granularity — the
+   * array survives because `lib/brain/candidates.ts` reads it — the projection,
+   * and `PROVISIONAL_PREDICATE`'s `jsonb_array_length(… -> 'unresolved') > 0`
+   * arm — not because the two sides can fail apart. #4772's review surface stopped reading
+   * it when #5031 deleted the which-side copy it fed.
+   *
+   * There are no legacy one-sided rows to handle. Before #5031 the positions
+   * were resolved by separate calls and COULD fail apart — but the only
+   * resolver ever shipped was the passthrough, which returned a canonical form
+   * for every non-blank surface and so never produced this flag at all.
+   */
   readonly unresolved?: readonly EntityRole[];
   readonly [key: string]: unknown;
 }

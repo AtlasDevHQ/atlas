@@ -658,6 +658,24 @@ describe("comparableValueWithReason distinguishes the two nulls (#5030)", () => 
     });
   });
 
+  test("a store id beats a declaration too — including one that would have been REJECTED", () => {
+    // The precedence table says the id wins outright, and this is the corner
+    // that costs something: `declaration-rejected` is the only operator-actionable
+    // signal in this module, and a resolved id silences it. Deliberate — the
+    // declaration exists solely to make an ambiguous SURFACE comparable, and
+    // nothing about the object is ambiguous once a store has named it — but it
+    // means a producer's broken `objectType` goes quiet exactly when a real
+    // entity store is wired up, so it is pinned rather than left to be
+    // rediscovered as a lost warning (#5031).
+    expect(
+      comparableValueWithReason({
+        surface: "499",
+        declared: { kind: "money", currency: "ZZZ9" },
+        entityId: "01J",
+      }),
+    ).toEqual({ value: "entity:01J", reason: "resolved" });
+  });
+
   test("`comparableValue` is exactly this function's value half", () => {
     // Two entry points, one implementation — the delegation is what stops the
     // reason code drifting from the value it explains.

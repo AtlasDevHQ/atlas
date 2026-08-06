@@ -265,12 +265,34 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
       {provenance.provisional && (
         <Alert>
           <AlertTriangle className="size-4" aria-hidden />
-          <AlertTitle>{provisionalBadge.label} entity resolution</AlertTitle>
+          <AlertTitle>{provisionalBadge.label} entity comparison</AlertTitle>
+          {/* Reworded for #5031's abstain/failure split, and the per-side branch
+              DELETED with it.
+
+              The flag no longer means "Atlas looked and could not pin this
+              entity" — that outcome (the store has no entry) is honest, is
+              already recorded as an absent comparison, and is deliberately
+              UNFLAGGED. `@useatlas/types` states the prohibition on presenting
+              it that way. What survives is the narrow case: the entity store did
+              not ANSWER — it threw, was unreachable, or broke its contract — so
+              the row carries no comparable value. Note what that does and does
+              not cost: the object IS still compared at both lookups when the
+              claim is written (the parse is kept there deliberately), and the
+              row still matches by identity key. What is withheld is the value AT
+              REST, which is what proving difference needs.
+
+              The old copy named which SIDE was unresolved. There is no such
+              thing now — one batched call covers both positions, so a failure
+              names both — and there are no legacy rows to preserve it for: the
+              only resolver ever shipped was the passthrough, which returned a
+              canonical form for every non-blank surface and therefore never
+              produced this flag at all. */}
           <AlertDescription>
-            {provenance.unresolved.length > 0
-              ? `Atlas could not pin the ${provenance.unresolved.join(" and ")} of this claim to a known entity, so it was recorded against a provisional one.`
-              : "Atlas could not pin one side of this claim to a known entity, so it was recorded against a provisional one."}{" "}
-            Publishing it is a decision that the entity is right, not just the claim.
+            Atlas couldn&apos;t get an answer from the entity store while recording this
+            claim, so this row carries no comparison value. It can still match an
+            identical claim, but it can never prove it <em>differs</em> from one — so it
+            can neither supersede another claim nor be superseded. Publishing it is a
+            decision that the claim is right without that check.
           </AlertDescription>
         </Alert>
       )}

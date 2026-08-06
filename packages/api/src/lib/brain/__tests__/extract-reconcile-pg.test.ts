@@ -40,6 +40,7 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import {
   reconcileFacts,
+  type EntityResolver,
   type FactCandidate,
   type ReconcileEpisodeRef,
 } from "@atlas/api/lib/brain/reconcile";
@@ -162,6 +163,26 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   function candidate(overrides: Partial<FactCandidate> = {}): FactCandidate {
     return { subject: "deploy window", predicate: "is", object: "Thursdays", ...overrides };
   }
+
+  /**
+   * An ANSWERING entity store, and the id rule the expectations re-use.
+   *
+   * Adversarial on purpose: against `passthroughEntityResolver` — which abstains
+   * on everything — "the resolver did not rewrite the surface" and "no key
+   * contains an id" pass while proving nothing, because there is no answer to
+   * leak. Separator-free so `lexicalNorm` cannot launder it out of a key.
+   */
+  function adversarialId(surface: string): string {
+    // Derived from the whole surface, not its LENGTH — the seam's own contract
+    // says ids must be globally unique, and a length-keyed id silently gives two
+    // 9-character surfaces one identity, which is a false `same` at the publish
+    // gate. A fixture that violates the rule it is testing under is one rename
+    // away from proving the opposite.
+    return `entid${surface.replaceAll(/[^a-zA-Z0-9]/g, "")}01J7X`;
+  }
+
+  const answerEverySurface: EntityResolver = (surfaces) =>
+    new Map([...surfaces].map((s) => [s, { entityId: adversarialId(s) }]));
 
   async function facts(): Promise<
     { id: string; subject: string; object: string; status: string; provenance: Record<string, unknown>; visible_to: string[] }[]
@@ -320,13 +341,89 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       candidates: [candidate()],
       producer: "extraction:v1",
       extractedAt: new Date(),
-      resolveEntity: (surface, { role }) => (role === "object" ? null : { canonical: surface }),
+      // A store OUTAGE, which since #5031 is the only thing that sets the flag.
+      // An abstain ("no entry") is honest and writes nothing here.
+      resolveEntity: () => {
+        throw new Error("entity store unreachable");
+      },
     });
 
     const stored = await facts();
-    expect(stored[0]!.provenance).toMatchObject({ provisional: true, unresolved: ["object"] });
+    expect(stored[0]!.provenance).toMatchObject({
+      provisional: true,
+      // Both sides: one batch covers both positions, so a failure has no
+      // per-role granularity to record.
+      unresolved: ["subject", "object"],
+    });
     // Still a draft, still reviewable — flagged, not dropped.
     expect(stored[0]!.status).toBe("draft");
+  });
+
+  it("an outage does NOT merge a value into its own negation", async () => {
+    // ⚠️ Only a live schema settles this, because the veto lives in SQL. A
+    // failed entity batch withholds the comparable value from the ROW — so an
+    // outage can never write a value that out-proves the answer it did not get
+    // — but it must NOT withhold it from the two lookups. `objectSameSql` is
+    // `(key match OR value match) AND NOT provably-different`, and a NULL bind
+    // makes that veto NULL, which `IS NOT TRUE` swallows: corroboration
+    // collapses to bare key equality.
+    //
+    // `lexicalNorm` strips a leading `-`, so `-499` and `499` key IDENTICALLY.
+    // With the veto disabled, the second claim merges into the first: no new
+    // row, no tension edge, and — because corroboration writes no provenance —
+    // no marker anywhere. Atlas would silently record one more piece of evidence
+    // for the opposite-signed belief.
+    const first = await insertEpisode({ sourceId: "C01:margin-1" });
+    await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode: first,
+      candidates: [candidate({ subject: "q3 margin", predicate: "is", object: "499" })],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    const second = await insertEpisode({ sourceId: "C01:margin-2" });
+    const report = await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode: second,
+      candidates: [candidate({ subject: "q3 margin", predicate: "is", object: "-499" })],
+      producer: "p",
+      extractedAt: new Date(),
+      resolveEntity: () => {
+        throw new Error("entity store unreachable");
+      },
+    });
+
+    expect(report.corroborated).toBe(0);
+    expect(report.created).toBe(1);
+    const stored = await facts();
+    expect(stored.map((f) => f.object)).toEqual(["499", "-499"]);
+    // The outage's own half, at rest: the new row carries NO comparable value,
+    // so it can never stamp `valid_to` at publish either.
+    const { rows } = await pool.query<{ object: string; object_cmp: string | null }>(
+      `SELECT object, object_cmp FROM brain_facts ORDER BY ingested_at, id`,
+    );
+    expect(rows.map((r) => r.object_cmp)).toEqual(["number:499", null]);
+  });
+
+  it("an honest abstain stores no provisional marker at all", async () => {
+    // The other arm of #5031's split, at rest — and the one that runs on every
+    // deployment, since `passthroughEntityResolver` abstains on everything. A
+    // marker written here would be present on every entity-valued object
+    // forever, which is precisely what defeats #4772's filter on its PRESENCE.
+    const episode = await insertEpisode({ sourceId: "C01:abstain" });
+    await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode,
+      candidates: [candidate()],
+      producer: "extraction:v1",
+      extractedAt: new Date(),
+      resolveEntity: () => new Map(),
+    });
+
+    const stored = await facts();
+    expect(stored[0]!.provenance).not.toHaveProperty("provisional");
+    expect(stored[0]!.provenance).not.toHaveProperty("unresolved");
   });
 
   it("corroborates a re-observed claim instead of duplicating it", async () => {
@@ -372,7 +469,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     return rows;
   }
 
-  it("materializes all three keys on a new fact, off the RESOLVED surfaces", async () => {
+  it("materializes all three keys on a new fact, off the RETAINED surfaces", async () => {
     const episode = await insertEpisode({ sourceId: "C01:key-1" });
     await reconcileFacts({
       vocabulary: identityVocabulary,
@@ -380,18 +477,51 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       candidates: [candidate({ subject: "Deploy_Window", predicate: "Ships  On" })],
       producer: "p",
       extractedAt: new Date(),
-      // The key must describe the row that was STORED, so it is derived after
-      // resolution — not from the candidate's raw surface.
-      resolveEntity: (surface) =>
-        surface === "Deploy_Window" ? { canonical: "The Deploy Box" } : { canonical: surface },
+      // An ANSWERING store, deliberately: against `passthroughEntityResolver`
+      // this test would pass while proving nothing, because there would be no
+      // id to leak into a key and no canonical form to overwrite a surface with
+      // (#5011 §3). The prohibition itself is owned by `reconcile.test.ts`;
+      // what this adds is that the columns AT REST agree with it.
+      resolveEntity: answerEverySurface,
     });
 
     expect(await slots()).toEqual([
-      { subject_key: "the deploy box", predicate_key: "ships on", object_key: "thursdays" },
+      { subject_key: "deploy window", predicate_key: "ships on", object_key: "thursdays" },
     ]);
-    // The retained surface is the resolver's canonical form, untouched by the
-    // fold — identity moved, the record of the claim did not.
-    expect((await facts())[0]).toMatchObject({ subject: "The Deploy Box" });
+    // The surface is what the PRODUCER wrote, untouched by the fold and by the
+    // store — identity moved, the record of the claim did not.
+    expect((await facts())[0]).toMatchObject({ subject: "Deploy_Window" });
+  });
+
+  it("lands the store's id at `object_cmp` and nowhere else", async () => {
+    // The positive control for the test above: without it, both hold against a
+    // stage that ignores the resolver entirely. The id has exactly one
+    // destination on the row, and `object_cmp` is a COMPARED value rather than
+    // a join arm — which is why a second namespace there costs nothing and at a
+    // slot would cost the whole corpus (ADR-0037 §5).
+    const episode = await insertEpisode({ sourceId: "C01:key-cmp" });
+    await reconcileFacts({
+      vocabulary: identityVocabulary,
+      episode,
+      candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
+      producer: "p",
+      extractedAt: new Date(),
+      resolveEntity: answerEverySurface,
+    });
+
+    const { rows } = await pool.query<{
+      subject_key: string | null;
+      object_key: string | null;
+      object_cmp: string | null;
+    }>(`SELECT subject_key, object_key, object_cmp FROM brain_facts`);
+    // Through the double's own rule rather than a hand-copied literal, so the
+    // two sides are one fact: the id the store minted, read back off the column
+    // the stage actually wrote.
+    expect(rows[0]!.object_cmp).toBe(`entity:${adversarialId("Acme Corp")}`);
+    // …and the subject's id, which the batch also resolved, reached NOTHING.
+    // #5032 gives it `subject_cmp`; until then a leak would show up here.
+    expect(rows[0]!.subject_key).toBe("deploy window");
+    expect(rows[0]!.object_key).toBe("acme corp");
   });
 
   // The three collide/don't-collide cases that used to sit here — a phrasing

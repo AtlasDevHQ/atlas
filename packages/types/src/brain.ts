@@ -127,10 +127,19 @@ export interface BrainFactProvenanceView {
   readonly extractedAt: string | null;
   readonly reconciledAt: string | null;
   /**
-   * An entity resolver could not pin one or both sides of the claim, so it was
-   * recorded against a provisional entity. THE quality queue — block-class
-   * failures (no provenance, no usable grant, unattributable actor, malformed
-   * claim) never reach this surface at all; they were refused upstream.
+   * The entity store did not ANSWER when this claim was recorded — it threw, was
+   * unavailable, or broke its contract — so the row carries no comparison value.
+   * It can still MATCH an identical claim by identity key; what it can never do
+   * is prove it DIFFERS from one, which is what superseding would need. THE
+   * quality queue: block-class failures (no
+   * provenance, no usable grant, unattributable actor, malformed claim) never
+   * reach this surface at all; they were refused upstream.
+   *
+   * ⚠️ Since #5031 this is NOT "the store had no entry for this entity". That
+   * outcome is honest, is already represented by an absent comparison, and is
+   * deliberately unflagged — flagging it would set this on every entity-valued
+   * object forever, which is precisely what defeats a filter on its presence.
+   * A reader must not present it as "Atlas looked and could not pin the entity".
    *
    * Always true when {@link unresolved} is non-empty: at rest the flag and the
    * side-list are written together, but the flag is derived here rather than
@@ -138,7 +147,16 @@ export interface BrainFactProvenanceView {
    * "resolved, but here are the unresolved sides".
    */
   readonly provisional: boolean;
-  /** Which sides were left unresolved. Empty unless `provisional`. */
+  /**
+   * Which sides were left unresolved. Empty unless `provisional`.
+   *
+   * Since #5031 a flagged row names BOTH sides: one batched call covers both
+   * positions, so a failure has no per-role granularity, and a reader should not
+   * build copy around which side it was. (Before #5031 the two positions were
+   * resolved separately and could fail apart, but the only resolver ever shipped
+   * was the passthrough, which never produced this flag — so there are no
+   * one-sided rows in any corpus.)
+   */
   readonly unresolved: readonly BrainEntityRole[];
   /**
    * False when the stored payload was missing a structural key, carried the

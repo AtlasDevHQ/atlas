@@ -814,17 +814,33 @@ describe("refusals and quality flags", () => {
     expect(document.body.textContent).toContain("no usable principal");
   });
 
-  test("flags a provisional candidate as a decision about the entity", async () => {
+  test("tells a reviewer the entity STORE was unreachable, not that Atlas could not pin the entity", async () => {
+    // #5031 split abstain from failure, and this copy is the one place a
+    // reviewer meets the difference. "Atlas could not pin the object to a known
+    // entity" describes the ABSTAIN — which is honest, is represented by an
+    // absent comparison, and no longer sets this flag at all. Saying it here
+    // would send a reviewer to adjudicate an entity when the truth is that a
+    // store was down. `@useatlas/types` names the prohibition; this asserts it.
     const view = await renderPage([
       candidate({
-        provenance: { ...PROVENANCE, provisional: true, unresolved: ["object"] },
+        // Both roles — the only shape a post-#5031 row takes, since one batched
+        // call covers both positions.
+        provenance: { ...PROVENANCE, provisional: true, unresolved: ["subject", "object"] },
       }),
     ]);
     expect(view.container.textContent).toContain("Provisional");
 
     fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
     await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
-    expect(document.body.textContent).toContain("the object of this claim");
+    // Deliberately not "couldn't reach": the flag also fires when the store
+    // ANSWERED and broke its contract (a blank id, a key nobody asked about),
+    // which is not a reachability problem. "Couldn't get an answer" is true of
+    // every trigger.
+    expect(document.body.textContent).toContain("couldn't get an answer from the entity store");
+    expect(document.body.textContent).not.toContain("could not pin");
+    // …and the copy must not overstate the damage either: the row still matches
+    // an identical claim by key. Only the DIFFERENCE proof is withheld.
+    expect(document.body.textContent).toContain("never prove it differs");
   });
 
   test("says a claim's provenance payload is incomplete instead of showing blanks", async () => {

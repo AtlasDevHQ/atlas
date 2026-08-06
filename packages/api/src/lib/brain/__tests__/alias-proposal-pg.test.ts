@@ -449,7 +449,7 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
-  // ── the wedge guard ─────────────────────────────────────────────────────
+  // ── the connection-reclaim bound ────────────────────────────────────────
 
   it(
     "runs every producer statement under a real, non-zero timeout",
@@ -458,8 +458,12 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
       // the constants that set them. The fast lane asserts the two statements
       // are issued, but it imports the constants it compares against — so
       // `statement_timeout = '0'` (Postgres for *no timeout*) moved both sides
-      // together and killed nothing. `'0'` restores exactly the wedge the
-      // deadline exists for, and a hang is not a falsifier.
+      // together and killed nothing.
+      //
+      // ⚠️ What `'0'` destroys is the RECLAIM, not the drain: `extract.ts`'s
+      // deadline still advances the fiber, so this is not a hang. The statement
+      // runs on holding one of five pooled connections and
+      // `withBrainTransaction`'s `finally` never reaches `client.release()`.
       //
       // It also proves three things nothing else does: that the `SET LOCAL`s
       // land inside a real `BEGIN` (outside one Postgres warns and does

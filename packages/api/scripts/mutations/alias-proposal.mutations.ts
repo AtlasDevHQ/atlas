@@ -10,25 +10,30 @@
  * kills only prohibitions and none of the controls is a mutation that switched
  * the machinery off rather than one that changed its rule.
  *
- * The two columns are complements and are worth reading against each other. The
- * `-pg` suite is the only lane that can see WHICH ROWS the three arms admit; the
- * fast lane sees binds, the ranking rules and the statement's TEXT. That is why
- * several SQL rows below are 0 in the fast lane and several TypeScript rows are
- * 0 in the `-pg` one — neither column is a superset of the other.
+ * The FIRST TWO columns are complements and are worth reading against each
+ * other. The `-pg` suite is the only lane that can see WHICH ROWS the three arms
+ * admit; the fast lane sees binds, the ranking rules and the statement's TEXT.
+ * That is why several SQL rows below are 0 in the fast lane and several
+ * TypeScript rows are 0 in the `-pg` one — neither is a superset of the other.
+ * The other two columns are narrower by design and mostly zeros:
+ * `alias-proposal-logging.test.ts` is the OPERATOR-LINE column and
+ * `extract-reconcile-pg.test.ts` is the WIRING's.
  *
  * Every mutation LISTED below dies in at least one column, with ONE stated
  * exception — and "listed" is deliberate: the list is curated, not exhaustive,
  * so it is evidence about the suites' reach and never a proof that nothing else
  * survives.
  *
- * ⚠️ The exception is *the post-deadline continuation is deleted*, and it is a
- * named gap rather than an untestable one: falsifying it needs the logger mocked
- * on the extract path (an `extract-logging.test.ts` on `acl-logging.test.ts`'s
- * pattern), which this slice does not add. Read its note before treating that
- * `0` as evidence of anything.
+ * ⚠️ TWO rows are exceptions — *the post-deadline continuation is deleted* and
+ * *the cross-tenant skip is silent* — and they share one named closure rather
+ * than being untestable: both need the logger mocked on the EXTRACT path (an
+ * `extract-logging.test.ts` on `acl-logging.test.ts`'s pattern), which this
+ * slice does not add. Two rows wanting the same file is the argument for
+ * building it next. Read their notes before treating either `0` as evidence.
  *
- * ⚠️ **Three rows in this file have shipped as measured NO-OPS across the review
- * rounds** — one splicing `${…}` as literal text into a module importing
+ * ⚠️ **FOUR rows in this file have shipped as measured NO-OPS across the review
+ * rounds** — and the fourth was created by the round that announced it had
+ * cleaned up the other three, when a code edit invalidated a row's anchor — one splicing `${…}` as literal text into a module importing
  * neither, one appending a duplicate `pending` to a `Promise.race`, one leaving a
  * `new Promise` executor in place so `setTimeout` still ran. Each published a
  * `0` that measured nothing. Before believing a zero, read the edit and ask what
@@ -380,7 +385,7 @@ prohibits by name. None of them has a symptom at rest.
           newString: "export const ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '0'`;",
         },
       ],
-      note: "⭐ Invisible to a test that compares the issued statement against the constant that produced it — both sides move together. `0` restores the wedge: the extraction drain awaits this inside a `concurrency: 1` loop, and a hang is not a falsifier. The `-pg` bound test reads the value back out of the session, which is the only assertion that can see it.",
+      note: "⭐ Invisible to a test that compares the issued statement against the constant that produced it — both sides move together. ⚠️ `0` does NOT restore the wedge — `ALIAS_PROPOSAL_DEADLINE_MS` still advances the drain. What it destroys is the RECLAIM: the statement runs on holding one of five pooled connections and `withBrainTransaction`'s `finally` never reaches `client.release()`. The `-pg` bound test reads the value back out of the session, which is the only assertion that can see it.",
     },
     {
       label: "the bounds never reach the PROPOSE half",
@@ -428,8 +433,12 @@ prohibits by name. None of them has a symptom at rest.
       edits: [
         {
           file: EXTRACT,
-          oldString: "  if (deps.proposalStall.stalled) return;\n",
-          newString: "",
+          // RE-ANCHORED after the skip LOG landed this round. Two rows in this
+          // file have now been invalidated by a later round's edit to the code
+          // they mutate — which is the argument for re-running the whole spec
+          // after any change to the module, not just the rows you touched.
+          oldString: "  if (deps.proposalStall.stalled) {",
+          newString: "  if (false) {",
         },
       ],
       note: "The read half of the same guard. Separated from the write half because a breaker that trips and is not read, and one that is read and never trips, fail identically from the outside and are two different edits.",
@@ -476,7 +485,7 @@ prohibits by name. None of them has a symptom at rest.
           newString: "  return proposeAliasEdges(workspaceId, inputs.slice(0, 1), SEAM_PROPOSAL_PRODUCER, boundedDeps);",
         },
       ],
-      note: "A silent truncation to one pair. Invisible to every corpus case, because all 14 expect exactly one proposal — only the two-pair cap workspace can see it, and `log.info` would honestly report `candidates: 1` with no signal that the rest were dropped.",
+      note: "A silent truncation to one pair. Invisible to every corpus case, because none expects MORE than one — nine fire with exactly one and five expect none — only the two-pair cap workspace can see it, and `log.info` would honestly report `candidates: 1` with no signal that the rest were dropped.",
     },
     {
       label: "the trigger's DEFAULT producer is replaced with a no-op",
@@ -523,12 +532,77 @@ prohibits by name. None of them has a symptom at rest.
       note: "The producer keeps its whole test suite and stops having a caller — #5022's *a store whose reader had no caller* one slice over, and the only column that can see it is this one.",
     },
     {
+      label: "the per-tick breaker trips on ANY failure, not only a timeout",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "    if (timedOut) deps.proposalStall.stalled = true;",
+          newString: "    deps.proposalStall.stalled = true;",
+        },
+      ],
+      note: "⚠️ The breaker's CONDITION, which round 3 added and did not falsify. `ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL` calls `55P03` a DESIGNED outcome — a human mid-approval — so under this mutant one expected lock timeout retires the producer for the rest of the tick and up to `BATCH_SIZE - 1` episodes silently skip. A rejection released its connection on the way out; only a timeout may still hold one.",
+    },
+    {
+      label: "the breaker is allocated at MODULE scope, so it never resets",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "    const proposalStall = { stalled: false };",
+          newString: "    const proposalStall = MODULE_WIDE_PROPOSAL_STALL;",
+        },
+        {
+          file: EXTRACT,
+          oldString: "const failureLedger = new Map<string, QuarantineEntry>();",
+          newString: "const failureLedger = new Map<string, QuarantineEntry>();\nconst MODULE_WIDE_PROPOSAL_STALL = { stalled: false };",
+        },
+      ],
+      note: "⚠️ The breaker's SCOPE, the other constraint round 3 asserted and did not falsify. ONE transient stall then disables alias proposals for the PROCESS LIFETIME — silently, no log, no counter, no red test — on a producer with a single caller and no sweep. `extract.ts`'s own `Effect.suspend` comment warns that exactly this hoist is *an obviously-equivalent-looking refactor*.",
+    },
+    {
+      label: "the cross-tenant skip is silent",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "  if (deps.proposalStall.stalled) {",
+          newString: "  if (deps.proposalStall.stalled) return;\n  if (false) {",
+        },
+      ],
+      note: "⚠️ MEASURED ZERO, and the SECOND row with the same named closure. The drain is FLEET-wide and the breaker is TICK-wide, so the episodes this skips routinely belong to different tenants from the one that stalled — and the single timeout line names only the first; without this line a tick that skipped one and a tick that skipped 24 render identically, which is the third-state argument this file already makes at `outageRefunded`. Falsifying it needs the logger mocked on the EXTRACT path (an `extract-logging.test.ts` on `acl-logging.test.ts`'s pattern), which this slice does not add — the same gap the post-deadline-continuation row names, and the reason to build that file is now two rows rather than one.",
+    },
+    {
+      label: "the truncation warn fires unconditionally",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "  if (rows.length >= cap) {",
+          newString: "  if (true) {",
+        },
+      ],
+      note: "The other direction of the same line: a reader that shouts on every healthy run passes the *silenced* row above it. Both directions are needed, which is the pairing every logging suite in this repo carries.",
+    },
+    {
+      label: "the all-rows-dropped ERROR fires whenever any row drops",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "  if (rows.length > 0 && candidates.length === 0) {",
+          newString: "  if (rows.length > 0) {",
+        },
+      ],
+      note: "The partial case must NOT reach the error arm — some rows read back, so the corpus is being reported honestly and only the odd row is dropped. Getting it wrong this way puts an `error` on every run that meets one malformed row.",
+    },
+    {
       label: "a failed proposal run fails the episode that already committed",
       edits: [
         {
           file: EXTRACT,
-          oldString: "  } catch (err) {\n    log.warn(\n      {\n        workspaceId: episode.workspaceId,\n        episodeId: episode.id,\n        comparable: report.comparable,",
-          newString: "  } catch (err) {\n    if (err) throw err;\n    log.warn(\n      {\n        workspaceId: episode.workspaceId,\n        episodeId: episode.id,\n        comparable: report.comparable,",
+          // RE-ANCHORED: round 3 inserted the breaker trip between `catch` and
+          // `log.warn`, which invalidated the previous `oldString` — so this row
+          // shipped as `⚠️ ANCHOR: 0 matches` in all four columns, on the
+          // slice's most load-bearing safety property. The FOURTH no-op in this
+          // file, created by the round that cleaned up the other three.
+          oldString: "    if (timedOut) deps.proposalStall.stalled = true;\n    log.warn(",
+          newString: "    if (timedOut) deps.proposalStall.stalled = true;\n    if (err) throw err;\n    log.warn(",
         },
       ],
       note: "The facts are written and the episode is stamped before the producer is asked, so this charges the failure ledger a strike against evidence there is nothing left to retry — and enough strikes quarantine an episode that was processed perfectly.",

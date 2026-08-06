@@ -797,13 +797,26 @@ export function runBrainExtractionCycle(
   // `Number.isInteger` AND the upper bound, both load-bearing: a delay past
   // 2^31-1 fires immediately, which would turn an override meant to shorten a
   // test into one that times out every run in production.
-  const aliasProposalDeadlineMs =
-    typeof deps.aliasProposalDeadlineMs === "number" &&
-    Number.isInteger(deps.aliasProposalDeadlineMs) &&
-    deps.aliasProposalDeadlineMs > 0 &&
-    deps.aliasProposalDeadlineMs <= 2_147_483_647
-      ? deps.aliasProposalDeadlineMs
-      : ALIAS_PROPOSAL_DEADLINE_MS;
+  const overriddenDeadline = deps.aliasProposalDeadlineMs;
+  if (
+    overriddenDeadline !== undefined &&
+    !(
+      Number.isInteger(overriddenDeadline) &&
+      overriddenDeadline > 0 &&
+      overriddenDeadline <= 2_147_483_647
+    )
+  ) {
+    // THROWN, not clamped — `loadAliasCandidates`'s cap precedent, and the same
+    // reasoning. Silently substituting the 15s default would make a test that
+    // MEANS to exercise the timeout arm exercise the fast path instead, and pass
+    // green while asserting nothing: the "passed for the wrong reason" class
+    // round 3 just fixed one file over. Costs production nothing — this is a
+    // test seam and the guard fires only on an override.
+    throw new Error(
+      `runBrainExtractionCycle: aliasProposalDeadlineMs must be an integer in [1, 2147483647]; got ${overriddenDeadline}. A delay past 2^31-1 fires IMMEDIATELY, so an out-of-range value does not degrade to "no timeout" — it times out every run.`,
+    );
+  }
+  const aliasProposalDeadlineMs = overriddenDeadline ?? ALIAS_PROPOSAL_DEADLINE_MS;
   const now = deps.now ?? (() => new Date());
 
   // `Effect.suspend` so the per-tick mutable state below is allocated per RUN
@@ -1183,8 +1196,10 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
  * A DRAIN bound, not a work bound — see {@link proposeAliasesAfterCommit} on why
  * the two are different and why both exist. Generous, because timing out costs a
  * workspace its proposals for that episode and there is no sweep to re-run them:
- * the number only has to be shorter than "forever", and every statement inside
- * it already carries a tighter server-side bound.
+ * the number only has to be shorter than "forever". Every statement AFTER the
+ * `SET LOCAL` pair lands carries a tighter server-side bound; `BEGIN` and the
+ * pair itself do NOT, and they are exactly the round trips this constant exists
+ * for — so "the server side already covers it" is the reading to avoid.
  */
 export const ALIAS_PROPOSAL_DEADLINE_MS = 15_000;
 
@@ -1305,7 +1320,27 @@ async function proposeAliasesAfterCommit(
   deps: ApplyDeps,
 ): Promise<void> {
   if (report.comparable === 0) return;
-  if (deps.proposalStall.stalled) return;
+  if (deps.proposalStall.stalled) {
+    // ⚠️ LOGGED, because the breaker is TICK-wide and the drain is FLEET-wide.
+    // `DRAIN_EPISODES_SQL` has no workspace scope, so the episode that tripped
+    // the breaker and the episodes this skips routinely belong to DIFFERENT
+    // tenants — and the one timeout line above names only the first. Without
+    // this an operator asking "why has workspace B no alias proposals" finds a
+    // single line naming workspace A, and a tick that skipped one is
+    // byte-identical to a tick that skipped twenty-four.
+    //
+    // The same argument this file already makes twice, at `outageRefunded`'s
+    // third-state warn and at the span comment in `effect/layers.ts`.
+    log.warn(
+      {
+        workspaceId: episode.workspaceId,
+        episodeId: episode.id,
+        comparable: report.comparable,
+      },
+      "brain extraction: skipping the alias-proposal trigger — an earlier episode in this tick timed out and tripped the per-tick breaker, so THIS workspace's candidates are not proposed even though the stall may have been another tenant's. They are re-derived only by the next comparable-creating episode in this workspace; the breaker resets on the next tick",
+    );
+    return;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   try {

@@ -258,9 +258,14 @@ const WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
  *   - `source` resolves to a warehouse-class member → TRUE. Its space is closed,
  *     typed and described, which is the entire argument for making it the target.
  *   - `source` is present and resolves to anything else → FALSE.
- *   - `source` is absent, or present and unresolvable (`warehouse:prod`,
- *     `snowflake`) → SQL NULL, folded to FALSE by {@link ALIAS_PROPOSAL_SQL}'s
- *     `COALESCE`. Evidence of nothing must not become evidence of a direction.
+ *   - `source` is present and does not resolve to a warehouse-class member
+ *     (`slack`, and also `warehouse:prod` or `snowflake`) → FALSE. Evidence of
+ *     nothing must not become evidence of a direction.
+ *   - `source` is ABSENT → `provenance->>'source'` is SQL NULL, so `= ANY(…)` is
+ *     unknown and `bool_or` over an all-NULL group answers NULL, folded to
+ *     FALSE by {@link ALIAS_PROPOSAL_SQL}'s `COALESCE`. ⚠️ Only the ABSENT case
+ *     reaches NULL — an earlier version of this bullet folded the unresolvable
+ *     case in with it, which the truth table above contradicts.
  *
  * FALSE on both sides makes the candidate UNDIRECTED, which is the fail-closed
  * outcome: approval routes the choice of target to a human instead of the
@@ -591,9 +596,19 @@ export interface RankedAliasCandidate {
  *   - Restoring `fromNorm`/`toNorm` on {@link AliasRankHint} — the shape it USED
  *     to have — makes `applyHintRanks(candidates, candidates)` legal again and
  *     gives every candidate the bonus.
+ *
+ * ⚠️ **Spelled as `keyof` and as the REVERSE assignability, and the first cut of
+ * both was a no-op.** `RankedAliasCandidate extends AliasCandidate` never
+ * becomes true by adding two fields, because `AliasCandidate` needs four — so
+ * the pin stayed satisfied through the exact refactor it names. And
+ * `applyHintRanks(candidates, candidates)` is legal iff `AliasCandidate extends
+ * AliasRankHint`, which is the other direction from the one that was written.
+ * Both replacements were compiled against their named refactor and both now
+ * error at the pin. #5068's lesson — a type annotation derived from the type it
+ * guards is a no-op — in a new spelling.
  */
-type _RankedIsNotACandidate = Assert<RankedAliasCandidate extends AliasCandidate ? false : true>;
-type _HintIsNotACandidate = Assert<AliasRankHint extends AliasCandidate ? false : true>;
+type _RankedIsNotACandidate = Assert<"fromNorm" extends keyof RankedAliasCandidate ? false : true>;
+type _HintIsNotACandidate = Assert<AliasCandidate extends AliasRankHint ? false : true>;
 
 /**
  * The rank ONE candidate earns, given the hints — the only function in the
@@ -756,7 +771,7 @@ export async function loadAliasCandidates(
   if (rows.length >= cap) {
     // WARN and not DEBUG: this is the line that stops a bounded run reading as a
     // complete one. The run is still correct — the pairs are ordered by evidence
-    // descending and the next run re-derives the whole set — but "25 candidates"
+    // descending and the whole set is re-derived whenever the trigger next fires — but "25 candidates"
     // means "at least 25" and only this line says so.
     log.warn(
       { workspaceId, cap },
@@ -785,7 +800,9 @@ export async function loadAliasCandidates(
 }
 
 /**
- * How long any one statement this producer causes may run.
+ * How long any one statement this producer causes may run ONCE THIS SETTING HAS
+ * LANDED — see {@link boundedTransaction} on the two round trips ahead of it
+ * that it cannot cover.
  *
  * Sized against the work rather than against a feeling: the self-join is over
  * one workspace's live facts filtered to non-null `object_cmp`, which is a small
@@ -900,7 +917,9 @@ export async function proposeAliasesFromCorpus(
   // workspace vocabulary lock per proposal, and holding a reader open across
   // that would serialize this producer against every approval for the length of
   // a batch. The candidate set is advisory and re-derived every run, so a pair
-  // that appears between the read and the write is simply next run's.
+  // that appears between the read and the write is next run's — which, per
+  // this function's ⚠️, means the next comparable-creating episode in this
+  // workspace and may be a long wait.
   const candidates = await bounded((tx) => loadAliasCandidates(tx, workspaceId, run.cap));
   // The bounded runner is threaded into the PROPOSE half too, not just the read.
   // Every statement this producer causes — including `proposeAliasEdge`'s

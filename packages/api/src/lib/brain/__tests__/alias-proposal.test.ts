@@ -353,12 +353,12 @@ describe("what the producer hands the queue (#5034)", () => {
     // a lock per candidate. Asserted because `proposeAliasEdges` over an empty
     // list is a silent no-op that would look identical from the counters.
     //
-    // ⚠️ It also pins the BOUNDS onto the read, which is the guard against
-    // wedging the extraction fiber — `extract.ts` awaits this inside a
-    // `concurrency: 1` loop with no per-tick timeout, so a statement that never
-    // returns stops the whole drain with no error to catch. Exact-list, so
-    // deleting either `SET LOCAL` turns this red rather than merely making the
-    // producer unbounded again.
+    // ⚠️ It also pins the BOUNDS onto the read — which is what RECLAIMS the
+    // pooled connection when a statement is slow or lock-blocked, and NOT what
+    // keeps the drain moving. `extract.ts`'s `ALIAS_PROPOSAL_DEADLINE_MS` does
+    // that, because `withBrainTransaction` issues `BEGIN` before the callback
+    // and these settings cannot bound their own arrival. Exact-list, so deleting
+    // either `SET LOCAL` turns this red.
     const seen: string[] = [];
     const counters = await proposeAliasesFromCorpus(
       "ws-1",

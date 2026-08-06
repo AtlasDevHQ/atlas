@@ -1342,8 +1342,11 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
 
   it("times out a stalled producer, keeps the episode, and trips the per-tick breaker", async () => {
     // The three properties nothing could see, all reachable with a fake that
-    // SETTLES — so this test cannot hang even if the deadline is deleted; it
-    // fails on the missing warn instead.
+    // SETTLES — so this test cannot hang even if the deadline is deleted. It
+    // degrades to a wrong COUNT (`asked` becomes 3), which is a falsifier where
+    // a hang is not. ⚠️ There is no warn assertion here, and an earlier version
+    // of this comment said there was: the logger is real in this file, and the
+    // mock lives in `alias-proposal-logging.test.ts`.
     //
     // ⭐ The breaker is the round-3 finding: a stall that precedes the first
     // `SET LOCAL` leaves `withBrainTransaction` parked on `BEGIN` with a client
@@ -1383,6 +1386,86 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect(result).toMatchObject({ status: "success", inspected: 3, extracted: 3, failed: 0 });
     // …and the producer was asked exactly ONCE across three stalling episodes.
     // Without the breaker this is 3, which is three leaked connections.
+    expect(asked).toHaveLength(1);
+  });
+
+  it("does NOT trip the breaker on an ordinary proposal failure", async () => {
+    // ⚠️ The breaker's CONDITION, which round 3 added and did not falsify:
+    // `if (timedOut) …` → an unconditional trip killed zero tests, because the
+    // only failure test used ONE episode and so could not see a tick-wide
+    // consequence.
+    //
+    // What that admits is not hypothetical: `ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL`'s
+    // own docstring calls `55P03` a DESIGNED, expected outcome — a human
+    // mid-approval holding the vocabulary lock. Under the unconditional trip,
+    // one expected lock timeout retires the producer for the rest of the tick
+    // and up to `BATCH_SIZE - 1` episodes silently skip.
+    //
+    // A rejection released its connection on the way out; only a TIMEOUT may
+    // still be holding one, and only a timeout may cost the rest of the tick.
+    const asked: string[] = [];
+    for (let i = 0; i < 2; i++) await insertEpisode({ sourceId: `fastfail-${i}` });
+    let episodeIndex = 0;
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({
+              subject: `fftier ${episodeIndex++}`,
+              predicate: "priced at",
+              object: "499 USD",
+            }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: (workspaceId) => {
+          asked.push(workspaceId);
+          return Promise.reject(new Error("55P03 lock_not_available"));
+        },
+      }),
+    );
+    expect(asked).toHaveLength(2);
+  });
+
+  it("resets the breaker between TICKS, so one bad minute does not retire the producer", async () => {
+    // ⚠️ The breaker's SCOPE, the other constraint round 3 asserted and did not
+    // falsify: hoisting `const proposalStall = { stalled: false }` to module
+    // scope killed zero tests. `extract.ts`'s own `Effect.suspend` comment warns
+    // that exactly this hoist is "an obviously-equivalent-looking refactor",
+    // which is the definition of a change a reviewer waves through.
+    //
+    // What it admits: ONE transient stall permanently disables alias proposals
+    // for the process lifetime — silently, with no log, no counter and no red
+    // test — on a producer with one caller and no sweep.
+    await insertEpisode({ sourceId: "stall-tick-1" });
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "btier 0", predicate: "priced at", object: "499 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        aliasProposalDeadlineMs: 20,
+        proposeAliases: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        },
+      }),
+    );
+
+    await insertEpisode({ sourceId: "stall-tick-2" });
+    const asked: string[] = [];
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "btier 1", predicate: "priced at", object: "499 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+        },
+      }),
+    );
+    // A process-lifetime flag leaves this empty, forever, with no line.
     expect(asked).toHaveLength(1);
   });
 

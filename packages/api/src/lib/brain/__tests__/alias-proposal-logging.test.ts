@@ -55,20 +55,33 @@ const debugs: Captured[] = [];
 mock.module("@atlas/api/lib/logger", () => {
   const record = (sink: Captured[]) => (payload: unknown, message?: unknown) =>
     sink.push({ payload, message: typeof message === "string" ? message : String(payload) });
-  const logger = {
+  const capture = {
     error: record(errors),
     warn: record(warns),
     info: () => {},
     debug: record(debugs),
-    trace: () => {},
-    fatal: () => {},
-    child: () => logger,
     level: "info",
   };
   return {
-    createLogger: () => logger,
-    logger,
-    default: logger,
+    createLogger: () => capture,
+    // ⚠️ ALL TEN value exports of `lib/logger.ts`, on `acl-logging.test.ts`'s
+    // template. The first cut supplied three — and two of those (`logger`,
+    // `default`) are not exports of that module at all, while seven real ones
+    // were missing. It passed only because `alias-proposal.ts`'s import graph
+    // happens to reach `createLogger` alone; `lib/settings.ts` is one import
+    // away, already reached by neighbouring brain modules, and uses `getLogger`
+    // and `setLogLevel`. The failure when that lands is an `undefined is not a
+    // function` in a file with nothing to do with this one, which is exactly
+    // why the rule is "mock every export".
+    getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
+    setLogLevel: () => true,
+    getRequestContext: () => undefined,
+    withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+    ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+    redactPaths: [] as string[],
+    scrubErrSerializer: (value: unknown) => value,
+    scrubLogFormatter: (obj: unknown) => obj,
+    hashShareToken: (token: string) => token,
   };
 });
 

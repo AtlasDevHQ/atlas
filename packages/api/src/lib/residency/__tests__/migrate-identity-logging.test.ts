@@ -100,6 +100,11 @@ afterEach(() => {
  * Postgres client"). That refusal is correct and load-bearing — it is what stops
  * a pool being passed where a transaction is required — so it is ANSWERED here
  * rather than routed around.
+ *
+ * ⚠️ Stating the cost of answering it: this suite therefore CANNOT catch "the
+ * importer took the lock outside a transaction". `migrate-roundtrip-pg.test.ts`
+ * covers that against a real connection; what this file pins is the ORDER of the
+ * statements, which is invisible there.
  */
 function captureClient(): { client: InternalPoolClient; calls: string[] } {
   const calls: string[] = [];
@@ -176,7 +181,7 @@ function fact(id: string, identity: Record<string, unknown>): Record<string, unk
 }
 
 const identityWarn = (): Captured | undefined =>
-  warns.find((w) => w.message.includes("Region import nulled identity values"));
+  warns.find((w) => w.message.includes("Region import WILL land identity losses"));
 
 describe("the identity-loss line (#5035)", () => {
   it("separates the RULE from the DRIFT, and counts each", async () => {
@@ -201,16 +206,35 @@ describe("the identity-loss line (#5035)", () => {
     expect(warn!.payload).toMatchObject({
       orgId: "org-log",
       bundleVersion: 3,
-      // Two positions on f-1.
-      storeLocal: 2,
-      unreadable: 2,
-      unkeyable: 0,
+      // Two POSITIONS on f-1 — the names carry their unit because the first two
+      // count positions (up to two per fact) and the last two count facts.
+      storeLocalPositions: 2,
+      unreadablePositions: 2,
+      unkeyableFacts: 0,
+      nullKeyFacts: 0,
     });
     // `unreadable` is the count an operator must act on, so the message has to
     // say what it means rather than leaving the reader to infer it from a
     // number. Asserted because a diagnostic that does not explain itself is
     // indistinguishable from one nobody reads.
     expect(warn!.message).toContain("DRIFT");
+  });
+
+  it("reports a v3 fact that ARRIVED unkeyed — the exporter's own drift shape", async () => {
+    // The destination-side half of `textOrNull`'s failure. Region A's projection
+    // drops `f.subject_key`; every fact exports `null`; this region accepts it
+    // (null is legitimate at all five positions) and lands the whole corpus
+    // unkeyed. Without this counter the only signal lives in the OTHER region's
+    // log stream, and nobody watching the cutover reads it.
+    const { client } = captureClient();
+    await importBundle(
+      client,
+      bundleWith([fact("f-1", { subjectKey: null }), fact("f-2", {})]),
+      "org-log",
+    );
+    const warn = identityWarn();
+    expect(warn, "a v3 fact arriving with no key is silent").toBeDefined();
+    expect(warn!.payload).toMatchObject({ nullKeyFacts: 1, unkeyableFacts: 0 });
   });
 
   it("says nothing when nothing was lost", async () => {
@@ -251,7 +275,11 @@ describe("the identity-loss line (#5035)", () => {
 
     const warn = identityWarn();
     expect(warn, "a legacy fact whose surface normalizes away is now silent").toBeDefined();
-    expect(warn!.payload).toMatchObject({ storeLocal: 0, unreadable: 0, unkeyable: 1 });
+    expect(warn!.payload).toMatchObject({
+      storeLocalPositions: 0,
+      unreadablePositions: 0,
+      unkeyableFacts: 1,
+    });
   });
 
   it("merges the vocabulary BEFORE it reads one to key legacy facts", async () => {

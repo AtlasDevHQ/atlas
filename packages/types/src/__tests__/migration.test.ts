@@ -225,7 +225,11 @@ describe("migration types", () => {
       ],
     };
 
-    expect(bundle.manifest.version).toBe(EXPORT_BUNDLE_VERSION);
+    // The LITERAL, not `EXPORT_BUNDLE_VERSION` — the object above is built from
+    // that constant, so comparing to it is a self-comparison that cannot fail.
+    // (It was one for a round, changed to silence a bump; the bump belongs
+    // here, which is the point of a pin.)
+    expect(bundle.manifest.version).toBe(3);
     expect(bundle.dashboards?.[0].cards).toHaveLength(1);
     expect(bundle.dashboards?.[0].drafts).toHaveLength(1);
     expect(bundle.knowledgeDocuments?.[0].links).toHaveLength(1);

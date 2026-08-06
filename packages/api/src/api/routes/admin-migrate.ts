@@ -32,6 +32,7 @@ import {
   type ComparableValue,
   type RegionCarryOutcome,
 } from "@atlas/api/lib/brain/object-cmp";
+
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -177,6 +178,17 @@ const IDENTITY_FIELDS = [
 ] as const satisfies readonly (keyof ExportedBrainFact)[];
 
 /**
+ * The three SLOT KEYS, which are join arms and therefore have one more rule than
+ * the two comparable values: `""` is refused (see the validation loop).
+ *
+ * Derived from {@link IDENTITY_FIELDS} by suffix rather than re-listed, so the
+ * two cannot disagree about which of the five is a key.
+ */
+const IDENTITY_KEY_FIELDS = IDENTITY_FIELDS.filter(
+  (f): f is Extract<(typeof IDENTITY_FIELDS)[number], `${string}Key`> => f.endsWith("Key"),
+);
+
+/**
  * …and the other direction, which the `satisfies` above cannot express.
  *
  * `satisfies` proves every member is a real field; it does not prove the list
@@ -188,6 +200,14 @@ const IDENTITY_FIELDS = [
  * the same rule `bundle-identity-v3.test.ts` applies to the SQL column names one
  * layer down. A type-level `never` check rather than a test, because the failure
  * belongs at the edit site: whoever adds the field sees it.
+ *
+ * ⚠️ **It can MISFIRE, and the obvious fix is the wrong one.** `ExportedBrainFact`
+ * lives in a published package evolved by issues with nothing to do with this
+ * one, so a future `dedupeKey` or `idempotencyKey` trips this pin. Adding it to
+ * {@link IDENTITY_FIELDS} would make that field REQUIRED on every v3 fact and
+ * REFUSED on every v1/v2 one, breaking imports from every already-deployed
+ * exporter. If the new field is not identity, narrow the `Extract` — do not
+ * extend the list.
  */
 type _IdentityFieldsAreExhaustive =
   Exclude<
@@ -483,6 +503,23 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
           // only ever matters to a caller inside this process, which is exactly
           // the caller a confusing refusal costs the most.
           const present = f[field] !== undefined;
+          // ⚠️ `""` is refused at the three SLOT KEYS, and this is not a
+          // tidiness check. No honest writer produces it — `slotKey` returns
+          // `null` for a surface that normalizes away and 0187's backfill maps
+          // it through `NULLIF(…, '')` — and the column has no CHECK. An empty
+          // key is not inert like a null one: `=` matches every OTHER empty key,
+          // so a bundle carrying them puts every such fact in ONE slot, where
+          // reconcile corroborates unrelated claims into a single row and the
+          // publish gate stamps `valid_to` across the group. The round-1 fix
+          // gated the two `_cmp` columns on exactly this argument and left the
+          // three columns that feed the same join ungated.
+          //
+          // The `_cmp` positions are not checked here: they go through
+          // `regionPortableComparable`, which refuses an empty payload and an
+          // untagged value on the way in.
+          if (IDENTITY_KEY_FIELDS.includes(field as (typeof IDENTITY_KEY_FIELDS)[number]) && f[field] === "") {
+            return { ok: false, error: `${at}.${field}: an empty string is not a key any writer can produce — a surface that normalizes away carries \`null\`, which joins nothing. An empty key joins every OTHER empty key, merging unrelated claims into one slot.` };
+          }
           if (version >= IDENTITY_FROM_VERSION) {
             if (!present || (f[field] !== null && typeof f[field] !== "string")) {
               return { ok: false, error: `${at}.${field}: must be present, and a string or null (required from bundle version ${IDENTITY_FROM_VERSION}; null is legitimate — a surface that normalizes away has no key, and a null comparable value is the 'unknown' verdict).` };
@@ -842,6 +879,35 @@ type IdentitySource =
   | { readonly carried: true }
   | { readonly carried: false; readonly vocabulary: ClaimVocabulary };
 
+/**
+ * Is this carry outcome a LOSS — something worth recomputing?
+ *
+ * One exhaustive classifier rather than a string test repeated at the two sites
+ * that need it (`comparableDropped` and the operator counters). A fifth
+ * {@link RegionCarryOutcome} reason would otherwise fall out of BOTH silently:
+ * the row is not marked `provisional` and the operator is not told, which is two
+ * fail-open drops from one added union member.
+ *
+ * `absent` is deliberately NOT a loss. Nothing arrived, so nothing was
+ * discarded, and marking it would make `provisional` mean *"was imported"*
+ * rather than *"is worth recomputing"* — the meaning #4772's review filter
+ * reads.
+ */
+function isLoss(reason: RegionCarryOutcome["reason"]): boolean {
+  switch (reason) {
+    case "store-local":
+    case "unreadable":
+      return true;
+    case "carried":
+    case "absent":
+      return false;
+    default: {
+      const exhaustive: never = reason;
+      throw new Error(`isLoss: unhandled carry reason ${String(exhaustive)}`);
+    }
+  }
+}
+
 /** The identity columns an imported fact lands with (#5035). */
 interface ImportedIdentity {
   readonly subjectKey: string | null;
@@ -875,6 +941,8 @@ interface ImportedIdentity {
   readonly carryReasons: readonly RegionCarryOutcome["reason"][];
   /** A key this import COMPUTED came out null — the surface norms away. */
   readonly unkeyable: boolean;
+  /** A key this import CARRIED arrived null — the cause is the source region's. */
+  readonly nullKeys: boolean;
 }
 
 /**
@@ -939,6 +1007,9 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
       objectCmp: null,
       comparableDropped: false,
       carryReasons: [],
+      // Counted through `unkeyable` on this arm — the key was COMPUTED here, so
+      // its null-ness is this import's own fact and its cause is the surface.
+      nullKeys: false,
       // `slotKey` is null for a surface that normalizes away (`-`, `___`), which
       // is legal and permanent. The INGEST path warns about it and is described
       // as "the only signal such a claim ever produces" — this is the second key
@@ -959,18 +1030,22 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
     objectKey: fact.objectKey ?? null,
     subjectCmp: subject.value,
     objectCmp: object.value,
-    // Compared against the REASON, not against the null-ness of the result. A
-    // row that arrived NULL is unchanged and has nothing to recompute; a row
-    // whose value was dropped does. Same final value, different fact about the
-    // row — and reading the reason rather than re-testing `fact.subjectCmp !=
-    // null` keeps the two in one place.
-    comparableDropped: [subject.reason, object.reason].some(
-      (r) => r === "store-local" || r === "unreadable",
-    ),
+    // Derived from the REASONS through {@link isLoss}, not from the null-ness of
+    // the result. A row that arrived NULL is unchanged and has nothing to
+    // recompute; a row whose value was dropped does. Same final value, different
+    // fact about the row — and one exhaustive classifier rather than two string
+    // tests, so a fifth reason cannot land unmarked AND uncounted.
+    comparableDropped: [subject.reason, object.reason].some(isLoss),
     carryReasons: [subject.reason, object.reason],
-    // A CARRIED key is never recomputed here, so this import cannot make one
-    // null — a null arrived null, and its cause belongs to the source region.
+    // A carried key is never recomputed here, so this import cannot make one
+    // NULL — but it can LAND one, and that is the state an operator needs
+    // reported. The exporter's own drift path produces exactly it: a projection
+    // that stops returning `f.subject_key` exports `null` for every fact, this
+    // region accepts it (null is legitimate at all five positions), and the
+    // whole corpus lands unkeyed with a green 200 at both ends. Region A's log
+    // carries the only other signal, and nobody watching the CUTOVER reads it.
     unkeyable: false,
+    nullKeys: [fact.subjectKey, fact.predicateKey, fact.objectKey].some((k) => (k ?? null) === null),
   };
 }
 
@@ -1541,18 +1616,29 @@ export async function importBundle(
   // Three counters, not one, because they mean different things and only two of
   // them are the design working:
   //
-  //   storeLocal — an `entity:` id dropped. ADR-0037 §8's rule, expected, and
-  //                the size of it is what tells an operator how much of the
-  //                corpus abstains until recomputed.
-  //   unreadable — the source region wrote a tag or a payload THIS region cannot
-  //                read. Real evidence lost, and the only symptom otherwise is
-  //                its absence. A version skew between two independently
-  //                deployed regions produces exactly this.
-  //   unkeyable  — a legacy surface that normalizes away, so no key exists.
+  //   storeLocalPositions — an `entity:` id dropped. ADR-0037 §8's rule,
+  //                expected, and the size of it is what tells an operator how
+  //                much of the corpus abstains until recomputed.
+  //   unreadablePositions — the source region wrote a tag or a payload THIS
+  //                region cannot read. Real evidence lost, and the only symptom
+  //                otherwise is its absence. A version skew between two
+  //                independently deployed regions produces exactly this.
+  //   unkeyableFacts — a legacy surface that normalizes away, so no key exists.
   //                Legal and permanent; the ingest path warns about it and calls
   //                that "the only signal such a claim ever produces", and this
   //                is the second key writer.
-  const identityLoss = { storeLocal: 0, unreadable: 0, unkeyable: 0 };
+  //   nullKeyFacts — a v3 fact that ARRIVED with a null key. The exporter's
+  //                drift path produces a whole corpus of them.
+  //
+  // ⚠️ The names carry their UNIT because the first two count POSITIONS (up to
+  // two per fact) and the last two count FACTS. Read against `brainFacts.imported`
+  // without that, a ratio is nonsense in one direction and understated in the other.
+  const identityLoss = {
+    storeLocalPositions: 0,
+    unreadablePositions: 0,
+    unkeyableFacts: 0,
+    nullKeyFacts: 0,
+  };
 
   // bundle episode id → the id it actually resolved to in the target. Only
   // populated on the adoption path (same source record, different uuid);
@@ -1693,10 +1779,27 @@ export async function importBundle(
 
       const identity = importedIdentity(fact, identitySource);
       for (const reason of identity.carryReasons) {
-        if (reason === "store-local") identityLoss.storeLocal++;
-        else if (reason === "unreadable") identityLoss.unreadable++;
+        switch (reason) {
+          case "store-local":
+            identityLoss.storeLocalPositions++;
+            break;
+          case "unreadable":
+            identityLoss.unreadablePositions++;
+            break;
+          case "carried":
+          case "absent":
+            break;
+          default: {
+            // A fifth reason must not fall silently out of BOTH this counter and
+            // `comparableDropped` — two silent drops from one added union
+            // member, in the one file that otherwise pins exhaustiveness twice.
+            const exhaustive: never = reason;
+            throw new Error(`importBundle: unhandled carry reason ${String(exhaustive)}`);
+          }
+        }
       }
-      if (identity.unkeyable) identityLoss.unkeyable++;
+      if (identity.unkeyable) identityLoss.unkeyableFacts++;
+      if (identity.nullKeys) identityLoss.nullKeyFacts++;
 
       await client.query(
         // `pre_widening_visible_to` travels or the target region re-opens the
@@ -1776,10 +1879,10 @@ export async function importBundle(
   // healthy counts. `unreadable > 0` is the one an operator must act on; it
   // means the SOURCE region emitted something this one cannot read, and those
   // rows lost real evidence rather than following a rule.
-  if (identityLoss.storeLocal > 0 || identityLoss.unreadable > 0 || identityLoss.unkeyable > 0) {
+  if (Object.values(identityLoss).some((n) => n > 0)) {
     log.warn(
       { orgId, bundleVersion: bundle.manifest.version, ...identityLoss },
-      "Region import nulled identity values (#5035, ADR-0037 §8). `storeLocal` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadable` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. `unkeyable` is a legacy surface that normalizes away to nothing, which is legal and permanent",
+      "Region import WILL land identity losses when this transaction commits (#5035, ADR-0037 §8). `storeLocalPositions` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadablePositions` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. `nullKeyFacts` is the other drift shape and is worse: those facts arrived with NO identity, so they join nothing at all — check the source region's export log for a projection warning. `unkeyableFacts` is a legacy surface that normalizes away to nothing, which is legal and permanent. Positions vs facts: the first two count POSITIONS, up to two per fact",
     );
   }
 

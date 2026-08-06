@@ -1614,6 +1614,20 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       const savedRegion = process.env.ATLAS_API_REGION;
       process.env.ATLAS_API_REGION = "us-test";
       try {
+        // Captured BEFORE the sweep so the "target org spared" assertion is a
+        // before/after comparison rather than an absolute count that depends on
+        // an earlier test in this file having completed.
+        const targetFactsBeforeSweep = (
+          await pool.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`,
+            [TARGET_ORG],
+          )
+        ).rows[0]!.n;
+        expect(
+          targetFactsBeforeSweep,
+          "the target org holds no imported facts, so 'the sweep spared them' is vacuous",
+        ).toBeGreaterThan(0);
+
         const sweep = await runSourceCleanupSweep();
         expect(sweep).toEqual({ due: 2, cleaned: 1, skipped: 1, blocked: 0 });
 
@@ -1649,11 +1663,22 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         expect(await countIn(`SELECT count(*)::int AS n FROM brain_episodes WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM brain_edges WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM fact_audience_member WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
-        // The TARGET org's imported brain is untouched — the sweep is scoped
-        // to the migrated-away workspace, not to the tables. Four facts: the
-        // live one, the tombstoned one, the value-typed-subject one, and the
-        // catch-up fact from the round-trip block above.
-        expect(await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG])).toBe(4);
+        // The TARGET org's imported brain is UNTOUCHED — the sweep is scoped to
+        // the migrated-away workspace, not to the tables.
+        //
+        // ⚠️ Asserted as *unchanged by the sweep*, not as an absolute count.
+        // The absolute form (`toBe(4)`) depends on the round-trip test above
+        // having run to completion, so ANY mutation that fails an assertion
+        // inside it also failed here — and every kill in the `roundtrip-pg`
+        // column read `2` when the real figure was `1`, the second being a
+        // cascade reported under a message about "sparing the target org"
+        // (#5035, panel round 2, proven by running the test alone). A
+        // before/after comparison measures what this test is actually about and
+        // is inert to the other test's state.
+        expect(
+          await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG]),
+          "the cleanup sweep deleted facts belonging to the TARGET org — it is scoped to the migrated-away workspace, not to the tables",
+        ).toBe(targetFactsBeforeSweep);
 
         // Survivors: platform settings row, unattributable cache row, the
         // TARGET org's imported data (seeded by the round-trip test above —

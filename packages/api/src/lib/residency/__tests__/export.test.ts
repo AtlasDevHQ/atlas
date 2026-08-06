@@ -3,8 +3,6 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -34,10 +32,23 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
+/**
+ * Captured `warn` payloads, so the identity-drift line can be asserted
+ * BEHAVIOURALLY (#5035, panel round 2).
+ *
+ * The first cut of that assertion grepped `textOrNull`'s source for the
+ * substrings `value === null` and `log.warn` — and the INVERTED implementation
+ * (loud on the honest abstain, silent on the drift) contains both, so the pin
+ * passed for the exact defect it named. A pin derived from source text cannot
+ * falsify a change in what that text means.
+ */
+const warns: { payload: unknown; message: string }[] = [];
+
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
-    warn: () => {},
+    warn: (payload: unknown, message?: unknown) =>
+      warns.push({ payload, message: typeof message === "string" ? message : String(payload) }),
     error: () => {},
     debug: () => {},
   }),
@@ -593,31 +604,63 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
     }
   });
 
-  it("is SILENT for a SQL null and LOUD for anything else", () => {
+  const driftWarn = () => warns.find((w) => w.message.includes("identity columns did not decode"));
+
+  it("is SILENT for a SQL null and LOUD for anything else", async () => {
     // The three-state distinction the first cut of `textOrNull` did not make.
     // An honest abstain arrives as `null` — a surface that norms away has no
     // key, and NULL is how `unknown` is spelled at a `_cmp` — while a dropped
-    // column arrives as `undefined`. Folding them into one silent `null` hides
-    // a corpus-wide degradation behind the ordinary case, which is the failure
-    // `preWideningGrant` eight lines up already refuses.
+    // column arrives as `undefined`. Folding them into one silence hides a
+    // corpus-wide degradation behind the ordinary case.
     //
-    // Asserted on the SOURCE rather than by capturing the logger: the rule is
-    // "these two states take different branches", and a logger mock would pin
-    // the message rather than the split.
-    const source = readFileSync(
-      join(import.meta.dir, "..", "export.ts"),
-      "utf8",
-    );
-    const body = /function textOrNull\([\s\S]*?\n}/.exec(source);
-    expect(body, "textOrNull is gone — re-point this pin").not.toBeNull();
+    // ⚠️ Both directions, because only the PAIR distinguishes the shipped
+    // implementation from its inversion. A test that asserted only "drift
+    // warns" passes for a function that warns on everything, which is the
+    // shape that trains an operator to ignore the line.
+    resetMocks();
+    warns.length = 0;
+    seed(null);
+    await exportWorkspaceBundle("org-1");
     expect(
-      body![0].includes("value === null"),
-      "textOrNull no longer separates a SQL NULL from a dropped column, so an honest abstain and a corpus-wide projection failure produce the same silence",
-    ).toBe(true);
+      driftWarn(),
+      "an honest abstain warned — every fact with no key or an `unknown` comparable value now produces a line, which is most of them",
+    ).toBeUndefined();
+
+    resetMocks();
+    warns.length = 0;
+    mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+      rows: [
+        {
+          id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
+          body: "…", locator: null, occurred_at: null,
+          ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
+          visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+    };
+    // `undefined` — the column dropped out of the projection, at TWO positions
+    // and on two facts, so the payload's per-column counts are observable.
+    const dropped = { ...factRow(null) };
+    delete (dropped as Record<string, unknown>).subject_key;
+    delete (dropped as Record<string, unknown>).object_cmp;
+    mockPoolQueryResults["FROM brain_facts f"] = {
+      rows: [dropped, { ...dropped, id: "fact-2" }],
+    };
+    await exportWorkspaceBundle("org-1");
+
+    const warn = driftWarn();
     expect(
-      body![0].includes("log.warn"),
-      "textOrNull no longer warns on drift. A column that stops decoding then exports `null` for every fact, the destination accepts it (null is legitimate at all five positions), and the whole imported corpus lands unkeyed with a green 200 at both ends",
-    ).toBe(true);
+      warn,
+      "a dropped column is silent. It exports `null` for every fact, the destination accepts it (null is legitimate at all five positions), and the whole imported corpus lands unkeyed with a green 200 at both ends",
+    ).toBeDefined();
+    // ONE line for the corpus, naming the columns and their counts — not one
+    // per row. Five call sites over a 200k-fact workspace would otherwise be a
+    // million records inside a single export call.
+    expect(warns.filter((w) => w.message.includes("identity columns did not decode"))).toHaveLength(1);
+    expect(warn!.payload).toMatchObject({
+      columns: { subject_key: 2, object_cmp: 2 },
+      brainFacts: 2,
+    });
   });
 
   it("no longer SELECTs predicate_cardinality", async () => {

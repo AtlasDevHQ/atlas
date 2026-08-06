@@ -79,6 +79,14 @@ export async function handleMigrateImport(
   // CLI built against an older published types package can't silently shrink
   // the accept set — same rationale as the server's admin-migrate.ts. The
   // `satisfies` tether (type-only, scaffold-safe) pins them to the wire union.
+  //
+  // ⚠️ And deliberately NO exhaustiveness pin, unlike `admin-migrate.ts`, which
+  // has one. The asymmetry is the point: a pin here would force this list to
+  // cover the union of whatever `@useatlas/types` version got installed, so a
+  // CLI built against a NEWER package would claim to read a version its own code
+  // has never seen. Drift in the other direction — this list falling behind the
+  // server's — is what actually costs a cutover, and that is guarded lexically
+  // by `bundle-identity-v3.test.ts`'s CLI-parity arm.
   const SUPPORTED_BUNDLE_VERSIONS = [1, 2, 3] as const satisfies readonly import("@useatlas/types").SupportedBundleVersion[];
   // The version at which the #4460 pillar sections appear, which is what the
   // summary below is really asking about. Deliberately not "the current

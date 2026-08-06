@@ -75,7 +75,6 @@ import {
   comparableTag,
   comparableValue,
   comparableValueWithReason,
-  parseStoredComparable,
   regionPortableComparable,
   type DeclaredObjectType,
   type TaggedComparable,
@@ -553,10 +552,26 @@ describe("what survives a region hop", () => {
     "bool:true",
   ];
 
-  test("`parseStoredComparable` re-admits a well-formed value and refuses the rest", () => {
-    for (const value of [...VALUE_TYPED, "entity:01J" as TaggedComparable]) {
-      expect(parseStoredComparable(value), `\`${value}\` was refused`).toBe(value);
+  test("re-admits a well-formed value and refuses the rest", () => {
+    // ⚠️ Asserted through `regionPortableComparable`, which is the module's ONLY
+    // export that hands out a comparable read back off the wire. Round 2 of
+    // #5035's panel found the reason it has to be: an exported
+    // `parseStoredComparable` returned a `ComparableValue` and admitted
+    // `entity:` verbatim, so `subjectCmp: parseStoredComparable(fact.subjectCmp)`
+    // compiled with NO CAST and reintroduced the whole defect — #5032's
+    // sibling-producer bypass, one column over. It was deleted; the re-admission
+    // arms are asserted through the survivor.
+    //
+    // `reason` is what separates the two `null`s: `unreadable` (refused) from
+    // `store-local` (the rule) and `absent` (nothing arrived).
+    for (const value of VALUE_TYPED) {
+      expect(regionPortableComparable(value), `\`${value}\` was refused`).toEqual({
+        value,
+        reason: "carried",
+      });
     }
+    // An entity id is well-formed and re-admitted — then dropped as store-local.
+    expect(regionPortableComparable("entity:01J").reason).toBe("store-local");
     for (const bad of [
       null,
       undefined,
@@ -574,11 +589,13 @@ describe("what survives a region hop", () => {
       "",
       ":",
     ]) {
-      expect(parseStoredComparable(bad), `\`${String(bad)}\` was admitted`).toBeNull();
+      expect(regionPortableComparable(bad).reason, `\`${String(bad)}\` was admitted`).not.toBe(
+        "carried",
+      );
     }
   });
 
-  test("`parseStoredComparable` REFUSES a payload this region cannot re-derive", () => {
+  test("REFUSES a payload this region cannot re-derive", () => {
     // ⚠️ The first cut of this function ADMITTED these, reasoning that an
     // unreadable payload "compares unequal to everything and proves nothing".
     // That is false in the direction that stamps: *different* is `a <> b AND
@@ -591,8 +608,10 @@ describe("what survives a region hop", () => {
       // region predating that check could have written it; here it would read as
       // provably different from a genuine `date:2026-03-01`.
       "date:2026-02-31",
-      // Three letters, not ISO-4217 — the shape `CURRENCY_RE` used to accept.
-      "money:ZZZ9:499",
+      // THREE letters, not ISO-4217 — the shape `CURRENCY_SHAPE_RE` accepts and
+      // the membership set refuses. (An earlier fixture here was `ZZZ9`, four
+      // characters, which never reaches the membership arm its comment named.)
+      "money:ZZZ:499",
       "money:MOS:12",
       // A payload that is not a fixpoint of its own canonicalizer.
       "number:0499",
@@ -602,14 +621,26 @@ describe("what survives a region hop", () => {
       // Money with no currency/amount split at all.
       "money:499",
     ]) {
-      expect(parseStoredComparable(bad), `\`${bad}\` was admitted`).toBeNull();
+      expect(regionPortableComparable(bad), `\`${bad}\` was admitted`).toEqual({
+        value: null,
+        reason: "unreadable",
+      });
     }
 
     // …and the positive control on the same axis: a payload this region WOULD
     // produce is admitted, so the refusals above are a grammar check rather than
     // a blanket refusal of every money/date value.
-    for (const good of ["date:2026-03-01", "money:USD:499", "number:499", "bool:true"]) {
-      expect(parseStoredComparable(good), `\`${good}\` was refused`).toBe(good as TaggedComparable);
+    const CANONICAL: readonly TaggedComparable[] = [
+      "date:2026-03-01",
+      "money:USD:499",
+      "number:499",
+      "bool:true",
+    ];
+    for (const good of CANONICAL) {
+      expect(regionPortableComparable(good), `\`${good}\` was refused`).toEqual({
+        value: good,
+        reason: "carried",
+      });
     }
   });
 
@@ -623,7 +654,7 @@ describe("what survives a region hop", () => {
       const produced = comparableValue({ surface });
       expect(produced, `\`${surface}\` stopped parsing`).not.toBeNull();
       expect(
-        parseStoredComparable(produced),
+        regionPortableComparable(produced).value,
         `\`${produced}\` is produced by comparableValue but refused on the way back in — the two are now different grammars`,
       ).toBe(produced);
     }

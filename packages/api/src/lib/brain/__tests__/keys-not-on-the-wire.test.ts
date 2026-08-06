@@ -161,6 +161,14 @@ const DECLARATION_SITES = new Set([
   // applies it and reverts it; it is not a read surface and it ships in no
   // bundle.
   "packages/api/scripts/mutations/alias-proposal.mutations.ts",
+  // The same shape a third time (#5035). Its occurrences are the before/after
+  // strings of the bundle-identity mutations — including two DELIBERATE quoted
+  // copies of a key projection (`SELECT a.object_key FROM brain_fact_alias a`,
+  // and a joined `e.audience_cmp` inside the granted statement), because
+  // measuring what §8's whole-file exemption is worth requires writing the
+  // violation down. `mutate.ts` applies each one and reverts it; the file is not
+  // a read surface and ships in no bundle.
+  "packages/api/scripts/mutations/bundle-identity.mutations.ts",
 ]);
 
 /**

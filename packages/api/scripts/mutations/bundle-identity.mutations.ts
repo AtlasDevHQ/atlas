@@ -51,13 +51,27 @@ reverted to the alternative that was actually on the table in ADR-0037 §8, and
 each reads as an improvement rather than a regression when you meet it in a
 diff.
 
-No row is zero across every column, and TWO of them were zero before the fixture
-that separates the programs existed — *\`provisional\` is written for EVERY
-imported row* and *the SUBJECT position is hardcoded to null*. In both cases the
-corpus, not the assertions, was the problem: every fact carried a store-local id,
-so "mark the dropped rows" and "mark every row" were one program, and so were
-"follow the tag rule at the subject" and "always null the subject". Each note
-records the fixture that split them.
+**ONE row is zero across every column, and it is honest**: *the carry decision
+reads \`tag === ENTITY_TAG\` instead of the portability table*. The two spellings
+are behaviourally identical today because \`entity\` is the only store-local tag,
+so no corpus can separate them. What \`REGION_PORTABILITY\` buys is a COMPILE
+error when a second one is added — enforced by \`bun run type\`, not by this
+runner, and that is the falsifier of record for that fix.
+
+Two more rows were zero until the fixture that separates the programs existed —
+*\`provisional\` is written for EVERY imported row* and *the SUBJECT position is
+hardcoded to null*. In both cases the corpus, not the assertions, was the
+problem: every fact carried a store-local id, so "mark the dropped rows" and
+"mark every row" were one program, and so were "follow the tag rule at the
+subject" and "always null the subject". Each note records the fixture that split
+them.
+
+⚠️ **The \`roundtrip-pg\` column used to double-count.** Every kill read \`2\`
+because the cleanup test asserted an ABSOLUTE fact count for the target org,
+which only holds if the round-trip test above it ran to completion — so any
+mutation that failed inside that test also failed the cleanup test, under a
+message about "sparing the target org". The assertion is now a before/after
+comparison and the counts are the real ones.
 `,
   mutations: [
     {
@@ -84,14 +98,14 @@ records the fixture that split them.
   type ClaimVocabulary,`,
         },
       ],
-      note: "The direction ADR-0037 §8 refuses. It is the *recoverable-looking* revert — re-deriving reuses the destination's own curated vocabulary, which reads as respecting local decisions — and it is the irreversible one: a destination alias the source lacks merges imported facts into a slot they never belonged to.",
+      note: "The direction ADR-0037 §8 refuses, and the *recoverable-looking* revert: re-deriving reuses the destination's own vocabulary, which reads as respecting local decisions. ⚠️ Stated precisely, because the note used to overreach: this edit re-derives against `identityVocabulary` — the identity function, no aliases — so what it measures is NOT-CARRIED. The over-match §8 actually refuses (a destination alias the source lacks, merging imported facts into a foreign slot) needs a curated destination vocabulary and is not what this row produces.",
     },
     {
       label: "a store-local `entity:` id travels verbatim",
       edits: [
         {
           file: OBJECT_CMP,
-          oldString: `      return verdict.tag === ENTITY_TAG
+          oldString: `      return REGION_PORTABILITY[verdict.tag] === "store-local"
         ? { value: null, reason: "store-local" }
         : { value: verdict.value, reason: "carried" };`,
           newString: `      return { value: verdict.value, reason: "carried" };`,
@@ -138,9 +152,7 @@ records the fixture that split them.
       edits: [
         {
           file: IMPORT,
-          oldString: `    comparableDropped: [subject.reason, object.reason].some(
-      (r) => r === "store-local" || r === "unreadable",
-    ),`,
+          oldString: `    comparableDropped: [subject.reason, object.reason].some(isLoss),`,
           newString: `    comparableDropped: false,`,
         },
       ],
@@ -151,9 +163,7 @@ records the fixture that split them.
       edits: [
         {
           file: IMPORT,
-          oldString: `    comparableDropped: [subject.reason, object.reason].some(
-      (r) => r === "store-local" || r === "unreadable",
-    ),`,
+          oldString: `    comparableDropped: [subject.reason, object.reason].some(isLoss),`,
           newString: `    comparableDropped: true,`,
         },
       ],
@@ -165,7 +175,7 @@ records the fixture that split them.
         {
           file: OBJECT_CMP,
           oldString: `  if (tag !== ENTITY_TAG && !PAYLOAD_IS_CANONICAL[tag](payload)) {
-    return { kind: "unreadable", detail: "payload" };
+    return { kind: "unreadable" };
   }`,
           newString: "",
         },
@@ -183,7 +193,7 @@ records the fixture that split them.
     objectCmp: fact.objectCmp as ComparableValue,`,
         },
       ],
-      note: "The one-token copy-paste from the three key lines directly above it. Under `ImportedIdentity`'s narrowed `ComparableValue` fields the honest spelling (`fact.subjectCmp ?? null`) does not compile at all — this row has to add a cast to express it, which is itself the measurement: the type turned a silent reintroduction of the verbatim `entity:` carry into something a reviewer must write down.",
+      note: "The one-token copy-paste from the three key lines directly above it. ⚠️ `bun test` does not typecheck, so the cast is ERASED and this cell measures runtime carry behaviour rather than the narrowing — the type is enforced by `bun run type` alone, where the honest spelling `fact.subjectCmp ?? null` fails. Recorded because the previous note claimed the cast WAS the measurement, which this runner cannot make.",
     },
     {
       label: "the SUBJECT position is hardcoded to null instead of following the tag rule",
@@ -197,13 +207,12 @@ records the fixture that split them.
       note: "ADR-0037 §8 states the rule by TAG, not by position, *\"so the two cannot drift about what a store-local id is\"*. ⚠️ This killed **zero** until `migrate-roundtrip-pg.test.ts` gained a fact with a VALUE-typed `subject_cmp`: every other fixture carries `entity:` or NULL there, and against that corpus the hardcode and the rule are the same program. Third time in this arc — a disjunction, a conditional, and now a positional rule each needed a fixture drawn from the population the mutation lives in.",
     },
     {
-      label: "`textOrNull` goes silent again",
+      label: "`textOrNull` stops counting drift (goes silent again)",
       edits: [
         {
           file: EXPORT,
-          oldString: `  if (value === null) return null;
-  if (typeof value === "string") return value;`,
-          newString: `  if (typeof value === "string") return value;`,
+          oldString: `  drift[column] = (drift[column] ?? 0) + 1;`,
+          newString: "",
         },
       ],
       note: "The retracted argument was that a warn here *\"would be indistinguishable from a log line per honest abstain\"*. An abstain arrives as `null` and a dropped column arrives as `undefined`, and `preWideningGrant` eight lines up already separates them. What the silence hid: `f.subject_key` stops arriving → every fact exports `null` → the destination accepts it (null is legitimate) → the whole corpus lands UNKEYED, green `200` at both ends.",
@@ -213,23 +222,26 @@ records the fixture that split them.
       edits: [
         {
           file: IMPORT,
-          oldString: `  if (identityLoss.storeLocal > 0 || identityLoss.unreadable > 0 || identityLoss.unkeyable > 0) {`,
+          oldString: `  if (Object.values(identityLoss).some((n) => n > 0)) {`,
           newString: `  if (false) {`,
         },
       ],
       note: "An expected `entity:` drop, a tag vocabulary the two regions disagree about, and a corpus of surfaces that norm away all present as one `200` with healthy counts without it. `unreadable` is the count that means evidence was LOST rather than deferred, and nothing else in the system would ever mention it.",
     },
     {
-      label: "the identity-loss line fires on every import (the `unreadable` split collapsed)",
+      label: "the `unreadable` split collapses into `storeLocal`",
       edits: [
         {
           file: IMPORT,
-          oldString: `        if (reason === "store-local") identityLoss.storeLocal++;
-        else if (reason === "unreadable") identityLoss.unreadable++;`,
-          newString: `        if (reason !== "carried") identityLoss.storeLocal++;`,
+          oldString: `          case "unreadable":
+            identityLoss.unreadablePositions++;
+            break;`,
+          newString: `          case "unreadable":
+            identityLoss.storeLocalPositions++;
+            break;`,
         },
       ],
-      note: "The opposite error and the one that looks tidier: three reasons folded into one counter. `absent` then counts as a loss, so the line fires on every import that carries a fact with no comparable value — which is nearly all of them — and an operator learns to skim it. The `unreadable` count, the only one that means evidence was lost, disappears entirely.",
+      note: "The one distinction the line exists to draw, erased. `storeLocalPositions` is the rule working and is expected after any migration; `unreadablePositions` means the source region wrote something this one CANNOT READ, so evidence was lost rather than deferred. Folded together, the actionable count disappears into an expected one and nobody looks.",
     },
     {
       label: "the legacy READ runs without the workspace vocabulary lock",
@@ -249,20 +261,69 @@ records the fixture that split them.
       edits: [
         {
           file: IMPORT,
-          oldString: `  const legacyKeying =
-    bundle.manifest.version < IDENTITY_FROM_VERSION &&
-    (bundle.brainEpisodes ?? []).some((e) => e.facts.length > 0);`,
-          newString: `  const legacyKeying = true;`,
+          oldString: `  if (legacyKeying) {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+  }`,
+          newString: `  {
+    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
+    await loadClaimVocabulary(client, orgId);
+  }`,
         },
       ],
-      note: "The negative for the two rows above: they would both pass against an importer that locked and loaded unconditionally, which serializes every region import against every alias approval for no reason — and makes a corrupt destination vocabulary fail a v3 import that never consults one.",
+      note: "The negative for the two rows above: they would both pass against an importer that locked and loaded unconditionally, which serializes every region import against every alias approval for no reason and makes a corrupt destination vocabulary fail a v3 import that never consults one. Earlier this row set `legacyKeying = true`, which ALSO flipped `identitySource` and so re-ran row 1 as well; its count was attributable to re-derivation and said nothing about a pointless load. This edit adds the lock and the load and leaves the key arm alone.",
+    },
+    {
+      label: "the carry decision reads `tag === ENTITY_TAG` instead of the portability table",
+      edits: [
+        {
+          file: OBJECT_CMP,
+          oldString: `      return REGION_PORTABILITY[verdict.tag] === "store-local"`,
+          newString: `      return verdict.tag === ENTITY_TAG`,
+        },
+      ],
+      note: "Behaviourally identical TODAY — `entity` is the only store-local tag — so this row measures the corpus, not the code, and its honest reading is the one the panel gave it: the literal comparison answers *is this the one store-local tag we had in 2026* rather than *is this value portable*. A second store-local tag (`person:`, `account:`) would hit `PAYLOAD_IS_CANONICAL`'s compile error, take the natural entry for an opaque id (`() => true`), and then travel verbatim. `REGION_PORTABILITY` is a `Record` over the FULL tag union so the carry decision is where that lands.",
+    },
+    {
+      label: "the exporter projects a key off a DIFFERENT table",
+      edits: [
+        {
+          file: EXPORT,
+          oldString: `    // --- 10. The curated identity vocabulary (#5022, ADR-0037 §6/§8) ---`,
+          newString: `    pool.query(\`SELECT a.object_key FROM brain_fact_alias a\`, params),
+    // --- 10. The curated identity vocabulary (#5022, ADR-0037 §6/§8) ---`,
+        },
+      ],
+      note: "The arm `keys-not-on-the-wire.test.ts` used to provide for this whole file and no longer does. Nothing about this projection names `brain_facts`, so the granted-statement checks cannot see it — `strayProjections` is what replaces them, and before this row nothing measured that it works.",
+    },
+    {
+      label: "a SIXTH identity field is added to the wire type",
+      edits: [
+        {
+          file: "../types/src/migration.ts",
+          oldString: `  predicateCardinality?: "single" | "multi";`,
+          newString: `  audienceKey?: string | null;
+  predicateCardinality?: "single" | "multi";`,
+        },
+      ],
+      note: "The other arm the exemption switches off: `keys-not-on-the-wire.test.ts`'s ORM sweep existed precisely because *a fact-shaped TYPE growing a key field IS the leak*. ⚠️ It ALSO trips `_IdentityFieldsAreExhaustive`, which is a type-level pin the test runner cannot see — so the cell here measures only the lexical half, and the compile half is `bun run type`'s.",
+    },
+    {
+      label: "the exporter's granted projection reads a key off a JOINED table",
+      edits: [
+        {
+          file: EXPORT,
+          oldString: `              f.subject_key, f.predicate_key, f.object_key,`,
+          newString: `              f.subject_key, f.predicate_key, f.object_key, e.audience_cmp,`,
+        },
+      ],
+      note: "Inside the one statement §8 grants, so `strayProjections` cannot see it. The negative arm there was `\\bf\\.([a-z_]+)\\b` — bound to the fact table's own alias — until the panel injected exactly this and measured zero. Any identifier ending `_key`/`_cmp` counts now, whatever qualifies it.",
     },
     {
       label: "`readStoredComparable` admits an EMPTY payload",
       edits: [
         {
           file: OBJECT_CMP,
-          oldString: `  if (payload === "") return { kind: "unreadable", detail: "empty-payload" };`,
+          oldString: `  if (payload === "") return { kind: "unreadable" };`,
           newString: "",
         },
       ],
@@ -308,8 +369,8 @@ records the fixture that split them.
       edits: [
         {
           file: EXPORT,
-          oldString: `      subjectCmp: textOrNull(f.subject_cmp, f.id, "subject_cmp"),
-      objectCmp: textOrNull(f.object_cmp, f.id, "object_cmp"),`,
+          oldString: `      subjectCmp: textOrNull(f.subject_cmp, "subject_cmp", identityDrift),
+      objectCmp: textOrNull(f.object_cmp, "object_cmp", identityDrift),`,
           newString: `      subjectCmp: f.subject_cmp as string | null,
       objectCmp: f.object_cmp as string | null,`,
         },

@@ -113,6 +113,17 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
     const factQueries = [
       ...source.matchAll(/SELECT((?:(?!SELECT)[\s\S])*?)FROM brain_facts\b/gi),
     ].map((m) => m[1]!);
+
+    // ⚠️ The tempered form re-anchors at the LAST `SELECT`, so a sub-select
+    // INSIDE the granted projection (`SELECT (SELECT 1 FROM z) n, f.subject_key
+    // FROM brain_facts f`) would hide everything before it. Refused outright
+    // rather than parsed: the one statement §8 grants has no sub-select today,
+    // and a scan that silently covers part of a statement is worse than one that
+    // says it cannot.
+    expect(
+      /\bSELECT\b/i.test(factQueries[0] ?? ""),
+      "the exporter's fact projection now contains a nested SELECT. This scan re-anchors at the last `SELECT` before the table, so it would only see the tail — split the sub-select out, or teach this pin to parse it.",
+    ).toBe(false);
     expect(
       factQueries.length,
       "export.ts no longer contains exactly one `SELECT … FROM brain_facts` — the exemption in keys-not-on-the-wire.test.ts covers this whole file, so a second projection is unguarded. Point this pin at it or give it its own.",
@@ -129,10 +140,16 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
     // ⚠️ The negative arm, and it is the half the exemption actually costs.
     // `keys-not-on-the-wire.test.ts` would have caught a SIXTH key column added
     // to this projection; it no longer looks at this file at all.
-    const named = [...projection.matchAll(/\bf\.([a-z_]+)\b/g)].map((m) => m[1]!);
-    const unexpected = named.filter(
-      (c) => /_key$|_cmp$/.test(c) && !(IDENTITY_COLUMNS as readonly string[]).includes(c),
+    // ⚠️ ALIAS-AGNOSTIC. The first cut matched `\bf\.([a-z_]+)\b`, which is
+    // bound to the fact table's own alias — so `j.audience_key` off a JOINed
+    // table, or a bare `audience_key`, sat inside the granted statement and was
+    // invisible to the very arm whose comment claimed to cover it (#5035, panel
+    // round 2, measured by injection). Any identifier ending `_key`/`_cmp`
+    // counts, whatever it is qualified by.
+    const named = [...projection.matchAll(/\b(?:[a-z_]+\.)?([a-z_]+(?:_key|_cmp))\b/g)].map(
+      (m) => m[1]!,
     );
+    const unexpected = named.filter((c) => !(IDENTITY_COLUMNS as readonly string[]).includes(c));
     expect(
       unexpected,
       "the exporter's fact projection names a key- or cmp-shaped column ADR-0037 §8 does not grant. §8's exception is the three slot keys and the two comparable values; anything else is an ordinary key-on-the-wire leak wearing the exemption's coat.",
@@ -235,13 +252,62 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
     // and the exemption turned it off. A SIXTH identity field, or a key field on
     // any OTHER wire type in this file, is otherwise unguarded.
     const granted = new Set(["subjectKey", "predicateKey", "objectKey", "subjectCmp", "objectCmp"]);
-    const declared = [...stripComments(source).matchAll(/^\s*(\w*(?:Key|Cmp))\??:/gm)].map(
-      (m) => m[1]!,
-    );
+    // `readonly` is optional in the pattern: `migration.ts` does not use it
+    // today, but `ImportedIdentity` one file over does, so the style is live in
+    // this very slice and a `readonly tenantKey?: …` would have slipped past.
+    const declared = [
+      ...stripComments(source).matchAll(/^\s*(?:readonly\s+)?(\w*(?:Key|Cmp))\??:/gm),
+    ].map((m) => m[1]!);
     expect(
       declared.filter((f) => !granted.has(f)),
       "migration.ts declares a key- or cmp-shaped field ADR-0037 §8 does not grant. §8's exception is the three slot keys and the two comparable values ON A BRAIN FACT; a key field anywhere else on the wire is the leak the prohibition exists to stop.",
     ).toEqual([]);
+  });
+
+  it("the CLI accepts exactly the versions the server does", () => {
+    // ⚠️ `packages/cli/src/commands/` has NO tests, and `handleMigrateImport` is
+    // referenced by no other file — so the CLI's copy of the accept set and the
+    // pillar-section threshold are unguarded by anything. A drift refuses a live
+    // cutover at the door with "Unsupported bundle version", and the server-side
+    // `=== CURRENT` mutation row proves that bug class is producible here.
+    //
+    // Compared LEXICALLY across packages rather than by importing, deliberately:
+    // the two lists are local constants ON PURPOSE (a CLI built against a newer
+    // published `@useatlas/types` must not silently claim to read a version its
+    // own code does not handle), so importing one into the other would destroy
+    // the property this pin exists to protect. What must not drift is the
+    // VALUES, and that is what this reads.
+    const cli = read("packages/cli/src/commands/migrate-import.ts");
+    const server = stripComments(read("packages/api/src/api/routes/admin-migrate.ts"));
+
+    const cliVersions = /const SUPPORTED_BUNDLE_VERSIONS = \[([^\]]*)\]/.exec(cli);
+    expect(cliVersions, "the CLI no longer declares SUPPORTED_BUNDLE_VERSIONS — re-point this pin").not.toBeNull();
+    const parsed = cliVersions![1]!.split(",").map((v) => Number(v.trim())).filter((n) => !Number.isNaN(n));
+
+    // The server's accept set is `SUPPORTED_BUNDLE_VERSIONS`, built from three
+    // named constants. Read those, not the array literal, because the array is
+    // expressed in terms of them.
+    const serverVersions = ["LEGACY_BUNDLE_VERSION", "PILLAR_SECTIONS_FROM_VERSION", "CURRENT_BUNDLE_VERSION"].map(
+      (name) => {
+        const hit = new RegExp(`const ${name} = (\\d+)`).exec(server);
+        expect(hit, `the server no longer declares ${name} — re-point this pin`).not.toBeNull();
+        return Number(hit![1]!);
+      },
+    );
+
+    expect(
+      [...parsed].sort(),
+      "the CLI's accept set no longer covers every version the server names. A bundle the server would import is refused at the CLI door with 'Unsupported bundle version', which surfaces at cutover.",
+    ).toEqual([...new Set(serverVersions)].sort());
+
+    // …and the pillar threshold, which is the OTHER half of the same fix: read
+    // as "the current version" it stops printing pillar counts for every bundle
+    // newer than v2.
+    const cliPillar = /const PILLAR_SECTIONS_FROM_VERSION = (\d+)/.exec(cli);
+    const serverPillar = /const PILLAR_SECTIONS_FROM_VERSION = (\d+)/.exec(server);
+    expect(cliPillar?.[1], "the CLI and the server disagree about which version first carries the #4460 sections").toBe(
+      serverPillar?.[1],
+    );
   });
 
   it("the importer names no identity column outside the one granted INSERT", () => {

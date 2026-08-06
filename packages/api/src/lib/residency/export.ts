@@ -114,14 +114,23 @@ function preWideningGrant(value: unknown, factId: unknown): string[] | null {
  * exists to end, with a green `200` at both ends. The destination's
  * `provisional` marker does not cover it either — that reads only the two `_cmp`
  * positions.
+ *
+ * ⚠️ It COUNTS rather than logging, and the caller emits one line (#5035, panel
+ * round 2). `preWideningGrant`'s per-row warn is affordable because its drift is
+ * per-row; this one's is not. The trigger named above is a projection or driver
+ * change, so it fires on **every row at every column** — five call sites × a
+ * 200k-fact workspace is a million `warn` records inside one export call, which
+ * is the "trains an operator to skim" failure the importer's own aggregate warn
+ * argues against 400 lines away.
  */
-function textOrNull(value: unknown, factId: unknown, column: string): string | null {
+function textOrNull(
+  value: unknown,
+  column: string,
+  drift: Record<string, number>,
+): string | null {
   if (value === null) return null;
   if (typeof value === "string") return value;
-  log.warn(
-    { factId, column, actualType: value === undefined ? "undefined" : typeof value },
-    "region export: an identity column did not decode as text — exporting `null`, which the target reads as 'no key' / 'unknown'. That is the recoverable direction (an under-match a human can repair) rather than a false claim of difference, but it is DRIFT, not an abstain: a SQL NULL arrives as null and never reaches this line. Check the projection and the driver (#5035)",
-  );
+  drift[column] = (drift[column] ?? 0) + 1;
   return null;
 }
 
@@ -637,6 +646,10 @@ export async function exportWorkspaceBundle(
   // Facts nest under their episode, mirroring links-under-documents above:
   // the nesting IS the FK ordering the importer needs, so it can never write a
   // fact before the episode its NOT NULL provenance FK points at.
+  // Per-column drift counts for the five identity columns, aggregated across the
+  // whole corpus and reported once below — see {@link textOrNull} for why a
+  // per-row line is the wrong shape here specifically.
+  const identityDrift: Record<string, number> = {};
   const factsByEpisode = new Map<string, ExportedBrainFact[]>();
   for (const f of brainFactResult.rows) {
     const episodeId = f.source_episode_id as string;
@@ -690,14 +703,25 @@ export async function exportWorkspaceBundle(
       // v3 REQUIRES all five, and `null` is a legitimate value at every one of
       // them: a surface that norms away has no key, permanently, and NULL is how
       // `unknown` is spelled at a `_cmp`.
-      subjectKey: textOrNull(f.subject_key, f.id, "subject_key"),
-      predicateKey: textOrNull(f.predicate_key, f.id, "predicate_key"),
-      objectKey: textOrNull(f.object_key, f.id, "object_key"),
-      subjectCmp: textOrNull(f.subject_cmp, f.id, "subject_cmp"),
-      objectCmp: textOrNull(f.object_cmp, f.id, "object_cmp"),
+      subjectKey: textOrNull(f.subject_key, "subject_key", identityDrift),
+      predicateKey: textOrNull(f.predicate_key, "predicate_key", identityDrift),
+      objectKey: textOrNull(f.object_key, "object_key", identityDrift),
+      subjectCmp: textOrNull(f.subject_cmp, "subject_cmp", identityDrift),
+      objectCmp: textOrNull(f.object_cmp, "object_cmp", identityDrift),
       createdAt: toISO(f.created_at),
       updatedAt: toISO(f.updated_at),
     });
+  }
+
+  // ONE line for the whole corpus, naming the COLUMN and the COUNT — strictly
+  // more actionable than a line per row, because the operator's question is
+  // *which projection broke and how much of the corpus did it take*, and a
+  // million identical lines answer neither.
+  if (Object.keys(identityDrift).length > 0) {
+    log.warn(
+      { orgScope, columns: identityDrift, brainFacts: brainFactResult.rows.length },
+      "region export: identity columns did not decode as text — exported `null`, which the target reads as 'no key' / 'unknown'. That is the recoverable direction (an under-match a human can repair) rather than a false claim of difference, but it is DRIFT, not an abstain: a SQL NULL never reaches this counter. A count approaching the fact total means the SELECT dropped the column or the driver stopped decoding it, and the target region will land the whole corpus UNKEYED (#5035)",
+    );
   }
 
   let totalBrainFacts = 0;

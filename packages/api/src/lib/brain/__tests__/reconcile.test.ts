@@ -529,7 +529,13 @@ describe("flag: entity resolution", () => {
   // #5011 §3 names, and the double below is the remedy: it answers every surface
   // it is asked about, with an id that shares no characters with the surface's
   // norm, so a leak is visible rather than merely absent.
-  const ENTITY_ID_MARKER = "ent-";
+  //
+  // ⚠️ SEPARATOR-FREE, and that is not cosmetic. `lexicalNorm` folds `-` and `_`
+  // to a space, so a marker of `ent-` is UNRECOGNISABLE in a key: the obvious
+  // leak mutation — `slotKey(objectEntityId ?? object, …)` — produces
+  // `"ent 12345"`, and a `toContain("ent-")` probe passes while the id sits in
+  // the key. A marker that a key can launder proves nothing about keys.
+  const ENTITY_ID_MARKER = "entid";
 
   /**
    * The double's id for a surface: stable, and deliberately sharing no
@@ -546,9 +552,19 @@ describe("flag: entity resolution", () => {
   class AnsweringStore {
     /** One entry per CALL — the assertion that the seam is episode-level. */
     readonly batches: ReadonlySet<string>[] = [];
+    /**
+     * How many transactions the fake had opened when each batch was issued.
+     * `[0]` is the whole assertion that the call sits BEFORE the transaction —
+     * the property `EntityResolver`'s docstring calls load-bearing against the
+     * bounded-pool starvation deadlock, and which nothing else can see.
+     */
+    readonly transactionsAtCall: number[] = [];
+
+    constructor(private readonly store?: FakeBrainStore) {}
 
     readonly resolve: EntityResolver = (surfaces) => {
       this.batches.push(new Set(surfaces));
+      this.transactionsAtCall.push(this.store?.transactions ?? 0);
       return new Map([...surfaces].map((s) => [s, { entityId: adversarialId(s) }]));
     };
   }
@@ -599,18 +615,32 @@ describe("flag: entity resolution", () => {
     // ignores the resolver entirely, which is exactly what they are supposed to
     // catch. One side of the assertion is a value the SYSTEM produced: the id
     // the double minted, read back off the bind the stage actually made.
-    const answering = new AnsweringStore();
     const store = new FakeBrainStore();
+    const answering = new AnsweringStore(store);
     await run(store, {
-      candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
+      // `single` so the rival scan is issued too — it carries the same four
+      // agreement binds and is the statement a partial repoint would miss.
+      candidates: [
+        candidate({ subject: "Deploy_Window", object: "Acme Corp", predicateCardinality: "single" }),
+      ],
       resolveEntity: answering.resolve,
     });
 
+    // BEFORE the transaction opened. See `transactionsAtCall`.
+    expect(answering.transactionsAtCall).toEqual([0]);
+
     // Not a literal: the id comes from the double's own rule, so the two sides
     // are one fact rather than a coincidence between two strings.
-    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBe(
-      `entity:${adversarialId("Acme Corp")}`,
-    );
+    //
+    // All THREE key-carrying statements, on `reconcile.test.ts`'s standing
+    // pattern for the comparable bind: an INSERT and a lookup disagreeing about
+    // what a claim's value IS is the failure this module keeps naming, and the
+    // entity arm was the one comparable-value producer not swept that way.
+    for (const name of ["insertFact", "corroboration", "tensionScan"] as const) {
+      expect(store.keyBindsFor(name)[0]?.comparable, `${name} bound no entity id`).toBe(
+        `entity:${adversarialId("Acme Corp")}`,
+      );
+    }
   });
 
   test("ONE call per episode, over the deduplicated subject AND object surfaces", async () => {
@@ -628,7 +658,11 @@ describe("flag: entity resolution", () => {
     const store = new FakeBrainStore();
     await run(store, {
       candidates: [
-        candidate({ subject: "Acme Corp", predicate: "employs", object: "Ada" }),
+        // Padded on purpose: the store is asked about the surface that will be
+        // STORED, never the producer's raw text. Untrimmed, the lookup misses a
+        // real entry and the row lands `object_cmp` NULL with no marker — a
+        // permanent, silent abstain that looks exactly like an honest one.
+        candidate({ subject: "  Acme Corp ", predicate: "employs", object: "Ada" }),
         candidate({ subject: "Beta Inc", predicate: "employs", object: "Grace" }),
         // `Acme Corp` and `Ada` again, positions swapped: role-invariance is why
         // that is one lookup per surface and not two.
@@ -698,16 +732,22 @@ describe("flag: entity resolution", () => {
     expect(store.facts[0]?.provenance.unresolved).toEqual(["subject", "object"]);
   });
 
-  test("a failed batch still writes the claim, with its surfaces and keys intact", async () => {
-    // The flag is a MARKER, never a degradation: an outage costs the object's
-    // comparability and nothing else. A stage that also dropped the keys would
-    // make an outage silently un-corroboratable, which no replay repairs.
+  test("a REJECTED promise fails the batch too, and the claim keeps its surfaces and keys", async () => {
+    // The async arm of the throwing test above — `await run(...)` would reject
+    // outright if the rejection escaped. The flag is a MARKER, never a
+    // degradation: an outage costs the object's comparability and nothing else.
+    // A stage that also dropped the keys would make an outage silently
+    // un-corroboratable, which no replay repairs.
     const store = new FakeBrainStore();
     await run(store, {
       candidates: [candidate({ subject: "Deploy_Window" })],
-      resolveEntity: () => Promise.reject(new Error("timeout")),
+      resolveEntity: () => Promise.reject(new Error("connection reset")),
     });
 
+    // The marker is what proves this ran the FAILED arm rather than simply
+    // never calling a resolver — every other assertion here is also true of a
+    // stage with no resolver at all.
+    expect(store.facts[0]?.provenance.provisional).toBe(true);
     expect(store.facts[0]?.subject).toBe("Deploy_Window");
     expect(store.keyBindsFor("insertFact")[0]).toMatchObject({
       subject: "deploy window",
@@ -723,6 +763,112 @@ describe("flag: entity resolution", () => {
     // wrote nothing also has no provisional fact.
     expect(store.facts).toHaveLength(1);
     expect(store.facts[0]?.provenance.provisional).toBeUndefined();
+  });
+
+  test("no batch is issued when every candidate was refused", async () => {
+    // A real store would spend a connection checkout answering about nothing.
+    // Safe to skip precisely because there is no prepared candidate left for a
+    // failure to flag — which is why the assertion has to be on the CALL, not
+    // on an outcome: nothing downstream can see the difference.
+    const answering = new AnsweringStore();
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [candidate({ object: "   " }), candidate({ subject: "" })],
+      resolveEntity: answering.resolve,
+    });
+
+    expect(answering.batches).toHaveLength(0);
+    expect(report.blocked.MALFORMED_CLAIM).toBe(2);
+  });
+
+  test("a store answering with a blank id fails the batch — it is a contract violation, not an abstain", async () => {
+    // The one path where an infrastructure fault could have presented as an
+    // honest abstain. A blank id will CHANGE on replay (the store is broken and
+    // someone will fix it), which is the entire criterion the marker encodes —
+    // and, untrapped, a blank id tags a comparable value with nothing and makes
+    // two unrelated objects read as provably the SAME.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      resolveEntity: () => new Map([["Thursdays", { entityId: "   " }]]),
+    });
+
+    expect(report.provisional).toBe(1);
+    expect(store.facts[0]?.provenance.unresolved).toEqual(["subject", "object"]);
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+  });
+
+  test("a store answering with a non-string id fails the batch rather than throwing mid-loop", async () => {
+    // From an untyped JS store. Without the guard the number reaches `.trim()`
+    // in the preparation loop — OUTSIDE the resolver catch — and aborts the
+    // whole episode: the quality-failure-becomes-a-block inversion, reached by a
+    // second route from the non-Map case below.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      resolveEntity: (() => new Map([["Thursdays", { entityId: 7 }]])) as unknown as EntityResolver,
+    });
+
+    expect(report.created).toBe(1);
+    expect(report.provisional).toBe(1);
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+  });
+
+  test("a conforming non-`Map` ReadonlyMap is an ANSWER, not an outage", async () => {
+    // The seam's declared type is STRUCTURAL, so a caching wrapper or a
+    // cross-realm map is legal. A nominal `instanceof` check would report every
+    // episode as a store outage forever — flagging the whole corpus provisional
+    // and destroying the marker's one meaning, in the alarming direction.
+    const backing = new Map([["Thursdays", { entityId: "entid-00042" }]]);
+    const wrapper: ReadonlyMap<string, { entityId: string }> = {
+      get: (k) => backing.get(k),
+      has: (k) => backing.has(k),
+      size: backing.size,
+      keys: () => backing.keys(),
+      values: () => backing.values(),
+      entries: () => backing.entries(),
+      forEach: (fn) => backing.forEach(fn),
+      [Symbol.iterator]: () => backing[Symbol.iterator](),
+    };
+
+    const store = new FakeBrainStore();
+    const report = await run(store, { resolveEntity: () => wrapper });
+
+    expect(report.provisional).toBe(0);
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBe("entity:entid-00042");
+  });
+
+  test("a failed batch withholds the comparable value rather than falling back to the parse", async () => {
+    // ⚠️ The irreversible direction. `499` is an entity in a healthy store, so
+    // its comparison is `entity:…` — a different TAG from a sibling's
+    // `number:…`, hence `unknown`, hence tension only. Fall back to the surface
+    // parse during an outage and it becomes `number:499`: same tag, unequal,
+    // PROVABLY different, and the publish gate stamps `valid_to` on a belief a
+    // healthy store would only have flagged for a human. An outage must never
+    // reach further than an answer would have.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ object: "499", predicateCardinality: "single" })],
+      resolveEntity: () => {
+        throw new Error("entity store unreachable");
+      },
+    });
+
+    for (const name of ["insertFact", "corroboration", "tensionScan"] as const) {
+      expect(store.keyBindsFor(name)[0]?.comparable, `${name} degraded to the parse`).toBeNull();
+    }
+  });
+
+  test("POSITIVE CONTROL: that same surface IS comparable when the store answers", async () => {
+    // Without this, the test above is satisfied by a stage that never computes a
+    // comparable value at all — and `499` is exactly the surface that parses on
+    // its own terms, so the withholding has to be shown to be the outage's doing
+    // rather than the parser's.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ object: "499", predicateCardinality: "single" })],
+      resolveEntity: () => new Map(),
+    });
+
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBe("number:499");
   });
 
   test("a resolver returning a non-Map is a failed batch, not an escaped TypeError", async () => {
@@ -1178,8 +1324,10 @@ describe("the draft candidate", () => {
     // through the VOCABULARY (a re-keyable, reviewed alias edge) or not at all;
     // the resolver reaches `object_cmp` and nothing else.
     //
-    // The store answering here is what stops this passing vacuously — see the
-    // `flag: entity resolution` block, which owns the prohibition in full.
+    // The store answers, and the `comparable` assertion below is where that
+    // answer shows up — without it this test is satisfied by a stage that never
+    // called a resolver at all. The prohibition itself is owned in full by the
+    // `flag: entity resolution` block.
     const store = new FakeBrainStore();
     await run(store, {
       candidates: [candidate({ subject: "deploy-01" })],
@@ -1187,10 +1335,13 @@ describe("the draft candidate", () => {
         new Map([...surfaces].map((s) => [s, { entityId: "ent-00042" }])),
     });
 
-    // The surface verbatim; the key its lexical norm — separators folded, and
-    // no trace of the id the store just supplied.
+    // The surface verbatim; the key its lexical norm, separators folded and no
+    // trace of the id; the id itself parked at the comparable position.
     expect(store.facts[0]?.subject).toBe("deploy-01");
-    expect(store.keyBindsFor("insertFact")[0]).toMatchObject({ subject: "deploy 01" });
+    expect(store.keyBindsFor("insertFact")[0]).toMatchObject({
+      subject: "deploy 01",
+      comparable: "entity:ent-00042",
+    });
   });
 
   test("the workspace's vocabulary reaches every slot", async () => {

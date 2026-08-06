@@ -178,10 +178,15 @@ export interface BrainFactProvenance {
   readonly reconciledAt: string;
   /**
    * Written ONLY when the entity store failed to answer the episode's batch —
-   * never for an honest "no entry" (#5031). It means exactly *this row's keys
-   * are worth recomputing*: an abstain will not change on replay and its rows
-   * are findable by key, while an outage will change and its rows are findable
-   * by nothing else (`object_cmp IS NULL` matches every honest abstain too).
+   * never for an honest "no entry" (#5031). It means exactly *this row's
+   * `object_cmp` is worth recomputing*, and NOT that its keys are: no resolver
+   * reaches a slot key, so a replay recomputes those to the same bytes. An
+   * abstain will not change on replay and its rows are findable by key, while an
+   * outage will change and its rows are findable by nothing else
+   * (`object_cmp IS NULL` matches every honest abstain too).
+   *
+   * ⚠️ Not total: a candidate that CORROBORATES writes no provenance at all, so
+   * an outage that coincided with a re-observation leaves no per-row trace.
    */
   readonly provisional?: true;
   /**
@@ -189,6 +194,10 @@ export interface BrainFactProvenance {
    * batch covers both positions, so a failure has no per-role granularity —
    * the array survives for #4772's review surface, which reads it, not because
    * the two sides can fail apart.
+   *
+   * ⚠️ Rows written BEFORE #5031 can carry a single role: back then the two
+   * positions were resolved by separate calls and could fail apart. A reader
+   * must still handle a one-element array.
    */
   readonly unresolved?: readonly EntityRole[];
   readonly [key: string]: unknown;

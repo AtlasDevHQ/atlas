@@ -40,6 +40,7 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import {
   reconcileFacts,
+  type EntityResolver,
   type FactCandidate,
   type ReconcileEpisodeRef,
 } from "@atlas/api/lib/brain/reconcile";
@@ -162,6 +163,21 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   function candidate(overrides: Partial<FactCandidate> = {}): FactCandidate {
     return { subject: "deploy window", predicate: "is", object: "Thursdays", ...overrides };
   }
+
+  /**
+   * An ANSWERING entity store, and the id rule the expectations re-use.
+   *
+   * Adversarial on purpose: against `passthroughEntityResolver` — which abstains
+   * on everything — "the resolver did not rewrite the surface" and "no key
+   * contains an id" pass while proving nothing, because there is no answer to
+   * leak. Separator-free so `lexicalNorm` cannot launder it out of a key.
+   */
+  function adversarialId(surface: string): string {
+    return `entid${surface.length}01J7X`;
+  }
+
+  const answerEverySurface: EntityResolver = (surfaces) =>
+    new Map([...surfaces].map((s) => [s, { entityId: adversarialId(s) }]));
 
   async function facts(): Promise<
     { id: string; subject: string; object: string; status: string; provenance: Record<string, unknown>; visible_to: string[] }[]
@@ -414,8 +430,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       // id to leak into a key and no canonical form to overwrite a surface with
       // (#5011 §3). The prohibition itself is owned by `reconcile.test.ts`;
       // what this adds is that the columns AT REST agree with it.
-      resolveEntity: (surfaces) =>
-        new Map([...surfaces].map((s) => [s, { entityId: `ent-${s.length}-01J7X` }])),
+      resolveEntity: answerEverySurface,
     });
 
     expect(await slots()).toEqual([
@@ -439,8 +454,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
       producer: "p",
       extractedAt: new Date(),
-      resolveEntity: (surfaces) =>
-        new Map([...surfaces].map((s) => [s, { entityId: `ent-${s.length}-01J7X` }])),
+      resolveEntity: answerEverySurface,
     });
 
     const { rows } = await pool.query<{
@@ -448,8 +462,10 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       object_key: string | null;
       object_cmp: string | null;
     }>(`SELECT subject_key, object_key, object_cmp FROM brain_facts`);
-    // `"Acme Corp".length` — the double's own rule, not a hand-copied literal.
-    expect(rows[0]!.object_cmp).toBe("entity:ent-9-01J7X");
+    // Through the double's own rule rather than a hand-copied literal, so the
+    // two sides are one fact: the id the store minted, read back off the column
+    // the stage actually wrote.
+    expect(rows[0]!.object_cmp).toBe(`entity:${adversarialId("Acme Corp")}`);
     // …and the subject's id, which the batch also resolved, reached NOTHING.
     // #5032 gives it `subject_cmp`; until then a leak would show up here.
     expect(rows[0]!.subject_key).toBe("deploy window");

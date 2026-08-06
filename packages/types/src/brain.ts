@@ -127,10 +127,17 @@ export interface BrainFactProvenanceView {
   readonly extractedAt: string | null;
   readonly reconciledAt: string | null;
   /**
-   * An entity resolver could not pin one or both sides of the claim, so it was
-   * recorded against a provisional entity. THE quality queue — block-class
-   * failures (no provenance, no usable grant, unattributable actor, malformed
-   * claim) never reach this surface at all; they were refused upstream.
+   * The entity store did not ANSWER when this claim was recorded — it threw, was
+   * unavailable, or broke its contract — so the claim's object was never
+   * compared against anything. THE quality queue: block-class failures (no
+   * provenance, no usable grant, unattributable actor, malformed claim) never
+   * reach this surface at all; they were refused upstream.
+   *
+   * ⚠️ Since #5031 this is NOT "the store had no entry for this entity". That
+   * outcome is honest, is already represented by an absent comparison, and is
+   * deliberately unflagged — flagging it would set this on every entity-valued
+   * object forever, which is precisely what defeats a filter on its presence.
+   * A reader must not present it as "Atlas looked and could not pin the entity".
    *
    * Always true when {@link unresolved} is non-empty: at rest the flag and the
    * side-list are written together, but the flag is derived here rather than
@@ -138,7 +145,15 @@ export interface BrainFactProvenanceView {
    * "resolved, but here are the unresolved sides".
    */
   readonly provisional: boolean;
-  /** Which sides were left unresolved. Empty unless `provisional`. */
+  /**
+   * Which sides were left unresolved. Empty unless `provisional`.
+   *
+   * Since #5031 a flagged row names BOTH sides: one batched call covers both
+   * positions, so a failure has no per-role granularity. ⚠️ Rows written before
+   * it can name exactly one — back then the positions were resolved by separate
+   * calls and could fail apart — so a reader must still handle a one-element
+   * array, and it means something different (that side alone did not resolve).
+   */
   readonly unresolved: readonly BrainEntityRole[];
   /**
    * False when the stored payload was missing a structural key, carried the

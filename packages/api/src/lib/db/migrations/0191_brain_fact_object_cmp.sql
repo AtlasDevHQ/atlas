@@ -55,8 +55,11 @@
 -- `object_cmp IS NULL` is therefore NOT a work queue. It matches every honest
 -- abstain too (`Enterprise tier` has no comparable value and never will, at any
 -- age), so a re-key sweep that used it would rewrite rows it must leave alone.
--- #5031 gives `provenance.provisional` the job of marking rows whose keys are
--- worth recomputing; that marker, not this column's nullability, is the handle.
+-- #5031 gives `provenance.provisional` the job of marking rows whose OBJECT
+-- COMPARISON is worth recomputing — the rows an entity-store outage left
+-- without one. That marker, not this column's nullability, is the handle. (It
+-- marks nothing about the KEYS, which no resolver ever reaches, and it is not
+-- total: a corroborating candidate writes no provenance to carry it.)
 --
 -- ## NULLABLE, permanently, unlike the slot keys
 --

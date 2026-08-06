@@ -266,10 +266,20 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
         <Alert>
           <AlertTriangle className="size-4" aria-hidden />
           <AlertTitle>{provisionalBadge.label} entity resolution</AlertTitle>
+          {/* Reworded for #5031's abstain/failure split. The flag no longer
+              means "Atlas looked and could not pin this entity" — that outcome
+              (the store has no entry) is honest, is recorded as an absent
+              comparison, and is now deliberately UNFLAGGED. What survives is the
+              narrow case: the entity store did not answer at all, so the claim's
+              object was never compared to anything.
+
+              The one/two-sided branch is kept for rows written BEFORE #5031,
+              which could genuinely fail one side at a time; every row written
+              since names both. */}
           <AlertDescription>
-            {provenance.unresolved.length > 0
-              ? `Atlas could not pin the ${provenance.unresolved.join(" and ")} of this claim to a known entity, so it was recorded against a provisional one.`
-              : "Atlas could not pin one side of this claim to a known entity, so it was recorded against a provisional one."}{" "}
+            {provenance.unresolved.length === 1
+              ? `Atlas could not pin the ${provenance.unresolved[0]} of this claim to a known entity, so it was recorded against a provisional one.`
+              : "Atlas couldn't reach the entity store while recording this claim, so its object was never compared against anything Atlas already believes."}{" "}
             Publishing it is a decision that the entity is right, not just the claim.
           </AlertDescription>
         </Alert>

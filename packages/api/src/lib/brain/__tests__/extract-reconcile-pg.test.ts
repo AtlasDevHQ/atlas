@@ -52,6 +52,7 @@ import {
   type ResolvedExtractionModel,
 } from "@atlas/api/lib/brain/extract";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { SEAM_PROPOSAL_PRODUCER } from "@atlas/api/lib/brain/alias-proposal";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -1199,6 +1200,58 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect(asked).toEqual([]);
   });
 
+  it("the DEFAULT wiring queues a real proposal — no injected producer", async () => {
+    // ⭐ The only test in the slice that exercises `extract.ts`'s DEFAULT
+    // `proposeAliases`. Every other trigger test injects a fake, and every
+    // pre-existing test has `comparable === 0`, so replacing that default with
+    // `() => Promise.resolve(undefined)` killed ZERO tests — the producer's one
+    // production call path was unproven, which is #5022's *a store whose reader
+    // had no caller* one indirection deeper. `extract.ts` deliberately catches
+    // and warns, so a broken default (a wrong binding, an import cycle) would
+    // have shipped green with the feature simply dead.
+    //
+    // Three of the four rows land through `reconcileFacts` directly; the fourth
+    // arrives through the drain, which is what makes the run's `comparable`
+    // non-zero and fires the trigger.
+    const seed = [
+      { subject: "Business tier", predicate: "is priced at", object: "499 USD" },
+      { subject: "Business tier", predicate: "priced at", object: "499 USD" },
+      { subject: "Starter tier", predicate: "is priced at", object: "199 USD" },
+    ];
+    for (const [index, claim] of seed.entries()) {
+      const seedEpisode = await insertEpisode({ sourceId: `seed-${index}` });
+      await reconcileFacts({
+        vocabulary: identityVocabulary,
+        episode: seedEpisode,
+        candidates: [candidate(claim)],
+        producer: "seed",
+        extractedAt: new Date(),
+      });
+    }
+
+    await insertEpisode();
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "Starter tier", predicate: "priced at", object: "199 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        // No `proposeAliases` — the default is what is under test.
+      }),
+    );
+
+    const { rows } = await pool.query<{ proposed_by: string; source_class: string }>(
+      "SELECT proposed_by, source_class FROM brain_vocabulary_proposal WHERE workspace_id = $1",
+      [WORKSPACE],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      proposed_by: SEAM_PROPOSAL_PRODUCER,
+      source_class: "seam",
+    });
+  });
+
   it("counts `comparable` per candidate, not off the head of the batch", async () => {
     // ⚠️ `reconcile.ts` reads `prepared[index]` alongside `outcomes[index]`,
     // relying on a 1:1 correlation the compiler cannot check. Both trigger tests
@@ -1238,9 +1291,10 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     // asked. Propagating here would return `failed` for an episode that was
     // fully processed — the drain would charge a strike against evidence there
     // is nothing left to retry, and enough strikes quarantine it. A proposal is
-    // advisory and the next episode in this workspace re-derives the whole
-    // candidate set from the corpus, so a lost run costs latency and nothing
-    // else.
+    // advisory, and the next episode in this workspace that creates a comparable
+    // object re-derives the whole candidate set from the corpus. ⚠️ That episode
+    // may never arrive — this trigger is the producer's only caller and there is
+    // no sweep — so the cost is unproposed candidates, not merely latency.
     const episode = await insertEpisode();
     const result = await Effect.runPromise(
       runBrainExtractionCycle({

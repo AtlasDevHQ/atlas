@@ -1137,6 +1137,18 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
 }
 
 /**
+ * How long the alias-proposal producer may take before the extraction drain
+ * stops waiting for it.
+ *
+ * A DRAIN bound, not a work bound — see {@link proposeAliasesAfterCommit} on why
+ * the two are different and why both exist. Generous, because timing out costs a
+ * workspace its proposals for that episode and there is no sweep to re-run them:
+ * the number only has to be shorter than "forever", and every statement inside
+ * it already carries a tighter server-side bound.
+ */
+export const ALIAS_PROPOSAL_DEADLINE_MS = 15_000;
+
+/**
  * Re-derive this workspace's alias proposals, after the episode has committed
  * and been stamped (#5034, ADR-0037 §4).
  *
@@ -1166,17 +1178,33 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
  * strike, and the strike would be against evidence that has already been fully
  * processed. Logged at `warn`, never swallowed.
  *
- * ## A HANG is bounded in the database, not here
+ * ## A HANG is bounded TWICE, and neither bound is sufficient alone
  *
  * A `try`/`catch` fires on a rejection and never on a call that does not settle,
  * and this `await` sits inside `applyRow` under `Effect.forEach(concurrency: 1)`
  * with no per-tick timeout — so an internal database that is REACHABLE AND NOT
  * ANSWERING would stop the whole brain-extraction drain forever, with no error,
- * no dead fiber, and not one line in the log. The bound is
- * `alias-proposal.ts`'s `boundedTransaction`, which issues `SET LOCAL
- * statement_timeout` and `SET LOCAL lock_timeout` so Postgres CANCELS the work
- * and this `catch` gets something to report. Read that function before removing
- * either statement; the failure it closes is the one that throws nothing.
+ * no dead fiber, and not one line in the log.
+ *
+ *   - **In the database:** `alias-proposal.ts`'s `boundedTransaction` issues
+ *     `SET LOCAL statement_timeout` and `SET LOCAL lock_timeout`, so Postgres
+ *     CANCELS a slow or lock-blocked statement rather than abandoning it. This
+ *     is the bound that reclaims a pooled connection.
+ *   - **Here:** {@link ALIAS_PROPOSAL_DEADLINE_MS}, whose only job is that the
+ *     DRAIN advances.
+ *
+ * ⚠️ The second is not belt-and-braces, and an earlier version of this
+ * paragraph claimed the first was enough. It is not: `withBrainTransaction`
+ * issues `BEGIN` **before** the callback runs, so `BEGIN` and the first
+ * `SET LOCAL` are themselves unbounded — and a database that is not answering
+ * does not answer `BEGIN` either. The pool's `connectionTimeoutMillis` covers
+ * the checkout and nothing covers the two round trips after it. The `SET LOCAL`
+ * pair cannot bound its own arrival, so the JS deadline is the only thing
+ * standing between that failure and a wedged fiber.
+ *
+ * The converse is also true, which is why both are kept: `Promise.race` does
+ * not CANCEL anything, so without the `SET LOCAL` pair a timed-out run would go
+ * on holding one of five pooled connections indefinitely.
  *
  * ## ⚠️ What "re-derived next run" is and is NOT worth
  *
@@ -1210,8 +1238,60 @@ async function proposeAliasesAfterCommit(
   deps: ApplyDeps,
 ): Promise<void> {
   if (report.comparable === 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   try {
-    await deps.proposeAliases(episode.workspaceId);
+    // Invoked INSIDE the try, which is why the seam is a THUNK: `proposeAliases`
+    // is a plain function type nothing forces to be `async`, so an injected
+    // implementation that threw SYNCHRONOUSLY would land outside the guard on an
+    // already-committed episode. `correction.ts`'s `proposeUnderDeadline` was
+    // built wrong that way first and records it.
+    const pending = deps.proposeAliases(episode.workspaceId);
+    // The race marks the LOSER's rejection as handled, so a real store error
+    // arriving after the deadline would otherwise be dropped with no line and
+    // not even an unhandled rejection. GUARDED on `timedOut`, or this fires on
+    // the ordinary fast-failure path too, where the `catch` below already
+    // reports it — one event, two warns, the second one wrong.
+    void pending
+      .then(
+        () => {
+          if (!timedOut) return;
+          log.warn(
+            { workspaceId: episode.workspaceId, episodeId: episode.id },
+            "brain extraction: the alias-proposal producer COMPLETED after its deadline — the earlier timeout line for this episode reports the same event, and any proposals it queued are present",
+          );
+        },
+        (cause: unknown) => {
+          if (!timedOut) return;
+          log.warn(
+            { workspaceId: episode.workspaceId, episodeId: episode.id, err: errorMessage(cause) },
+            "brain extraction: the alias-proposal producer FAILED after its deadline had already been reported — this is the underlying cause behind the earlier timeout line, and no proposal landed",
+          );
+        },
+      )
+      // DETACHED — it settles after this function has returned, so no `try` on
+      // the extraction path can reach it, and an unhandled rejection is
+      // process-fatal by default. A committed episode's bookkeeping must not be
+      // able to take the worker down.
+      .catch(() => {
+        // intentionally ignored: best-effort observability on a detached
+        // promise. The only ways here are the logger itself throwing and a
+        // hostile rejection value reaching `errorMessage` — neither of which an
+        // advisory proposal may kill the extraction fiber for.
+      });
+    await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(
+            new Error(
+              `the alias-proposal producer did not answer within ${ALIAS_PROPOSAL_DEADLINE_MS}ms — the internal database is reachable but not responding`,
+            ),
+          );
+        }, ALIAS_PROPOSAL_DEADLINE_MS);
+      }),
+    ]);
   } catch (err) {
     log.warn(
       {
@@ -1224,9 +1304,19 @@ async function proposeAliasesAfterCommit(
         // from a pool checkout plus a query on the internal DB — the highest-
         // probability source of a credentialed URL in this file.
         err: errorMessage(err),
+        timedOut,
       },
-      "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and no vocabulary changed. The candidates are re-derived from the corpus by the NEXT episode in this workspace that creates a comparable object; this trigger is the producer's only caller, so if no such episode arrives they stay unproposed until one does",
+      timedOut
+        ? "brain extraction: the alias-proposal producer did not answer within its deadline — the facts and the stamp are COMMITTED and unaffected, and the extraction drain is free to advance, which is what this deadline exists for. The producer's own fate is UNKNOWN: the race does not cancel it, though `SET LOCAL statement_timeout` bounds each statement it had already reached. If it settles, a follow-up line for this episode says which"
+        : "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and no vocabulary changed. The candidates are re-derived from the corpus by the NEXT episode in this workspace that creates a comparable object; this trigger is the producer's only caller, so if no such episode arrives they stay unproposed until one does",
     );
+  } finally {
+    // Around the RACE, so it runs whoever wins. A `finally` on the TIMER
+    // PROMISE settles only when the timer fires, so `clearTimeout` would always
+    // be a no-op and the fast path would leave a timer armed per episode —
+    // `correction.ts` shipped exactly that bug once and its docstring measures
+    // it (race settled at 52ms, the `finally` ran at 3080ms).
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

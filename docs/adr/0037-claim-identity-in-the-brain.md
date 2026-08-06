@@ -118,7 +118,7 @@ A warehouse predicate becomes collidable by being **an ordinary surface on an or
 - **The proposal is at the PREDICATE position only, so it can never auto-approve.** `autoApproveEligible` refuses every non-entity position before it reads the threshold — which is what makes it safe for the rank to move at all.
 - **The `predicate_key` projection is an exemption to §6's *keys are never projected to the wire*, and a narrow one.** What that rule protects is a key *beside its claim*; this query returns two norms and a count — no fact id, no surface, no row — and norms are what the vocabulary is made of. `keys-not-on-the-wire.test.ts` carries the entry and `alias-proposal.test.ts` carries the compensating pin that `subject_key` stays an aggregate input.
 
-The falsification is `alias-proposal-corpus.ts` over `alias-proposal-pg.test.ts`, on §9's terms: twelve cases, every prohibition paired with a firing control, and `inverse-relations` carrying its control *inside its own workspace* because a query returning the empty set satisfies every prohibition in the file. `scripts/mutations/alias-proposal.md` is the measured table.
+The falsification is `alias-proposal-corpus.ts` over `alias-proposal-pg.test.ts`, on §9's terms: 14 cases, every prohibition paired with a firing control, and `inverse-relations` carrying its control *inside its own workspace* because a query returning the empty set satisfies every prohibition in the file. `scripts/mutations/alias-proposal.md` is the measured table.
 
 ### 5. Subject/object identity ([T5](https://github.com/AtlasDevHQ/atlas/issues/5009), [T12](https://github.com/AtlasDevHQ/atlas/issues/5017))
 

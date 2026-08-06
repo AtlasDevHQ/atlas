@@ -31,10 +31,10 @@
  *
  *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/alias-proposal.mutations.ts
  *
- * ⚠️ Two rows are 0 here for a reason that is not a gap and is worth knowing
- * before adding a test to close them: the repeat THRESHOLD and the candidate CAP
- * are read from the shipped constants by the bind assertion, so changing a
- * constant changes both sides of that comparison at once. They are falsified by
+ * ⚠️ This column's zeros are mostly SQL rows a lane that runs no SQL cannot see.
+ * One is different and worth knowing before adding a test to close it: the
+ * repeat THRESHOLD is read from the shipped constant by the bind assertion, so
+ * changing it moves both sides of that comparison at once. It is falsified by
  * the `-pg` corpus, where the number is a property of the fixtures instead.
  */
 
@@ -249,15 +249,46 @@ describe("reading the query back (#5034)", () => {
     expect(found!.directed).toBe(false);
   });
 
-  it("drops a row that does not read back, rather than defaulting it", async () => {
+  it("drops every row that does not read back, rather than defaulting it", async () => {
     // Both permissive fallbacks are wrong in the expensive direction: a
     // defaulted `subjects` manufactures a repeat count nothing measured, and a
     // coerced norm proposes a workspace-wide re-key of a predicate nobody said.
-    // The good row beside it is the control — a reader that threw, or that
+    // The good row beside them is the control — a reader that threw, or that
     // dropped the whole batch, would pass a bare "no candidate" assertion.
-    const executor = fakeExecutor([row({ subjects: "2" }), row({ from_norm: "unit price" })]);
+    //
+    // ⚠️ One entry per shape the reader's docstring names, because a single
+    // `subjects: "2"` row left the other two arms unfalsified:
+    //   - `null`      — the executor is an injectable interface typed
+    //                   `readonly unknown[]`, so a null row must DROP, not throw;
+    //   - `"t"`       — a driver or projection change delivering a string for a
+    //                   boolean, which coerced silently to `false` and turned the
+    //                   whole direction rule off with no line;
+    //   - `1`         — below the repeat threshold, i.e. the domain arm rather
+    //                   than the type arm;
+    //   - `2.5`       — a non-integer "distinct subject count".
+    const executor = fakeExecutor([
+      null,
+      row({ subjects: "2" }),
+      row({ from_warehouse: "t" }),
+      row({ subjects: 1 }),
+      row({ subjects: 2.5 }),
+      row({ from_norm: "unit price" }),
+    ]);
     const found = await loadAliasCandidates(executor, "ws-1");
     expect(found.map((c) => c.fromNorm)).toEqual(["unit price"]);
+  });
+
+  it("refuses a cap that is not a positive integer", async () => {
+    // `cap` is exported API (`AliasProposalRun.cap`) and both bad values fail as
+    // something else: `0` yields `LIMIT 0` AND a spurious "the cap bound this
+    // run" warn, which together read as "this workspace has no agreeing pairs".
+    for (const cap of [0, -1, 2.5]) {
+      await expect(loadAliasCandidates(fakeExecutor([]), "ws-1", cap)).rejects.toThrow(
+        /positive integer/,
+      );
+    }
+    // The control: a legal cap still runs.
+    await expect(loadAliasCandidates(fakeExecutor([]), "ws-1", 1)).resolves.toEqual([]);
   });
 });
 
@@ -303,6 +334,18 @@ describe("what the producer hands the queue (#5034)", () => {
     expect(params[2]).toBe("predicate");
     expect(params[6]).toBe("seam");
     expect(params[8]).toBe(SEAM_PROPOSAL_PRODUCER);
+  });
+
+  it("THROWS rather than reporting a clean zero when the store fails", async () => {
+    // The documented contract, and the reason for it: `extract.ts` is the caller
+    // that knows an episode already committed, so it is the one entitled to
+    // decide a failed run is survivable — and it logs. Swallowing here would
+    // return all-zero counters, which are byte-identical to a genuine no-op, and
+    // would make the falsification suite unable to tell a refused proposal from
+    // a broken one.
+    await expect(
+      proposeAliasesFromCorpus("ws-1", {}, { withTransaction: () => Promise.reject(new Error("boom")) }),
+    ).rejects.toThrow("boom");
   });
 
   it("costs one bounded read and nothing more when the corpus supports nothing", async () => {
@@ -471,10 +514,15 @@ describe("no identity key graduates into the result (#5019, #5034)", () => {
       join(import.meta.dir, "..", "alias-proposal.ts"),
       "utf8",
     ).replace(/\/\*[\s\S]*?\*\//g, " ");
+    // ⚠️ EVERY reference, not `FROM brain_facts` — `ALIAS_PROPOSAL_SQL` names the
+    // table twice (a self-join), and a second statement spelled `JOIN
+    // brain_facts f ON …` or `UPDATE brain_facts` would slip a `FROM`-only
+    // count entirely. Measured: adding such a statement left the narrower
+    // assertion green.
     expect(
-      source.match(/FROM brain_facts/g) ?? [],
-      "`alias-proposal.ts` now holds more than one statement against `brain_facts`, and only the first is pinned here — either pin the new one or drop the `keys-not-on-the-wire.test.ts` exemption",
-    ).toHaveLength(1);
+      source.match(/brain_facts/g) ?? [],
+      "`alias-proposal.ts` now names `brain_facts` somewhere new, and only `ALIAS_PROPOSAL_SQL` is pinned here — either pin the new statement or drop the `keys-not-on-the-wire.test.ts` exemption",
+    ).toHaveLength(2);
   });
 
   it("hands back no fact id and no claim surface", () => {

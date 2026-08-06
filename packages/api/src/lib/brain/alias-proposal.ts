@@ -170,8 +170,15 @@ export const ALIAS_PROPOSAL_REPEAT_THRESHOLD = 2;
  *
  * A bound on the QUEUE rather than on the query's correctness: the pairs are
  * ordered by repeat count descending, so a truncated run drops the weakest
- * evidence and the next run re-derives the whole set from the corpus. Nothing is
- * lost permanently — this producer holds no cursor and no watermark.
+ * evidence and the next run re-derives the whole set from the corpus — this
+ * producer holds no cursor and no watermark.
+ *
+ * ⚠️ **"The next run" is worth less than it sounds, and an earlier version of
+ * this line said "nothing is lost permanently".** `extract.ts`'s
+ * `proposeAliasesAfterCommit` is this producer's ONLY caller and it is gated on
+ * an episode creating a comparable row — which the same docstring describes as
+ * very nearly never. So a workspace with 30 agreeing pairs proposes 25 and the
+ * remaining 5 wait for another comparable-creating episode that may not arrive.
  *
  * ⚠️ **It does not bound the query's COST, and reading it as if it did is the
  * mistake worth naming.** `LIMIT` applies after `GROUP BY`/`HAVING`, so the
@@ -216,11 +223,25 @@ const WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
  * ⚠️ **NOT the negation of #5033's `supersedableTierSql`, and it must not be
  * rewritten as one.** That predicate answers *is there evidence this row is
  * below tier-1*, and admits a row carrying NO `source` key at all as a
- * deliberate carve-out. Negating it would make every such row — every row
- * written before `reconcile.ts` spread `source` into provenance, and every row a
- * region import restored without one — read as warehouse-derived, which is the
- * one reading that lets a producer pick the canonical TARGET of a workspace-wide
- * re-key on no evidence whatsoever.
+ * deliberate carve-out.
+ *
+ * ⚠️ The two rules differ on **exactly one** population, and an earlier version
+ * of this paragraph named the wrong one. `supersedableTierSql` is
+ * `NOT jsonb_exists(…) OR source = ANY(non-warehouse)`, so negating it answers
+ * FALSE for a `source`-less row — the same as this predicate. Evaluated against
+ * Postgres rather than reasoned about:
+ *
+ * | stored `provenance` | this predicate | `NOT supersedableTierSql` |
+ * |---|---|---|
+ * | no `source` key | NULL → false | false |
+ * | `{"source":"slack"}` | false | false |
+ * | `{"source":"warehouse:prod"}` | false | **true** ← the only divergence |
+ * | `{"source":"warehouse"}` | true | true |
+ *
+ * One population, and it is the one that matters: a kind this region cannot
+ * classify would become the canonical TARGET of a workspace-wide re-key on
+ * evidence of nothing. That is the whole reason the rule is a positive
+ * allowlist, and `unclassifiable-source` in the corpus is what proves it.
  *
  * Three populations, and only the first is TRUE here:
  *
@@ -703,7 +724,7 @@ export async function loadAliasCandidates(
     // means "at least 25" and only this line says so.
     log.warn(
       { workspaceId, cap },
-      "brain alias proposal: the candidate cap bound this run — the weakest-evidence pairs were dropped and will be re-derived next run, so the count below is a floor rather than a total",
+      "brain alias proposal: the candidate cap bound this run — the weakest-evidence pairs were dropped. They are re-derived only by the NEXT episode in this workspace that creates a comparable object — there is no sweep — so treat the count below as a floor rather than a total",
     );
   }
   const candidates: AliasCandidate[] = [];
@@ -742,10 +763,18 @@ export const ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout
  * How long a proposal may wait for the workspace vocabulary lock.
  *
  * `identity.ts`'s `IDENTITY_MUTATION_LOCK_TIMEOUT_SQL`, at the other end of the
- * same contention: a human approving an alias holds that lock, and this
- * producer must yield to them rather than queue behind them indefinitely. A
- * refused run is re-derived from the corpus next episode; a blocked one is not
- * re-derived at all, because it never returns.
+ * same contention: a human approving an alias holds that lock, and this producer
+ * must yield to them rather than queue behind them indefinitely.
+ *
+ * ⚠️ **Its cost is a whole BATCH, not one candidate, and it is not cheap.**
+ * `proposeAliasEdges` is a sequential loop with no per-candidate catch, so the
+ * first `55P03` propagates out and candidates *n+1…cap* are never attempted. And
+ * they are not simply "next run's": this producer has one caller, gated on an
+ * episode creating a comparable object, so the rest of the batch waits for
+ * however long that takes (see {@link proposeAliasesFromCorpus}). Accepted
+ * anyway, because the alternative is queueing behind a human at the review gate
+ * — and the counters `proposeAliasEdges` logs before re-throwing are what makes
+ * the truncation visible rather than silent.
  */
 export const ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '5s'`;
 
@@ -805,6 +834,10 @@ export interface AliasProposalRun {
  * here would also make the falsification suite unable to tell a refused proposal
  * from a broken one. `cardinality.ts`'s `proposeFromCorrectionEvents` carries the
  * same contract for the same reason.
+ *
+ * ⚠️ A run that fails or is refused is NOT automatically retried: see
+ * `extract.ts`'s `proposeAliasesAfterCommit` for what "re-derived next run"
+ * actually costs, since this producer has exactly one caller and no sweep.
  *
  * Returns the producer counters verbatim, including `rejected` — THE number that
  * matters on a re-run, because a producer whose second pass reports zero there is

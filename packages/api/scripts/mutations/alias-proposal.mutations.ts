@@ -16,10 +16,18 @@
  * several SQL rows below are 0 in the fast lane and several TypeScript rows are
  * 0 in the `-pg` one — neither column is a superset of the other.
  *
- * Every mutation below dies in at least one column. The zeros that remain are
- * all of one kind — a SQL mutation invisible to a lane that never runs SQL, or a
+ * Every mutation LISTED below dies in at least one column — and the word is
+ * deliberate: the list is curated, not exhaustive, so it is evidence about the
+ * suites' reach and never a proof that nothing else survives. The zeros that
+ * remain are all of one kind — a SQL mutation invisible to a lane that never runs SQL, or a
  * TypeScript one invisible to a lane whose assertions are about which rows
  * matched — and none of them is a mutation nothing catches.
+ *
+ * ⚠️ The two `-pg` columns can flake under concurrent scratch-DB contention, so
+ * a cell that surprises you is worth re-running that row alone before treating
+ * it as evidence. Panel round 2 re-measured the negated-tier-guard row's third
+ * column as 0 where generation recorded 1; two subsequent regenerations both
+ * recorded 1. Generated numbers are maintained by re-running, never by editing.
  *
  * Both suites need `TEST_DATABASE_URL` for the `-pg` column; without it that
  * column is 0 for a reason that has nothing to do with coverage:
@@ -172,10 +180,19 @@ prohibits by name. None of them has a symptom at rest.
           // record a mutation's exact SPELLING, because two defensible readings
           // of one label produce two different numbers.
           newString:
-            "  return `(NOT (NOT jsonb_exists(${alias}.provenance, 'source')\n      OR ${alias}.provenance->>'source' = ANY (${episodeSourceArraySql(NON_WAREHOUSE_SOURCES)})))`;",
+            "  return `(NOT (NOT jsonb_exists(${alias}.provenance, 'source')\n      OR ${alias}.provenance->>'source' = ANY (" +
+            // CONCATENATED, not interpolated into the string above. `${…}` inside
+            // a double-quoted string is literal text, so the first cut spliced
+            // `${episodeSourceArraySql(NON_WAREHOUSE_SOURCES)}` verbatim into a
+            // file that imports neither — the mutant then died on a ReferenceError
+            // rather than on the rule, i.e. the cell measured a CRASH. `${alias}`
+            // above IS meant to stay literal: it is the TARGET file's own
+            // interpolation.
+            episodeSourceArraySql(NON_WAREHOUSE_SOURCES) +
+            ")))`;",
         },
       ],
-      note: "The tidy-looking simplification, and it is wrong in both directions: a kind this region cannot classify reads as warehouse-derived (evidence of nothing becoming evidence of a direction) while a `source`-less row does too. #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp. Killed by `unclassifiable-source`, which exists for this row.",
+      note: "The tidy-looking simplification, and it is wrong in both directions: the two rules differ on EXACTLY ONE population and it is the dangerous one — a kind this region cannot classify reads as warehouse-derived, i.e. evidence of nothing becoming evidence of a direction. (A `source`-less row answers false under BOTH, because the guard's carve-out is an `OR`; measured against Postgres, not reasoned about.) #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp. Killed by `unclassifiable-source`, which exists for this row.",
     },
     {
       label: "the direction fold is `bool_and` instead of `bool_or`",
@@ -331,6 +348,61 @@ prohibits by name. None of them has a symptom at rest.
         },
       ],
       note: "Unreachable from any corpus on today's curve — see the trigger rows below for the other half of the slice — — `structuralConfidence` is asymptotic to 1 and the bonus is 0.05, so a pair would need ~19 distinct subjects to cross — which is exactly why the fast lane reaches for the arithmetic directly rather than for a fixture. A hinted pair pushed past 1 does not queue at high confidence: `proposeAliasEdge` refuses it as `confidence-out-of-range` and it does not queue at all.",
+    },
+    {
+      label: "the statement bound is set to `0` — Postgres for NO timeout",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "export const ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '10s'`;",
+          newString: "export const ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '0'`;",
+        },
+      ],
+      note: "⭐ Invisible to a test that compares the issued statement against the constant that produced it — both sides move together. `0` restores the wedge: the extraction drain awaits this inside a `concurrency: 1` loop, and a hang is not a falsifier. The `-pg` bound test reads the value back out of the session, which is the only assertion that can see it.",
+    },
+    {
+      label: "the bounds never reach the PROPOSE half",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "  return proposeAliasEdges(workspaceId, inputs, SEAM_PROPOSAL_PRODUCER, boundedDeps);",
+          newString: "  return proposeAliasEdges(workspaceId, inputs, SEAM_PROPOSAL_PRODUCER, deps);",
+        },
+      ],
+      note: "`proposeAliasEdge` takes the workspace vocabulary lock; unbounded, the `lock_timeout` half is gone and a human mid-approval can block the producer indefinitely. The claim *every statement this producer causes is covered* was unproven until the `-pg` bound test asserted the settings inside the propose transactions too.",
+    },
+    {
+      label: "the JS deadline around the trigger is removed",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "    await Promise.race([\n      pending,",
+          newString: "    await Promise.race([\n      pending,\n      // eslint-disable-next-line\n      pending,",
+        },
+      ],
+      note: "⚠️ MEASURED ZERO, and honest — a HANG is not a falsifier, which is exactly why the deadline exists. `withBrainTransaction` issues `BEGIN` before the callback, so the two `SET LOCAL`s cannot bound their own arrival and a database that is not answering wedges the drain with no error. Nothing short of a delayed-settle fake and a timer recorder can see this, and that machinery is not built here; the `-pg` bound test covers the DATABASE half, and this row records that the JS half is covered by argument.",
+    },
+    {
+      label: "the trigger's DEFAULT producer is replaced with a no-op",
+      edits: [
+        {
+          file: EXTRACT,
+          oldString: "    deps.proposeAliases ?? ((workspaceId: string) => proposeAliasesFromCorpus(workspaceId));",
+          newString: "    deps.proposeAliases ?? (() => Promise.resolve(undefined));",
+        },
+      ],
+      note: "⭐ The producer's ONE production call path. Every trigger test injects a fake and every pre-existing test has `comparable === 0`, so before the end-to-end default test this killed nothing — a wrong binding or an import cycle would have shipped green with the feature dead, and `extract.ts` catches and warns rather than failing the episode. #5022's *a store whose reader had no caller*, one indirection deeper.",
+    },
+    {
+      label: "`COALESCE` is dropped, so an all-NULL group reads as `null`",
+      edits: [
+        {
+          file: ALIAS,
+          oldString: "         COALESCE(bool_or(from_warehouse), false) AS from_warehouse,\n         COALESCE(bool_or(to_warehouse), false)   AS to_warehouse",
+          newString: "         bool_or(from_warehouse) AS from_warehouse,\n         bool_or(to_warehouse)   AS to_warehouse",
+        },
+      ],
+      note: "The population no corpus case can reach by construction: a row carrying NO `source` key at all, so `= ANY(…)` is unknown and `bool_or` over the group answers NULL. The reader's `typeof … !== \"boolean\"` arm then DROPS the candidate rather than mis-directing it — fail-closed, and the `-pg` test that strips `provenance -> source` by hand is what shows it.",
     },
     {
       label: "the trigger runs on EVERY episode, gate or no gate",

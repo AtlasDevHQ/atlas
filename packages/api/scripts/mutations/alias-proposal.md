@@ -20,16 +20,16 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the subject arm is dropped | 1 | 1 | 0 |
 | the predicate arm weakens to `>=`, so every row joins itself | 15 | 1 | 0 |
 | the repeat gate counts EVIDENCE ROWS instead of distinct subjects | 1 | 1 | 0 |
-| the repeat gate is switched off (threshold 2 → 1) | 2 | 0 | 0 |
+| the repeat gate is switched off (threshold 2 → 1) | 2 | 1 | 0 |
 | the direction rule fires when EITHER side is warehouse-derived | 1 | 1 | 0 |
 | the direction rule stops swapping, so the target is arrival order | 2 | 1 | 0 |
-| the direction arm is written as the NEGATED tier guard | 1 | 1 | 1 |
+| the direction arm is written as the NEGATED tier guard | 1 | 0 | 0 |
 | the direction fold is `bool_and` instead of `bool_or` | 1 | 0 | 0 |
 | the JOIN stops scoping to one workspace (the `WHERE` stays) | 1 | 0 | 0 |
 | a subject key graduates into the projection | 0 | 2 | 0 |
 | the cap stops ordering by evidence | 1 | 0 | 0 |
 | the object arm admits two NULLs as agreement (`=` → `IS NOT DISTINCT FROM`) | 1 | 1 | 0 |
-| the query stops scoping to one workspace | 24 | 0 | 0 |
+| the query stops scoping to one workspace | 25 | 0 | 1 |
 | the trigger gate reads only the FIRST candidate's comparable | 0 | 0 | 1 |
 | the query reads tombstoned and superseded rows as evidence | 1 | 0 | 0 |
 | an extractor hint may become a candidate | 1 | 1 | 0 |
@@ -37,11 +37,16 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the reader defaults an unreadable repeat count instead of dropping the row | 0 | 1 | 0 |
 | the rank is a constant, so evidence stops ordering the queue | 0 | 1 | 0 |
 | the hint bonus can push a rank past the CHECK | 0 | 1 | 0 |
+| the statement bound is set to `0` — Postgres for NO timeout | 1 | 0 | 0 |
+| the bounds never reach the PROPOSE half | 1 | 0 | 0 |
+| the JS deadline around the trigger is removed | 0 | 0 | 0 |
+| the trigger's DEFAULT producer is replaced with a no-op | 0 | 0 | 1 |
+| `COALESCE` is dropped, so an all-NULL group reads as `null` | 1 | 0 | 0 |
 | the trigger runs on EVERY episode, gate or no gate | 0 | 0 | 1 |
-| the trigger is never reached at all | 0 | 0 | 1 |
+| the trigger is never reached at all | 0 | 0 | 2 |
 | a failed proposal run fails the episode that already committed | 0 | 0 | 1 |
 
-Suite sizes: **alias-proposal-pg.test.ts** 29 tests (`src/lib/brain/__tests__/alias-proposal-pg.test.ts`) · **alias-proposal.test.ts** 30 tests (`src/lib/brain/__tests__/alias-proposal.test.ts`) · **extract-reconcile-pg.test.ts** 36 tests (`src/lib/brain/__tests__/extract-reconcile-pg.test.ts`).
+Suite sizes: **alias-proposal-pg.test.ts** 30 tests (`src/lib/brain/__tests__/alias-proposal-pg.test.ts`) · **alias-proposal.test.ts** 32 tests (`src/lib/brain/__tests__/alias-proposal.test.ts`) · **extract-reconcile-pg.test.ts** 37 tests (`src/lib/brain/__tests__/extract-reconcile-pg.test.ts`).
 
 ## Notes
 
@@ -52,7 +57,7 @@ Suite sizes: **alias-proposal-pg.test.ts** 29 tests (`src/lib/brain/__tests__/al
 - **the repeat gate is switched off (threshold 2 → 1)** — A lone coincidental object match becomes work: `Acme / founded / 2019` beside `Acme / incorporated / 2019` reaches a reviewer as a proposed synonym. ADR-0037 §4's own worked example of what the gate is for.
 - **the direction rule fires when EITHER side is warehouse-derived** — Two warehouse columns for one quantity would be directed at whichever side the byte ordering put second — a workspace-wide re-key chosen by `<` rather than by evidence.
 - **the direction rule stops swapping, so the target is arrival order** — `directed: true` with the ENGLISH side as the target re-keys the warehouse's own rows onto a phrase nobody's schema contains. A test asserting only the flag cannot see it, which is why the corpus asserts the target.
-- **the direction arm is written as the NEGATED tier guard** — The tidy-looking simplification, and it is wrong in both directions: a kind this region cannot classify reads as warehouse-derived (evidence of nothing becoming evidence of a direction) while a `source`-less row does too. #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp. Killed by `unclassifiable-source`, which exists for this row.
+- **the direction arm is written as the NEGATED tier guard** — The tidy-looking simplification, and it is wrong in both directions: the two rules differ on EXACTLY ONE population and it is the dangerous one — a kind this region cannot classify reads as warehouse-derived, i.e. evidence of nothing becoming evidence of a direction. (A `source`-less row answers false under BOTH, because the guard's carve-out is an `OR`; measured against Postgres, not reasoned about.) #5033's allowlist argument, arriving where the consequence is a proposed target rather than a stamp. Killed by `unclassifiable-source`, which exists for this row.
 - **the direction fold is `bool_and` instead of `bool_or`** — Invisible to a corpus whose provenance is uniform within every group, which every warehouse case was until `mixed-provenance` landed. Under `bool_and` one subject whose warehouse row has not arrived yet silently un-directs the pair and hands a human a choice the evidence could have made.
 - **the JOIN stops scoping to one workspace (the `WHERE` stays)** — The REALISTIC scope leak, and the one worth reading beside the `WHERE`-deleting row below: this one is valid SQL that returns wrong rows, where deleting the `WHERE` leaves `$1` unbound and every statement errors. A workspace-wide re-key proposed from a NEIGHBOURING TENANT'S claims.
 - **a subject key graduates into the projection** — The row that measures what this module's `keys-not-on-the-wire.test.ts` exemption is worth. It dies in `alias-proposal.test.ts`'s exact-columns pin, which is the file-local replacement for the repo-wide guard the exemption switched off. ⚠️ It would NOT die in `keys-not-on-the-wire.test.ts` — that is the whole point of the exemption — but that is reasoning rather than a measured cell, since adding a fourth column to run every row against a scan this slice does not otherwise touch would cost more than it tells anyone.
@@ -66,6 +71,11 @@ Suite sizes: **alias-proposal-pg.test.ts** 29 tests (`src/lib/brain/__tests__/al
 - **the reader defaults an unreadable repeat count instead of dropping the row** — A statement that drifted from its reader would manufacture a repeat count nothing measured — `NaN` clears no threshold in SQL but reaches `confidence` as a value 0190's CHECK rejects, so the pair silently stops queuing while the producer reports success.
 - **the rank is a constant, so evidence stops ordering the queue** — The cap drops the WEAKEST evidence first, and with a flat rank it drops an arbitrary 25. The queue also stops surfacing the best-supported pair first, which is the only thing a reviewer's attention is allocated by.
 - **the hint bonus can push a rank past the CHECK** — Unreachable from any corpus on today's curve — see the trigger rows below for the other half of the slice — — `structuralConfidence` is asymptotic to 1 and the bonus is 0.05, so a pair would need ~19 distinct subjects to cross — which is exactly why the fast lane reaches for the arithmetic directly rather than for a fixture. A hinted pair pushed past 1 does not queue at high confidence: `proposeAliasEdge` refuses it as `confidence-out-of-range` and it does not queue at all.
+- **the statement bound is set to `0` — Postgres for NO timeout** — ⭐ Invisible to a test that compares the issued statement against the constant that produced it — both sides move together. `0` restores the wedge: the extraction drain awaits this inside a `concurrency: 1` loop, and a hang is not a falsifier. The `-pg` bound test reads the value back out of the session, which is the only assertion that can see it.
+- **the bounds never reach the PROPOSE half** — `proposeAliasEdge` takes the workspace vocabulary lock; unbounded, the `lock_timeout` half is gone and a human mid-approval can block the producer indefinitely. The claim *every statement this producer causes is covered* was unproven until the `-pg` bound test asserted the settings inside the propose transactions too.
+- **the JS deadline around the trigger is removed** — ⚠️ MEASURED ZERO, and honest — a HANG is not a falsifier, which is exactly why the deadline exists. `withBrainTransaction` issues `BEGIN` before the callback, so the two `SET LOCAL`s cannot bound their own arrival and a database that is not answering wedges the drain with no error. Nothing short of a delayed-settle fake and a timer recorder can see this, and that machinery is not built here; the `-pg` bound test covers the DATABASE half, and this row records that the JS half is covered by argument.
+- **the trigger's DEFAULT producer is replaced with a no-op** — ⭐ The producer's ONE production call path. Every trigger test injects a fake and every pre-existing test has `comparable === 0`, so before the end-to-end default test this killed nothing — a wrong binding or an import cycle would have shipped green with the feature dead, and `extract.ts` catches and warns rather than failing the episode. #5022's *a store whose reader had no caller*, one indirection deeper.
+- **`COALESCE` is dropped, so an all-NULL group reads as `null`** — The population no corpus case can reach by construction: a row carrying NO `source` key at all, so `= ANY(…)` is unknown and `bool_or` over the group answers NULL. The reader's `typeof … !== "boolean"` arm then DROPS the candidate rather than mis-directing it — fail-closed, and the `-pg` test that strips `provenance -> source` by hand is what shows it.
 - **the trigger runs on EVERY episode, gate or no gate** — A corpus-wide self-join per episode, forever, on a workspace where the query provably cannot find anything — `object_cmp` is never backfilled and there is no entity store, so today that is very nearly every episode. It has no symptom beyond latency, which is the kind that is never found.
 - **the trigger is never reached at all** — The producer keeps its whole test suite and stops having a caller — #5022's *a store whose reader had no caller* one slice over, and the only column that can see it is this one.
 - **a failed proposal run fails the episode that already committed** — The facts are written and the episode is stamped before the producer is asked, so this charges the failure ledger a strike against evidence there is nothing left to retry — and enough strikes quarantine an episode that was processed perfectly.

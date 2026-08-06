@@ -20,7 +20,7 @@
  *
  * On day one this query returns zero rows for want of populated `object_cmp`,
  * so every prohibition below passes green against machinery that does nothing at
- * all — a query that returns the empty set satisfies all six. The controls are
+ * all — a query that returns the empty set satisfies every one of them. The controls are
  * what prove each can fire, and `inverse-relations` carries its control INSIDE
  * its own workspace for that reason rather than borrowing one from another case.
  *
@@ -424,8 +424,11 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
       // It is the population where `COALESCE(bool_or(…), false)` earns its keep:
       // `provenance->>'source'` is SQL NULL, `= ANY(…)` is unknown, and `bool_or`
       // over an all-NULL group answers NULL. Without the `COALESCE` the reader
-      // sees `null`, and the direction would then hinge on a JS truthiness check
-      // rather than on evidence.
+      // receives `null` for a column it type-checks as a boolean, so it DROPS the
+      // candidate — this test then fails on the length assertion below rather
+      // than on the direction. Fail-closed either way, and stated precisely
+      // because an earlier version of this comment claimed the direction would
+      // hinge on a JS truthiness check; it would not.
       const workspaceId = await landCase(
         ALIAS_PROPOSAL_CORPUS.find((k) => k.id === "warehouse-target")!,
       );
@@ -441,6 +444,60 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
       const observed = await observe(workspaceId);
       expect(observed).toHaveLength(1);
       expect(observed[0]!.target).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── the wedge guard ─────────────────────────────────────────────────────
+
+  it(
+    "runs every producer statement under a real, non-zero timeout",
+    async () => {
+      // ⭐ The VALUES, read back from the session rather than compared against
+      // the constants that set them. The fast lane asserts the two statements
+      // are issued, but it imports the constants it compares against — so
+      // `statement_timeout = '0'` (Postgres for *no timeout*) moved both sides
+      // together and killed nothing. `'0'` restores exactly the wedge the
+      // deadline exists for, and a hang is not a falsifier.
+      //
+      // It also proves three things nothing else does: that the `SET LOCAL`s
+      // land inside a real `BEGIN` (outside one Postgres warns and does
+      // nothing), that they reach the PROPOSE half and not only the read, and
+      // that they are `LOCAL` — the outer `SHOW` after the inner transaction
+      // has committed would still read `10s` if they were session-wide.
+      const kase = controlCase();
+      const workspaceId = await landCase(kase);
+
+      const seen: { statement: string; lock: string }[] = [];
+      await proposeAliasesFromCorpus(
+        workspaceId,
+        {},
+        {
+          withTransaction: (fn) =>
+            withBrainTransaction(async (tx) => {
+              const result = await fn(tx);
+              const settings = await tx.query(
+                "SELECT current_setting('statement_timeout') AS statement, current_setting('lock_timeout') AS lock",
+              );
+              seen.push(settings.rows[0] as { statement: string; lock: string });
+              return result;
+            }),
+        },
+      );
+
+      // One entry for the read and one for the single proposal this corpus
+      // case queues — the propose half is threaded with the same bounded
+      // runner, and this is what says so.
+      expect(seen.length).toBeGreaterThanOrEqual(2);
+      for (const settings of seen) {
+        expect(settings).toEqual({ statement: "10s", lock: "5s" });
+      }
+
+      // …and LOCAL: the pooled connection does not carry them onward.
+      const after = await withBrainTransaction((tx) =>
+        tx.query("SELECT current_setting('statement_timeout') AS statement"),
+      );
+      expect((after.rows[0] as { statement: string }).statement).not.toBe("10s");
     },
     PG_TEST_TIMEOUT_MS,
   );

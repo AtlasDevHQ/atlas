@@ -32,7 +32,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `TIER_HELD_BACK_COUNT_SQL`'s `IS NOT TRUE` → `NOT (…)` | 1 | 0 |
 | `TIER_HELD_BACK_COUNT_SQL` hard-wired to `SELECT 0` | 4 | 0 |
 
-Suite sizes: **promotion-pg.test.ts** 46 tests (`src/lib/brain/__tests__/promotion-pg.test.ts`) · **identity-consumers-pg.test.ts** 59 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`).
+Suite sizes: **promotion-pg.test.ts** 46 tests (`src/lib/brain/__tests__/promotion-pg.test.ts`) · **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`).
 
 ## Notes
 

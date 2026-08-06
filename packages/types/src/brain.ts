@@ -667,6 +667,15 @@ export interface BrainFactOversight {
    * always emits it; the server-side wire schema requires it.
    */
   readonly willSupersede?: BrainFactWillSupersede;
+  /**
+   * What the next publish will make VISIBLE TO MORE PEOPLE (#5032) — the
+   * disclosure that makes publish-time grant widening (#4823) something a
+   * reviewer is told about rather than something they discover afterwards.
+   *
+   * Optional on the TYPE for {@link willSupersede}'s deploy-skew reason, and
+   * required by the server-side wire schema for the same one.
+   */
+  readonly willWiden?: BrainFactWillWiden;
 }
 
 /**
@@ -725,6 +734,99 @@ export interface BrainFactWillSupersede {
    * looking for private channels that do not exist.
    */
   readonly truncated: boolean;
+}
+
+/**
+ * One grant the next publish will WIDEN (#5032, ADR-0037 §5).
+ *
+ * Publishing a draft unions in the grant of every episode already recorded as
+ * evidence for it (#4823, `widenGrantFromEvidence`), so a claim first seen in a
+ * private channel and restated in a public one stops being served only to the
+ * private one. That is usually right. It is not right when two different
+ * entities share a name: corroboration matches on identity keys derived from the
+ * SURFACE, so a public episode about one `Acme Corp` can become evidence for a
+ * private fact about another — and this widening then discloses the private
+ * claim's body. That is the case this notice exists for.
+ *
+ * CONTENT, and therefore reader-scoped exactly like
+ * {@link BrainFactWillSupersedePair}: an entry appears only where the reader's
+ * own fail-closed ACL predicate admits the draft.
+ */
+export interface BrainFactWillWidenEntry {
+  /** The draft whose published grant will be wider than its stored one. */
+  readonly factId: string;
+  /** The draft's SPO claim, `subject predicate object` — the thing being disclosed. */
+  readonly label: string;
+  /**
+   * The grant tokens the evidence adds, in the order the evidence arrived —
+   * the same list the post-publish `PromotionReport.widened` reports.
+   *
+   * ⚠️ A SYNTACTIC upper bound on readers gained, never a reader count: role
+   * matching is monotone, so `role:owner` added to a fact already granted
+   * `role:member` appears here and admits nobody new. Over-stating is the
+   * deliberate direction — the opposite error is a silent ACL change.
+   *
+   * A NON-EMPTY tuple, and the type is the enforcement. An entry exists only
+   * where the widening was not a no-op — that is what keeps this notice from
+   * firing on every ordinary corroboration — and `EvidenceWidenedGrant.added`
+   * already carries the guarantee, so widening it back to `readonly string[]`
+   * here would discard a property the producer has. ⚠️ The schema mirrors this
+   * as `z.tuple([z.string()], z.string())` rather than
+   * `z.array(z.string()).nonempty()`, and deliberately: zod v4 infers `string[]`
+   * from `.nonempty()`, so under that spelling the schema's
+   * `satisfies z.ZodType<…>` passes vacuously on this axis and the two sides
+   * stop checking each other. The tuple is what keeps them in lockstep.
+   */
+  readonly added: readonly [string, ...string[]];
+}
+
+/**
+ * The will-widen disclosure (#5032) — what publishing will make visible to more
+ * people, shown BEFORE the admin confirms.
+ *
+ * ⚠️ **Reader-scoped with NO `withheld` counterpart**, and the asymmetry with
+ * {@link BrainFactWillSupersede} is deliberate rather than an omission. Counting
+ * the widenings a reader cannot see means running the grant grammar over other
+ * readers' episode grants, which the oversight module's no-unscoped-content rule
+ * forbids and which no issue has decided. So an empty `entries` means *"none
+ * that you can see"*, never *"none"* — the post-publish record
+ * (`PromotionReport.widened`) is what covers the rest, one moment too late to be
+ * notice.
+ */
+export interface BrainFactWillWiden {
+  /**
+   * How many reader-visible drafts will widen — the real cardinality, taken
+   * before the cap, so the client never infers it from a clipped array.
+   */
+  readonly total: number;
+  readonly entries: readonly BrainFactWillWidenEntry[];
+  /**
+   * True when `entries` is clipped at the response cap — the list is short, the
+   * remainder exists, and `total` counts it.
+   *
+   * ⚠️ Deliberately NOT the drift signal. Those are two different facts with two
+   * different remedies (paginate vs. diff the query), and one boolean carrying
+   * both forces the UI to state one of them unconditionally — which is a
+   * confident, specific, wrong explanation on the surface whose entire product
+   * is honest notice. See {@link incomplete}.
+   */
+  readonly truncated: boolean;
+  /**
+   * True when Atlas could not EVALUATE some drafts — a row came back with a
+   * column it could not read, so that draft is missing from `entries` **and**
+   * from {@link total}.
+   *
+   * The distinction from {@link truncated} is the whole reason this field
+   * exists: a truncated list understates itself by a known amount that `total`
+   * still reports, while an incomplete one understates `total` as well. A reader
+   * seeing `incomplete` should treat publishing as widening MORE than is listed;
+   * a reader seeing `truncated` should not.
+   *
+   * Both are `false` on the ordinary path, and a client that only understands
+   * `truncated` degrades to the pre-#5032 reading rather than to a false
+   * all-clear.
+   */
+  readonly incomplete: boolean;
 }
 
 // ---------------------------------------------------------------------------

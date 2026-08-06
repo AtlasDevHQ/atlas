@@ -47,6 +47,8 @@ import type {
   BrainFactTensionView,
   BrainFactWillSupersede,
   BrainFactWillSupersedePair,
+  BrainFactWillWiden,
+  BrainFactWillWidenEntry,
   BrainResultTier,
   BrainSearchTensionView,
 } from "@useatlas/types";
@@ -595,6 +597,84 @@ export const BrainFactWillSupersedeSchema = z.strictObject({
   truncated: z.boolean(),
 }) satisfies z.ZodType<BrainFactWillSupersede, unknown>;
 
+/**
+ * One grant the next publish will widen (#5032). Strict for
+ * {@link BrainFactWillSupersedePairSchema}'s reason verbatim: this object
+ * carries CONTENT (the SPO label) legitimately, because the list is
+ * reader-ACL-scoped — and exactly because content is allowed, an extra key must
+ * be refused rather than stripped.
+ *
+ * `added` is NON-EMPTY, which is the disclosure's design restated at the wire:
+ * widening fires on legitimate corroboration too, so a notice that could carry
+ * an empty `added` would be universal, and the reviewer learns to click through
+ * it.
+ *
+ * ⚠️ It is spelled as a one-plus-rest TUPLE and NOT as `.nonempty()`, and the
+ * difference is the whole enforcement — see the note on the field. Zod v4 infers
+ * `string[]` from `.nonempty()`, so under that spelling
+ * `satisfies z.ZodType<BrainFactWillWidenEntry, unknown>` passes on this axis
+ * whatever the type says; the tuple is what makes the `satisfies` actually check
+ * it. Two guards, not one: the TYPE (`readonly [string, ...string[]]`, which
+ * `widenGrantFromEvidence` already produces) and this line checking itself
+ * against it.
+ */
+export const BrainFactWillWidenEntrySchema = z.strictObject({
+  factId: z.string(),
+  label: z.string(),
+  // `z.tuple([z.string()], z.string())` — one required element plus a rest —
+  // and NOT `z.array(z.string()).nonempty()`. The two accept the identical set
+  // of values at runtime; only this one INFERS `[string, ...string[]]`, which is
+  // what makes the `satisfies` below check non-emptiness instead of passing
+  // vacuously. (Measured: with `.nonempty()` the type is `string[]`, and
+  // tightening `BrainFactWillWidenEntry.added` to a tuple made this line a
+  // compile error — which is the guard working.)
+  added: z.tuple([z.string()], z.string()),
+}) satisfies z.ZodType<BrainFactWillWidenEntry, unknown>;
+
+/**
+ * The envelope WITHOUT the cross-check, which is what the client gets.
+ *
+ * Split out in #5032's panel round 4. The refinement below is right on the
+ * server and wrong on the client, for the reason stated 60 lines down about
+ * `countsConsistent` — and until the split it rode onto the client anyway via
+ * `.optional()`, which defends the field being ABSENT and does nothing about the
+ * field being present and failing a refinement.
+ *
+ * The consequence was specific: a producer-side arithmetic bug — the thing the
+ * refinement exists to catch — made `safeParse` fail on the whole oversight
+ * envelope, and `useAdminFetch` hard-throws `schema_mismatch` on that. So a
+ * headline that would have UNDER-stated a widening instead took down the
+ * hidden-backlog alert, the supersession preview and the widening notice at
+ * once, in one request. Failing the entire surface closed over somebody else's
+ * already-shipped bug is the trade this codebase declines everywhere else.
+ *
+ * Still `strictObject`: unknown-key rejection is a leak guard, not a
+ * cross-check, and it is the half the client should keep.
+ */
+const BrainFactWillWidenEnvelopeSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  entries: z.array(BrainFactWillWidenEntrySchema),
+  truncated: z.boolean(),
+  incomplete: z.boolean(),
+});
+
+export const BrainFactWillWidenSchema = BrainFactWillWidenEnvelopeSchema
+  .superRefine((value, ctx) => {
+    // `total` is taken BEFORE the cap, so it can never be smaller than the list
+    // it summarizes. A producer that got this wrong would render a headline
+    // UNDER-stating a visible list of ACL changes, which is the one direction
+    // this surface must not fail in — so it is a 500 with a requestId rather
+    // than something the panel has to defend against with a `Math.max`.
+    if (value.entries.length > value.total) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["total"],
+        message:
+          "the will-widen total is below the number of entries shipped — the headline would understate a list of ACL changes the reader can see",
+      });
+    }
+  }) satisfies z.ZodType<BrainFactWillWiden, unknown>;
+
 const OVERSIGHT_ENVELOPE_FIELDS = {
   buckets: z.array(BrainFactOversightBucketSchema),
   workspaceTotals: BrainFactOversightTotalsSchema,
@@ -631,6 +711,11 @@ export const BrainFactOversightSchema = z
     // that stopped emitting it would silently retire the will-supersede
     // disclosure — the "no silent supersession" rule enforced as a parse.
     willSupersede: BrainFactWillSupersedeSchema,
+    // Required server-side on the identical argument (#5032): a server that
+    // stopped emitting this retires the review-gate widening notice, which is
+    // the only thing standing between an unresolvable subject homonym and a
+    // private claim's body reaching a public audience.
+    willWiden: BrainFactWillWidenSchema,
   })
   .superRefine((value, ctx) => {
     if (
@@ -682,4 +767,16 @@ export const BrainFactOversightClientSchema = z.object({
   // behaviour — rather than losing the whole oversight surface. The pair
   // objects themselves stay strict for the bucket-arm reason above.
   willSupersede: BrainFactWillSupersedeSchema.optional(),
+  // Optional HERE and only here, for `willSupersede`'s reason: during a deploy
+  // window an older API omits it and the panel renders no widening notice —
+  // the pre-#5032 behaviour — rather than losing the whole oversight surface
+  // and with it the hidden-backlog alert.
+  //
+  // ⚠️ And the UN-refined envelope, which is the other half of that same
+  // sentence. `.optional()` alone covers the field being absent; it does nothing
+  // when the field is present and trips a cross-check, which would fail the
+  // whole envelope for a producer bug that can only ever under-state one
+  // headline. The refinements are server-side on purpose — see
+  // `BrainFactWillWidenEnvelopeSchema`.
+  willWiden: BrainFactWillWidenEnvelopeSchema.optional(),
 }) satisfies z.ZodType<BrainFactOversight, unknown>;

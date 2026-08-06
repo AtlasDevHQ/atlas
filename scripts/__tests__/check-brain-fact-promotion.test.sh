@@ -533,16 +533,20 @@ run_fixture "Drizzle .insert().onConflictDoUpdate({set:{objectKey}}) fails" fail
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.insert(brainFacts).values({ subject: s }).onConflictDoUpdate({ target: brainFacts.id, set: { objectKey: k } });'
 
-# The two `_cmp` arms are at DIFFERENT stages, and the fixture names say which.
-# `subject_cmp` is gated ahead of its column (#5032), so nothing in the tree can
-# hold that arm yet and this fixture is the only thing that does — without it
-# the alternation could be deleted and every other test here would still pass.
-# `object_cmp` exists as of #5030 / migration 0191 and `INSERT_FACT_SQL` writes
-# it, so its arm now guards a real column against a real re-key; that is the
-# stronger statement, and worth saying rather than leaving both labelled as
-# pre-schema. ADR-0037 §2's column table defines both; `subject_cmp` is the
-# INVERTED one.
-run_fixture "UPDATE … SET subject_cmp fails (gated ahead of the column, #5032)" fail \
+# Both `_cmp` arms now guard a REAL column against a real re-key — `object_cmp`
+# since #5030 / migration 0191, `subject_cmp` since #5032 / migration 0193 — and
+# `INSERT_FACT_SQL` writes both, which is legal because this gate is UPDATE-only.
+# (This block used to say `subject_cmp` was gated ahead of its column and that
+# its fixture was the only thing holding the alternation in place. True then,
+# false now, and left uncorrected it would misdescribe what the fixture proves.)
+#
+# ⚠️ They are still not twins, and the two fixtures are not one test written
+# twice: ADR-0037 defines `object_cmp` as proving difference to ENABLE
+# supersession and `subject_cmp` as proving it to SUPPRESS every consumer. So a
+# rogue re-derivation of the first stamps `valid_to` on a pair nobody
+# arbitrated, and of the second splits a live belief apart with no reviewer and
+# no row to find it by. Deleting either alternation loses a distinct hazard.
+run_fixture "UPDATE … SET subject_cmp fails (the column EXISTS since #5032)" fail \
   "packages/api/src/lib/brain/rogue.ts" \
 'await db.query(`UPDATE brain_facts SET subject_cmp = $2 WHERE workspace_id = $1`);'
 

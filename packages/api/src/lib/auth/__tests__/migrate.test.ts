@@ -577,6 +577,10 @@ describe("migrateAuthTables", () => {
             { name: "0190_brain_vocabulary_proposal.sql" },
             { name: "0191_brain_fact_object_cmp.sql" },
             { name: "0192_brain_predicate_cardinality.sql" },
+            // 0193 adds `brain_facts.subject_cmp` — one nullable column on a
+            // brain-owned table, so it is in the already-applied set for the
+            // same reason as 0187–0192: Better Auth owns nothing it touches.
+            { name: "0193_brain_fact_subject_cmp.sql" },
           ],
         };
       }

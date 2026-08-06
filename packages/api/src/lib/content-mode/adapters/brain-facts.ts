@@ -58,6 +58,10 @@ import {
 // SAMENESS half of the same module, so the two seams cannot drift into
 // disagreeing about which pairs are merely `unknown`.
 import { comparableDifferentSql } from "@atlas/api/lib/brain/object-cmp";
+// ⚠️ The SUBJECT arm's polarity is INVERTED against the object's — proven
+// difference SUPPRESSES the collision here where it enables it there. Read
+// `subject-cmp.ts` before editing `collisionCorePredicate`.
+import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
 // Cardinality as a property of the canonical predicate (#5027), replacing the
 // both-sides row comparison this file used to spell inline. Imported for the
 // same reason as the arm above: one place says what collides.
@@ -482,7 +486,9 @@ function supersedableTierSql(alias: string): string {
  *
  * Joins a draft alias `d` to every already-published fact it would supersede:
  * the same WORKSPACE, the same SLOT — `(subject_key, predicate_key)` — a
- * PROVABLY DIFFERENT object, a shared canonical predicate DECLARED
+ * PROVABLY DIFFERENT object, subjects NOT PROVABLY DIFFERENT (#5032 — the
+ * homonym suppression, and note the inverted polarity against the object arm),
+ * a shared canonical predicate DECLARED
  * `single`-cardinality, and BOTH sides
  * either carrying positive evidence that they are NOT tier-1 or naming no
  * source at all ({@link supersedableTierSql}, #5033). Read that arm's three
@@ -684,12 +690,33 @@ function collisionIdentityPredicate(d: string, p: string): string {
  * this instead of {@link supersessionCollisionPredicate} gets a collision rule
  * with the tier guard AND the cardinality gate silently absent — #5033 and
  * #5027 both deleted, while looking like a refactor.
+ *
+ * ## The subject arm is IDENTITY, not consequence — which is why it lives HERE
+ * ## (#5032)
+ *
+ * `subjectNotDifferentSql` sits inside the core rather than beside the tier
+ * guard, and the placement is the argument: a homonym pair NEVER COLLIDED. It is
+ * two claims about two different entities that happen to share a surface, so it
+ * is not a collision the gate declined to act on — there was nothing in the slot
+ * to act on. Moved out to {@link supersessionCollisionPredicate} it would start
+ * appearing in {@link TIER_HELD_BACK_COUNT_SQL} and
+ * {@link CARDINALITY_HELD_BACK_COUNT_SQL} as *"curate this and it will
+ * supersede"*, which is false and un-actionable: no vocabulary edit and no tier
+ * change makes two entities one.
+ *
+ * ⚠️ Note the polarity, which is NOT the object arm's above it: at the object,
+ * proven difference is what LETS this predicate match; at the subject, proven
+ * difference is what stops it. Both are built from `comparableDifferentSql`, and
+ * the subject's is wrapped in `IS NOT TRUE` — see `subject-cmp.ts` for why an
+ * `IS NOT TRUE` and never a `NOT (…)`, and for why supersession is the LEAST
+ * important of the three consumers this arm serves.
  */
 function collisionCorePredicate(d: string, p: string): string {
   return `${p}.workspace_id = ${d}.workspace_id
      AND ${p}.subject_key = ${d}.subject_key
      AND ${p}.predicate_key = ${d}.predicate_key
      AND ${comparableDifferentSql(`${p}.object_cmp`, `${d}.object_cmp`)}
+     AND ${subjectNotDifferentSql(`${p}.subject_cmp`, `${d}.subject_cmp`)}
      AND ${p}.status = 'published'
      AND ${p}.invalidated_at IS NULL
      AND ${p}.valid_to IS NULL`;

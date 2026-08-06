@@ -3341,13 +3341,48 @@ export const brainFacts = pgTable(
     // `unknown`, and unlike a cardinality flip there is no gate to hang a
     // preview on. 0191's header is the argument; this is the summary.
     //
-    // Only the OBJECT gets one. Subject and predicate are join arms, never
-    // compared for difference — `subject_cmp` is #5032's and has INVERTED
-    // polarity (it suppresses rather than enables), so it is not this column
-    // mirrored and must not be built by copying it.
+    // Only the OBJECT gets one of THIS shape. The predicate never does — it is
+    // a join arm and nothing else. The subject gets `subject_cmp` below, which
+    // has INVERTED polarity and is not this column mirrored.
     //
     // Never projected to the wire, on the keys' terms — `keys-not-on-the-wire.test.ts`.
     objectCmp: text("object_cmp"),
+    // The SUBJECT's comparable value (#5032, ADR-0037 §5, migration 0193) — a
+    // resolved entity id, tagged (`entity:01J…`), supplied by a warehouse-backed
+    // store and NEVER parsed from a surface (`lib/brain/subject-cmp.ts`).
+    //
+    // ⚠️ **NOT `object_cmp` at another position — the polarity is INVERTED.**
+    //
+    //   object_cmp   non-null, same tag, unequal ⇒ ENABLES supersession
+    //   subject_cmp  non-null, same tag, unequal ⇒ SUPPRESSES everything:
+    //                corroboration, tension and supersession alike
+    //
+    // Two claims about DIFFERENT entities are not in the same slot at all, so
+    // `object_cmp`'s "tension on `different` and `unknown`, supersession on
+    // `different` only" does not transfer. Building this by copying the object
+    // arms mints tension edges between provably-different entities.
+    //
+    // It exists for CORROBORATION, which is the only identity consumer with no
+    // grant arm and no cardinality arm: a homonym lets a public episode become
+    // evidence for a private fact, and publish then overwrites `visible_to`
+    // with the union of evidence grants — the private claim's BODY reaching the
+    // public audience. See migration 0193 and `promotion.ts`'s
+    // `widenGrantFromEvidence`.
+    //
+    // NULLABLE PERMANENTLY, and NULL everywhere is byte-identical to the
+    // behaviour before 0193 — every consumer arm is `(…difference…) IS NOT
+    // TRUE`, which a NULL makes vacuously true. **Only a warehouse-backed
+    // subject can ever supply one; the extractor never can, for any subject,
+    // ever.** The residue is guarded by the review-gate widening disclosure
+    // (`loadWideningPreview`), not prevented.
+    //
+    // NEVER BACKFILLED. Resolving stored subject surfaces and stamping their
+    // ids would retroactively SPLIT live beliefs the corpus already merged,
+    // with no gate to hang a preview on — 0191's argument at the position where
+    // its consequence has the opposite sign.
+    //
+    // Never projected to the wire, on the keys' terms — `keys-not-on-the-wire.test.ts`.
+    subjectCmp: text("subject_cmp"),
     // Bi-temporal, invalidate-never-delete. `validFrom`/`validTo` are VALID
     // time (when the claim held in the world); `validTo` is stamped by a HUMAN
     // promotion — there is no autonomous supersession, and staleness decay

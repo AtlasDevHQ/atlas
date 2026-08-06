@@ -52,7 +52,7 @@
 #     supersession stamp; UPDATE-only like the grant, see the column notes)
 #   - `UPDATE [schema.]brain_facts … SET … subject_key / predicate_key /
 #     object_key / subject_cmp / object_cmp …` (#5019 — a re-key; UPDATE-only,
-#     with `object_cmp` live since #5030 and `subject_cmp` gated ahead of #5032 adding it)
+#     with `object_cmp` live since #5030 and `subject_cmp` since #5032)
 #   - `INSERT INTO [schema.]brain_facts (… status …)`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … visible_to …`
 #   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
@@ -340,18 +340,21 @@ ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
 # draft stage, and that is defensible (the surfaces are untouched, so no
 # user-facing content changed) but it should be defensible on the record.
 #
-# ONLY `subject_cmp` DOES NOT EXIST YET. ADR-0037 §2's column table defines
-# both: `object_cmp` proves DIFFERENCE at the object, and `subject_cmp` (#5032)
-# is its INVERTED twin — non-null and unequal means "not the same slot",
-# suppressing corroboration, tension, and supersession alike. It is not a
-# mirror.
+# BOTH `_cmp` columns are LIVE. `object_cmp` since #5030 (migration 0191) and
+# `subject_cmp` since #5032 (migration 0193); `INSERT_FACT_SQL` names both —
+# legal, because this gate is UPDATE-only and each value is derived at ingest
+# exactly as the grant is. This paragraph used to say `subject_cmp` did not
+# exist yet and that the guard was running ahead of its schema, which was the
+# right posture then and is now false.
 #
-# `object_cmp` is LIVE since #5030: migration 0191 adds it and
-# `INSERT_FACT_SQL` names it — legal, because this gate is UPDATE-only and the
-# value is derived at ingest exactly as the grant is. `subject_cmp` is still
-# gated ahead of its schema so the guard is never the thing lagging it, and no
-# production code can trip THAT arm until #5032, which makes its adversarial
-# fixture the only thing holding it in place.
+# They are NOT twins, and the difference is why re-deriving either is refused
+# for a DIFFERENT reason: `object_cmp` proves DIFFERENCE at the object, which
+# ENABLES supersession, so a second writer that re-derived one could stamp
+# `valid_to` on a pair nobody arbitrated. `subject_cmp` proves difference at the
+# subject, which SUPPRESSES corroboration, tension and supersession alike — so a
+# second writer there splits a live belief apart, silently, in the direction
+# nobody can report (a missed corroboration writes no row to find). Same gate,
+# opposite hazards.
 #
 # `valid_to` (#4912) is the third gated column, UPDATE-only like the grant:
 # "a human promotion stamps `valid_to`; there is no autonomous supersession"

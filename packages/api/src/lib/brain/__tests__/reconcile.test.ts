@@ -41,6 +41,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
 import {
   CORROBORATION_LOOKUP_SQL,
   INSERT_FACT_SQL,
@@ -124,10 +125,20 @@ interface SlotBinds {
    * and dies only where nobody looks.
    */
   readonly comparable: string | null;
+  /**
+   * The SUBJECT's comparable value (#5032) — the fifth member of
+   * `agreementBinds`, and ⚠️ **not the fourth's twin**: at the object a proven
+   * difference ENABLES supersession, at the subject it SUPPRESSES all three
+   * consumers. Read here for {@link comparable}'s reason — the `-pg` lane skips
+   * on the default local run, so without this field a `subjectComparableValue`
+   * that always returned `null`, or an `agreementBinds` that dropped the member,
+   * is invisible to `bun run test`.
+   */
+  readonly subjectComparable: string | null;
 }
 
 /**
- * The four consecutive agreement binds, read positionally — `null` stays `null`
+ * The five consecutive agreement binds, read positionally — `null` stays `null`
  * rather than becoming `"null"` through `String()`, which is the whole
  * distinction these tests are about.
  */
@@ -136,7 +147,13 @@ function keyParams(params: readonly unknown[], from: number): SlotBinds {
     const v = params[from + i];
     return v === null || v === undefined ? null : String(v);
   };
-  return { subject: at(0), predicate: at(1), object: at(2), comparable: at(3) };
+  return {
+    subject: at(0),
+    predicate: at(1),
+    object: at(2),
+    comparable: at(3),
+    subjectComparable: at(4),
+  };
 }
 
 /**
@@ -299,19 +316,22 @@ class FakeBrainStore {
         return { rows: [{ id: `edge-${++this.seq}` }] };
       }
       case STATEMENTS.tensionScan.sql: {
-        // `id <> $6` is the ONE arm still applied here, and it is not identity:
+        // `id <> $7` is the ONE arm still applied here, and it is not identity:
         // it is the statement refusing to return the row the stage just wrote,
         // compared by uuid. Modelling it keeps a scripted rival list from
         // producing a self-edge the real query cannot produce.
         //
-        // ⚠️ Index 5, and it was 4 until #5030 widened `agreementBinds` — a stale
-        // index here does not fail, it silently STOPS modelling the arm: the
-        // filter compares rival ids against `"money:USD:499"`, matches nothing,
-        // and the fake starts returning a self-rival the real statement cannot.
-        // The renumbering assertion further down caught its own index and left
-        // this one; that is the shape `agreementBinds`'s docstring warns about,
-        // reproduced inside the harness that is supposed to catch it.
-        const selfId = String(params[5]);
+        // ⚠️ Index 6, and it has moved TWICE — 4 before #5030, 5 before #5032 —
+        // because both slices widened `agreementBinds`, which this statement
+        // spreads in the MIDDLE of its bind list. A stale index here does not
+        // fail, it silently STOPS modelling the arm: the filter compares rival
+        // ids against a tagged comparable value, matches nothing, and the fake
+        // starts returning a self-rival the real statement cannot. #5030's
+        // renumbering assertion caught its own index and left this one; that is
+        // the shape `agreementBinds`'s docstring warns about, reproduced inside
+        // the harness that is supposed to catch it, which is why the test below
+        // falsifies the FAKE and not only the stage.
+        const selfId = String(params[6]);
         return { rows: this.rivalIds.filter((id) => id !== selfId).map((id) => ({ id })) };
       }
       case STATEMENTS.tensionEdge.sql: {
@@ -1323,31 +1343,44 @@ describe("advisory contradiction edges", () => {
   });
 
   test("the scan binds the row just written as its own self-exclusion", async () => {
-    // `id <> $6`. Without it every `single` fact earns a self-edge the moment it
+    // `id <> $7`. Without it every `single` fact earns a self-edge the moment it
     // lands, and the review queue fills with claims contradicting themselves.
     // The BIND is what this file can prove; that the statement still spells the
     // arm is the lexical backstop at the bottom.
     //
-    // Index 5, not 4, since #5030: the agreement tuple spread ahead of it grew a
-    // fourth member (the comparable value). That renumbering is the hazard
-    // `agreementBinds`'s docstring names — a stale index here binds a KEY where
-    // the statement declares `::uuid`, so this assertion is also the one that
-    // fails if the next `_cmp` column widens the spread without renumbering.
+    // Index 6, and it has moved twice — 4 before #5030, 5 before #5032, each
+    // time because the agreement tuple spread ahead of it grew a member. That
+    // renumbering is the hazard `agreementBinds`'s docstring names, and it is
+    // NOT caught by the compiler: a wider tuple spreads into `unknown[]`
+    // identically. A stale index here binds a KEY where the statement declares
+    // `::uuid`, so this assertion is the one that fails when the next `_cmp`
+    // column widens the spread without renumbering.
     const store = new FakeBrainStore();
     await run(store, { candidates: [candidate({ ...single, object: "Grace" })] });
 
     const binds = store.bindsFor("tensionScan");
     expect(binds, "the rival scan was never issued").toHaveLength(1);
-    expect(binds[0]![5]).toBe(store.facts[0]!.id);
+    expect(binds[0]![6]).toBe(store.facts[0]!.id);
+    // The CAP moved with it. Asserted beside the id rather than left to the
+    // lexical `LIMIT $8` check, and as a TYPE rather than a value: the cap is
+    // private to `reconcile.ts` and restating its number here would pin it
+    // twice, but every wrong bind at this position is a string (a uuid, or a
+    // tagged comparable value) that pg would reject inside `LIMIT` at runtime —
+    // which no unit fake would notice.
+    expect(
+      typeof binds[0]![7],
+      "the tension cap is bound at the wrong index — a non-number here is a uuid or a comparable value landing in LIMIT",
+    ).toBe("number");
   });
 
   test("…and the fake HONOURS that exclusion, so no self-edge is ever observed", async () => {
     // The bind assertion above proves the stage passes the right id; it says
-    // nothing about whether the fake's `id <> $6` model reads it at the right
+    // nothing about whether the fake's `id <> $7` model reads it at the right
     // index. Nothing did, and the model had silently stopped working: after
     // #5030 widened `agreementBinds` it compared rival ids against the
     // COMPARABLE VALUE, matched nothing, and would have handed the stage a
-    // self-rival the real statement cannot return.
+    // self-rival the real statement cannot return. #5032 widened it again, so
+    // this test is the reason the harness moved with the statement.
     //
     // A fake that lies in the permissive direction is worse than no fake — the
     // next author to debug a self-edge would be debugging the harness. So the
@@ -1363,7 +1396,7 @@ describe("advisory contradiction edges", () => {
 
     expect(
       selfRival.edges.filter((e) => e.edgeType === "in-tension-with"),
-      "the stage wired an in-tension-with edge from a fact to ITSELF — the fake's `id <> $6` exclusion is reading the wrong bind index",
+      "the stage wired an in-tension-with edge from a fact to ITSELF — the fake's `id <> $7` exclusion is reading the wrong bind index",
     ).toHaveLength(0);
   });
 
@@ -1381,7 +1414,9 @@ describe("advisory contradiction edges", () => {
     await run(store, { candidates: [candidate({ predicateCardinality: "single" })] });
 
     expect(INSERT_FACT_SQL).not.toContain("predicate_cardinality");
-    expect(store.bindsFor("insertFact")[0]).toHaveLength(13);
+    // 14 since #5032 added `subject_cmp` as `$14`. The number is the point: a
+    // re-added cardinality bind makes it 15 with valid SQL and an unchanged row.
+    expect(store.bindsFor("insertFact")[0]).toHaveLength(14);
   });
 
   test("the producer's cardinality hint still gates the ADVISORY tension scan", async () => {
@@ -1565,8 +1600,14 @@ describe("the draft candidate", () => {
       // whole abstain band — so the fourth bind is `null` here, and the test
       // below is the one that proves it can be non-null.
       comparable: null,
+      // `null` for the SUBJECT too, and here that is not merely the common case
+      // — it is what makes #5032 non-regressive. `passthroughEntityResolver`
+      // abstains, so nothing suppresses anything, and every consumer behaves
+      // exactly as it did before the column existed. The positive control is two
+      // tests below.
+      subjectComparable: null,
     };
-    // All four agreement binds, on all three statements that carry them, and
+    // All five agreement binds, on all three statements that carry them, and
     // each is asserted: an INSERT keyed correctly beside a lookup keyed off the
     // raw surface would write rows nothing can ever find.
     expect(store.keyBindsFor("insertFact")[0]).toEqual(keyed);
@@ -1604,6 +1645,99 @@ describe("the draft candidate", () => {
         "money:USD:499",
       );
     }
+  });
+
+  test("…and the SUBJECT's comparable value is bound too, on all three (#5032)", async () => {
+    // THE positive control for `subjectComparable: null` above, which an
+    // `agreementBinds` that always yields `null` — or a `subjectComparableValue`
+    // that returns `null` unconditionally — satisfies perfectly.
+    //
+    // The resolver answers for the SUBJECT surface only. That is not tidiness:
+    // it also proves the stage reads the batch at the subject position rather
+    // than reusing the object's answer, which is the shape #5031 left plumbed
+    // and unobserved. If the two were crossed, `subjectComparable` would be
+    // `null` here and `comparable` would carry the id.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ subject: "acmecorp", predicateCardinality: "single" })],
+      resolveEntity: (surfaces) =>
+        new Map(
+          [...surfaces]
+            .filter((surface) => surface === "acmecorp")
+            .map((surface) => [surface, { entityId: "ent-acme-vendor" }]),
+        ),
+    });
+
+    for (const name of ["insertFact", "corroboration", "tensionScan"] as const) {
+      expect(
+        store.keyBindsFor(name)[0]?.subjectComparable,
+        `${name} bound no SUBJECT comparable value`,
+      ).toBe("entity:ent-acme-vendor");
+      // …and the object's stayed null, so the two positions are not one value
+      // read twice. A stage that bound `subjectComparable` into both slots would
+      // pass the assertion above and start proving object difference from a
+      // subject id — which stamps `valid_to`.
+      expect(
+        store.keyBindsFor(name)[0]?.comparable,
+        `${name} bound the SUBJECT's id at the OBJECT position`,
+      ).toBeNull();
+    }
+  });
+
+  test("the subject's comparable value is the STORE's id and never a parse of the surface (#5032)", async () => {
+    // ADR-0037 §5 states the limit as absolute — *"the extractor can never
+    // supply one, for any subject, ever"* — and `subject-cmp.ts` implements it
+    // by deriving the column from a resolved id and nothing else. This is that
+    // sentence made falsifiable.
+    //
+    // The surfaces are chosen to PARSE: `499` and `true` both yield comparable
+    // values at the object position (`number:499`, `bool:true`), which is what
+    // makes this a real refusal rather than a restatement of "unparseable
+    // surfaces abstain". Swap `subjectComparableValue` for `comparableValue` and
+    // both rows below go non-null.
+    //
+    // Why the refusal matters: at this position a value SUPPRESSES. `lexicalNorm`
+    // strips a leading `-`, so a surface parse would make `-499` and `499` — one
+    // subject key — read as two entities and silently stop corroborating.
+    for (const subject of ["499", "true"]) {
+      const store = new FakeBrainStore();
+      await run(store, {
+        candidates: [candidate({ subject, predicateCardinality: "single" })],
+      });
+      expect(
+        store.keyBindsFor("insertFact")[0]?.subjectComparable,
+        `the subject surface \`${subject}\` was PARSED into subject_cmp — only a store id may land there`,
+      ).toBeNull();
+    }
+  });
+
+  test("a failed batch withholds the subject's comparable value too (#5032)", async () => {
+    // The subject has no at-rest/lookup split, and this is why that is safe
+    // rather than an omission: a failed batch yields no id at all, so `null` is
+    // the honest value at every site and there is nothing an outage could bind
+    // that a healthy store would have out-proven.
+    //
+    // The direction is the conservative one AT THIS POSITION and the opposite of
+    // the object's: withholding a suppression costs a homonym corroboration
+    // (visible at the review gate), while fabricating one would split a live
+    // belief apart with no reviewer anywhere.
+    const store = new FakeBrainStore();
+    await run(store, {
+      candidates: [candidate({ subject: "acmecorp", predicateCardinality: "single" })],
+      resolveEntity: () => {
+        throw new Error("entity store unavailable");
+      },
+    });
+
+    for (const name of ["insertFact", "corroboration", "tensionScan"] as const) {
+      expect(
+        store.keyBindsFor(name)[0]?.subjectComparable,
+        `${name} bound a subject id from a batch that FAILED`,
+      ).toBeNull();
+    }
+    // The row still carries the recompute marker, and it now covers BOTH
+    // comparable values — one batch fed them, one failure withheld them.
+    expect(store.facts[0]?.provenance).toMatchObject({ provisional: true });
   });
 
   test("keys are derived off the RETAINED surface, which the resolver cannot move", async () => {
@@ -1728,6 +1862,11 @@ describe("the draft candidate", () => {
       // and an `objectSameSql` fed an aliased value there would compare the
       // vocabulary's output against a parser's.
       comparable: null,
+      // The same prohibition at the SUBJECT, where it bites harder (#5032): a
+      // vocabulary entry reaching `subject_cmp` would make two claims the alias
+      // just MERGED read as provably different entities and stop corroborating —
+      // the alias undone by the column it fed.
+      subjectComparable: null,
     });
   });
 
@@ -1900,16 +2039,66 @@ describe("no autonomous supersession (#4912)", () => {
       expect(sql).toContain("strpos(object_cmp, ':') > 0");
       expect(sql).toContain("strpos($5, ':') > 0");
     }
+    // ── The SUBJECT arm (#5032), and ⚠️ its polarity is INVERTED ──────────
+    //
+    // Both statements take the SAME arm — `(…provably different…) IS NOT TRUE`
+    // — where the object arm splits them into opposite halves. That is not an
+    // oversight to "fix": a proven difference of SUBJECT means the two claims
+    // are about different entities and were never in one slot, so there is
+    // nothing to corroborate AND nothing to flag as a rival. Mirroring the
+    // object arm here would put proven difference on the tension side and mint
+    // advisory edges between provably-different entities.
+    //
+    // Pinned lexically for the same reason as everything above it: the fake
+    // reads binds positionally, so deleting either arm leaves every behavioural
+    // test in this file green, and the behavioural falsifier lives in
+    // `identity-consumers-pg.test.ts`, which SKIPS without `TEST_DATABASE_URL`.
+    for (const [name, sql] of [
+      ["CORROBORATION_LOOKUP_SQL", CORROBORATION_LOOKUP_SQL],
+      ["TENSION_CANDIDATES_SQL", TENSION_CANDIDATES_SQL],
+    ] as const) {
+      // ⚠️ The WHOLE arm, from the builder — not two floating substrings.
+      // MEASURED: `CORROBORATION_LOOKUP_SQL` contains `)) IS NOT TRUE` TWICE,
+      // once from this arm and once from `objectSameSql`'s own difference veto,
+      // so a two-substring check was satisfied by the OBJECT arm and said
+      // nothing about the subject. Inverting the subject polarity in the
+      // corroboration statement alone killed ZERO tests in this file — the exact
+      // gap this block exists to close, on the statement `subject-cmp.ts` calls
+      // the consumer with no brake.
+      //
+      // Not circular: `subject-cmp.test.ts` owns the BUILDER's polarity (a
+      // mirrored arm dies there), so this assertion only has to prove the
+      // statement uses the builder rather than a hand-spelled lookalike.
+      expect(
+        sql,
+        `${name} lost the subject_cmp arm, or spelled it by hand instead of through \`subjectNotDifferentSql\` (#5032)`,
+      ).toContain(subjectNotDifferentSql("subject_cmp", "$6"));
+      // The tag and separator arms, on the subject operands. Not redundant with
+      // the object loop above: `comparableDifferentSql` is called twice with
+      // different operands, and a subject call that dropped them would read a
+      // truncated `'entity'` from a region import as proof of difference — here
+      // that SUPPRESSES corroboration on every row sharing the defect.
+      expect(sql).toContain("strpos(subject_cmp, ':') > 0");
+      expect(sql).toContain("strpos($6, ':') > 0");
+    }
+    // …and there is NO positive subject arm anywhere. `subject-cmp.ts` ships no
+    // `subjectSameSql` on purpose — the slot keys already answer "same subject?"
+    // — and a `subject_cmp = $6` disjunct appearing in either statement would be
+    // the object arm's two-arm shape restored at the position whose polarity is
+    // inverted.
+    for (const sql of [CORROBORATION_LOOKUP_SQL, TENSION_CANDIDATES_SQL]) {
+      expect(sql).not.toContain("subject_cmp = $6");
+    }
     // …and the self-exclusion, whose BIND is asserted above but whose presence
     // in the statement nothing else here can see. Without it every `single` fact
-    // is its own rival the moment it lands. `$6` since #5030 widened the
-    // agreement spread ahead of it.
-    expect(TENSION_CANDIDATES_SQL).toContain("id <> $6");
+    // is its own rival the moment it lands. `$7` since #5032 widened the
+    // agreement spread ahead of it a second time (it was `$6` after #5030).
+    expect(TENSION_CANDIDATES_SQL).toContain("id <> $7");
     // …and the cap, the last placeholder after the spread. `agreementBinds`'s
     // docstring names this assertion as part of what enforces the renumbering,
     // so it has to exist: widening the tuple again without renumbering pushes
     // the cap past the end of the bind list and pg raises at runtime, not here.
-    expect(TENSION_CANDIDATES_SQL).toContain("LIMIT $7");
+    expect(TENSION_CANDIDATES_SQL).toContain("LIMIT $8");
     // …and no surviving surface comparison in either. An AND-ed surface arm
     // beside a key arm reads as pivoted and is not.
     for (const [name, sql] of [

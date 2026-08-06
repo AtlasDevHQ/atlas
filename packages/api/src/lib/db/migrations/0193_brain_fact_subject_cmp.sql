@@ -1,0 +1,144 @@
+-- 0193 — The subject's comparable value: `brain_facts.subject_cmp` (#5032,
+-- ADR-0037 §5 "Subject/object identity — limits").
+--
+-- ⚠️ **THIS IS NOT `object_cmp` AT ANOTHER POSITION. ITS POLARITY IS
+-- INVERTED**, and describing it as a mirror produces an implementation that
+-- mints tension edges between provably-DIFFERENT entities:
+--
+--            | null | proves     | effect when proven
+--   ---------|------|------------|--------------------------------------------
+--   object   | yes  | difference | ENABLES supersession
+--   subject  | yes  | difference | SUPPRESSES everything — corroboration,
+--            |      |            | tension and supersession alike
+--
+-- Two claims about DIFFERENT ENTITIES are not in the same slot at all, so there
+-- is nothing to corroborate, nothing to flag as a rival, and nothing to
+-- supersede. `object_cmp`'s "tension fires on `different` and `unknown`,
+-- supersession on `different` only" does NOT transfer.
+--
+-- ## What it is for: corroboration is the one consumer with no brake
+--
+-- The slot keys collide two SURFACES. Homonymy is by definition the case where
+-- one surface names two referents, so a key can never separate them —
+-- `lexicalNorm` newly collides `Acme Corp` / `ACME CORP` / `acme-corp` /
+-- `Acme  Corp` (distinct keys before 0187), and an approved alias can
+-- MANUFACTURE a homonym that did not exist (`acme → acme corp`, workspace-wide,
+-- by indexed rewrite).
+--
+-- Supersession requires `single` cardinality on the CANONICAL predicate, which
+-- since #5027 needs positive evidence (`cardinalitySingleSql`, read at the
+-- publish gate). The tension scan is gated differently and more weakly — on the
+-- producer's per-claim hint, which defaults to `multi` (`reconcile.ts`,
+-- `predicateCardinality`). The two are worth keeping apart: they are separate
+-- gates with separate provenance, and only the first consults the store.
+-- Corroboration is gated by neither, i.e. by nothing:
+--
+--   CORROBORATION_LOOKUP_SQL    workspace + S/P/O. No grant arm, no cardinality
+--                               arm.
+--     ↓ hit
+--   INSERT_PROVENANCE_EDGE_SQL  a PUBLIC episode recorded as evidence on a
+--                               PRIVATE fact
+--     ↓ publish
+--   EVIDENCE_GRANTS_SQL         collect every provenance-edge episode's
+--                               visible_to
+--   WIDEN_AND_PROMOTE_FACTS_SQL visible_to := the union. Overwrite.
+--
+-- So `Acme Corp / status / active` from a procurement-private episode
+-- corroborates the identical triple about a DIFFERENT `Acme Corp` from an
+-- `org`-granted one, and the private claim's BODY reaches the public audience.
+-- The safety argument for that widening is written at `promotion.ts` — *"the
+-- claim was stated in A and in B, and a reader of either already saw it said"* —
+-- and subject homonymy falsifies that sentence: the claim was NOT stated in B.
+-- A different entity's claim was. That comment is corrected in the same commit
+-- as this migration, because a claim in the tree that homonymy makes false is
+-- worse than no comment.
+--
+-- ## ⚠️ Only a warehouse-backed subject can ever supply one, and that is
+-- ## PERMANENT
+--
+-- A `subject_cmp` requires a subject backed by a primary key — a warehouse
+-- dimension value. **The extractor can never supply one, for any subject,
+-- ever**: `lib/brain/subject-cmp.ts` derives this column from a resolved entity
+-- id and from nothing else, and deliberately does NOT parse the surface (a
+-- surface parse would make the sentence above false in the tree, which is the
+-- exact defect this slice exists to correct one file over).
+--
+-- So the `Acme Corp`-vendor / `Acme Corp`-account case — the one that occurs
+-- TODAY — stays unresolvable. The mechanism protects the case that does not yet
+-- exist and not the case that does, and accepting that means accepting it
+-- FOREVER: the identity vocabulary is a function on surfaces, and no function on
+-- surfaces maps one surface to two referents. The residue is guarded rather than
+-- prevented, by the review-gate widening disclosure this slice also ships
+-- (`loadWideningPreview`, `lib/brain/oversight.ts`) — VISIBLE, not closed.
+--
+-- The unevenness is not the per-source-class policy ADR-0037 §4 rules out, on
+-- `object_cmp`'s own precedent: that column is already unevenly supplied by
+-- VALUE TYPE (bare `$499` and every entity surface fail closed to NULL). The
+-- honest difference, stated because it is real: `object_cmp`'s unevenness is by
+-- value type, `subject_cmp`'s is by PRODUCER — a class distinction in practice
+-- even though no code branches on `provenance.source`.
+--
+-- ## NULL is byte-identical to the behaviour before this migration
+--
+-- Every consumer arm is spelled `(comparableDifferentSql(…)) IS NOT TRUE`. A
+-- NULL on either side makes every conjunct of the difference test unknown, so
+-- the whole predicate is NULL, so `IS NOT TRUE` is TRUE and the arm admits the
+-- pair. With the column NULL everywhere — which it is on every existing row and
+-- on every extractor-produced row forever — the three consumers behave exactly
+-- as they did before. That is a stronger property than `object_cmp` had, where
+-- the polarity choice was live, and `identity-consumers-pg.test.ts` asserts it
+-- rather than leaving it as a reading of the SQL.
+--
+-- ## NEVER BACKFILLED — for 0191's reason, arriving in the other direction
+--
+-- There is nothing to backfill: no row predating this migration has a resolved
+-- subject id anywhere on it (`provenance.entityIds` retired in #5031 without
+-- ever shipping a producer that populated it). But the prohibition is worth
+-- stating anyway, because the obvious future "repair" — resolve the stored
+-- subject surfaces and stamp their ids — would retroactively SUPPRESS
+-- corroboration on pairs the corpus already merged, splitting live beliefs
+-- apart with no gate to hang a preview on. 0191 refuses a backfill because it
+-- would manufacture positive evidence of DIFFERENCE; this one refuses for the
+-- same reason at the position where the consequence is the opposite sign.
+--
+-- `subject_cmp IS NULL` is therefore not a work queue either. It matches every
+-- extractor-supplied subject, permanently, which is nearly the whole corpus.
+--
+-- ## NO INDEX, by T3 §7's own argument
+--
+-- The seek arm stays `subject_key` — `idx_brain_facts_subject` (0187) already
+-- serves the `(workspace_id, subject_key, predicate_key)` prefix, and a slot
+-- holds a handful of live rows (for `single` cardinality essentially one). This
+-- column is a RESIDUAL FILTER over that tiny set, never a seek. The
+-- btree-hostile-disjunction objection gets the identical answer it got for
+-- `object_cmp`: three-valued agreement is free at the index level, and
+-- ADR-0037 §1's zero-net-new-indexes result is preserved.
+--
+-- ⚠️ **The unique index T3 §7 deferred is NOT decided here.** Under a
+-- `subject_cmp`-less unique `(workspace_id, subject_key, predicate_key,
+-- object_key)` two referents' identical claim would be UNREPRESENTABLE AS TWO
+-- ROWS — cementing a homonym merge at the database level and foreclosing any
+-- later split. It must gain this column or be dropped; #5038 owns that decision
+-- and its NULL-in-a-unique-tuple semantics. Nothing in the tree creates that
+-- index today, so this is a constraint on a future migration, not a change to
+-- one.
+--
+-- ## No CHECK constraint, for 0191's reason verbatim
+--
+-- The column is a bare `TEXT`. `INSERT_FACT_SQL` is the sole writer and
+-- `subjectComparableValue` emits only `entity:<non-empty id>`, so a malformed
+-- value is unreachable today; it stops being unreachable at #5035, which makes
+-- the region importer a second writer. 0191's header carries the argument and
+-- the deferral's owner — this column joins that deferral rather than opening a
+-- second one.
+--
+-- ## Scale
+--
+-- Two catalog writes (the column and its comment). `ADD COLUMN` with no default
+-- has never rewritten the table, so this holds the runner's advisory lock for
+-- the length of an `ALTER TABLE` and nothing more.
+
+ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS subject_cmp TEXT;
+
+COMMENT ON COLUMN brain_facts.subject_cmp IS
+  'Resolved entity id of the SUBJECT, tagged (`entity:01J…`), supplied only by a warehouse-backed store — never parsed from a surface (lib/brain/subject-cmp.ts). ⚠️ INVERTED POLARITY vs object_cmp: non-null, same tag and UNEQUAL means two claims about DIFFERENT entities, which SUPPRESSES corroboration, tension and supersession alike. NULL means unknown and suppresses nothing — byte-identical to pre-0193 behaviour. Never backfilled: see migration 0193.';

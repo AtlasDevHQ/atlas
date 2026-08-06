@@ -56,13 +56,15 @@
  *     would make this stage a silent fact-dropper, which the issue forbids in
  *     both directions.
  *
- *     Since #5031 the flag means one narrow thing — *this row's `object_cmp` is
- *     worth recomputing* — and a store that answers "no entry" does NOT set it.
- *     **Not its keys**: the resolver reaches no key at any position, so a replay
- *     recomputes those to the same bytes under the same vocabulary. That abstain is honest, it is
- *     represented at rest already (`object_cmp` NULL → `unknown` → tension
- *     only), and it will not change on replay; an outage will, and nothing else
- *     in the design can find those rows afterwards. See
+ *     Since #5031 the flag means one narrow thing — *this row's COMPARABLE
+ *     VALUES are worth recomputing* — and a store that answers "no entry" does
+ *     NOT set it. Since #5032 that is BOTH `_cmp` columns, since one failed
+ *     batch withheld both. **Not its keys**: the resolver reaches no key at any
+ *     position, so a replay recomputes those to the same bytes under the same
+ *     vocabulary. That abstain is honest, it is represented at rest already (a
+ *     NULL `_cmp` → `unknown` → tension only at the object, and no suppression
+ *     at the subject), and it will not change on replay; an outage will, and
+ *     nothing else in the design can find those rows afterwards. See
  *     {@link resolveEntitiesForEpisode}, which also states where the marker is
  *     NOT written.
  *
@@ -236,6 +238,19 @@ import {
   type ComparableValue,
   type DeclaredObjectType,
 } from "@atlas/api/lib/brain/object-cmp";
+// The SUBJECT's comparable value, and its ONE arm. A separate module because
+// the polarity is INVERTED — proven difference SUPPRESSES here where it enables
+// at the object — and because the value comes from a store id and never from a
+// parse of the surface. Reading `subject-cmp.ts` before editing either of the
+// two statements below is not optional: the mistake it exists to prevent
+// (mirroring the object arms) mints tension edges between provably-different
+// entities and leaves the ACL-widening hole open.
+import {
+  subjectComparableValue,
+  subjectNotDifferentSql,
+  type ResolvedEntityId,
+  type SubjectComparable,
+} from "@atlas/api/lib/brain/subject-cmp";
 import type {
   BrainFactProvenance,
   EntityRole,
@@ -411,11 +426,13 @@ export interface ResolvedEntity {
  * materialize-once argument the slot keys are built on.
  *
  * The batch covers the deduplicated SUBJECT and OBJECT surfaces together, in one
- * call. Today only the object's id has a destination column; the subject's is
- * resolved and carried with no consumer until #5032 adds `subject_cmp` (see
- * {@link PreparedCandidate.subjectEntityId}). That is expected, not an oversight
- * — the seam that serves two positions is this issue's, and building it
- * object-only would have to be unbuilt.
+ * call, and since #5032 BOTH ids have a destination column: the object's reaches
+ * `object_cmp` and the subject's reaches `subject_cmp` (see
+ * {@link PreparedCandidate.subjectComparable}). ⚠️ They are not two instances of
+ * one mechanism — at the object a proven difference ENABLES supersession, at the
+ * subject it SUPPRESSES every consumer at once, because two claims about
+ * different entities are not in the same slot. `subject-cmp.ts` carries the
+ * table.
  *
  * Invoked ONCE, BEFORE the transaction opens, which is load-bearing for the
  * DB-backed resolver this seam anticipates: it may check out its own connection
@@ -687,6 +704,27 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
  * A wider re-observation is acted on there instead: `promoteBrainFacts` unions
  * the evidence grants in when the draft is published (#4823).
  *
+ * ## The subject arm is a SUPPRESSION, and it is the one that matters (#5032)
+ *
+ * `subjectNotDifferentSql("subject_cmp", "$6")` — the whole statement is vetoed
+ * when the store proves the two subjects are DIFFERENT ENTITIES. Not a mirror of
+ * the object arm above: nothing is enabled here, and there is no positive
+ * `subject_cmp = $6` disjunct anywhere, because two claims about different
+ * entities are not in the same slot at all. See `subject-cmp.ts` for the
+ * polarity table.
+ *
+ * THIS statement is why the column exists. It is the only identity consumer with
+ * no grant arm and no cardinality arm, and on a hit it attaches the incoming
+ * episode as evidence — so a homonym lets a PUBLIC episode become evidence for a
+ * PRIVATE fact, and the publish gate then overwrites `visible_to` with the union
+ * of every evidence grant. That is a private claim's body reaching a public
+ * audience, and it is the reason a `subject_cmp` test asserting only *"no
+ * supersession"* proves nothing.
+ *
+ * NULL on either side admits the pair — the abstain band, which at this position
+ * is every extractor-supplied subject, permanently. So this arm is a no-op on
+ * the corpus as it stands and stays one until a warehouse-backed store answers.
+ *
  * `valid_to IS NULL` (#4912): only a CURRENT fact corroborates. A superseded
  * fact — `valid_to` stamped by a human promotion — is settled history that
  * every as-of-now read hides, so strengthening it would swallow the
@@ -707,6 +745,7 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
       AND subject_key = $2
       AND predicate_key = $3
       AND ${objectSameSql("object_key", "$4", "object_cmp", "$5")}
+      AND ${subjectNotDifferentSql("subject_cmp", "$6")}
       AND invalidated_at IS NULL
       AND valid_to IS NULL
     ORDER BY ingested_at
@@ -739,6 +778,12 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * second writer re-deriving it changes what a claim is provably different from,
  * and difference is what stamps `valid_to`.
  *
+ * `subject_cmp` (#5032) joins it on identical terms — sole writer, migration
+ * 0193, no backfill, UPDATE-gated — and for the INVERTED reason: re-deriving one
+ * changes what a claim is provably NOT the same subject as, and that suppresses
+ * corroboration. A second writer stamping subject ids onto the existing corpus
+ * would silently split live beliefs apart.
+ *
  * `RETURNING id` and nothing else. A key must never reach a consumer that could
  * branch on it — that is what makes an alias un-removable — and
  * `keys-not-on-the-wire.test.ts` scans RETURNING lists naming this exact shape.
@@ -759,11 +804,11 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
 export const INSERT_FACT_SQL = `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, valid_from, extracted_at,
           source_episode_id, provenance, visible_to,
-          subject_key, predicate_key, object_key, object_cmp)
+          subject_key, predicate_key, object_key, object_cmp, subject_cmp)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
                $7::uuid, $8::jsonb,
                ARRAY(SELECT jsonb_array_elements_text($9::jsonb)),
-               $10, $11, $12, $13)
+               $10, $11, $12, $13, $14)
        RETURNING id`;
 
 /**
@@ -842,6 +887,30 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * simplification and would reverse the NULL-key abstention documented above: a
  * degenerate rival would start earning advisory edges. The builder's own
  * docstring carries that argument.
+ *
+ * ## The subject arm is a SUPPRESSION here TOO, and that is not symmetry (#5032)
+ *
+ * Every other consumer split on the object's three-valued verdict — *same* to
+ * corroboration, *different* to supersession, `unknown` here. `subject_cmp` does
+ * not split at all: all three take
+ * `subjectNotDifferentSql("subject_cmp", "$6")`, unchanged, because a proven
+ * difference of SUBJECT removes the pair from the slot entirely rather than
+ * moving it between verdicts.
+ *
+ * ⚠️ Concretely, and this is the mistake ADR-0037 §5 warns about by name:
+ * treating `subject_cmp` as a mirror of `object_cmp` puts proven difference on
+ * the tension side, which mints an `in-tension-with` edge between two claims the
+ * store has just PROVEN are about different entities. That is a permanent
+ * advisory edge asserting a contradiction that does not exist, surfaced to every
+ * reviewer through the tension cluster. The `unknown` band still lands here; a
+ * proven-different SUBJECT does not.
+ *
+ * ⚠️ **`$6` is the subject comparable and the two trailing binds moved** — the
+ * self-exclusion is `$7` and the cap is `$8`. This statement spreads
+ * {@link agreementBinds} in the MIDDLE of its bind list, so widening the tuple
+ * without renumbering hands the slot declared `::uuid` a tagged comparable
+ * value; `INSERT_FACT_SQL` would at least raise an arity error, this would not.
+ * `reconcile.test.ts` pins both numbers lexically and positionally.
  */
 export const TENSION_CANDIDATES_SQL = `SELECT id
      FROM brain_facts
@@ -849,11 +918,12 @@ export const TENSION_CANDIDATES_SQL = `SELECT id
       AND subject_key = $2
       AND predicate_key = $3
       AND ${objectNotSameSql("object_key", "$4", "object_cmp", "$5")}
+      AND ${subjectNotDifferentSql("subject_cmp", "$6")}
       AND invalidated_at IS NULL
       AND valid_to IS NULL
-      AND id <> $6::uuid
+      AND id <> $7::uuid
     ORDER BY ingested_at DESC
-    LIMIT $7`;
+    LIMIT $8`;
 
 /**
  * The advisory edge. `in-tension-with` is SURFACED with both provenances and
@@ -1018,9 +1088,9 @@ export async function reconcileFacts(
     // INSERT would start disagreeing about which slot a claim is in.
     //
     // The resolver reaches none of this (#5031). It cannot rewrite a surface and
-    // it cannot put an id in a key; its answer reaches the row at `object_cmp`
-    // and nowhere else. A store's slot-side contribution travels as vocabulary
-    // instead, which is what makes it re-keyable in place.
+    // it cannot put an id in a key; its answers reach the row at the two `_cmp`
+    // columns and nowhere else. A store's slot-side contribution travels as
+    // vocabulary instead, which is what makes it re-keyable in place.
     const keys: SlotKeys = {
       subject: slotKey(subject, vocabulary.subject),
       predicate: slotKey(predicate, vocabulary.predicate),
@@ -1037,9 +1107,10 @@ export async function reconcileFacts(
     // surface parse — `ReconcileRequest.resolveEntity` is an injectable seam, so
     // that is a statement about the default and not about every deployment.
     //
-    // THIS is the resolver's one destination on the row. `object_cmp` is a
-    // COMPARED value, never a join arm, so an id here costs nothing; at a slot
-    // it would cost the whole existing corpus.
+    // One of the resolver's two destinations on the row (the other is
+    // `subjectComparable` below). Both are COMPARED values, never join arms, so
+    // an id here costs nothing; at a slot it would cost the whole existing
+    // corpus.
     const { value: parsed, reason: comparableReason } = comparableValueWithReason({
       surface: object,
       declared: candidate.objectType,
@@ -1087,6 +1158,19 @@ export async function reconcileFacts(
     // PAYLOAD — only the edge (see {@link resolveEntitiesForEpisode}).
     const comparableForLookups = parsed;
     const comparableAtRest = resolution.kind === "failed" ? null : parsed;
+    // The SUBJECT's comparable value (#5032) — the store's id and NEVER a parse
+    // of the surface, which is `subject-cmp.ts`'s rule rather than this line's.
+    //
+    // ONE value, no at-rest/lookup split, and the reason is that the split above
+    // exists only because an outage's surface FALLBACK can out-prove the id it
+    // replaced. There is no fallback here: `storeId` already returns `undefined`
+    // for a failed batch, so an outage yields `null` at every site — which
+    // suppresses nothing, i.e. exactly the pre-#5032 behaviour. That is the
+    // conservative direction at this position: withholding a suppression costs a
+    // homonym corroboration (the hazard, still guarded by the review-gate
+    // widening disclosure), while fabricating one would silently split a live
+    // belief apart with no reviewer anywhere.
+    const subjectComparable = subjectComparableValue(subjectEntityId);
     // A REJECTED declaration is an operator-actionable defect, and the reason
     // code is what separates it from the abstain it otherwise looks identical
     // to. `objectType` exists solely to make an ambiguous surface comparable,
@@ -1144,7 +1228,7 @@ export async function reconcileFacts(
       comparableAtRest,
       comparableForLookups,
       resolutionFailed: resolution.kind === "failed",
-      subjectEntityId,
+      subjectComparable,
       candidate,
     });
   }
@@ -1253,8 +1337,23 @@ interface SlotKeys {
 const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonly (keyof SlotKeys)[];
 
 /**
- * The four agreement values, in the order all three statements bind them: the
- * three slot keys, then the comparable value (#5030).
+ * The five agreement values, in the order all three statements bind them: the
+ * three slot keys, the OBJECT's comparable value (#5030), then the SUBJECT's
+ * (#5032).
+ *
+ * ⚠️ The two comparable values are NOT two instances of one thing, and binding
+ * them adjacently is the one place that is easy to forget. The object's proves
+ * difference to ENABLE a stamp; the subject's proves difference to SUPPRESS
+ * every consumer at once — see `subject-cmp.ts` for the polarity table.
+ *
+ * A swap is a COMPILE ERROR since the panel rounds on #5032: the subject
+ * parameter is a `SubjectComparable`, which only `subjectComparableValue` can
+ * produce, so neither a general `ComparableValue` nor a same-shaped
+ * `entityComparable(…)` satisfies it. It was not before, and prose was all
+ * that stood in the way. Two behavioural falsifiers back it up in the FAST lane
+ * (`reconcile.test.ts` asserts, at all three statements, that the subject bind
+ * carries the id AND the object bind is `null` — a swap flips both), so this is
+ * not a property that needs `TEST_DATABASE_URL` to see.
  *
  * `ReconcileExecutor.query` takes `unknown[]`, so `[…, item.subject,
  * item.predicate, item.object]` type-checks perfectly at every one of these call
@@ -1267,41 +1366,58 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
  * order-drift one.
  *
  * A fixed-length TUPLE, not `(string | null)[]`, and the arity is what it buys.
- * The hazard this docstring used to warn about ARRIVED in #5030 and is kept
- * rather than deleted, because `subject_cmp` (#5032) inherits it verbatim:
+ * The hazard this docstring warned about arrived in #5030 and AGAIN in #5032,
+ * and is kept because the next widener inherits it verbatim:
  * `TENSION_CANDIDATES_SQL` spreads this in the MIDDLE of its bind list, so
  * widening the tuple without renumbering that statement's trailing placeholders
  * pushes `factId` one placeholder along and hands the slot declared `::uuid` a
  * tagged comparable value instead. In `INSERT_FACT_SQL` the spread is last and
  * pg would at least raise an arity error; **in the rival scan** it would not.
+ * #5032 renumbered it to `$7`/`$8`; a sixth member means `$8`/`$9`.
  *
  * ⚠️ The arity buys no COMPILE-time protection, and an earlier version of this
  * docstring claimed it did. `ReconcileExecutor.query` takes `unknown[]`, so a
- * 4-tuple and a 5-tuple spread into an array literal identically. What actually
- * enforces the renumbering is `reconcile.test.ts` — the lexical assertions on
- * `$5`/`$6`/`$7` and the positional `binds[0]![5]` self-exclusion check. Said
- * plainly because #5032's author is the reader who would otherwise rely on it.
+ * 4-tuple and a 5-tuple spread into an array literal identically — which is
+ * exactly how #5032 could widen it without a single type error. What actually
+ * enforces the renumbering is `reconcile.test.ts`: the lexical assertions on
+ * `$6`/`$7`/`$8` and the positional `binds[0]![6]` self-exclusion check.
  *
  * It does NOT catch subject/predicate/object ORDER drift, since those three
- * members share a type; only a brand would, and a brand buys nothing against
- * `unknown[]`. The comparable value is the one member a swap would be caught on
- * at all, and only behaviourally: it is TAGGED, so bound at a key position it
- * matches nothing a `slotKey` ever produced.
+ * members share a type. A brand would, and is not obviously worth three more
+ * types on values that are already `unknown[]` by the time they reach `query` —
+ * the comparable values were worth it because their swap is silent AND
+ * consequential, where a key swap mints rows that match nothing and is loud.
  *
- * ⚠️ **The three call sites no longer pass the same comparable value**, and that
- * is deliberate rather than drift: the two LOOKUPS bind
+ * ⚠️ **The three call sites no longer pass the same OBJECT comparable value**,
+ * and that is deliberate rather than drift: the two LOOKUPS bind
  * {@link PreparedCandidate.comparableForLookups} and the INSERT binds
  * {@link PreparedCandidate.comparableAtRest}, which differ only when the entity
  * batch FAILED. They are two named fields for exactly this reason — so the
  * divergence is declared at the seam that computes them and can never be a
  * second derivation at a call site. See `comparableForLookups` for why an
  * outage must not withhold the value from a lookup.
+ *
+ * The SUBJECT's has no such split, and the asymmetry is a consequence rather
+ * than a choice: {@link PreparedCandidate.subjectComparable} is derived from a
+ * store id and from nothing else, so a FAILED batch has no id to withhold — it
+ * is already `null` at every site. There is nothing an outage could bind here
+ * that a healthy store would have out-proven, which is the whole reason the
+ * object needed two fields. It is passed as a third parameter rather than
+ * folded into a `{object, subject}` record so a call site cannot silently swap
+ * the two positionally.
  */
 function agreementBinds(
   keys: SlotKeys,
-  comparable: ComparableValue,
-): readonly [string | null, string | null, string | null, ComparableValue] {
-  return [keys.subject, keys.predicate, keys.object, comparable];
+  objectComparable: ComparableValue,
+  subjectComparable: SubjectComparable,
+): readonly [
+  string | null,
+  string | null,
+  string | null,
+  ComparableValue,
+  SubjectComparable,
+] {
+  return [keys.subject, keys.predicate, keys.object, objectComparable, subjectComparable];
 }
 
 interface PreparedCandidate {
@@ -1347,23 +1463,36 @@ interface PreparedCandidate {
    */
   readonly resolutionFailed: boolean;
   /**
-   * The subject's store id — **resolved, carried, and read by nothing yet.**
+   * What lands in `subject_cmp`, and what all three consumers compare against
+   * (#5032) — the subject's resolved store id as `entity:<id>`, or `null`.
    *
-   * Carried here for the reason every other field in this interface is:
-   * MATERIALIZE ONCE. The keys and the comparable value are computed in the
-   * preparation loop precisely so the lookup and the INSERT cannot disagree
-   * about what a claim IS, and reading the subject's id at write time instead
-   * would open a second derivation site for #5032 to land in.
+   * ⚠️ **Read `subject-cmp.ts` before touching this. Its polarity is INVERTED
+   * against {@link comparableAtRest}:** non-null on both sides, same tag and
+   * unequal means two claims about DIFFERENT entities, which suppresses
+   * corroboration, tension and supersession alike. It is not the object's
+   * comparable value at another position, and building it that way mints tension
+   * edges between provably-different entities.
    *
-   * (The two-position BATCH does not depend on this field — that property lives
-   * in {@link resolveEntitiesForEpisode} and has its own test. Nothing observes
-   * this write, so nothing would go red if it were deleted; #5032 is what gives
-   * it a reader.)
+   * ONE field, not the two the object needs, and the asymmetry falls out of
+   * where the value comes from: {@link subjectComparableValue} reads a store id
+   * and never parses the surface, so a FAILED batch leaves it `null` at every
+   * site with nothing to withhold. The object's split exists because an outage's
+   * surface parse can be MORE proving than the id it replaced; there is no
+   * surface parse here to be more proving.
    *
-   * ⚠️ It is NOT a candidate for a slot key, then or ever — see
-   * {@link ResolvedEntity}.
+   * Materialized in the preparation loop like the keys and for the same reason:
+   * computing it at write time would open a second derivation site, and the two
+   * lookups and the INSERT would be free to disagree about which entity a claim
+   * is about.
+   *
+   * ⚠️ The id is NOT a candidate for a slot key, then or ever — see
+   * {@link ResolvedEntity}. It reaches the row here and nowhere else.
+   *
+   * Typed {@link SubjectComparable} and not `EntityComparable`: the narrower
+   * type is the one `entityComparable(surface)` cannot satisfy, and this field
+   * is where that bypass would have landed.
    */
-  readonly subjectEntityId: string | undefined;
+  readonly subjectComparable: SubjectComparable;
   readonly candidate: FactCandidate;
 }
 
@@ -1478,7 +1607,7 @@ export function classifyEpisodeForReconcile(
  * else can express.
  */
 type EntityResolution =
-  | { readonly kind: "answered"; readonly ids: ReadonlyMap<string, string> }
+  | { readonly kind: "answered"; readonly ids: ReadonlyMap<string, ResolvedEntityId> }
   | { readonly kind: "failed" };
 
 /**
@@ -1488,7 +1617,7 @@ type EntityResolution =
  * at the seam ({@link resolveEntitiesForEpisode}), so there is no per-candidate
  * re-check here to drift from it.
  */
-function storeId(resolution: EntityResolution, surface: string): string | undefined {
+function storeId(resolution: EntityResolution, surface: string): ResolvedEntityId | undefined {
   return resolution.kind === "failed" ? undefined : resolution.ids.get(surface);
 }
 
@@ -1506,14 +1635,18 @@ function storeId(resolution: EntityResolution, surface: string): string | undefi
  * block — inverting the asymmetry this stage exists to hold. Logged (never
  * swallowed) with a narrowed error.
  *
- * What the resulting flag MEANS is now one thing: *this row's `object_cmp` is
- * worth recomputing.* **Not its keys** — the resolver reaches no key at any
+ * What the resulting flag MEANS is now one thing: *this row's COMPARABLE VALUES
+ * are worth recomputing.* Since #5032 that is BOTH of them — one batch feeds
+ * `object_cmp` and `subject_cmp`, so one failure withholds both, and a recompute
+ * that repaired only the object would leave a homonym suppression unwritten.
+ * **Not its keys** — the resolver reaches no key at any
  * position, so a replay recomputes them to the same bytes under the same
- * vocabulary; what an outage leaves missing is the comparable VALUE. An honest abstain will not change on replay,
+ * vocabulary; what an outage leaves missing is the comparable VALUES. An honest abstain will not change on replay,
  * and when the store later gains the entry the affected rows are findable by key
  * with no marker at all. An OUTAGE will change on replay and there is no
- * key-based way to find those rows — `object_cmp IS NULL` matches every honest
- * abstain too. That is the marker's entire remaining purpose, and the batch unit
+ * key-based way to find those rows — a NULL `_cmp` matches every honest
+ * abstain too, and at the subject that is nearly the whole corpus. That is the
+ * marker's entire remaining purpose, and the batch unit
  * reinforces it: an outage fails the whole batch, and the whole batch is exactly
  * what wants re-running.
  *
@@ -1536,10 +1669,13 @@ function storeId(resolution: EntityResolution, surface: string): string | undefi
  * one, and it exists.
  *
  * And the recompute does not exist yet, in either shape. `INSERT_FACT_SQL` is
- * the only writer that produces an `object_cmp`, and `object_cmp` is an
- * UPDATE-GATED column (`scripts/check-brain-fact-promotion.sh`), so the sweep
+ * the only writer that produces either `_cmp` value, and both are UPDATE-GATED
+ * columns (`scripts/check-brain-fact-promotion.sh`), so the sweep
  * this marker is a handle FOR needs a second writer with an allowlist entry
- * behind it. The marker is worth writing now — the rows are unfindable
+ * behind it. ⚠️ A `subject_cmp` recompute is the more dangerous half and must
+ * not be built by copying the object one: writing a subject id onto a row
+ * SUPPRESSES corroboration, so a sweep that got the wrong entity splits a live
+ * belief apart rather than merely failing to prove a difference. The marker is worth writing now — the rows are unfindable
  * otherwise, and that is irreversible in a way a missing job is not — but
  * nobody should read it as evidence that the repair is already possible.
  *
@@ -1620,7 +1756,7 @@ async function resolveEntitiesForEpisode(
     // never called at all, and the snapshot is immune to a resolver that mutates
     // the map it handed back — which would otherwise let one surface resolve two
     // ways WITHIN one episode, the exact thing batching exists to prevent.
-    const ids = new Map<string, string>();
+    const ids = new Map<string, ResolvedEntityId>();
     let unusable = 0;
     let foreign = 0;
     let overAnswered = 0;
@@ -1707,7 +1843,13 @@ async function resolveEntitiesForEpisode(
         unusable++;
         continue;
       }
-      ids.set(surface, id);
+      // THE ONE mint of a `ResolvedEntityId` (#5032), and it sits here because
+      // this is the only place an id is validated — non-empty after trim, for a
+      // surface we asked about, not a duplicate. The assertion is the cast that
+      // the brand exists to make deliberate: everywhere else a bare `string`
+      // cannot become one, so `subjectComparableValue(subject)` — passing a
+      // SURFACE where an id is required — stops compiling.
+      ids.set(surface, id as ResolvedEntityId);
     }
     // A blank or non-string id is a store CONTRACT violation, not an abstain,
     // and the difference is the whole point of the split: an abstain will not
@@ -1780,8 +1922,8 @@ async function writeCandidate(
     // The LOOKUP value, which an outage does not withhold — see
     // `PreparedCandidate.comparableForLookups`. Binding the at-rest NULL here
     // would disable this statement's difference veto and merge `-499` into a
-    // live `499`.
-    ...agreementBinds(item.keys, item.comparableForLookups),
+    // live `499`. The subject's comparable is the same value at all three sites.
+    ...agreementBinds(item.keys, item.comparableForLookups, item.subjectComparable),
   ]);
   const existingId = firstId(existing.rows);
   if (existingId !== null) {
@@ -1804,6 +1946,17 @@ async function writeCandidate(
     //   review gate and makes a grant an immutable per-version snapshot, so an
     //   unattended ingest pass — this one — is precisely where it must NOT
     //   happen. Recording the edge here is what makes the gate able to do it.
+    //
+    //   ⚠️ That widening is SAFE only because the two rows are the same claim,
+    //   and SUBJECT HOMONYMY is the case where they are not (#5032). This edge
+    //   is where the hazard is created: a public episode about one `Acme Corp`
+    //   becomes evidence for a private fact about another, and publish then
+    //   discloses the private claim's BODY to the public audience —
+    //   `promotion.ts`'s `widenGrantFromEvidence` carries the corrected safety
+    //   argument. `subject_cmp` on the lookup above is what stops the match
+    //   whenever a store can prove the subjects are different entities; where it
+    //   cannot (every extractor-supplied subject, permanently) the residue is
+    //   disclosed at the review gate rather than prevented.
     //
     // Nor its CARDINALITY: a claim first stored `multi` and re-asserted `single`
     // stays `multi` and earns no tension edges. Upgrading it would supersede by
@@ -1839,10 +1992,9 @@ async function writeCandidate(
     occurredAt: isoOrNull(episode.occurredAt),
     extractedAt: isoOrNull(ctx.extractedAt),
     reconciledAt: ctx.now().toISOString(),
-    // No `entityIds` (#5031). The object's id is a COLUMN now — `object_cmp`,
-    // where the publish gate can actually compare it — and the subject's has no
-    // consumer until #5032. A jsonb copy of a column is a second truth nothing
-    // reads and nothing keeps in step.
+    // No `entityIds` (#5031). BOTH ids are COLUMNS since #5032 — `object_cmp`
+    // and `subject_cmp`, where the SQL can actually compare them — so a jsonb
+    // copy would be a second truth nothing reads and nothing keeps in step.
     //
     // Present ONLY when it is true, so a reviewer's filter on the key is not
     // fooled by every fact carrying `provisional: false`.
@@ -1863,7 +2015,7 @@ async function writeCandidate(
     JSON.stringify(ctx.grantTokens),
     // The AT-REST value, the one bind an outage withholds: this is what the
     // publish gate compares between two stored rows to stamp `valid_to`.
-    ...agreementBinds(item.keys, item.comparableAtRest),
+    ...agreementBinds(item.keys, item.comparableAtRest, item.subjectComparable),
   ]);
   const factId = firstId(inserted.rows);
   if (factId === null) {
@@ -1926,7 +2078,7 @@ async function writeCandidate(
       // The LOOKUP value again. The edges are ADVISORY, so the conservative
       // direction here is to keep finding rivals during an outage rather than
       // to go quiet — a spurious edge costs a reviewer a glance.
-      ...agreementBinds(item.keys, item.comparableForLookups),
+      ...agreementBinds(item.keys, item.comparableForLookups, item.subjectComparable),
       factId,
       TENSION_EDGE_CAP,
     ]);

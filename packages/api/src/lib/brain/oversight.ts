@@ -23,11 +23,17 @@
  *
  * Mechanically that means: no UNSCOPED query here selects `subject`,
  * `predicate`, `object`, `provenance`, `source_episode_id`, or anything off
- * `brain_episodes`. There is exactly ONE statement in this module that selects
- * claim content — `willSupersedePairsSql` (#4912) — and it is reader-scoped on
- * both of its aliases, so it can only show a reader claims their own ACL
- * already entitles them to read; see its header for why that does not breach
- * this rule.
+ * `brain_episodes`. TWO statements in this module select claim content —
+ * `willSupersedePairsSql` (#4912) and `willWidenRowsSql` (#5032) — and both are
+ * READER-SCOPED, so each can only show a reader claims their own ACL already
+ * entitles them to read; see their headers for why that does not breach this
+ * rule.
+ *
+ * ⚠️ `willWidenRowsSql` is the only one that touches `brain_episodes` at all,
+ * and it is why that disclosure has NO unscoped `withheld` counterpart: the
+ * count would have to run the grant grammar over episode grants for facts the
+ * reader cannot see, which this rule forbids. Its header records the gap rather
+ * than working around it.
  *
  * From the UNSCOPED aggregates, TWO non-numeric values reach the wire, and an
  * auditor must check both: `label`, only when {@link classifyToken} rules the
@@ -35,10 +41,15 @@
  * arms and a positional handle (`discovered-N`) on the withheld one.
  * Everything else there is a number or a closed enum. `oversight.test.ts` pins
  * both, because a `z.strictObject` on the wire schema can reject an unexpected
- * KEY but cannot tell a channel id from a sentence. The third place an auditor
- * must now look is `loadSupersessionPreview`'s pairs (#4912) — fact ids and
- * SPO labels, sanctioned because they are READER-scoped on both sides, not
- * workspace-wide; see its header.
+ * KEY but cannot tell a channel id from a sentence. The third and fourth places
+ * an auditor must now look are `loadSupersessionPreview`'s pairs (#4912) and
+ * `loadWideningPreview`'s entries (#5032) — fact ids, SPO labels and, on the
+ * latter, GRANT TOKENS. All sanctioned because they are READER-scoped, not
+ * workspace-wide; see their headers. The tokens are the same list the
+ * post-publish `PromotionReport.widened` already reports to the same admin one
+ * moment later, which is why they are not held to `classifyToken`'s
+ * disclosable/withheld policy — that policy governs the UNSCOPED aggregate,
+ * where the reader has no entitlement to the row at all.
  *
  * ## Why the aggregate is deliberately NOT ACL-scoped
  *
@@ -72,9 +83,17 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   aclVisibilityClause,
+  isUnknownArray,
   parsePrincipal,
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
+// The widening notice runs the transaction's OWN decision function (#5032), so
+// the disclosure and the act cannot disagree about what widens. Never
+// reimplement it as a SQL predicate here — the grant grammar has one home.
+import {
+  widenGrantFromEvidence,
+  type StoredGrant,
+} from "@atlas/api/lib/brain/promotion";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
   PROVISIONAL_PREDICATE,
@@ -100,6 +119,8 @@ import type {
   BrainFactOversightTotals,
   BrainFactWillSupersede,
   BrainFactWillSupersedePair,
+  BrainFactWillWiden,
+  BrainFactWillWidenEntry,
 } from "@useatlas/types";
 
 const log = createLogger("brain-oversight");
@@ -866,11 +887,13 @@ export function willSupersedePairsSql(
  * invisible by construction afterwards, so this preview is the one moment the
  * replacement can be seen as a pair.
  *
- * ⚠️ *Collides* is narrower than it was, twice over, and this preview inherits
- * both narrowings for free because it is built from
+ * ⚠️ *Collides* is narrower than it was, three times over, and this preview
+ * inherits every narrowing for free because it is built from
  * `supersessionCollisionJoin`. Since #5030 a pair must be PROVABLY different,
  * not merely differently-keyed; since #5033 neither side may be tier-1 or carry
- * a source kind the region cannot classify. So a pair held back on either
+ * a source kind the region cannot classify; since #5032 the two subjects must
+ * not be PROVABLY DIFFERENT ENTITIES (a homonym is not a collision at all — it
+ * is two claims that never shared a slot). So a pair held back on any
  * ground correctly does not appear here — the disclosure and the transaction
  * agree, which is the property #4912 actually requires. It is NOT the same as
  * the pair being gone: BOTH claims stay live and current, related by the
@@ -1035,5 +1058,419 @@ export async function loadSupersessionPreview(
     // drift-dropped rows, which are also "you were entitled to more than is
     // listed".
     truncated: clipped || scopedTotal > pairs.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Will-widen disclosure (#5032)
+// ---------------------------------------------------------------------------
+
+/** Most widening entries one response enumerates — {@link WILL_SUPERSEDE_PAIR_MAX}'s bound, same posture. */
+export const WILL_WIDEN_ENTRY_MAX = 100;
+
+/**
+ * Most DRAFTS {@link willWidenRowsSql} scans, before the evidence join.
+ *
+ * Far above {@link WILL_WIDEN_ENTRY_MAX} on purpose: this is not the display
+ * cap, it is the work cap. The overwhelming majority of drafts widen NOTHING
+ * (`widenGrantFromEvidence` returns `null`), so the scan has to cover many more
+ * drafts than it will ever list — a bound at the entry cap would silently stop
+ * looking after 100 drafts, most of which had no notice to give, and hide the
+ * one that did behind them.
+ *
+ * Hitting it sets `incomplete`, never `truncated`: the drafts beyond it were
+ * never evaluated, so they are missing from `total` as well.
+ */
+export const WILL_WIDEN_DRAFT_SCAN_MAX = 5_000;
+
+/**
+ * Every reader-visible draft and the grant of every episode already recorded as
+ * EVIDENCE for it — the exact input {@link widenGrantFromEvidence} takes at
+ * publish.
+ *
+ * ## Why rows and not a count
+ *
+ * "Will this fact's audience widen?" is decided by the GRANT GRAMMAR: a token
+ * counts only if `parseGrant` reads it as a principal and `formatPrincipal`
+ * round-trips it, and `impliedRoles` then makes most unions admit nobody
+ * (`role:owner` added to a fact already granted `role:member` gains no reader).
+ * That grammar lives in `acl.ts` and `promotion.ts` says in as many words that
+ * duplicating it as a SQL predicate would let the two drift.
+ *
+ * So this statement does no deciding. It projects the two grants, and the
+ * decision is made in TypeScript by **the same function the transaction runs**,
+ * which is the only way the notice and the act cannot disagree — the property
+ * `supersessionCollisionJoin`'s header argues for at the other disclosure.
+ *
+ * ## Scope, and the one thing this disclosure does NOT have
+ *
+ * Reader-scoped on the FACT, mirroring `willSupersedePairsSql`: an entry appears
+ * only where the reader's own fail-closed predicate admits the draft. The
+ * EPISODE is deliberately not ACL-gated — a fact's evidence grants are what
+ * decides its own published grant, and a reader entitled to the fact is
+ * precisely the person who must be told what publishing it will do to it.
+ *
+ * ⚠️ **There is no unscoped `withheld` counterpart, and that is a stated gap
+ * rather than an oversight.** `willSupersede` has one because a `COUNT(*)` over
+ * the collision join needs no content; the equivalent here would have to run the
+ * grant grammar over `brain_episodes.visible_to` for drafts the reader cannot
+ * see, and this module's header forbids an unscoped query that selects anything
+ * off `brain_episodes`. The alternatives were both worse: a SQL approximation of
+ * the grammar is the second spelling `promotion.ts` forbids, and projecting
+ * other readers' grants to compute a number is a disclosure-policy decision no
+ * issue has taken. The consequence, stated so nobody reads a clean panel as an
+ * all-clear: an admin publishing a workspace whose widening drafts are all
+ * invisible to them sees NOTHING here. The post-publish record
+ * (`PromotionReport.widened`, and the INFO line beside it) is what covers that
+ * case today, one moment too late to be notice.
+ *
+ * ## The bound is on DRAFTS, and the position of it is the whole design
+ *
+ * {@link willSupersedePairsSql} can carry a plain row `LIMIT` because each of
+ * its rows IS a disclosure. Here each row is a FRAGMENT of one — the decision is
+ * made after grouping — so a row `LIMIT` would cut a draft's evidence list in
+ * half, hand {@link widenGrantFromEvidence} a partial input, and produce an
+ * `added` that is a SUBSET of the real one. That is an under-reported ACL change
+ * rendered as a confident complete notice, which is strictly worse than not
+ * listing the draft at all.
+ *
+ * So the `LIMIT` sits inside a CTE over the DRAFTS, before the evidence join:
+ * every draft that survives it carries its complete evidence list, and the ones
+ * that did not survive are absent rather than wrong. Overflow is reported
+ * through `incomplete`, never silently.
+ *
+ * ⚠️ It is a bound and not a page. There is no cursor and no ordering contract
+ * with the client — `(ingested_at, id)` is here so the same drafts are chosen on
+ * every call, not so a caller can walk them. A reader who hits it should treat
+ * publishing as widening more than is listed.
+ *
+ * **Why it needs one at all**, given that publish reads the same row set:
+ * `DRAFT_FACTS_SQL` × `EVIDENCE_GRANTS_SQL` run inside a deliberate, rare admin
+ * action, whereas this runs on every render of the oversight page — and it
+ * shares a `Promise.all` with the two older disclosures, so an unbounded scan
+ * here takes the hidden-backlog delta and the supersession preview down with it.
+ * The internal pool sets no `statement_timeout`, so "however long it takes" was
+ * the only bound before this.
+ *
+ * ## ⚠️ The joins are LEFT, and that is what makes the bound OBSERVABLE
+ *
+ * With INNER joins a draft carrying no `provenance` edge produces no row at all
+ * — and most drafts carry nothing this notice will report, which is the very
+ * argument for setting the scan cap far above the entry cap. `drafts.size` in
+ * the loader would then count *drafts with surviving evidence*, never *drafts
+ * scanned*, so `>= WILL_WIDEN_DRAFT_SCAN_MAX` could only ever fire in the single
+ * case where all 5,000 scanned drafts happened to have evidence. One
+ * evidence-less draft in the window silently disabled the detector, and the
+ * panel then rendered a confident complete count over a workspace whose tail was
+ * never evaluated — the under-reported ACL change the CTE exists to prevent,
+ * reintroduced one variable later.
+ *
+ * A draft with no edge is not hypothetical: a region-import bundle carries facts
+ * and edges independently (`admin-migrate.ts` iterates `bundle.brainEdges ?? []`),
+ * so facts without provenance edges are storable.
+ *
+ * LEFT means every scoped draft yields at least one row, so `drafts.size` is the
+ * scanned count for every draft the loader can read at all. It is not an exact
+ * equality: a fact whose `fact_grant` drifts fails on every one of its rows (the
+ * column is constant per fact), so it is scanned and never counted — masked, like
+ * the poison sweep below, by that path also forcing `incomplete` through
+ * `droppedRows`. `brain_episodes.visible_to` is `NOT NULL` (0180), so a SQL
+ * `null` in `evidence_grant` can only mean the join found nothing — which the
+ * loader reads as "no evidence", NOT as drift.
+ *
+ * `factAclSql` is interpolated, so callers pass a clause they built — same
+ * contract as {@link willSupersedePairsSql}.
+ */
+export function willWidenRowsSql(factAclSql: string, draftLimitParam: number): string {
+  return `WITH scoped AS (
+      SELECT f.id, f.ingested_at, f.subject, f.predicate, f.object, f.visible_to, f.workspace_id
+        FROM brain_facts f
+       WHERE ${factAclSql}
+         AND ${supersedingDraftPredicate("f")}
+       ORDER BY f.ingested_at, f.id
+       LIMIT $${draftLimitParam}
+    )
+    SELECT f.id::text AS fact_id,
+         f.subject || ' ' || f.predicate || ' ' || f.object AS label,
+         f.visible_to  AS fact_grant,
+         ep.visible_to AS evidence_grant
+    FROM scoped f
+    LEFT JOIN brain_edges e
+      ON e.workspace_id = f.workspace_id
+     AND e.edge_type = 'provenance'
+     AND e.from_fact_id = f.id
+    LEFT JOIN brain_episodes ep
+      ON ep.workspace_id = e.workspace_id
+     AND ep.id = e.to_episode_id
+   ORDER BY f.ingested_at, f.id, ep.ingested_at, ep.id`;
+}
+
+/**
+ * What the next publish will make VISIBLE TO MORE PEOPLE, disclosed before the
+ * admin confirms (#5032, ADR-0037 §5).
+ *
+ * ## The gap this closes is NOTICE, not authority
+ *
+ * #4823 already put grant widening at the review gate and made the human the
+ * authority over it. What a reviewer never got was a way to SEE it coming: they
+ * publish a draft and its audience widens because of `provenance` edges written
+ * by an unattended ingest pass weeks earlier. That is `status: ambiguous`'s
+ * shape — surface it to a human, never silently pick.
+ *
+ * ## Why it exists NOW: subject homonymy
+ *
+ * Widening is usually correct, and its safety argument is
+ * `widenGrantFromEvidence`'s *"a reader of either already saw it said"*. Subject
+ * homonymy falsifies that sentence: `CORROBORATION_LOOKUP_SQL` matches on slot
+ * keys, keys are a function of the SURFACE, and one surface can name two
+ * entities — so a public episode about one `Acme Corp` becomes evidence for a
+ * private fact about another, and this widening then hands its audience the
+ * private claim's BODY. `subject_cmp` (#5032) removes that whenever a
+ * warehouse-backed store can prove the two subjects are different entities. It
+ * can never remove the extractor↔extractor case, for any subject, ever — which
+ * is why the residue gets a disclosure instead of a fix.
+ *
+ * ## ⚠️ Gated on `added` being NON-EMPTY, which is the whole design
+ *
+ * Widening fires on legitimate corroboration too, so a disclosure that reported
+ * "this publish widens grants" whenever an evidence edge existed would be
+ * universal — a filter that has been fooled, and one a reviewer learns to click
+ * through in a week. {@link widenGrantFromEvidence} returns `null` when the
+ * evidence adds nothing, which is the common case by a wide margin
+ * (role-implication makes most unions admit nobody), and this function reports
+ * exactly the facts for which it does not. Rare BY CONSTRUCTION, by narrowing
+ * the trigger rather than by hoping.
+ *
+ * ⚠️ `added` is a SYNTACTIC upper bound on readers gained, not a reader count —
+ * `widenGrantFromEvidence` says so at length. A `role:owner` added to a fact
+ * already granted `role:member` appears here and admits nobody new. The
+ * disclosure over-states in that direction on purpose; the opposite error is a
+ * silent ACL change.
+ *
+ * **Accepted cost, recorded because it is real:** nothing distinguishes the
+ * homonym from the honest corroborations in this list. A reviewer told
+ * *"publishing widens this to `org`"* can publish or not, and this may be a
+ * speed bump that gets clicked through. It is VISIBLE, not prevented.
+ *
+ * @throws {BrainReaderUnresolvedError} when the reader has no usable
+ *   principals, for {@link loadFactOversight}'s reason.
+ */
+export async function loadWideningPreview(
+  db: BrainCandidateReader,
+  ctx: BrainPrincipalContext,
+  requestId?: string,
+): Promise<BrainFactWillWiden> {
+  const workspaceId = ctx.workspaceId;
+  const factAcl = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: "f",
+    paramIndex: 1,
+    requestId,
+  });
+  if (factAcl.decision === "deny-all") {
+    throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, OVERSIGHT_SURFACE);
+  }
+
+  // Spread into a fresh array: `AclClause.params` is a readonly tuple and the
+  // reader's `query` takes `unknown[]`. The draft cap binds after the ACL's own
+  // params, so its placeholder number is whatever the clause left free.
+  const result = await db.query(willWidenRowsSql(factAcl.sql, factAcl.nextParamIndex), [
+    ...factAcl.params,
+    WILL_WIDEN_DRAFT_SCAN_MAX,
+  ]);
+
+  // Grouped in SQL's order, so the token order this discloses is the token
+  // order publish will store — `EVIDENCE_GRANTS_SQL` orders by the same two
+  // columns for the same reason. A disclosure that listed `[org, audience:X]`
+  // where the transaction writes `[audience:X, org]` is not wrong about the
+  // outcome, but it is a difference a reviewer comparing the two would have to
+  // explain to themselves.
+  const drafts = new Map<
+    string,
+    { readonly label: string; readonly grant: StoredGrant; readonly evidence: (readonly unknown[])[] }
+  >();
+  let droppedRows = 0;
+  /** Facts whose evidence list is known-incomplete — see the drop arm below. */
+  const poisoned = new Set<string>();
+  for (const raw of result.rows) {
+    // ⚠️ These two arms drop WITHOUT poisoning, and the asymmetry against the
+    // grant arm below is forced rather than chosen: poisoning needs a `fact_id`
+    // to poison, and these are exactly the rows that failed to produce one. So
+    // the "poison the whole fact, never just the row" rule stated below holds
+    // for the arm that can identify its fact and CANNOT hold here.
+    //
+    // The residue is real and bounded: if one row of a multi-row fact lands here
+    // while its siblings survive, that fact is evaluated against a partial
+    // evidence list and its `added` is a SUBSET of the truth. What keeps it from
+    // being the defect the poisoning exists to prevent is that `incomplete` is
+    // still set (every arm increments `droppedRows`), so the panel drops the
+    // confident headline and tells the reviewer to treat publishing as widening
+    // more than is shown — the user-visible answer stays honest even though this
+    // entry does not. Reachability is the other half: `fact_id` and `label` come
+    // off the CTE and are constant per fact, so from Postgres this arm takes
+    // either all of a fact's rows or none of them.
+    if (typeof raw !== "object" || raw === null) {
+      droppedRows++;
+      continue;
+    }
+    const r = raw as Record<string, unknown>;
+    if (typeof r.fact_id !== "string" || typeof r.label !== "string") {
+      droppedRows++;
+      continue;
+    }
+    // BOTH grants must load as arrays. `visible_to text[] NOT NULL` (0180)
+    // makes a non-array impossible from Postgres, so this is query drift — and
+    // it is dropped rather than coerced to `[]`, in opposite directions for the
+    // two columns and deliberately: an empty FACT grant would make every
+    // evidence token look newly added (a fabricated disclosure), and an empty
+    // EVIDENCE grant would make a real widening vanish (a false all-clear). The
+    // warn below is the only honest response to either.
+    //
+    // ⚠️ A `null` `evidence_grant` is NOT drift — it is the LEFT JOIN reporting
+    // that this draft has no `provenance` edge. `visible_to` is `NOT NULL`, so
+    // the two are distinguishable, and they must be: an evidence-less draft is
+    // an ordinary, common shape that must still COUNT toward the scan bound.
+    // Read ONCE into a narrowed local. `r.evidence_grant` is `unknown`, and a
+    // second read of the same property does not carry the guard's narrowing —
+    // which is how an unchecked value would reach `widenGrantFromEvidence`.
+    const evidence: readonly unknown[] | null = isUnknownArray(r.evidence_grant)
+      ? r.evidence_grant
+      : null;
+    const noEvidence = r.evidence_grant === null;
+    if (!isUnknownArray(r.fact_grant) || (!noEvidence && evidence === null)) {
+      droppedRows++;
+      // ⚠️ POISON the whole fact, never just the row. `fact_id`, `label` and
+      // `fact_grant` are constant per fact (they come off the CTE), but
+      // `evidence_grant` is one value PER ROW — so dropping a single row and
+      // keeping the rest evaluates the draft against a PARTIAL evidence list and
+      // produces an `added` that is a SUBSET of the real one. That is a LISTED
+      // entry with an under-stated token list, which `willWidenRowsSql`'s own
+      // header calls "strictly worse than not listing the draft at all", and
+      // which `BrainFactWillWiden.incomplete` promises does not happen ("that
+      // draft is missing from `entries` AND from `total`").
+      //
+      // The transaction's `groupEvidenceGrants` skips instead, and is right to:
+      // there a short list publishes the fact NARROWER, which is fail-closed. In
+      // a PREVIEW the sign flips — it under-states a widening the transaction
+      // will then perform in full.
+      // No `typeof` re-check: the arm above already `continue`d on a non-string
+      // `fact_id` and TS has narrowed it here. Re-testing read as if the
+      // invariant were uncertain at the one place it is proven.
+      poisoned.add(r.fact_id);
+      continue;
+    }
+    const existing = drafts.get(r.fact_id);
+    if (existing) {
+      if (evidence !== null) existing.evidence.push(evidence);
+      continue;
+    }
+    drafts.set(r.fact_id, {
+      label: r.label,
+      // Narrowed to `StoredGrant` the way the adapter narrows it: a `text[]`
+      // element off the driver is a string or `null`, and anything else is
+      // coerced to `null` rather than passed through into an ACL computation.
+      grant: r.fact_grant.map((token) => (typeof token === "string" ? token : null)),
+      // An evidence-less draft is recorded with an EMPTY list rather than
+      // skipped: `widenGrantFromEvidence(grant, [])` returns `null`, so it lists
+      // nothing — and it still counts toward `drafts.size`, which is what makes
+      // the scan-cap detector correct.
+      evidence: evidence === null ? [] : [evidence],
+    });
+  }
+  // The SCANNED count, read BEFORE the poison sweep below — which is the whole
+  // reason it is a separate variable and not `drafts.size` at the point of use
+  // (#5032, panel round 4).
+  //
+  // `scanCapped` asks "did the CTE return its whole `LIMIT`", and the LEFT JOINs
+  // above exist so that `drafts` answers it. The sweep then makes `drafts.size`
+  // mean something else — drafts scanned MINUS drafts poisoned — so reading it
+  // afterwards re-broke the detector the joins were changed to fix: at exactly
+  // `WILL_WIDEN_DRAFT_SCAN_MAX` scanned drafts with one poisoned, `scanCapped`
+  // was `false` and the panel rendered a confident complete count over an
+  // unevaluated tail. One variable later, the same defect, in the fix for it.
+  //
+  // It was masked rather than harmless: `incomplete` ORs in `droppedRows`, and
+  // every poisoning implies a drop, so the wire looked right for a reason that
+  // has nothing to do with the cap. An undocumented coupling one edit from
+  // breaking is not a guard.
+  //
+  // ⚠️ **This line is UNFALSIFIABLE from the wire, and that is a property rather
+  // than a missing fixture.** `poisoned.add` sits in the SAME branch as
+  // `droppedRows++` — there is exactly one such branch — so a non-empty `poisoned`
+  // implies `droppedRows > 0`. The sweep is the only thing that shrinks `drafts`
+  // between here and the use, so the two readings differ only when something was
+  // deleted, which requires a drop. `scanCapped` feeds nothing but
+  // `incomplete: droppedRows > 0 || scanCapped`, so the differing input reports
+  // `true` under both readings and there is no fourth wire field to leak through.
+  //
+  // Verified two ways rather than argued once: reverting this to `drafts.size` at
+  // the point of use kills zero tests, and the four sharpest candidate fixtures
+  // (`MAX` with 1 poisoned, with 10 poisoned, with a `fact_grant`-drift fact, and
+  // `MAX+5` with 10 poisoned) return byte-identical envelopes under both readings.
+  // Separating them needs a new wire field, which this disclosure does not need
+  // and should not grow for a diagnostic.
+  //
+  // So it is held by the argument above and by this note, and a future edit that
+  // makes the two readings distinguishable — a `scanCapped` on the wire, a
+  // per-reason `incomplete` — should add the fixture at the same time.
+  const scannedDrafts = drafts.size;
+  // Applied AFTER the loop, so a fact poisoned by its third row is removed even
+  // though its first two built a plausible entry.
+  for (const factId of poisoned) drafts.delete(factId);
+  if (droppedRows > 0) {
+    // LOUD, because every drop UNDERSTATES this disclosure — the failure
+    // direction is a reviewer publishing an ACL change they were not shown.
+    log.warn(
+      { workspaceId, requestId, droppedRows, kept: drafts.size },
+      "brain oversight: will-widen rows came back with an unreadable column — the widening notice UNDERSTATES what publish will disclose; the query shape changed",
+    );
+  }
+
+  const entries: BrainFactWillWidenEntry[] = [];
+  for (const [factId, draft] of drafts) {
+    // THE gate, and the one line that must stay `widenGrantFromEvidence`: a
+    // reimplementation here — "the evidence has a token the fact lacks" — would
+    // fire on malformed evidence tokens the transaction drops, and this notice
+    // would list widenings that never happen.
+    const widening = widenGrantFromEvidence(draft.grant, draft.evidence);
+    if (widening === null) continue;
+    entries.push({ factId, label: draft.label, added: widening.added });
+  }
+
+  const total = entries.length;
+  // The scan cap is detected by counting the DRAFTS the statement returned, not
+  // the rows: the CTE limits drafts, and one draft is many rows. `>=` rather
+  // than `>` because the statement cannot exceed its own `LIMIT` — hitting it
+  // exactly is the only observable, and the honest reading of "we stopped
+  // looking" is that there may be more.
+  const scanCapped = scannedDrafts >= WILL_WIDEN_DRAFT_SCAN_MAX;
+  if (scanCapped) {
+    // LOUD, for the `droppedRows` warn's reason and with more force. Every other
+    // degradation in this file logs — bucket truncation, dropped bucket rows, the
+    // count inversion, dropped will-widen rows, will-supersede window drift — and
+    // this is the one that says *Atlas stopped looking at this workspace's
+    // drafts*, on the only pre-publish ACL disclosure there is. Reaching the wire
+    // as one bit of `incomplete` meant an operator could learn it only if an admin
+    // happened to render the page and reported the wording.
+    log.warn(
+      { workspaceId, requestId, scannedDrafts, cap: WILL_WIDEN_DRAFT_SCAN_MAX },
+      "brain oversight: the will-widen draft scan hit its cap — the widening notice UNDERSTATES what publish will widen for this workspace; the tail was never evaluated",
+    );
+  }
+  return {
+    total,
+    // Capped AFTER the total is taken, so `total` is the real cardinality and
+    // `truncated` is a statement about the LIST — never a number the client has
+    // to infer from an array length.
+    entries: entries.slice(0, WILL_WIDEN_ENTRY_MAX),
+    // TWO signals, deliberately not one. `truncated` means the list is short and
+    // `total` still counts the remainder; `incomplete` means Atlas could not
+    // evaluate some drafts at all, so `total` understates too. They have
+    // different remedies — paginate versus diff the query / treat publishing as
+    // widening more than is listed — and a single boolean forces the UI to state
+    // one of them unconditionally, which is a confident, specific, WRONG
+    // explanation on the surface whose entire product is honest notice.
+    truncated: total > WILL_WIDEN_ENTRY_MAX,
+    incomplete: droppedRows > 0 || scanCapped,
   };
 }

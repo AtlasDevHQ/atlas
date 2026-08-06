@@ -15,6 +15,7 @@ import { describe, expect, it } from "bun:test";
 import { Effect } from "effect";
 import {
   BRAIN_FACTS_TABLE,
+  CARDINALITY_HELD_BACK_COUNT_SQL,
   SUPERSEDE_STAMP_EXPLICIT_SQL,
   SUPERSEDE_STAMP_SQL,
   SUPERSESSION_TARGETS_SQL,
@@ -25,6 +26,7 @@ import {
   supersedingDraftPredicate,
   supersessionCollisionPredicate,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
   IDENTITY_MUTATION_LOCK_RESET_SQL,
@@ -185,11 +187,21 @@ function txWithDrafts(
       // below would then pass while reading the cardinality count, and neither
       // statement would be modelled by anything.
       //
-      // Discriminated on `IS NOT TRUE`, which is #5033's three-valued negation
-      // and is spelled nowhere else: `cardinalitySingleSql` is an `EXISTS`, so
-      // #5027's count negates it with a bare `NOT`.
+      // Discriminated on statement IDENTITY, never on a substring. It used to
+      // key on `IS NOT TRUE`, described here as "#5033's three-valued negation,
+      // spelled nowhere else" — and #5032 spelled it somewhere else, inside
+      // `collisionCorePredicate`, which BOTH statements are built from. The
+      // discriminator then answered `tier` for both, and the tier test read a
+      // rolled-back cardinality savepoint. A substring discriminator over two
+      // statements that share a builder is a claim about the whole builder tree
+      // and goes stale silently; `===` cannot.
       if (sql.includes("held_back")) {
-        const tier = sql.includes("IS NOT TRUE");
+        const tier = sql === TIER_HELD_BACK_COUNT_SQL;
+        if (!tier && sql !== CARDINALITY_HELD_BACK_COUNT_SQL) {
+          throw new Error(
+            "a third `held_back` statement reached the tx double, or one of the two drifted from its exported constant — the discriminator cannot name it",
+          );
+        }
         if (tier && opts.heldBackFails) throw new Error("held-back count exploded");
         if (!tier && opts.uncuratedFails) throw new Error("uncurated count exploded");
         return { rows: [{ held_back: (tier ? opts.heldBack : opts.uncurated) ?? 0 }] };
@@ -1000,6 +1012,21 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.invalidated_at IS NULL");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.valid_to IS NULL");
     expect(SUPERSESSION_TARGETS_SQL).toContain("p.object_cmp <> d.object_cmp");
+    // The subject arm on the STAMPING statement, and its POLARITY. `<>` alone
+    // would pass whether the arm enables or suppresses — and enabling is the
+    // failure ADR-0037 §5 names: `valid_to` stamped between two claims the store
+    // has just proven are about different entities. `IS NOT TRUE` is the wrapper
+    // that makes it a suppression, and never `NOT (…)`, which is NULL for the
+    // whole abstain band and a `WHERE` reads NULL as false.
+    // The WHOLE arm, from the builder. It works today as two substrings only
+    // because `SUPERSESSION_TARGETS_SQL` happens to contain `)) IS NOT TRUE`
+    // exactly once — and this same diff removed that pattern from three tx
+    // doubles for going stale the moment a shared builder grew the spelling.
+    // Reintroducing it here would have been the same defect one file over.
+    expect(SUPERSESSION_TARGETS_SQL).toContain(
+      subjectNotDifferentSql("p.subject_cmp", "d.subject_cmp"),
+    );
+    expect(SUPERSESSION_TARGETS_SQL).not.toContain("p.subject_cmp = d.subject_cmp");
   });
 
   it("the both-sides cardinality clause is GONE, replaced by one lookup (#5027)", () => {
@@ -1175,6 +1202,16 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
       "p.subject_key = d.subject_key",
       "p.predicate_key = d.predicate_key",
       "p.object_cmp <> d.object_cmp",
+      // ⚠️ The SUBJECT arm (#5032), and its absence here was a real gap rather
+      // than an omission of taste: MEASURED, deleting
+      // `subjectNotDifferentSql` from `collisionCorePredicate` was green on
+      // every suite a default `bun run test` executes — this file loads the
+      // publish adapter and already pins the object arm three lines up, so it
+      // was the natural owner and did not own it. Note the `shippedArms` loop
+      // below cannot close this: both sides of that comparison are built from
+      // `collisionCorePredicate`, so a deleted arm vanishes from both and the
+      // loop stays green.
+      "p.subject_cmp <> d.subject_cmp",
       "c.cardinality = 'single'",
       "c.status = 'approved'",
       "p.status = 'published'",
@@ -1233,9 +1270,23 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     // ⚠️ `IS NOT TRUE`, never `NOT (…)`. `supersedableTierSql` is SQL NULL — not
     // false — for a `{"source": null}` provenance, so `NOT (…)` drops exactly
     // the population the guard is subtlest about and the diagnostic would go
-    // blind to it. This repo has already paid for the same distinction once, in
-    // `objectNotSameSql`.
-    expect(TIER_HELD_BACK_COUNT_SQL).toContain(") IS NOT TRUE");
+    // blind to it. This repo has already paid for the same distinction in
+    // `objectNotSameSql` and again in `subjectNotDifferentSql`.
+    //
+    // Pinned on the TIER negation specifically, not on a bare `) IS NOT TRUE`.
+    // That looser spelling stopped meaning anything at #5032: the subject arm
+    // inside `collisionCorePredicate` spells it too, so weakening THIS negation
+    // to `NOT (…)` would have left the assertion green on somebody else's arm.
+    //
+    // Reconstructed from the arms extracted above rather than re-spelled —
+    // `supersedableTierSql` is private, and a hand-written copy here would be
+    // the second spelling this whole block exists to forbid.
+    const tierArms = shippedArms.filter(
+      (arm) => arm.startsWith(tierArm("p")) || arm.startsWith(tierArm("d")),
+    );
+    expect(TIER_HELD_BACK_COUNT_SQL).toContain(
+      `AND (${tierArms[0]} AND ${tierArms[1]}) IS NOT TRUE`,
+    );
     expect(
       /AND NOT \(\(NOT jsonb_exists/.test(TIER_HELD_BACK_COUNT_SQL),
       "the held-back count negates the tier guard with `NOT (…)` — that is NULL for a null-valued `source`, so the one population this diagnostic most needs to see disappears from it",

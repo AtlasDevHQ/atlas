@@ -47,6 +47,7 @@ import {
   isWarehouseDerivedSource,
   EPISODE_SOURCE_SLUG,
   NON_WAREHOUSE_SOURCES,
+  WAREHOUSE_SOURCES,
   type EpisodeSource,
   type EpisodeSourceSpec,
 } from "@atlas/api/lib/brain/sources";
@@ -402,6 +403,68 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // map passes.
     expect(NON_WAREHOUSE_SOURCES).not.toContain("warehouse");
     expect(NON_WAREHOUSE_SOURCES.length).toBeGreaterThan(0);
+  });
+
+  test("WAREHOUSE_SOURCES is the CLASS half, so a new warehouse member JOINS it", () => {
+    // #5034's direction rule is an allowlist built from this list, and it runs
+    // the opposite way from the tier guard's: membership here is positive
+    // evidence that a row IS warehouse-derived, which is what makes its norm the
+    // proposed TARGET of a workspace-wide re-key. A warehouse-class member that
+    // failed to join would leave every candidate involving it undirected — the
+    // recoverable direction, but a silent narrowing all the same.
+    //
+    // Derivation first, then the value anchor, on `NON_WAREHOUSE_SOURCES`'s
+    // terms exactly: with only the derivation asserted, renaming the class in
+    // the spec map passes.
+    expect([...WAREHOUSE_SOURCES]).toEqual(
+      EPISODE_SOURCES.filter((source) => episodeSourceClass(source) === WAREHOUSE_CLASS),
+    );
+    expect(WAREHOUSE_SOURCES).toContain("warehouse");
+    expect(WAREHOUSE_SOURCES.length).toBeGreaterThan(0);
+  });
+
+  test("the two source lists PARTITION the vocabulary, checked against the SPEC MAP", () => {
+    // The property that makes reading one list as the other's negation LOOK
+    // safe, asserted here so the places that must not do it have something to
+    // point at. Both consumers splice a list into SQL and read membership as
+    // POSITIVE evidence, and neither may be spelled as `NOT (the other)`:
+    // against a STORED value the two lists do not partition anything, because a
+    // region import restores kinds outside the vocabulary entirely
+    // (`warehouse:prod`, `snowflake`) and those must fall out of both.
+    //
+    // So this is a statement about the VOCABULARY and never about a stored
+    // value, and the distinction is the whole of #4964: `content-mode/adapters/
+    // brain-facts.ts` refuses to stamp an unclassifiable row, and
+    // `lib/brain/alias-proposal.ts` refuses to name it as a direction target.
+    //
+    // ⚠️ Checked against `EPISODE_SOURCE_SPECS` rather than against the other
+    // list. Both lists are `EPISODE_SOURCES.filter(…)` over the same predicate,
+    // so "no member in both, none in neither" is a tautology of
+    // `Array.prototype.filter` — true for EVERY implementation of
+    // `isWarehouseDerivedSource` including one that returns a constant, and its
+    // own diagnostic would describe a state no edit to `sources.ts` can produce.
+    // Deriving one side from the declared `class` independently is what makes a
+    // spec-map rename break it.
+    // `Object.entries` widens the key to `string`, so both sides are compared
+    // as strings — the point is the MEMBERSHIP, and re-narrowing here would
+    // reintroduce the derivation this test exists to avoid.
+    const declaredWarehouse = Object.entries(EPISODE_SOURCE_SPECS)
+      .filter(([, spec]) => spec.class === WAREHOUSE_CLASS)
+      .map(([source]) => source)
+      .sort();
+    expect(
+      [...WAREHOUSE_SOURCES].sort() as string[],
+      "`WAREHOUSE_SOURCES` no longer matches the kinds whose spec declares the warehouse class — the direction rule's allowlist and the spec map disagree",
+    ).toEqual(declaredWarehouse);
+    expect(
+      [...NON_WAREHOUSE_SOURCES].sort() as string[],
+      "`NON_WAREHOUSE_SOURCES` no longer matches the kinds whose spec declares anything else — the tier guard's allowlist and the spec map disagree",
+    ).toEqual(
+      Object.entries(EPISODE_SOURCE_SPECS)
+        .filter(([, spec]) => spec.class !== WAREHOUSE_CLASS)
+        .map(([source]) => source)
+        .sort(),
+    );
   });
 
   test("every stored source is a bare slug — the tier guard splices these into SQL", () => {

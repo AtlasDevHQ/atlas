@@ -45,6 +45,7 @@ import {
   type ReconcileEpisodeRef,
 } from "@atlas/api/lib/brain/reconcile";
 import {
+  ALIAS_PROPOSAL_DEADLINE_MS,
   BATCH_SIZE,
   _resetBrainExtractionFailures,
   runBrainExtractionCycle,
@@ -52,6 +53,7 @@ import {
   type ResolvedExtractionModel,
 } from "@atlas/api/lib/brain/extract";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { SEAM_PROPOSAL_PRODUCER } from "@atlas/api/lib/brain/alias-proposal";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -1148,5 +1150,345 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   it("an empty queue is a clean success", async () => {
     const result = await cycleWith(oneFact);
     expect(result).toMatchObject({ status: "success", inspected: 0, extracted: 0 });
+  });
+
+  // ── the alias-proposal trigger (#5034) ──────────────────────────────────
+  //
+  // `alias-proposal-pg.test.ts` owns what the query MATCHES; these three own
+  // WHEN it is asked at all. The gate is `report.comparable`, and it is exact
+  // rather than a sample: `ALIAS_PROPOSAL_SQL` joins two rows on `object_cmp`
+  // non-null and equal, so a run that created no comparable row cannot have
+  // changed the candidate set. Getting that wrong in the permissive direction
+  // costs a corpus-wide self-join per episode forever; getting it wrong in the
+  // other direction silently retires the producer.
+
+  it("asks the alias-proposal producer once, after an episode created a comparable row", async () => {
+    await insertEpisode();
+    const asked: string[] = [];
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        // `499 USD` parses to `money:USD:499`, so this candidate lands with a
+        // non-null `object_cmp` — the ONE thing the gate reads.
+        extract: () =>
+          Promise.resolve([candidate({ predicate: "priced at", object: "499 USD" })]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+        },
+      }),
+    );
+    expect(asked).toEqual([WORKSPACE]);
+  });
+
+  it("does not ask when the episode created nothing the query could join on", async () => {
+    // The default candidate's object is `Thursdays`, which parses to no
+    // comparable value — the state of very nearly the whole corpus, since
+    // `object_cmp` is never backfilled and there is no entity store. The
+    // producer must therefore cost NOTHING on the ordinary episode, and the
+    // control above is what proves this assertion is not just "the wiring is
+    // absent".
+    await insertEpisode();
+    const asked: string[] = [];
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: oneFact,
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+        },
+      }),
+    );
+    expect(asked).toEqual([]);
+  });
+
+  it("the DEFAULT wiring queues a real proposal — no injected producer", async () => {
+    // ⭐ The only test in the slice that exercises `extract.ts`'s DEFAULT
+    // `proposeAliases`. Every other trigger test injects a fake, and every
+    // pre-existing test has `comparable === 0`, so replacing that default with
+    // `() => Promise.resolve(undefined)` killed ZERO tests — the producer's one
+    // production call path was unproven, which is #5022's *a store whose reader
+    // had no caller* one indirection deeper. `extract.ts` deliberately catches
+    // and warns, so a broken default (a wrong binding, an import cycle) would
+    // have shipped green with the feature simply dead.
+    //
+    // Three of the four rows land through `reconcileFacts` directly; the fourth
+    // arrives through the drain, which is what makes the run's `comparable`
+    // non-zero and fires the trigger.
+    const seed = [
+      { subject: "Business tier", predicate: "is priced at", object: "499 USD" },
+      { subject: "Business tier", predicate: "priced at", object: "499 USD" },
+      { subject: "Starter tier", predicate: "is priced at", object: "199 USD" },
+    ];
+    for (const [index, claim] of seed.entries()) {
+      const seedEpisode = await insertEpisode({ sourceId: `seed-${index}` });
+      await reconcileFacts({
+        vocabulary: identityVocabulary,
+        episode: seedEpisode,
+        candidates: [candidate(claim)],
+        producer: "seed",
+        extractedAt: new Date(),
+      });
+    }
+
+    await insertEpisode();
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "Starter tier", predicate: "priced at", object: "199 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        // No `proposeAliases` — the default is what is under test.
+      }),
+    );
+
+    const { rows } = await pool.query<{ proposed_by: string; source_class: string }>(
+      "SELECT proposed_by, source_class FROM brain_vocabulary_proposal WHERE workspace_id = $1",
+      [WORKSPACE],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      proposed_by: SEAM_PROPOSAL_PRODUCER,
+      source_class: "seam",
+    });
+  });
+
+  it("counts `comparable` per candidate, not off the head of the batch", async () => {
+    // ⚠️ `reconcile.ts` reads `prepared[index]` alongside `outcomes[index]`,
+    // relying on a 1:1 correlation the compiler cannot check. Both trigger tests
+    // above use a ONE-candidate episode, so `prepared[index]` → `prepared[0]`
+    // survives them — and that failure is silent in the expensive direction:
+    // `comparable` reads 0, the trigger never fires, and the producer retires
+    // with a green suite.
+    //
+    // A mixed batch is what separates them. The blank candidate is BLOCKED
+    // (`MALFORMED_CLAIM`), so it consumes an index without producing a created
+    // outcome; the uncomparable one is created with a NULL `object_cmp`; only
+    // the third has a comparable object. Reading off the head would answer 0.
+    await insertEpisode();
+    let observed: number | undefined;
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "   ", predicate: "priced at", object: "499 USD" }),
+            candidate({ subject: "deploy window", predicate: "ships on", object: "Thursdays" }),
+            candidate({ subject: "Business tier", predicate: "priced at", object: "499 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        reconcile: async (request, deps) => {
+          const report = await reconcileFacts(request, deps);
+          observed = report.comparable;
+          return report;
+        },
+        proposeAliases: async () => undefined,
+      }),
+    );
+    expect(observed).toBe(1);
+  });
+
+  it("arms the drain deadline and DISARMS it on the fast path", async () => {
+    // ⭐ The falsifier for `ALIAS_PROPOSAL_DEADLINE_MS`, and it needs no hang.
+    //
+    // The mutation row for the deadline read `0 | 0 | 0` with a note saying
+    // nothing short of a delayed-settle fake and a timer recorder could see it,
+    // and "that machinery is not built here". Both halves were wrong: the timer
+    // recorder ALONE sees it, and the machinery is built one file over
+    // (`correction.test.ts`, guarding the identical defect in
+    // `proposeUnderDeadline`) — whose own comment records the repo making this
+    // exact mistake and correcting it. A `0` in a mutation table is a CLAIM.
+    //
+    // Filtering on the exported constant is what keeps `pg`'s own timers out of
+    // the count; a bare "some timer was armed" would pass in any `-pg` file.
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const armed: { ms: unknown; handle: unknown }[] = [];
+    const cleared = new Set<unknown>();
+    globalThis.setTimeout = ((fn: never, ms: never, ...rest: never[]) => {
+      const handle = realSet(fn, ms, ...rest);
+      armed.push({ ms, handle });
+      return handle;
+    }) as typeof globalThis.setTimeout;
+    globalThis.clearTimeout = ((handle: never) => {
+      cleared.add(handle);
+      realClear(handle);
+    }) as typeof globalThis.clearTimeout;
+    try {
+      await insertEpisode();
+      await Effect.runPromise(
+        runBrainExtractionCycle({
+          extract: () =>
+            Promise.resolve([candidate({ predicate: "priced at", object: "499 USD" })]),
+          resolveModel: async () => FAKE_MODEL,
+          proposeAliases: async () => undefined,
+        }),
+      );
+    } finally {
+      globalThis.setTimeout = realSet;
+      globalThis.clearTimeout = realClear;
+    }
+
+    const deadlines = armed.filter((t) => t.ms === ALIAS_PROPOSAL_DEADLINE_MS);
+    expect(deadlines, "no deadline was armed around the proposal run").toHaveLength(1);
+    // The second half, and it is a separate defect: a `finally` attached to the
+    // TIMER PROMISE rather than to the race settles only when the timer fires,
+    // so `clearTimeout` is unconditionally a no-op and every episode leaves a
+    // 15s timer armed. `correction.ts` shipped exactly that once.
+    expect(
+      deadlines.filter((t) => !cleared.has(t.handle)),
+      "the deadline timer was left armed on the fast path",
+    ).toEqual([]);
+  });
+
+  it("times out a stalled producer, keeps the episode, and trips the per-tick breaker", async () => {
+    // The three properties nothing could see, all reachable with a fake that
+    // SETTLES — so this test cannot hang even if the deadline is deleted. It
+    // degrades to a wrong COUNT (`asked` becomes 3), which is a falsifier where
+    // a hang is not. ⚠️ There is no warn assertion here, and an earlier version
+    // of this comment said there was: the logger is real in this file, and the
+    // mock lives in `alias-proposal-logging.test.ts`.
+    //
+    // ⭐ The breaker is the round-3 finding: a stall that precedes the first
+    // `SET LOCAL` leaves `withBrainTransaction` parked on `BEGIN` with a client
+    // checked out and never released. Before the deadline that cost one
+    // connection, because the fiber wedged behind it; WITH the deadline the
+    // drain advances, so without a breaker every later episode in the tick
+    // leaks another into a pool bounded at five.
+    const asked: string[] = [];
+    for (let i = 0; i < 3; i++) await insertEpisode({ sourceId: `stall-${i}` });
+
+    // ⚠️ A DISTINCT SUBJECT per episode, and it is load-bearing. With the same
+    // triple three times the second and third CORROBORATE — `created` is 0, so
+    // `comparable` is 0 and the trigger never fires for them. The test then
+    // asserts `asked` is 1 whatever the breaker does, and both breaker mutations
+    // measured ZERO against it. Measured, not reasoned about.
+    let episodeIndex = 0;
+    const result = await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({
+              subject: `tier ${episodeIndex++}`,
+              predicate: "priced at",
+              object: "499 USD",
+            }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        aliasProposalDeadlineMs: 20,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        },
+      }),
+    );
+
+    // The episodes are unaffected: extracted, stamped, no strike.
+    expect(result).toMatchObject({ status: "success", inspected: 3, extracted: 3, failed: 0 });
+    // …and the producer was asked exactly ONCE across three stalling episodes.
+    // Without the breaker this is 3, which is three leaked connections.
+    expect(asked).toHaveLength(1);
+  });
+
+  it("does NOT trip the breaker on an ordinary proposal failure", async () => {
+    // ⚠️ The breaker's CONDITION, which round 3 added and did not falsify:
+    // `if (timedOut) …` → an unconditional trip killed zero tests, because the
+    // only failure test used ONE episode and so could not see a tick-wide
+    // consequence.
+    //
+    // What that admits is not hypothetical: `ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL`'s
+    // own docstring calls `55P03` a DESIGNED, expected outcome — a human
+    // mid-approval holding the vocabulary lock. Under the unconditional trip,
+    // one expected lock timeout retires the producer for the rest of the tick
+    // and up to `BATCH_SIZE - 1` episodes silently skip.
+    //
+    // A rejection released its connection on the way out; only a TIMEOUT may
+    // still be holding one, and only a timeout may cost the rest of the tick.
+    const asked: string[] = [];
+    for (let i = 0; i < 2; i++) await insertEpisode({ sourceId: `fastfail-${i}` });
+    let episodeIndex = 0;
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({
+              subject: `fftier ${episodeIndex++}`,
+              predicate: "priced at",
+              object: "499 USD",
+            }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: (workspaceId) => {
+          asked.push(workspaceId);
+          return Promise.reject(new Error("55P03 lock_not_available"));
+        },
+      }),
+    );
+    expect(asked).toHaveLength(2);
+  });
+
+  it("resets the breaker between TICKS, so one bad minute does not retire the producer", async () => {
+    // ⚠️ The breaker's SCOPE, the other constraint round 3 asserted and did not
+    // falsify: hoisting `const proposalStall = { stalled: false }` to module
+    // scope killed zero tests. `extract.ts`'s own `Effect.suspend` comment warns
+    // that exactly this hoist is "an obviously-equivalent-looking refactor",
+    // which is the definition of a change a reviewer waves through.
+    //
+    // What it admits: ONE transient stall permanently disables alias proposals
+    // for the process lifetime — silently, with no log, no counter and no red
+    // test — on a producer with one caller and no sweep.
+    await insertEpisode({ sourceId: "stall-tick-1" });
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "btier 0", predicate: "priced at", object: "499 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        aliasProposalDeadlineMs: 20,
+        proposeAliases: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        },
+      }),
+    );
+
+    await insertEpisode({ sourceId: "stall-tick-2" });
+    const asked: string[] = [];
+    await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([
+            candidate({ subject: "btier 1", predicate: "priced at", object: "499 USD" }),
+          ]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: async (workspaceId) => {
+          asked.push(workspaceId);
+        },
+      }),
+    );
+    // A process-lifetime flag leaves this empty, forever, with no line.
+    expect(asked).toHaveLength(1);
+  });
+
+  it("a failing proposal run does not fail the episode that already committed", async () => {
+    // The facts are written and the episode is stamped before the producer is
+    // asked. Propagating here would return `failed` for an episode that was
+    // fully processed — the drain would charge a strike against evidence there
+    // is nothing left to retry, and enough strikes quarantine it. A proposal is
+    // advisory, and the next episode in this workspace that creates a comparable
+    // object re-derives the whole candidate set from the corpus. ⚠️ That episode
+    // may never arrive — this trigger is the producer's only caller and there is
+    // no sweep — so the cost is unproposed candidates, not merely latency.
+    const episode = await insertEpisode();
+    const result = await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: () =>
+          Promise.resolve([candidate({ predicate: "priced at", object: "499 USD" })]),
+        resolveModel: async () => FAKE_MODEL,
+        proposeAliases: () => Promise.reject(new Error("proposal store unreachable")),
+      }),
+    );
+    expect(result).toMatchObject({ status: "success", extracted: 1, factsCreated: 1, failed: 0 });
+    expect(await extractedAtOf(episode.id)).not.toBeNull();
+    expect(await facts()).toHaveLength(1);
   });
 });

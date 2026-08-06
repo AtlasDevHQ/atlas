@@ -128,6 +128,7 @@ import {
 } from "@atlas/api/lib/brain/reconcile";
 import type { ClaimVocabulary } from "@atlas/api/lib/brain/identity";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
+import { proposeAliasesFromCorpus } from "@atlas/api/lib/brain/alias-proposal";
 
 const log = createLogger("brain.extract");
 
@@ -730,6 +731,27 @@ export interface BrainExtractionDeps {
   readonly reconcile?: typeof reconcileFacts;
   /** Defaults to {@link loadWorkspaceVocabulary}. */
   readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
+  /**
+   * Defaults to `proposeAliasesFromCorpus` (#5034) — the alias-proposal
+   * producer, run after an episode commits and only when it created a row
+   * carrying a comparable object. See {@link proposeAliasesAfterCommit}.
+   *
+   * Injectable for the reason `reconcile` is: it opens its own transaction on
+   * the internal pool, and a unit test of the drain must be able to observe
+   * whether the trigger fired without one.
+   */
+  readonly proposeAliases?: (workspaceId: string) => Promise<unknown>;
+  /**
+   * Test seam for {@link ALIAS_PROPOSAL_DEADLINE_MS}, on `correction.ts`'s
+   * `auditWriteTimeoutMs` precedent. Exists so the timeout arm is reachable in
+   * under a second instead of never — the arm's whole point is a producer that
+   * does not settle, and a suite cannot wait 15s for one.
+   *
+   * RANGE-GUARDED at the read, not here: a `setTimeout` delay past 2^31-1
+   * fires IMMEDIATELY, so an out-of-range override would silently make every
+   * run time out rather than none.
+   */
+  readonly aliasProposalDeadlineMs?: number;
   /** Test clock. */
   readonly now?: () => Date;
 }
@@ -770,6 +792,31 @@ export function runBrainExtractionCycle(
   const resolveModel = deps.resolveModel ?? resolveExtractionModel;
   const reconcile = deps.reconcile ?? reconcileFacts;
   const loadVocabulary = deps.loadVocabulary ?? loadWorkspaceVocabulary;
+  const proposeAliases =
+    deps.proposeAliases ?? ((workspaceId: string) => proposeAliasesFromCorpus(workspaceId));
+  // `Number.isInteger` AND the upper bound, both load-bearing: a delay past
+  // 2^31-1 fires immediately, which would turn an override meant to shorten a
+  // test into one that times out every run in production.
+  const overriddenDeadline = deps.aliasProposalDeadlineMs;
+  if (
+    overriddenDeadline !== undefined &&
+    !(
+      Number.isInteger(overriddenDeadline) &&
+      overriddenDeadline > 0 &&
+      overriddenDeadline <= 2_147_483_647
+    )
+  ) {
+    // THROWN, not clamped — `loadAliasCandidates`'s cap precedent, and the same
+    // reasoning. Silently substituting the 15s default would make a test that
+    // MEANS to exercise the timeout arm exercise the fast path instead, and pass
+    // green while asserting nothing: the "passed for the wrong reason" class
+    // round 3 just fixed one file over. Costs production nothing — this is a
+    // test seam and the guard fires only on an override.
+    throw new Error(
+      `runBrainExtractionCycle: aliasProposalDeadlineMs must be an integer in [1, 2147483647]; got ${overriddenDeadline}. A delay past 2^31-1 fires IMMEDIATELY, so an out-of-range value does not degrade to "no timeout" — it times out every run.`,
+    );
+  }
+  const aliasProposalDeadlineMs = overriddenDeadline ?? ALIAS_PROPOSAL_DEADLINE_MS;
   const now = deps.now ?? (() => new Date());
 
   // `Effect.suspend` so the per-tick mutable state below is allocated per RUN
@@ -794,6 +841,11 @@ export function runBrainExtractionCycle(
     // ONE binding, threaded into both halves — `extractEpisode` reads it and
     // `tallyEpisode` writes it, and they have to be the same object.
     const failures = failureLedger;
+    // The alias-proposal circuit breaker, allocated PER RUN so it resets every
+    // tick. See `proposeAliasesAfterCommit`: a producer stall leaks the pooled
+    // connection it was holding, and without this the drain — which the
+    // deadline exists to keep advancing — would leak one per episode.
+    const proposalStall = { stalled: false };
     const charged: { episodeId: string; workspaceId: string }[] = [];
     /**
      * How many episodes the scan EXCLUDED as backing-off, this tick.
@@ -905,7 +957,17 @@ export function runBrainExtractionCycle(
         return internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE, excluded]);
       },
       applyRow: (row) =>
-        extractEpisode(row, { extract, modelFor, reconcile, loadVocabulary, now, failures }),
+        extractEpisode(row, {
+          extract,
+          modelFor,
+          reconcile,
+          loadVocabulary,
+          proposeAliases,
+          proposalStall,
+          aliasProposalDeadlineMs,
+          now,
+          failures,
+        }),
       defectOutcome: (error) => ({ kind: "failed", error }),
       tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
       emitCycleAudit: settleAndAudit,
@@ -918,6 +980,19 @@ interface ApplyDeps {
   readonly modelFor: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
   readonly reconcile: typeof reconcileFacts;
   readonly loadVocabulary: (workspaceId: string) => Promise<ClaimVocabulary>;
+  readonly proposeAliases: (workspaceId: string) => Promise<unknown>;
+  /**
+   * The per-tick circuit breaker for the alias-proposal trigger — see
+   * {@link proposeAliasesAfterCommit}'s "one stall per tick, not one per
+   * episode".
+   *
+   * Cycle-scoped, like `failures` above and for a sharper reason: it must reset
+   * between ticks, or one bad minute would retire the producer for the lifetime
+   * of the process. THE SAME object is bound into both halves in
+   * `runBrainExtractionCycle`.
+   */
+  readonly proposalStall: { stalled: boolean };
+  readonly aliasProposalDeadlineMs: number;
   readonly now: () => Date;
   /**
    * Consecutive-failure ledger — see the quarantine note. THE SAME map the
@@ -1110,7 +1185,246 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
   // on why the reverse order is not merely slower but unsafe.
   await stampExtracted(episode);
   deps.failures.delete(episode.id);
+  await proposeAliasesAfterCommit(episode, report, deps);
   return { kind: "extracted", report };
+}
+
+/**
+ * How long the alias-proposal producer may take before the extraction drain
+ * stops waiting for it.
+ *
+ * A DRAIN bound, not a work bound — see {@link proposeAliasesAfterCommit} on why
+ * the two are different and why both exist. Generous, because timing out costs a
+ * workspace its proposals for that episode and there is no sweep to re-run them:
+ * the number only has to be shorter than "forever". Every statement AFTER the
+ * `SET LOCAL` pair lands carries a tighter server-side bound; `BEGIN` and the
+ * pair itself do NOT, and they are exactly the round trips this constant exists
+ * for — so "the server side already covers it" is the reading to avoid.
+ */
+export const ALIAS_PROPOSAL_DEADLINE_MS = 15_000;
+
+/**
+ * Re-derive this workspace's alias proposals, after the episode has committed
+ * and been stamped (#5034, ADR-0037 §4).
+ *
+ * ## Gated on `report.comparable`, and that gate is exact rather than a heuristic
+ *
+ * `ALIAS_PROPOSAL_SQL` joins two rows on `object_cmp` non-null and equal, so its
+ * candidate set is a pure function of the rows that HAVE one. An episode that
+ * created none cannot have changed that set — a corroborating candidate writes
+ * no row at all, and a created row with a NULL comparable joins nothing on
+ * either side. So this is not sampling: skipping is provably lossless, and the
+ * corpus-wide self-join is spent only when the corpus grew evidence it could
+ * read. Today that is very nearly never, which is the honest shape of ADR-0037
+ * §4's *on day one it returns zero rows for want of populated `object_cmp`*.
+ *
+ * ## AFTER the stamp, and never inside the reconcile transaction
+ *
+ * `cardinality.ts`'s `proposeFromCorrectionEvents` exactly: a proposal is
+ * advisory and the extraction is real work, so a store failure here must not
+ * roll back facts already committed — and a `try`/`catch` inside that
+ * transaction could not deliver that however it were written, since a failed
+ * statement puts Postgres in `25P02` and takes the enclosing COMMIT with it.
+ *
+ * ## Caught here, not propagated
+ *
+ * Throwing would return `failed` from {@link extractEpisode} for an episode
+ * whose facts are committed and whose row is stamped — the drain would charge a
+ * strike, and the strike would be against evidence that has already been fully
+ * processed. Logged at `warn`, never swallowed.
+ *
+ * ## A HANG is bounded TWICE, and neither bound is sufficient alone
+ *
+ * A `try`/`catch` fires on a rejection and never on a call that does not settle,
+ * and this `await` sits inside `applyRow` under `Effect.forEach(concurrency: 1)`
+ * with no per-tick timeout — so an internal database that is REACHABLE AND NOT
+ * ANSWERING would stop the whole brain-extraction drain forever, with no error,
+ * no dead fiber, and not one line in the log.
+ *
+ *   - **In the database:** `alias-proposal.ts`'s `boundedTransaction` issues
+ *     `SET LOCAL statement_timeout` and `SET LOCAL lock_timeout`, so Postgres
+ *     CANCELS a slow or lock-blocked statement rather than abandoning it. This
+ *     is the bound that reclaims a pooled connection.
+ *   - **Here:** {@link ALIAS_PROPOSAL_DEADLINE_MS}, whose only job is that the
+ *     DRAIN advances.
+ *
+ * ⚠️ The second is not belt-and-braces, and an earlier version of this
+ * paragraph claimed the first was enough. It is not: `withBrainTransaction`
+ * issues `BEGIN` **before** the callback runs, so `BEGIN` and the first
+ * `SET LOCAL` are themselves unbounded — and a database that is not answering
+ * does not answer `BEGIN` either. The pool's `connectionTimeoutMillis` covers
+ * the checkout and nothing covers the two round trips after it. The `SET LOCAL`
+ * pair cannot bound its own arrival, so the JS deadline is the only thing
+ * standing between that failure and a wedged fiber.
+ *
+ * The converse is also true, which is why both are kept: `Promise.race` does
+ * not CANCEL anything, so a timed-out run whose statements DID arrive is
+ * reclaimed by `statement_timeout` and not by anything here.
+ *
+ * ## One stall per TICK, not one per episode — and why that is required
+ *
+ * ⚠️ **In the headline case the connection is NOT reclaimed, and the deadline is
+ * what makes that matter.** If the stall precedes the first `SET LOCAL` — which
+ * is precisely the reachable-but-not-answering case — then `withBrainTransaction`
+ * is parked on `BEGIN`, its callback never runs, and `client.release()` never
+ * runs either. `idleTimeoutMillis` does not apply to a checked-out client, so the
+ * connection is gone from a pool bounded at **5** until the socket dies.
+ *
+ * Before the deadline that cost exactly one connection, because the fiber wedged
+ * behind it. With the deadline the drain ADVANCES — which is the whole point —
+ * so the next comparable-creating episode would check out another, and
+ * `BATCH_SIZE` of them would exhaust the pool and take down every unrelated
+ * internal query in the process: auth, audit, settings, and this drain's own
+ * `DRAIN_EPISODES_SQL` and `stampExtracted`.
+ *
+ * So the first timeout in a tick trips {@link ApplyDeps.proposalStall} and every
+ * later episode in that tick skips the trigger. The leak is bounded at one
+ * connection per cycle, the drain still advances, and the breaker resets next
+ * tick because it is allocated per run — a process-lifetime flag would retire
+ * the producer permanently on one bad minute.
+ *
+ * The skipped episodes lose nothing a completed run would have kept: the
+ * producer re-derives its whole candidate set from the corpus and holds no
+ * cursor. What they lose is the same thing a failed run loses, on the same
+ * terms as the paragraph below.
+ *
+ * ## ⚠️ What "re-derived next run" is and is NOT worth
+ *
+ * The producer holds no cursor, so a lost run costs no state — but it is only
+ * re-run by ANOTHER episode in this workspace that creates a comparable row,
+ * because this trigger is `proposeAliasesFromCorpus`'s only caller. There is no
+ * scheduler fiber and no admin re-run verb. Under the day-one reality this
+ * function's gate describes — comparable rows are very nearly never — that next
+ * episode may not arrive, so a failed run's candidates can stay unproposed
+ * indefinitely.
+ *
+ * That is stated plainly rather than softened because an earlier version of this
+ * docstring and its log line both claimed *"nothing is permanently lost"*, which
+ * is a promise the wiring does not keep. The durable fix is a low-frequency
+ * `registerPeriodicFiber` sweep so a lost run has a floor; it is deliberately
+ * NOT in this slice — it is a second trigger with its own enablement, cadence
+ * and audit questions, and #5034's scope is the query.
+ *
+ * ## The other gap, same shape
+ *
+ * `correction.ts` is the other caller of `reconcileFacts` and is NOT wired here.
+ * A correction inherits the slot and derives the object fresh, so it can
+ * introduce a comparable row this trigger never sees — and, per the paragraph
+ * above, "the next extraction finds it" is a hope rather than a guarantee.
+ * Deliberate: hanging a workspace-wide self-join off the human-facing verb buys
+ * a proposal sooner at the cost of latency on the one path a person waits on.
+ */
+async function proposeAliasesAfterCommit(
+  episode: ReconcileEpisodeRef,
+  report: ReconcileReport,
+  deps: ApplyDeps,
+): Promise<void> {
+  if (report.comparable === 0) return;
+  if (deps.proposalStall.stalled) {
+    // ⚠️ LOGGED, because the breaker is TICK-wide and the drain is FLEET-wide.
+    // `DRAIN_EPISODES_SQL` has no workspace scope, so the episode that tripped
+    // the breaker and the episodes this skips routinely belong to DIFFERENT
+    // tenants — and the one timeout line above names only the first. Without
+    // this an operator asking "why has workspace B no alias proposals" finds a
+    // single line naming workspace A, and a tick that skipped one is
+    // byte-identical to a tick that skipped twenty-four.
+    //
+    // The same argument this file already makes twice, at `outageRefunded`'s
+    // third-state warn and at the span comment in `effect/layers.ts`.
+    log.warn(
+      {
+        workspaceId: episode.workspaceId,
+        episodeId: episode.id,
+        comparable: report.comparable,
+      },
+      "brain extraction: skipping the alias-proposal trigger — an earlier episode in this tick timed out and tripped the per-tick breaker, so THIS workspace's candidates are not proposed even though the stall may have been another tenant's. They are re-derived only by the next comparable-creating episode in this workspace; the breaker resets on the next tick",
+    );
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    // Invoked INSIDE the try, which is why the seam is a THUNK: `proposeAliases`
+    // is a plain function type nothing forces to be `async`, so an injected
+    // implementation that threw SYNCHRONOUSLY would land outside the guard on an
+    // already-committed episode. `correction.ts`'s `proposeUnderDeadline` was
+    // built wrong that way first and records it.
+    const pending = deps.proposeAliases(episode.workspaceId);
+    // The race marks the LOSER's rejection as handled, so a real store error
+    // arriving after the deadline would otherwise be dropped with no line and
+    // not even an unhandled rejection. GUARDED on `timedOut`, or this fires on
+    // the ordinary fast-failure path too, where the `catch` below already
+    // reports it — one event, two warns, the second one wrong.
+    void pending
+      .then(
+        () => {
+          if (!timedOut) return;
+          log.warn(
+            { workspaceId: episode.workspaceId, episodeId: episode.id },
+            "brain extraction: the alias-proposal producer COMPLETED after its deadline — the earlier timeout line for this episode reports the same event, and any proposals it queued are present",
+          );
+        },
+        (cause: unknown) => {
+          if (!timedOut) return;
+          log.warn(
+            { workspaceId: episode.workspaceId, episodeId: episode.id, err: errorMessage(cause) },
+            "brain extraction: the alias-proposal producer FAILED after its deadline had already been reported — this is the underlying cause behind the earlier timeout line. ⚠️ It does NOT mean nothing was written: `proposeAliasEdge` commits per candidate, so a failure part way through a batch leaves every earlier proposal in place, and the producer's own counters line says how many",
+          );
+        },
+      )
+      // DETACHED — it settles after this function has returned, so no `try` on
+      // the extraction path can reach it, and an unhandled rejection is
+      // process-fatal by default. A committed episode's bookkeeping must not be
+      // able to take the worker down.
+      .catch(() => {
+        // intentionally ignored: best-effort observability on a detached
+        // promise. The only ways here are the logger itself throwing and a
+        // hostile rejection value reaching `errorMessage` — neither of which an
+        // advisory proposal may kill the extraction fiber for.
+      });
+    await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(
+            new Error(
+              `the alias-proposal producer did not answer within ${deps.aliasProposalDeadlineMs}ms — most likely an internal database that is reachable but not responding, or a batch spending its budget waiting on the workspace vocabulary lock, which ALIAS_PROPOSAL_LOCK_TIMEOUT_SQL treats as an expected outcome`,
+            ),
+          );
+        }, deps.aliasProposalDeadlineMs);
+      }),
+    ]);
+  } catch (err) {
+    // TRIP THE BREAKER, and only on the timeout arm. An ordinary failure
+    // released its connection on the way out; a timeout did not, and the next
+    // episode would leak another.
+    if (timedOut) deps.proposalStall.stalled = true;
+    log.warn(
+      {
+        workspaceId: episode.workspaceId,
+        episodeId: episode.id,
+        comparable: report.comparable,
+        // SCRUBBED, on `reconcile.ts`'s precedent and this file's own three
+        // existing uses. `error-scrub.ts` exists because pg error text sometimes
+        // echoes the connection string verbatim, and the error caught here comes
+        // from a pool checkout plus a query on the internal DB — the highest-
+        // probability source of a credentialed URL in this file.
+        err: errorMessage(err),
+        timedOut,
+      },
+      timedOut
+        ? "brain extraction: the alias-proposal producer did not answer within its deadline — the facts and the stamp are COMMITTED and unaffected, and the extraction drain is free to advance, which is what this deadline exists for. The producer's own fate is UNKNOWN: the race does not cancel it, though `SET LOCAL statement_timeout` bounds each statement it had already reached. If it settles, a follow-up line for this episode says which — but the failure this deadline exists for may never produce one, so treat a MISSING follow-up as the run still being in flight rather than as recovered"
+        : "brain extraction: the alias-proposal producer failed after this episode committed — the facts and the stamp are safe, and no vocabulary EDGE changed — though proposals queued before the failure are present, since `proposeAliasEdge` commits per candidate. The remaining candidates are re-derived from the corpus by the NEXT episode in this workspace that creates a comparable object; this trigger is the producer's only caller, so if no such episode arrives they stay unproposed until one does",
+    );
+  } finally {
+    // Around the RACE, so it runs whoever wins. A `finally` on the TIMER
+    // PROMISE settles only when the timer fires, so `clearTimeout` would always
+    // be a no-op and the fast path would leave a timer armed per episode —
+    // `correction.ts` shipped exactly that bug once and its docstring measures
+    // it (race settled at 52ms, the `finally` ran at 3080ms).
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 async function stampExtracted(episode: ReconcileEpisodeRef): Promise<void> {

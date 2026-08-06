@@ -616,6 +616,27 @@ export interface ReconcileReport {
   readonly corroborated: number;
   /** Created facts carrying `provenance.provisional` — a subset of `created`. */
   readonly provisional: number;
+  /**
+   * Created facts carrying a non-null `object_cmp` — a subset of `created`, and
+   * the ONE trigger condition for the alias-proposal producer (#5034).
+   *
+   * ⚠️ It is a gate, not a statistic, so read what it is a gate ON before
+   * changing how it is counted. `ALIAS_PROPOSAL_SQL` joins two rows on
+   * `object_cmp` non-null and equal, so its candidate set is a pure function of
+   * the rows that HAVE one. A run that created none cannot have changed that
+   * set: a corroborating candidate writes no row at all, and a created row with
+   * a NULL comparable joins nothing on either side. `extract.ts` therefore skips
+   * the corpus-wide self-join entirely when this is zero, which today is very
+   * nearly always — `object_cmp` is never backfilled and there is no entity
+   * store, so only a typed object (money, a number, a date) produces one.
+   *
+   * NOT the same number as `provisional`, and the two are easy to conflate
+   * because both concern the resolver. `provisional` counts rows whose comparable
+   * is missing BECAUSE THE BATCH FAILED; this counts rows that have one at all,
+   * however they got it. A workspace with no store has `provisional: 0` and
+   * `comparable: 0` for entirely different reasons.
+   */
+  readonly comparable: number;
   readonly blocked: Readonly<Record<ReconcileBlockReason, number>>;
   /** Per-candidate, in input order. */
   readonly outcomes: readonly ReconcileOutcome[];
@@ -1002,6 +1023,7 @@ export async function reconcileFacts(
       created: 0,
       corroborated: 0,
       provisional: 0,
+      comparable: 0,
       blocked,
       outcomes: candidates.map(() => ({ kind: "blocked" as const, reason })),
     };
@@ -1031,7 +1053,7 @@ export async function reconcileFacts(
   const grantTokens = episode.visibleTo.filter((t): t is string => typeof t === "string");
 
   if (candidates.length === 0) {
-    return { created: 0, corroborated: 0, provisional: 0, blocked, outcomes: [] };
+    return { created: 0, corroborated: 0, provisional: 0, comparable: 0, blocked, outcomes: [] };
   }
 
   // ── Blank-trim pass (no database, no resolver) ────────────────────────
@@ -1286,14 +1308,40 @@ export async function reconcileFacts(
   let created = 0;
   let corroborated = 0;
   let provisional = 0;
-  for (const outcome of outcomes) {
+  let comparable = 0;
+  for (const [index, outcome] of outcomes.entries()) {
     // Exhaustive, with a `never` binding: a fourth outcome arm must be counted
     // somewhere, and the compiler is the only reviewer that never forgets.
     switch (outcome.kind) {
-      case "created":
+      case "created": {
         created++;
         if (outcome.provisional) provisional++;
+        // Read off `prepared`, which the transaction above maps 1:1 onto
+        // `outcomes` in input order — the outcome itself does not carry the
+        // comparable, and widening it to would put a value on the wire-ish shape
+        // that `ReconcileReport.comparable`'s docstring says is a GATE. The
+        // index lookup is what keeps the two definitions of "this row got a
+        // comparable value" from becoming two.
+        //
+        // ⚠️ THROWS on a desync rather than under-counting, which is the same
+        // choice the `never` arm below makes and for a sharper reason. This
+        // number is not a statistic: it is the sole trigger for #5034's alias
+        // producer, so a silent under-count does not skew a metric, it RETIRES
+        // the producer repo-wide with no log line, no red test and no symptom —
+        // the one failure the mutation table calls out as invisible to
+        // everything else. The invariant is the one the compiler cannot check,
+        // so it is the one that needs the runtime assertion.
+        const item = prepared[index];
+        if (item === undefined || item.kind !== "prepared") {
+          throw new Error(
+            `brain reconcile: outcomes/prepared fell out of 1:1 at index ${index} — a "created" ` +
+              "outcome has no prepared candidate behind it. Refusing rather than under-counting " +
+              "`comparable`, which would silently switch off the alias-proposal producer (#5034).",
+          );
+        }
+        if (item.comparableAtRest !== null) comparable++;
         break;
+      }
       case "corroborated":
         corroborated++;
         break;
@@ -1306,7 +1354,7 @@ export async function reconcileFacts(
     }
   }
 
-  return { created, corroborated, provisional, blocked, outcomes };
+  return { created, corroborated, provisional, comparable, blocked, outcomes };
 }
 
 // ---------------------------------------------------------------------------

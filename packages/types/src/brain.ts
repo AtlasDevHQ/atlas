@@ -128,8 +128,9 @@ export interface BrainFactProvenanceView {
   readonly reconciledAt: string | null;
   /**
    * The entity store did not ANSWER when this claim was recorded — it threw, was
-   * unavailable, or broke its contract — so the claim's object was never
-   * compared against anything. THE quality queue: block-class failures (no
+   * unavailable, or broke its contract — so the row carries no comparison value
+   * and can never prove agreement or difference with another claim. THE quality
+   * queue: block-class failures (no
    * provenance, no usable grant, unattributable actor, malformed claim) never
    * reach this surface at all; they were refused upstream.
    *

@@ -600,14 +600,18 @@ describe("flag: entity resolution", () => {
     // #5000 re-caused by the fix for #5000.
     const store = new FakeBrainStore();
     await run(store, {
-      candidates: [candidate({ subject: "Deploy_Window", object: "Acme Corp" })],
+      // `single` so the rival scan is issued: the sweep below claims to cover
+      // every key-carrying statement, and under the default `multi` a third of
+      // it would read binds that were never made.
+      candidates: [
+        candidate({ subject: "Deploy_Window", object: "Acme Corp", predicateCardinality: "single" }),
+      ],
       resolveEntity: new AnsweringStore(store).resolve,
     });
 
-    // ⚠️ The MARKER sweep runs FIRST, and it is what makes the exact assertion
-    // below more than a duplicate. An earlier draft had them the other way
-    // round, which made the sweep unreachable on failure — the exact
-    // `toMatchObject` threw before it, so the loop only ever executed in the
+    // ⚠️ The MARKER sweep runs FIRST, and the order is the whole point. After
+    // the exact `toMatchObject` below it would be unreachable on failure — that
+    // assertion throws on any leak, so the loop would only ever execute in the
     // world where every key already equalled its expected literal and no leak
     // was possible. A probe that can only run when it must pass is not a probe.
     //
@@ -616,8 +620,12 @@ describe("flag: entity resolution", () => {
     // covers three binds of one statement.
     for (const name of ["insertFact", "corroboration", "tensionScan"] as const) {
       const binds = store.keyBindsFor(name)[0];
+      // Asserted, not defaulted: `?? ""` would let a statement that stopped
+      // being issued pass the sweep silently, which is how a third of it was
+      // vacuous before the fixture declared `single` below.
+      expect(binds, `${name} was never issued`).toBeDefined();
       for (const position of ["subject", "predicate", "object"] as const) {
-        expect(binds?.[position] ?? "", `${name}.${position} leaked an entity id`).not.toContain(
+        expect(binds?.[position], `${name}.${position} leaked an entity id`).not.toContain(
           ENTITY_ID_MARKER,
         );
       }
@@ -892,7 +900,7 @@ describe("flag: entity resolution", () => {
   });
 
   test("…and KEEPS it at the two lookups, because a NULL there disables the difference veto", async () => {
-    // The other half, and the defect the first draft of this rule shipped.
+    // The other half, and the one that is easy to get wrong by symmetry.
     // `objectSameSql` = `(key match OR value match) AND NOT provably-different`.
     // The veto arm is NULL when the bind is NULL, `IS NOT TRUE` swallows it, and
     // corroboration collapses to bare key equality — at which point `-499` and
@@ -940,7 +948,9 @@ describe("flag: entity resolution", () => {
     const report = await run(store, {
       candidates: [
         candidate({ object: "499" }),
-        candidate({ subject: "release train", object: "Fridays" }),
+        // A PARSEABLE object too, so the withheld-comparable half of the loop
+        // discriminates at both indices: `Fridays` parses to null either way.
+        candidate({ subject: "release train", object: "42" }),
       ],
       resolveEntity: () => {
         throw new Error("entity store unreachable");
@@ -960,8 +970,9 @@ describe("flag: entity resolution", () => {
     // in the preparation loop, OUTSIDE the catch — the whole reason the nominal
     // check was replaced. Reading by iteration means that `get` is never
     // reached, and this is the only test that can tell the two apart: the
-    // conforming-wrapper test below supplies a WORKING `get`, so it dies to a
-    // nominal check but not to a `.get`-based read.
+    // conforming-wrapper test ("a conforming non-`Map` ReadonlyMap is an
+    // ANSWER") supplies a WORKING `get`, so it dies to a nominal check but not
+    // to a `.get`-based read.
     //
     // It also settles the snapshot's OTHER claim — that the stage does not hold
     // a live reference to the resolver's map, which would let one surface
@@ -1002,6 +1013,83 @@ describe("flag: entity resolution", () => {
     const report = await run(store, {
       // `thursdays`, not `Thursdays` — the shape a normalizing store produces.
       resolveEntity: () => new Map([["thursdays", { entityId: "entid00042" }]]),
+    });
+
+    expect(report.provisional).toBe(1);
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+  });
+
+  test("a REPEATING iterable is cut short rather than spinning the event loop", async () => {
+    // ⚠️ The bound has to count ENTRIES CONSUMED. Counting distinct accepted
+    // keys does not terminate: `ids.set` on a key already present leaves the
+    // size unchanged, so an iterable repeating one VALID entry advances no
+    // counter at all. This test is the difference between a contract violation
+    // and a hung process — the copy loop is synchronous, so a non-terminating
+    // one blocks every workspace, not one episode, and the catch never runs.
+    //
+    // Two surfaces (`deploy window` / `Thursdays`), one repeated forever.
+    const store = new FakeBrainStore();
+    const repeating: ReadonlyMap<string, { entityId: string }> = {
+      get: () => undefined,
+      has: () => true,
+      size: 1,
+      keys: () => [][Symbol.iterator](),
+      values: () => [][Symbol.iterator](),
+      entries: () => [][Symbol.iterator](),
+      forEach: () => {},
+      *[Symbol.iterator]() {
+        for (;;) yield ["Thursdays", { entityId: "entid00042" }] as const;
+      },
+    };
+
+    const report = await run(store, { resolveEntity: () => repeating });
+
+    // Reached at all — a bound that did not hold would never return.
+    expect(report.created).toBe(1);
+    expect(report.provisional).toBe(1);
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+  });
+
+  test("a duplicate key fails the batch — one surface must not resolve two ways", async () => {
+    // A `Map` cannot produce one; a generator can, and within the bound it would
+    // silently last-write-win. That is the same defect the owned copy exists to
+    // prevent (a surface resolving two ways inside one episode), arriving
+    // through the door the copy does not close — and the winner lands on
+    // `object_cmp`, the column the publish gate stamps from.
+    const store = new FakeBrainStore();
+    const duplicating: ReadonlyMap<string, { entityId: string }> = {
+      get: () => undefined,
+      has: () => true,
+      size: 2,
+      keys: () => [][Symbol.iterator](),
+      values: () => [][Symbol.iterator](),
+      entries: () => [][Symbol.iterator](),
+      forEach: () => {},
+      [Symbol.iterator]: () =>
+        [
+          ["Thursdays", { entityId: "entid00042" }],
+          ["Thursdays", { entityId: "entid99999" }],
+        ][Symbol.iterator]() as MapIterator<[string, { entityId: string }]>,
+    };
+
+    const report = await run(store, { resolveEntity: () => duplicating });
+
+    expect(report.provisional).toBe(1);
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+  });
+
+  test("a resolver cannot widen the set it is validated against", async () => {
+    // `ReadonlySet` is a compile-time fiction. If the returned keys were checked
+    // against the set the RESOLVER was handed, a store could add a key to that
+    // set and then answer under it — validating the answer against an oracle the
+    // answerer controls, which is not validation. The check runs against a copy
+    // the resolver never sees.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      resolveEntity: (surfaces) => {
+        (surfaces as Set<string>).add("thursdays");
+        return new Map([["thursdays", { entityId: "entid00042" }]]);
+      },
     });
 
     expect(report.provisional).toBe(1);

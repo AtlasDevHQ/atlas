@@ -283,9 +283,10 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
               canonical form for every non-blank surface and therefore never
               produced this flag at all. */}
           <AlertDescription>
-            Atlas couldn&apos;t reach the entity store while recording this claim, so its
-            object was never compared against anything Atlas already believes. Publishing
-            it is a decision that the claim is right without that check.
+            Atlas couldn&apos;t reach the entity store while recording this claim, so this
+            row carries no comparison value — it can never prove agreement or difference
+            with another claim. Publishing it is a decision that the claim is right
+            without that check.
           </AlertDescription>
         </Alert>
       )}

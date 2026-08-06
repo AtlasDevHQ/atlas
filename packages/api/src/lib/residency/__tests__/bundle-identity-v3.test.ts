@@ -295,10 +295,12 @@ describe("the v3 bundle carries exactly the identity ADR-0037 §8 grants (#5035)
       },
     );
 
+    // Numeric comparator: the default `sort()` is LEXICOGRAPHIC and would
+    // mis-compare the moment a version 10 exists.
     expect(
-      [...parsed].sort(),
+      [...parsed].sort((a, b) => a - b),
       "the CLI's accept set no longer covers every version the server names. A bundle the server would import is refused at the CLI door with 'Unsupported bundle version', which surfaces at cutover.",
-    ).toEqual([...new Set(serverVersions)].sort());
+    ).toEqual([...new Set(serverVersions)].sort((a, b) => a - b));
 
     // …and the pillar threshold, which is the OTHER half of the same fix: read
     // as "the current version" it stops printing pillar counts for every bundle

@@ -107,8 +107,14 @@ comparison and the counts are the real ones.
           file: OBJECT_CMP,
           oldString: `      return REGION_PORTABILITY[verdict.tag] === "store-local"
         ? { value: null, reason: "store-local" }
-        : { value: verdict.value, reason: "carried" };`,
-          newString: `      return { value: verdict.value, reason: "carried" };`,
+        : {
+            value: verdict.value as NonNullable<RegionPortableComparable>,
+            reason: "carried",
+          };`,
+          newString: `      return {
+        value: verdict.value as NonNullable<RegionPortableComparable>,
+        reason: "carried",
+      };`,
         },
       ],
       note: "Counterfeit positive evidence of difference at `object_cmp`, which is the arm `supersessionCollisionJoin` becomes. Reads as *preserving data* and is strictly worse than the NULL it replaces: NULL is `unknown`, reaches a reviewer as tension, and stamps nothing.",
@@ -211,7 +217,7 @@ comparison and the counts are the real ones.
       edits: [
         {
           file: EXPORT,
-          oldString: `  drift[column] = (drift[column] ?? 0) + 1;`,
+          oldString: `  drift[key] = (drift[key] ?? 0) + 1;`,
           newString: "",
         },
       ],
@@ -288,12 +294,23 @@ comparison and the counts are the real ones.
       edits: [
         {
           file: EXPORT,
-          oldString: `    // --- 10. The curated identity vocabulary (#5022, ADR-0037 §6/§8) ---`,
-          newString: `    pool.query(\`SELECT a.object_key FROM brain_fact_alias a\`, params),
-    // --- 10. The curated identity vocabulary (#5022, ADR-0037 §6/§8) ---`,
+          // APPENDED after the last element of the `Promise.all` array, and over
+          // a table that EXISTS. An earlier version prepended it before the
+          // vocabulary query — which re-bound `vocabularyEdgeResult` to the
+          // injected result and discarded the real edges — and named a table
+          // that does not exist, so its `roundtrip-pg` count was a `42P01`
+          // rather than a leak detection. The same compound-edit defect this
+          // table corrected one row over.
+          oldString: `  ]);
+
+  // Group messages by conversation_id`,
+          newString: `    pool.query(\`SELECT f.object_key FROM brain_facts f WHERE \${scopeClause("f.workspace_id", orgScope)}\`, params),
+  ]);
+
+  // Group messages by conversation_id`,
         },
       ],
-      note: "The arm `keys-not-on-the-wire.test.ts` used to provide for this whole file and no longer does. Nothing about this projection names `brain_facts`, so the granted-statement checks cannot see it — `strayProjections` is what replaces them, and before this row nothing measured that it works.",
+      note: "The arm `keys-not-on-the-wire.test.ts` used to provide for this whole file and no longer does. A SECOND statement projecting a key is invisible to the granted-statement checks; `strayProjections` is what replaces them, and before this row nothing measured that it works. ⚠️ Read the `v3 pin` column and only that one — the other non-zero cells are the injected query tripping the scope-clause and count assertions, not a leak detection.",
     },
     {
       label: "a SIXTH identity field is added to the wire type",
@@ -316,7 +333,41 @@ comparison and the counts are the real ones.
           newString: `              f.subject_key, f.predicate_key, f.object_key, e.audience_cmp,`,
         },
       ],
-      note: "Inside the one statement §8 grants, so `strayProjections` cannot see it. The negative arm there was `\\bf\\.([a-z_]+)\\b` — bound to the fact table's own alias — until the panel injected exactly this and measured zero. Any identifier ending `_key`/`_cmp` counts now, whatever qualifies it.",
+      note: "Inside the one statement §8 grants, so `strayProjections` cannot see it. The negative arm there was `\\bf\\.([a-z_]+)\\b` — bound to the fact table's own alias — until the panel injected exactly this and measured zero. Any identifier ending `_key`/`_cmp` counts now, whatever qualifies it. ⚠️ `v3 pin` is the cell that measures the guard; `brain_episodes` has no `audience_cmp`, so the `roundtrip-pg` cell is a `42703` from the injected column name.",
+    },
+    {
+      label: "the EMPTY slot key is accepted",
+      edits: [
+        {
+          file: IMPORT,
+          oldString: `          if ((IDENTITY_KEY_FIELDS as readonly string[]).includes(field) && f[field] === "") {`,
+          newString: `          if (false) {`,
+        },
+      ],
+      note: "`\"\"` is unproducible by any writer (`slotKey` returns `null`; 0187 backfills through `NULLIF`) and the column has no CHECK, so validation is the only place it can be refused — and unlike `null` it is NOT inert: `=` matches every other empty key, so a bundle carrying them puts unrelated claims in ONE slot where reconcile corroborates them into a single row and publish stamps `valid_to` across the group. Round 3 found this gate shipped with no test and no row at all.",
+    },
+    {
+      label: "the empty-key gate is pointed at the `_cmp` columns instead of the keys",
+      edits: [
+        {
+          file: IMPORT,
+          oldString: `      (f): f is Extract<(typeof IDENTITY_FIELDS)[number], \`\${string}Key\`> => f.endsWith("Key"),`,
+          newString: `      (f): f is Extract<(typeof IDENTITY_FIELDS)[number], \`\${string}Key\`> => f.endsWith("Cmp"),`,
+        },
+      ],
+      note: "⚠️ **TypeScript does not check a type guard's BODY**, so this compiles and yields an array TYPED as the three keys and HOLDING the two comparables — the gate then fires where it does nothing and stops firing where the hazard is. The predicate pins the type; only a behavioural split can pin the body, which is what `admin-migrate.test.ts`'s accept-side assertion on `subjectCmp: \"\"` is for.",
+    },
+    {
+      label: "`textOrNull` counts the honest abstain as drift",
+      edits: [
+        {
+          file: EXPORT,
+          oldString: `  if (value === null) return null;
+  if (typeof value === "string") return value;`,
+          newString: `  if (typeof value === "string") return value;`,
+        },
+      ],
+      note: "The \"warns on EVERYTHING\" inversion, which is the shape that trains an operator to skim the line — and it SURVIVED round 2's behavioural test, because `factRow` sets all five identity columns to non-empty strings so the `value === null` branch was never reached where the warn sink could see it. The abstain arm now seeds explicit SQL NULLs. A test that asserts only *drift warns* cannot tell the two apart.",
     },
     {
       label: "`readStoredComparable` admits an EMPTY payload",

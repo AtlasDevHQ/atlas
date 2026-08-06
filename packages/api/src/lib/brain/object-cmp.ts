@@ -958,8 +958,40 @@ function readStoredComparable(value: string | null | undefined): StoredComparabl
  * disagreeing about what a comparable value looks like — a drift the caller
  * logs, since nothing else in the system would ever mention it.
  */
+declare const regionPortableBrand: unique symbol;
+
+/**
+ * A comparable value that came from {@link regionPortableComparable} — the ONLY
+ * shape the region importer may bind into `subject_cmp` / `object_cmp`.
+ *
+ * ⚠️ **A brand, and the third time this slice has needed one at this column.**
+ * #5032 branded `subject-cmp.ts`'s parameter, then had to brand its OUTPUT
+ * because an exported sibling producer satisfied the destination with no cast.
+ * #5035 round 1 typed the importer's destination `ComparableValue`, which closed
+ * `fact.subjectCmp ?? null`; round 2 deleted `parseStoredComparable`, which
+ * closed one more spelling. Round 3 measured what was left and found SEVEN
+ * cast-free reintroductions still compiling — `entityComparable(x)`,
+ * `comparableValue({…})`, `comparableValueWithReason({…}).value`,
+ * `subjectComparableValue(id)`, a bare `"entity:01J…"` literal, and a template
+ * built from `ENTITY_TAG`.
+ *
+ * Those producers are all LEGITIMATE for other destinations — `entityComparable`
+ * is `comparableValueWithReason`'s first arm and `subject-cmp.ts`'s only source;
+ * `comparableValue` is `reconcile.ts`'s — so deleting them is not available and
+ * a third deletion round would not converge. `ComparableValue` says *"shaped
+ * like `<tag>:<payload>`"*, which is the half a sibling can forge; this says
+ * *"was judged portable by the region rule"*, which is a provenance claim and is
+ * what the rule is actually about.
+ *
+ * The `null` abstain stays plain and constructible anywhere, deliberately: it
+ * carries nothing and forges nothing.
+ */
+export type RegionPortableComparable =
+  | (TaggedComparable & { readonly [regionPortableBrand]: true })
+  | null;
+
 export type RegionCarryOutcome =
-  | { readonly reason: "carried"; readonly value: TaggedComparable }
+  | { readonly reason: "carried"; readonly value: NonNullable<RegionPortableComparable> }
   | { readonly reason: "absent" | "store-local" | "unreadable"; readonly value: null };
 
 export function regionPortableComparable(stored: string | null | undefined): RegionCarryOutcome {
@@ -974,9 +1006,16 @@ export function regionPortableComparable(stored: string | null | undefined): Reg
       // literal comparison is what lets a second store-local tag travel: it
       // answers "is this the one store-local tag we had in 2026" rather than
       // "is this value portable".
+      // THE seam. The cast is sound here and only here: `verdict.value` reached
+      // this line through `readStoredComparable`'s tag, payload and fixpoint
+      // arms, and this branch is the portability judgement itself — which is
+      // exactly the provenance {@link RegionPortableComparable} asserts.
       return REGION_PORTABILITY[verdict.tag] === "store-local"
         ? { value: null, reason: "store-local" }
-        : { value: verdict.value, reason: "carried" };
+        : {
+            value: verdict.value as NonNullable<RegionPortableComparable>,
+            reason: "carried",
+          };
     default: {
       // Throws rather than falling through to a value: a new verdict arm
       // reaching here unhandled would otherwise take the CARRY branch by

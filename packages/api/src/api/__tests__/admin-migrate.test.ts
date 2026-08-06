@@ -1044,6 +1044,34 @@ describe("validateBundle — company brain (#4767)", () => {
     }
   });
 
+  it("refuses an EMPTY slot key, and accepts an empty `_cmp`", () => {
+    // ⚠️ The split is the test. `""` at a SLOT KEY is not inert the way `null`
+    // is: `=` matches every OTHER empty key, so a bundle carrying them puts
+    // unrelated claims in ONE slot, where reconcile corroborates them into a
+    // single row and the publish gate stamps `valid_to` across the group. No
+    // writer produces one — `slotKey` returns `null` for a surface that
+    // normalizes away and 0187 backfills through `NULLIF(…, '')` — and the
+    // column has no CHECK, so validation is the only place it can be refused.
+    //
+    // At the two `_cmp` positions there is nothing to refuse HERE: they go
+    // through `regionPortableComparable`, which reads `""` as absent. Asserting
+    // the accept side is what makes this a split rather than a blanket rule —
+    // and it is what fails if the key/cmp partition is ever inverted, which a
+    // type predicate cannot catch because TypeScript does not check its body.
+    for (const field of ["subjectKey", "predicateKey", "objectKey"] as const) {
+      const bundle = v3BrainBundle();
+      (bundle.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>)[field] = "";
+      const result = validateBundle(bundle);
+      expect(result.ok, `an empty '${field}' was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain(field);
+    }
+    for (const field of ["subjectCmp", "objectCmp"] as const) {
+      const bundle = v3BrainBundle();
+      (bundle.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>)[field] = "";
+      expect(validateBundle(bundle).ok, `an empty '${field}' was refused`).toBe(true);
+    }
+  });
+
   it("rejects a v1/v2 fact that carries identity it has no format for", () => {
     for (const version of [1, 2]) {
       for (const field of IDENTITY_FIELDS) {

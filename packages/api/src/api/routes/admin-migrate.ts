@@ -29,8 +29,8 @@ import {
 } from "@atlas/api/lib/brain/vocabulary";
 import {
   regionPortableComparable,
-  type ComparableValue,
   type RegionCarryOutcome,
+  type RegionPortableComparable,
 } from "@atlas/api/lib/brain/object-cmp";
 
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
@@ -184,9 +184,18 @@ const IDENTITY_FIELDS = [
  * Derived from {@link IDENTITY_FIELDS} by suffix rather than re-listed, so the
  * two cannot disagree about which of the five is a key.
  */
-const IDENTITY_KEY_FIELDS = IDENTITY_FIELDS.filter(
-  (f): f is Extract<(typeof IDENTITY_FIELDS)[number], `${string}Key`> => f.endsWith("Key"),
-);
+const IDENTITY_KEY_FIELDS: readonly Extract<(typeof IDENTITY_FIELDS)[number], `${string}Key`>[] =
+  Object.freeze(
+    // ⚠️ A user-defined type guard's BODY is not checked by TypeScript: the
+    // inverted spelling (`f.endsWith("Cmp")`) type-checks and yields an array
+    // typed as the three keys while holding the two `_cmp` fields, which would
+    // move the `""` gate off the three columns that need it and onto the two
+    // that do not. `admin-migrate.test.ts`'s empty-key test is what pins the
+    // body; the predicate only pins the type.
+    IDENTITY_FIELDS.filter(
+      (f): f is Extract<(typeof IDENTITY_FIELDS)[number], `${string}Key`> => f.endsWith("Key"),
+    ),
+  );
 
 /**
  * …and the other direction, which the `satisfies` above cannot express.
@@ -517,10 +526,18 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
           // The `_cmp` positions are not checked here: they go through
           // `regionPortableComparable`, which refuses an empty payload and an
           // untagged value on the way in.
-          if (IDENTITY_KEY_FIELDS.includes(field as (typeof IDENTITY_KEY_FIELDS)[number]) && f[field] === "") {
-            return { ok: false, error: `${at}.${field}: an empty string is not a key any writer can produce — a surface that normalizes away carries \`null\`, which joins nothing. An empty key joins every OTHER empty key, merging unrelated claims into one slot.` };
-          }
+          // `as readonly string[]` on the ARRAY, not a downcast of `field` —
+          // the house idiom two functions up (`isSupportedBundleVersion`) and in
+          // `object-cmp.ts`. A downcast is accepted silently for a value that is
+          // not in the set, which is the wrong direction for a habit.
           if (version >= IDENTITY_FROM_VERSION) {
+            // Inside the version arm: a v1/v2 bundle carrying `""` is refused
+            // one branch down for the accurate reason (it carries no identity at
+            // all), and reporting the empty-key hazard there would send an
+            // operator to a fix that hits the other refusal.
+            if ((IDENTITY_KEY_FIELDS as readonly string[]).includes(field) && f[field] === "") {
+              return { ok: false, error: `${at}.${field}: an empty string is not a key any writer can produce — a surface that normalizes away carries \`null\`, which joins nothing. An empty key joins every OTHER empty key, merging unrelated claims into one slot. Null the empty keys in the source region (\`UPDATE brain_facts SET ${field.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)} = NULL WHERE ${field.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)} = ''\`) and re-export.` };
+            }
             if (!present || (f[field] !== null && typeof f[field] !== "string")) {
               return { ok: false, error: `${at}.${field}: must be present, and a string or null (required from bundle version ${IDENTITY_FROM_VERSION}; null is legitimate — a surface that normalizes away has no key, and a null comparable value is the 'unknown' verdict).` };
             }
@@ -882,11 +899,12 @@ type IdentitySource =
 /**
  * Is this carry outcome a LOSS — something worth recomputing?
  *
- * One exhaustive classifier rather than a string test repeated at the two sites
- * that need it (`comparableDropped` and the operator counters). A fifth
- * {@link RegionCarryOutcome} reason would otherwise fall out of BOTH silently:
- * the row is not marked `provisional` and the operator is not told, which is two
- * fail-open drops from one added union member.
+ * `comparableDropped`'s classifier. The operator counters DO NOT call it — they
+ * are their own four-arm `switch`, because they need to tell `store-local` from
+ * `unreadable` where this only needs "is it a loss". Both have a `never`
+ * default, which is what matters: a fifth {@link RegionCarryOutcome} reason
+ * would otherwise fall out of BOTH silently — the row unmarked and the operator
+ * untold, two fail-open drops from one added union member.
  *
  * `absent` is deliberately NOT a loss. Nothing arrived, so nothing was
  * discarded, and marking it would make `provisional` mean *"was imported"*
@@ -914,8 +932,9 @@ interface ImportedIdentity {
   readonly predicateKey: string | null;
   readonly objectKey: string | null;
   /**
-   * ⚠️ {@link ComparableValue}, NOT `string | null`, and the narrowing is the
-   * whole guarantee this slice produces (#5035, panel round 1).
+   * ⚠️ {@link RegionPortableComparable}, NOT `string | null` and not the wider
+   * `ComparableValue`, and the narrowing is the whole guarantee this slice
+   * produces (#5035, panel rounds 1 and 3).
    *
    * `regionPortableComparable` is the only function that may decide what lands
    * in `subject_cmp`/`object_cmp`. Under a `string | null` field the line
@@ -927,10 +946,14 @@ interface ImportedIdentity {
    *
    * This is #5032's lesson at the destination rather than the parameter: a
    * branded input stops the wrong CALL, and only a narrowed output stops the
-   * caller who skips the function altogether.
+   * caller who skips the function altogether. ⚠️ And `ComparableValue` alone was
+   * NOT enough — round 3 measured seven cast-free spellings that still satisfied
+   * it (`entityComparable(x)`, `comparableValue({…})`, a bare `"entity:01J…"`
+   * literal, …), all legitimate producers for other destinations. Shape is
+   * forgeable; the brand is a provenance claim and is not.
    */
-  readonly subjectCmp: ComparableValue;
-  readonly objectCmp: ComparableValue;
+  readonly subjectCmp: RegionPortableComparable;
+  readonly objectCmp: RegionPortableComparable;
   /** A non-null comparable value was discarded, so the row is `provisional`. */
   readonly comparableDropped: boolean;
   /**
@@ -1881,8 +1904,18 @@ export async function importBundle(
   // rows lost real evidence rather than following a rule.
   if (Object.values(identityLoss).some((n) => n > 0)) {
     log.warn(
-      { orgId, bundleVersion: bundle.manifest.version, ...identityLoss },
-      "Region import WILL land identity losses when this transaction commits (#5035, ADR-0037 §8). `storeLocalPositions` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadablePositions` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. `nullKeyFacts` is the other drift shape and is worse: those facts arrived with NO identity, so they join nothing at all — check the source region's export log for a projection warning. `unkeyableFacts` is a legacy surface that normalizes away to nothing, which is legal and permanent. Positions vs facts: the first two count POSITIONS, up to two per fact",
+      {
+        orgId,
+        bundleVersion: bundle.manifest.version,
+        ...identityLoss,
+        // The denominators the message tells the operator to divide by. Without
+        // them `unreadablePositions: 412` is unreadable on its own, and the only
+        // other place the fact count appears is the route's post-COMMIT info
+        // line — which is never written at all if the import then fails.
+        brainFactsImported: result.brainFacts.imported,
+        comparablePositions: result.brainFacts.imported * 2,
+      },
+      "Region import WILL land identity losses when this transaction commits (#5035, ADR-0037 §8). `storeLocalPositions` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadablePositions` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. ⚠️ `nullKeyFacts` is AMBIGUOUS and both readings are here: a surface that normalizes away carries a null key legitimately and permanently (the v3 equivalent of `unkeyableFacts`, and nothing to act on), and so does a source-region projection that stopped returning the column. A count approaching `brainFactsImported` means the projection — check the source region's export log for its identity-drift line; a handful means normalized-away surfaces. `unkeyableFacts` is that same legal, permanent state on a legacy bundle. Units: the first two count POSITIONS, up to two per fact; the last two count FACTS",
     );
   }
 

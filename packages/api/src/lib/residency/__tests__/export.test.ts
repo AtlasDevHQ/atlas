@@ -44,6 +44,13 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
  */
 const warns: { payload: unknown; message: string }[] = [];
 
+// ⚠️ ALL TEN value exports of `lib/logger`. The partial factory this replaces
+// (`{ createLogger }` alone) is the trap this repo has recorded: `mock.module`
+// swaps the WHOLE module, so a missing export becomes `undefined` for every file
+// in the process. Reproduced by #5035's panel — running this suite in the same
+// bun process as `migrate-identity-logging.test.ts` fails with
+// `Export named 'getRequestContext' not found`, in a file with nothing to do
+// with this one. The isolated runner masks it; a plain `bun test` does not.
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -51,7 +58,17 @@ void mock.module("@atlas/api/lib/logger", () => ({
       warns.push({ payload, message: typeof message === "string" ? message : String(payload) }),
     error: () => {},
     debug: () => {},
+    level: "info",
   }),
+  getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
+  setLogLevel: () => true,
+  getRequestContext: () => undefined,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (obj: unknown) => obj,
+  hashShareToken: (token: string) => token,
 }));
 
 // ── Import after mocks ──────────────────────────────────────────────
@@ -66,6 +83,10 @@ function resetMocks() {
   }
   mockPoolQueryError = null;
   recordedQueries.length = 0;
+  // Reset with the rest. Without it a `toHaveLength(1)` further down is correct
+  // only because the test happens to clear the sink by hand, and the next test
+  // added in between false-fails it.
+  warns.length = 0;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -617,9 +638,25 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
     // implementation from its inversion. A test that asserted only "drift
     // warns" passes for a function that warns on everything, which is the
     // shape that trains an operator to ignore the line.
+    // ⚠️ SQL NULLs at the identity positions, explicitly. `factRow` sets all
+    // five to non-empty strings, so `seed(null)` alone never reaches
+    // `textOrNull`'s `value === null` branch at all — and the "warns on
+    // EVERYTHING" implementation the paragraph above rules out would have
+    // survived this arm. Measured (#5035, panel round 3).
     resetMocks();
-    warns.length = 0;
-    seed(null);
+    mockPoolQueryResults["FROM brain_episodes WHERE"] = {
+      rows: [
+        {
+          id: "ep-1", source: "slack", source_id: "C:1.0", source_actor: null,
+          body: "…", locator: null, occurred_at: null,
+          ingested_at: "2026-06-01T00:00:00Z", extracted_at: null,
+          visible_to: ["org"], created_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+    };
+    mockPoolQueryResults["FROM brain_facts f"] = {
+      rows: [{ ...factRow(null), subject_key: null, object_key: null, subject_cmp: null, object_cmp: null }],
+    };
     await exportWorkspaceBundle("org-1");
     expect(
       driftWarn(),
@@ -657,8 +694,12 @@ describe("brain facts — the pre-widening grant travels (#4836)", () => {
     // per row. Five call sites over a 200k-fact workspace would otherwise be a
     // million records inside a single export call.
     expect(warns.filter((w) => w.message.includes("identity columns did not decode"))).toHaveLength(1);
+    // Keyed by column AND decoded type, so the line can tell "the SELECT
+    // dropped the column" (`undefined`) from "the driver stopped decoding it"
+    // (some other type) — two causes the message names and two different
+    // remediations.
     expect(warn!.payload).toMatchObject({
-      columns: { subject_key: 2, object_cmp: 2 },
+      columns: { "subject_key:undefined": 2, "object_cmp:undefined": 2 },
       brainFacts: 2,
     });
   });

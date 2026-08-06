@@ -795,18 +795,26 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * JSON scalars, `null` included: a surface that norms away has no key, and a
  * sentinel would file every such claim under one slot.
  *
- * `object_cmp` (#5030) is derived here on the same terms and is the ONLY write
- * path that ever produces one — migration 0191 deliberately does not backfill,
- * so a row predating this statement keeps NULL forever and stays `unknown`.
- * That is why the column is on the guard's UPDATE-only list beside the keys: a
- * second writer re-deriving it changes what a claim is provably different from,
- * and difference is what stamps `valid_to`.
+ * `object_cmp` (#5030) is derived here on the same terms, and this is the only
+ * path that DERIVES one — migration 0191 deliberately does not backfill, so a
+ * row predating this statement keeps NULL forever and stays `unknown`. That is
+ * why the column is on the guard's UPDATE-only list beside the keys: a second
+ * writer re-deriving it changes what a claim is provably different from, and
+ * difference is what stamps `valid_to`.
  *
- * `subject_cmp` (#5032) joins it on identical terms — sole writer, migration
- * 0193, no backfill, UPDATE-gated — and for the INVERTED reason: re-deriving one
- * changes what a claim is provably NOT the same subject as, and that suppresses
- * corroboration. A second writer stamping subject ids onto the existing corpus
- * would silently split live beliefs apart.
+ * `subject_cmp` (#5032) joins it on identical terms — same sole DERIVER,
+ * migration 0193, no backfill, UPDATE-gated — and for the INVERTED reason:
+ * re-deriving one changes what a claim is provably NOT the same subject as, and
+ * that suppresses corroboration. A second writer stamping subject ids onto the
+ * existing corpus would silently split live beliefs apart.
+ *
+ * ⚠️ **Since #5035 there IS a second writer of both columns, and the wording
+ * above narrowed to say so.** The region importer INSERTs them
+ * (`admin-migrate.ts`), which is a row COPY rather than a derivation — ADR-0037
+ * §8's rule — and it carries only what `regionPortableComparable` judged
+ * portable, nulling every store-local id. So "sole writer" was false from that
+ * commit; "sole deriver" is what the argument above actually needs, and it still
+ * holds.
  *
  * `RETURNING id` and nothing else. A key must never reach a consumer that could
  * branch on it — that is what makes an alias un-removable — and

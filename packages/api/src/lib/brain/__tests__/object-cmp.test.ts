@@ -565,7 +565,7 @@ describe("what survives a region hop", () => {
     // `reason` is what separates the two `null`s: `unreadable` (refused) from
     // `store-local` (the rule) and `absent` (nothing arrived).
     for (const value of VALUE_TYPED) {
-      expect(regionPortableComparable(value), `\`${value}\` was refused`).toEqual({
+      expect(regionPortableComparable(value), `\`${value}\` was refused`).toMatchObject({
         value,
         reason: "carried",
       });
@@ -621,7 +621,7 @@ describe("what survives a region hop", () => {
       // Money with no currency/amount split at all.
       "money:499",
     ]) {
-      expect(regionPortableComparable(bad), `\`${bad}\` was admitted`).toEqual({
+      expect(regionPortableComparable(bad), `\`${bad}\` was admitted`).toMatchObject({
         value: null,
         reason: "unreadable",
       });
@@ -637,7 +637,7 @@ describe("what survives a region hop", () => {
       "bool:true",
     ];
     for (const good of CANONICAL) {
-      expect(regionPortableComparable(good), `\`${good}\` was refused`).toEqual({
+      expect(regionPortableComparable(good), `\`${good}\` was refused`).toMatchObject({
         value: good,
         reason: "carried",
       });
@@ -654,9 +654,17 @@ describe("what survives a region hop", () => {
       const produced = comparableValue({ surface });
       expect(produced, `\`${surface}\` stopped parsing`).not.toBeNull();
       expect(
-        regionPortableComparable(produced).value,
+        // `String(...)` because the carried value is BRANDED — deliberately not
+        // assignable from `comparableValue`'s output, which is the guard itself
+        // (round 3 measured `comparableValue({…})` as one of seven cast-free
+        // spellings that satisfied the unbranded destination). The bytes are
+        // what this test is about.
+        String(regionPortableComparable(produced).value),
         `\`${produced}\` is produced by comparableValue but refused on the way back in — the two are now different grammars`,
-      ).toBe(produced);
+        // `produced!` rather than `String(produced)`: the assertion above proves
+        // it is non-null, and `String(null)` would make this pass vacuously if
+        // it ever were.
+      ).toBe(produced!);
     }
   });
 
@@ -666,7 +674,7 @@ describe("what survives a region hop", () => {
     // that is counterfeit positive evidence of DIFFERENCE, which is the arm that
     // stamps `valid_to`. Strictly worse than the NULL it replaces, because NULL
     // is `unknown` and reaches a human.
-    expect(regionPortableComparable("entity:01JSOURCE7X")).toEqual({
+    expect(regionPortableComparable("entity:01JSOURCE7X")).toMatchObject({
       value: null,
       reason: "store-local",
     });
@@ -677,7 +685,7 @@ describe("what survives a region hop", () => {
     // Region-invariant parses travel. These read a SURFACE and no store, so the
     // same input produces the same bytes in either region.
     for (const value of VALUE_TYPED) {
-      expect(regionPortableComparable(value), `\`${value}\` was dropped`).toEqual({
+      expect(regionPortableComparable(value), `\`${value}\` was dropped`).toMatchObject({
         value,
         reason: "carried",
       });
@@ -703,7 +711,7 @@ describe("what survives a region hop", () => {
     // acts on it, so collapsing them into one `null` is the silent failure this
     // return shape exists to prevent.
     for (const bad of ["499", "entity:", "wat:1", "money:ZZZ9:499", "date:2026-02-31"]) {
-      expect(regionPortableComparable(bad), `\`${bad}\` was carried`).toEqual({
+      expect(regionPortableComparable(bad), `\`${bad}\` was carried`).toMatchObject({
         value: null,
         reason: "unreadable",
       });
@@ -711,7 +719,7 @@ describe("what survives a region hop", () => {
     // …and a genuinely absent value is neither: nothing was lost, so nothing is
     // worth recomputing and the row must not be marked `provisional`.
     for (const absent of [null, undefined, ""]) {
-      expect(regionPortableComparable(absent), `\`${String(absent)}\``).toEqual({
+      expect(regionPortableComparable(absent), `\`${String(absent)}\``).toMatchObject({
         value: null,
         reason: "absent",
       });

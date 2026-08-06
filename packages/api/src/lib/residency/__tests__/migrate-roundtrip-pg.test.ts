@@ -1417,6 +1417,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       const CLEAN_ORG = "org-cleanup-src";
       const GUARD_ORG = "org-cleanup-guard";
       const GRACE_ORG = "org-cleanup-in-grace";
+      /** A workspace the sweep is not asked about — seeded in this test, so the
+       *  "spared" assertion carries no dependency on any other test's state. */
+      const SPARED_ORG = "org-cleanup-spared";
       const C_CONV = "77777777-7777-4777-8777-777777777777";
       const GRACE_CONV = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
       const C_DASH = "88888888-8888-4888-8888-888888888888";
@@ -1614,19 +1617,26 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       const savedRegion = process.env.ATLAS_API_REGION;
       process.env.ATLAS_API_REGION = "us-test";
       try {
-        // Captured BEFORE the sweep so the "target org spared" assertion is a
-        // before/after comparison rather than an absolute count that depends on
-        // an earlier test in this file having completed.
-        const targetFactsBeforeSweep = (
-          await pool.query<{ n: number }>(
-            `SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`,
-            [TARGET_ORG],
-          )
-        ).rows[0]!.n;
-        expect(
-          targetFactsBeforeSweep,
-          "the target org holds no imported facts, so 'the sweep spared them' is vacuous",
-        ).toBeGreaterThan(0);
+        // ⚠️ The "spared" side is seeded HERE, not inherited from the round-trip
+        // test above. The first attempt at this fix captured a before-count and
+        // asserted it `> 0` — which re-imported the very dependency it was
+        // removing, so the mutation column kept double-counting (#5035, panel
+        // round 3, measured by running this test alone: `Expected > 0, Received
+        // 0`). A spared-workspace assertion needs a spared workspace, and the
+        // cheapest honest one is its own.
+        const SPARED_EPISODE = "bbbbbbbb-5035-4000-8000-000000000001";
+        const SPARED_FACT = "bbbbbbbb-5035-4000-8000-000000000002";
+        await pool.query(
+          `INSERT INTO brain_episodes (id, workspace_id, source, source_id, body, visible_to)
+           VALUES ($1, $2, 'slack', 'C-spared/1', 'spared', ARRAY['org'])`,
+          [SPARED_EPISODE, SPARED_ORG],
+        );
+        await pool.query(
+          `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, ingested_at,
+                                    source_episode_id, provenance, status, visible_to)
+           VALUES ($1, $2, 's', 'p', 'o', now(), $3, '{"actor":"u"}'::jsonb, 'draft', ARRAY['org'])`,
+          [SPARED_FACT, SPARED_ORG, SPARED_EPISODE],
+        );
 
         const sweep = await runSourceCleanupSweep();
         expect(sweep).toEqual({ due: 2, cleaned: 1, skipped: 1, blocked: 0 });
@@ -1663,8 +1673,8 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         expect(await countIn(`SELECT count(*)::int AS n FROM brain_episodes WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM brain_edges WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM fact_audience_member WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
-        // The TARGET org's imported brain is UNTOUCHED — the sweep is scoped to
-        // the migrated-away workspace, not to the tables.
+        // A workspace the sweep was not asked about is UNTOUCHED — it is scoped
+        // to the migrated-away workspace, not to the tables.
         //
         // ⚠️ Asserted as *unchanged by the sweep*, not as an absolute count.
         // The absolute form (`toBe(4)`) depends on the round-trip test above
@@ -1676,17 +1686,17 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // before/after comparison measures what this test is actually about and
         // is inert to the other test's state.
         expect(
-          await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG]),
-          "the cleanup sweep deleted facts belonging to the TARGET org — it is scoped to the migrated-away workspace, not to the tables",
-        ).toBe(targetFactsBeforeSweep);
+          await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [SPARED_ORG]),
+          "the cleanup sweep deleted facts belonging to a workspace it was not asked to clean — it is scoped to the migrated-away workspace, not to the tables",
+        ).toBe(1);
 
         // Survivors: platform settings row, unattributable cache row, the
-        // TARGET org's imported data (seeded by the round-trip test above —
-        // these blocks run sequentially in this file), and the returned
-        // (guarded) workspace.
+        // and the returned (guarded) workspace.
         expect(await countIn(`SELECT count(*)::int AS n FROM settings WHERE key = 'cleanup_probe_platform' AND org_id IS NULL`, [])).toBe(1);
         expect(await countIn(`SELECT count(*)::int AS n FROM chat_cache WHERE key = 'response:generic'`, [])).toBe(1);
-        expect(await countIn(`SELECT count(*)::int AS n FROM conversations WHERE org_id = $1`, [TARGET_ORG])).toBe(1);
+        // GUARD_ORG and GRACE_ORG are seeded by THIS test; the TARGET_ORG
+        // assertion that used to sit here was inherited from the round-trip
+        // block and coupled every mutation's count to it.
         expect(await countIn(`SELECT count(*)::int AS n FROM conversations WHERE org_id = $1`, [GUARD_ORG])).toBe(1);
 
         // Grace-period boundary: the 2-day-old migration was never due —

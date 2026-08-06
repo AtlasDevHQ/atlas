@@ -125,12 +125,21 @@ function preWideningGrant(value: unknown, factId: unknown): string[] | null {
  */
 function textOrNull(
   value: unknown,
-  column: string,
+  // A literal union, not `string`: five call sites pass five spellings that must
+  // match the vocabulary an operator reads in the log, and a typo would create a
+  // drift counter nobody can find.
+  column: "subject_key" | "predicate_key" | "object_key" | "subject_cmp" | "object_cmp",
   drift: Record<string, number>,
 ): string | null {
   if (value === null) return null;
   if (typeof value === "string") return value;
-  drift[column] = (drift[column] ?? 0) + 1;
+  // Keyed by column AND decoded type. The message names two causes — the SELECT
+  // dropped the column, or the driver stopped decoding it — and they have
+  // different remediations (revert a query change vs redeploy). Keyed on the
+  // column alone the line cannot tell an operator which, which is what the
+  // per-row `actualType` used to carry before this became an aggregate.
+  const key = `${column}:${value === undefined ? "undefined" : typeof value}`;
+  drift[key] = (drift[key] ?? 0) + 1;
   return null;
 }
 

@@ -620,12 +620,16 @@ describe("flag: entity resolution", () => {
     // covers three binds of one statement.
     for (const name of ["insertFact", "corroboration", "tensionScan"] as const) {
       const binds = store.keyBindsFor(name)[0];
-      // Asserted, not defaulted: `?? ""` would let a statement that stopped
-      // being issued pass the sweep silently, which is how a third of it was
-      // vacuous before the fixture declared `single` below.
+      // The un-issued-statement case gets its OWN assertion rather than being
+      // folded into the sweep — that is what was vacuous before the fixture
+      // above declared `single`.
       expect(binds, `${name} was never issued`).toBeDefined();
       for (const position of ["subject", "predicate", "object"] as const) {
-        expect(binds?.[position], `${name}.${position} leaked an entity id`).not.toContain(
+        // `?? ""` restored deliberately: a slot key is NULLABLE (a surface that
+        // norms away), and `expect(null).not.toContain(…)` THROWS in bun rather
+        // than passing — so a null bind would fail this sweep under the label
+        // "leaked an entity id" when the cause is "the key was null".
+        expect(binds?.[position] ?? "", `${name}.${position} leaked an entity id`).not.toContain(
           ENTITY_ID_MARKER,
         );
       }
@@ -1027,7 +1031,21 @@ describe("flag: entity resolution", () => {
     // and a hung process — the copy loop is synchronous, so a non-terminating
     // one blocks every workspace, not one episode, and the catch never runs.
     //
+    // ⚠️ The assertion is the YIELD COUNT, not merely that the run finished.
+    // "It returned" is satisfied by a bound of `surfaces * 10_000`; and a test
+    // whose only falsifier is a HANG is unusable here — neither
+    // `scripts/test-isolated.ts` nor the `api-tests` CI job sets a timeout, so a
+    // regression is a multi-hour shard with no test named, not a red X. (bun's
+    // per-test timeout cannot rescue it either: the copy loop is synchronous and
+    // never yields, which is the property under test.) Counting is the shape
+    // that pins tightness AND cannot hang.
+    //
+    // Throwing from the generator after N would not work: the throw lands inside
+    // the seam's own try and becomes an ordinary failed batch, indistinguishable
+    // from the fixed behaviour.
+    //
     // Two surfaces (`deploy window` / `Thursdays`), one repeated forever.
+    let yielded = 0;
     const store = new FakeBrainStore();
     const repeating: ReadonlyMap<string, { entityId: string }> = {
       get: () => undefined,
@@ -1038,16 +1056,54 @@ describe("flag: entity resolution", () => {
       entries: () => [][Symbol.iterator](),
       forEach: () => {},
       *[Symbol.iterator]() {
-        for (;;) yield ["Thursdays", { entityId: "entid00042" }] as const;
+        for (;;) {
+          yielded++;
+          yield ["Thursdays", { entityId: "entid00042" }] as const;
+        }
       },
     };
 
     const report = await run(store, { resolveEntity: () => repeating });
 
-    // Reached at all — a bound that did not hold would never return.
+    // Exactly one past the requested count: consumed, refused, stopped.
+    expect(yielded).toBe(3);
     expect(report.created).toBe(1);
     expect(report.provisional).toBe(1);
     expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+  });
+
+  test("a COMPLETE, valid answer plus one extra entry still fails the batch", async () => {
+    // ⚠️ The one case only `overAnswered` catches. The bound breaks BEFORE the
+    // offending entry is classified, so `foreign`, `duplicate` and `unusable` are
+    // all zero here — and without this fixture, deleting `overAnswered` from the
+    // verdict kills nothing while letting a contract-breaking store's answer land
+    // on `object_cmp` unmarked.
+    const store = new FakeBrainStore();
+    const overAnswering: ReadonlyMap<string, { entityId: string }> = {
+      get: () => undefined,
+      has: () => true,
+      size: 3,
+      keys: () => [][Symbol.iterator](),
+      values: () => [][Symbol.iterator](),
+      entries: () => [][Symbol.iterator](),
+      forEach: () => {},
+      [Symbol.iterator]: () =>
+        [
+          // Both requested surfaces, answered correctly…
+          ["deploy window", { entityId: "entid00001" }],
+          ["Thursdays", { entityId: "entid00042" }],
+          // …and one more, which is the whole violation.
+          ["Fridays", { entityId: "entid00099" }],
+        ][Symbol.iterator]() as MapIterator<[string, { entityId: string }]>,
+    };
+
+    const report = await run(store, { resolveEntity: () => overAnswering });
+
+    // The comparable FIRST: it is the harm (a contract-breaker's id reaching the
+    // column the publish gate stamps from), and asserting the coarse flag first
+    // would shadow it — the failure would name `provisional` and never reach here.
+    expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+    expect(report.provisional).toBe(1);
   });
 
   test("a duplicate key fails the batch — one surface must not resolve two ways", async () => {
@@ -1074,8 +1130,12 @@ describe("flag: entity resolution", () => {
 
     const report = await run(store, { resolveEntity: () => duplicating });
 
-    expect(report.provisional).toBe(1);
+    // The comparable FIRST, and specifically NOT the loser: with the duplicate
+    // arm gone this binds `entity:entid99999`, which is the harm the test is
+    // named for. Asserting `provisional` first would shadow it — that assertion
+    // fails too, and the run would never reach this line.
     expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
+    expect(report.provisional).toBe(1);
   });
 
   test("a resolver cannot widen the set it is validated against", async () => {
@@ -1092,6 +1152,10 @@ describe("flag: entity resolution", () => {
       },
     });
 
+    // `provisional` carries the whole property: under the mutation this targets,
+    // the accepted key is `thursdays` while the lookup asks for `Thursdays`, so
+    // the comparable below is null either way. Kept as a smoke check, not a
+    // guard.
     expect(report.provisional).toBe(1);
     expect(store.keyBindsFor("insertFact")[0]?.comparable).toBeNull();
   });

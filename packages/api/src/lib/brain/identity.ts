@@ -225,8 +225,9 @@ export function identityKey(surface: string): string | null {
  *
  * `reconcile.ts` catches a throwing `EntityResolver` and degrades that episode's
  * candidates to provisional, and the opposite choice here is the point of the
- * asymmetry: an entity the store could not name costs the object its
- * COMPARABILITY and nothing else — the row still keys and still corroborates.
+ * asymmetry: an entity the store could not name costs the object the store's
+ * id — it falls back to whatever the surface parses to, which for a name is
+ * nothing — and the row still keys and still corroborates.
  * When the store did not ANSWER at all, the row is additionally marked, and the
  * marker says only "recompute this object's comparison once it does" (#5031).
  * A vocabulary lookup that fails has no such safe degraded answer. Falling back

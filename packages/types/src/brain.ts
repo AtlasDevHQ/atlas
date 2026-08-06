@@ -128,9 +128,10 @@ export interface BrainFactProvenanceView {
   readonly reconciledAt: string | null;
   /**
    * The entity store did not ANSWER when this claim was recorded — it threw, was
-   * unavailable, or broke its contract — so the row carries no comparison value
-   * and can never prove agreement or difference with another claim. THE quality
-   * queue: block-class failures (no
+   * unavailable, or broke its contract — so the row carries no comparison value.
+   * It can still MATCH an identical claim by identity key; what it can never do
+   * is prove it DIFFERS from one, which is what superseding would need. THE
+   * quality queue: block-class failures (no
    * provenance, no usable grant, unattributable actor, malformed claim) never
    * reach this surface at all; they were refused upstream.
    *

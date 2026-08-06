@@ -274,7 +274,12 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
               already recorded as an absent comparison, and is deliberately
               UNFLAGGED. `@useatlas/types` states the prohibition on presenting
               it that way. What survives is the narrow case: the entity store did
-              not ANSWER, so this claim's object was never compared to anything.
+              not ANSWER — it threw, was unreachable, or broke its contract — so
+              the row carries no comparable value. Note what that does and does
+              not cost: the object IS still compared at both lookups when the
+              claim is written (the parse is kept there deliberately), and the
+              row still matches by identity key. What is withheld is the value AT
+              REST, which is what proving difference needs.
 
               The old copy named which SIDE was unresolved. There is no such
               thing now — one batched call covers both positions, so a failure
@@ -283,10 +288,11 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
               canonical form for every non-blank surface and therefore never
               produced this flag at all. */}
           <AlertDescription>
-            Atlas couldn&apos;t reach the entity store while recording this claim, so this
-            row carries no comparison value — it can never prove agreement or difference
-            with another claim. Publishing it is a decision that the claim is right
-            without that check.
+            Atlas couldn&apos;t get an answer from the entity store while recording this
+            claim, so this row carries no comparison value. It can still match an
+            identical claim, but it can never prove it <em>differs</em> from one — so it
+            can neither supersede another claim nor be superseded. Publishing it is a
+            decision that the claim is right without that check.
           </AlertDescription>
         </Alert>
       )}

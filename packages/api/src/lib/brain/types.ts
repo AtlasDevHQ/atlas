@@ -186,16 +186,17 @@ export interface BrainFactProvenance {
    * outage will change and its rows are findable by nothing else
    * (`object_cmp IS NULL` matches every honest abstain too).
    *
-   * ⚠️ Not total: a candidate that CORROBORATES writes no provenance at all, so
-   * an outage that coincided with a re-observation leaves no per-row trace.
+   * ⚠️ Not total: a candidate that CORROBORATES writes no provenance PAYLOAD, so
+   * it carries no flag of its own. It is not traceless — its `provenance` edge
+   * to the episode is written, and that edge is how those facts are found.
    */
   readonly provisional?: true;
   /**
    * Both roles whenever {@link provisional} is set, and absent otherwise. One
    * batch covers both positions, so a failure has no per-role granularity — the
-   * array survives because `lib/brain/candidates.ts` reads it (the projection,
-   * and the proposal filter's `jsonb_array_length(… -> 'unresolved') > 0`), not
-   * because the two sides can fail apart. #4772's review surface stopped reading
+   * array survives because `lib/brain/candidates.ts` reads it — the projection,
+   * and `PROVISIONAL_PREDICATE`'s `jsonb_array_length(… -> 'unresolved') > 0`
+   * arm — not because the two sides can fail apart. #4772's review surface stopped reading
    * it when #5031 deleted the which-side copy it fed.
    *
    * There are no legacy one-sided rows to handle. Before #5031 the positions

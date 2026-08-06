@@ -832,8 +832,15 @@ describe("refusals and quality flags", () => {
 
     fireEvent.click(view.container.querySelectorAll("tbody tr")[0]!);
     await waitFor(() => expect(document.body.textContent).toContain("Fact candidate"));
-    expect(document.body.textContent).toContain("couldn't reach the entity store");
+    // Deliberately not "couldn't reach": the flag also fires when the store
+    // ANSWERED and broke its contract (a blank id, a key nobody asked about),
+    // which is not a reachability problem. "Couldn't get an answer" is true of
+    // every trigger.
+    expect(document.body.textContent).toContain("couldn't get an answer from the entity store");
     expect(document.body.textContent).not.toContain("could not pin");
+    // …and the copy must not overstate the damage either: the row still matches
+    // an identical claim by key. Only the DIFFERENCE proof is withheld.
+    expect(document.body.textContent).toContain("never prove it differs");
   });
 
   test("says a claim's provenance payload is incomplete instead of showing blanks", async () => {

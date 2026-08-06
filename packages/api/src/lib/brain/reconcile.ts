@@ -1075,15 +1075,16 @@ export async function reconcileFacts(
     // row carries a NULL `object_cmp` so it can never stamp at publish — plus,
     // on a `single` predicate, an advisory tension edge for a human.
     //
-    // It does NOT make an outage conservative in every direction, and an earlier
-    // draft of this comment said it did. The parse also feeds `objectSameSql`'s
+    // It does NOT make an outage conservative in every direction — do not
+    // restate it that way. The parse also feeds `objectSameSql`'s
     // value-SAME arm, so two surfaces that canonicalize alike (`499.00` and
     // `499`) still corroborate during an outage where a healthy store might have
     // resolved them to different entities and kept them apart. That is `main`'s
     // behaviour and this change neither causes nor cures it — the alternative
     // (NULL at the lookups) merges strictly MORE, including a value into its own
     // negation. The episode-level log line is what records that the batch failed
-    // at all for a corroborator, since corroboration writes no provenance.
+    // at all for a corroborator, since corroboration writes no provenance
+    // PAYLOAD — only the edge (see {@link resolveEntitiesForEpisode}).
     const comparableForLookups = parsed;
     const comparableAtRest = resolution.kind === "failed" ? null : parsed;
     // A REJECTED declaration is an operator-actionable defect, and the reason
@@ -1169,7 +1170,7 @@ export async function reconcileFacts(
       // Emitted BEFORE the transaction, unlike the `unkeyed` warn below, and the
       // prose is written to survive that: it claims a property of the BATCH,
       // which is settled here, rather than of rows that may still roll back.
-      "brain reconcile: the entity store did not answer this episode's batch, so these candidates were reconciled with no object comparison (`object_cmp`) — worth recomputing once it does. Their identity keys are unaffected under the same vocabulary: no resolver reaches a slot key. The ones that CREATED a row carry `provenance.provisional`; the ones that corroborated carry no provenance payload, so this count is the only place they are counted (their `provenance` edges to this episode are how they are found)",
+      "brain reconcile: the entity store did not answer this episode's batch, so these candidates were reconciled with no object comparison (`object_cmp`) — worth recomputing once it does. Their identity keys are unaffected under the same vocabulary: no resolver reaches a slot key. The ones that CREATED a row carry `provenance.provisional`; the ones that corroborated get no provenance payload FROM THIS EPISODE — the existing row is untouched, keeping its own — so this count is the only place they are counted, and their `provenance` edges to this episode are how they are found",
     );
   }
 
@@ -1525,7 +1526,9 @@ function storeId(resolution: EntityResolution, surface: string): string | undefi
  * It is not traceless, though, and the difference matters to whoever builds the
  * repair: corroboration DOES write a `provenance` EDGE to this episode, so the
  * facts a failed batch touched are `SELECT from_fact_id FROM brain_edges WHERE
- * edge_type = 'provenance' AND to_episode_id = <the id in the log line>`. What
+ * workspace_id = <ws> AND edge_type = 'provenance' AND to_episode_id = <the id
+ * in the log line>` — scoped like every other edge query here, and returning the
+ * CREATED rows too, which carry the marker as well. What
  * is genuinely lost for a corroborator is the DECISION — whether a healthy store
  * would have matched this claim to that row at all — not a value a recompute
  * could restore. A sweep over `provisional OR object_cmp IS NULL` would cover
@@ -1631,28 +1634,41 @@ async function resolveEntitiesForEpisode(
       // point, blocking the whole event loop rather than one episode: no catch,
       // no flag, no log line.
       //
-      // ⚠️ Counting distinct ACCEPTED keys does not bound it. `ids.set` on a key
-      // already present leaves `ids.size` unchanged, so an iterable repeating
-      // one valid entry advances nothing and never terminates for any episode
-      // with two or more surfaces. `seen` is the fix and the reason it is a
-      // separate variable.
+      // ⚠️ Counting distinct ACCEPTED keys does not bound it. A repeated entry
+      // lands on the `duplicate` arm below, which leaves `ids.size` unchanged
+      // just as `ids.set` on an existing key would have — so an iterable
+      // repeating one valid entry advances no accepted-key count and never
+      // terminates for any episode with two or more surfaces. `seen` is the fix
+      // and the reason it is a separate variable.
       //
       // A resolver cannot legitimately answer about more surfaces than it was
       // handed, so the requested count is the ceiling — and it is not a timer:
       // no deadline, no timer handle, none of the failure modes a clock in this
       // file would bring.
       //
-      // ⚠️ Not independently falsifiable TODAY, and that is worth stating rather
-      // than leaving for someone to rediscover by mutating it and seeing nothing
-      // go red. Every other path below advances one of the four counters, so
-      // their SUM already terminates the loop — measured: restoring the
-      // distinct-key bound with the duplicate arm intact kills no test. `seen`
-      // is what stops that from being a load-bearing coincidence: a later edit
-      // that adds a `continue` advancing nothing would silently restore the hang,
-      // and the hang is a blocked event loop, not a failed episode. `overAnswered`
-      // is likewise a DIAGNOSTIC rather than a second guard — an over-answer must
-      // repeat or invent a key to exceed the requested count, so one of the other
-      // three fires anyway; it exists so the log says which shape it was.
+      // ⚠️ `seen` is not independently falsifiable today, and that is worth
+      // stating rather than leaving for someone to rediscover by mutating it and
+      // seeing nothing go red. Every path below advances exactly one of
+      // `ids.size`, `unusable`, `foreign`, `duplicate` — note those, NOT the four
+      // violation counters logged further down, whose set the accept path
+      // advances none of — so a bound over their sum terminates too, and
+      // swapping `seen` for it kills no test. `seen` is what stops that from
+      // being a load-bearing coincidence: a later edit adding a `continue` that
+      // advances nothing would silently restore the hang, and the hang is a
+      // blocked event loop, not a failed episode.
+      //
+      // (The literal pre-`seen` bound — `ids.size + unusable + foreign` — is a
+      // different thing and does NOT terminate: a repeat lands on the `duplicate`
+      // arm, which that sum does not count. It hangs the runner rather than
+      // failing a test, which is why the test below asserts a yield COUNT.)
+      //
+      // ⚠️ `overAnswered` is NOT a diagnostic, and an earlier version of this
+      // comment said it was — it is the ONLY counter that fires on its own case.
+      // The `break` runs before the offending entry is classified, so an answer
+      // that is complete and valid plus one extra entry leaves `foreign`,
+      // `duplicate` and `unusable` all zero. Drop it from the verdict below and
+      // a contract-breaking store's answer is stamped onto `object_cmp` with no
+      // marker and no log line at all.
       if (++seen > counts.surfaces) {
         overAnswered++;
         break;

@@ -70,7 +70,11 @@ import {
   type CorrectionOutcome,
   type CorrectionRefusalReason,
 } from "@atlas/api/lib/brain/correction";
-import { loadFactOversight, loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
+import {
+  loadFactOversight,
+  loadSupersessionPreview,
+  loadWideningPreview,
+} from "@atlas/api/lib/brain/oversight";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
 import {
@@ -242,10 +246,11 @@ const oversightRoute = createRoute({
   summary: "Where the workspace's facts stand, as counts",
   description:
     "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. " +
-    "The WORKSPACE-WIDE half returns numbers only: no subject, predicate, object, provenance, episode body, or fact id reaches the counts, the buckets, or the totals. The ONE exception is `willSupersede.pairs` below, which carries claims and fact ids — and is therefore reader-scoped, never workspace-wide. " +
+    "The WORKSPACE-WIDE half returns numbers only: no subject, predicate, object, provenance, episode body, or fact id reaches the counts, the buckets, or the totals. The TWO exceptions are `willSupersede.pairs` and `willWiden.entries` below, which carry claims and fact ids — and are therefore reader-scoped, never workspace-wide. " +
     "A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. " +
     "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped. " +
-    "`willSupersede` discloses what the next publish will supersede (#4912): promoting a single-cardinality draft that collides with a live published fact stamps the old fact's `valid_to` atomically with the promotion. Not every same-slot disagreement collides — publish stamps only where the two values are PROVABLY different, and never where either side is warehouse-derived or carries a source kind this region cannot classify (a warehouse-derived fact is never superseded by review, and never itself supersedes anything); those pairs coexist in visible tension instead, and are absent here because this disclosure is built from the same rule the transaction runs. The pairs list both claims and is gated by the reader's own visibility predicate on BOTH sides; supersessions the reader may not see travel as `willSupersede.withheld` — a count, never content.",
+    "`willSupersede` discloses what the next publish will supersede (#4912): promoting a single-cardinality draft that collides with a live published fact stamps the old fact's `valid_to` atomically with the promotion. Not every same-slot disagreement collides — publish stamps only where the two values are PROVABLY different, and never where either side is warehouse-derived or carries a source kind this region cannot classify (a warehouse-derived fact is never superseded by review, and never itself supersedes anything); those pairs coexist in visible tension instead, and are absent here because this disclosure is built from the same rule the transaction runs. The pairs list both claims and is gated by the reader's own visibility predicate on BOTH sides; supersessions the reader may not see travel as `willSupersede.withheld` — a count, never content. " +
+    "`willWiden` discloses what the next publish will make VISIBLE TO MORE PEOPLE (#5032): publishing a draft unions in the grant of every episode already recorded as evidence for it, so a claim first seen privately and restated publicly stops being served only to the private audience. That is usually right, and it is wrong when two different entities share a name — corroboration matches on identity derived from the surface, so a public episode about one `Acme Corp` can become evidence for a private fact about another, and the widening then discloses the private claim's body. An entry appears ONLY where the widening actually adds a grant token (an ordinary corroboration between equally-granted episodes adds none and is not listed), and `added` is a syntactic upper bound on readers gained rather than a reader count. ⚠️ Reader-scoped with NO withheld counterpart: an empty `entries` means \"none that you can see\", never \"none\".",
   responses: {
     200: {
       description: "Per-audience counts by state, plus workspace totals",
@@ -474,11 +479,12 @@ adminBrainFacts.openapi(oversightRoute, async (c) => {
           // inside the counts loader so the counts aggregate keeps its
           // numbers-only contract and its own tests.
           const db = getInternalDB();
-          const [counts, willSupersede] = await Promise.all([
+          const [counts, willSupersede, willWiden] = await Promise.all([
             loadFactOversight(db, ctx, requestId),
             loadSupersessionPreview(db, ctx, requestId),
+            loadWideningPreview(db, ctx, requestId),
           ]);
-          return { ...counts, willSupersede };
+          return { ...counts, willSupersede, willWiden };
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });

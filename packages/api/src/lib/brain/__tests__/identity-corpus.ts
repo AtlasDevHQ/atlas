@@ -108,6 +108,26 @@ export interface Claim {
    */
   readonly source?: string;
   /**
+   * The entity id a warehouse-backed store resolves this claim's SUBJECT to
+   * (#5032) — what lands in `brain_facts.subject_cmp`.
+   *
+   * Omitted by every entry that does not need it, which is the state of the
+   * whole corpus today and of every extractor-produced claim forever: no store
+   * means no id, and `subject-cmp.ts` never parses the surface.
+   *
+   * ⚠️ **Its polarity is INVERTED against {@link objectType}'s effect.** A
+   * declared object type can turn an `unknown` verdict into `different` and
+   * ENABLE a stamp. Two DIFFERENT ids here suppress every consumer at once —
+   * corroboration, tension and supersession — because two claims about
+   * different entities were never in one slot. Two IDENTICAL ids suppress
+   * nothing, which is what keeps this from being "any id means suppress".
+   *
+   * Deliberately a bare `string`: the corpus may not import behaviour, and an id
+   * is opaque to every consumer anyway. What matters is only whether the two
+   * sides' ids are equal.
+   */
+  readonly subjectEntityId?: string;
+  /**
    * What the producer says its object IS (#5030) — omitted by every entry that
    * does not need it, which is the conservative default a producer gets.
    *
@@ -133,6 +153,7 @@ export const RELATIONS = [
   "unproven-rival",
   "proven-rival",
   "tier-guarded-rival",
+  "proven-homonym",
   "different-claim",
 ] as const;
 
@@ -156,6 +177,20 @@ export const RELATIONS = [
  *     ADR-0037 §4). The identity layer is unchanged — same slot, same
  *     three-valued agreement, same tension edge — and only the CONSEQUENCE is
  *     withheld. *Identity is source-agnostic; consequence is tier-ordered.*
+ *   - `proven-homonym` — one surface, two ENTITIES (#5032, ADR-0037 §5). Every
+ *     slot key matches, so on the keys alone this is `same-claim` and the two
+ *     rows MERGE — but a warehouse-backed store has resolved the two subjects
+ *     to different ids, which is positive evidence that they were never in the
+ *     same slot. Every consumer must leave the pair alone, and the arm that
+ *     matters is **corroboration**: it is the only identity consumer with no
+ *     grant arm and no cardinality arm, so a merge here attaches a public
+ *     episode as evidence to a private fact and publish then widens the private
+ *     claim's grant to the union. That discloses the claim's BODY.
+ *
+ *     ⚠️ The verdict row is identical to `different-claim`'s and the two are
+ *     NOT interchangeable. `different-claim` is refused by a KEY arm;
+ *     this is refused by a residual filter over a pair every key arm ADMITS.
+ *     Fold them together and the suppression is falsified by nothing.
  *   - `different-claim` — different slots. The claims may look near-identical
  *     to a lexical matcher and are not the same claim, so nothing may collide
  *     them. This is the direction where an over-match costs a `valid_to` stamp
@@ -226,11 +261,41 @@ export interface ClaimPair {
  * | `warehouse-both`         | = | = | ≠ | different |
  * | `unresolvable-incumbent` | = | = | ≠ | different |
  * | `unresolvable-draft`     | = | = | ≠ | different |
+ * | `homonym-subject`        | = | = | **=** | same |
+ * | `homonym-rival`          | = | = | ≠ | different |
+ * | `homonym-control`        | = | = | **=** | same |
+ * | `homonym-same-entity`    | = | = | **=** | same |
  * | `subject-differs`        | ≠ | = | ≠ | different |
  * | `predicate-differs`      | = | ≠ | ≠ | different |
  * | `inverse-relations`      | ≠ | ≠ | ≠ | unknown |
  * | `copula-pair`            | = | ≠ | = | unknown |
  * | `entity-alias`           | ≠ | = | = | unknown |
+ *
+ * ## The SUBJECT-ENTITY dimension is not a sixth column either (#5032)
+ *
+ * The three `homonym-*` rows are byte-identical in every column above — they
+ * are one claim, spelled twice, that every key arm merges. They vary only
+ * {@link Claim.subjectEntityId}, which no KEY reads:
+ *
+ *   - `homonym-subject` — two DIFFERENT ids → suppressed everywhere.
+ *   - `homonym-control` — no ids at all → corroborates. Today's whole corpus.
+ *   - `homonym-same-entity` — the SAME id on both sides → corroborates.
+ *
+ * That triple is the falsification, and each row kills a different mutation.
+ * Drop the control and "suppressed" is indistinguishable from a filter that
+ * dropped the pair for an unrelated reason; drop `homonym-same-entity` and the
+ * whole slice is satisfied by `both sides non-null ⇒ suppress`, which switches
+ * corroboration off for every store-backed workspace.
+ *
+ * ⚠️ **The triple reaches CONSUMER 1 only, and `homonym-rival` is why there is a
+ * fourth row.** All three hold their objects EQUAL — which is what makes them
+ * reach corroboration at all — so `comparableDifferentSql` is false and the
+ * collision join never matches them on ANY implementation. Measured, not
+ * reasoned about: with only the triple in the corpus, deleting the subject arm
+ * from `collisionCorePredicate` killed zero tests here. `homonym-rival` varies
+ * the objects instead (`priced-rival`'s, byte for byte) and is what gives
+ * consumers 2 and 3 a falsifier. A prohibition blocked by the wrong arm is the
+ * trap the table above exists to close, and it caught this one.
  *
  * ## The tier dimension is NOT a fifth column (#5033)
  *
@@ -532,6 +597,123 @@ export const IDENTITY_CORPUS = [
     },
   },
   {
+    id: "homonym-subject",
+    relation: "proven-homonym",
+    why:
+      "⭐ #5032's headline case, and the reason `subject_cmp` exists. Two companies both " +
+      "called `Acme Corp` — the vendor and the account — and a warehouse-backed store has " +
+      "resolved them to different entity ids. EVERY slot key matches: same subject key, same " +
+      "predicate key, same object key. So on the keys alone the two rows CORROBORATE, which " +
+      "is the merge this entry exists to prevent.\n" +
+      "  ⚠️ **Corroboration is the arm that matters, not supersession.** It is the only " +
+      "identity consumer with no grant arm and no cardinality arm, so the merge attaches the " +
+      "second episode as EVIDENCE to the first fact — and at publish " +
+      "`widenGrantFromEvidence` overwrites `visible_to` with the union of every evidence " +
+      "grant. A procurement-private claim then becomes readable by everyone the public " +
+      "episode's grant names, BODY INCLUDED. A test asserting only \"no supersession\" passes " +
+      "against a half-implementation that still does that.\n" +
+      "  The objects are held byte-identical on purpose. That is what makes the pair reach " +
+      "the corroboration arm at all: a differing object would be blocked by the OBJECT and " +
+      "this entry would prove nothing about the subject filter.",
+    a: {
+      subject: "Acme Corp",
+      predicate: "status",
+      object: "active",
+      subjectEntityId: "ent-acme-vendor",
+    },
+    b: {
+      subject: "acme-corp",
+      predicate: "status",
+      object: "active",
+      subjectEntityId: "ent-acme-account",
+    },
+  },
+  {
+    id: "homonym-rival",
+    relation: "proven-homonym",
+    why:
+      "⭐ The homonym shape that reaches consumers 2 AND 3, and its absence was MEASURED " +
+      "rather than reasoned about: with only `homonym-subject` in the corpus, deleting the " +
+      "subject arm from `collisionCorePredicate` killed ZERO tests in this file. The reason " +
+      "is that `homonym-subject` holds its objects EQUAL — which is what makes it reach " +
+      "corroboration — so `comparableDifferentSql` is false and the collision join never " +
+      "matches it on any implementation. A prohibition blocked by the wrong arm, which is the " +
+      "exact trap this file's arm-coverage table exists to close.\n" +
+      "  So this entry is BYTE-IDENTICAL to `priced-rival` in every claim column — two " +
+      "prices, both money with an explicit ISO-4217 code, provably different — and differs " +
+      "only in that the store has resolved the two subjects to DIFFERENT entities. Two " +
+      "products in two catalogs both spelled `Business Tier`, each with its own price. " +
+      "Without the subject arm the publish gate stamps `valid_to` on one of them and the " +
+      "rival scan wires an advisory edge between them; with it, neither happens, because " +
+      "they were never in the same slot.\n" +
+      "  ⚠️ The byte-identity is asserted, not merely intended — `the homonym fixtures vary " +
+      "ONLY the subject ids` compares this entry against `priced-rival` column by column. " +
+      "Drift one object and it would refuse the stamp for a reason that has nothing to do " +
+      "with the subject, and the guard-deleted mutation would quietly survive on it. That " +
+      "is the pairing ADR-0037 §4 asks for at the tier, applied at the subject.",
+    a: {
+      subject: "Business_Tier",
+      predicate: "Priced At",
+      object: "499 USD",
+      subjectEntityId: "ent-tier-catalog-a",
+    },
+    b: {
+      subject: "business tier",
+      predicate: "priced-at",
+      object: "599 USD",
+      subjectEntityId: "ent-tier-catalog-b",
+    },
+  },
+  {
+    id: "homonym-control",
+    relation: "same-claim",
+    why:
+      "⭐ THE positive control for `homonym-subject`, and byte-identical to it but for the " +
+      "two entity ids. Without it the suppression above passes green against an " +
+      "implementation that dropped the pair for some OTHER reason — a broken key derivation, " +
+      "a lookup that stopped matching at all — which is indistinguishable from a filter that " +
+      "works. That is the `warehouse-incumbent`/`priced-rival` pairing #5033 needed, at the " +
+      "position where the consequence is a disclosure rather than a stamp.\n" +
+      "  It is also the state of the ENTIRE corpus in production today: no entity store means " +
+      "no id at either position, so `subject_cmp` is NULL, the difference test is unknown, " +
+      "`IS NOT TRUE` admits the pair, and the three consumers behave exactly as they did " +
+      "before the column existed. `NULL everywhere is byte-identical to today` is an " +
+      "acceptance criterion, and this row is where it is asserted rather than read off the " +
+      "SQL.",
+    a: { subject: "Acme Corp", predicate: "status", object: "active" },
+    b: { subject: "acme-corp", predicate: "status", object: "active" },
+  },
+  {
+    id: "homonym-same-entity",
+    relation: "same-claim",
+    why:
+      "⚠️ The SECOND control, and the one that separates *proven different* from *non-null*. " +
+      "Both sides resolve to the SAME entity id — the store confirming these really are one " +
+      "company — so the difference test is false, nothing is suppressed, and the claim " +
+      "corroborates.\n" +
+      "  Its absence would leave the whole slice satisfiable by a filter spelled `both sides " +
+      "non-null ⇒ suppress`, which is the shape a reader reaches for when they think of " +
+      "`subject_cmp` as \"the store said something\". That filter switches corroboration OFF " +
+      "for every warehouse-backed workspace the moment a store is wired in — silently, since " +
+      "a missed corroboration writes no row anyone can find. `homonym-control` cannot catch " +
+      "it (both ids are absent there) and `homonym-subject` cannot either (the verdict is the " +
+      "same for the wrong reason).\n" +
+      "  Spelled with the phrasing noise the other two carry, so a key-layer failure cannot " +
+      "be what makes it pass.",
+    a: {
+      subject: "Acme Corp",
+      predicate: "status",
+      object: "active",
+      subjectEntityId: "ent-acme-vendor",
+    },
+    b: {
+      subject: "acme-corp",
+      predicate: "status",
+      object: "active",
+      subjectEntityId: "ent-acme-vendor",
+    },
+  },
+  {
     id: "subject-differs",
     relation: "different-claim",
     why:
@@ -647,6 +829,19 @@ export const VERDICTS = {
   // `supersedes: true` would not be simplifying a duplicate — it would be
   // deleting the guard.
   "tier-guarded-rival": { corroborates: false, tension: true, supersedes: false },
+  // One surface, two ENTITIES (#5032). Every cell `false`, and the FIRST one is
+  // the load-bearing one — corroboration is the consumer with no grant arm, so
+  // a merge here widens a private fact's ACL at publish. Tension is `false` too,
+  // and that is where the polarity is easiest to get wrong: `object_cmp` sends
+  // proven difference to tension, `subject_cmp` sends it nowhere. Two claims
+  // about different entities are not rivals — an `in-tension-with` edge between
+  // them asserts a contradiction that does not exist.
+  //
+  // Byte-identical to `different-claim`'s row below and NOT redundant with it:
+  // that relation is refused by a KEY arm, this one by a residual filter over a
+  // pair every key arm admits. Deleting either leaves the other's mechanism
+  // falsified by nothing.
+  "proven-homonym": { corroborates: false, tension: false, supersedes: false },
   // Two slots: every consumer must leave the pair entirely alone.
   "different-claim": { corroborates: false, tension: false, supersedes: false },
 } as const satisfies Record<SlotRelation, Verdict>;

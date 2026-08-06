@@ -10,11 +10,13 @@ import {
   Info,
   Lock,
   ShieldAlert,
+  Users,
 } from "lucide-react";
 import type {
   BrainFactOversight,
   BrainFactOversightBucket,
   BrainFactWillSupersede,
+  BrainFactWillWiden,
 } from "@/ui/lib/types";
 import { BrainFactOversightClientSchema } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -77,13 +79,20 @@ export function OversightPanel() {
     // actually needs to know is that the all-clear they are not seeing is
     // absent because Atlas could not check, not because there is nothing to
     // report.
+    //
+    // ⚠️ Names ALL THREE disclosures, because one request carries all three and
+    // any one loader failing 500s the lot. The copy predated #4912 and #5032 and
+    // named only the counts, so an admin read it as "the breakdown is missing"
+    // and had no way to learn that the supersession preview and the widening
+    // notice were absent too — with publish still one click away.
     return (
       <Alert role="alert" variant="destructive">
         <AlertTriangle className="size-4" aria-hidden />
         <AlertDescription className="space-y-1">
           <p>
             Couldn&apos;t load the workspace fact breakdown, so Atlas can&apos;t tell you
-            whether drafts exist outside your queue. Publishing is still workspace-wide.
+            whether drafts exist outside your queue, what this publish will supersede, or
+            whose audience it will widen. Publishing is still workspace-wide.
           </p>
           <p className="text-xs opacity-90">{friendlyError(error)}</p>
           <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => refetch()}>
@@ -153,6 +162,23 @@ export function OversightPanel() {
       {data.willSupersede &&
         (data.willSupersede.total > 0 || data.willSupersede.pairs.length > 0) && (
           <WillSupersedeNotice willSupersede={data.willSupersede} />
+        )}
+
+      {/* ⚠️ `|| incomplete` is NOT belt-and-braces — it is the whole reason the
+          flag exists. `{ total: 0, entries: [], incomplete: true }` is a fully
+          reachable, schema-valid response: query drift drops the rows, so the
+          drafts that would have widened are missing from the LIST and from the
+          COUNT. Gated on `entries.length` alone this renders a clean panel with
+          a live publish button, and the admin publishes an ACL change they were
+          never shown — which is the one failure this surface exists to prevent,
+          in the direction nobody can report afterwards (you cannot notice that a
+          fact became readable to somebody else).
+
+          `truncated` is deliberately NOT in the gate: it is only ever set
+          alongside a non-empty list. */}
+      {data.willWiden &&
+        (data.willWiden.entries.length > 0 || data.willWiden.incomplete) && (
+          <WillWidenNotice willWiden={data.willWiden} />
         )}
 
       <Collapsible open={open} onOpenChange={setOpen}>
@@ -323,6 +349,103 @@ function WillSupersedeNotice({ willSupersede }: { willSupersede: BrainFactWillSu
             rest are yours to see too but did not fit in one response.
           </p>
         )}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
+ * What the next publish will make VISIBLE TO MORE PEOPLE (#5032) — the third
+ * half of the pre-publish disclosure, beside the hidden backlog and the
+ * supersession notice.
+ *
+ * Publishing a draft unions in the grant of every episode already recorded as
+ * evidence for it (#4823), so a claim first seen in a private channel and
+ * restated in a public one stops being served only to the private audience.
+ * That is usually right. It is wrong when two different entities share a name:
+ * corroboration matches on identity derived from the SURFACE, so a public
+ * episode about one `Acme Corp` can become evidence for a private fact about
+ * another — and the widening then hands its audience the private claim's body.
+ * The API can prove that away only for warehouse-backed subjects; for everything
+ * else this notice is the guard.
+ *
+ * `role="alert"` for the supersession notice's reason, and more so: an ACL
+ * change is invisible afterwards in the one direction nobody can report — you
+ * cannot notice that a fact became readable to somebody else.
+ *
+ * The claims render verbatim because the API gates each entry on this reader's
+ * own ACL. The token list renders verbatim too, and is the SAME list the
+ * post-publish record already reports to this admin one moment later.
+ *
+ * ⚠️ The copy must not promise completeness. There is no `withheld` counterpart
+ * on this disclosure (the API's own docstring says why), so "that you can see"
+ * is load-bearing rather than hedging.
+ */
+function WillWidenNotice({ willWiden }: { willWiden: BrainFactWillWiden }) {
+  const { entries, total, truncated, incomplete } = willWiden;
+  // Floored at what is visibly listed, mirroring the supersession notice: a
+  // headline smaller than the list below it reads as a bug to the one person
+  // who most needs to trust this screen.
+  const count = Math.max(total, entries.length);
+  return (
+    <Alert role="alert">
+      <Users className="size-4" aria-hidden />
+      <AlertDescription className="min-w-0 space-y-2">
+        {/* The headline states what Atlas KNOWS. On the `incomplete` path it
+            knows a lower bound and nothing more, so it must not lead with a
+            number that reads as the answer — the count moves into the sentence
+            below, where "at least" can qualify it honestly. */}
+        <p>
+          <span className="font-medium">
+            {incomplete
+              ? "Publishing may widen the audience of more facts than Atlas can list."
+              : `Publishing will widen the audience of ${
+                  count === 1 ? "1 fact." : `${count.toLocaleString()} facts.`
+                }`}
+          </span>{" "}
+          Each of these was first recorded from a narrower audience and has since been
+          corroborated by evidence from a wider one, so publishing serves it to both. Check that
+          the wider evidence is really about the same thing — two different subjects with the same
+          name look identical here. Retract the draft instead if it is not.
+        </p>
+        {incomplete && (
+          <p className="text-xs text-muted-foreground">
+            Atlas could not evaluate every draft this time, so both the list and the count
+            understate what publishing will widen — treat it as widening more than is shown. This
+            is an Atlas fault, not an audience boundary.
+          </p>
+        )}
+        <ul className="space-y-1">
+          {entries.map((entry) => (
+            <li
+              key={entry.factId}
+              className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs"
+            >
+              <span className="truncate font-mono" title={entry.label}>
+                {entry.label}
+              </span>
+              <ArrowRight className="size-3 shrink-0 text-muted-foreground" aria-label="becomes visible to" />
+              <span className="truncate font-mono text-muted-foreground" title={entry.added.join(", ")}>
+                {entry.added.join(", ")}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {/* ONLY the cap. This sentence claims the remainder exists, is yours,
+            and is counted in the headline — all true when the list was clipped
+            and all false when a row was dropped, which is what `incomplete`
+            says instead. One boolean carrying both made this copy a confident,
+            specific, wrong explanation on the drift path. */}
+        {truncated && (
+          <p className="text-xs text-muted-foreground">
+            Showing the first {entries.length.toLocaleString()}; the rest are yours to see too but
+            did not fit in one response.
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground">
+          Only facts you can review are listed. Publish is workspace-wide, so it may widen others
+          you are not part of.
+        </p>
       </AlertDescription>
     </Alert>
   );

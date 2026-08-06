@@ -5,7 +5,8 @@
  * consumes it. Corroboration (`CORROBORATION_LOOKUP_SQL`), the advisory rival
  * scan (`TENSION_CANDIDATES_SQL`), and the publish gate's
  * `supersessionCollisionJoin` each read the same materialized
- * `(subject_key, predicate_key, object_key, object_cmp)` tuple, and each turns
+ * `(subject_key, predicate_key, object_key, object_cmp, subject_cmp)` tuple, and
+ * each turns
  * it into a different verdict — *same*, *different-and-coexisting*,
  * *different-and-stamping*. Running all three over one fixture set is what stops
  * them drifting into disagreeing about what collides, which three private
@@ -43,6 +44,24 @@
  * Its positive control is `priced-rival`, one relation up, and the two are the
  * same claims. `promotion-pg.test.ts` carries the other non-identity refusals —
  * the cardinality gate, and the tier guard's absent-`source` carve-out.
+ *
+ * ## ⚠️ And since #5032 a SIXTH relation refuses a pair every key arm ADMITS
+ *
+ * `proven-homonym` is the first relation whose prohibition is not reached
+ * through a key. One surface, two ENTITIES: the subject key, the predicate key
+ * and (for three of the four entries) the object key all match, so every
+ * consumer WOULD collide the pair — and `subject_cmp` is a residual filter that
+ * stops them. Its verdict row is byte-identical to `different-claim`'s and the
+ * two are not interchangeable: fold them together and the filter is falsified by
+ * nothing, because a `different-claim` pair is refused by an arm that would have
+ * refused it anyway.
+ *
+ * ⚠️ **Its polarity is INVERTED against `object_cmp`'s**, which is the mistake
+ * ADR-0037 §5 names by hand: proven difference at the OBJECT enables a stamp, at
+ * the SUBJECT it suppresses corroboration, tension and supersession alike. So
+ * `proven-homonym`'s tension cell is `false` where `proven-rival`'s is `true`,
+ * and a reader "restoring symmetry" there would mint advisory edges between
+ * entities the store has just proven are different.
  *
  * ## Why this is a `-pg` suite and not a unit one
  *
@@ -84,45 +103,30 @@
  *
  * ## MUTATIONS THIS CATCHES
  *
- * Run one at a time against this file; each line is verified, not asserted.
+ * **GENERATED — see `packages/api/scripts/mutations/identity-corpus.md`**, from
+ * `scripts/mutations/identity-corpus.mutations.ts`:
  *
- * | Mutation | Dies on |
- * |---|---|
- * | `lexicalNorm` loses its ASCII case fold | 14 |
- * | `CORROBORATION_LOOKUP_SQL` repointed at the surface columns | 6 |
- * | the corroboration call site binds raw surfaces instead of `item.keys.*` | 6 — **and 3 in `reconcile.test.ts`**, which is the bind half it can still see |
- * | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 10 — the edge DIRECTION is what the review queue renders |
- * | `CORROBORATION_LOOKUP_SQL`'s `object_key = $4` arm neutralized | 6 — via both key-equal `same-claim` pairs |
- * | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 — via `same-through-value` |
- * | `objectSameSql` loses its difference VETO | 3 — via `sign-flip-rival` |
- * | `objectNotSameSql` loses its `OR comparableDifferentSql(…)` disjunct | 1 — `sign-flip-rival`, consumer 2 |
- * | `supersessionCollisionPredicate` back on `object_key <> object_key` | 3 — `rival-through-phrasing`, `cross-type-rival`, `sign-flip-rival` |
- * | `lexicalNorm` loses its edge trim | 3 — via `separator-edges` |
- * | `identityAlias` given a global rule (`/^is /` stripped) | 3 — all three PROHIBITIONS, via `copula-pair` |
- * | `TENSION_CANDIDATES_SQL` repointed at the surface columns | 7 |
- * | the tension call site binds raw surfaces | 7 |
- * | `supersessionCollisionJoin` repointed at the surface columns | 1 — via `priced-rival` |
- * | `subject_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `subject-differs` |
- * | `predicate_key =` neutralized in the rival scan / dropped from the collision join | 1 each, via `predicate-differs` |
- * | `comparableDifferentSql` loses its `split_part` tag arm | 1 — `cross-type-rival` (`object-cmp-pg.test.ts`'s parity tests catch it too, at the SQL level) |
- * | `objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)` | **1 — `rival-through-phrasing`** |
- * | the tier guard deleted from `supersessionCollisionPredicate` | 5 — every `tier-guarded-rival` |
- * | the tier guard applied to the PUBLISHED side only | 2 — `warehouse-draft`, `unresolvable-draft` |
- * | the tier guard applied to the DRAFT side only | 2 — `warehouse-incumbent`, `unresolvable-incumbent` |
- * | the tier guard weakened to a denylist — the allowlist ARM replaced by `<> 'warehouse'`, the absent-key disjunct kept | **2 — both `unresolvable-*`** |
- * | the tier guard loses its absent-key disjunct | **0 — see below** |
- * | the carve-out simplified to `->>'source' IS NULL` | **0 — see below** |
- * | `TIER_HELD_BACK_COUNT_SQL`'s `IS NOT TRUE` weakened to `NOT (…)` | **0 — see below** |
- * | `TIER_HELD_BACK_COUNT_SQL` hard-wired to `SELECT 0` | **0 — see below** |
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/identity-corpus.mutations.ts
  *
- * ⚠️ **EVERY count above was re-measured on this tree, one mutation at a time,
- * and several MOVED** — the case fold 9→14, both tension-repoint rows 2→7, the
- * tension-edge direction 5→10, because #5033 added five corpus entries. (#5030
- * had already moved them from 8, 1 and 1.) Numbers are regenerated in one pass
- * against the FINAL tree and never edited a row at a time, because slice B's
- * table carried numbers forward twice under a header claiming they had been
- * re-measured — and the first cut of THIS slice reproduced that exact defect,
- * updating this paragraph while leaving four cells above it stale.
+ * Two sibling tables cover the arms this one deliberately omits, so no number
+ * lives in two places: `tier-guard.md` (the consequence ordering, #5033) and
+ * `subject-cmp.md` (the homonymy suppression, #5032).
+ *
+ * ⚠️ **This table used to be hand-typed here, and #5032 is what finally
+ * promoted it — because it went stale AGAIN, exactly as its own header
+ * predicted.** That header said every count had been re-measured and that
+ * several MOVED when #5033 added five corpus entries (the case fold 9→14, both
+ * tension-repoint rows 2→7, the tension edge 5→10). #5032 added four more
+ * entries and five cells moved again — the case fold 14→20, two corroboration
+ * rows 6→12 and a third 6→16. The exact numbers are in the generated table;
+ * naming them here at all is the habit this promotion exists to break, so they
+ * are named once, as evidence that the cells move, and never maintained. Every count here is a function of the CORPUS SIZE,
+ * and the corpus is what a slice in this arc grows — so a number stored in
+ * prose is a claim that goes false on the next slice, under a comment that
+ * reads as measurement. #5060 built the runner for exactly this.
+ *
+ * The prose below is what the generated table cannot carry: WHY each row means
+ * something, and which fixture is load-bearing for it.
  *
  * The tier rows are what #5033 buys, and they are worth reading
  * as a set. Two aliases carry the same guard, so "it is present" is not the
@@ -144,9 +148,9 @@
  * additionally kills 8 over there and the rows stop being separable. Both
  * tables in this slice are measured with the `<>` spelling above.
  *
- * ⚠️ **The last four rows are ZEROS, and they are stated rather than omitted.**
- * They mark this file's blind spot exactly, and `promotion-pg.test.ts` is where
- * each is falsified — 8, 1, 1 and 2 respectively:
+ * ⚠️ **Four of `tier-guard.md`'s rows are ZEROS in this file's column, and they
+ * are stated rather than omitted.** They mark this file's blind spot exactly,
+ * and `promotion-pg.test.ts` is where each is falsified:
  *
  *   - The first two are the absent-`source` carve-out. Every pair here lands
  *     through `reconcileFacts`, which spreads `source: episode.source` onto
@@ -166,10 +170,7 @@
  * the one a reader would delete as redundant: it is what carries a key-equal,
  * provably-different pair into TENSION after the veto has kept it out of
  * corroboration. Without it `sign-flip-rival` mints a second row and then earns
- * no edge — worse than either verdict alone. Said
- * explicitly, and the numbers regenerated in one pass rather than edited row by
- * row, because slice B's table carried numbers forward twice under a header
- * claiming they had been re-measured.
+ * no edge — worse than either verdict alone.
  *
  * Three rows widen what collides rather than narrowing it — `identityAlias`,
  * which widens the KEY FUNCTION, and the two key-arm mutations, which widen the
@@ -183,11 +184,13 @@
  * form. A pair with one already-normalized side is blind to either the statement
  * repoint or the call-site bind, depending which side is clean.
  *
- * The last row is the one worth pausing on. `NOT (object_cmp = $5)` reads as
- * the same thing and is NULL whenever either side is unparseable; a WHERE
- * clause treats NULL as false, so the entire `unknown` population silently
- * stops earning tension edges — the abstain band would exist in the
- * documentation and nowhere else. It is caught by ONE test.
+ * The `objectNotSameSql`'s `IS NOT TRUE` row is the one worth pausing on.
+ * `NOT (object_cmp = $5)` reads as the same thing and is NULL whenever either
+ * side is unparseable; a WHERE clause treats NULL as false, so the entire
+ * `unknown` population silently stops earning tension edges — the abstain band
+ * would exist in the documentation and nowhere else. It is caught by ONE test,
+ * and `subject-cmp.md` records the identical distinction one position over,
+ * where the blast radius is the whole corpus rather than one band.
  *
  * The two corroboration rows are a matched pair, and the second was added
  * because the first measured ZERO behavioural deaths: with only key-equal
@@ -210,8 +213,18 @@
  * NARROWS rather than widens, and `unproven-rival` catches that direction. A
  * TRUE-substitution — the widening one — is still unowned.
  *
+ * The four `homonym-*` entries (#5032) are measured in `subject-cmp.md` rather
+ * than here, and the pairing is worth reading there rather than assuming: three
+ * of them hold their OBJECTS equal, which is what makes them reach
+ * corroboration — and is also why they cannot reach the collision join on any
+ * implementation. `homonym-rival` exists because that gap was MEASURED: with
+ * only the equal-object rows, deleting the subject arm from
+ * `collisionCorePredicate` killed zero tests in this file. A prohibition blocked
+ * by the wrong arm is the trap the corpus's arm-coverage table exists to close,
+ * and it caught this one.
+ *
  * Two entries — `inverse-relations` and `entity-alias` — are not falsified by
- * any mutation above, and that is stated rather than hidden: no rule reachable
+ * any mutation in the tables, and that is stated rather than hidden: no rule reachable
  * from `lexicalNorm` can swap a subject with an object or unify two spellings of
  * one machine. They prohibit a direction a FUTURE normalization could take
  * (T3 §3 falsified morphological folding with the first of them), and they are
@@ -229,7 +242,7 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import { promoteBrainFacts } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { resolvePrincipalContext } from "@atlas/api/lib/brain/acl";
-import { loadSupersessionPreview } from "@atlas/api/lib/brain/oversight";
+import { loadSupersessionPreview, loadWideningPreview } from "@atlas/api/lib/brain/oversight";
 import {
   reconcileFacts,
   type ReconcileEpisodeRef,
@@ -363,6 +376,82 @@ describe("the identity corpus itself (#5021)", () => {
     ).toBe(true);
   });
 
+  it("the homonym fixtures vary ONLY the subject ids (#5032)", () => {
+    // `the tier fixtures vary ONLY the tier`'s argument, one position over, and
+    // it closes the same failure. `homonym-subject` refuses corroboration; if
+    // its CLAIMS drifted from its control's — one different object, one
+    // different predicate spelling — it would refuse for a reason that has
+    // nothing to do with the subject ids, and the mutation that deletes the
+    // subject arm would quietly survive on it. All three consumers stay green
+    // throughout, which is what makes this invisible without an assertion.
+    const identityOf = (claim: Claim) => ({
+      subject: claim.subject,
+      predicate: claim.predicate,
+      object: claim.object,
+      objectType: claim.objectType,
+      source: claim.source,
+    });
+    const homonyms: readonly ClaimPair[] = IDENTITY_CORPUS.filter((pair) =>
+      pair.id.startsWith("homonym-"),
+    );
+    // The equal-object family and the rival share nothing but their name, so
+    // they are checked against DIFFERENT controls — `homonym-subject` and
+    // `priced-rival` respectively.
+    const [equalObjectControl] = homonyms.filter((pair) => pair.id === "homonym-subject");
+    expect(
+      equalObjectControl,
+      "`homonym-subject` is gone — the equal-object homonym fixtures have no control",
+    ).toBeDefined();
+    for (const pair of homonyms.filter((p) => p.id !== "homonym-rival")) {
+      expect(
+        [identityOf(pair.a), identityOf(pair.b)],
+        `\`${pair.id}\` is not identity-identical to \`homonym-subject\` — it can no longer show that ONLY the subject ids changed the verdict`,
+      ).toEqual([identityOf(equalObjectControl!.a), identityOf(equalObjectControl!.b)]);
+    }
+    // …and `homonym-rival` against `priced-rival`, which is the shape that
+    // reaches consumers 2 and 3. Objects deliberately differ from the family
+    // above, so it needs its own control rather than sharing one.
+    const [rivalControl] = pairsWhere("proven-rival").filter((p) => p.id === "priced-rival");
+    // `pairsWhere` already returns `readonly ClaimPair[]`, so this one needs no
+    // widening — only the direct `IDENTITY_CORPUS` reads above do.
+    const [homonymRival] = homonyms.filter((p) => p.id === "homonym-rival");
+    expect(rivalControl, "`priced-rival` is gone — `homonym-rival` has no control").toBeDefined();
+    expect(homonymRival, "`homonym-rival` is gone — consumers 2 and 3 lose their only falsifier").toBeDefined();
+    expect(
+      [identityOf(homonymRival!.a), identityOf(homonymRival!.b)],
+      "`homonym-rival` is not identity-identical to `priced-rival` — it can no longer show that ONLY the subject ids withheld the stamp",
+    ).toEqual([identityOf(rivalControl!.a), identityOf(rivalControl!.b)]);
+
+    // …and the ids themselves present the three DISTINCT shapes the falsification
+    // needs. Collapse any two and a whole mutation class stops being visible:
+    // without `absent` the suppression cannot be told from a broken lookup,
+    // without `same` it cannot be told from `both sides non-null ⇒ suppress`,
+    // and without `differ` nothing exercises the arm at all.
+    // Annotated `ClaimPair`, not `(typeof IDENTITY_CORPUS)[number]`. The corpus
+    // is `as const satisfies readonly ClaimPair[]`, so its element type is a
+    // union of LITERALS in which the optional `subjectEntityId` is absent from
+    // every arm that does not set it — reading it off the literal type is a
+    // compile error. Widening to the declared interface is what makes the
+    // optional field readable, and is why `identityOf` above takes `Claim`.
+    const shapeOf = (pair: ClaimPair) =>
+      pair.a.subjectEntityId === undefined && pair.b.subjectEntityId === undefined
+        ? "absent"
+        : pair.a.subjectEntityId === pair.b.subjectEntityId
+          ? "same"
+          : "differ";
+    expect(new Set(homonyms.map(shapeOf))).toEqual(new Set(["absent", "same", "differ"]));
+    // Every `proven-homonym` entry really carries DIFFERING ids — the relation
+    // asserts the store proved a difference, and a fixture that forgot the ids
+    // would be a `same-claim` wearing the label, passing every consumer's
+    // prohibition because the pair never reached the arm.
+    for (const pair of pairsWhere("proven-homonym")) {
+      expect(
+        shapeOf(pair),
+        `\`${pair.id}\` claims relation \`proven-homonym\` but its two sides do not carry DIFFERENT subject entity ids — nothing is being suppressed`,
+      ).toBe("differ");
+    }
+  });
+
   it("holds no duplicate id", () => {
     // The id names a workspace AND both episode source ids, so a duplicate makes
     // two entries share a corpus and points every failure at the wrong one.
@@ -468,10 +557,29 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
     const report = await reconcileFacts({
       vocabulary: identityVocabulary,
       episode,
-      // `source` is spread in with the rest and is harmless — `FactCandidate`
-      // has no such field, and the tier the guard reads comes off the EPISODE
-      // above, which is the only place a producer can stamp it.
+      // `source` and `subjectEntityId` are spread in with the rest and are
+      // harmless — `FactCandidate` has neither field. The tier the guard reads
+      // comes off the EPISODE above and the subject id comes off the RESOLVER
+      // below, which are the only two places a producer can stamp them.
       candidates: [{ ...claim, predicateCardinality: "single" }],
+      // The entity store, standing in for a warehouse-backed one (#5032).
+      // Answers for the SUBJECT surface only, and only when the fixture names an
+      // id: that is what `subject_cmp` can ever be fed from, since
+      // `subject-cmp.ts` never parses a surface.
+      //
+      // Omitted entries are an ABSTAIN, not a failure — which is what leaves
+      // every pre-#5032 entry in the corpus landing exactly as it did before,
+      // with `subject_cmp` NULL and nothing suppressed.
+      ...(claim.subjectEntityId === undefined
+        ? {}
+        : {
+            resolveEntity: (surfaces: ReadonlySet<string>) =>
+              new Map(
+                [...surfaces]
+                  .filter((surface) => surface === claim.subject.trim())
+                  .map((surface) => [surface, { entityId: claim.subjectEntityId! }]),
+              ),
+          }),
       producer: "identity-corpus",
       extractedAt: new Date("2026-06-21T10:00:00.000Z"),
     });
@@ -606,6 +714,12 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       // lookup would start merging or forking on tier, which is per-class
       // matching — the thing ADR-0037 §4 rules out.
       "tier-guarded-rival": "does not absorb one across a tier boundary either",
+      // ⭐ THE consumer for #5032, and the reason `subject_cmp` exists. Every
+      // key arm merges this pair; only the residual subject filter keeps them
+      // apart. A merge here attaches the second episode as EVIDENCE to the
+      // first fact, and publish then unions in its grant — so this cell is the
+      // one that stops a private claim's BODY reaching a public audience.
+      "proven-homonym": "⭐ does not absorb a claim about a DIFFERENT ENTITY with the same name",
       "different-claim": "does not collide a different SLOT",
     };
 
@@ -655,6 +769,13 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       // queue entirely — silently, and precisely where the authoritative side
       // is the one at stake.
       "tier-guarded-rival": "⭐ still flags the contradiction the publish gate will NOT act on",
+      // ⚠️ `false`, and this is where the polarity is easiest to get wrong.
+      // `object_cmp` sends proven difference TO tension; `subject_cmp` sends it
+      // nowhere. Two claims about provably different entities are not rivals,
+      // so an edge here would assert a contradiction that does not exist — the
+      // failure mode ADR-0037 §5 names when it forbids reading this column as a
+      // mirror of the object one.
+      "proven-homonym": "does not flag two claims about DIFFERENT entities as rivals",
       "same-claim": "does not put one claim in tension with itself",
       "different-claim": "does not flag two claims that share no slot",
     };
@@ -709,6 +830,11 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
         "stamps nothing when it cannot PROVE the contradiction — tension only (#5030)",
       "tier-guarded-rival":
         "stamps nothing across a TIER boundary, however provable the contradiction (#5033)",
+      // The LEAST important of this column's three cells, and worth saying so:
+      // supersession already needs `single` cardinality and a provably
+      // different object, so a homonym rarely reaches it. Corroboration is
+      // where #5032 earns its place.
+      "proven-homonym": "stamps nothing between two claims about DIFFERENT entities",
       "same-claim": "stamps nothing when the draft merely restates the incumbent",
       "different-claim": "stamps nothing across two slots — the irreversible direction",
     };
@@ -825,5 +951,189 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
         );
       }
     }
+  });
+  // ══════════════════════════════════════════════════════════════════════
+  // The review-gate widening disclosure, against the real schema (#5032)
+  // ══════════════════════════════════════════════════════════════════════
+
+  describe("the widening notice runs (#5032)", () => {
+    // ⚠️ This block exists because `willWidenRowsSql` was, until the review
+    // panel measured it, **never executed anywhere**. Every other assertion on
+    // it is `toContain` against a fake reader keyed on `sql.includes(…)`, so a
+    // syntax error, a wrong alias, a broken `aclVisibilityClause` interpolation,
+    // or a `||` label expression collapsing to NULL would all have shipped
+    // green — on the one surface whose failure mode is *"an admin published an
+    // ACL change they were not shown"*. Its sibling `willSupersedePairsSql` has
+    // had a real-schema exercise since #4912; this closes the asymmetry.
+    //
+    // Deliberately NOT driven from the corpus. The corpus varies IDENTITY; this
+    // varies GRANTS, which no `ClaimPair` expresses — and bolting a grant field
+    // onto `Claim` would put a field on every entry that fifteen of them ignore.
+
+    async function seedGrantedEpisode(
+      workspaceId: string,
+      sourceId: string,
+      visibleTo: readonly string[],
+    ): Promise<ReconcileEpisodeRef> {
+      const occurredAt = new Date("2026-06-21T09:00:00.000Z");
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_episodes
+           (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
+         VALUES ($1, 'slack', $2, 'U123', 'evidence', $3::timestamptz, $4::text[])
+         RETURNING id`,
+        [workspaceId, sourceId, occurredAt.toISOString(), [...visibleTo]],
+      );
+      return {
+        id: rows[0]!.id,
+        workspaceId,
+        source: "slack",
+        sourceId,
+        sourceActor: "U123",
+        occurredAt,
+        visibleTo: [...visibleTo],
+      };
+    }
+
+    /** The same claim, twice, from two differently-granted episodes. */
+    async function landCorroboratedPair(
+      workspaceId: string,
+      first: readonly string[],
+      second: readonly string[],
+    ) {
+      for (const [i, grant] of [first, second].entries()) {
+        await reconcileFacts({
+          vocabulary: identityVocabulary,
+          episode: await seedGrantedEpisode(workspaceId, `widen-${i}`, grant),
+          candidates: [{ subject: "acme corp", predicate: "status", object: "active" }],
+          producer: "widening-notice",
+          extractedAt: new Date("2026-06-21T10:00:00.000Z"),
+        });
+      }
+      // The PRECONDITION: one row with two evidence edges. If the second
+      // observation forked instead of corroborating there is nothing to widen,
+      // and every assertion below would pass vacuously.
+      expect(await factIds(workspaceId), "the pair did not corroborate").toHaveLength(1);
+      expect(await provenanceEdgeCount(workspaceId)).toBe(2);
+    }
+
+    async function previewFor(workspaceId: string) {
+      const readerCtx = await resolvePrincipalContext(pool, {
+        workspaceId,
+        mode: "managed",
+        userId: "u1",
+        resolvedRole: { role: "owner", orgId: workspaceId },
+      });
+      return loadWideningPreview(pool, readerCtx);
+    }
+
+    it(
+      "⭐ names the claim and the grant tokens publish will add",
+      async () => {
+        // The statement executes, the CTE bound parses, the ACL clause
+        // interpolates at the right placeholder, and the label expression
+        // survives the concatenation. None of that was covered before.
+        const ws = "ws-5032-widen-fires";
+        // ⚠️ The first grant is `role:member` and NOT `audience:procurement`,
+        // and the reason is the disclosure's own scoping rule rather than
+        // convenience: an entry appears only where the reader's ACL admits the
+        // DRAFT, and an `owner` reviewer holds no `audience:procurement`. The
+        // evocative private-channel story is the one the LAST test in this block
+        // pins — where the widening happens and the notice correctly says
+        // nothing. Here the reviewer must be able to see what they are being
+        // warned about, or the test would pass against a loader that returns
+        // nothing for any input.
+        await landCorroboratedPair(ws, ["role:member"], ["org"]);
+
+        const preview = await previewFor(ws);
+        expect(preview.total).toBe(1);
+        expect(preview.entries[0]?.label).toBe("acme corp status active");
+        expect(preview.entries[0]?.added).toEqual(["org"]);
+        expect(preview.truncated).toBe(false);
+        expect(preview.incomplete).toBe(false);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "…and says nothing when the second episode grants what the fact already holds",
+      async () => {
+        // THE prohibition, and its control is the test above — byte-identical
+        // but for the second episode's grant. Widening fires on ordinary
+        // corroboration too, so a notice that reported "there are evidence
+        // edges" would fire on essentially every publish and be clicked
+        // through; the gate is `widenGrantFromEvidence` returning non-null.
+        const ws = "ws-5032-widen-silent";
+        await landCorroboratedPair(ws, ["org"], ["org"]);
+
+        const preview = await previewFor(ws);
+        expect(preview.total).toBe(0);
+        expect(preview.entries).toEqual([]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "the notice lists exactly what the publish then writes",
+      async () => {
+        // The #4912 property, applied to this disclosure: the preview and the
+        // transaction are two call sites of ONE decision function, and drift
+        // between them is an ACL change disclosed as one thing and performed as
+        // another. Asserted against `PromotionReport.widened`, which is the
+        // durable record of what actually happened.
+        const ws = "ws-5032-widen-agrees";
+        await landCorroboratedPair(ws, ["role:member"], ["org"]);
+
+        const preview = await previewFor(ws);
+        const report = await publish(ws);
+
+        expect(report.widened?.map((w) => w.added)).toEqual(
+          preview.entries.map((e) => e.added),
+        );
+        expect(report.widened?.map((w) => w.rowId)).toEqual(
+          preview.entries.map((e) => e.factId),
+        );
+        // …and the grant really widened at rest, so neither list is a pair of
+        // agreeing intentions about a write that did not happen.
+        const { rows } = await pool.query<{ visible_to: string[] }>(
+          `SELECT visible_to FROM brain_facts WHERE workspace_id = $1`,
+          [ws],
+        );
+        expect(rows[0]!.visible_to.toSorted()).toEqual(["org", "role:member"]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      '⚠️ an empty list means "none that YOU can see", never "none"',
+      async () => {
+        // The stated limit of this disclosure, made falsifiable instead of left
+        // in a docstring. The first episode is `audience:procurement`, which an
+        // `owner` reviewer does not hold — so the draft is outside their ACL,
+        // the notice lists nothing, and publishing widens it to `org` anyway.
+        //
+        // This is the case with NO unscoped `withheld` counterpart:
+        // `willSupersede` can count what a reader may not see because a
+        // `COUNT(*)` needs no content, while the equivalent here would have to
+        // run the grant grammar over other readers' episode grants — which
+        // `oversight.ts`'s no-unscoped-content rule forbids. So the honest
+        // reading of an empty list is "none that you can see", and this test is
+        // what stops a future reader treating it as an all-clear.
+        const ws = "ws-5032-widen-out-of-scope";
+        await landCorroboratedPair(ws, ["audience:procurement"], ["org"]);
+
+        const preview = await previewFor(ws);
+        expect(preview.total, "a draft outside the reader's ACL was listed").toBe(0);
+        expect(preview.entries).toEqual([]);
+        // …and the widening HAPPENS regardless — publish is workspace-wide.
+        // Without this half the test would pass against a loader that never
+        // finds anything, which is the failure it exists to distinguish from.
+        const report = await publish(ws);
+        expect(
+          report.widened?.map((w) => w.added),
+          "the publish did not widen, so the silence above proves nothing",
+        ).toEqual([["org"]]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
   });
 });

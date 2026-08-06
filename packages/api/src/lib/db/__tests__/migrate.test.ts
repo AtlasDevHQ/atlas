@@ -297,7 +297,16 @@ describe("runMigrations", () => {
     //   independent model calls. One value per predicate makes the two sides
     //   unable to disagree, and absence means `multi`, so an uncurated
     //   predicate never supersedes, #5027 / ADR-0037 §3) = 193.
-    expect(count).toBe(193);
+    //   Plus 0193 (brain_fact_subject_cmp — the SUBJECT's comparable value, and
+    //   ⚠️ NOT `object_cmp` mirrored: its polarity is INVERTED, so non-null and
+    //   unequal means two claims about DIFFERENT entities and SUPPRESSES
+    //   corroboration, tension and supersession alike. It exists for
+    //   corroboration, the one identity consumer with no grant arm — a homonym
+    //   makes a public episode evidence for a private fact, and publish then
+    //   overwrites `visible_to` with the union of evidence grants, so the
+    //   private claim's body reaches the public audience. Only a
+    //   warehouse-backed subject can ever supply one, #5032 / ADR-0037 §5) = 194.
+    expect(count).toBe(194);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -519,6 +528,7 @@ describe("runMigrations", () => {
         "0190_brain_vocabulary_proposal.sql",
         "0191_brain_fact_object_cmp.sql",
         "0192_brain_predicate_cardinality.sql",
+        "0193_brain_fact_subject_cmp.sql",
       ],
     });
 

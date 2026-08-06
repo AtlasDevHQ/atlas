@@ -1,0 +1,181 @@
+/**
+ * The subject's comparable value — `brain_facts.subject_cmp` (#5032,
+ * ADR-0037 §5).
+ *
+ * ## ⚠️ THIS IS NOT `object-cmp.ts` AT ANOTHER POSITION. THE POLARITY IS
+ * ## INVERTED
+ *
+ * It is a separate module for exactly that reason. Both columns are nullable and
+ * both prove DIFFERENCE, and there the resemblance stops:
+ *
+ * | | Null | Proves | Effect when proven |
+ * |---|---|---|---|
+ * | `object_cmp` | yes | *difference* | **enables** supersession |
+ * | `subject_cmp` | yes | *difference* | **suppresses everything** — corroboration, tension and supersession alike |
+ *
+ * Two claims about *different entities* are not in the same slot at all. There
+ * is nothing to strengthen, nothing to flag as a rival, and nothing to retire.
+ * So `object-cmp.ts`'s rule — *"tension fires on `different` and `unknown`,
+ * supersession on `different` only"* — **does not transfer**, and an
+ * implementation written by copying {@link objectSameSql} /
+ * {@link objectNotSameSql} mints `in-tension-with` edges between entities the
+ * store has just PROVEN are different. That is the wrong direction: the whole
+ * point is that the pair never met.
+ *
+ * There is therefore exactly ONE arm here ({@link subjectNotDifferentSql}) where
+ * the object position has two, and all three consumers take the same one.
+ *
+ * ## What it is for: corroboration is the consumer with no brake
+ *
+ * The slot keys collide two SURFACES, and homonymy is by definition the case
+ * where one surface names two referents — so no key function can separate them,
+ * at any future date. `CORROBORATION_LOOKUP_SQL` (`reconcile.ts`) is the only
+ * identity consumer with **no grant arm and no cardinality arm**: on a hit it
+ * attaches a public episode as evidence to a private fact, and publish then
+ * overwrites `visible_to` with the union of the evidence grants
+ * (`widenGrantFromEvidence`). Tension and supersession are both gated on
+ * `single` cardinality, which since #5027 needs positive evidence; corroboration
+ * is gated by nothing.
+ *
+ * So a homonym does not merely mislabel a claim — it discloses a private claim's
+ * BODY to a wider audience. That is why the suppression covers corroboration
+ * first and the destructive pair second, and why a test asserting only *"no
+ * supersession"* passes against a half-implementation that still widens an ACL.
+ *
+ * ## Only a warehouse-backed subject can supply one — permanently
+ *
+ * {@link subjectComparableValue} takes a resolved entity id and NOTHING ELSE. It
+ * deliberately does not parse the surface, which is the one design decision in
+ * this module a reader is most likely to try to "finish" by reaching for
+ * `comparableValue`. Two reasons, in order:
+ *
+ *   1. **ADR-0037 §5 states the limit as absolute** — *"the extractor can never
+ *      supply one, for any subject, ever"* — and a surface parse would make that
+ *      sentence false in the tree. This slice exists in part to correct exactly
+ *      that class of defect one file over (`promotion.ts`'s widening comment),
+ *      so introducing a fresh one here would be self-defeating.
+ *   2. **It would buy almost nothing and cost silently.** The column is only
+ *      ever consulted where the subject KEYS already matched, so a surface parse
+ *      changes a verdict only for pairs that normalize together while parsing
+ *      apart — `-499` and `499`, since `lexicalNorm` strips a leading `-`. A
+ *      subject that is a signed number is not a subject any producer emits, and
+ *      the failure it would buy is a SUPPRESSED corroboration: evidence silently
+ *      not linked, which is the direction nobody can report.
+ *
+ * The consequence is stated plainly because it is the weak point: the
+ * extracted↔extracted homonym — the case that occurs TODAY — stays
+ * unresolvable, and is guarded by the review-gate widening disclosure
+ * (`loadWideningPreview`, `lib/brain/oversight.ts`) rather than prevented.
+ * Accepting it means accepting it forever.
+ *
+ * ## NULL is byte-identical to the pre-#5032 behaviour
+ *
+ * {@link subjectNotDifferentSql} is `(difference) IS NOT TRUE`, and a NULL on
+ * either side makes every conjunct of the difference test unknown — so the
+ * predicate is NULL, `IS NOT TRUE` is TRUE, and the arm admits the pair. With
+ * the column NULL everywhere, which it is on every existing row and on every
+ * extractor-produced row forever, nothing changes. That is a stronger
+ * non-regression property than `object_cmp` had, and it is ASSERTED rather than
+ * read off the SQL (`identity-consumers-pg.test.ts`).
+ *
+ * ## Cross-region, the failure direction FLIPS to safe
+ *
+ * `subject_cmp` inherits `object_cmp`'s cross-region hazard (#5035) with the
+ * polarity inverted, which is worth stating because it inverts the conclusion: a
+ * foreign store id at the subject is non-null and, by construction, unequal to
+ * every id the destination mints for the same real entity — so it reads as
+ * *different* and **suppresses**. Under-match, recoverable, a missed
+ * corroboration. At `object_cmp` the same shape is counterfeit positive evidence
+ * of difference and stamps `valid_to`. The two columns must not be given one
+ * import rule on the assumption that they fail alike.
+ */
+
+import {
+  comparableDifferentSql,
+  entityComparable,
+  type EntityComparable,
+} from "@atlas/api/lib/brain/object-cmp";
+
+/**
+ * An entity id that a store returned AND that the resolver seam validated —
+ * non-empty after trim, for a surface that was actually requested, not a
+ * duplicate.
+ *
+ * ⚠️ **A brand, and it is load-bearing rather than decoration.** The rule this
+ * module exists to hold is *the subject's comparable value is a store id and
+ * never a parse of the surface* — and until #5032's review panel measured it,
+ * that rule was enforced only by a docstring. With a plain `string` parameter,
+ * `subjectComparableValue(subject)` compiled at the one call site where both are
+ * in scope, and its failure is STRICTLY WORSE than the surface parse the rule
+ * forbids: the raw, un-normalized surface becomes the payload, so `Acme Corp`
+ * and `acme-corp` produce `entity:Acme Corp` / `entity:acme-corp` — same tag,
+ * unequal, *proven different* — and corroboration switches off for exactly the
+ * pair the corpus was built around.
+ *
+ * `reconcile.ts`'s `resolveEntitiesForEpisode` is the ONE place a value is cast
+ * into this type, because it is the one place an id is validated. Nowhere else
+ * can a bare `string` become one.
+ */
+export type ResolvedEntityId = string & { readonly __resolvedEntityId: unique symbol };
+
+/**
+ * What lands in `brain_facts.subject_cmp` — a resolved entity id, or `null`.
+ *
+ * A named function rather than a bare call to {@link entityComparable} at the
+ * one call site, because the RULE is what needs a home: *the subject's
+ * comparable value is a store id or nothing, never a parse of the surface.* An
+ * inlined call is a line someone widens; a function with this docstring is a
+ * claim they have to argue with.
+ *
+ * The claim is now also enforced twice over rather than asserted: the parameter
+ * is a {@link ResolvedEntityId}, which a surface cannot satisfy, and the return
+ * is an {@link EntityComparable}, which cannot be swapped with the object's
+ * comparable at `agreementBinds`. `subject-cmp.test.ts` pins the runtime
+ * behaviour — including the refusal of surfaces that DO parse at the object
+ * position, which is what makes it a real refusal rather than a restatement of
+ * "unparseable surfaces abstain".
+ *
+ * `null` here means *unknown*, which suppresses nothing. It is the honest answer
+ * for every extractor-produced claim and will stay the answer for them forever.
+ */
+export function subjectComparableValue(
+  entityId: ResolvedEntityId | undefined,
+): EntityComparable {
+  return entityComparable(entityId);
+}
+
+/**
+ * *Not provably a different entity* — the ONE arm, taken by all three consumers.
+ *
+ * Read the name precisely: it is not "the same subject". It is the complement of
+ * PROVEN difference in a three-valued logic, so it admits the entire `unknown`
+ * band — which is where every extractor-supplied subject lives, permanently, and
+ * is exactly what makes NULL a no-op.
+ *
+ * `IS NOT TRUE` rather than `NOT (…)`, and this is not a style note: `NOT NULL`
+ * is NULL and a `WHERE` treats that as false, so the readable spelling would
+ * suppress corroboration for every claim in the corpus whose subject has no
+ * comparable value — i.e. all of them. The same trap `objectNotSameSql` records,
+ * with a far larger blast radius here because the abstain band at this position
+ * is not a minority, it is the default.
+ *
+ * Built from {@link comparableDifferentSql} rather than re-spelling the tag and
+ * well-formedness arms, so the two positions cannot drift about what "provably
+ * different" means. The tag arm matters at this position too even though the
+ * only tag a subject can carry today is `entity:` — #5035 makes the region
+ * importer a second writer of both `_cmp` columns, and the arms that refuse
+ * `'entity'`-with-no-payload are the ones that stop a truncated import from
+ * reading as proof.
+ *
+ * ⚠️ There is deliberately no positive `subjectSameSql` counterpart. Nothing
+ * needs one: no consumer asks *"are these provably the same subject?"* — the
+ * slot keys answer that — and adding one would invite a reader to restore the
+ * two-arm symmetry `object-cmp.ts` has, which is where the inverted polarity
+ * gets lost.
+ *
+ * `a` / `b` are interpolated; callers pass column expressions or bind
+ * placeholders they control — same contract as `comparableDifferentSql`.
+ */
+export function subjectNotDifferentSql(a: string, b: string): string {
+  return `(${comparableDifferentSql(a, b)}) IS NOT TRUE`;
+}

@@ -1468,7 +1468,9 @@ describe("cardinality proposer", () => {
     // and every other assertion in this file would still pass.
     const insert = store.executedParams(INSERT_FACT_SQL);
     expect(insert).not.toBeUndefined();
-    expect(insert).toHaveLength(13);
+    // 14 since #5032 added `subject_cmp` as `$14`; a re-added cardinality bind
+    // makes it 15.
+    expect(insert).toHaveLength(14);
     expect(INSERT_FACT_SQL).not.toContain("predicate_cardinality");
   });
 

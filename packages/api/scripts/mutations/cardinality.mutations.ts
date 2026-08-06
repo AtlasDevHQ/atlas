@@ -191,26 +191,31 @@ human behind it.
           // PARAMETER COUNT the only thing that catches this. A statement that
           // is still valid SQL with an unchanged row is precisely the shape a
           // lexical assertion misses.
+          // Re-anchored by #5032, which added `subject_cmp` as `$14`. The
+          // mutation is unchanged in substance: the column back in the list AND
+          // back on the bind, so every placeholder after it shifts by one.
           oldString: `          source_episode_id, provenance, visible_to,
-          subject_key, predicate_key, object_key, object_cmp)
+          subject_key, predicate_key, object_key, object_cmp, subject_cmp)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
                $7::uuid, $8::jsonb,
                ARRAY(SELECT jsonb_array_elements_text($9::jsonb)),
-               $10, $11, $12, $13)`,
+               $10, $11, $12, $13, $14)`,
           newString: `          source_episode_id, provenance, visible_to, predicate_cardinality,
-          subject_key, predicate_key, object_key, object_cmp)
+          subject_key, predicate_key, object_key, object_cmp, subject_cmp)
        VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
                $7::uuid, $8::jsonb,
                ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), $10,
-               $11, $12, $13, $14)`,
+               $11, $12, $13, $14, $15)`,
         },
         {
           file: RECONCILE,
-          oldString: `    JSON.stringify(ctx.grantTokens),
-    ...agreementBinds(item.keys, item.comparable),`,
-          newString: `    JSON.stringify(ctx.grantTokens),
-    item.candidate.predicateCardinality ?? "multi",
-    ...agreementBinds(item.keys, item.comparable),`,
+          // ⚠️ This anchor was ALREADY stale before #5032 and the mutation had
+          // been ANCHOR-failing silently: the field became `comparableAtRest` at
+          // #5030 and nobody re-ran the spec. Now spelled off the INSERT's own
+          // call site, which is the only one binding the at-rest value.
+          oldString: "    ...agreementBinds(item.keys, item.comparableAtRest, item.subjectComparable),",
+          newString: `    item.candidate.predicateCardinality ?? "multi",
+    ...agreementBinds(item.keys, item.comparableAtRest, item.subjectComparable),`,
         },
       ],
       note: "The other half of the revert, and the half that makes restoring the both-sides clause a WORKING change rather than a silent no-op. Caught by parameter COUNT in two suites — the only instrument that sees it, since the mutated statement is valid SQL that writes an unchanged-looking row.",

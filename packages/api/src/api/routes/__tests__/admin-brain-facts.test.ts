@@ -247,6 +247,15 @@ let supersessionPreviewResponse: Record<string, unknown> = {
 };
 let supersessionPreviewCalls = 0;
 let supersessionPreviewCtx: unknown;
+/** The will-widen half (#5032), stubbed on the same terms as the other two. */
+let wideningPreviewResponse: Record<string, unknown> = {
+  total: 0,
+  entries: [],
+  truncated: false,
+  incomplete: false,
+};
+let wideningPreviewCalls = 0;
+let wideningPreviewCtx: unknown;
 // EVERY named export, not just the two this route reaches: `mock.module` is
 // file-global, so a partial factory link-fails the moment anything else in the
 // graph imports one of the omitted names.
@@ -258,7 +267,10 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
   OVERSIGHT_DISTINCT_TOKENS_SQL: "SELECT 1 FROM brain_facts",
   WILL_SUPERSEDE_PAIR_MAX: 100,
   WILL_SUPERSEDE_TOTAL_SQL: "SELECT 1 FROM brain_facts",
+  WILL_WIDEN_ENTRY_MAX: 100,
+  WILL_WIDEN_DRAFT_SCAN_MAX: 5_000,
   willSupersedePairsSql: () => "SELECT 1 FROM brain_facts",
+  willWidenRowsSql: () => "SELECT 1 FROM brain_facts",
   loadConfiguredChannels: async () => new Map(),
   classifyToken: () => ({ kind: "org", labelPolicy: "intrinsic" }),
   loadFactOversight: async (_db: unknown, ctx: unknown) => {
@@ -270,6 +282,11 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
     supersessionPreviewCalls++;
     supersessionPreviewCtx = ctx;
     return supersessionPreviewResponse;
+  },
+  loadWideningPreview: async (_db: unknown, ctx: unknown) => {
+    wideningPreviewCalls++;
+    wideningPreviewCtx = ctx;
+    return wideningPreviewResponse;
   },
 }));
 
@@ -348,6 +365,9 @@ beforeEach(() => {
   supersessionPreviewCalls = 0;
   supersessionPreviewCtx = undefined;
   supersessionPreviewResponse = { total: 0, pairs: [], withheld: 0, truncated: false };
+  wideningPreviewCalls = 0;
+  wideningPreviewCtx = undefined;
+  wideningPreviewResponse = { total: 0, entries: [], truncated: false, incomplete: false };
   oversightResponse = {
     buckets: [],
     workspaceTotals: {
@@ -612,6 +632,37 @@ describe("GET /oversight", () => {
     await adminBrainFacts.request("/oversight");
     expect(supersessionPreviewCtx).toEqual(oversightCtx);
     expect(JSON.stringify(supersessionPreviewCtx)).not.toContain("override");
+  });
+
+  it("merges the will-widen disclosure into the same response (#5032)", async () => {
+    // The third section, on the will-supersede test's terms exactly: the strict
+    // schema requires it, so dropping the merge is a 500 rather than a silently
+    // retired notice — and the happy path is pinned so the entries really ship.
+    //
+    // This is the disclosure that stands between an unresolvable subject
+    // homonym and a private claim's body reaching a public audience, so "the
+    // route forgot to merge it" must not be a quiet outcome.
+    wideningPreviewResponse = {
+      total: 1,
+      entries: [{ factId: "f1", label: "acme corp status active", added: ["org"] }],
+      truncated: false,
+      incomplete: false,
+    };
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { willWiden: unknown };
+    expect(body.willWiden).toEqual(wideningPreviewResponse);
+    expect(wideningPreviewCalls).toBe(1);
+  });
+
+  it("hands the will-widen loader the SAME reviewer context as the counts", async () => {
+    // The entries carry claim labels and grant tokens, both scoped by the
+    // reader context — a second, wider context here would name claims the queue
+    // itself refuses to show, and would do it on the surface whose whole subject
+    // is who can see what.
+    await adminBrainFacts.request("/oversight");
+    expect(wideningPreviewCtx).toEqual(oversightCtx);
+    expect(JSON.stringify(wideningPreviewCtx)).not.toContain("override");
   });
 
   it("hands the aggregate the reviewer's OWN member-table context", async () => {

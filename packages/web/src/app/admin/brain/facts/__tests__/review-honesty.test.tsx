@@ -1962,6 +1962,78 @@ describe("will-supersede disclosure (#4912)", () => {
     expect(view.container.textContent ?? "").not.toContain("audiences you are not part of");
   });
 
+  test("stays silent when nothing widens — including on an older API", async () => {
+    // The default oversight fixture carries NO `willWiden` at all, which is what
+    // an older API sends during a deploy window. The panel renders the pre-#5032
+    // page rather than losing the whole oversight surface — the same posture the
+    // will-supersede notice keeps, and the reason the CLIENT schema marks the
+    // field optional while the SERVER schema requires it.
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("Workspace breakdown"),
+    );
+    expect(view.container.textContent ?? "").not.toContain("widen the audience");
+  });
+
+  test("names the claim and the audiences it will gain, and warns about the homonym", async () => {
+    // The notice IS the disclosure: a count alone would tell an admin something
+    // is about to change without telling them WHAT becomes readable by WHOM.
+    oversight = {
+      ...oversight,
+      willWiden: {
+        total: 1,
+        entries: [
+          { factId: "f1", label: "acme corp status active", added: ["org"] },
+        ],
+        truncated: false,
+        incomplete: false,
+      },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("widen the audience of 1 fact"),
+    );
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("acme corp status active");
+    expect(text).toContain("org");
+    // ⚠️ The copy must name the HOMONYM, which is the whole reason the notice
+    // exists (#5032): the reviewer's one job here is to check that the wider
+    // evidence is really about the same thing, and two different subjects with
+    // the same name look identical on this screen.
+    expect(text).toContain("two different subjects with the same name");
+    // …and must NOT promise completeness. There is no unscoped `withheld`
+    // counterpart on this disclosure, so an empty list means "none that you can
+    // see" — a sentence claiming otherwise would be a false all-clear on the
+    // surface whose entire subject is who can read what.
+    expect(text).toContain("Only facts you can review are listed");
+  });
+
+  test("⚠️ renders on `incomplete` even with an EMPTY list, and does not claim a page was clipped", async () => {
+    // `{ total: 0, entries: [], incomplete: true }` is a fully reachable,
+    // schema-valid response: query drift drops the rows, so the drafts that
+    // would have widened are missing from the LIST and from the COUNT. Gated on
+    // `entries.length` alone — which is how this shipped before the review panel
+    // — the panel renders nothing at all and the admin publishes an ACL change
+    // they were never shown. That is the failure this whole surface exists to
+    // prevent, in the direction nobody can report afterwards.
+    oversight = {
+      ...oversight,
+      willWiden: { total: 0, entries: [], truncated: false, incomplete: true },
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("could not evaluate every draft"),
+    );
+    const text = view.container.textContent ?? "";
+    // The headline must NOT state a count — Atlas knows a lower bound and
+    // nothing more, and "0 facts" would be a confident wrong answer.
+    expect(text).toContain("may widen the audience of more facts than Atlas can list");
+    // …and must NOT borrow the truncation copy, which claims the remainder
+    // exists, is yours, and is counted. All false on this path. One boolean
+    // carrying both facts is what made that sentence ship.
+    expect(text).not.toContain("did not fit in one response");
+  });
+
   test("the publish modal states the workspace-wide count before the confirm button", async () => {
     // The modal is the confirm surface; an admin who never visits the review
     // page must still learn a publish will retire published beliefs. The

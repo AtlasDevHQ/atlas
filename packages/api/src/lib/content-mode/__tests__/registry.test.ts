@@ -15,6 +15,12 @@
 import { describe, it, expect } from "bun:test";
 import { Effect, Layer } from "effect";
 import { IDENTITY_MUTATION_LOCK_NAMESPACE } from "@atlas/api/lib/brain/identity";
+// The two held-back diagnostics as VALUES: the ordered double below tells them
+// apart by identity, never by a substring both share through their builder.
+import {
+  CARDINALITY_HELD_BACK_COUNT_SQL,
+  TIER_HELD_BACK_COUNT_SQL,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import type { ModeDraftCounts, PublishPromotedCounts } from "@useatlas/types/mode";
 import { CONTENT_MODE_TABLES } from "../tables";
 import type { InferDraftCounts, InferPromotedCounts } from "../infer";
@@ -703,17 +709,24 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // and shifts every assertion after it by one.
     expect(calls[12].sql).toContain("superseded_id");
     expect(calls[13].sql).toContain("SAVEPOINT brain_tier_held_back");
-    expect(calls[14].sql).toContain("IS NOT TRUE");
+    // ⚠️ Identified by statement IDENTITY, never by a substring. These two lines
+    // read `IS NOT TRUE` / `NOT (…)` until #5032, on the argument that the
+    // three-valued tier negation was spelled nowhere else — and #5032 spelled it
+    // inside `collisionCorePredicate`, which BOTH counts are built from, so the
+    // second assertion started failing and the first stopped distinguishing
+    // anything. A substring taken from a SHARED BUILDER is a claim about the
+    // whole builder tree; `===` against the exported constant is a claim about
+    // one statement, which is what an ordered double needs. (Two sibling doubles
+    // in `brain-facts.test.ts` and `brain-facts-logging.test.ts` carried the
+    // identical defect and moved with this one.)
+    expect(calls[14].sql).toBe(TIER_HELD_BACK_COUNT_SQL);
     expect(calls[15].sql).toContain("SAVEPOINT brain_cardinality_held_back");
-    // Identified by `NOT EXISTS` rather than by the table name: calls 12, 14 AND
-    // 16 all name `brain_predicate_cardinality`. Call 12 joins on
-    // `supersessionCollisionPredicate` and call 14 on `collisionIdentityPredicate`
-    // — both of which contain `cardinalitySingleSql` — while this one joins on
-    // the CORE and negates it. Pinning on the table name would pass if this
-    // statement were replaced by a second copy of the tier count; `NOT EXISTS`
-    // is what distinguishes them.
-    expect(calls[16].sql).toContain("NOT EXISTS");
-    expect(calls[16].sql).not.toContain("IS NOT TRUE");
+    expect(calls[16].sql).toBe(CARDINALITY_HELD_BACK_COUNT_SQL);
+    // …and the two really are DIFFERENT statements. Without this, both
+    // assertions above would pass against a tree that had collapsed them into
+    // one — which is exactly the failure the old `NOT EXISTS` check was
+    // reaching for, stated as the property instead of as a proxy for it.
+    expect(TIER_HELD_BACK_COUNT_SQL).not.toBe(CARDINALITY_HELD_BACK_COUNT_SQL);
     expect(calls[17].sql).toContain("brain_edges");
     expect(calls[18].sql).toContain("UPDATE brain_facts");
 

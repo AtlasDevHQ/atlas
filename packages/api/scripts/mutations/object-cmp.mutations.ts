@@ -170,8 +170,13 @@ below is the direct measurement of that.
       edits: [
         {
           file: SOURCE,
-          oldString: '  if (entityId !== undefined && entityId.trim() !== "") {',
-          newString: '  if (entityId !== undefined && entityId.trim() !== "" && parseSurface(surface) === null) {',
+          // Re-anchored by #5032: the entity arm moved into `entityComparable`
+          // so the SUBJECT position could reach the same spelling of
+          // `entity:<id>`. The mutation is unchanged in substance — demote the
+          // store below the parser — and is now spelled at the branch that
+          // consumes it.
+          oldString: "  const resolved = entityComparable(entityId);\n  if (resolved !== null) return { value: resolved, reason: \"resolved\" };",
+          newString: "  const resolved = entityComparable(entityId);\n  if (resolved !== null && parseSurface(surface) === null) return { value: resolved, reason: \"resolved\" };",
         },
       ],
       note: "Demotes the entity store below the parser, so a resolved `Enterprise tier` / `Enterprise Plan` pair stops comparing equal the moment either surface happens to parse.",

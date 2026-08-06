@@ -1696,18 +1696,26 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         // the superseded row must NOT absorb the evidence — it is hidden from
         // every as-of-now read, so corroborating it would swallow the flip.
         //
-        // FOUR binds since #5030 — the three slot keys and the comparable value
-        // — and the last one is not optional padding: `reconcile.ts` corroborates
-        // on `object_key = $4 OR object_cmp = $5`, so a re-observation whose
-        // typed value matches would corroborate through the second arm even when
-        // the keys disagree. Binding only the keys here would test a statement
-        // this repo does not run.
+        // FIVE binds since #5032 — the three slot keys, the OBJECT's comparable
+        // value (#5030) and the SUBJECT's (#5032) — and neither `_cmp` is
+        // optional padding. `reconcile.ts` corroborates on
+        // `object_key = $4 OR object_cmp = $5`, so a re-observation whose typed
+        // value matches would corroborate through the second arm even when the
+        // keys disagree; and `$6` is vetoed by proven SUBJECT difference, whose
+        // polarity is INVERTED (a match there suppresses rather than enables).
+        // Binding fewer would test a statement this repo does not run — and pg
+        // says so, rather than silently answering: an arity mismatch is a bind
+        // error, which is why this call site had to move with the statement.
+        //
+        // `null` at the subject, which is what a claim with no entity store
+        // carries and therefore what the shipped default writes on every row.
         const back = await pool.query(CORROBORATION_LOOKUP_SQL, [
           ws,
           slotKey("alice", identityAlias),
           slotKey("manager", identityAlias),
           slotKey("bob", identityAlias),
           comparableValue({ surface: "bob", entityId: "ent:bob" }),
+          null,
         ]);
         expect(back.rows).toEqual([]);
         // The CURRENT claim still corroborates normally.
@@ -1717,6 +1725,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           slotKey("manager", identityAlias),
           slotKey("carol", identityAlias),
           comparableValue({ surface: "carol", entityId: "ent:carol" }),
+          null,
         ]);
         expect(current.rows.map((r) => r.id)).toEqual([draft]);
       },

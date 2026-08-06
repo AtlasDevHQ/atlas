@@ -27,12 +27,12 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `MONEY_RE` back to `\s+` (a newline separates the tokens) | 1 |
 | `canonicalDecimal` loses its `-0` fold | 1 |
 | `comparableTag` loses its `boundary === -1` arm (`moneys` reads as `money`) | 1 |
-| `comparableValue` prefers the surface parse over `entityId` | 1 |
+| `comparableValue` prefers the surface parse over `entityId` | 2 |
 | `comparableDifferentSql` loses its `split_part` tag equality arm | 1 |
 | `comparableDifferentSql` loses its known-tag `IN` arm | 0 |
 | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | 0 |
 
-Suite sizes: **object-cmp.test.ts** 58 tests (`src/lib/brain/__tests__/object-cmp.test.ts`).
+Suite sizes: **object-cmp.test.ts** 59 tests (`src/lib/brain/__tests__/object-cmp.test.ts`).
 
 ## Notes
 

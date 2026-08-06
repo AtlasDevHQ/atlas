@@ -411,9 +411,68 @@ function canonicalCurrency(raw: string): string | null {
 // Composition
 // ---------------------------------------------------------------------------
 
-/** `<tag>:<payload>`, the one place the wire format is written. */
-function tagged(tag: ComparableTag, payload: string): TaggedComparable {
+/**
+ * `<tag>:<payload>`, the one place the wire format is written.
+ *
+ * GENERIC in the tag since #5032, which costs nothing at runtime and buys the
+ * narrowing {@link entityComparable} needs: without it every producer returns
+ * the union `TaggedComparable`, and a value that can only ever be `entity:…` is
+ * indistinguishable at the type level from one that could be `money:…`.
+ */
+function tagged<T extends ComparableTag>(
+  tag: T,
+  payload: string,
+): `${T}${typeof TAG_SEPARATOR}${string}` {
   return `${tag}${TAG_SEPARATOR}${payload}`;
+}
+
+/**
+ * A resolved entity id, tagged — the ONLY shape an entity-derived comparable
+ * value can take, spelled as a type rather than as a promise in a docstring.
+ *
+ * ⚠️ This is what makes `agreementBinds`'s two comparable parameters
+ * distinguishable to the compiler (#5032). They are adjacent, they mean OPPOSITE
+ * things — the object's proven difference ENABLES a `valid_to` stamp, the
+ * subject's SUPPRESSES every consumer — and while both were `ComparableValue` a
+ * swap type-checked perfectly. `EntityComparable` is a strict subtype, so the
+ * subject parameter refuses a general one and the swap is a compile error.
+ *
+ * Not a brand: a template-literal type costs nothing, needs no minting site, and
+ * is exactly as strong as the property being claimed. `subject-cmp.ts` is where
+ * the "and never a parse of the surface" half is enforced.
+ */
+export type EntityComparable = `${typeof ENTITY_TAG}${typeof TAG_SEPARATOR}${string}` | null;
+
+/**
+ * A resolved entity id as a comparable value — `entity:<id>` — or `null` for an
+ * abstain (no id, or an id that is blank once trimmed).
+ *
+ * Exported because there are now TWO positions whose comparable value can be an
+ * entity id, and they must not spell it twice: this function is
+ * {@link comparableValueWithReason}'s first arm at the object AND the whole of
+ * `subject-cmp.ts`'s `subjectComparableValue` at the subject. A second spelling
+ * of `entity:` is a value #5035's null-at-import rule would fail to
+ * discriminate, since that rule keys on the tag.
+ *
+ * Returns {@link EntityComparable}, NOT the wider `ComparableValue`. That
+ * narrowing is the whole point — see the type — and it is why `tagged` became
+ * generic.
+ *
+ * The `trim()`-to-blank arm is not decoration: an id of `"   "` would tag a
+ * comparable value with nothing, producing `entity:` — one of the exact
+ * malformed shapes `comparableDifferentSql`'s `strpos` arms exist to refuse,
+ * reached from the writer rather than from an importer.
+ *
+ * ⚠️ Takes `string | undefined` and no longer `| null`: no caller passes `null`,
+ * and a parameter that accepts more than any caller needs is the one the next
+ * caller feeds something unvalidated. The `typeof` guard stays anyway — it is
+ * what keeps the function honest against a caller that reaches it through
+ * `unknown`.
+ */
+export function entityComparable(entityId: string | undefined): EntityComparable {
+  if (typeof entityId !== "string") return null;
+  const trimmed = entityId.trim();
+  return trimmed === "" ? null : tagged(ENTITY_TAG, trimmed);
 }
 
 /**
@@ -563,9 +622,8 @@ export interface ComparableOutcome {
 export function comparableValueWithReason(input: ComparableInput): ComparableOutcome {
   const { surface, declared, entityId } = input;
 
-  if (entityId !== undefined && entityId.trim() !== "") {
-    return { value: tagged(ENTITY_TAG, entityId.trim()), reason: "resolved" };
-  }
+  const resolved = entityComparable(entityId);
+  if (resolved !== null) return { value: resolved, reason: "resolved" };
 
   const parsed = parseSurface(surface);
   if (declared === undefined) {

@@ -345,12 +345,39 @@ export interface EvidenceWidenedGrant {
  * - **Union, not "pick the widest".** Widest is not a total order —
  *   `audience:A` and `audience:B` are incomparable — but visibility is token
  *   overlap, so the set of readers a grant admits is monotone in its tokens and
- *   the union IS the least upper bound. It is also the honest reading: the
- *   claim was stated in A and in B, and a reader of either already saw it said.
- *   That last part is the safety argument, and it is about the CLAIM only —
+ *   the union IS the least upper bound. It is also *usually* the honest reading:
+ *   the claim was stated in A and in B, and a reader of either already saw it
+ *   said.
+ *
+ *   ⚠️ **That sentence is the safety argument, and SUBJECT HOMONYMY MAKES IT
+ *   FALSE (#5032, ADR-0037 §5).** It was written here unqualified and should not
+ *   have been. `CORROBORATION_LOOKUP_SQL` (`reconcile.ts`) matches on the SLOT
+ *   KEYS, and a key is a function of the SURFACE — so two different entities
+ *   sharing a name (`Acme Corp` the vendor, `Acme Corp` the account) land in one
+ *   slot, and a public episode about one becomes EVIDENCE for a private fact
+ *   about the other. The claim was not stated in B. A *different entity's* claim
+ *   was, and this function then hands its audience the private claim's BODY —
+ *   which is a strictly worse disclosure than the attribution one below, because
+ *   no read-time narrowing withholds it. Corroboration is the only identity
+ *   consumer with no grant arm and no cardinality arm, so nothing else stops it.
+ *
+ *   `brain_facts.subject_cmp` (migration 0193, `lib/brain/subject-cmp.ts`) is
+ *   what closes the reachable half: when the entity store proves the two
+ *   subjects are different entities the corroboration lookup does not match at
+ *   all, so no evidence edge is written and there is nothing here to union.
+ *   **It does not close all of it, and that is permanent** — only a
+ *   warehouse-backed subject can supply a `subject_cmp`, so the
+ *   extractor↔extractor homonym (the case that occurs today) stays live. It is
+ *   guarded rather than prevented, by `loadWideningPreview`'s review-gate
+ *   notice, which fires exactly when {@link EvidenceWidenedGrant.added} would be
+ *   non-empty. Read that as *"a human is told, and may click through"*, not as
+ *   *"this cannot happen"*.
+ *
+ *   The rest of the argument is about the CLAIM only —
  *   ADR-0036 §T5 has provenance ride the fact's grant, and a fact's provenance
  *   names its FIRST episode (`sourceId`, `actor`, `occurredAt`). So a reader
- *   gained by widening learns nothing new about the claim, and WOULD learn who
+ *   gained by widening learns nothing new about the claim *when the two rows
+ *   really are about one entity*, and WOULD learn who
  *   said it first, in which channel, and when. #4823 accepted that price;
  *   #4836 no longer does. The attribution triple is now narrowed at READ time:
  *   `attributionDecision` (`lib/brain/attribution.ts`) withholds it from any

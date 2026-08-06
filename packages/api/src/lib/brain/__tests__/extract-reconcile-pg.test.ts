@@ -513,13 +513,22 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       subject_key: string | null;
       object_key: string | null;
       object_cmp: string | null;
-    }>(`SELECT subject_key, object_key, object_cmp FROM brain_facts`);
+      subject_cmp: string | null;
+    }>(`SELECT subject_key, object_key, object_cmp, subject_cmp FROM brain_facts`);
     // Through the double's own rule rather than a hand-copied literal, so the
     // two sides are one fact: the id the store minted, read back off the column
     // the stage actually wrote.
     expect(rows[0]!.object_cmp).toBe(`entity:${adversarialId("Acme Corp")}`);
-    // …and the subject's id, which the batch also resolved, reached NOTHING.
-    // #5032 gives it `subject_cmp`; until then a leak would show up here.
+    // …and the SUBJECT's id lands in `subject_cmp` since #5032. This assertion
+    // replaced one that said the subject's id "reached NOTHING" — true until
+    // this column existed, and a claim the slice itself falsified.
+    //
+    // It is a second, independent falsifier for the two-position batch, at a
+    // site the corpus does not cover: the corpus varies whether two claims
+    // agree, this one asks where ONE resolved id lands. The pairing with the
+    // key assertions below is the whole point — the id reaches the `_cmp`
+    // column and NOT the key, which is #5000 re-caused by the fix for #5000.
+    expect(rows[0]!.subject_cmp).toBe(`entity:${adversarialId("Deploy_Window")}`);
     expect(rows[0]!.subject_key).toBe("deploy window");
     expect(rows[0]!.object_key).toBe("acme corp");
   });

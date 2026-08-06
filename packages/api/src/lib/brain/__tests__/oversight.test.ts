@@ -36,10 +36,13 @@ import {
   OVERSIGHT_BUCKET_MAX,
   OVERSIGHT_TOTALS_SQL,
   WILL_SUPERSEDE_PAIR_MAX,
+  WILL_WIDEN_ENTRY_MAX,
   classifyToken,
   loadConfiguredChannels,
   loadFactOversight,
   loadSupersessionPreview,
+  loadWideningPreview,
+  willWidenRowsSql,
   type ConfiguredChannels,
 } from "@atlas/api/lib/brain/oversight";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
@@ -108,6 +111,14 @@ interface ReaderOptions {
   willSupersedeTotal?: unknown;
   /** Reader-scoped will-supersede pair rows (#4912). */
   willSupersedePairs?: readonly unknown[];
+  /**
+   * Reader-scoped will-widen rows (#5032) — one row per (draft, evidence
+   * episode) pair, which the loader groups.
+   *
+   * Defaulted to `[]` rather than left undefined so every pre-#5032 test lands
+   * a `total: 0` disclosure instead of tripping the loader's drift path.
+   */
+  willWidenRows?: readonly unknown[];
 }
 
 function reader(options: ReaderOptions): BrainCandidateReader {
@@ -134,6 +145,14 @@ function reader(options: ReaderOptions): BrainCandidateReader {
       }
       if (sql.includes("scoped_total")) {
         return { rows: [...(options.willSupersedePairs ?? [])] };
+      }
+      // The will-widen projection (#5032). Discriminated on `evidence_grant`,
+      // which is unique to it — the will-supersede pair statement above is
+      // matched on `scoped_total` and this one selects no such column, so the
+      // two cannot be confused. Placed AFTER the pair arm anyway, so a future
+      // statement selecting both would be answered by the more specific one.
+      if (sql.includes("evidence_grant")) {
+        return { rows: [...(options.willWidenRows ?? [])] };
       }
       if (sql.includes("COUNT(DISTINCT g.token)")) {
         // `in` rather than `??`: the drift tests pass `null`, and `?? 0` would
@@ -550,16 +569,17 @@ describe("loadFactOversight", () => {
       reviewable: 26,
     });
     const result = await loadFactOversight(db, ctx());
-    // Merged exactly as the route merges it — the strict schema REQUIRES the
-    // will-supersede section (#4912), so parsing the counts alone would fail
-    // for the wrong reason. Its pair labels are the ONE sanctioned content
-    // channel and are reader-scoped; here the fixture carries none, so the
+    // Merged exactly as the route merges it — the strict schema REQUIRES both
+    // disclosure sections (#4912, #5032), so parsing the counts alone would
+    // fail for the wrong reason. Their labels are the TWO sanctioned content
+    // channels and both are reader-scoped; here the fixtures carry none, so the
     // no-content sweep below still covers the whole payload.
     const willSupersede = await loadSupersessionPreview(db, ctx());
+    const willWiden = await loadWideningPreview(db, ctx());
 
     // Parses against the strict wire schema, so an extra key is a failure here
     // and not a silent strip.
-    const parsed = BrainFactOversightSchema.parse({ ...result, willSupersede });
+    const parsed = BrainFactOversightSchema.parse({ ...result, willSupersede, willWiden });
     const COUNTERS = ["awaitingReview", "published", "retracted", "provisional", "inTension"];
     for (const bucket of parsed.buckets) {
       // Exhaustive, per arm — a new key on either is a failure rather than
@@ -986,5 +1006,225 @@ describe("loadSupersessionPreview", () => {
     await loadFactOversight(reader({ seen }), ctx());
     const reviewable = seen.find((sql) => sql.includes("COUNT(*)::int AS n")) ?? "";
     expect(reviewable).toContain("(f.valid_to IS NULL OR f.valid_to > now())");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The review-gate widening disclosure (#5032)
+// ---------------------------------------------------------------------------
+
+/**
+ * One (draft, evidence episode) row of {@link willWidenRowsSql}'s projection.
+ *
+ * The loader groups these by `fact_id`, so a draft with two evidence episodes
+ * is two rows here — which is the shape the SQL really produces and the one a
+ * single-row fixture would hide.
+ */
+function widenRow(
+  factId: string,
+  factGrant: readonly unknown[],
+  evidenceGrant: readonly unknown[],
+  over: Record<string, unknown> = {},
+) {
+  return {
+    fact_id: factId,
+    label: `acme corp status active (${factId})`,
+    fact_grant: [...factGrant],
+    evidence_grant: [...evidenceGrant],
+    ...over,
+  };
+}
+
+describe("loadWideningPreview (#5032)", () => {
+  it("fires when the evidence adds a grant token the fact does not hold", async () => {
+    // THE positive control, and the case the whole slice exists for: a claim
+    // stored `audience:procurement` whose evidence includes an `org` episode.
+    // Publishing serves it to `org` — and if the two episodes are about two
+    // different `Acme Corp`s, that is a private claim's body reaching everyone.
+    const result = await loadWideningPreview(
+      reader({
+        willWidenRows: [widenRow("f-1", ["audience:procurement"], ["org"])],
+      }),
+      ctx(),
+    );
+    expect(result).toEqual({
+      total: 1,
+      entries: [{ factId: "f-1", label: "acme corp status active (f-1)", added: ["org"] }],
+      truncated: false,
+      incomplete: false,
+    });
+  });
+
+  it("does NOT fire on an ordinary corroboration", async () => {
+    // THE prohibition, and its absence is what would make the notice worthless.
+    // Widening fires on legitimate corroboration too — every re-observation
+    // writes a provenance edge — so a disclosure that reported "this publish has
+    // evidence edges" would fire on essentially every publish, and a reviewer
+    // learns to click through it in a week. The gate is `added` being non-empty,
+    // never "an evidence row exists".
+    //
+    // Two evidence episodes, both granted exactly what the fact already holds,
+    // which is what an ordinary re-observation looks like.
+    const result = await loadWideningPreview(
+      reader({
+        willWidenRows: [
+          widenRow("f-1", ["org"], ["org"]),
+          widenRow("f-1", ["org"], ["org"]),
+        ],
+      }),
+      ctx(),
+    );
+    expect(result).toEqual({ total: 0, entries: [], truncated: false, incomplete: false });
+  });
+
+  it("does not fire when the union admits nobody new, because role matching is monotone", async () => {
+    // The second half of the same prohibition, and the one a hand-rolled "does
+    // the evidence have a token the fact lacks?" predicate gets WRONG: the token
+    // `role:member` is genuinely absent from a fact granted `role:owner`, so a
+    // set-difference in SQL would list this — but `parseGrant`/`formatPrincipal`
+    // round-trip it and `widenGrantFromEvidence` still reports it as added,
+    // while a MALFORMED evidence token is dropped. This fixture pins the
+    // malformed half, which is the one that separates the shipped function from
+    // any restatement of it: `everyone` is not in the grant grammar, grants
+    // nobody, and must not produce a notice.
+    const result = await loadWideningPreview(
+      reader({ willWidenRows: [widenRow("f-1", ["org"], ["everyone", "org"])] }),
+      ctx(),
+    );
+    expect(result.entries, "a malformed evidence token produced a widening notice").toEqual([]);
+  });
+
+  it("groups a draft's evidence episodes into ONE entry, in the SQL's order", async () => {
+    // A draft with several evidence episodes is several rows, and reporting it
+    // three times would tell a reviewer three ACL changes are coming when one
+    // is. The token ORDER is asserted too: it is the order publish will store
+    // (`EVIDENCE_GRANTS_SQL` orders by the same two columns), and a reviewer
+    // comparing the notice against the result should not have to explain a
+    // difference away.
+    const result = await loadWideningPreview(
+      reader({
+        willWidenRows: [
+          widenRow("f-1", ["audience:procurement"], ["audience:finance"]),
+          widenRow("f-1", ["audience:procurement"], ["org"]),
+          widenRow("f-1", ["audience:procurement"], ["audience:finance"]),
+        ],
+      }),
+      ctx(),
+    );
+    expect(result.total).toBe(1);
+    expect(result.entries[0]?.added).toEqual(["audience:finance", "org"]);
+  });
+
+  it("reports the true total and flags truncation rather than letting the client infer it", async () => {
+    // `total` is taken BEFORE the cap. A client computing the count from
+    // `entries.length` under a clipped page would under-report an ACL change,
+    // which is `distinctAudiences`' rule applied to the surface where being
+    // wrong means an unannounced disclosure.
+    const rows = Array.from({ length: WILL_WIDEN_ENTRY_MAX + 3 }, (_, i) =>
+      widenRow(`f-${i}`, ["audience:procurement"], ["org"]),
+    );
+    const result = await loadWideningPreview(reader({ willWidenRows: rows }), ctx());
+    expect(result.total).toBe(WILL_WIDEN_ENTRY_MAX + 3);
+    expect(result.entries).toHaveLength(WILL_WIDEN_ENTRY_MAX);
+    expect(result.truncated).toBe(true);
+    // …and NOT `incomplete`: every draft was evaluated, the list is merely
+    // short, and `total` counts the remainder. The inverse of the drift test
+    // above, and the pair is what makes each flag mean one thing.
+    expect(result.incomplete, "a clipped page was reported as unevaluated drafts").toBe(false);
+  });
+
+  it("drops a row whose grants did not load as arrays, and never coerces one to []", async () => {
+    // Query drift, and it is dropped in BOTH directions on purpose. An empty
+    // FACT grant would make every evidence token look newly added — a
+    // fabricated disclosure; an empty EVIDENCE grant would make a real widening
+    // vanish — a false all-clear. Neither is better than the other, so neither
+    // is guessed.
+    const result = await loadWideningPreview(
+      reader({
+        willWidenRows: [
+          widenRow("f-1", ["audience:procurement"], ["org"], { fact_grant: "org" }),
+          widenRow("f-2", ["audience:procurement"], ["org"], { evidence_grant: null }),
+          // …and the positive control beside them, so "everything was dropped"
+          // and "the loader stopped working" are distinguishable.
+          widenRow("f-3", ["audience:procurement"], ["org"]),
+        ],
+      }),
+      ctx(),
+    );
+    expect(result.entries.map((e) => e.factId)).toEqual(["f-3"]);
+    // …and the drop is reported as `incomplete`, NOT as `truncated`. A dropped
+    // row is missing from `total` too, so the two facts are different: a
+    // truncated list understates itself by an amount `total` still reports, an
+    // incomplete one understates `total` as well. Asserting BOTH fields is what
+    // stops a future edit collapsing them back into one boolean — which is what
+    // made the panel copy claim "the rest did not fit in one response" about
+    // drafts Atlas never evaluated.
+    expect(result.incomplete, "a dropped row left the response looking complete").toBe(true);
+    expect(result.truncated, "a dropped row was reported as a clipped page").toBe(false);
+    expect(result.total).toBe(1);
+  });
+
+  it("scopes the projection to the reader's own ACL and to draft, live rows", async () => {
+    const seen: string[] = [];
+    await loadWideningPreview(reader({ seen, willWidenRows: [] }), ctx());
+    const sql = seen.find((s) => s.includes("evidence_grant")) ?? "";
+    // The DRAFT scan bound (#5032 panel round): a `LIMIT` inside the CTE, before
+    // the evidence join, so every draft that survives it carries its COMPLETE
+    // evidence list. A row-level `LIMIT` would hand `widenGrantFromEvidence` a
+    // partial input and under-report an ACL change while still listing it —
+    // strictly worse than omitting the draft.
+    expect(sql).toContain("WITH scoped AS");
+    expect(sql, "the bound is on rows, not drafts — a clipped evidence list under-reports `added`").toMatch(
+      /LIMIT \$\d+\s*\n\s*\)/,
+    );
+    // Reader-scoped on the FACT. Without this the notice would name claims the
+    // reader's grant excludes — the one thing `oversight.ts`'s module rule
+    // forbids outside a reader-scoped projection.
+    expect(sql).toContain("f.workspace_id = $");
+    // Drafts only, and live. A published fact has already widened; an
+    // invalidated one will not be promoted.
+    expect(sql).toContain("f.status = 'draft'");
+    expect(sql).toContain("f.invalidated_at IS NULL");
+    // The evidence pointer is the `provenance` edge and nothing else —
+    // `EVIDENCE_GRANTS_SQL` narrows to the same edge type, and widening off a
+    // `derives-from` edge would let a lineage relationship move an ACL.
+    expect(sql).toContain("e.edge_type = 'provenance'");
+    // Workspace-scoped on BOTH joins, like the statement it mirrors: the
+    // composite FKs make a cross-tenant edge unstorable, and this is the query
+    // whose output describes an ACL change.
+    expect(sql).toContain("ep.workspace_id = e.workspace_id");
+  });
+
+  it("refuses to answer a reader it cannot identify", async () => {
+    // Fail-closed, exactly like the supersession preview: an unresolvable
+    // reader must not receive an empty widening list, which renders as "nothing
+    // will widen" — a confident false all-clear on a disclosure surface.
+    await expect(
+      loadWideningPreview(reader({}), {
+        origin: "unresolved",
+        workspaceId: WS,
+        userId: null,
+        role: null,
+        audienceIds: [],
+      }),
+    ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
+  });
+
+  it("selects no episode BODY, and no claim beyond the label it discloses", () => {
+    // The module's no-content rule, applied to the one new projection. The
+    // label is sanctioned (reader-scoped, like the will-supersede pairs); the
+    // episode's body, its actor and its source id are not, and this statement
+    // touches `brain_episodes` — the table the module header names by hand.
+    const sql = willWidenRowsSql("f.workspace_id = $1", 2);
+    for (const forbidden of ["ep.body", "ep.source_actor", "ep.source_id", "f.provenance"]) {
+      expect(sql, `the widening projection selects ${forbidden}`).not.toContain(forbidden);
+    }
+    // …and the evidence ORDER matches the transaction's. `EVIDENCE_GRANTS_SQL`
+    // orders by `ep.ingested_at, ep.id` so the stored token order does not
+    // depend on the query plan; this notice discloses the order publish will
+    // WRITE, and a reviewer comparing the two should not have to explain a
+    // difference away. The grouping test cannot see this — it preserves
+    // whatever order the fixture supplies, so it agrees with itself.
+    expect(sql).toContain("ep.ingested_at, ep.id");
   });
 });

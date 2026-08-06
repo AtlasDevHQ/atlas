@@ -62,7 +62,11 @@ void mock.module("@atlas/api/lib/logger", () => ({
   hashShareToken: (token: string) => token,
 }));
 
-const { promoteBrainFacts } = await import("@atlas/api/lib/content-mode/adapters/brain-facts");
+// The two held-back statements are imported as VALUES, not matched by
+// substring: the tx double below discriminates on identity, for the reason its
+// own ⚠️ records.
+const { promoteBrainFacts, TIER_HELD_BACK_COUNT_SQL, CARDINALITY_HELD_BACK_COUNT_SQL } =
+  await import("@atlas/api/lib/content-mode/adapters/brain-facts");
 // Imported the same way as the module under test rather than statically: a
 // static import is hoisted above the `mock.module` call above, and while
 // `identity.ts` happens not to pull the logger today, "happens not to" is the
@@ -146,13 +150,25 @@ function tx(
       }
       // TWO statements name `held_back` since #5027 — the tier count and the
       // uncurated-cardinality count — over the same collision core. Told apart
-      // on `IS NOT TRUE`, #5033's three-valued negation, which #5027's count
-      // does not use (`cardinalitySingleSql` is an `EXISTS`, negated with a bare
-      // `NOT`). Without the discriminator the cardinality statement would be
-      // handed the tier fixture's value, including its EXPLODE sentinel, and
-      // every assertion in this block would be about the wrong statement.
+      // on statement IDENTITY. Without a discriminator the cardinality statement
+      // would be handed the tier fixture's value, including its EXPLODE
+      // sentinel, and every assertion in this block would be about the wrong
+      // statement.
+      //
+      // ⚠️ It used to key on `IS NOT TRUE` — "#5033's three-valued negation,
+      // which #5027's count does not use" — and #5032 put that spelling inside
+      // `collisionCorePredicate`, which BOTH statements are built from. Every
+      // statement then read as the tier one and the cardinality fixture went
+      // unreachable. A substring taken from a SHARED BUILDER is a claim about
+      // the whole builder tree; `===` against the exported constant is a claim
+      // about one statement, which is what a double needs.
       if (sql.includes("held_back")) {
-        if (!sql.includes("IS NOT TRUE")) {
+        if (sql !== TIER_HELD_BACK_COUNT_SQL && sql !== CARDINALITY_HELD_BACK_COUNT_SQL) {
+          throw new Error(
+            "a third `held_back` statement reached the tx double, or one of the two drifted from its exported constant — this double can no longer tell them apart",
+          );
+        }
+        if (sql === CARDINALITY_HELD_BACK_COUNT_SQL) {
           if (uncurated === EXPLODE) throw new Error("uncurated count exploded");
           return { rows: [{ held_back: uncurated }] };
         }

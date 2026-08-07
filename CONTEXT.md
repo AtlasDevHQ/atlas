@@ -61,10 +61,22 @@ The install **handler** it uses (OAuth, Form, Static-bot per "Install models" be
 
 ### Surfaces
 
+- **Claim Vocabulary** — the workspace-curated set of decisions about **which spellings mean the same thing**, read by claim identity (ADR-0037 §6). Two relations, not one: **approved edges** are the human's decisions (at-most-one-parent, never rewritten by another approval), and the **effective target** is their transitive closure — what `alias` actually reads. Removal is therefore a *recomputation*, not a delete, which is what keeps a bad alias undoable. **Position-scoped**: a decision at the predicate position never re-keys subjects.
+
+  A single decision is an **alias** — a directed pair of norms at one position. The human who decides one is an **approver** (plain owner/admin entitlement — `acl.ts`'s only owner/admin gate; there is no standing curator role and Atlas should not invent one). Cardinality is a **second vocabulary property under the same authority**, not a separate system.
+
+  **Qualified deliberately.** Bare "vocabulary" is already taken in this glossary — the `source` vocabulary above (`EPISODE_SOURCE_SPECS`) is a fixed enum shipped in code that no customer touches. The Claim Vocabulary is its opposite in every property that matters: workspace-scoped, human-authored, mutable, and the thing an admin is editing. The code already agrees (`loadClaimVocabulary`, `ClaimVocabulary`).
+
+  It is **the one piece of brain state with no ACL, permanently** (ADR-0037 §6) — a derived invariant, since the identity consumers carry no grant arm and keys are materialized by a fiber that has no reader. Per-team terminology is *refused* by that decision, not merely unimplemented.
+
+  _Avoid_: bare **"vocabulary"** in cross-subsystem prose (say Claim Vocabulary); **"curator"** for the actor (say approver — it implies a role that does not exist); **"synonym"** (an alias is directed and position-scoped, a synonym is neither); treating the approved edges and the effective target as one thing (that conflation is the forest invariant ADR-0037 §6 had to retire).
+
+
 Every brain surface lives under `/admin/brain`, and none is a member of **Intelligence** — the sidebar group holding model configuration, prompt authoring and agent behaviour, which is a grab-bag the brain was wrongly filed into until #5066.
 
 - `/admin/brain` — overview: the backlog counts, read-only.
 - `/admin/brain/facts` — the review queue: reject what you don't trust, then publish, and what survived is promoted. **The only console surface carrying brain-fact review verbs.** Promotion itself is not exclusive to it: the shared publish modal hangs off `PendingChangesPill` in the admin top bar, so any admin can publish from any `/admin/*` route without ever opening this page — which is exactly why the publish preview discloses a workspace-wide supersession count. `brain_facts.status` is grep-guarded by `scripts/check-brain-fact-promotion.sh` to a named allowlist (today: the content-mode adapter, the region import, the correction verbs, the vocabulary re-key); the guard exempts a FILE, not a column, and records that cost itself. Was `/admin/brain-facts`, which now 308s here.
+- `/admin/brain/vocabulary` — the **Claim Vocabulary**: one queue holding both pending alias proposals and pending cardinality decisions, the blast-radius preview an approver decides against, and direct human authoring. Nav label is **Vocabulary**; the route keeps the `brain` noun per ADR-0038.
 
 ## Chat Platform mechanics
 

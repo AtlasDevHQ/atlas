@@ -69,6 +69,16 @@ The install **handler** it uses (OAuth, Form, Static-bot per "Install models" be
 
   It is **the one piece of brain state with no ACL, permanently** (ADR-0037 §6) — a derived invariant, since the identity consumers carry no grant arm and keys are materialized by a fiber that has no reader. Per-team terminology is *refused* by that decision, not merely unimplemented.
 
+  **Three levels, and they are not interchangeable** — `key = alias(lexicalNorm(surface))`:
+
+  | | What it is |
+  |---|---|
+  | **Surface** | the spelling as it was actually observed in a claim (`Ships On`, `ships on`, `499 a month`) |
+  | **Norm** | `lexicalNorm(surface)` — pure, total normalization. ASCII-only case fold plus a separator class. Composes under the vocabulary and must stay total to have a fixpoint |
+  | **Key** | the norm resolved through the Claim Vocabulary at ONE position. What the three identity consumers compare |
+
+  A **norm** is not a **key**: `identityKey` is deliberately the vocabulary-free half. The §6 prohibition *keys are never projected to the wire* is about keys — **norms necessarily appear on the vocabulary surface**, since an approver cannot approve a merge without seeing which two spellings merge (#5034's exemption, and `brain_vocabulary_edge` has stored norms since 0189).
+
   _Avoid_: bare **"vocabulary"** in cross-subsystem prose (say Claim Vocabulary); **"curator"** for the actor (say approver — it implies a role that does not exist); **"synonym"** (an alias is directed and position-scoped, a synonym is neither); treating the approved edges and the effective target as one thing (that conflation is the forest invariant ADR-0037 §6 had to retire).
 
 

@@ -298,7 +298,7 @@ describe("searchBrain tool.execute", () => {
       throw new Error("connection to postgres://user:pw@host failed");
     };
     const res = await run({ query: "x" });
-    expect(res.error).toContain("Company-brain search failed");
+    expect(res.error).toContain("Company Atlas search failed");
     expect(res.reason).toBe("search_failed");
     // The raw exception (which carries a connection string) must not leak.
     expect(JSON.stringify(res)).not.toContain("postgres://");

@@ -13,7 +13,7 @@ import { BrainFactCandidateSummarySchema } from "@/ui/lib/admin-schemas";
 type BrainSummary = z.infer<typeof BrainFactCandidateSummarySchema>;
 
 /**
- * Landing page for the Company Brain group (#5066).
+ * Landing page for the Company Atlas group (#5066).
  *
  * ## Why this page exists at all
  *
@@ -23,7 +23,7 @@ type BrainSummary = z.infer<typeof BrainFactCandidateSummarySchema>;
  * wherever the two overlap. That makes it orthogonal to all four
  * pillars rather than a fifth one, and the sidebar should read that way: its
  * own group, with this as the landing page and every curation surface
- * underneath. The taxonomy argument lives in CONTEXT.md under "Company Brain";
+ * underneath. The taxonomy argument lives in CONTEXT.md under "Company Atlas";
  * ADR-0036 holds the substrate design.
  *
  * Note the asymmetry the copy below has to respect: the brain's ingest sources
@@ -66,7 +66,7 @@ export default function CompanyBrainOverview() {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Company Brain</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Company Atlas</h1>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
           What Atlas has learned about your business from the conversations it can see —
           claims pulled out of chat history, meeting transcripts and mail, held behind a review
@@ -79,9 +79,9 @@ export default function CompanyBrainOverview() {
         <AdminContentWrapper
           loading={loading}
           error={error}
-          feature="Company Brain"
+          feature="Company Atlas"
           onRetry={refetch}
-          loadingMessage="Loading Company Brain vitals..."
+          loadingMessage="Loading Company Atlas vitals..."
         >
           <SummaryGrid summary={summary} />
         </AdminContentWrapper>

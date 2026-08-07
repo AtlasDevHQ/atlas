@@ -473,7 +473,7 @@ export default function BrainFactsPage() {
               error={error}
               isEmpty={candidates.length === 0}
               onRetry={refetch}
-              feature="Company Brain"
+              feature="Company Atlas"
               loadingMessage="Loading fact candidates..."
               emptyState={{
                 icon: Brain,

@@ -49,14 +49,18 @@ export const navGroups: NavGroup[] = [
     ],
   },
   // Not a pillar and not a member of Intelligence (CONTEXT.md, "Company
-  // Brain"). The brain is a DERIVED layer — it owns no catalog row of its own
+  // Atlas"). The Atlas is a DERIVED layer — it owns no catalog row of its own
   // (its ingest sources do, on the knowledge pillar), and it yields to the
   // warehouse Datasource wherever the two overlap. Its surfaces are one
   // curation workflow over one substrate, so they group with each other rather
   // than sitting as siblings of "Prompt Library". `/admin/brain` is the group
   // landing page; every leaf lives under it.
+  //
+  // The route and the `Brain` glyph keep the old noun on purpose (ADR-0038):
+  // the rename is a product-copy change, and `/admin/brain` is a URL with a
+  // legacy-redirect test already pointing at it.
   {
-    title: "Company Brain",
+    title: "Company Atlas",
     icon: Brain,
     items: [
       { href: "/admin/brain", label: "Overview" },
@@ -65,7 +69,7 @@ export const navGroups: NavGroup[] = [
   },
   {
     title: "Intelligence",
-    // Sparkles, not Brain — the Brain glyph moved to the Company Brain group
+    // Sparkles, not Brain — the Brain glyph moved to the Company Atlas group
     // above, and two groups sharing an icon reads as one split in half.
     icon: Sparkles,
     items: [

@@ -279,4 +279,4 @@ export function shouldRefuseTurn(probe: CapabilityProbe): boolean {
  */
 export const NO_CAPABILITY_MESSAGE =
   "This workspace has nothing for Atlas to work with yet. Connect a data source to query your data, " +
-  "add a Knowledge Base collection, or let the Company Brain learn from your team's activity.";
+  "add a Knowledge Base collection, or let the Company Atlas learn from your team's activity.";

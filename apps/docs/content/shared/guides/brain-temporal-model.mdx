@@ -1,11 +1,11 @@
 ---
-title: Company Brain — Temporal Model
-description: How the company brain records when a claim held, the difference between superseding and retracting a fact, reading the brain as of a past instant, and the advisory staleness signal.
+title: Company Atlas — Temporal Model
+description: How the Company Atlas records when a claim held, the difference between superseding and retracting a fact, reading the brain as of a past instant, and the advisory staleness signal.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The company brain stores **reviewed facts** — claims a human approved at the review gate — alongside the raw **episodes** they were drawn from. A claim that was right on Monday can be quietly wrong by Friday, so every fact carries time on two axes and nothing in the brain is ever deleted.
+The Company Atlas stores **reviewed facts** — claims a human approved at the review gate — alongside the raw **episodes** they were drawn from. A claim that was right on Monday can be quietly wrong by Friday, so every fact carries time on two axes and nothing in the brain is ever deleted.
 
 This page covers what those axes mean, the difference between a claim being *replaced* and a claim being *withdrawn*, how to read the brain as it stood at a past instant, and the advisory age signal attached to every fact.
 
@@ -115,17 +115,17 @@ Acting on the signal is a human decision, taken through the [correction verbs](/
 ## Enabling the brain
 
 <WhenSaaS>
-Nothing to set up. The company brain is available to every workspace on Atlas Cloud, and the review queue lives in the admin console under **Company Brain → Facts**.
+Nothing to set up. The Company Atlas is available to every workspace on Atlas Cloud, and the review queue lives in the admin console under **Company Atlas → Facts**.
 </WhenSaaS>
 
 <WhenSelfHosted>
-The brain stores its facts and episodes in the internal database, so a deployment needs `DATABASE_URL`. Access is resolved per reader against the workspace's `member` role, so reviewers reach the queue in the admin console under **Company Brain → Facts**.
+The brain stores its facts and episodes in the internal database, so a deployment needs `DATABASE_URL`. Access is resolved per reader against the workspace's `member` role, so reviewers reach the queue in the admin console under **Company Atlas → Facts**.
 
 Fact **extraction** is off by default and enabled with `ATLAS_BRAIN_EXTRACTION_ENABLED=true`. This is a platform-scoped setting applied at restart. Episodes are stored either way, so turning extraction on later extracts the accumulated backlog rather than losing it.
 </WhenSelfHosted>
 
 ## Related
 
-- [Company Brain — Corrections](/guides/brain-corrections) — the four verbs a human uses to fix a fact
-- [Company Brain — Conflicts](/guides/brain-conflicts) — what Atlas does when two claims disagree
+- [Company Atlas — Corrections](/guides/brain-corrections) — the four verbs a human uses to fix a fact
+- [Company Atlas — Conflicts](/guides/brain-conflicts) — what Atlas does when two claims disagree
 - <AudienceLink saas="/guides/knowledge-base">Knowledge Base</AudienceLink> — the document store `searchBrain` reads alongside the brain

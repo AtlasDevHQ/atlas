@@ -3,7 +3,7 @@
  * `resolveDatasourceUrl()` check (#4826).
  *
  * The bug this locks down is a FALSE REFUSAL: a workspace adopted for the
- * Knowledge Base or the Company Brain has no analytics datasource by design,
+ * Knowledge Base or the Company Atlas has no analytics datasource by design,
  * and the old env-level gate read that as "unusable" and 400'd every chat turn
  * before the agent loop started. So the tests that matter are the ones asserting
  * the probe reports a capability for a workspace that has *only* knowledge, or
@@ -379,6 +379,6 @@ describe("NO_CAPABILITY_MESSAGE", () => {
   it("names all three pillars so the refusal is actionable", () => {
     expect(NO_CAPABILITY_MESSAGE).toContain("data source");
     expect(NO_CAPABILITY_MESSAGE).toContain("Knowledge Base");
-    expect(NO_CAPABILITY_MESSAGE).toContain("Company Brain");
+    expect(NO_CAPABILITY_MESSAGE).toContain("Company Atlas");
   });
 });

@@ -1,11 +1,11 @@
 ---
-title: Company Brain — Writing a Source Connector
-description: The contract a new company-brain source implements — what a vendor directory must provide, why every connector owes a stable source id, and how the stored source value splits into a class and a vendor.
+title: Company Atlas — Writing a Source Connector
+description: The contract a new Company Atlas source implements — what a vendor directory must provide, why every connector owes a stable source id, and how the stored source value splits into a class and a vendor.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Adding a source to the company brain is deliberately small. The scheduling, high-water marks, incremental-versus-reconcile cadence, rate-limit backoff and per-sync caps are all shared machinery you inherit; what a new vendor writes is a client that fetches records and a declaration of what kind of evidence they are.
+Adding a source to the Company Atlas is deliberately small. The scheduling, high-water marks, incremental-versus-reconcile cadence, rate-limit backoff and per-sync caps are all shared machinery you inherit; what a new vendor writes is a client that fetches records and a declaration of what kind of evidence they are.
 
 This page is the contract. It is written for whoever adds the next vendor — a second chat platform, a second meeting recorder, a mail provider that is not Outlook — or the first connector in a class Atlas has not shipped yet.
 
@@ -201,7 +201,7 @@ There is a separate, narrower lane where an unrecognised kind *can* reach storag
 
 ## Related
 
-- [Company Brain — Sources](/guides/brain-sources) — the classes, and how each one derives its audience
-- [Company Brain — Chat Webhook Fast-Path](/guides/brain-chat-webhook) — the second writer this contract exists for
-- [Company Brain — Corrections](/guides/brain-corrections) — the correction path a source's class determines
-- [Environment variables → Company Brain](/reference/environment-variables#company-brain)
+- [Company Atlas — Sources](/guides/brain-sources) — the classes, and how each one derives its audience
+- [Company Atlas — Chat Webhook Fast-Path](/guides/brain-chat-webhook) — the second writer this contract exists for
+- [Company Atlas — Corrections](/guides/brain-corrections) — the correction path a source's class determines
+- [Environment variables → Company Atlas](/reference/environment-variables#company-atlas)

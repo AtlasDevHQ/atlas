@@ -1843,7 +1843,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // the Slack history source and which channels they scoped it to.
     key: "ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED",
     section: "Knowledge Base",
-    label: "Company Brain Chat Webhook Fast-Path",
+    label: "Company Atlas Chat Webhook Fast-Path",
     description:
       "Store Slack messages as brain episodes as they arrive, instead of waiting for the next sync. Off by default. For TOP-LEVEL messages this only changes how quickly one becomes available; for THREAD REPLIES it changes whether they are stored at all, because the scheduled sync reads conversations.history, which never returns replies. Only channels the Slack history source is scoped to are stored. Applies immediately.",
     type: "boolean",
@@ -1909,7 +1909,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // effect on the next boot rather than on the next tick.
     key: "ATLAS_BRAIN_EXTRACTION_ENABLED",
     section: "Knowledge Base",
-    label: "Company Brain Extraction",
+    label: "Company Atlas Extraction",
     description:
       "Draw fact candidates from stored episodes — chat, meeting transcripts and mail alike — with the workspace's configured model, and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart.",
     type: "boolean",
@@ -1937,7 +1937,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // since workspace precedence beats platform.
     key: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
     section: "Knowledge Base",
-    label: "Company Brain Audience Sync",
+    label: "Company Atlas Audience Sync",
     description:
       "Keep company-brain audience membership in sync so facts drawn from private chat channels, meeting transcripts and mail are visible to the people who were in them — and hidden again when someone leaves. Matches participants' email addresses against existing Atlas accounts; it never creates accounts and never stores a roster. Switching this OFF does not stop those facts being collected: it stops the membership behind them being refreshed, so they stop granting anyone once they pass the staleness bound. Slack channels additionally need Slack's users:read and users:read.email scopes.",
     type: "boolean",
@@ -1953,7 +1953,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // it?") — the answer is one interval, and this is where it is set.
     key: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
     section: "Knowledge Base",
-    label: "Company Brain Audience Sync Interval",
+    label: "Company Atlas Audience Sync Interval",
     description:
       "How often brain audience membership — private chat channels, meeting participants, mail recipients — is re-read from the source, in minutes (default 30). This is also the shortest delay between someone losing access at the source and losing access to facts drawn from it; an audience whose roster cannot be read keeps its membership until it can, up to the staleness limit below. Applies at restart; non-positive or unparseable values fall back to the default.",
     type: "number",
@@ -1978,7 +1978,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // remains at expiry is an abandoned connection, which SHOULD stop granting.
     key: "ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",
     section: "Knowledge Base",
-    label: "Company Brain Audience Staleness Limit",
+    label: "Company Atlas Audience Staleness Limit",
     description:
       "How long a brain audience's membership — a private chat channel, a meeting's participants, a mail message's recipients — stays valid after Atlas last verified it against the source, in hours (default 168 = 7 days). Past this, facts drawn from that source stop being readable through its membership until a sync succeeds again, so a source Atlas has lost access to cannot keep granting access indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to 0 to disable the limit and rely on the sync-cycle alerts alone.",
     type: "number",
@@ -2000,7 +2000,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // own broken rows get reported is the self-serving direction.
     key: "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS",
     section: "Knowledge Base",
-    label: "Company Brain Grant Sweep Interval",
+    label: "Company Atlas Grant Sweep Interval",
     description:
       "How often Atlas scans company-brain facts and episodes for access grants that name nobody, in hours (default 24). Such rows are invisible to every reader and to the review queue, and nothing repairs them automatically — the sweep only counts and logs them, and never rejects or changes anything. Applies at restart; non-positive or unparseable values fall back to the default, values below 0.05 hours (3 minutes) are clamped up, and values above ~596 hours are clamped down to the maximum timer delay.",
     type: "number",

@@ -743,7 +743,7 @@ try {
 | `rate_limited` | 429 | Yes | Too many requests (check `retryAfterSeconds`) |
 | `configuration_error` | 400 | No | Server misconfigured |
 | `no_datasource` | 400 / 503 | No | No analytics datasource URL resolved (400 on the self-hosted single-tenant path; 503 from the SQL pipeline) |
-| `no_capability` | 400 | No | This workspace has no datasource, no Knowledge Base collections, and no Company Brain content — nothing for the agent to serve |
+| `no_capability` | 400 | No | This workspace has no datasource, no Knowledge Base collections, and no Company Atlas content — nothing for the agent to serve |
 | `org_not_found` | — | No | **Deprecated — no longer emitted.** Kept in the union for wire compatibility. The no-active-organization response is `bad_request` (400); branch on that instead |
 | `invalid_request` | 400 | No | Invalid request body |
 | `validation_error` | 422 | No | Request validation failed (see `details` for field errors) |

@@ -36,9 +36,9 @@ export const FEATURE_NAMES = [
   "Cache",
   "Change plan",
   // Was "Brain Facts" (#5066). The table name `brain_facts` had been wearing a
-  // product label; the surface is the Company Brain, and the banner copy that
+  // product label; the surface is the Company Atlas, and the banner copy that
   // interpolates this ("… requires an enterprise plan") should say so.
-  "Company Brain",
+  "Company Atlas",
   "Connections",
   "CRM Outbox",
   "Custom Domains",

@@ -252,7 +252,7 @@ describe("defaultRegistry", () => {
     expect(text).toContain("### 2. Explore the Semantic Layer");
     expect(text).toContain("### 3. Write and Execute SQL");
     expect(text).toContain("### Create a Dashboard");
-    expect(text).toContain("### Search the Company Brain");
+    expect(text).toContain("### Search the Company Atlas");
     expect(text).toContain("### Correct a Company-Brain Fact");
   });
 

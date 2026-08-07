@@ -353,7 +353,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
   server.registerTool(
     "searchBrain",
     {
-      title: "Search the Company Brain",
+      title: "Search the Company Atlas",
       description: withErrorContract(searchBrain.description ?? "", SEARCH_BRAIN_ERROR_CODES),
       // #4954 — IMPORTED, not re-declared. Until then this schema was a second
       // hand-authored copy of the api-side one, kept in agreement only by a

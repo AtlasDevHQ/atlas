@@ -76,7 +76,7 @@ describe("resolveAdminBreadcrumb", () => {
     });
   });
 
-  test("Company Brain is its own group, and its landing page doesn't swallow its leaves (#5066)", () => {
+  test("Company Atlas is its own group, and its landing page doesn't swallow its leaves (#5066)", () => {
     // `/admin/brain` is a group LANDING page with a real child under it —
     // one of three sibling-prefix pairs in this file (`/admin/semantic` +
     // `/admin/semantic/improve` and `/platform` + its children are the
@@ -88,12 +88,12 @@ describe("resolveAdminBreadcrumb", () => {
     // below generalizes this to all three pairs.
     expect(resolveAdminBreadcrumb("/admin/brain")).toEqual({
       kind: "page",
-      section: "Company Brain",
+      section: "Company Atlas",
       page: "Overview",
     });
     expect(resolveAdminBreadcrumb("/admin/brain/facts")).toEqual({
       kind: "page",
-      section: "Company Brain",
+      section: "Company Atlas",
       page: "Facts",
     });
   });
@@ -136,7 +136,7 @@ describe("resolveAdminBreadcrumb", () => {
   });
 
   test("no two nav groups share an icon", () => {
-    // Splitting Company Brain out of Intelligence (#5066) left two groups
+    // Splitting Company Atlas out of Intelligence (#5066) left two groups
     // holding the `Brain` glyph until Intelligence was re-iconed. Duplicate
     // icons read as one group accidentally rendered twice, and the next split
     // will hit the same fork.

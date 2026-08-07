@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach } from "bun:test";
 /**
  * Legacy admin-URL redirects in `next.config.ts` (#5066).
  *
- * `/admin/brain-facts` was retired when the Company Brain became its own nav
+ * `/admin/brain-facts` was retired when the Company Atlas became its own nav
  * group; the page now lives at `/admin/brain/facts`. Bookmarks, the docs
  * portal, and the brain soak runbook all name the old URL, so it has to
  * redirect rather than 404.

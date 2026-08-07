@@ -72,10 +72,10 @@ const mockSearchBrainExecute = mock<(...args: unknown[]) => Promise<unknown>>(as
 }));
 void mock.module("@atlas/api/lib/tools/search-brain", () => ({
   BRAIN_TOOL_REASONS: REAL_BRAIN_TOOL_REASONS,
-  SEARCH_BRAIN_DESCRIPTION: "Search the company brain",
+  SEARCH_BRAIN_DESCRIPTION: "Search the Company Atlas",
   normalizeSearchInput: (input: Record<string, unknown>) => input,
   searchBrain: {
-    description: "Search the company brain",
+    description: "Search the Company Atlas",
     execute: mockSearchBrainExecute,
   },
 }));
@@ -1042,7 +1042,7 @@ describe("MCP tools", () => {
       // can be checked here without duplicating a 148-word string.
       //
       // Exact-match on the pre-contract paragraph, not `toContain`: the stub
-      // ("Search the company brain") is a PREFIX of the real constant, so a
+      // ("Search the Company Atlas") is a PREFIX of the real constant, so a
       // hand-written literal copied from `descriptions.ts` would satisfy a
       // substring check and `withErrorContract` would still append its section
       // — i.e. both assertions would go green on the exact decoupling this
@@ -1050,7 +1050,7 @@ describe("MCP tools", () => {
       const { client } = await createTestClient();
       const { tools } = await client.listTools();
       const description = tools.find((t) => t.name === "searchBrain")?.description;
-      expect(description?.split("\n\n")[0]).toBe("Search the company brain");
+      expect(description?.split("\n\n")[0]).toBe("Search the Company Atlas");
       expect(description).toContain("Error contract:");
     });
 
@@ -1245,7 +1245,7 @@ describe("MCP tools", () => {
       // prevent. Branching is on `reason`, so rewording the prose cannot
       // silently demote this to `internal_error`.
       mockSearchBrainExecute.mockResolvedValueOnce({
-        error: "Company-brain search was refused: ...",
+        error: "Company Atlas search was refused: ...",
         reason: REAL_BRAIN_TOOL_REASONS.readerUnresolved,
       });
       const { client } = await createTestClient();
@@ -1313,7 +1313,7 @@ describe("MCP tools", () => {
 
     it("maps every other degraded reason to `internal_error`", async () => {
       mockSearchBrainExecute.mockResolvedValueOnce({
-        error: "Company-brain search failed.",
+        error: "Company Atlas search failed.",
         reason: REAL_BRAIN_TOOL_REASONS.searchFailed,
       });
       const { client } = await createTestClient();

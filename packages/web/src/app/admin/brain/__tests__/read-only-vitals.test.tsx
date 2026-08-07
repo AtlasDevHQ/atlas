@@ -6,7 +6,7 @@ import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
 
 /**
- * What the Company Brain overview must SAY, and what it must never do
+ * What the Company Atlas overview must SAY, and what it must never do
  * (#5066). The sibling `facts/__tests__/review-honesty.test.tsx` is the model:
  * every assertion here is a place where a quiet UI would mislead an admin.
  *
@@ -179,7 +179,7 @@ function renderPage() {
   return render(createElement(CompanyBrainOverview), { wrapper: Wrapper });
 }
 
-describe("Company Brain overview — counts are never fabricated (#5066)", () => {
+describe("Company Atlas overview — counts are never fabricated (#5066)", () => {
   test("renders the four backlog counts once the summary loads", async () => {
     const view = renderPage();
     await waitFor(() => expect(view.container.textContent).toContain("41"));
@@ -237,7 +237,7 @@ describe("Company Brain overview — counts are never fabricated (#5066)", () =>
     const view = renderPage();
 
     await waitFor(() =>
-      expect(view.container.textContent ?? "").toContain("Company Brain not enabled"),
+      expect(view.container.textContent ?? "").toContain("Company Atlas not enabled"),
     );
     // The generic banner and its dead Retry button are what must NOT appear.
     expect(view.container.querySelector('[role="alert"]')).toBeNull();
@@ -275,7 +275,7 @@ describe("Company Brain overview — counts are never fabricated (#5066)", () =>
     const view = renderPage();
 
     await waitFor(() =>
-      expect(view.container.textContent ?? "").toContain("Loading Company Brain vitals"),
+      expect(view.container.textContent ?? "").toContain("Loading Company Atlas vitals"),
     );
     expectNoCounts(view.container);
     expect(view.container.textContent ?? "").not.toMatch(/\d/);
@@ -296,7 +296,7 @@ describe("Company Brain overview — counts are never fabricated (#5066)", () =>
   });
 });
 
-describe("Company Brain overview — read-only by construction (#5066)", () => {
+describe("Company Atlas overview — read-only by construction (#5066)", () => {
   test("touches no endpoint outside GET /summary", async () => {
     // The durable half of "this is not a second review queue". A label regex is
     // defeated by a "Trust this claim" button; this is defeated only by not

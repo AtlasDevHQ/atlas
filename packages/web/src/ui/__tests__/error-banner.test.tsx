@@ -61,7 +61,7 @@ describe("ErrorBanner", () => {
     // nothing connected must not be told to configure a data source env var.
     const err = makeError({
       error: "no_capability",
-      message: "Connect a data source, add a Knowledge Base collection, or let the Company Brain learn.",
+      message: "Connect a data source, add a Knowledge Base collection, or let the Company Atlas learn.",
     });
     const { container } = render(
       <ErrorBanner error={err} authMode="none" />,

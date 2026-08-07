@@ -1,11 +1,11 @@
 ---
-title: Company Brain — Sources
-description: The classes of source the company brain ingests, why they are connected in that order, exactly how each one derives who may see a fact — including where that derivation is a lower bound rather than an exact set — and why facts lag episodes by design.
+title: Company Atlas — Sources
+description: The classes of source the Company Atlas ingests, why they are connected in that order, exactly how each one derives who may see a fact — including where that derivation is a lower bound rather than an exact set — and why facts lag episodes by design.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The company brain does not ingest "documents". It ingests **episodes** — immutable, deduped records of something that was said, in a place, to an audience — and every episode carries the access grant Atlas derived for it at the moment it was stored.
+The Company Atlas does not ingest "documents". It ingests **episodes** — immutable, deduped records of something that was said, in a place, to an audience — and every episode carries the access grant Atlas derived for it at the moment it was stored.
 
 That grant is the whole reason sources arrive in the order they do. A source is easy or hard to connect not by how much text it holds, but by **how honestly Atlas can answer "who was allowed to see this?"** This page covers the classes shipped so far, the answer each one gives, and where that answer is knowingly incomplete.
 
@@ -127,7 +127,7 @@ The 500-participant bound is not a safety refusal — such a message has a perfe
 
 ## What each source needs to connect
 
-All three are installed from the integrations catalog as a **Company Brain** source, and each consumes one of your workspace's knowledge-collection slots. Every scope field is capped at **50 entries** — channels, hosts, or mailboxes — and going over is refused at install time rather than silently truncated.
+All three are installed from the integrations catalog as a **Company Atlas** source, and each consumes one of your workspace's knowledge-collection slots. Every scope field is capped at **50 entries** — channels, hosts, or mailboxes — and going over is refused at install time rather than silently truncated.
 
 <Callout type="info" title="A brain source shows up as a collection with zero documents">
   This looks like a failed install and is not. A brain source reuses the Knowledge Base collection machinery for scheduling and credentials, so it appears on the Knowledge admin page as a collection — but its records are stored as brain **episodes**, not as knowledge documents, so the document count stays at zero however much it ingests. Check the source's sync state, not its document count.
@@ -135,9 +135,9 @@ All three are installed from the integrations catalog as a **Company Brain** sou
 
 | Source | Credentials | Scope field | Required vendor permissions |
 |---|---|---|---|
-| **Company Brain (Slack history)** | None — reuses your existing Slack connection | `Channels` — required, comma-separated channel ids. Invite the Atlas bot to each first | The Slack app's existing scopes; membership sync additionally needs `users:read` and `users:read.email` |
-| **Company Brain (Zoom transcripts)** | A Zoom **Server-to-Server OAuth** app: account id, client id, client secret | `Hosts` — optional. **Blank means the whole account** | `cloud_recording:read:admin` and `meeting:read:admin` |
-| **Company Brain (Outlook mail)** | An Entra app registration: directory (tenant) id, application (client) id, client secret | `Mailboxes` — **required**, non-empty | `Mail.Read` and `User.ReadBasic.All` **application** permissions, with admin consent granted |
+| **Company Atlas (Slack history)** | None — reuses your existing Slack connection | `Channels` — required, comma-separated channel ids. Invite the Atlas bot to each first | The Slack app's existing scopes; membership sync additionally needs `users:read` and `users:read.email` |
+| **Company Atlas (Zoom transcripts)** | A Zoom **Server-to-Server OAuth** app: account id, client id, client secret | `Hosts` — optional. **Blank means the whole account** | `cloud_recording:read:admin` and `meeting:read:admin` |
+| **Company Atlas (Outlook mail)** | An Entra app registration: directory (tenant) id, application (client) id, client secret | `Mailboxes` — **required**, non-empty | `Mail.Read` and `User.ReadBasic.All` **application** permissions, with admin consent granted |
 
 Both new credential surfaces are account/tenant-scoped app credentials rather than a three-legged user login, so nothing breaks the day the admin who clicked Authorize leaves — and both work on self-hosted deployments, where there is no Atlas-registered vendor app to authorize through. Client secrets are stored encrypted and never shown again.
 
@@ -183,7 +183,7 @@ So a just-ingested episode routinely shows up in retrieval like this:
 The window is routinely open, and gets wider the more sources you connect:
 
 - **Extraction is off by default** (`ATLAS_BRAIN_EXTRACTION_ENABLED`). On a deployment that has never switched it on, every ingested episode stays raw and `extraction: pending` permanently, because nothing is drawing facts from them. Turning it on later extracts the backlog rather than losing it. (A workspace can still hold authoritative facts with extraction off — a [correction](/guides/brain-corrections) is a separate, human-authored entry point that does not go through extraction at all.)
-- **Ingest itself is not continuous.** Every brain source is walked by one shared sync cycle on one cadence — `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`, **default 24 hours**. Without the [chat webhook fast-path](/guides/brain-chat-webhook), "the next sync" can be most of a day away. That knob is in the [Knowledge Base section](/reference/environment-variables#knowledge-base), not the Company Brain one, because it governs both pillars.
+- **Ingest itself is not continuous.** Every brain source is walked by one shared sync cycle on one cadence — `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`, **default 24 hours**. Without the [chat webhook fast-path](/guides/brain-chat-webhook), "the next sync" can be most of a day away. That knob is in the [Knowledge Base section](/reference/environment-variables#knowledge-base), not the Company Atlas one, because it governs both pillars.
 - **Extraction drains at a fixed rate, and it is the real bound.** The fiber takes **25 episodes every 5 minutes — roughly 300 an hour, process-wide across every workspace**, oldest first with no per-workspace fairness. Both numbers are constants with no knob. Size a first backfill against that figure: 50 Slack channels with a week of history apiece will sit in the window for a long time, and nothing about that is a fault.
 - **Zoom publishes its transcript asynchronously**, minutes after the meeting ends. The recording exists before the transcript does.
 - **Extracted facts then go through review.** Extraction produces *draft candidates*; nothing **extracted** becomes an authoritative fact without a human approving it at the review gate. (A hand-written correction lands authoritative immediately — it already has its human, so queueing it for a second one would only review the reviewer.)
@@ -200,8 +200,8 @@ Access is decided per fact, not per cluster: a reader entitled to a meeting's au
 
 ## Related
 
-- [Company Brain — Chat Webhook Fast-Path](/guides/brain-chat-webhook) — lower ingest latency for Slack, and why the poll stays the floor
-- [Company Brain — Writing a Source Connector](/guides/brain-connector-authoring) — the contract a new vendor implements
-- [Company Brain — Conflicts](/guides/brain-conflicts) — what happens when two sources disagree
-- [Company Brain — Temporal Model](/guides/brain-temporal-model) — how a claim's validity window is recorded
-- [Environment variables → Company Brain](/reference/environment-variables#company-brain) — backfill windows, cadences, and the staleness bound
+- [Company Atlas — Chat Webhook Fast-Path](/guides/brain-chat-webhook) — lower ingest latency for Slack, and why the poll stays the floor
+- [Company Atlas — Writing a Source Connector](/guides/brain-connector-authoring) — the contract a new vendor implements
+- [Company Atlas — Conflicts](/guides/brain-conflicts) — what happens when two sources disagree
+- [Company Atlas — Temporal Model](/guides/brain-temporal-model) — how a claim's validity window is recorded
+- [Environment variables → Company Atlas](/reference/environment-variables#company-brain) — backfill windows, cadences, and the staleness bound

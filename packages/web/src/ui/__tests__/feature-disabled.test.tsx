@@ -79,11 +79,11 @@ describe("FeatureGate — the server's message displaces the guess (#5068)", () 
     const { container } = render(
       <FeatureGate
         status={404}
-        feature="Company Brain"
+        feature="Company Atlas"
         message="No internal database configured."
       />,
     );
-    expect(container.textContent).toContain("Company Brain not enabled");
+    expect(container.textContent).toContain("Company Atlas not enabled");
     expect(container.textContent).toContain("No internal database configured.");
     expect(container.textContent).not.toContain(
       "Enable this feature in your server configuration",
@@ -239,7 +239,7 @@ describe("FeatureGate — request id (#5068)", () => {
     const { container } = render(
       <FeatureGate
         status={404}
-        feature="Company Brain"
+        feature="Company Atlas"
         message="No internal database configured."
         requestId={REQUEST_ID}
       />,

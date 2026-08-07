@@ -1,5 +1,5 @@
 ---
-title: Company Brain — Chat Webhook Fast-Path
+title: Company Atlas — Chat Webhook Fast-Path
 description: How to enable the Slack webhook fast-path so messages become brain episodes seconds after they are said, why the scheduled poll remains the correctness floor, and the one class of message where that floor does not apply.
 ---
 
@@ -61,9 +61,9 @@ If you are setting Slack up from scratch, the relevant part is the bot event sub
 
 ### 2. Install and scope the Slack history brain source
 
-The fast-path writes episodes **only for channels the Company Brain (Slack history) source is scoped to**. It reads that install's channel list and skips anything outside it. A workspace that has not installed the source stores nothing through this path, regardless of the knob.
+The fast-path writes episodes **only for channels the Company Atlas (Slack history) source is scoped to**. It reads that install's channel list and skips anything outside it. A workspace that has not installed the source stores nothing through this path, regardless of the knob.
 
-See [Company Brain — Sources](/guides/brain-sources#what-each-source-needs-to-connect) for the install fields.
+See [Company Atlas — Sources](/guides/brain-sources#what-each-source-needs-to-connect) for the install fields.
 
 ### 3. Turn the knob on
 
@@ -130,7 +130,7 @@ The reason this section exists at all: a fast-path that silently stores nothing 
 
 ## Related
 
-- [Company Brain — Sources](/guides/brain-sources) — what each source class ingests and how its audience is derived
-- [Company Brain — Writing a Source Connector](/guides/brain-connector-authoring) — the stable-source-id obligation this page depends on
+- [Company Atlas — Sources](/guides/brain-sources) — what each source class ingests and how its audience is derived
+- [Company Atlas — Writing a Source Connector](/guides/brain-connector-authoring) — the stable-source-id obligation this page depends on
 - <AudienceLink saas="/guides/slack" selfHosted="/plugins/interactions/slack">Slack integration</AudienceLink> — the app configuration the events arrive through
-- [Environment variables → Company Brain](/reference/environment-variables#company-brain)
+- [Environment variables → Company Atlas](/reference/environment-variables#company-brain)

@@ -458,7 +458,7 @@ function WillSupersedeNotice({ count }: { count: number }) {
           A draft holds a new value for a single-valued predicate, so the currently published{" "}
           {one ? "fact" : "facts"} will stop being served as current belief. Nothing is deleted —
           the old {one ? "value stays" : "values stay"} readable to as-of questions. Review the
-          exact replacements under Company Brain → Facts in the admin sidebar before confirming.
+          exact replacements under Company Atlas → Facts in the admin sidebar before confirming.
         </p>
       </div>
     </div>

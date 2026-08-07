@@ -10,7 +10,7 @@ import { resolvedTensionBadge, statusBadge, tensionBadge } from "../columns";
 
 /**
  * The sidebar location of this page, spelled the way user-facing copy spells
- * it ("Company Brain → Facts"). Built from `navGroups` so copy that points an
+ * it ("Company Atlas → Facts"). Built from `navGroups` so copy that points an
  * admin at the sidebar breaks when the sidebar moves — see the publish-modal
  * assertion in "will-supersede disclosure (#4912)".
  */
@@ -2203,8 +2203,8 @@ describe("will-widen disclosure (#5032)", () => {
     // ⚠️ ANCHORED on the surrounding copy ("under … in the admin sidebar"),
     // not on the bare path. `toContain` is a substring test, and every
     // plausible rename of this group is a SUFFIX of the current title —
-    // renaming "Company Brain" to "Brain" yields "Brain → Facts", which is
-    // still contained in "Company Brain → Facts", so the unanchored form
+    // renaming "Company Atlas" to "Atlas" yields "Atlas → Facts", which is
+    // still contained in "Company Atlas → Facts", so the unanchored form
     // stayed green against exactly the drift it was written to catch.
     expect(document.body.textContent).toContain(
       `under ${sidebarPathToFacts()} in the admin sidebar`,

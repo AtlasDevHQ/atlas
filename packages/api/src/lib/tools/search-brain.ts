@@ -135,9 +135,9 @@ void _unavailableIsReason;
  * contract.
  */
 const READER_UNRESOLVED_MESSAGE =
-  "Company-brain search was refused: your identity could not be resolved for this workspace, " +
+  "Company Atlas search was refused: your identity could not be resolved for this workspace, " +
   "so results cannot be filtered safely. This is a configuration or session problem, not an " +
-  "empty knowledge base — do not treat it as 'nothing is known'. Report it and continue without brain results.";
+  "empty knowledge base — do not treat it as 'nothing is known'. Report it and continue without Atlas results.";
 
 /**
  * The fully-shaped empty response — every store reported, nothing invented.
@@ -159,16 +159,16 @@ function emptyResponse(unavailable: BrainSearchUnavailable | null = null): Brain
 }
 
 /** Workflow-guidance block injected into the agent system prompt via `describe()`. */
-export const SEARCH_BRAIN_DESCRIPTION = `### Search the Company Brain
+export const SEARCH_BRAIN_DESCRIPTION = `### Search the Company Atlas
 Use the searchBrain tool for decisions, rationale, ownership, policy, and history:
 - Pass a natural-language \`query\`; narrow the document store with \`type\`, \`tags\`, \`collection\`, or \`since\`, and narrow the stores themselves with \`include\`
-- Every result is labelled: \`tier: "fact"\` (reviewed claim), \`"raw-episode"\` (the source record), \`"document"\` (hosted knowledge). Cite the tier and the provenance when you use one — a raw episode is what someone SAID, not what is true
+- Every result is labelled: \`tier: "fact"\` is an ATTESTED claim (a named person reviewed and stood behind it), \`"raw-episode"\` is ON THE RECORD (the source material — what someone SAID, not what is true), \`"document"\` is hosted knowledge. Cite the tier and the provenance when you use one. The third tier, SURVEYED — warehouse rows that are authoritative by construction because the query re-reads them live — is not in this tool at all; it is \`executeSQL\`. Never present an attested claim as if it were surveyed
 - An episode tagged \`extraction: "pending"\` has not been distilled into facts yet; quote it as raw evidence
 - A fact whose \`provenance.attribution\` is \`{ "visible": false }\` is one you may read but whose author, source id, and original timestamp are withheld from this reader. Use the claim; say attribution is restricted if asked who said it. Do NOT report it as anonymous, undated, or unsourced — and never infer the author from anything else in the response
 - Every fact carries its age: \`validFrom\`, \`corroborationCount\`, \`provenance.attribution.occurredAt\` (when visible), and a read-time \`decay\` signal (\`fresh\`/\`aging\`/\`stale\`/\`unknown\`). Staleness is advisory — a \`stale\` fact is still the reviewed record. Present its age ("as of March…") instead of asserting it as current, and never discard or overrule a fact because of age
 - \`tensions\` is the fact's conflict cluster, listed in both directions and deliberately unranked — each visible counterpart carries its own claim and provenance. Where both sides are still live, surface both with their evidence and never pick a winner; recency and corroboration are context for the reader, not a verdict. Two fields tell you a rival is NOT live and that a human already resolved the conflict — report those as settled, and say which: a non-null \`invalidatedAt\` is a rival since RETRACTED (withdrawn as something that should never have been served); a \`validTo\` ALREADY IN THE PAST is a rival since SUPERSEDED (it held until that time, then was replaced). A \`validTo\` still in the future is a LIVE rival whose window is merely scheduled to close — treat it as contested. Both labels are as of NOW, never relative to \`asOf\`. A retired rival is listed only because it is why the claim was once contested — never present one as a live contradiction, and do not let it make the surviving claim sound disputed. A \`{ "visible": false, "withheldCount": N }\` entry means N conflicting claims exist that you cannot see — treat the claim as contested, never as settled
 - To answer "what did we believe at <time>", pass \`asOf\` (ISO-8601, in the past): facts are then the versions valid AT that instant, including ones since superseded. A response carrying \`asOf\` is HISTORICAL — frame every fact in it as "as of <time>", never as current; a response without \`asOf\` is current belief. A retracted fact is never returned as a RESULT, under \`asOf\` or otherwise — the one place it still appears is a \`tensions\` counterpart, labelled by \`invalidatedAt\` as above
-- If the response carries \`unavailable\`, the brain could NOT be searched (e.g. no workspace is bound). Say so — do NOT report it as "nothing is known"
+- If the response carries \`unavailable\`, the Atlas could NOT be searched (e.g. no workspace is bound). Say so — do NOT report it as "nothing is known"
 - Read-only, and never the SQL whitelist, metrics, or glossary. For quantitative current state use \`executeSQL\`; for the on-disk semantic layer use \`explore\``;
 
 /**
@@ -311,7 +311,7 @@ export const searchBrain = tool({
     if (!hasInternalDB()) {
       return {
         error:
-          "Company-brain search is unavailable — this deployment has no internal database configured.",
+          "Company Atlas search is unavailable — this deployment has no internal database configured.",
         reason: BRAIN_TOOL_REASONS.noInternalDb,
       };
     }
@@ -395,8 +395,8 @@ export const searchBrain = tool({
       );
       return {
         error: withRequestId(
-          "Company-brain search failed. Retry with a simpler query or fewer filters; " +
-            "if it persists, the brain store may be temporarily unavailable.",
+          "Company Atlas search failed. Retry with a simpler query or fewer filters; " +
+            "if it persists, the Atlas store may be temporarily unavailable.",
           requestId,
         ),
         reason: BRAIN_TOOL_REASONS.searchFailed,

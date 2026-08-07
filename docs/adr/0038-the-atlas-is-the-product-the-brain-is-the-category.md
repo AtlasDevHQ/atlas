@@ -1,6 +1,6 @@
 # The Atlas is the product; the brain is the category
 
-Status: **proposed** (2026-08-07, brain-milestone review — destination doc: [`docs/prd/company-atlas.md`](../prd/company-atlas.md))
+Status: accepted (2026-08-07, brain-milestone review — destination doc: [`docs/prd/company-atlas.md`](../prd/company-atlas.md))
 
 [ADR-0036](./0036-atlas-as-company-brain.md) §T2 committed to *"the data-grounded company brain"* as **both** the category claim and the product noun. We decided to **split them**: the category claim stands unchanged — it is how a buyer finds Atlas and how the field talks — while the thing itself is named **the Company Atlas**, or in-product simply **the Atlas**.
 

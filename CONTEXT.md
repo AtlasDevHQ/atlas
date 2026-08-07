@@ -61,10 +61,32 @@ The install **handler** it uses (OAuth, Form, Static-bot per "Install models" be
 
 ### Surfaces
 
+- **Claim Vocabulary** — the workspace-curated set of decisions about **which spellings mean the same thing**, read by claim identity (ADR-0037 §6). Two relations, not one: **approved edges** are the human's decisions (at-most-one-parent, never rewritten by another approval), and the **effective target** is their transitive closure — what `alias` actually reads. Removal is therefore a *recomputation*, not a delete, which is what keeps a bad alias undoable. **Position-scoped**: a decision at the predicate position never re-keys subjects.
+
+  A single decision is an **alias** — a directed pair of norms at one position. The human who decides one is an **approver** (plain owner/admin entitlement — `acl.ts`'s only owner/admin gate; there is no standing curator role and Atlas should not invent one). Cardinality is a **second vocabulary property under the same authority**, not a separate system.
+
+  **Qualified deliberately.** Bare "vocabulary" is already taken in this glossary — the `source` vocabulary above (`EPISODE_SOURCE_SPECS`) is a fixed enum shipped in code that no customer touches. The Claim Vocabulary is its opposite in every property that matters: workspace-scoped, human-authored, mutable, and the thing an admin is editing. The code already agrees (`loadClaimVocabulary`, `ClaimVocabulary`).
+
+  It is **the one piece of brain state with no ACL, permanently** (ADR-0037 §6) — a derived invariant, since the identity consumers carry no grant arm and keys are materialized by a fiber that has no reader. Per-team terminology is *refused* by that decision, not merely unimplemented.
+
+  **Three levels, and they are not interchangeable** — `key = alias(lexicalNorm(surface))`:
+
+  | | What it is |
+  |---|---|
+  | **Surface** | the spelling as it was actually observed in a claim (`Ships On`, `ships on`, `499 a month`) |
+  | **Norm** | `lexicalNorm(surface)` — pure, total normalization. ASCII-only case fold plus a separator class. Composes under the vocabulary and must stay total to have a fixpoint |
+  | **Key** | the norm resolved through the Claim Vocabulary at ONE position. What the three identity consumers compare |
+
+  A **norm** is not a **key**: `identityKey` is deliberately the vocabulary-free half. The §6 prohibition *keys are never projected to the wire* is about keys — **norms necessarily appear on the vocabulary surface**, since an approver cannot approve a merge without seeing which two spellings merge (#5034's exemption, and `brain_vocabulary_edge` has stored norms since 0189).
+
+  _Avoid_: bare **"vocabulary"** in cross-subsystem prose (say Claim Vocabulary); **"curator"** for the actor (say approver — it implies a role that does not exist); **"synonym"** (an alias is directed and position-scoped, a synonym is neither); treating the approved edges and the effective target as one thing (that conflation is the forest invariant ADR-0037 §6 had to retire).
+
+
 Every brain surface lives under `/admin/brain`, and none is a member of **Intelligence** — the sidebar group holding model configuration, prompt authoring and agent behaviour, which is a grab-bag the brain was wrongly filed into until #5066.
 
 - `/admin/brain` — overview: the backlog counts, read-only.
 - `/admin/brain/facts` — the review queue: reject what you don't trust, then publish, and what survived is promoted. **The only console surface carrying brain-fact review verbs.** Promotion itself is not exclusive to it: the shared publish modal hangs off `PendingChangesPill` in the admin top bar, so any admin can publish from any `/admin/*` route without ever opening this page — which is exactly why the publish preview discloses a workspace-wide supersession count. `brain_facts.status` is grep-guarded by `scripts/check-brain-fact-promotion.sh` to a named allowlist (today: the content-mode adapter, the region import, the correction verbs, the vocabulary re-key); the guard exempts a FILE, not a column, and records that cost itself. Was `/admin/brain-facts`, which now 308s here.
+- `/admin/brain/vocabulary` — the **Claim Vocabulary**, in two panes. **Pending**: one queue holding both alias proposals and cardinality decisions together (a person is deciding about a predicate, not visiting queue A vs queue B), each with the blast-radius preview it is decided against, plus direct human authoring. **In force**: the approved edges and curated cardinalities currently shaping identity, each removable. Removal belongs on this surface rather than in a follow-up because ADR-0037 §6 makes reversibility the sole thing that renders a bad alias undoable, and a pending queue structurally cannot show an edge already approved. Nav label is **Vocabulary**; the route keeps the `brain` noun per ADR-0038.
 
 ## Chat Platform mechanics
 

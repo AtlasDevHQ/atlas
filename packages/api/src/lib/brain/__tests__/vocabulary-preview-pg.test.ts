@@ -423,9 +423,25 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
 
       expect(after - before).toBe(radius.arming.total);
       expect(radius.arming.total).toBeGreaterThan(0);
-      // The other predicate's pair is still held back, so the flip's blast
-      // radius must NOT have counted it.
-      expect(await supersedesNow()).toBe(after);
+      // ⚠️ The flip is the ONLY kind whose `total` and `pairs` come from two
+      // DIFFERENT statements, so it is the only one where they can disagree.
+      // If `cardinalityFlipExpr` drifted `OR` → `AND`, the delta returns no
+      // pairs while the imported total stays positive → `withheld = total`,
+      // i.e. "N pairs are hidden from you by ACL" shown to an owner who can see
+      // everything. Nothing else in the suite would fail.
+      expect(radius.arming.pairs).toHaveLength(radius.arming.total);
+      expect(radius.arming.withheld).toBe(0);
+      expect(radius.arming.countsConsistent).toBe(true);
+      // ⚠️ NOT `expect(await supersedesNow()).toBe(after)` — that re-read the
+      // same query against an unchanged database and compared it to itself. The
+      // scoping is already caught by the equality above (a globally-TRUE gate
+      // makes `arming.total` 2 against a real delta of 1); what is asserted here
+      // is the complement, that the OTHER predicate's pair is still held back.
+      const otherHeld = await pool.query(
+        cardinalityHeldBackCountSql("d.predicate_key = $2"),
+        [WS, "budget is"],
+      );
+      expect(Number((otherHeld.rows[0] as { held_back: number }).held_back)).toBeGreaterThan(0);
     }, PG_TEST_TIMEOUT_MS);
   });
 
@@ -517,46 +533,166 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
 
   it("a `{\"source\": null}` pair is excluded by the JOIN, not by the exclusion arm", async () => {
     // ⚠️ The falsifier for an OVERCLAIM this module's docstrings originally
-    // made. `supersedableTierSql` is SQL NULL for this provenance, which is the
-    // shape that makes `NOT (…)` the repo's recurring bug — but here the tier
-    // guard is carried by the JOIN as well, so such a pair never reaches the
-    // exclusion at all and the two spellings are extensionally identical.
+    // made. `supersedableTierSql` is SQL NULL for this provenance, the shape
+    // that makes `NOT (…)` the repo's recurring bug — but the tier guard is
+    // carried by the JOIN as well, so such a pair never reaches the exclusion
+    // and the two spellings are extensionally identical.
     //
-    // Measured rather than reasoned, because the docstring that claimed
-    // otherwise was reasoned.
-    // Both rows share ONE predicate, so the identity arms are already TRUE and
-    // the tier guard is the only arm left to decide the pair. An earlier cut
-    // probed two DIFFERENT predicates before approving the alias — where the
-    // slot arm is plainly FALSE, so the predicate returned `false` and the
-    // probe measured the wrong thing entirely.
-    const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+    // ⚠️⚠️ The FIRST cut of this test was vacuous, and vacuous in the subtler
+    // way: it landed both rows under `priced at` and then previewed
+    // `is priced at → priced at`. No row was keyed `is priced at`, so the
+    // hypothetical CASE was the identity on every row, `joinExprs ≡
+    // excludeExprs`, and `arming.total === 0` held BY CONSTRUCTION — with the
+    // tier guard deleted, with the exclusion spelled `NOT (…)`, and with
+    // `provenance` untouched. It measured nothing about the preview.
+    //
+    // The shape below is a genuine cross-vocabulary pair, asserted TWICE on the
+    // same fixture: positive before the provenance mutation, zero after. That
+    // is what makes the zero attributable to the tier guard.
+    const published = await land({ subject: "widget", predicate: "is priced at", object: "10 USD" });
     await publish(published);
     const draft = await land({ subject: "widget", predicate: "priced at", object: "12 USD" });
     await curate("priced at");
+
+    const request = {
+      kind: "alias-approval",
+      position: "predicate",
+      fromNorm: "is priced at",
+      toNorm: "priced at",
+    } as const;
+
+    // The positive control: this pair IS armable while both rows carry a
+    // recognised source.
+    const before = await loadBlastRadius(pool, owner(), request);
+    expect(
+      before.arming.total,
+      "the fixture must be armable before the provenance is nulled, or the zero below proves nothing",
+    ).toBeGreaterThan(0);
+
     await pool.query(
       `UPDATE brain_facts SET provenance = jsonb_set(provenance, '{source}', 'null'::jsonb)
         WHERE id = ANY($1::uuid[])`,
       [[published, draft]],
     );
 
-    // The tier guard is NULL on both sides, so the pair is not supersedable...
-    const tierProbe = await pool.query(
-      `SELECT (${supersessionCollisionPredicate("d", "p")}) AS collides
-         FROM brain_facts d JOIN brain_facts p ON p.id = $2::uuid
-        WHERE d.id = $1::uuid`,
-      [draft, published],
-    );
-    expect((tierProbe.rows[0] as { collides: boolean | null }).collides).toBeNull();
+    // ⚠️ NO separate "is the tier arm NULL" probe here, and its absence is
+    // deliberate. Two earlier drafts tried one and both measured the wrong
+    // thing: evaluating `supersessionCollisionPredicate` over this pair returns
+    // FALSE rather than NULL, because the two rows sit in DIFFERENT predicate
+    // slots until the alias is approved, so the identity arm is false and
+    // `FALSE AND NULL` is FALSE. A probe that has to be set up differently from
+    // the fixture it explains is measuring a different pair.
+    //
+    // The before/after on ONE fixture is the attribution, and it is stronger:
+    // the only thing that changed between the two calls is the provenance.
+    const after = await loadBlastRadius(pool, owner(), request);
+    expect(after.arming.total).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
 
-    // ...and the counterfactual JOIN carries the same guard, so the preview
-    // reports zero for the pair regardless of how the exclusion is spelled.
+  // ── 4b. the subtree walk, past the seed ─────────────────────────────────
+
+  it("a REMOVAL walks the whole subtree, not just the removed norm", async () => {
+    // ⚠️ Every other removal fixture approves ONE edge, whose subtree is the
+    // seed alone — so the recursive arm never returns a row in any test, in any
+    // suite. Measured: reversing the walk's direction (`e.from_norm` →
+    // `e.to_norm`) survives them all. This is the arm the whole "removal
+    // re-derives from the SURFACE" design exists for.
+    //
+    // Chain: `list price → is priced at → priced at`. Removing `is priced at`'s
+    // edge must return BOTH `is priced at` and its child `list price` to the
+    // `is priced at` slot — the grandchild is the row a seed-only substitution
+    // misses.
+    const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+    await publish(published);
+    await land({ subject: "widget", predicate: "list price", object: "12 USD" });
+    await curate("priced at");
+
+    await approve("is priced at", "priced at");
+    await approve("list price", "is priced at");
+
+    const before = await supersedesNow();
+    expect(before, "the grandchild must be colliding through the chain").toBeGreaterThan(0);
+
+    const radius = await loadBlastRadius(pool, owner(), {
+      kind: "alias-removal",
+      position: "predicate",
+      fromNorm: "is priced at",
+    });
+
+    // The grandchild is in the disarming set — it resolves through the removed
+    // norm even though no edge names it.
+    expect(radius.disarming.total).toBe(before);
+    expect(radius.disarming.countsConsistent).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ── 4c. the pair projection's orientation ───────────────────────────────
+
+  it("a pair's draft label is the DRAFT's claim, not the published one", async () => {
+    // ⚠️ No test anywhere asserted a pair's CONTENT — `radius.arming.pairs`
+    // appeared zero times in this file. Measured: swapping `d.subject || …` for
+    // `p.subject || …` in `draft_label` survives the entire suite, and the
+    // preview would then tell an approver the superseded claim is the incoming
+    // one — the disclosure read backwards, on the surface whose entire job is
+    // the disclosure. `pairsSelect` is also the one projection NOT byte-pinned.
+    const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+    await publish(published);
+    await land({ subject: "widget", predicate: "is priced at", object: "12 USD" });
+    await curate("priced at");
+
     const radius = await loadBlastRadius(pool, owner(), {
       kind: "alias-approval",
       position: "predicate",
       fromNorm: "is priced at",
       toNorm: "priced at",
     });
-    expect(radius.arming.total).toBe(0);
+
+    expect(radius.arming.pairs).toHaveLength(1);
+    const pair = radius.arming.pairs[0]!;
+    // The DRAFT is the incoming `12 USD` claim; the SUPERSEDED side is the
+    // published `10 USD` one. Reversed, an approver reads the retirement
+    // backwards.
+    expect(pair.draftLabel).toBe("widget is priced at 12 USD");
+    expect(pair.supersededLabel).toBe("widget priced at 10 USD");
+    // And no key rides along on the projection.
+    expect(JSON.stringify(pair)).not.toContain("_key");
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ── 4d. a restricted reader ─────────────────────────────────────────────
+
+  it("withholds a pair whose PUBLISHED side the reader cannot see, and counts it", async () => {
+    // Nothing measured that the reader scoping works against real SQL — the
+    // unit tests only assert `visible_to &&` appears as a substring.
+    const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+    await publish(published);
+    await land({ subject: "widget", predicate: "is priced at", object: "12 USD" });
+    await curate("priced at");
+    // Narrow the published row to an audience the reader below does not hold.
+    await pool.query(`UPDATE brain_facts SET visible_to = ARRAY['audience:secret'] WHERE id = $1::uuid`, [
+      published,
+    ]);
+
+    const restricted: BrainPrincipalContext = {
+      origin: "authenticated",
+      workspaceId: WS,
+      userId: "user-restricted",
+      role: "member",
+      audienceIds: [],
+    };
+    const radius = await loadBlastRadius(pool, restricted, {
+      kind: "alias-approval",
+      position: "predicate",
+      fromNorm: "is priced at",
+      toNorm: "priced at",
+    });
+
+    // The supersession happens regardless of who is looking — the unscoped
+    // total sees it...
+    expect(radius.arming.total).toBe(1);
+    // ...but the reader may not read the published side, so no pair is listed
+    // and the difference is disclosed as `withheld` rather than omitted.
+    expect(radius.arming.pairs).toHaveLength(0);
+    expect(radius.arming.withheld).toBe(1);
+    expect(radius.arming.countsConsistent).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
   // ── 5. the fourth arm of the union ──────────────────────────────────────

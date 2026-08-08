@@ -90,6 +90,24 @@ function deltaStatements(captures: readonly Capture[]): readonly string[] {
     .filter((sql) => sql.includes("FROM brain_facts d") && sql.includes("JOIN brain_facts p"));
 }
 
+/**
+ * Split a delta statement into its JOIN half and its EXCLUSION half.
+ *
+ * ⚠️ Without this every `toContain` in the file is blind to WHICH SIDE of the
+ * delta a substitution landed on — `deltaSql` puts both vocabularies into one
+ * string. Measured: swapping `joinExprs`/`excludeExprs` (arming and disarming
+ * exchanged) passed all 31 unit tests, and replacing the entire exclusion arm
+ * with `AND TRUE` passed all 19 in this file. That is #5035's lesson in its
+ * purest form — a pin derived from source text cannot falsify a change in what
+ * that text means — and the fix is to assert POSITIONALLY.
+ */
+function halves(sql: string): { join: string; exclude: string } {
+  const marker = "\n   WHERE";
+  const at = sql.indexOf(marker);
+  expect(at, "a delta statement must have a WHERE clause to split on").toBeGreaterThan(0);
+  return { join: sql.slice(0, at), exclude: sql.slice(at) };
+}
+
 const APPROVE_PREDICATE: BlastRadiusRequest = {
   kind: "alias-approval",
   position: "predicate",
@@ -113,11 +131,65 @@ describe("the exclusion arm's spelling", () => {
     const deltas = deltaStatements(captures);
     expect(deltas.length).toBeGreaterThan(0);
     for (const sql of deltas) {
-      expect(sql).toContain(") IS NOT TRUE");
-      // `NOT EXISTS` inside the cardinality gate is a different and legitimate
-      // construct, so the assertion targets the wrapper shape specifically.
-      expect(sql).not.toContain("AND NOT (p.workspace_id");
-      expect(sql).not.toContain("AND NOT (d.workspace_id");
+      // ⚠️ Asserted on the EXCLUSION half only. A bare `toContain(") IS NOT
+      // TRUE")` over the whole statement is vacuous — `subjectNotDifferentSql`
+      // already emits `)) IS NOT TRUE` inside every collision predicate, so the
+      // assertion passed on a statement with NO exclusion arm at all. Measured.
+      const { exclude } = halves(sql);
+      expect(exclude).toContain(") IS NOT TRUE");
+      expect(exclude).not.toContain("AND NOT (p.workspace_id");
+      expect(exclude).not.toContain("AND NOT (d.workspace_id");
+    }
+  });
+
+  it("the exclusion arm actually EXISTS — the delta is a difference, not a listing", async () => {
+    // The mutation the assertion above could not see: replacing the whole
+    // exclusion with `AND TRUE` makes `arming` report every colliding pair
+    // rather than the NEW ones. That is an over-disclosure that reads as a
+    // catastrophic blast radius, and it passed every test in this file.
+    const captures: Capture[] = [];
+    await loadBlastRadius(reader(captures), ctx(), APPROVE_PREDICATE);
+
+    for (const sql of deltaStatements(captures)) {
+      const { exclude } = halves(sql);
+      // The exclusion must name the FULL collision predicate of the other
+      // vocabulary, not merely be present.
+      expect(exclude).toContain("p.workspace_id = d.workspace_id");
+      expect(exclude).toContain("brain_predicate_cardinality");
+      expect(exclude).not.toContain("AND TRUE");
+    }
+  });
+
+  it("ARMING is the side that joins on the hypothetical — asserted through the RESULT", async () => {
+    // ⚠️ A counting assertion is NOT enough, and this is the second draft.
+    // "Exactly two statements JOIN on the hypothetical" stays true when
+    // `joinExprs`/`excludeExprs` are exchanged — the same statements exist,
+    // attributed to the opposite direction — so the swap survived it. Measured.
+    //
+    // Answering the two vocabularies with DIFFERENT counts is what ties a
+    // statement to the side that reported it. Under the swap, `arming` reports
+    // the stored side's number and this fails.
+    const SUB = "CASE WHEN d.predicate_key = $2";
+    const radius = await loadBlastRadius(
+      reader([], (sql) => {
+        if (!sql.includes("delta_total")) return undefined;
+        return halves(sql).join.includes(SUB) ? [{ delta_total: 7 }] : [{ delta_total: 3 }];
+      }),
+      ctx(),
+      APPROVE_PREDICATE,
+    );
+
+    expect(radius.arming.total).toBe(7);
+    expect(radius.disarming.total).toBe(3);
+  });
+
+  it("no statement joins on AND excludes the same vocabulary — that is a self-difference", async () => {
+    const captures: Capture[] = [];
+    await loadBlastRadius(reader(captures), ctx(), APPROVE_PREDICATE);
+    const SUB = "CASE WHEN d.predicate_key = $2";
+    for (const sql of deltaStatements(captures)) {
+      const { join, exclude } = halves(sql);
+      expect(join.includes(SUB) && exclude.includes(SUB)).toBe(false);
     }
   });
 });
@@ -249,18 +321,39 @@ describe("the cardinality flip imports the held-back count rather than re-derivi
   it("un-curating asks the opposite question and can arm nothing", async () => {
     const captures: Capture[] = [];
     const radius = await loadBlastRadius(
-      reader(captures, (sql) =>
-        sql.includes("brain_predicate_cardinality\n        WHERE") ? [{ hit: 1 }] : undefined,
-      ),
+      reader(captures, (sql) => {
+        if (sql.includes("AS hit")) return [{ hit: 1 }];
+        if (sql.includes("delta_total")) return [{ delta_total: 11 }];
+        return undefined;
+      }),
       ctx(),
       { kind: "cardinality-removal", predicateSurface: "reports to" },
     );
 
-    // A removal's hypothetical SUBTRACTS the key from the gate, so the arming
-    // side joins on a strictly narrower rule than it excludes — provably empty.
-    expect(radius.arming.total).toBe(0);
+    // ⚠️ The value assertion that used to live here (`arming.total === 0`) is
+    // NOT expressible at this level, and finding that out is why the responder
+    // now answers non-zero. A mock does not evaluate SQL — it returned whatever
+    // it was told — so `0 === 0` held under every implementation, including one
+    // whose arming side joins on the broadest possible rule. Feeding it 11 made
+    // the test fail, which is the correct outcome: the emptiness is a property
+    // of the STATEMENT and only a real database can decide it.
+    //
+    // So the value lives in `vocabulary-preview-pg.test.ts` ("a CARDINALITY
+    // removal disarms exactly the pairs the preview promised", which asserts
+    // `arming.total === 0` against real rows), and what is asserted HERE is the
+    // shape that makes it empty: the arming side joins on a rule strictly
+    // NARROWER than the one it excludes, so the difference cannot contain a row.
+    expect(radius.disarming.total).toBe(11);
     const deltas = deltaStatements(captures);
-    expect(deltas.some((s) => s.includes("IS DISTINCT FROM $2"))).toBe(true);
+    const unflip = "IS DISTINCT FROM $2";
+    const arming = deltas.filter((sql) => halves(sql).join.includes(unflip));
+    expect(arming.length).toBeGreaterThan(0);
+    for (const sql of arming) {
+      const { join, exclude } = halves(sql);
+      // JOIN carries the subtracted gate; the exclusion carries the stored one.
+      expect(join).toContain(unflip);
+      expect(exclude).not.toContain(unflip);
+    }
     // No imported held-back statement: that count answers "what would curating
     // arm", which is not this decision's question.
     expect(captures.some((c) => c.sql.includes("AS held_back"))).toBe(false);
@@ -423,5 +516,186 @@ describe("the payload", () => {
     // and this flag is what makes that assertable rather than conventional.
     const radius = await loadBlastRadius(reader([]), ctx(), APPROVE_PREDICATE);
     expect(radius.floor).toBe(true);
+  });
+});
+
+describe("an unkeyable surface is a disclosed REASON, never a zero", () => {
+  // ⚠️ The path that used to return `structurallyEmpty: null` with two zeroed
+  // sides — and `null` is documented as "the question was asked and answered",
+  // so a request that was never computable rendered as "at least 0 today, and
+  // every future claim in this slot". The module's signature failure, produced
+  // by the module, on the one path nothing logged.
+  //
+  // `-`, `___` and `  ` all norm away, and `reconcile.ts`'s MALFORMED_CLAIM
+  // guard tests `trim() === ""` — so it admits `-` and `___`, which is why
+  // these rows exist in real corpora rather than being a hypothetical.
+  for (const surface of ["-", "___", "  "]) {
+    it(`refuses to compute for ${JSON.stringify(surface)} and says why`, async () => {
+      const captures: Capture[] = [];
+      const radius = await loadBlastRadius(reader(captures), ctx(), {
+        kind: "alias-approval",
+        position: "predicate",
+        fromNorm: surface,
+        toNorm: "priced at",
+      });
+
+      expect(radius.structurallyEmpty).toBe("unkeyable-surface");
+      expect(radius.arming.total).toBe(0);
+      // Not merely zero — the question was never asked.
+      expect(deltaStatements(captures)).toHaveLength(0);
+    });
+  }
+
+  it("the same for a cardinality flip on a degenerate predicate", async () => {
+    const radius = await loadBlastRadius(reader([]), ctx(), {
+      kind: "cardinality-flip",
+      predicateSurface: "-",
+    });
+    expect(radius.structurallyEmpty).toBe("unkeyable-surface");
+  });
+
+  it("an unresolvable reader is refused BEFORE the unkeyable check", async () => {
+    // The ordering that used to be wrong: the fail-closed gate lived inside
+    // `loadBlastRadiusSide`, i.e. after both early returns, so an unresolvable
+    // reader asking about a degenerate norm got a clean zero instead of a
+    // refusal. The gate is reachable only on the paths that did not need it.
+    const unresolved: BrainPrincipalContext = {
+      origin: "unresolved",
+      workspaceId: WS,
+      userId: null,
+      role: null,
+      audienceIds: [],
+    };
+    await expect(
+      loadBlastRadius(reader([]), unresolved, {
+        kind: "alias-approval",
+        position: "predicate",
+        fromNorm: "-",
+        toNorm: "priced at",
+      }),
+    ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
+  });
+});
+
+describe("countsConsistent — the half the clamp alone does not carry", () => {
+  // `loadFactOversight` ships this flag precisely because "silently clamping
+  // the delta to zero renders as 'nothing is hidden from you', which is the
+  // pre-#4825 defect reproduced by its own fix." This module clamped, logged,
+  // and shipped nothing — so a client rendered `withheld: 0` off two statements
+  // that had just disagreed.
+  const pairRow = (i: number, scopedTotal: unknown) => ({
+    draft_id: `d${i}`,
+    draft_label: "a b c",
+    superseded_id: `p${i}`,
+    superseded_label: "a b d",
+    scoped_total: scopedTotal,
+  });
+
+  it("is true on a clean read", async () => {
+    const radius = await loadBlastRadius(
+      reader([], (sql) =>
+        sql.includes("draft_label")
+          ? [pairRow(1, 1)]
+          : sql.includes("delta_total")
+            ? [{ delta_total: 3 }]
+            : undefined,
+      ),
+      ctx(),
+      APPROVE_PREDICATE,
+    );
+    expect(radius.arming.countsConsistent).toBe(true);
+    expect(radius.arming.withheld).toBe(2);
+  });
+
+  it("is CLEARED when the scoped count exceeds the workspace count", async () => {
+    // The inversion. `withheld` clamps to 0, which reads as "nothing is hidden
+    // from you" — true only if the two statements agreed, and they did not.
+    const radius = await loadBlastRadius(
+      reader([], (sql) =>
+        sql.includes("draft_label")
+          ? [pairRow(1, 9)]
+          : sql.includes("delta_total")
+            ? [{ delta_total: 1 }]
+            : undefined,
+      ),
+      ctx(),
+      APPROVE_PREDICATE,
+    );
+    expect(radius.arming.withheld).toBe(0);
+    expect(radius.arming.countsConsistent).toBe(false);
+  });
+
+  it("is CLEARED when a row will not narrow — a dropped row is not an ACL-withheld one", async () => {
+    // On the unclipped path the first floor does not apply, so a row that
+    // failed to PARSE falls through and re-emerges inside `withheld`: "you lack
+    // permission to see this" for a row that simply would not read.
+    const radius = await loadBlastRadius(
+      reader([], (sql) =>
+        sql.includes("draft_label")
+          ? [pairRow(1, 2), { draft_id: 42, draft_label: null }]
+          : sql.includes("delta_total")
+            ? [{ delta_total: 2 }]
+            : undefined,
+      ),
+      ctx(),
+      APPROVE_PREDICATE,
+    );
+    expect(radius.arming.pairs).toHaveLength(1);
+    expect(radius.arming.countsConsistent).toBe(false);
+  });
+
+  it("is CLEARED when the scoped window will not parse", async () => {
+    const radius = await loadBlastRadius(
+      reader([], (sql) =>
+        sql.includes("draft_label")
+          ? [pairRow(1, "not-a-number")]
+          : sql.includes("delta_total")
+            ? [{ delta_total: 5 }]
+            : undefined,
+      ),
+      ctx(),
+      APPROVE_PREDICATE,
+    );
+    expect(radius.arming.countsConsistent).toBe(false);
+  });
+
+  it("a NULL window is treated as drift, not as a finite zero", async () => {
+    // `Number(null)` is a finite 0, which would skip both the max() and the
+    // drift counter — the one shape of window drift that would otherwise go
+    // entirely unlogged and unflagged.
+    const radius = await loadBlastRadius(
+      reader([], (sql) =>
+        sql.includes("draft_label")
+          ? [pairRow(1, null)]
+          : sql.includes("delta_total")
+            ? [{ delta_total: 4 }]
+            : undefined,
+      ),
+      ctx(),
+      APPROVE_PREDICATE,
+    );
+    expect(radius.arming.countsConsistent).toBe(false);
+  });
+
+  it("is CLEARED when the removal subtree walk hit the depth bound", async () => {
+    // A truncated walk understates the disarming set — an admin could withdraw
+    // an arbitration whose scope was understated by an order of magnitude with
+    // every counter reading trustworthy.
+    const radius = await loadBlastRadius(
+      reader([], (sql) => (sql.includes("AS hit") ? [{ hit: true }] : undefined)),
+      ctx(),
+      { kind: "alias-removal", position: "predicate", fromNorm: "is priced at" },
+    );
+    expect(radius.disarming.countsConsistent).toBe(false);
+    expect(radius.arming.countsConsistent).toBe(false);
+  });
+
+  it("an unreadable depth probe fails CLOSED", async () => {
+    const radius = await loadBlastRadius(
+      reader([], (sql) => (sql.includes("AS hit") ? [{ hit: "maybe" }] : undefined)),
+      ctx(),
+      { kind: "alias-removal", position: "predicate", fromNorm: "is priced at" },
+    );
+    expect(radius.disarming.countsConsistent).toBe(false);
   });
 });

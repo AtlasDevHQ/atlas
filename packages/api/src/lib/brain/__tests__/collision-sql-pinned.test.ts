@@ -398,8 +398,8 @@ describe("the default IS the stored parameterization, not merely equivalent to i
   });
 
   it("STORED_COLLISION_EXPRS reads the stored columns and nothing else", () => {
-    expect(STORED_COLLISION_EXPRS.subjectKey("x")).toBe("x.subject_key");
-    expect(STORED_COLLISION_EXPRS.predicateKey("x")).toBe("x.predicate_key");
+    expect(STORED_COLLISION_EXPRS.subjectSlot("x")).toBe("x.subject_key");
+    expect(STORED_COLLISION_EXPRS.predicateSlot("x")).toBe("x.predicate_key");
     expect(STORED_COLLISION_EXPRS.cardinalitySingle("x")).toBe(cardinalitySingleSql("x"));
   });
 
@@ -420,7 +420,7 @@ describe("the counterfactual seam cannot weaken the rule it evaluates", () => {
   // seam, it would be the second spelling the header forbids after all.
   const hypothetical = {
     ...STORED_COLLISION_EXPRS,
-    predicateKey: (a: string) => `CASE WHEN ${a}.predicate_key = $9 THEN $10 ELSE ${a}.predicate_key END`,
+    predicateSlot: (a: string) => `CASE WHEN ${a}.predicate_key = $9 THEN $10 ELSE ${a}.predicate_key END`,
   };
 
   it("a substituted slot expression keeps every conjunct", () => {
@@ -449,8 +449,8 @@ describe("the counterfactual seam cannot weaken the rule it evaluates", () => {
     expect(supersessionCollisionPredicate("d", "p")).not.toContain("object_key");
     expect(Object.keys(STORED_COLLISION_EXPRS).sort()).toEqual([
       "cardinalitySingle",
-      "predicateKey",
-      "subjectKey",
+      "predicateSlot",
+      "subjectSlot",
     ]);
   });
 });

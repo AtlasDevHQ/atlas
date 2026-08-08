@@ -637,13 +637,42 @@ export function supersessionCollisionJoin(
  * columns swapped, which is exactly the forbidden thing, or make the COLUMNS a
  * parameter while the ARMS stay single-spelled. This is the second.
  *
- * The distinction is worth being precise about, because it is the whole
- * justification: what varies here is **which value each side's slot is read
- * from**, never **which conjuncts must hold**. A caller cannot use this seam to
- * drop the tier guard, the cardinality gate or the homonym suppression — those
- * are not in this record and cannot be put into it. Every counterfactual is
- * therefore the same collision rule evaluated against a different slot
- * assignment, which is what makes the preview's parity claim meaningful at all.
+ * ## ⚠️ What this record makes UNREACHABLE, and what it only disciplines
+ *
+ * An earlier version of this paragraph claimed *"a caller cannot use this seam
+ * to drop the tier guard, the cardinality gate or the homonym suppression —
+ * those are not in this record and cannot be put into it."* **That is true of
+ * two of the three and false of the third — and the third is the one that
+ * actually varies.**
+ *
+ * | Conjunct | Reachable through this record? |
+ * |---|---|
+ * | tier guard (`supersedableTierSql`, both sides) | **No** — not a member |
+ * | homonym suppression (`subjectNotDifferentSql`) | **No** — not a member |
+ * | object comparable (`comparableDifferentSql`) | **No** — not a member |
+ * | the published row's live-and-current arms | **No** — not a member |
+ * | **cardinality gate** | **YES** — `cardinalitySingle` is a member |
+ * | **subject / predicate slot identity** | **YES** — both are members |
+ *
+ * `cardinalitySingle: () => "TRUE"` compiles and removes the gate from every
+ * statement built through {@link supersessionCollisionPredicate};
+ * `subjectSlot: () => "1"` renders `1 = 1` and deletes the subject-identity
+ * arm. The consumer proves it rather than merely admitting it —
+ * `cardinalityFlipExpr` (`lib/brain/vocabulary-preview.ts`) forces the gate TRUE
+ * for one predicate ON PURPOSE, which is exactly the shape an accident takes.
+ *
+ * So the honest claim is narrower: **four conjuncts are structurally out of
+ * reach; three are caller-supplied, and their discipline is the pinned test
+ * plus review.** The strong version was the more comfortable sentence, and it is
+ * the one a reviewer would have trusted instead of checking.
+ *
+ * The members are named `…Slot` rather than `…Key` for a second reason:
+ * `keys-not-on-the-wire.test.ts`'s ORM arm is deliberately over-broad: it fires
+ * on the camel-cased spelling of any identity-key column ANYWHERE in a file
+ * outside its declaration sites, comments included. These members build SQL slot
+ * EXPRESSIONS rather than projecting key columns, so the accurate name is also
+ * the one that keeps that guard's exemption list short — and a short exemption
+ * list is the whole guard.
  *
  * ## The default is byte-identical, and that is pinned rather than asserted
  *
@@ -673,10 +702,15 @@ export function supersessionCollisionJoin(
  * number and opposite facts.
  */
 export interface CollisionExprs {
-  /** The subject slot. `${alias}.subject_key` when stored. */
-  readonly subjectKey: (alias: string) => string;
-  /** The predicate slot. `${alias}.predicate_key` when stored. */
-  readonly predicateKey: (alias: string) => string;
+  /**
+   * The subject slot. `${alias}.subject_key` when stored.
+   *
+   * Applied to BOTH aliases (`p` and `d`) — see {@link cardinalitySingle} for
+   * the member whose calling convention differs.
+   */
+  readonly subjectSlot: (alias: string) => string;
+  /** The predicate slot. `${alias}.predicate_key` when stored. Applied to BOTH aliases. */
+  readonly predicateSlot: (alias: string) => string;
   /**
    * The cardinality gate, taking the DRAFT alias.
    *
@@ -685,6 +719,13 @@ export interface CollisionExprs {
    * real lookup re-pointed at the hypothetical predicate key, while a
    * cardinality flip needs the gate to read TRUE for one specific key that has
    * no approved row yet. Neither is expressible as a flag.
+   *
+   * ⚠️ **Called with the DRAFT alias only**, unlike its two siblings, and the
+   * three share one type so nothing says so but this line. A gate written on
+   * the assumption it will also see the published side compiles and is silently
+   * wrong — it would answer about one row while the caller believes it answered
+   * about the slot. One lookup is sufficient precisely because the predicate
+   * already equates both sides' keys; see {@link cardinalitySingleSql}'s ⚠️.
    */
   readonly cardinalitySingle: (alias: string) => string;
 }
@@ -697,8 +738,8 @@ export interface CollisionExprs {
  * equivalent to it.
  */
 export const STORED_COLLISION_EXPRS: CollisionExprs = Object.freeze({
-  subjectKey: (alias: string) => `${alias}.subject_key`,
-  predicateKey: (alias: string) => `${alias}.predicate_key`,
+  subjectSlot: (alias: string) => `${alias}.subject_key`,
+  predicateSlot: (alias: string) => `${alias}.predicate_key`,
   cardinalitySingle: (alias: string) => cardinalitySingleSql(alias),
 });
 
@@ -815,8 +856,8 @@ function collisionCorePredicate(
   exprs: CollisionExprs = STORED_COLLISION_EXPRS,
 ): string {
   return `${p}.workspace_id = ${d}.workspace_id
-     AND ${exprs.subjectKey(p)} = ${exprs.subjectKey(d)}
-     AND ${exprs.predicateKey(p)} = ${exprs.predicateKey(d)}
+     AND ${exprs.subjectSlot(p)} = ${exprs.subjectSlot(d)}
+     AND ${exprs.predicateSlot(p)} = ${exprs.predicateSlot(d)}
      AND ${comparableDifferentSql(`${p}.object_cmp`, `${d}.object_cmp`)}
      AND ${subjectNotDifferentSql(`${p}.subject_cmp`, `${d}.subject_cmp`)}
      AND ${p}.status = 'published'

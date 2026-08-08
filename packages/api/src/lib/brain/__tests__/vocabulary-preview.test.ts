@@ -32,6 +32,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   BLAST_RADIUS_PAIR_MAX,
+  assertPlaceholdersBelowAclBase,
   loadBlastRadius,
   type BlastRadius,
   type BlastRadiusRequest,
@@ -132,6 +133,17 @@ function halves(sql: string): { join: string; exclude: string } {
   expect(at, "a delta statement must have a WHERE clause to split on").toBeGreaterThan(0);
   return { join: sql.slice(0, at), exclude: sql.slice(at) };
 }
+
+/**
+ * Answer the "does this edge exist" probe affirmatively.
+ *
+ * ⚠️ Matched on the probe's full projection, not on `brain_vocabulary_edge`
+ * alone — the removal delta's own recursive CTE walks that same table, so the
+ * looser predicate also captured the delta statements and fed them `{hit: 1}`
+ * where a count was expected.
+ */
+const EDGE_EXISTS = "SELECT 1 AS hit FROM brain_vocabulary_edge";
+const edgeExists = (sql: string) => (sql.includes(EDGE_EXISTS) ? [{ hit: 1 }] : undefined);
 
 const APPROVE_PREDICATE: BlastRadiusRequest = {
   kind: "alias-approval",
@@ -290,7 +302,7 @@ describe("the object position is structurally empty, not zero", () => {
 describe("removal re-derives from the SURFACE, because the key column cannot tell the populations apart", () => {
   it("substitutes on a subtree membership test over the normalized surface", async () => {
     const captures: Capture[] = [];
-    await loadBlastRadius(reader(captures), ctx(), {
+    await loadBlastRadius(reader(captures, edgeExists), ctx(), {
       kind: "alias-removal",
       position: "predicate",
       fromNorm: "is priced at",
@@ -314,7 +326,7 @@ describe("removal re-derives from the SURFACE, because the key column cannot tel
 
   it("bounds the walk so a corrupt cyclic store cannot spin an admin request", async () => {
     const captures: Capture[] = [];
-    await loadBlastRadius(reader(captures), ctx(), {
+    await loadBlastRadius(reader(captures, edgeExists), ctx(), {
       kind: "alias-removal",
       position: "subject",
       fromNorm: "acme",
@@ -724,7 +736,9 @@ describe("subtreeTruncated — a scope blind spot, not a count disagreement", ()
   it("is set when the walk hit the bound, and leaves countsConsistent alone", async () => {
     const radius = computed(
       await loadBlastRadius(
-        reader([], (sql) => (sql.includes("AS hit") ? [{ hit: true }] : undefined)),
+        reader([], (sql) =>
+          sql.includes(EDGE_EXISTS) ? [{ hit: 1 }] : sql.includes("AS hit") ? [{ hit: true }] : undefined,
+        ),
         ctx(),
         removal,
       ),
@@ -738,7 +752,9 @@ describe("subtreeTruncated — a scope blind spot, not a count disagreement", ()
   it("is false on a complete walk", async () => {
     const radius = computed(
       await loadBlastRadius(
-        reader([], (sql) => (sql.includes("AS hit") ? [{ hit: false }] : undefined)),
+        reader([], (sql) =>
+          sql.includes(EDGE_EXISTS) ? [{ hit: 1 }] : sql.includes("AS hit") ? [{ hit: false }] : undefined,
+        ),
         ctx(),
         removal,
       ),
@@ -750,20 +766,46 @@ describe("subtreeTruncated — a scope blind spot, not a count disagreement", ()
     ["an unreadable probe", "maybe"],
     ["a NULL probe — bool_or over an empty CTE, or a probe that lost its seed", null],
   ] as const) {
-    it(`fails CLOSED on ${label}`, async () => {
-      // `false` is the only value that may answer "the walk was complete".
-      // `null` used to take that arm UNLOGGED, while the same module maps
-      // `Number(null)` to NaN forty lines down for exactly this reason.
+    it(`routes ${label} to countsConsistent, NOT to subtreeTruncated`, async () => {
+      // ⚠️ The distinction, and it is the one round 2 collapsed. An unreadable
+      // probe and a genuine bound hit are two different facts:
+      // `subtreeTruncated`'s docstring asserts the SECOND specifically ("the
+      // walk hit MAX_CHAIN_DEPTH"), so reporting a driver or query-shape drift
+      // through it told an approver their approved-edge graph was cyclic or
+      // deeper than 64 — sending them to inspect a vocabulary that may be
+      // perfectly healthy.
+      //
+      // A drifted probe IS statement drift, which is what `countsConsistent`
+      // already means. `false` remains the only value that answers "the walk
+      // was complete"; `null` used to take that arm unlogged.
       const radius = computed(
         await loadBlastRadius(
-          reader([], (sql) => (sql.includes("AS hit") ? [{ hit }] : undefined)),
+          reader([], (sql) =>
+            sql.includes(EDGE_EXISTS) ? [{ hit: 1 }] : sql.includes("AS hit") ? [{ hit }] : undefined,
+          ),
           ctx(),
           removal,
         ),
       );
-      expect(radius.subtreeTruncated).toBe(true);
+      expect(radius.subtreeTruncated, "nothing established that the graph is deep").toBe(false);
+      expect(radius.arming.countsConsistent, "but the numbers are not trustworthy").toBe(false);
+      expect(radius.disarming.countsConsistent).toBe(false);
     });
   }
+
+  it("a genuine bound hit sets subtreeTruncated and leaves countsConsistent alone", async () => {
+    const radius = computed(
+      await loadBlastRadius(
+        reader([], (sql) =>
+          sql.includes(EDGE_EXISTS) ? [{ hit: 1 }] : sql.includes("AS hit") ? [{ hit: true }] : undefined,
+        ),
+        ctx(),
+        removal,
+      ),
+    );
+    expect(radius.subtreeTruncated).toBe(true);
+    expect(radius.disarming.countsConsistent).toBe(true);
+  });
 });
 
 describe("the closure refusals — both were untested, and a no-op survived each", () => {
@@ -838,5 +880,112 @@ describe("the curated probe reads only APPROVED entries", () => {
     const probe = captures.find((c) => c.sql.includes("AS hit"));
     expect(probe, "the curated probe must run").toBeDefined();
     expect(probe!.sql).toContain("status = 'approved'");
+  });
+});
+
+describe("a removal with nothing to remove is a REASON, not computed zeros", () => {
+  it("reports no-such-edge rather than `floor: true` over two empty sides", async () => {
+    // ⚠️ The alias kinds had no analogue of `not-curated`, and the result was
+    // worse than the case that member exists for: with no approved edge the
+    // subtree is the seed alone and `removalKeyExpr` maps those rows onto the
+    // key they already carry, so `hypothetical ≡ stored`, both deltas are
+    // empty, and the caller got a COMPUTED radius of zeros. A renderer then
+    // says "at least 0 today, and every future claim in this slot" for a
+    // decision that does nothing at all.
+    const captures: Capture[] = [];
+    const radius = await loadBlastRadius(reader(captures), ctx(), {
+      kind: "alias-removal",
+      position: "predicate",
+      fromNorm: "never aliased",
+    });
+
+    expect(emptyReason(radius)).toBe("no-such-edge");
+    // And the question was never asked — no delta, and no depth probe either.
+    expect(deltaStatements(captures)).toHaveLength(0);
+  });
+
+  it("an existing edge still computes", async () => {
+    // The positive control. Without it the probe could refuse everything and
+    // the assertion above would still pass.
+    const radius = await loadBlastRadius(
+      reader([], edgeExists),
+      ctx(),
+      { kind: "alias-removal", position: "predicate", fromNorm: "is priced at" },
+    );
+    expect(radius.kind).toBe("computed");
+  });
+});
+
+describe("the placeholder guard", () => {
+  // ⚠️ Deleting this guard's body survived the entire suite: no legal request
+  // can construct a plan that trips it, because it exists to catch a FUTURE
+  // edit in which an expression's hand-written `$n` literal and the plan's
+  // `params` array drift apart. So it is exercised directly.
+  //
+  // The failure it converts into a refusal is silent and under-disclosing: an
+  // expression referencing a placeholder at or above the ACL base binds the
+  // reader's principal-token array as a slot key, joins nothing, and reports
+  // "this decision changes nothing" on an admin console.
+  it("refuses an expression that reaches into the reader's range", () => {
+    expect(() => assertPlaceholdersBelowAclBase("x = $4", 4, "ws", "arming", "req-1")).toThrow(
+      /references \$4, at or above the ACL base \$4/,
+    );
+  });
+
+  it("names the request, so the 500 can be correlated", () => {
+    // The sibling refusal (`readCount`) carries the requestId; this one was
+    // added in the same round and did not, which is the rule it was fixed to.
+    expect(() => assertPlaceholdersBelowAclBase("x = $9", 3, "ws", "arming", "req-7")).toThrow(
+      /request req-7/,
+    );
+    expect(() => assertPlaceholdersBelowAclBase("x = $9", 3, "ws", "arming")).toThrow(
+      /request unknown/,
+    );
+  });
+
+  it("admits a plan whose highest placeholder is below the base", () => {
+    expect(() => assertPlaceholdersBelowAclBase("a = $2 AND b = $3", 4, "ws", "arming")).not.toThrow();
+  });
+
+  it("admits a plan with no placeholders at all", () => {
+    expect(() => assertPlaceholdersBelowAclBase("a = b", 2, "ws", "disarming")).not.toThrow();
+  });
+});
+
+describe("the injectable depth bound can only NARROW", () => {
+  // ⚠️ `maxChainDepth` sits on an exported options bag beside `requestId` and
+  // is interpolated RAW into SQL at two sites, so a future route spreading a
+  // parsed query into this call would hand a client control of statement text.
+  // The clamp makes the seam incapable of widening past the shipped bound, of
+  // going non-positive, and of being non-integral.
+  async function emittedBound(maxChainDepth: number): Promise<string> {
+    const captures: Capture[] = [];
+    await loadBlastRadius(
+      reader(captures, edgeExists),
+      ctx(),
+      { kind: "alias-removal", position: "predicate", fromNorm: "is priced at" },
+      { maxChainDepth },
+    );
+    const sql = deltaStatements(captures)[0];
+    expect(sql).toBeDefined();
+    return sql as string;
+  }
+
+  it("cannot widen past the shipped bound", async () => {
+    expect(await emittedBound(9999)).toContain("s.depth < 64");
+  });
+
+  it("clamps a non-positive value to 1 rather than emitting it", async () => {
+    const sql = await emittedBound(-5);
+    expect(sql).toContain("s.depth < 1");
+    expect(sql).not.toContain("s.depth < -5");
+  });
+
+  it("truncates a fractional value", async () => {
+    expect(await emittedBound(3.9)).toContain("s.depth < 3");
+  });
+
+  it("honours a legitimate narrowing", async () => {
+    expect(await emittedBound(2)).toContain("s.depth < 2");
   });
 });

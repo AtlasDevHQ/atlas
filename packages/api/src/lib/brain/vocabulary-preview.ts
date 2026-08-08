@@ -83,8 +83,8 @@
  * — so approving one changes what corroborates and what earns a tension edge,
  * and changes nothing about what supersedes.
  *
- * That is reported as {@link BlastRadius.structurallyEmpty} rather than as a
- * zero, because *"0 pairs"* and *"this position cannot produce pairs"* are the
+ * That is reported as a `structurally-empty` {@link BlastRadius} carrying a
+ * reason, rather than as a zero, because *"0 pairs"* and *"this position cannot produce pairs"* are the
  * same number and opposite facts, and an approver reading the first will
  * reasonably conclude the alias is harmless when what is true is that its harm
  * is of a different kind. The same trap the M1 dogfood fell into: the sync
@@ -209,7 +209,26 @@ export type StructurallyEmptyReason =
    * closure target is the DIFFERENT case, and {@link resolveEffectiveTarget}
    * refuses that one rather than routing it here.
    */
-  | "unkeyable-surface";
+  | "unkeyable-surface"
+  /**
+   * An `alias-removal` naming a norm with no approved parent edge.
+   *
+   * ⚠️ Added because the alias kinds had NO analogue of `not-curated`, and the
+   * consequence was strictly worse than the one that member exists to prevent.
+   * With no edge, the removal's subtree is `{fromNorm}` and `removalKeyExpr`
+   * maps those rows onto the key they already carry — so `hypothetical ≡
+   * stored`, both deltas are empty, and the caller received a **computed**
+   * radius of zeros with `floor: true`. A renderer then says *"at least 0
+   * today, and every future claim in this slot"* for a decision that does
+   * nothing at all.
+   *
+   * `not-curated`'s own docstring argues it had to be its own member because
+   * collapsing it *"would tell someone their un-curation is a no-op"*. This is
+   * that same sentence for the alias path, and it was routed to `computed`
+   * zeros rather than merely mislabelled — which is why it is a reason and not
+   * a rewording.
+   */
+  | "no-such-edge";
 
 /**
  * The counterfactual's answer — a DISCRIMINATED UNION, and the discrimination
@@ -273,7 +292,15 @@ export interface BlastRadiusSide {
   readonly pairs: readonly BlastRadiusPair[];
   /** `total − scopedTotal`: pairs that happen regardless, listing rows this reader may not read. */
   readonly withheld: number;
-  /** The page overran {@link BLAST_RADIUS_PAIR_MAX}. Never folded into `withheld`. */
+  /**
+   * The sample lists fewer pairs than the reader is entitled to — either the
+   * page overran {@link BLAST_RADIUS_PAIR_MAX}, or rows failed to narrow and
+   * were dropped. `countsConsistent` distinguishes the two.
+   *
+   * Never folded into `withheld`, which means something else entirely: pairs
+   * the ACL withheld. Truncation dressed as an ACL boundary is what the wire
+   * type forbids.
+   */
   readonly truncated: boolean;
   /**
    * Whether the two statements behind this side agree well enough for the
@@ -290,9 +317,14 @@ export interface BlastRadiusSide {
    * just disagreed.
    *
    * Cleared by: an inverted delta (`scopedTotal > total`), a row whose columns
-   * would not narrow, a window that would not parse, and a subtree walk that hit
-   * {@link MAX_CHAIN_DEPTH}. Every one of those understates the blast radius,
-   * which is the direction that gets a belief retired.
+   * would not narrow, a window that would not parse, and a depth probe that did
+   * not answer. Every one of those is two statements failing to agree.
+   *
+   * ⚠️ **NOT cleared by a truncated subtree walk** — that is a SCOPE fact and
+   * travels on {@link BlastRadius.subtreeTruncated}. A consumer gating trust on
+   * this flag alone will believe it saw the whole alias subtree when it did
+   * not, so a renderer must read both. Four docstrings in this module asserted
+   * the old behaviour after it changed; that is what this sentence replaces.
    *
    * The cardinality flip is the most exposed: its `total` comes from a DIFFERENT
    * statement than its pairs, so the two are structurally more able to disagree
@@ -427,8 +459,9 @@ function removalKeyExpr(
  * carried it. An admin could withdraw an arbitration whose scope was understated
  * by an order of magnitude with every counter reading trustworthy.
  *
- * So the bound is PROBED ({@link subtreeTruncatedSql}) and clears
- * {@link BlastRadiusSide.countsConsistent}. Note the bound is also not purely a
+ * So the bound is PROBED ({@link subtreeTruncatedSql}) and travels on
+ * {@link BlastRadius.subtreeTruncated} — a scope statement, not a count
+ * disagreement. Note the bound is also not purely a
  * corruption signal: `vocabulary.ts` records that a rebuild fails when edges are
  * cyclic **or deeper than** the bound, so depth alone can trip it.
  */
@@ -551,9 +584,24 @@ function aliasExprs(
  */
 const SUBTREE_CTE = "subtree";
 
-/** The walk's depth bound — the shipped constant unless a test injects one. */
+/** No walk was performed — every kind but `alias-removal`. */
+const NO_SUBTREE: SubtreeProbe = Object.freeze({ truncated: false, probeDrifted: false });
+
+/**
+ * The walk's depth bound — the shipped constant unless a test injects one.
+ *
+ * ⚠️ CLAMPED, and interpolated raw into SQL at two sites. `maxChainDepth` sits
+ * on an EXPORTED options bag beside `requestId`, so a future route spreading a
+ * parsed query string into this call would hand a client control of a value
+ * that reaches the statement text. The clamp makes the seam incapable of
+ * injecting, of widening past the shipped bound, and of producing a
+ * non-integral depth — it can only ever NARROW, which is the whole production
+ * invariant.
+ */
 function maxDepth(opts: BlastRadiusOptions): number {
-  return opts.maxChainDepth ?? MAX_CHAIN_DEPTH;
+  const requested = opts.maxChainDepth;
+  if (requested === undefined) return MAX_CHAIN_DEPTH;
+  return Math.min(Math.max(1, Math.trunc(requested)), MAX_CHAIN_DEPTH);
 }
 
 /**
@@ -730,7 +778,7 @@ export async function loadBlastRadius(
     arming,
     disarming,
     floor: true,
-    subtreeTruncated: plan.subtreeTruncated,
+    subtreeTruncated: plan.subtree.truncated,
   };
 }
 
@@ -768,15 +816,30 @@ function assertReaderResolvable(ctx: BrainPrincipalContext, requestId?: string):
  */
 interface CounterfactualPlan {
   readonly hypothetical: CollisionExprs;
-  /** Everything after `$1` (the workspace id), in order. */
-  readonly params: readonly unknown[];
+  /**
+   * Everything after `$1` (the workspace id), in order.
+   *
+   * `readonly string[]`, not `unknown[]`. Every kind binds strings, and the
+   * wider type was actively hiding a hole: round 2 deleted the caller's
+   * `toKey === null` check on the strength of a prose argument, and
+   * `unknown[]` accepted the `string | null` silently. A NULL here binds `$3`,
+   * the approval CASE moves the whole population onto a NULL key, both deltas
+   * return 0, and the surface reports "this approval arms nothing" — the
+   * module's own named worst outcome, with no log line. The invariant went from
+   * CHECKED to DOCUMENTED, in the file whose thesis is that this is the
+   * anti-pattern. One word puts the compiler back in the room.
+   */
+  readonly params: readonly string[];
   readonly ctes: readonly string[];
   /**
-   * The subtree walk hit {@link MAX_CHAIN_DEPTH}, so the removal's disarming set
-   * is INCOMPLETE. Clears `countsConsistent` on both sides — a preview that
-   * cannot see the whole subtree cannot be trusted about either direction.
+   * What the depth probe established about the removal's subtree walk.
+   *
+   * `truncated` travels to {@link BlastRadius.subtreeTruncated} — a radius-wide
+   * SCOPE statement. `probeDrifted` clears
+   * {@link BlastRadiusSide.countsConsistent} instead, because an unreadable
+   * probe is statement drift and says nothing about the graph's depth.
    */
-  readonly subtreeTruncated: boolean;
+  readonly subtree: SubtreeProbe;
   /**
    * An ARMING-side total that comes from a different statement.
    *
@@ -803,18 +866,22 @@ async function planCounterfactual(
 ): Promise<CounterfactualPlan | StructurallyEmptyReason> {
   switch (request.kind) {
     case "alias-approval": {
+      // POSITION FIRST, matching the removal arm below. Both guards are
+      // unreachable today (`structurallyEmptyReason` runs before this
+      // function), and the whole reason they exist is the hypothetical where
+      // that stops being true — under which two arms answering DIFFERENT
+      // reasons for one request shape is exactly the confusion they were added
+      // to prevent. Position is the structural fact; keyability is the
+      // request-content fact.
+      if (!isCollidingSlot(request.position)) return "object-position";
       const fromKey = identityKey(request.fromNorm);
       const toNorm = lexicalNorm(request.toNorm);
       if (fromKey === null || toNorm === "") return "unkeyable-surface";
       // `to`'s CURRENT effective target — see `approvalKeyExpr`'s ⚠️.
-      // Narrowed HERE — the one call site that already knows the answer,
-      // because `structurallyEmptyReason` returned non-null for `object` and
-      // `loadBlastRadius` returned before reaching this function.
-      if (!isCollidingSlot(request.position)) return "object-position";
-      // `resolveEffectiveTarget` cannot answer null here — `toNorm` is a
-      // non-empty norm and `lexicalNorm` is idempotent — so the arm that used
-      // to sit here was dead AND fed the overloaded null channel. It refuses
-      // loudly on the two corrupt-closure shapes instead.
+      // `resolveEffectiveTarget` returns `string`: `toNorm` is a non-empty norm
+      // and `lexicalNorm` is idempotent, so the null arm that used to sit here
+      // was dead AND fed the overloaded null channel. It refuses loudly on the
+      // two corrupt-closure shapes instead.
       const toKey = await resolveEffectiveTarget(
         db,
         workspaceId,
@@ -826,7 +893,7 @@ async function planCounterfactual(
         hypothetical: aliasExprs(request.position, approvalKeyExpr(request.position, 2, 3)),
         params: [fromKey, toKey],
         ctes: [],
-        subtreeTruncated: false,
+        subtree: NO_SUBTREE,
       };
     }
     case "alias-removal": {
@@ -842,7 +909,7 @@ async function planCounterfactual(
         // cannot make the walk start somewhere the substitution does not land.
         params: [fromKey, request.position],
         ctes: [subtreeCteSql(SUBTREE_CTE, 1, 3, 2, maxDepth(opts))],
-        subtreeTruncated: await subtreeHitBound(db, workspaceId, request.position, fromKey, opts),
+        subtree: await subtreeHitBound(db, workspaceId, request.position, fromKey, opts),
       };
     }
     case "cardinality-flip":
@@ -861,7 +928,7 @@ async function planCounterfactual(
             : cardinalityUnflipExpr(2),
         params: [canonicalKey],
         ctes: [],
-        subtreeTruncated: false,
+        subtree: NO_SUBTREE,
         // ⚠️ NO `extraWhere: d.predicate_key = $2`, and its absence is the
         // decision rather than an omission. It was there, and it was a SECOND
         // mechanism doing the gate's job: given `d.predicate_key = $2`, the
@@ -916,7 +983,7 @@ async function subtreeHitBound(
   position: CollidingSlot,
   fromKey: string,
   opts: BlastRadiusOptions,
-): Promise<boolean> {
+): Promise<SubtreeProbe> {
   const depth = maxDepth(opts);
   const { rows } = await db.query(
     subtreeTruncatedSql(subtreeCteSql(SUBTREE_CTE, 1, 3, 2, depth), depth),
@@ -928,7 +995,7 @@ async function subtreeHitBound(
       { workspaceId, requestId: opts.requestId, position, fromNorm: fromKey, maxChainDepth: depth },
       "brain vocabulary preview: the alias subtree walk hit the depth bound — the approved-edge graph is cyclic or deeper than the bound, so this removal's disarming set is TRUNCATED and understates the blast radius",
     );
-    return true;
+    return { truncated: true, probeDrifted: false };
   }
   // ⚠️ `false` is the ONLY value that may answer "the walk was complete".
   // `null` used to take this arm unlogged — a `bool_or` over an empty CTE, a
@@ -937,12 +1004,29 @@ async function subtreeHitBound(
   // same file argues exactly this for `Number(null)` forty lines down; two
   // treatments of SQL NULL in one module, and the silent one was on the side
   // that decides whether an approver is shown a trustworthy number.
-  if (hit === false) return false;
+  if (hit === false) return { truncated: false, probeDrifted: false };
   log.warn(
     { workspaceId, requestId: opts.requestId, position, hit: hit === null ? "null" : typeof hit },
-    "brain vocabulary preview: the subtree depth probe did not read back as a boolean — treating the walk as TRUNCATED rather than assuming it was complete",
+    "brain vocabulary preview: the subtree depth probe did not read back as a boolean — the numbers cannot be trusted, but nothing establishes that the graph is deep or cyclic",
   );
-  return true;
+  // ⚠️ NOT `truncated: true`. An unreadable probe and a genuine bound hit are
+  // two different facts, and `BlastRadius.subtreeTruncated`'s docstring asserts
+  // the SECOND one specifically ("the walk hit MAX_CHAIN_DEPTH"). Collapsing
+  // them told an approver their approved-edge graph was cyclic or deeper than
+  // 64 whenever a driver or a query shape drifted — sending them to inspect a
+  // vocabulary that may be perfectly healthy. A drifted probe is statement
+  // drift, which is exactly what `countsConsistent` already means, so it goes
+  // there. Same distinction the module drew between `not-curated` and
+  // `already-single`.
+  return { truncated: false, probeDrifted: true };
+}
+
+/** What the depth probe established — two facts, deliberately not one boolean. */
+interface SubtreeProbe {
+  /** The walk provably reached its bound. */
+  readonly truncated: boolean;
+  /** The probe did not answer, so nothing about the walk is established. */
+  readonly probeDrifted: boolean;
 }
 
 async function resolveEffectiveTarget(
@@ -951,7 +1035,7 @@ async function resolveEffectiveTarget(
   position: CollidingSlot,
   norm: string,
   requestId?: string,
-): Promise<string | null> {
+): Promise<string> {
   const { rows } = await db.query(
     `SELECT effective_target FROM brain_vocabulary_target
       WHERE workspace_id = $1 AND slot_position = $2 AND norm = $3`,
@@ -969,7 +1053,12 @@ async function resolveEffectiveTarget(
   // pairs forever with no log line. That is the same defect class `readCount`
   // throws on 130 lines below, and it was handled the opposite way.
   const row = rows[0] as Record<string, unknown> | undefined;
-  if (row === undefined) return identityKey(norm);
+  // `?? norm` is honest rather than defensive: the only caller guarantees a
+  // non-empty norm and `lexicalNorm` is idempotent, so `identityKey` cannot
+  // answer null here. Returning `string` is what lets the plan's `params` be
+  // `string[]`, which is what puts the guarantee under the compiler instead of
+  // in a comment two functions away.
+  if (row === undefined) return identityKey(norm) ?? norm;
 
   const stored = row.effective_target;
   // ⚠️ QUERY SHAPE ONLY — `typeof`, and deliberately NOT `|| stored.trim() ===
@@ -1033,6 +1122,20 @@ async function structurallyEmptyReason(
   ) {
     return "object-position";
   }
+  if (request.kind === "alias-removal") {
+    const fromKey = identityKey(request.fromNorm);
+    if (fromKey === null) return "unkeyable-surface";
+    const { rows } = await db.query(
+      `SELECT 1 AS hit FROM brain_vocabulary_edge
+        WHERE workspace_id = $1 AND slot_position = $2 AND from_norm = $3`,
+      [workspaceId, request.position, fromKey],
+    );
+    // The same probe shape the cardinality kinds use one branch down: ask the
+    // store whether there is anything to undo, rather than inferring it from an
+    // empty delta.
+    if (rows.length === 0) return "no-such-edge";
+  }
+
   if (request.kind === "cardinality-flip" || request.kind === "cardinality-removal") {
     const canonicalKey = identityKey(request.predicateSurface);
     if (canonicalKey === null) return null;
@@ -1110,7 +1213,13 @@ async function loadBlastRadiusSide(
   // A `ParamBuilder` is the mechanical answer (`AclClause.nextParamIndex` is
   // that answer one seam over) and was judged more machinery than this earns.
   // This is the four-line version: loud, at the seam, rather than a zero.
-  assertPlaceholdersBelowAclBase(pairsSqlPlaceholderSource(plan), aclBase, workspaceId, direction);
+  assertPlaceholdersBelowAclBase(
+    pairsSqlPlaceholderSource(plan),
+    aclBase,
+    workspaceId,
+    direction,
+    opts.requestId,
+  );
 
   // Narrowed once, so the statement, its params and its result column travel
   // together and no `as` is needed to re-assert what the check established.
@@ -1118,9 +1227,10 @@ async function loadBlastRadiusSide(
   // ONE presence test, not two. `override?.sql ?? …` and `override ? … : …`
   // coincide only because `sql` is a required non-nullish string — which is the
   // same inconsistently-read optional the regrouping was meant to close.
-  const { sql: totalSql, params: totalParams } = override
-    ? { sql: override.sql, params: [workspaceId, ...override.params] }
+  const { sql: totalSql, params: totalParams, column: totalColumn } = override
+    ? { sql: override.sql, params: [workspaceId, ...override.params], column: override.column }
     : {
+        column: "delta_total",
         sql: deltaSql({
           select: TOTAL_SELECT,
           joinExprs,
@@ -1152,14 +1262,14 @@ async function loadBlastRadiusSide(
     ]),
   ]);
 
-  const total = readCount(totalResult.rows[0], override?.column ?? "delta_total");
+  const total = readCount(totalResult.rows[0], totalColumn);
   if (total === null) {
     // LOGGED before it throws, with the requestId — the two refusals in
     // `resolveEffectiveTarget` do, and this is the one an operator is most
     // likely to actually hit (two statements, drift on either). CLAUDE.md:
     // request ids on all 500s.
     log.error(
-      { workspaceId, requestId: opts.requestId, direction, column: override?.column ?? "delta_total" },
+      { workspaceId, requestId: opts.requestId, direction, column: totalColumn },
       "brain vocabulary preview: the delta total did not read back as a number — refusing rather than disclosing a blast radius Atlas cannot establish",
     );
     // A THROW, not a degraded 0 — `loadSupersessionPreview`'s reason exactly: 0
@@ -1201,7 +1311,7 @@ async function loadBlastRadiusSide(
     // radius-wide scope blind spot, not a side-local count disagreement, and it
     // now travels on `BlastRadius.subtreeTruncated` where it renders as its own
     // sentence. Smearing it here made the two indistinguishable to a consumer.
-    countsConsistent: !inverted && !drifted,
+    countsConsistent: !inverted && !drifted && !plan.subtree.probeDrifted,
   };
 }
 
@@ -1214,40 +1324,60 @@ async function loadBlastRadiusSide(
  */
 function pairsSqlPlaceholderSource(plan: CounterfactualPlan): string {
   const probe = "__x";
-  return [
-    plan.hypothetical.subjectSlot(probe),
-    plan.hypothetical.predicateSlot(probe),
-    plan.hypothetical.cardinalitySingle(probe),
-    ...plan.ctes,
-  ].join(" ");
+  // `Object.values`, NOT a hand-enumeration of the three members. Enumerating
+  // them meant a FOURTH member on `CollisionExprs` would silently shrink this
+  // guard's coverage with no compile error — the guard would keep passing while
+  // covering less, which is the failure mode a guard must not have.
+  const exprs = Object.values(plan.hypothetical).map((build) => build(probe));
+  // ⚠️ `armingTotalOverride.sql` is deliberately NOT scanned: it carries no ACL
+  // clause, so it has no reader range to collide with. Stated because that is
+  // an invariant of the override rather than a property of this function.
+  return [...exprs, ...plan.ctes].join(" ");
 }
 
-/** Refuse a plan whose expressions reach into the reader's placeholder range. */
-function assertPlaceholdersBelowAclBase(
+/**
+ * Refuse a plan whose expressions reach into the reader's placeholder range.
+ *
+ * EXPORTED for its test. It is a pure function over a string and a number, and
+ * the alternative was leaving it uncovered: no legal `BlastRadiusRequest` can
+ * construct a plan that trips it (that is the point — it guards a FUTURE edit),
+ * so deleting its body survived the whole suite. A guard whose only failure
+ * mode is unreachable through the public API is one whose test has to reach it
+ * directly.
+ */
+export function assertPlaceholdersBelowAclBase(
   source: string,
   aclBase: number,
   workspaceId: string,
   direction: DeltaDirection,
+  requestId?: string,
 ): void {
   const refs = [...source.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
   const highest = refs.length === 0 ? 0 : Math.max(...refs);
   if (highest >= aclBase) {
     log.error(
-      { workspaceId, direction, highest, aclBase },
+      { workspaceId, requestId, direction, highest, aclBase },
       "brain vocabulary preview: a counterfactual expression references a placeholder inside the reader's range — the ACL clause and the slot substitution would bind the same parameter",
     );
     throw new Error(
       `brain vocabulary preview: the ${direction} counterfactual references $${highest}, at or above ` +
-        `the ACL base $${aclBase} (workspace ${workspaceId}). The plan's placeholder literals and its ` +
+        `the ACL base $${aclBase} (workspace ${workspaceId}, request ${requestId ?? "unknown"}). ` +
+        `The plan's placeholder literals and its ` +
         `\`params\` array have drifted, so the reader's visibility predicate would bind against a slot ` +
         `key — joining nothing and reporting that this decision changes nothing. Refusing.`,
     );
   }
 }
 
-/** One `COUNT(*)::int` column, or `null` when it did not read back as one. */
-function readCount(raw: unknown, column: string): number | null {
-  const value = (raw as Record<string, unknown> | undefined)?.[column];
+/**
+ * A non-negative integer count, or `null` when the value did not read back as
+ * one.
+ *
+ * ONE spelling, used by both the total columns and the per-row window. `""` is
+ * refused explicitly — `Number("")` is a finite 0, which is the shape that
+ * reads as "no rows" when it means "the column drifted".
+ */
+function readNonNegativeInt(value: unknown): number | null {
   const n =
     typeof value === "number"
       ? value
@@ -1255,6 +1385,11 @@ function readCount(raw: unknown, column: string): number | null {
         ? Number(value)
         : Number.NaN;
   return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null;
+}
+
+/** One `COUNT(*)::int` column, or `null` when it did not read back as one. */
+function readCount(raw: unknown, column: string): number | null {
+  return readNonNegativeInt((raw as Record<string, unknown> | undefined)?.[column]);
 }
 
 /**
@@ -1292,14 +1427,16 @@ function readPairs(
       droppedRows++;
       continue;
     }
-    const windowed =
-      typeof r.scoped_total === "number"
-        ? r.scoped_total
-        : r.scoped_total == null
-          ? Number.NaN
-          : Number(r.scoped_total);
-    if (Number.isFinite(windowed) && windowed > scopedTotal) scopedTotal = Math.trunc(windowed);
-    else if (!Number.isFinite(windowed)) windowDriftRows++;
+    // ⚠️ The SAME narrowing `readCount` applies, rather than a looser twin.
+    // The looser one accepted `""` (`Number("") === 0`, finite) and negative
+    // values as trustworthy, so a `scoped_total` column drifting to empty
+    // string left `scopedTotal` at 0, `withheld` computed off a number nothing
+    // established, and `countsConsistent` saying the numbers were facts —
+    // while `readCount` forty lines up refuses both. Two treatments of one
+    // question is the asymmetry this module keeps having to remove.
+    const windowed = readNonNegativeInt(r.scoped_total);
+    if (windowed !== null && windowed > scopedTotal) scopedTotal = windowed;
+    else if (windowed === null) windowDriftRows++;
     pairs.push({
       draftId: r.draft_id,
       draftLabel: r.draft_label,

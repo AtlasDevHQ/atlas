@@ -278,7 +278,7 @@ async function lockWorkspaceVocabulary(
  * WHICH cycle lengths get the good error, and is a behaviour change rather than
  * a tuning knob.
  */
-const MAX_CHAIN_DEPTH = 64;
+export const MAX_CHAIN_DEPTH = 64;
 
 /** One approved edge, as callers supply it. */
 export interface AliasEdgeInput {

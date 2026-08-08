@@ -259,12 +259,34 @@ export type CardinalityWriteResult =
  *
  * `alias` is interpolated; callers pass a plain identifier they control — the
  * same contract as `brainFactStatusClause` and `comparableDifferentSql`.
+ *
+ * ## `predicateKeyExpr` — the COUNTERFACTUAL seam (#5025)
+ *
+ * #5025's blast-radius preview asks *"what would supersede if I approved this
+ * alias?"*, and a predicate-position alias moves a claim's `predicate_key`. The
+ * lookup has to follow it: after `is priced at → priced at` the merged slot's
+ * cardinality is the one curated on **`priced at`**, so a preview that kept
+ * reading the stored column would answer about the slot the claim is leaving.
+ *
+ * Defaulted to `${alias}.predicate_key`, so every shipped caller emits the
+ * byte-identical string it emitted before the parameter existed —
+ * `collision-sql-pinned.test.ts` asserts exactly that against a literal, which
+ * is what makes this a parameterization rather than the second spelling of
+ * "what collides" that `supersessionCollisionJoin`'s header forbids.
+ *
+ * ⚠️ The `workspace_id` arm is NOT parameterized and must not become so. A
+ * counterfactual is about which SLOT a claim occupies inside one workspace; a
+ * vocabulary never moves a row across workspaces, and a seam that let it would
+ * make a preview disclose another tenant's curation.
  */
-export function cardinalitySingleSql(alias: string): string {
+export function cardinalitySingleSql(
+  alias: string,
+  predicateKeyExpr: string = `${alias}.predicate_key`,
+): string {
   return `EXISTS (
        SELECT 1 FROM brain_predicate_cardinality c
         WHERE c.workspace_id = ${alias}.workspace_id
-          AND c.predicate_key = ${alias}.predicate_key
+          AND c.predicate_key = ${predicateKeyExpr}
           AND c.cardinality = 'single'
           AND c.status = 'approved')`;
 }

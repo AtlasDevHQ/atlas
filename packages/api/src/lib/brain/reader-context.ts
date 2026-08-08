@@ -84,7 +84,20 @@ const log = createLogger("brain-reader-context");
 export class BrainReaderIdentityError extends Error {}
 
 /** Closed diagnostic vocabulary for which surface refused a read. */
-export type BrainReadSurface = "read" | "review" | "search" | "oversight" | "correction";
+export type BrainReadSurface =
+  | "read"
+  | "review"
+  | "search"
+  | "oversight"
+  | "correction"
+  /**
+   * The Claim Vocabulary blast-radius preview (#5086). Its own member rather
+   * than reusing `"oversight"`: both modules refuse with this class, and one
+   * shared literal made the two messages byte-identical — so an operator could
+   * not tell the publish preview from the counterfactual preview, which are two
+   * different fixes. Diagnostics only, never branched on.
+   */
+  | "vocabulary-preview";
 
 /**
  * The reader's identity could not be turned into a usable principal set, so

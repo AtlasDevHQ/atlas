@@ -614,10 +614,137 @@ function supersedableTierSql(alias: string): string {
  * `d` / `p` are interpolated; callers pass plain identifiers they control —
  * same contract as `brainFactStatusClause`.
  */
-export function supersessionCollisionJoin(d: string, p: string): string {
+export function supersessionCollisionJoin(
+  d: string,
+  p: string,
+  exprs: CollisionExprs = STORED_COLLISION_EXPRS,
+): string {
   return `JOIN brain_facts ${p}
-      ON ${supersessionCollisionPredicate(d, p)}`;
+      ON ${supersessionCollisionPredicate(d, p, exprs)}`;
 }
+
+/**
+ * The three expressions a collision is evaluated AGAINST, rather than the arms
+ * it is built FROM (#5025).
+ *
+ * ## Why this exists, and why it is not the second spelling the header forbids
+ *
+ * `supersessionCollisionJoin` forbids a second spelling of *what collides*,
+ * because a disclosure that lists one set while the transaction stamps another
+ * is silent supersession through drift. #5025's blast-radius preview asks a
+ * question that is genuinely different — *what would collide if I approved
+ * this?* — and there were only two ways to express it: copy the arms with two
+ * columns swapped, which is exactly the forbidden thing, or make the COLUMNS a
+ * parameter while the ARMS stay single-spelled. This is the second.
+ *
+ * ## ⚠️ What this record makes UNREACHABLE, and what it only disciplines
+ *
+ * An earlier version of this paragraph claimed *"a caller cannot use this seam
+ * to drop the tier guard, the cardinality gate or the homonym suppression —
+ * those are not in this record and cannot be put into it."* **That is true of
+ * two of the three and false of the third — and the third is the one that
+ * actually varies.**
+ *
+ * | Conjunct | Reachable through this record? |
+ * |---|---|
+ * | tier guard (`supersedableTierSql`, both sides) | **No** — not a member |
+ * | homonym suppression (`subjectNotDifferentSql`) | **No** — not a member |
+ * | object comparable (`comparableDifferentSql`) | **No** — not a member |
+ * | the published row's live-and-current arms | **No** — not a member |
+ * | **cardinality gate** | **YES** — `cardinalitySingle` is a member |
+ * | **subject / predicate slot identity** | **YES** — both are members |
+ *
+ * `cardinalitySingle: () => "TRUE"` compiles and removes the gate from every
+ * statement built through {@link supersessionCollisionPredicate};
+ * `subjectSlot: () => "1"` renders `1 = 1` and deletes the subject-identity
+ * arm. The consumer proves it rather than merely admitting it —
+ * `cardinalityFlipExpr` (`lib/brain/vocabulary-preview.ts`) forces the gate TRUE
+ * for one predicate ON PURPOSE, which is exactly the shape an accident takes.
+ *
+ * So the honest claim is narrower: **four conjuncts are structurally out of
+ * reach; three are caller-supplied, and their discipline is the pinned test
+ * plus review.** The strong version was the more comfortable sentence, and it is
+ * the one a reviewer would have trusted instead of checking.
+ *
+ * The members are named `…Slot` rather than `…Key` for a second reason:
+ * `keys-not-on-the-wire.test.ts`'s ORM arm is deliberately over-broad: it fires
+ * on the camel-cased spelling of any identity-key column anywhere in a file
+ * outside its declaration sites. (Comments are NOT included — the arm runs
+ * `stripComments` first. An earlier version of this sentence said they were,
+ * which is the same comfortable-and-unchecked shape three other claims in this
+ * slice were corrected for, reintroduced in the fix for them.) These members
+ * build SQL slot EXPRESSIONS rather than projecting key columns, so the accurate
+ * name is also the one that keeps that guard's exemption list short — and a
+ * short exemption list is the whole guard.
+ *
+ * ## The default is byte-identical, and that is pinned rather than asserted
+ *
+ * {@link STORED_COLLISION_EXPRS} reproduces the stored columns exactly, so every
+ * statement that existed before this parameter emits the same string it always
+ * did. `collision-sql-pinned.test.ts` compares the four shipped statements to
+ * literal snapshots — a falsifier rather than a claim, because "this refactor
+ * changed nothing" is precisely the assertion that is cheap to believe and
+ * expensive to be wrong about on a predicate that stamps `valid_to`.
+ *
+ * ## What is deliberately ABSENT
+ *
+ * No `objectCmp` and no `subjectCmp`. A vocabulary approval does not move them:
+ * `object_cmp` / `subject_cmp` are the typed comparable values #5030 and #5032
+ * derive from the surface's PARSE, and aliasing two surfaces together changes
+ * neither parse. Admitting them as parameters would invite a counterfactual that
+ * claims an alias makes two objects provably different, which no alias can do.
+ *
+ * ⚠️ **The object POSITION therefore has no supersession blast radius at all.**
+ * The collision joins on `subject_key`, `predicate_key` and `object_cmp` —
+ * `object_key` appears nowhere in it. An object-position alias moves
+ * `object_key`, which is a CORROBORATION arm (`reconcile.ts`'s
+ * `objectSameSql`), so approving one changes what corroborates and what earns a
+ * tension edge, and changes nothing about what supersedes. `lib/brain/
+ * vocabulary-preview.ts` discloses that in words rather than rendering a zero,
+ * because "0 pairs" and "this position cannot produce pairs" are the same
+ * number and opposite facts.
+ */
+export interface CollisionExprs {
+  /**
+   * The subject slot. `${alias}.subject_key` when stored.
+   *
+   * Applied to BOTH aliases (`p` and `d`) — see {@link cardinalitySingle} for
+   * the member whose calling convention differs.
+   */
+  readonly subjectSlot: (alias: string) => string;
+  /** The predicate slot. `${alias}.predicate_key` when stored. Applied to BOTH aliases. */
+  readonly predicateSlot: (alias: string) => string;
+  /**
+   * The cardinality gate, taking the DRAFT alias.
+   *
+   * A whole expression rather than a `single: boolean`, because the two
+   * counterfactuals need different things from it: an alias approval needs the
+   * real lookup re-pointed at the hypothetical predicate key, while a
+   * cardinality flip needs the gate to read TRUE for one specific key that has
+   * no approved row yet. Neither is expressible as a flag.
+   *
+   * ⚠️ **Called with the DRAFT alias only**, unlike its two siblings, and the
+   * three share one type so nothing says so but this line. A gate written on
+   * the assumption it will also see the published side compiles and is silently
+   * wrong — it would answer about one row while the caller believes it answered
+   * about the slot. One lookup is sufficient precisely because the predicate
+   * already equates both sides' keys; see {@link cardinalitySingleSql}'s ⚠️.
+   */
+  readonly cardinalitySingle: (alias: string) => string;
+}
+
+/**
+ * The stored columns — the collision as every shipped statement asks it.
+ *
+ * `cardinalitySingle` is {@link cardinalitySingleSql} at its own default, so the
+ * emitted string is identical to the pre-parameter one rather than merely
+ * equivalent to it.
+ */
+export const STORED_COLLISION_EXPRS: CollisionExprs = Object.freeze({
+  subjectSlot: (alias: string) => `${alias}.subject_key`,
+  predicateSlot: (alias: string) => `${alias}.predicate_key`,
+  cardinalitySingle: (alias: string) => cardinalitySingleSql(alias),
+});
 
 /**
  * The same collision, as a bare predicate rather than a JOIN's `ON` clause.
@@ -634,8 +761,12 @@ export function supersessionCollisionJoin(d: string, p: string): string {
  * building the `JOIN` from the predicate keeps that convenience without letting
  * it become a second copy.
  */
-export function supersessionCollisionPredicate(d: string, p: string): string {
-  return `${collisionIdentityPredicate(d, p)}
+export function supersessionCollisionPredicate(
+  d: string,
+  p: string,
+  exprs: CollisionExprs = STORED_COLLISION_EXPRS,
+): string {
+  return `${collisionIdentityPredicate(d, p, exprs)}
      AND ${supersedableTierSql(p)}
      AND ${supersedableTierSql(d)}`;
 }
@@ -675,9 +806,13 @@ export function supersessionCollisionPredicate(d: string, p: string): string {
  * collided but for the TIER", and a pair the cardinality arm excluded never
  * collided at all.
  */
-function collisionIdentityPredicate(d: string, p: string): string {
-  return `${collisionCorePredicate(d, p)}
-     AND ${cardinalitySingleSql(d)}`;
+function collisionIdentityPredicate(
+  d: string,
+  p: string,
+  exprs: CollisionExprs = STORED_COLLISION_EXPRS,
+): string {
+  return `${collisionCorePredicate(d, p, exprs)}
+     AND ${exprs.cardinalitySingle(d)}`;
 }
 
 /**
@@ -718,10 +853,14 @@ function collisionIdentityPredicate(d: string, p: string): string {
  * `IS NOT TRUE` and never a `NOT (…)`, and for why supersession is the LEAST
  * important of the three consumers this arm serves.
  */
-function collisionCorePredicate(d: string, p: string): string {
+function collisionCorePredicate(
+  d: string,
+  p: string,
+  exprs: CollisionExprs = STORED_COLLISION_EXPRS,
+): string {
   return `${p}.workspace_id = ${d}.workspace_id
-     AND ${p}.subject_key = ${d}.subject_key
-     AND ${p}.predicate_key = ${d}.predicate_key
+     AND ${exprs.subjectSlot(p)} = ${exprs.subjectSlot(d)}
+     AND ${exprs.predicateSlot(p)} = ${exprs.predicateSlot(d)}
      AND ${comparableDifferentSql(`${p}.object_cmp`, `${d}.object_cmp`)}
      AND ${subjectNotDifferentSql(`${p}.subject_cmp`, `${d}.subject_cmp`)}
      AND ${p}.status = 'published'
@@ -774,19 +913,38 @@ function collisionCorePredicate(d: string, p: string): string {
  * cannot drop a row into the three-valued hole `supersedableTierSql`'s
  * `{"source": null}` provenance falls into. {@link cardinalitySingleSql} is an
  * `EXISTS`; {@link supersedableTierSql} is a comparison.
+ *
+ * ## The draft scope is a PARAMETER since #5025, and the constant is its default
+ *
+ * The publish gate asks this of one batch (`d.id = ANY($2::uuid[])`). #5025's
+ * cardinality-flip preview asks the identical question of one PREDICATE — *how
+ * many beliefs would curating this predicate retire?* — and its issue is
+ * explicit that it must **import this statement rather than re-derive the
+ * cardinality half**, on {@link supersessionCollisionJoin}'s standing rule.
+ *
+ * So the scope moved into {@link cardinalityHeldBackCountSql} and this constant
+ * became that builder at the publish gate's own scope. The emitted string is
+ * unchanged — `collision-sql-pinned.test.ts` holds it against a literal — so
+ * #5027's mutation rows still address the statement they were measured on.
  */
-export const CARDINALITY_HELD_BACK_COUNT_SQL = `
+export function cardinalityHeldBackCountSql(draftScopeSql: string): string {
+  return `
   SELECT COUNT(*)::int AS held_back
     FROM brain_facts d
     JOIN brain_facts p
       ON ${collisionCorePredicate("d", "p")}
    WHERE d.workspace_id = $1
      AND ${supersedingDraftPredicate("d")}
-     AND d.id = ANY($2::uuid[])
+     AND ${draftScopeSql}
      AND ${supersedableTierSql("p")}
      AND ${supersedableTierSql("d")}
      AND NOT ${cardinalitySingleSql("d")}
 `;
+}
+
+export const CARDINALITY_HELD_BACK_COUNT_SQL = cardinalityHeldBackCountSql(
+  "d.id = ANY($2::uuid[])",
+);
 
 /**
  * How many provable collisions this publish is HOLDING BACK on tier grounds

@@ -9,10 +9,14 @@
  *
  * The negatives this file exists for, in the order they would hurt:
  *
- *   - **the exclusion arm is `IS NOT TRUE`, never `NOT (…)`.** Third site in the
- *     repo; first one where a bare negation UNDER-discloses an irreversible
- *     consequence, by dropping every `{"source": null}` provenance through the
- *     three-valued hole.
+ *   - **the exclusion arm is spelled `IS NOT TRUE`.** A DEFENSIVE spelling, and
+ *     the test below says so rather than claiming a kill it does not make: the
+ *     two spellings are extensionally identical today, because every
+ *     NULL-capable arm of the exclusion is shared with the JOIN and joining
+ *     forces each one TRUE. `vocabulary-preview-pg.test.ts` measures that
+ *     against a real `{"source": null}` pair. What this pins is the SPELLING,
+ *     so the day an exclusion-only nullable arm appears the guard is already
+ *     there.
  *   - **a predicate-position alias re-points the CARDINALITY lookup too.** The
  *     compound case ADR-0037 §6's amendment exists for is exactly the case a
  *     bundle that moved only the slot arm would report as zero.
@@ -93,22 +97,25 @@ const APPROVE_PREDICATE: BlastRadiusRequest = {
   toNorm: "priced at",
 };
 
-describe("the exclusion arm's polarity", () => {
-  it("negates the other vocabulary with IS NOT TRUE and never a bare NOT", async () => {
+describe("the exclusion arm's spelling", () => {
+  // ⚠️ Scope note, because this test is easy to over-read and an earlier draft
+  // of its name did: it pins a SPELLING, not a behavioural kill. `NOT (…)`
+  // would return the same set today — every NULL-capable arm of the exclusion
+  // (tier, `object_cmp`, a NULL slot key) is shared with the JOIN, and a row
+  // only reaches the exclusion by joining, which forces each shared arm TRUE.
+  // `vocabulary-preview-pg.test.ts` measures that against a real
+  // `{"source": null}` pair. The spelling is kept because the equivalence holds
+  // only while the exclusion has no nullable arm of its own.
+  it("negates the other vocabulary with IS NOT TRUE rather than a bare NOT", async () => {
     const captures: Capture[] = [];
     await loadBlastRadius(reader(captures), ctx(), APPROVE_PREDICATE);
 
     const deltas = deltaStatements(captures);
     expect(deltas.length).toBeGreaterThan(0);
     for (const sql of deltas) {
-      // The exclusion is the whole collision predicate wrapped in `IS NOT TRUE`.
       expect(sql).toContain(") IS NOT TRUE");
-      // ⚠️ The failure this pins: `NOT (` immediately wrapping the collision
-      // would compile, read naturally, and silently drop every row whose
-      // provenance is `{"source": null}` — the population `brain-facts.ts`
-      // twice calls the subtlest one — out of a disclosure that must be
-      // complete. `NOT EXISTS` inside the cardinality gate is a different and
-      // legitimate construct, so the assertion targets the wrapper shape.
+      // `NOT EXISTS` inside the cardinality gate is a different and legitimate
+      // construct, so the assertion targets the wrapper shape specifically.
       expect(sql).not.toContain("AND NOT (p.workspace_id");
       expect(sql).not.toContain("AND NOT (d.workspace_id");
     }
@@ -285,7 +292,13 @@ describe("the cardinality flip imports the held-back count rather than re-derivi
 
 describe("the reader boundary", () => {
   it("throws rather than answering an unresolvable reader with an empty radius", async () => {
-    const unresolved: BrainPrincipalContext = { origin: "unresolved", workspaceId: WS };
+    const unresolved: BrainPrincipalContext = {
+      origin: "unresolved",
+      workspaceId: WS,
+      userId: null,
+      role: null,
+      audienceIds: [],
+    };
     await expect(
       loadBlastRadius(reader([]), unresolved, APPROVE_PREDICATE),
     ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);

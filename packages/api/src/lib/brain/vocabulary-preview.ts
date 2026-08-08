@@ -40,16 +40,33 @@
  * on. The alternative — an `approve` preview and a `remove` preview — is two
  * spellings of one question, which is the shape this file exists to avoid.
  *
- * ## ⚠️ The exclusion arm is `IS NOT TRUE`, never `NOT (…)`
+ * ## The exclusion arm is `IS NOT TRUE`, and the honest claim is narrower than
+ * ## it first looks
  *
  * The delta's second half asks *and it does NOT collide under the other
  * vocabulary*, and `supersedableTierSql` is SQL **NULL** — not `false` — for a
- * `{"source": null}` provenance. `NOT (NULL)` is NULL, so a bare negation drops
- * exactly the population `brain-facts.ts` twice records as the subtlest one out
- * of a disclosure whose entire job is to be complete. The repo has already paid
- * for this distinction on `TIER_HELD_BACK_COUNT_SQL` and on `objectNotSameSql`;
- * this is the third site and it is the one where the failure is an
- * UNDER-disclosure of an irreversible consequence.
+ * `{"source": null}` provenance, which is the shape that makes `NOT (…)` the
+ * repo's recurring bug (`TIER_HELD_BACK_COUNT_SQL`, `objectNotSameSql`).
+ *
+ * ⚠️ **Here the two spellings are extensionally IDENTICAL, and saying otherwise
+ * would be the overclaim this file is least entitled to make.** Measured, not
+ * reasoned: every arm of the exclusion that can be NULL — the tier guard, the
+ * `object_cmp` comparison, a NULL slot key — is SHARED with the JOIN predicate,
+ * and a row only reaches the exclusion by joining, which forces each shared arm
+ * to TRUE. A NULL slot key stays NULL through the substitution too (`CASE WHEN
+ * NULL = $x` takes the ELSE branch), so it cannot join either. So the exclusion
+ * is two-valued for every row that ever evaluates it, and `NOT (…)` would
+ * return the same set today. `vocabulary-preview-pg.test.ts` seeds a
+ * `{"source": null}` pair and shows it is excluded by the JOIN rather than by
+ * this arm — the falsifier for the equivalence, not for the spelling.
+ *
+ * The spelling stays anyway, and the reason is a CHANGE rather than a value:
+ * the equivalence holds only while the exclusion's NULL-capable arms are a
+ * subset of the join's. An exclusion-only arm — the obvious one being a scope
+ * narrowing that reads a nullable column the join does not — breaks it silently
+ * and in the under-disclosing direction. A defensive spelling that costs
+ * nothing and stops being a no-op exactly when someone stops thinking about it
+ * is worth keeping; a docstring calling it load-bearing when it is not is not.
  *
  * ## ⚠️ The object position has NO supersession blast radius
  *
@@ -421,10 +438,11 @@ export type DeltaDirection = "arming" | "disarming";
  * stored); for `disarming` they are (stored, hypothetical). Both come from
  * `supersessionCollisionPredicate`, so both carry every conjunct.
  *
- * ⚠️ `IS NOT TRUE` on the exclusion, never `NOT (…)`. See the module header —
- * this is the third site in the repo where the distinction decides whether the
- * subtlest population is visible, and the first where getting it wrong
- * UNDER-discloses an irreversible consequence.
+ * `IS NOT TRUE` on the exclusion rather than `NOT (…)` — a DEFENSIVE spelling,
+ * not a load-bearing one. The module header carries the measurement: the two
+ * are extensionally identical today because every NULL-capable arm of the
+ * exclusion is shared with the join, and it is an exclusion-ONLY nullable arm
+ * that would break the equivalence.
  */
 function deltaSql(opts: {
   readonly select: string;
@@ -611,7 +629,20 @@ async function planCounterfactual(
             : cardinalityUnflipExpr(2),
         params: [predicateKey],
         ctes: [],
-        extraWhere: `d.predicate_key = $2`,
+        // ⚠️ NO `extraWhere: d.predicate_key = $2`, and its absence is the
+        // decision rather than an omission. It was there, and it was a SECOND
+        // mechanism doing the gate's job: given `d.predicate_key = $2`, the
+        // expression `(d.predicate_key = $2 OR stored)` is just `TRUE`, so the
+        // scope came entirely from the WHERE and the gate could be replaced by
+        // `TRUE` with no test noticing — measured, as a surviving mutation.
+        //
+        // The gate alone is sufficient AND self-scoping: for a pair in any
+        // other predicate the hypothetical and the stored expression coincide,
+        // so `hyp ∧ ¬stored` is empty for it. One mechanism, and it is the one
+        // a mutation can reach. The cost is that the delta scans the
+        // workspace's drafts rather than one predicate's — a human-paced
+        // preview on an admin surface, and the same posture
+        // `REKEY_DRIFTED_FACTS_SQL` takes on a far hotter path.
         // The literal reuse #5025's handoff requires: the arming total is
         // `CARDINALITY_HELD_BACK_COUNT_SQL`'s own question at a predicate scope
         // rather than a batch scope. `vocabulary-preview-pg.test.ts` asserts

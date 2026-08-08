@@ -33,13 +33,38 @@ import { describe, expect, it } from "bun:test";
 import {
   BLAST_RADIUS_PAIR_MAX,
   loadBlastRadius,
+  type BlastRadius,
   type BlastRadiusRequest,
+  type StructurallyEmptyReason,
 } from "@atlas/api/lib/brain/vocabulary-preview";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 
 const WS = "ws-preview";
+
+/**
+ * Narrow a radius to the computed branch.
+ *
+ * The union exists so a renderer cannot read `floor` on a branch where it is
+ * meaningless; these tests pay the same one-line cost the future call site
+ * will, which is the point of the shape.
+ */
+function computed(radius: BlastRadius): Extract<BlastRadius, { kind: "computed" }> {
+  expect(radius.kind, `expected a computed radius, got ${JSON.stringify(radius)}`).toBe("computed");
+  if (radius.kind !== "computed") throw new Error("unreachable");
+  return radius;
+}
+
+/** Narrow a radius to the structurally-empty branch and return its reason. */
+function emptyReason(radius: BlastRadius): StructurallyEmptyReason {
+  expect(radius.kind, `expected a structurally-empty radius, got ${JSON.stringify(radius)}`).toBe(
+    "structurally-empty",
+  );
+  if (radius.kind !== "structurally-empty") throw new Error("unreachable");
+  return radius.reason;
+}
+
 
 function ctx(
   partial: Partial<Extract<BrainPrincipalContext, { origin: "authenticated" }>> = {},
@@ -179,8 +204,8 @@ describe("the exclusion arm's spelling", () => {
       APPROVE_PREDICATE,
     );
 
-    expect(radius.arming.total).toBe(7);
-    expect(radius.disarming.total).toBe(3);
+    expect(computed(radius).arming.total).toBe(7);
+    expect(computed(radius).disarming.total).toBe(3);
   });
 
   it("no statement joins on AND excludes the same vocabulary — that is a self-difference", async () => {
@@ -242,11 +267,11 @@ describe("the object position is structurally empty, not zero", () => {
       toNorm: "project atlas",
     });
 
-    expect(radius.structurallyEmpty).toBe("object-position");
-    expect(radius.arming.total).toBe(0);
-    expect(radius.disarming.total).toBe(0);
-    // Not merely "the answer was 0" — the question was never asked, because
-    // `object_key` is not in the collision.
+    expect(emptyReason(radius)).toBe("object-position");
+    // ⚠️ There is nothing to assert about totals, and that is the union's whole
+    // point: on this branch the numbers do not EXIST, so a renderer cannot read
+    // "at least 0 today, and every future claim in this slot" off a response
+    // that means "this position cannot produce pairs".
     expect(deltaStatements(captures)).toHaveLength(0);
   });
 
@@ -257,7 +282,7 @@ describe("the object position is structurally empty, not zero", () => {
       position: "object",
       fromNorm: "nova",
     });
-    expect(radius.structurallyEmpty).toBe("object-position");
+    expect(emptyReason(radius)).toBe("object-position");
     expect(deltaStatements(captures)).toHaveLength(0);
   });
 });
@@ -343,7 +368,7 @@ describe("the cardinality flip imports the held-back count rather than re-derivi
     // `arming.total === 0` against real rows), and what is asserted HERE is the
     // shape that makes it empty: the arming side joins on a rule strictly
     // NARROWER than the one it excludes, so the difference cannot contain a row.
-    expect(radius.disarming.total).toBe(11);
+    expect(computed(radius).disarming.total).toBe(11);
     const deltas = deltaStatements(captures);
     const unflip = "IS DISTINCT FROM $2";
     const arming = deltas.filter((sql) => halves(sql).join.includes(unflip));
@@ -366,7 +391,7 @@ describe("the cardinality flip imports the held-back count rather than re-derivi
       ctx(),
       { kind: "cardinality-flip", predicateSurface: "reports to" },
     );
-    expect(radius.structurallyEmpty).toBe("already-single");
+    expect(emptyReason(radius)).toBe("already-single");
     expect(deltaStatements(captures)).toHaveLength(0);
   });
 
@@ -379,7 +404,7 @@ describe("the cardinality flip imports the held-back count rather than re-derivi
       kind: "cardinality-removal",
       predicateSurface: "reports to",
     });
-    expect(radius.structurallyEmpty).toBe("not-curated");
+    expect(emptyReason(radius)).toBe("not-curated");
   });
 });
 
@@ -457,7 +482,7 @@ describe("the payload", () => {
     expect(serialized).not.toContain("predicate_key");
     expect(serialized).not.toContain("subject_key");
     expect(serialized).not.toContain("predicateKey");
-    expect(radius.arming.pairs[0]?.draftLabel).toBe("acme priced at 12");
+    expect(computed(radius).arming.pairs[0]?.draftLabel).toBe("acme priced at 12");
   });
 
   it("reports the workspace-wide remainder as `withheld`", async () => {
@@ -480,9 +505,9 @@ describe("the payload", () => {
       ctx(),
       APPROVE_PREDICATE,
     );
-    expect(radius.arming.total).toBe(5);
-    expect(radius.arming.withheld).toBe(4);
-    expect(radius.arming.truncated).toBe(false);
+    expect(computed(radius).arming.total).toBe(5);
+    expect(computed(radius).arming.withheld).toBe(4);
+    expect(computed(radius).arming.truncated).toBe(false);
   });
 
   it("reports a clipped page as truncated and never folds it into withheld", async () => {
@@ -504,10 +529,10 @@ describe("the payload", () => {
       ctx(),
       APPROVE_PREDICATE,
     );
-    expect(radius.arming.truncated).toBe(true);
-    expect(radius.arming.pairs).toHaveLength(BLAST_RADIUS_PAIR_MAX);
+    expect(computed(radius).arming.truncated).toBe(true);
+    expect(computed(radius).arming.pairs).toHaveLength(BLAST_RADIUS_PAIR_MAX);
     // Truncation dressed as an ACL boundary is what the wire type forbids.
-    expect(radius.arming.withheld).toBe(0);
+    expect(computed(radius).arming.withheld).toBe(0);
   });
 
   it("always reports the count as a FLOOR", async () => {
@@ -515,7 +540,7 @@ describe("the payload", () => {
     // surface renders "at least N today, and every future claim in this slot",
     // and this flag is what makes that assertable rather than conventional.
     const radius = await loadBlastRadius(reader([]), ctx(), APPROVE_PREDICATE);
-    expect(radius.floor).toBe(true);
+    expect(computed(radius).floor).toBe(true);
   });
 });
 
@@ -539,9 +564,9 @@ describe("an unkeyable surface is a disclosed REASON, never a zero", () => {
         toNorm: "priced at",
       });
 
-      expect(radius.structurallyEmpty).toBe("unkeyable-surface");
-      expect(radius.arming.total).toBe(0);
-      // Not merely zero — the question was never asked.
+      expect(emptyReason(radius)).toBe("unkeyable-surface");
+      // Not merely zero — the question was never asked, and the branch carries
+      // no number a renderer could mistake for one.
       expect(deltaStatements(captures)).toHaveLength(0);
     });
   }
@@ -551,7 +576,7 @@ describe("an unkeyable surface is a disclosed REASON, never a zero", () => {
       kind: "cardinality-flip",
       predicateSurface: "-",
     });
-    expect(radius.structurallyEmpty).toBe("unkeyable-surface");
+    expect(emptyReason(radius)).toBe("unkeyable-surface");
   });
 
   it("an unresolvable reader is refused BEFORE the unkeyable check", async () => {
@@ -603,8 +628,8 @@ describe("countsConsistent — the half the clamp alone does not carry", () => {
       ctx(),
       APPROVE_PREDICATE,
     );
-    expect(radius.arming.countsConsistent).toBe(true);
-    expect(radius.arming.withheld).toBe(2);
+    expect(computed(radius).arming.countsConsistent).toBe(true);
+    expect(computed(radius).arming.withheld).toBe(2);
   });
 
   it("is CLEARED when the scoped count exceeds the workspace count", async () => {
@@ -621,8 +646,8 @@ describe("countsConsistent — the half the clamp alone does not carry", () => {
       ctx(),
       APPROVE_PREDICATE,
     );
-    expect(radius.arming.withheld).toBe(0);
-    expect(radius.arming.countsConsistent).toBe(false);
+    expect(computed(radius).arming.withheld).toBe(0);
+    expect(computed(radius).arming.countsConsistent).toBe(false);
   });
 
   it("is CLEARED when a row will not narrow — a dropped row is not an ACL-withheld one", async () => {
@@ -640,8 +665,13 @@ describe("countsConsistent — the half the clamp alone does not carry", () => {
       ctx(),
       APPROVE_PREDICATE,
     );
-    expect(radius.arming.pairs).toHaveLength(1);
-    expect(radius.arming.countsConsistent).toBe(false);
+    expect(computed(radius).arming.pairs).toHaveLength(1);
+    expect(computed(radius).arming.countsConsistent).toBe(false);
+    // ⚠️ `truncated` too — it is the wire flag that must never be folded into
+    // `withheld`, and three floor/derivation mutations survived for want of one
+    // assertion on it: dropping `|| scopedTotal > pairs.length`, and deleting
+    // either floor.
+    expect(computed(radius).arming.truncated).toBe(true);
   });
 
   it("is CLEARED when the scoped window will not parse", async () => {
@@ -656,7 +686,7 @@ describe("countsConsistent — the half the clamp alone does not carry", () => {
       ctx(),
       APPROVE_PREDICATE,
     );
-    expect(radius.arming.countsConsistent).toBe(false);
+    expect(computed(radius).arming.countsConsistent).toBe(false);
   });
 
   it("a NULL window is treated as drift, not as a finite zero", async () => {
@@ -674,28 +704,139 @@ describe("countsConsistent — the half the clamp alone does not carry", () => {
       ctx(),
       APPROVE_PREDICATE,
     );
-    expect(radius.arming.countsConsistent).toBe(false);
+    expect(computed(radius).arming.countsConsistent).toBe(false);
   });
 
-  it("is CLEARED when the removal subtree walk hit the depth bound", async () => {
-    // A truncated walk understates the disarming set — an admin could withdraw
-    // an arbitration whose scope was understated by an order of magnitude with
-    // every counter reading trustworthy.
-    const radius = await loadBlastRadius(
-      reader([], (sql) => (sql.includes("AS hit") ? [{ hit: true }] : undefined)),
-      ctx(),
-      { kind: "alias-removal", position: "predicate", fromNorm: "is priced at" },
+});
+
+describe("subtreeTruncated — a scope blind spot, not a count disagreement", () => {
+  // ⚠️ It used to clear `countsConsistent` on both sides. A truncated walk is
+  // ONE statement asking about a smaller population than requested, not two
+  // statements disagreeing — different sentences, different actions, so a
+  // different field. The same argument that split `not-curated` from
+  // `already-single`.
+  const removal = {
+    kind: "alias-removal",
+    position: "predicate",
+    fromNorm: "is priced at",
+  } as const;
+
+  it("is set when the walk hit the bound, and leaves countsConsistent alone", async () => {
+    const radius = computed(
+      await loadBlastRadius(
+        reader([], (sql) => (sql.includes("AS hit") ? [{ hit: true }] : undefined)),
+        ctx(),
+        removal,
+      ),
     );
-    expect(radius.disarming.countsConsistent).toBe(false);
-    expect(radius.arming.countsConsistent).toBe(false);
+    expect(radius.subtreeTruncated).toBe(true);
+    // The two statements did NOT disagree — nothing about the counts is wrong,
+    // they simply describe less than was asked about.
+    expect(radius.disarming.countsConsistent).toBe(true);
   });
 
-  it("an unreadable depth probe fails CLOSED", async () => {
-    const radius = await loadBlastRadius(
-      reader([], (sql) => (sql.includes("AS hit") ? [{ hit: "maybe" }] : undefined)),
-      ctx(),
-      { kind: "alias-removal", position: "predicate", fromNorm: "is priced at" },
+  it("is false on a complete walk", async () => {
+    const radius = computed(
+      await loadBlastRadius(
+        reader([], (sql) => (sql.includes("AS hit") ? [{ hit: false }] : undefined)),
+        ctx(),
+        removal,
+      ),
     );
-    expect(radius.disarming.countsConsistent).toBe(false);
+    expect(radius.subtreeTruncated).toBe(false);
+  });
+
+  for (const [label, hit] of [
+    ["an unreadable probe", "maybe"],
+    ["a NULL probe — bool_or over an empty CTE, or a probe that lost its seed", null],
+  ] as const) {
+    it(`fails CLOSED on ${label}`, async () => {
+      // `false` is the only value that may answer "the walk was complete".
+      // `null` used to take that arm UNLOGGED, while the same module maps
+      // `Number(null)` to NaN forty lines down for exactly this reason.
+      const radius = computed(
+        await loadBlastRadius(
+          reader([], (sql) => (sql.includes("AS hit") ? [{ hit }] : undefined)),
+          ctx(),
+          removal,
+        ),
+      );
+      expect(radius.subtreeTruncated).toBe(true);
+    });
+  }
+});
+
+describe("the closure refusals — both were untested, and a no-op survived each", () => {
+  // `resolveEffectiveTarget`'s two throws had zero coverage: replacing either
+  // guard with a no-op survived all 59 tests. The second is documented as
+  // REACHABLE — 0189's CHECKs do not constrain `effective_target` to being a
+  // norm, and the region importer rebuilds that table.
+  const closureRow = (value: unknown) => (sql: string) =>
+    sql.includes("brain_vocabulary_target") ? [{ effective_target: value }] : undefined;
+
+  it("refuses when the closure column did not read back as a string (query-shape drift)", async () => {
+    await expect(
+      loadBlastRadius(reader([], closureRow(42)), ctx(), APPROVE_PREDICATE),
+    ).rejects.toThrow(/did not read back as a string/);
+  });
+
+  it("refuses when the stored target NORMS AWAY — corruption, not drift", async () => {
+    // ⚠️ The arm that used to be unreachable. Its sibling tested
+    // `stored.trim() === ""` and claimed that was "unreachable from Postgres",
+    // but 0189's CHECK is `effective_target <> ''` — and `'   ' <> ''` is TRUE,
+    // so a whitespace-only target is storable and was being reported as a
+    // QUERY-SHAPE problem. An operator was sent to look at the SELECT, the
+    // driver and the migration state for a bad row.
+    for (const degenerate of ["   ", "-", "___"]) {
+      await expect(
+        loadBlastRadius(reader([], closureRow(degenerate)), ctx(), APPROVE_PREDICATE),
+        `"${degenerate}" must be reported as a corrupt closure, not as query drift`,
+      ).rejects.toThrow(/norms away/);
+    }
+  });
+
+  it("an empty string is the one shape the CHECK does reject, and still refuses", async () => {
+    await expect(
+      loadBlastRadius(reader([], closureRow("")), ctx(), APPROVE_PREDICATE),
+    ).rejects.toThrow(/norms away|did not read back/);
+  });
+});
+
+describe("the refusals name THIS surface", () => {
+  it("an unresolvable reader is refused as `vocabulary-preview`, not as `oversight`", async () => {
+    // ⚠️ The sole justification for adding a `BrainReadSurface` member was that
+    // both previews produced byte-identical refusals. Reverting the constant to
+    // "oversight" survived all 59 tests — the string appeared in no test in the
+    // repo, so the distinction the change bought was the one thing unchecked.
+    const unresolved: BrainPrincipalContext = {
+      origin: "unresolved",
+      workspaceId: WS,
+      userId: null,
+      role: null,
+      audienceIds: [],
+    };
+    await expect(
+      loadBlastRadius(reader([]), unresolved, APPROVE_PREDICATE),
+    ).rejects.toThrow(/brain vocabulary-preview:/);
+  });
+});
+
+describe("the curated probe reads only APPROVED entries", () => {
+  it("a PENDING cardinality row does not make a flip structurally empty", async () => {
+    // Dropping `AND status = 'approved'` from the probe survived all 59 tests:
+    // the unit suite mocked the whole response and the pg suite only ever
+    // seeded approved rows. With that mutation a PENDING proposal — which
+    // `cardinalitySingleSql` deliberately ignores, because a repeat-gated
+    // heuristic must never stamp `valid_to` with no human in the loop — makes
+    // the flip report `already-single`: a fabricated structural empty on the
+    // surface whose entire job is telling those apart.
+    const captures: Capture[] = [];
+    await loadBlastRadius(reader(captures), ctx(), {
+      kind: "cardinality-flip",
+      predicateSurface: "reports to",
+    });
+    const probe = captures.find((c) => c.sql.includes("AS hit"));
+    expect(probe, "the curated probe must run").toBeDefined();
+    expect(probe!.sql).toContain("status = 'approved'");
   });
 });

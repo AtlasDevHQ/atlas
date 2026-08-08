@@ -105,6 +105,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
+import type { BrainFactWillSupersedePair } from "@useatlas/types";
 import { aclVisibilityClause, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
@@ -149,17 +150,18 @@ export const BLAST_RADIUS_PAIR_MAX = 50;
 /**
  * One pair a decision would arm or disarm.
  *
+ * ⚠️ An ALIAS of the wire type, not a copy. It was a field-for-field duplicate
+ * of `BrainFactWillSupersedePair` — same four fields, same semantics, same
+ * rationale docstring — which is the SSOT violation CLAUDE.md names. No route
+ * serializes it YET, and that is the argument for fixing it now rather than
+ * deferring: the moment one does, the duplicate becomes a wire contract and the
+ * drift is permanent.
+ *
  * Labels, never keys. ADR-0037 §6 forbids projecting a key beside its claim
  * (`keys-not-on-the-wire.test.ts` is the guard), and a consumer that can branch
- * on a key is what makes an alias un-removable. The SURFACE is what an approver
- * reads anyway.
+ * on a key is what makes an alias un-removable.
  */
-export interface BlastRadiusPair {
-  readonly draftId: string;
-  readonly draftLabel: string;
-  readonly supersededId: string;
-  readonly supersededLabel: string;
-}
+export type BlastRadiusPair = BrainFactWillSupersedePair;
 
 /**
  * Why a preview can produce no pairs AT ALL, as distinct from producing none.
@@ -209,24 +211,60 @@ export type StructurallyEmptyReason =
    */
   | "unkeyable-surface";
 
-/** The counterfactual's answer. */
-export interface BlastRadius {
-  /**
-   * Pairs a decision would make supersedable — content-free count plus a
-   * reader-scoped bounded sample.
-   */
-  readonly arming: BlastRadiusSide;
-  /** Pairs a decision would make safe again. Empty for every approval. */
-  readonly disarming: BlastRadiusSide;
-  /**
-   * ALWAYS true today, and a field rather than a comment because the surface
-   * must render the floor wording and a boolean is what makes that assertable.
-   * See the module header for the two independent reasons.
-   */
-  readonly floor: true;
-  /** Non-null when the counterfactual cannot produce pairs by construction. */
-  readonly structurallyEmpty: StructurallyEmptyReason | null;
-}
+/**
+ * The counterfactual's answer — a DISCRIMINATED UNION, and the discrimination
+ * is the module's thesis made unrepresentable rather than argued.
+ *
+ * ⚠️ It used to be one record carrying `arming`, `disarming`, `floor: true` AND
+ * a nullable `structurallyEmpty`, with a shared `EMPTY_SIDE` filling the fields
+ * that had no meaning. Every field was readable on every branch — so a renderer
+ * that read `floor` before checking `structurallyEmpty` produced *"at least 0
+ * today, and every future claim in this slot"* for an object-position alias.
+ * That sentence is false (no future claim in that slot can supersede) and it is
+ * precisely the confident false all-clear the module header spends four
+ * paragraphs on, reachable by reading two fields in the wrong order.
+ *
+ * Split, the numbers do not exist on the branch where they are meaningless and
+ * `EMPTY_SIDE` disappears entirely. The cost is one `switch` at the single
+ * future call site; the module is unwired, so this is the cheapest this change
+ * will ever be.
+ */
+export type BlastRadius =
+  /** The counterfactual cannot produce pairs BY CONSTRUCTION. No numbers. */
+  | { readonly kind: "structurally-empty"; readonly reason: StructurallyEmptyReason }
+  /** The question was asked and answered. */
+  | {
+      readonly kind: "computed";
+      /**
+       * Pairs the decision would make supersedable — content-free count plus a
+       * reader-scoped bounded sample.
+       */
+      readonly arming: BlastRadiusSide;
+      /** Pairs it would make safe again. Empty for every approval. */
+      readonly disarming: BlastRadiusSide;
+      /**
+       * ALWAYS true, and a field rather than a comment because the surface must
+       * render the floor wording and a literal type is what makes that
+       * assertable. See the module header for the two independent reasons.
+       */
+      readonly floor: true;
+      /**
+       * The alias subtree walk hit {@link MAX_CHAIN_DEPTH}, so BOTH sides
+       * describe a smaller population than was asked about.
+       *
+       * ⚠️ Its own field on the RADIUS rather than folded into
+       * {@link BlastRadiusSide.countsConsistent}, and the distinction is the one
+       * this module already made when it split `not-curated` from
+       * `already-single`: a truncated walk is not two statements disagreeing, it
+       * is one statement asking about a smaller population. Those render as
+       * different sentences and demand different actions from an approver —
+       * *"these numbers may not agree"* versus *"we could not see your whole
+       * alias subtree"* — so they are different fields. Smeared across both
+       * sides it also became impossible to tell a side-local disagreement from a
+       * radius-wide blind spot.
+       */
+      readonly subtreeTruncated: boolean;
+    };
 
 export interface BlastRadiusSide {
   /** Unscoped, workspace-wide. A number, never content. */
@@ -262,16 +300,6 @@ export interface BlastRadiusSide {
    */
   readonly countsConsistent: boolean;
 }
-
-const EMPTY_SIDE: BlastRadiusSide = Object.freeze({
-  total: 0,
-  pairs: [],
-  withheld: 0,
-  truncated: false,
-  // A structurally-empty side is not a DEGRADED one: nothing was computed, so
-  // nothing disagreed. The reason travels on `structurallyEmpty`.
-  countsConsistent: true,
-});
 
 // ---------------------------------------------------------------------------
 // The hypothetical vocabularies
@@ -409,6 +437,7 @@ function subtreeCteSql(
   workspaceParam: number,
   positionParam: number,
   fromNormParam: number,
+  depth: number,
 ): string {
   return `${cteName} AS (
        SELECT $${fromNormParam}::text AS node, 1 AS depth
@@ -419,7 +448,7 @@ function subtreeCteSql(
            ON e.workspace_id = $${workspaceParam}::text
           AND e.slot_position = $${positionParam}::text
           AND e.to_norm = s.node
-        WHERE s.depth < ${MAX_CHAIN_DEPTH}
+        WHERE s.depth < ${depth}
      )`;
 }
 
@@ -513,18 +542,33 @@ function aliasExprs(
 // The delta
 // ---------------------------------------------------------------------------
 
-/** Which half of the delta a statement computes. */
 /**
- * Did the subtree walk reach {@link MAX_CHAIN_DEPTH}?
+ * The CTE name, spelled ONCE.
+ *
+ * {@link subtreeTruncatedSql} takes the CTE definition as a parameter but reads
+ * `FROM subtree` in its body, so a rename at one of the three sites was a
+ * runtime SQL error nothing would catch until production.
+ */
+const SUBTREE_CTE = "subtree";
+
+/** The walk's depth bound — the shipped constant unless a test injects one. */
+function maxDepth(opts: BlastRadiusOptions): number {
+  return opts.maxChainDepth ?? MAX_CHAIN_DEPTH;
+}
+
+/**
+ * Did the subtree walk reach its depth bound?
  *
  * Asked as its own statement rather than folded into the delta, because the
  * delta's shape is fixed by {@link deltaSql} and a `bool_or` column would have
  * to survive both the count and the pairs projection. One extra round trip on a
  * human-paced admin preview, and only for a removal.
  */
-function subtreeTruncatedSql(cte: string): string {
-  return `WITH RECURSIVE ${cte} SELECT bool_or(depth >= ${MAX_CHAIN_DEPTH}) AS hit FROM subtree`;
+function subtreeTruncatedSql(cte: string, depth: number): string {
+  return `WITH RECURSIVE ${cte} SELECT bool_or(depth >= ${depth}) AS hit FROM ${SUBTREE_CTE}`;
 }
+
+/** Which half of the delta a statement computes. */
 
 export type DeltaDirection = "arming" | "disarming";
 
@@ -585,6 +629,21 @@ function pairsSelect(): string {
 // Loading
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-call knobs.
+ *
+ * `maxChainDepth` is injectable ONLY so the depth bound is falsifiable: with
+ * the shipped 64 no fixture can reach it, and a mutation weakening the probe's
+ * threshold (`>=` to `>`) was measured surviving all 59 tests — the walk would
+ * truncate silently and `subtreeTruncated` would stay false, which is the exact
+ * failure the probe exists to prevent. Production never passes it.
+ */
+export interface BlastRadiusOptions {
+  readonly requestId?: string;
+  /** Test seam. Defaults to {@link MAX_CHAIN_DEPTH}. */
+  readonly maxChainDepth?: number;
+}
+
 /** What a caller asks a preview about. */
 export type BlastRadiusRequest =
   /** Approving `fromNorm → toNorm` at `position`. */
@@ -626,7 +685,7 @@ export async function loadBlastRadius(
   db: BrainCandidateReader,
   ctx: BrainPrincipalContext,
   request: BlastRadiusRequest,
-  requestId?: string,
+  opts: BlastRadiusOptions = {},
 ): Promise<BlastRadius> {
   const workspaceId = ctx.workspaceId;
 
@@ -637,45 +696,42 @@ export async function loadBlastRadius(
   // degenerate norm received a clean `{total: 0}` instead of the refusal this
   // function's own `@throws` contract promises. The fail-closed gate was
   // reachable only on the paths that did not need it.
-  assertReaderResolvable(ctx, requestId);
+  assertReaderResolvable(ctx, opts.requestId);
 
   const structurallyEmpty = await structurallyEmptyReason(db, workspaceId, request);
   if (structurallyEmpty !== null) {
-    return {
-      arming: EMPTY_SIDE,
-      disarming: EMPTY_SIDE,
-      floor: true,
-      structurallyEmpty,
-    };
+    return { kind: "structurally-empty", reason: structurallyEmpty };
   }
 
-  const plan = await planCounterfactual(db, workspaceId, request, requestId);
-  if (plan === null) {
-    // ⚠️ A DISCLOSED REASON, never a bare zero. The earlier version returned
-    // `structurallyEmpty: null` here with a comment describing two causes that
-    // cannot reach this branch — "an unaliased norm" resolves to itself rather
-    // than to null, and "a predicate with no facts" never consults
-    // `brain_facts` at all. What actually reaches it is a surface that norms
-    // away, and reporting that as "asked and answered, zero" is the confident
-    // false all-clear the module header argues against at length.
+  const plan = await planCounterfactual(db, workspaceId, request, opts);
+  if (typeof plan === "string") {
+    // ⚠️ A REASON, carried out of `planCounterfactual` rather than manufactured
+    // here. It used to return a bare `null` from six sites and this caller
+    // stamped `"unkeyable-surface"` on all of them — so an object-position
+    // request (reachable if `structurallyEmptyReason` is ever reordered or a
+    // second caller appears) rendered as *"this surface does not key"*, which
+    // is a factually wrong reason in the under-disclosing direction, with a log
+    // line asserting something untrue. `"object-position"` and
+    // `"unkeyable-surface"` are opposite facts.
     log.warn(
-      { workspaceId, requestId, kind: request.kind },
-      "brain vocabulary preview: the decision named a surface that does not key — disclosing an unkeyable-surface reason rather than a zero blast radius",
+      { workspaceId, requestId: opts.requestId, kind: request.kind, reason: plan },
+      "brain vocabulary preview: the decision could not be turned into a counterfactual — disclosing a reason rather than a zero blast radius",
     );
-    return {
-      arming: EMPTY_SIDE,
-      disarming: EMPTY_SIDE,
-      floor: true,
-      structurallyEmpty: "unkeyable-surface",
-    };
+    return { kind: "structurally-empty", reason: plan };
   }
 
   const [arming, disarming] = await Promise.all([
-    loadBlastRadiusSide(db, ctx, plan, "arming", requestId),
-    loadBlastRadiusSide(db, ctx, plan, "disarming", requestId),
+    loadBlastRadiusSide(db, ctx, plan, "arming", opts),
+    loadBlastRadiusSide(db, ctx, plan, "disarming", opts),
   ]);
 
-  return { arming, disarming, floor: true, structurallyEmpty: null };
+  return {
+    kind: "computed",
+    arming,
+    disarming,
+    floor: true,
+    subtreeTruncated: plan.subtreeTruncated,
+  };
 }
 
 /**
@@ -743,20 +799,29 @@ async function planCounterfactual(
   db: BrainCandidateReader,
   workspaceId: string,
   request: BlastRadiusRequest,
-  requestId?: string,
-): Promise<CounterfactualPlan | null> {
+  opts: BlastRadiusOptions,
+): Promise<CounterfactualPlan | StructurallyEmptyReason> {
   switch (request.kind) {
     case "alias-approval": {
       const fromKey = identityKey(request.fromNorm);
       const toNorm = lexicalNorm(request.toNorm);
-      if (fromKey === null || toNorm === "") return null;
+      if (fromKey === null || toNorm === "") return "unkeyable-surface";
       // `to`'s CURRENT effective target — see `approvalKeyExpr`'s ⚠️.
       // Narrowed HERE — the one call site that already knows the answer,
       // because `structurallyEmptyReason` returned non-null for `object` and
       // `loadBlastRadius` returned before reaching this function.
-      if (!isCollidingSlot(request.position)) return null;
-      const toKey = await resolveEffectiveTarget(db, workspaceId, request.position, toNorm, requestId);
-      if (toKey === null) return null;
+      if (!isCollidingSlot(request.position)) return "object-position";
+      // `resolveEffectiveTarget` cannot answer null here — `toNorm` is a
+      // non-empty norm and `lexicalNorm` is idempotent — so the arm that used
+      // to sit here was dead AND fed the overloaded null channel. It refuses
+      // loudly on the two corrupt-closure shapes instead.
+      const toKey = await resolveEffectiveTarget(
+        db,
+        workspaceId,
+        request.position,
+        toNorm,
+        opts.requestId,
+      );
       return {
         hypothetical: aliasExprs(request.position, approvalKeyExpr(request.position, 2, 3)),
         params: [fromKey, toKey],
@@ -765,25 +830,25 @@ async function planCounterfactual(
       };
     }
     case "alias-removal": {
-      if (!isCollidingSlot(request.position)) return null;
+      if (!isCollidingSlot(request.position)) return "object-position";
       const fromKey = identityKey(request.fromNorm);
-      if (fromKey === null) return null;
+      if (fromKey === null) return "unkeyable-surface";
       return {
-        hypothetical: aliasExprs(request.position, removalKeyExpr(request.position, "subtree", 2)),
+        hypothetical: aliasExprs(request.position, removalKeyExpr(request.position, SUBTREE_CTE, 2)),
         // `$2` is BOTH the substituted key and the subtree seed, and they are the
         // same string rather than two values that happen to match: `fromNorm` is
         // already a norm, and `identityKey` is idempotent on one, so
         // `identityKey(fromNorm) === fromNorm`. Bound once so a future edit
         // cannot make the walk start somewhere the substitution does not land.
         params: [fromKey, request.position],
-        ctes: [subtreeCteSql("subtree", 1, 3, 2)],
-        subtreeTruncated: await subtreeHitBound(db, workspaceId, request.position, fromKey, requestId),
+        ctes: [subtreeCteSql(SUBTREE_CTE, 1, 3, 2, maxDepth(opts))],
+        subtreeTruncated: await subtreeHitBound(db, workspaceId, request.position, fromKey, opts),
       };
     }
     case "cardinality-flip":
     case "cardinality-removal": {
       const canonicalKey = identityKey(request.predicateSurface);
-      if (canonicalKey === null) return null;
+      if (canonicalKey === null) return "unkeyable-surface";
       return {
         // A flip ADDS this key to the gate; a removal SUBTRACTS it. Both are
         // "the vocabulary after the decision", and the delta's direction swap
@@ -848,27 +913,34 @@ async function planCounterfactual(
 async function subtreeHitBound(
   db: BrainCandidateReader,
   workspaceId: string,
-  position: SlotPosition,
+  position: CollidingSlot,
   fromKey: string,
-  requestId?: string,
+  opts: BlastRadiusOptions,
 ): Promise<boolean> {
-  const { rows } = await db.query(subtreeTruncatedSql(subtreeCteSql("subtree", 1, 3, 2)), [
-    workspaceId,
-    fromKey,
-    position,
-  ]);
+  const depth = maxDepth(opts);
+  const { rows } = await db.query(
+    subtreeTruncatedSql(subtreeCteSql(SUBTREE_CTE, 1, 3, 2, depth), depth),
+    [workspaceId, fromKey, position],
+  );
   const hit = (rows[0] as { hit?: unknown } | undefined)?.hit;
   if (hit === true) {
     log.warn(
-      { workspaceId, requestId, position, fromNorm: fromKey, maxChainDepth: MAX_CHAIN_DEPTH },
+      { workspaceId, requestId: opts.requestId, position, fromNorm: fromKey, maxChainDepth: depth },
       "brain vocabulary preview: the alias subtree walk hit the depth bound — the approved-edge graph is cyclic or deeper than the bound, so this removal's disarming set is TRUNCATED and understates the blast radius",
     );
     return true;
   }
-  if (hit === false || hit === null) return false;
+  // ⚠️ `false` is the ONLY value that may answer "the walk was complete".
+  // `null` used to take this arm unlogged — a `bool_or` over an empty CTE, a
+  // probe that lost its seed row, a driver mapping an aggregate to null — each
+  // means the probe told us nothing, and each was recorded as "complete". The
+  // same file argues exactly this for `Number(null)` forty lines down; two
+  // treatments of SQL NULL in one module, and the silent one was on the side
+  // that decides whether an approver is shown a trustworthy number.
+  if (hit === false) return false;
   log.warn(
-    { workspaceId, requestId, position, hit: typeof hit },
-    "brain vocabulary preview: the subtree depth probe did not read back as a boolean — clearing countsConsistent rather than assuming the walk was complete",
+    { workspaceId, requestId: opts.requestId, position, hit: hit === null ? "null" : typeof hit },
+    "brain vocabulary preview: the subtree depth probe did not read back as a boolean — treating the walk as TRUNCATED rather than assuming it was complete",
   );
   return true;
 }
@@ -876,7 +948,7 @@ async function subtreeHitBound(
 async function resolveEffectiveTarget(
   db: BrainCandidateReader,
   workspaceId: string,
-  position: SlotPosition,
+  position: CollidingSlot,
   norm: string,
   requestId?: string,
 ): Promise<string | null> {
@@ -900,7 +972,17 @@ async function resolveEffectiveTarget(
   if (row === undefined) return identityKey(norm);
 
   const stored = row.effective_target;
-  if (typeof stored !== "string" || stored.trim() === "") {
+  // ⚠️ QUERY SHAPE ONLY — `typeof`, and deliberately NOT `|| stored.trim() ===
+  // ""`. That extra clause read as harmless and was a second collapse inside
+  // the fix for the first one: 0189's CHECK is `effective_target <> ''`, and
+  // `'   ' <> ''` is TRUE, so a whitespace-only target is STORABLE (0189's
+  // header says outright that normal form is not enforced on this table). It
+  // therefore intercepted a genuinely corrupt row and reported it as driver /
+  // migration drift, sending an operator to look at the SELECT — while making
+  // the "closure is corrupt" arm below, written for exactly this row,
+  // unreachable. Every non-empty string now falls through to `identityKey`,
+  // which answers `null` for every degenerate spelling.
+  if (typeof stored !== "string") {
     log.error(
       { workspaceId, position, norm, requestId },
       "brain vocabulary preview: brain_vocabulary_target.effective_target did not read back as a string — the closure query shape changed",
@@ -986,7 +1068,7 @@ async function loadBlastRadiusSide(
   ctx: BrainPrincipalContext,
   plan: CounterfactualPlan,
   direction: DeltaDirection,
-  requestId?: string,
+  opts: BlastRadiusOptions,
 ): Promise<BlastRadiusSide> {
   const workspaceId = ctx.workspaceId;
   const joinExprs = direction === "arming" ? plan.hypothetical : STORED_COLLISION_EXPRS;
@@ -998,7 +1080,7 @@ async function loadBlastRadiusSide(
     table: "brain_facts",
     alias: "d",
     paramIndex: aclBase,
-    requestId,
+    requestId: opts.requestId,
   });
   if (draftAcl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(workspaceId, ctx.origin, PREVIEW_SURFACE);
@@ -1007,7 +1089,7 @@ async function loadBlastRadiusSide(
     table: "brain_facts",
     alias: "p",
     paramIndex: draftAcl.nextParamIndex,
-    requestId,
+    requestId: opts.requestId,
   });
   if (publishedAcl.decision === "deny-all") {
     // Unreachable — same context, same table, and the first clause resolved.
@@ -1017,21 +1099,37 @@ async function loadBlastRadiusSide(
   }
   const limitParam = publishedAcl.nextParamIndex;
 
+  // ⚠️ The plan's expressions carry HAND-WRITTEN placeholder literals (`$2`,
+  // `$3`) while `aclBase` is derived from `plan.params.length`. They agree
+  // today — verified for all four kinds — and the failure mode if they ever
+  // stop is silent and in the under-disclosing direction: an expression
+  // referencing a placeholder at or above `aclBase` would compare a slot key
+  // against an ACL principal token, join nothing, and report "this approval
+  // arms nothing" on an admin console.
+  //
+  // A `ParamBuilder` is the mechanical answer (`AclClause.nextParamIndex` is
+  // that answer one seam over) and was judged more machinery than this earns.
+  // This is the four-line version: loud, at the seam, rather than a zero.
+  assertPlaceholdersBelowAclBase(pairsSqlPlaceholderSource(plan), aclBase, workspaceId, direction);
+
   // Narrowed once, so the statement, its params and its result column travel
   // together and no `as` is needed to re-assert what the check established.
   const override = direction === "arming" ? plan.armingTotalOverride : undefined;
-  const totalSql =
-    override?.sql ??
-    deltaSql({
-      select: TOTAL_SELECT,
-      joinExprs,
-      excludeExprs,
-      workspaceParam: 1,
-      ctes: plan.ctes,
-    });
-  const totalParams = override
-    ? [workspaceId, ...override.params]
-    : [workspaceId, ...plan.params];
+  // ONE presence test, not two. `override?.sql ?? …` and `override ? … : …`
+  // coincide only because `sql` is a required non-nullish string — which is the
+  // same inconsistently-read optional the regrouping was meant to close.
+  const { sql: totalSql, params: totalParams } = override
+    ? { sql: override.sql, params: [workspaceId, ...override.params] }
+    : {
+        sql: deltaSql({
+          select: TOTAL_SELECT,
+          joinExprs,
+          excludeExprs,
+          workspaceParam: 1,
+          ctes: plan.ctes,
+        }),
+        params: [workspaceId, ...plan.params],
+      };
 
   const pairsSql = deltaSql({
     select: pairsSelect(),
@@ -1056,6 +1154,14 @@ async function loadBlastRadiusSide(
 
   const total = readCount(totalResult.rows[0], override?.column ?? "delta_total");
   if (total === null) {
+    // LOGGED before it throws, with the requestId — the two refusals in
+    // `resolveEffectiveTarget` do, and this is the one an operator is most
+    // likely to actually hit (two statements, drift on either). CLAUDE.md:
+    // request ids on all 500s.
+    log.error(
+      { workspaceId, requestId: opts.requestId, direction, column: override?.column ?? "delta_total" },
+      "brain vocabulary preview: the delta total did not read back as a number — refusing rather than disclosing a blast radius Atlas cannot establish",
+    );
     // A THROW, not a degraded 0 — `loadSupersessionPreview`'s reason exactly: 0
     // renders as "this decision arms nothing", a confident false all-clear
     // fabricated from query drift, on the surface whose whole job is this
@@ -1063,7 +1169,8 @@ async function loadBlastRadiusSide(
     // Postgres.
     throw new Error(
       `brain vocabulary preview: the ${direction} total did not read back as a number for ` +
-        `workspace ${workspaceId} — refusing to disclose a blast radius Atlas cannot establish`,
+        `workspace ${workspaceId} (request ${opts.requestId ?? "unknown"}) — refusing to disclose ` +
+        `a blast radius Atlas cannot establish`,
     );
   }
 
@@ -1071,13 +1178,13 @@ async function loadBlastRadiusSide(
     pairsResult.rows,
     workspaceId,
     direction,
-    requestId,
+    opts.requestId,
   );
 
   const inverted = scopedTotal > total;
   if (inverted) {
     log.warn(
-      { workspaceId, requestId, direction, scopedTotal, total },
+      { workspaceId, requestId: opts.requestId, direction, scopedTotal, total },
       "brain vocabulary preview: the reader-scoped delta exceeds the workspace delta — a brief ingest race, or the two statements disagree; reporting 0 withheld and clearing countsConsistent",
     );
   }
@@ -1090,8 +1197,52 @@ async function loadBlastRadiusSide(
     // The clamp above is `loadSupersessionPreview`'s; this flag is the half that
     // module ships and this one had dropped. Without it the clamp renders as
     // "nothing is hidden from you" off two statements that just disagreed.
-    countsConsistent: !inverted && !drifted && !plan.subtreeTruncated,
+    // ⚠️ NOT `&& !plan.subtreeTruncated` any more. A truncated walk is a
+    // radius-wide scope blind spot, not a side-local count disagreement, and it
+    // now travels on `BlastRadius.subtreeTruncated` where it renders as its own
+    // sentence. Smearing it here made the two indistinguishable to a consumer.
+    countsConsistent: !inverted && !drifted,
   };
+}
+
+/**
+ * Every `$n` the plan's own expressions reference, as one string to scan.
+ *
+ * Built from the plan rather than from the emitted statement so the check does
+ * not accidentally read the ACL clause's own placeholders — which are legal at
+ * and above `aclBase` by construction.
+ */
+function pairsSqlPlaceholderSource(plan: CounterfactualPlan): string {
+  const probe = "__x";
+  return [
+    plan.hypothetical.subjectSlot(probe),
+    plan.hypothetical.predicateSlot(probe),
+    plan.hypothetical.cardinalitySingle(probe),
+    ...plan.ctes,
+  ].join(" ");
+}
+
+/** Refuse a plan whose expressions reach into the reader's placeholder range. */
+function assertPlaceholdersBelowAclBase(
+  source: string,
+  aclBase: number,
+  workspaceId: string,
+  direction: DeltaDirection,
+): void {
+  const refs = [...source.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
+  const highest = refs.length === 0 ? 0 : Math.max(...refs);
+  if (highest >= aclBase) {
+    log.error(
+      { workspaceId, direction, highest, aclBase },
+      "brain vocabulary preview: a counterfactual expression references a placeholder inside the reader's range — the ACL clause and the slot substitution would bind the same parameter",
+    );
+    throw new Error(
+      `brain vocabulary preview: the ${direction} counterfactual references $${highest}, at or above ` +
+        `the ACL base $${aclBase} (workspace ${workspaceId}). The plan's placeholder literals and its ` +
+        `\`params\` array have drifted, so the reader's visibility predicate would bind against a slot ` +
+        `key — joining nothing and reporting that this decision changes nothing. Refusing.`,
+    );
+  }
 }
 
 /** One `COUNT(*)::int` column, or `null` when it did not read back as one. */

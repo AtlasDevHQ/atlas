@@ -59,7 +59,11 @@ import {
   supersedingDraftPredicate,
   supersessionCollisionPredicate,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
-import { loadBlastRadius } from "@atlas/api/lib/brain/vocabulary-preview";
+import {
+  loadBlastRadius,
+  type BlastRadius,
+  type StructurallyEmptyReason,
+} from "@atlas/api/lib/brain/vocabulary-preview";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -67,6 +71,29 @@ const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 const PG_TEST_TIMEOUT_MS = 60_000;
 
 const WS = "ws-preview-5086";
+
+/**
+ * Narrow a radius to the computed branch.
+ *
+ * The union exists so a renderer cannot read `floor` on a branch where it is
+ * meaningless; these tests pay the same one-line cost the future call site
+ * will, which is the point of the shape.
+ */
+function computed(radius: BlastRadius): Extract<BlastRadius, { kind: "computed" }> {
+  expect(radius.kind, `expected a computed radius, got ${JSON.stringify(radius)}`).toBe("computed");
+  if (radius.kind !== "computed") throw new Error("unreachable");
+  return radius;
+}
+
+/** Narrow a radius to the structurally-empty branch and return its reason. */
+function emptyReason(radius: BlastRadius): StructurallyEmptyReason {
+  expect(radius.kind, `expected a structurally-empty radius, got ${JSON.stringify(radius)}`).toBe(
+    "structurally-empty",
+  );
+  if (radius.kind !== "structurally-empty") throw new Error("unreachable");
+  return radius.reason;
+}
+
 
 describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
   let pool: Pool;
@@ -292,11 +319,11 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
       // THE property. Not "the preview returned a plausible number" — the
       // preview predicted the transaction, and the transaction is measured
       // through its own disclosure statement.
-      expect(after - before).toBe(radius.arming.total);
+      expect(after - before).toBe(computed(radius).arming.total);
       // And the preview was not trivially zero, which would satisfy the
       // equation while proving nothing.
-      expect(radius.arming.total).toBeGreaterThan(0);
-      expect(radius.disarming.total).toBe(0);
+      expect(computed(radius).arming.total).toBeGreaterThan(0);
+      expect(computed(radius).disarming.total).toBe(0);
     }, PG_TEST_TIMEOUT_MS);
 
     it("…and follows the CARDINALITY lookup to the merged slot (the compound case)", async () => {
@@ -328,8 +355,8 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
       await approve("is priced at", "priced at");
       const after = await supersedesNow();
 
-      expect(after - before).toBe(radius.arming.total);
-      expect(radius.arming.total).toBeGreaterThan(0);
+      expect(after - before).toBe(computed(radius).arming.total);
+      expect(computed(radius).arming.total).toBeGreaterThan(0);
     }, PG_TEST_TIMEOUT_MS);
 
     it("…and resolves the target through an EXISTING chain, not to the norm as typed", async () => {
@@ -360,8 +387,8 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
       await approve("is priced at", "priced at");
       const after = await supersedesNow();
 
-      expect(after - before).toBe(radius.arming.total);
-      expect(radius.arming.total).toBeGreaterThan(0);
+      expect(after - before).toBe(computed(radius).arming.total);
+      expect(computed(radius).arming.total).toBeGreaterThan(0);
     }, PG_TEST_TIMEOUT_MS);
 
     it("an ALIAS removal disarms exactly the pairs the preview promised", async () => {
@@ -390,9 +417,9 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
       // The mirror. This is the arm a key-to-key substitution gets WRONG —
       // `REKEY_DRIFTED_FACTS_SQL`'s header says why, and the removal
       // counterfactual re-derives from the surface for exactly this test.
-      expect(before - after).toBe(radius.disarming.total);
-      expect(radius.disarming.total).toBeGreaterThan(0);
-      expect(radius.arming.total).toBe(0);
+      expect(before - after).toBe(computed(radius).disarming.total);
+      expect(computed(radius).disarming.total).toBeGreaterThan(0);
+      expect(computed(radius).arming.total).toBe(0);
     }, PG_TEST_TIMEOUT_MS);
 
     it("a CARDINALITY flip arms exactly the pairs the preview promised", async () => {
@@ -421,17 +448,22 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
       await curate("headcount is");
       const after = await supersedesNow();
 
-      expect(after - before).toBe(radius.arming.total);
-      expect(radius.arming.total).toBeGreaterThan(0);
+      expect(after - before).toBe(computed(radius).arming.total);
+      expect(computed(radius).arming.total).toBeGreaterThan(0);
       // ⚠️ The flip is the ONLY kind whose `total` and `pairs` come from two
       // DIFFERENT statements, so it is the only one where they can disagree.
       // If `cardinalityFlipExpr` drifted `OR` → `AND`, the delta returns no
       // pairs while the imported total stays positive → `withheld = total`,
       // i.e. "N pairs are hidden from you by ACL" shown to an owner who can see
       // everything. Nothing else in the suite would fail.
-      expect(radius.arming.pairs).toHaveLength(radius.arming.total);
-      expect(radius.arming.withheld).toBe(0);
-      expect(radius.arming.countsConsistent).toBe(true);
+      expect(computed(radius).arming.pairs).toHaveLength(computed(radius).arming.total);
+      expect(computed(radius).arming.withheld).toBe(0);
+      expect(computed(radius).arming.countsConsistent).toBe(true);
+      // The provably-empty direction, asserted like every sibling arm does.
+      // Applying `armingTotalOverride` to BOTH directions was otherwise killed
+      // only incidentally, by a statement-count assertion in the unit suite —
+      // never by a claim about the number a client renders.
+      expect(computed(radius).disarming.total).toBe(0);
       // ⚠️ NOT `expect(await supersedesNow()).toBe(after)` — that re-read the
       // same query against an unchanged database and compared it to itself. The
       // scoping is already caught by the equality above (a globally-TRUE gate
@@ -526,7 +558,7 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     // ...and the preview reported a REASON rather than a zero, which is the
     // whole point — "0 pairs" and "this position cannot produce pairs" are the
     // same number and opposite facts.
-    expect(radius.structurallyEmpty).toBe("object-position");
+    expect(emptyReason(radius)).toBe("object-position");
   }, PG_TEST_TIMEOUT_MS);
 
   // ── 4. the IS NOT TRUE equivalence, measured rather than claimed ────────
@@ -565,7 +597,7 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     // recognised source.
     const before = await loadBlastRadius(pool, owner(), request);
     expect(
-      before.arming.total,
+      computed(before).arming.total,
       "the fixture must be armable before the provenance is nulled, or the zero below proves nothing",
     ).toBeGreaterThan(0);
 
@@ -586,7 +618,7 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     // The before/after on ONE fixture is the attribution, and it is stronger:
     // the only thing that changed between the two calls is the provenance.
     const after = await loadBlastRadius(pool, owner(), request);
-    expect(after.arming.total).toBe(0);
+    expect(computed(after).arming.total).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 
   // ── 4b. the subtree walk, past the seed ─────────────────────────────────
@@ -607,7 +639,7 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     await land({ subject: "widget", predicate: "list price", object: "12 USD" });
     await curate("priced at");
 
-    await approve("is priced at", "priced at");
+    const proposalId = await approve("is priced at", "priced at");
     await approve("list price", "is priced at");
 
     const before = await supersedesNow();
@@ -621,14 +653,24 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
 
     // The grandchild is in the disarming set — it resolves through the removed
     // norm even though no edge names it.
-    expect(radius.disarming.total).toBe(before);
-    expect(radius.disarming.countsConsistent).toBe(true);
+    expect(computed(radius).disarming.total).toBe(before);
+    expect(computed(radius).disarming.countsConsistent).toBe(true);
+    expect(computed(radius).subtreeTruncated).toBe(false);
+
+    // ⚠️ And the loop is CLOSED. Every sibling removal fixture asserts
+    // `before − after === disarming.total`; this was the only one that compared
+    // the preview to a before-state and never ran the decision — so a
+    // multi-level over-claim would have been invisible here, in the one fixture
+    // that exists to cover multiple levels.
+    await removeEdge(proposalId);
+    const after = await supersedesNow();
+    expect(before - after).toBe(computed(radius).disarming.total);
   }, PG_TEST_TIMEOUT_MS);
 
   // ── 4c. the pair projection's orientation ───────────────────────────────
 
   it("a pair's draft label is the DRAFT's claim, not the published one", async () => {
-    // ⚠️ No test anywhere asserted a pair's CONTENT — `radius.arming.pairs`
+    // ⚠️ No test anywhere asserted a pair's CONTENT — `computed(radius).arming.pairs`
     // appeared zero times in this file. Measured: swapping `d.subject || …` for
     // `p.subject || …` in `draft_label` survives the entire suite, and the
     // preview would then tell an approver the superseded claim is the incoming
@@ -646,8 +688,8 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
       toNorm: "priced at",
     });
 
-    expect(radius.arming.pairs).toHaveLength(1);
-    const pair = radius.arming.pairs[0]!;
+    expect(computed(radius).arming.pairs).toHaveLength(1);
+    const pair = computed(radius).arming.pairs[0]!;
     // The DRAFT is the incoming `12 USD` claim; the SUPERSEDED side is the
     // published `10 USD` one. Reversed, an approver reads the retirement
     // backwards.
@@ -658,6 +700,43 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   // ── 4d. a restricted reader ─────────────────────────────────────────────
+
+  it("withholds a pair whose DRAFT side the reader cannot see, and counts it", async () => {
+    // ⚠️ The MIRROR of the test below, and it is the one that was missing.
+    // `principalTokens` seeds `org` unconditionally, and the draft's
+    // `visible_to` is `['org']` — so in the published-side fixture the draft is
+    // always visible and its gate is never load-bearing. Measured: rebuilding
+    // the DRAFT clause against alias `p` (arity preserved, so no bind error)
+    // passed all 13 pg tests. The projection emits the draft's full claim body,
+    // so this is a disclosure path.
+    const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+    await publish(published);
+    const draft = await land({ subject: "widget", predicate: "is priced at", object: "12 USD" });
+    await curate("priced at");
+    await pool.query(`UPDATE brain_facts SET visible_to = ARRAY['audience:secret'] WHERE id = $1::uuid`, [
+      draft,
+    ]);
+
+    const restricted: BrainPrincipalContext = {
+      origin: "authenticated",
+      workspaceId: WS,
+      userId: "user-restricted",
+      role: "member",
+      audienceIds: [],
+    };
+    const radius = computed(
+      await loadBlastRadius(pool, restricted, {
+        kind: "alias-approval",
+        position: "predicate",
+        fromNorm: "is priced at",
+        toNorm: "priced at",
+      }),
+    );
+
+    expect(radius.arming.total).toBe(1);
+    expect(radius.arming.pairs).toHaveLength(0);
+    expect(radius.arming.withheld).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
 
   it("withholds a pair whose PUBLISHED side the reader cannot see, and counts it", async () => {
     // Nothing measured that the reader scoping works against real SQL — the
@@ -687,12 +766,52 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
 
     // The supersession happens regardless of who is looking — the unscoped
     // total sees it...
-    expect(radius.arming.total).toBe(1);
+    expect(computed(radius).arming.total).toBe(1);
     // ...but the reader may not read the published side, so no pair is listed
     // and the difference is disclosed as `withheld` rather than omitted.
-    expect(radius.arming.pairs).toHaveLength(0);
-    expect(radius.arming.withheld).toBe(1);
-    expect(radius.arming.countsConsistent).toBe(true);
+    expect(computed(radius).arming.pairs).toHaveLength(0);
+    expect(computed(radius).arming.withheld).toBe(1);
+    expect(computed(radius).arming.countsConsistent).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("a chain DEEPER than the bound is reported as truncated, not as a complete walk", async () => {
+    // ⚠️ The mutation nothing could kill: `bool_or(depth >= N)` → `> N`
+    // survived all 59 tests, because the recursive arm stops at `depth < N` so
+    // N is the maximum depth ever emitted and the mutant can never be true. The
+    // walk would truncate silently, `subtreeTruncated` would stay false, and an
+    // admin would withdraw an arbitration whose scope was understated.
+    //
+    // With the shipped bound of 64 no fixture can reach it, so the bound is
+    // INJECTED. That is the only reason `BlastRadiusOptions.maxChainDepth`
+    // exists; production never passes it.
+    const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+    await publish(published);
+    await land({ subject: "widget", predicate: "level three", object: "12 USD" });
+    await curate("priced at");
+
+    // level three → level two → level one → priced at  (depth 3 from the seed)
+    await approve("level one", "priced at");
+    await approve("level two", "level one");
+    await approve("level three", "level two");
+
+    const shallow = computed(
+      await loadBlastRadius(
+        pool,
+        owner(),
+        { kind: "alias-removal", position: "predicate", fromNorm: "level one" },
+        { maxChainDepth: 2 },
+      ),
+    );
+    expect(shallow.subtreeTruncated, "a walk bounded below the real depth is truncated").toBe(true);
+
+    const full = computed(
+      await loadBlastRadius(pool, owner(), {
+        kind: "alias-removal",
+        position: "predicate",
+        fromNorm: "level one",
+      }),
+    );
+    expect(full.subtreeTruncated, "the shipped bound covers this chain").toBe(false);
   }, PG_TEST_TIMEOUT_MS);
 
   // ── 5. the fourth arm of the union ──────────────────────────────────────
@@ -710,8 +829,8 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
       kind: "cardinality-removal",
       predicateSurface: "headcount is",
     });
-    expect(radius.disarming.total).toBe(before);
-    expect(radius.arming.total).toBe(0);
+    expect(computed(radius).disarming.total).toBe(before);
+    expect(computed(radius).arming.total).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 
   it("a SUBJECT-position alias arms pairs — the position the predicate fixtures cannot probe", async () => {
@@ -733,7 +852,7 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     await approve("acme corp", "acme", "subject");
     const after = await supersedesNow();
 
-    expect(after - before).toBe(radius.arming.total);
-    expect(radius.arming.total).toBeGreaterThan(0);
+    expect(after - before).toBe(computed(radius).arming.total);
+    expect(computed(radius).arming.total).toBeGreaterThan(0);
   }, PG_TEST_TIMEOUT_MS);
 });

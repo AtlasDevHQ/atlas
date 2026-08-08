@@ -668,11 +668,14 @@ export function supersessionCollisionJoin(
  *
  * The members are named `…Slot` rather than `…Key` for a second reason:
  * `keys-not-on-the-wire.test.ts`'s ORM arm is deliberately over-broad: it fires
- * on the camel-cased spelling of any identity-key column ANYWHERE in a file
- * outside its declaration sites, comments included. These members build SQL slot
- * EXPRESSIONS rather than projecting key columns, so the accurate name is also
- * the one that keeps that guard's exemption list short — and a short exemption
- * list is the whole guard.
+ * on the camel-cased spelling of any identity-key column anywhere in a file
+ * outside its declaration sites. (Comments are NOT included — the arm runs
+ * `stripComments` first. An earlier version of this sentence said they were,
+ * which is the same comfortable-and-unchecked shape three other claims in this
+ * slice were corrected for, reintroduced in the fix for them.) These members
+ * build SQL slot EXPRESSIONS rather than projecting key columns, so the accurate
+ * name is also the one that keeps that guard's exemption list short — and a
+ * short exemption list is the whole guard.
  *
  * ## The default is byte-identical, and that is pinned rather than asserted
  *

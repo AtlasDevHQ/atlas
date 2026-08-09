@@ -57,15 +57,17 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import { isSlotPosition, type SlotPosition } from "@atlas/api/lib/brain/identity";
+import type { SlotPosition } from "@atlas/api/lib/brain/identity";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import {
   OBSERVED_SURFACE_PAGE_MAX,
+  SURFACE_FILTER_MAX_CHARS,
   loadObservedSurfaces,
 } from "@atlas/api/lib/brain/vocabulary-surfaces";
 import {
@@ -83,8 +85,9 @@ import {
   declarePredicateCardinalityForSurface,
   type CardinalityRefusal,
 } from "@atlas/api/lib/brain/cardinality";
+import type { PositionalDecision } from "@atlas/api/lib/brain/vocabulary-visibility";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import type { AuthMode } from "@useatlas/types";
+import type { AuthMode, BrainVocabularyScope } from "@useatlas/types";
 import {
   BRAIN_VOCABULARY_SLOT_POSITIONS,
   BrainVocabularyAuthorRequestSchema,
@@ -101,6 +104,8 @@ import {
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
 
+const log = createLogger("admin-brain-vocabulary");
+
 /**
  * Every response is parsed through its own wire schema before it goes out.
  *
@@ -116,6 +121,54 @@ import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-r
  */
 function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown): T {
   return schema.parse(payload);
+}
+
+/**
+ * The same guard on a WRITE route, where a failure means something different.
+ *
+ * ⚠️ On a read, `checked()` throwing is exactly right: nothing happened, and a
+ * 500 is the honest answer. On `/author` and `/remove` the transaction has
+ * **already committed** — the edge is in force and the corpus has been re-keyed
+ * — so the same throw produces *"Failed to author brain vocabulary alias edge."*
+ * over a write that succeeded. An approver reads that as "it did not work" and
+ * retries; the retry is refused with `already-aliased`, which reads as a second
+ * failure for a decision that landed on the first attempt.
+ *
+ * That is the mirror image of the rule this file's header already states about
+ * refusals behind a 200 — a write's outcome must not be misreported in either
+ * direction. So the describe-it step is separated from the do-it step: the write
+ * is reported as having LANDED, with the description problem named as the
+ * server-side defect it is.
+ */
+function checkedWrite<T>(
+  schema: { parse: (value: unknown) => T },
+  payload: unknown,
+  context: { readonly verb: string; readonly proposalId: string; readonly requestId: string },
+): { ok: true; body: T } | { ok: false; body: { error: string; message: string; requestId: string } } {
+  try {
+    return { ok: true, body: schema.parse(payload) };
+  } catch (err) {
+    log.error(
+      {
+        proposalId: context.proposalId,
+        verb: context.verb,
+        requestId: context.requestId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "brain vocabulary: a COMMITTED write could not be described by its own response schema — the write landed; the projection drifted",
+    );
+    return {
+      ok: false,
+      body: {
+        error: "response_schema_mismatch",
+        message:
+          `The ${context.verb} succeeded and is in force — proposal ${context.proposalId} — but ` +
+          "Atlas could not build a response describing it, which is a defect on our side. Do NOT " +
+          "retry: the change has already been applied. Reload the page to see the current state.",
+        requestId: context.requestId,
+      },
+    };
+  }
 }
 
 /** The workspace-resolved principal every read and write on this surface uses. */
@@ -156,8 +209,6 @@ function refusalStatus(
       return 403;
     case "degenerate-norm":
     case "self-edge":
-    case "confidence-out-of-range":
-    case "warehouse-key-at-predicate":
     case "degenerate-key":
     case "unattributed":
     case "producer-proposed-multi":
@@ -198,7 +249,8 @@ function refusalBody(
 
 const commonResponses = {
   400: {
-    description: "Invalid request — malformed norms, or no active organization",
+    description:
+      "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
     content: { "application/json": { schema: ErrorSchema } },
   },
   401: {
@@ -230,16 +282,26 @@ const surfacesRoute = createRoute({
     "⚠️ Authoring is a PICKER and never a norm text box, and this endpoint is why. `lexicalNorm` is ASCII-only case folding with a specific separator class, so a human cannot reliably predict what the pipeline produced from `499 a month` vs `499 A Month` vs `499-a-month` — and a wrong guess authors an edge whose `from_norm` no fact has ever produced. It inserts cleanly, the closure recomputes, the re-key moves zero rows and the preview reads 0: indistinguishable from a merge that worked. `q` FILTERS this list; it never supplies a value. " +
     "Scoped by the positional-visibility rule: predicate-position surfaces are workspace-scoped only (a verb phrase discloses nothing an approver could not guess), entity-position surfaces are gated by the reader's own fail-closed visibility predicate. `truncated` means the corpus has more norms than this page carries — filter rather than concluding a spelling is absent.",
   request: {
+    // ⚠️ This schema is ENFORCED, not decorative. The handler used to declare it
+    // and then hand-parse `c.req.raw.url` — two statements of one contract, of
+    // which only the hand-rolled one ran, and the declared one (the weaker of
+    // the two) was what the OpenAPI document advertised. `position` is an enum
+    // here, so an unknown value is refused by the same `validationHook` that
+    // guards every body on this surface rather than by a bespoke branch.
     query: z.object({
       position: z
-        .string()
+        .enum(BRAIN_VOCABULARY_SLOT_POSITIONS)
         .openapi({ description: `One of: ${BRAIN_VOCABULARY_SLOT_POSITIONS.join(", ")}` }),
       q: z
         .string()
+        .max(SURFACE_FILTER_MAX_CHARS)
         .optional()
         .openapi({ description: "Case-insensitive substring filter over the surface and the norm" }),
-      limit: z
-        .string()
+      limit: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(OBSERVED_SURFACE_PAGE_MAX)
         .optional()
         .openapi({ description: `Maximum norms (default and max ${OBSERVED_SURFACE_PAGE_MAX})` }),
     }),
@@ -404,27 +466,15 @@ adminBrainVocabulary.openapi(surfacesRoute, async (c) => {
       const { mode, user, orgId } = yield* AuthContext;
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
-      const url = new URL(c.req.raw.url);
-      const rawPosition = url.searchParams.get("position");
-      if (!isSlotPosition(rawPosition)) {
-        return c.json(
-          {
-            error: "bad_request",
-            message: `Invalid position. Must be one of: ${BRAIN_VOCABULARY_SLOT_POSITIONS.join(", ")}.`,
-            requestId,
-          },
-          400,
-        );
-      }
-      const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+      const query = c.req.valid("query");
 
       const ctx = yield* approverContext(mode, user, orgId, requestId);
       const page = yield* Effect.tryPromise({
         try: () =>
           loadObservedSurfaces(getInternalDB(), ctx, {
-            position: rawPosition,
-            filter: url.searchParams.get("q") ?? undefined,
-            limit: Number.isFinite(rawLimit) ? rawLimit : undefined,
+            position: query.position,
+            filter: query.q,
+            limit: query.limit,
             requestId,
           }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
@@ -482,6 +532,14 @@ adminBrainVocabulary.openapi(inForceRoute, async (c) => {
               countsConsistent: n.consistent,
             })),
             cardinalities: view.cardinalities,
+            cardinalityCounts: {
+              position: view.cardinalityCounts.position,
+              scope: view.cardinalityCounts.decision,
+              total: view.cardinalityCounts.total,
+              scoped: view.cardinalityCounts.scoped,
+              withheld: view.cardinalityCounts.withheld,
+              countsConsistent: view.cardinalityCounts.consistent,
+            },
             coverage,
             truncated: view.truncated,
           };
@@ -532,24 +590,33 @@ adminBrainVocabulary.openapi(authorRoute, async (c) => {
       });
 
       switch (outcome.kind) {
-        case "authored":
-          return c.json(
-            checked(BrainVocabularyAuthorResponseSchema, {
+        case "authored": {
+          const described = checkedWrite(
+            BrainVocabularyAuthorResponseSchema,
+            {
               outcome: "authored",
               proposalId: outcome.id,
               convergedOnProposal: outcome.convergedOnProposal,
-            }),
-            200,
+            },
+            { verb: "authoring", proposalId: outcome.id, requestId },
           );
+          return described.ok ? c.json(described.body, 200) : c.json(described.body, 500);
+        }
         case "already_approved":
+          // No `convergedOnProposal` — the union does not carry it on this arm.
+          // It used to be hard-coded `true` here, which is FALSE whenever the
+          // pre-existing approved row was itself hand-authored (the common
+          // double-submit case), and that field decides what the approver is
+          // told the audit trail will say.
           return c.json(
             checked(BrainVocabularyAuthorResponseSchema, {
               outcome: "already_approved",
               proposalId: outcome.id,
-              convergedOnProposal: true,
             }),
             200,
           );
+        // `already_approved` keeps the plain `checked()`: nothing was written on
+        // that arm, so a schema failure there is an ordinary 500 about a read.
         case "not_decidable":
           return c.json(
             {
@@ -589,24 +656,30 @@ adminBrainVocabulary.openapi(removeRoute, async (c) => {
       });
 
       switch (outcome.kind) {
-        case "removed":
-          return c.json(
-            checked(BrainVocabularyRemoveResponseSchema, {
+        case "removed": {
+          const described = checkedWrite(
+            BrainVocabularyRemoveResponseSchema,
+            {
               outcome: "removed",
               proposalId: outcome.id,
               memoryCreated: outcome.memoryCreated,
-            }),
-            200,
+            },
+            { verb: "removal", proposalId: outcome.id, requestId },
           );
+          return described.ok ? c.json(described.body, 200) : c.json(described.body, 500);
+        }
         case "already_removed":
           // 200, not 409. The pair is in the state the caller asked for, and a
           // double-click on a confirm button must not read as a failure — the
           // `outcome` field is what distinguishes it from a removal that ran.
+          //
+          // No `memoryCreated`: nothing was written, so the field has no value
+          // to report rather than a false one. The union is what makes that
+          // expressible.
           return c.json(
             checked(BrainVocabularyRemoveResponseSchema, {
               outcome: "already_removed",
               proposalId: outcome.id,
-              memoryCreated: false,
             }),
             200,
           );
@@ -641,6 +714,16 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
       // arms supersession for every future claim in the slot.
       const author = recordedAuthor(ctx);
       if (author === null) {
+        // LOGGED, like `authorAliasEdge` and `removeInForceAliasEdge` both do
+        // for the identical denial. A `single` entry arms retroactive
+        // supersession for every future claim in the slot, so an attempt to set
+        // one without the entitlement is exactly the event `acl.ts` says you
+        // want in the log — and the refusal message travels out in the response,
+        // which is the caller's copy, not a server-side record.
+        log.warn(
+          { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+          "Predicate cardinality write refused — the reader does not clear the owner/admin bar",
+        );
         return c.json(
           refusalBody(
             "not-entitled",
@@ -726,5 +809,31 @@ type _PositionsAreSlotPositions = [
   : never;
 const _positionsAreSlotPositions: _PositionsAreSlotPositions = true;
 void _positionsAreSlotPositions;
+
+/**
+ * ⚠️ Compile-time pin: every internal {@link PositionalDecision} has a wire
+ * spelling. THE mapping this file performs with no other check.
+ *
+ * `scope: page.decision` and `scope: n.decision` below convert the seam's union
+ * into `BrainVocabularyScope`, and the two were written independently in two
+ * packages with nothing tying them together — the only enforcement was a
+ * runtime `z.enum` inside `checked()`, which fails as a 500 on the whole pane
+ * rather than as a type error.
+ *
+ * That is not hypothetical: `vocabulary-visibility.ts` already contemplates
+ * splitting `audit-override` out of `reader-scoped` so an approver can tell "you
+ * can see everything" from "an override was in force". Under the old shape that
+ * change compiled and broke `/in-force` at runtime. Here it stops compiling.
+ *
+ * Directional on purpose. This pin catches a NEW internal arm with no wire
+ * spelling; `BRAIN_VOCABULARY_SCOPES`' own `Exclude` pin (in `@useatlas/schemas`)
+ * catches the reverse. Neither alone is enough, because `satisfies` cannot see a
+ * schema enum that is narrower than its type.
+ */
+type _DecisionsHaveWireScopes = [Exclude<PositionalDecision, BrainVocabularyScope>] extends [never]
+  ? true
+  : never;
+const _decisionsHaveWireScopes: _DecisionsHaveWireScopes = true;
+void _decisionsHaveWireScopes;
 
 export { adminBrainVocabulary };

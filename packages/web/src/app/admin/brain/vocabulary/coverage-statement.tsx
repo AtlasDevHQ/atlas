@@ -40,18 +40,31 @@ export function CoverageStatement({
   counts,
   edgeCount,
   cardinalityCount,
+  cardinalityCounts,
 }: {
   coverage: BrainVocabularyCoverage;
   counts: readonly BrainVocabularyPositionCounts[];
   edgeCount: number;
   cardinalityCount: number;
+  /** Curated predicates: total vs what this reader may see. */
+  cardinalityCounts: BrainVocabularyPositionCounts;
 }) {
-  const withheld = counts.reduce((sum, c) => sum + c.withheld, 0);
-  const inconsistent = counts.some((c) => !c.countsConsistent);
+  // Cardinality entries fold into the SAME two numbers as the edges. Kept
+  // separate in the props and merged here, rather than merged by the caller,
+  // because the sentence below is the one that was making a workspace-wide
+  // claim from a denied read and this is where that is fixed.
+  const withheld =
+    counts.reduce((sum, c) => sum + c.withheld, 0) + cardinalityCounts.withheld;
+  const inconsistent =
+    counts.some((c) => !c.countsConsistent) || !cardinalityCounts.countsConsistent;
+  const denied =
+    cardinalityCounts.scope === "deny-all" || counts.some((c) => c.scope === "deny-all");
 
   return (
     <div className="space-y-2 text-sm">
-      <p className="text-foreground">{inForceSentence(edgeCount, cardinalityCount)}</p>
+      <p className="text-foreground">
+        {inForceSentence(edgeCount, cardinalityCount, denied, withheld)}
+      </p>
 
       <p className="text-muted-foreground">{pendingSentence(coverage)}</p>
 
@@ -76,9 +89,27 @@ export function CoverageStatement({
   );
 }
 
-/** Point 1 — what is in force, stated even when it is zero. */
-function inForceSentence(edges: number, cardinalities: number): string {
+/**
+ * Point 1 — what is in force, stated even when it is zero.
+ *
+ * ⚠️ The "nothing yet" sentence is a claim about the WORKSPACE, and it must not
+ * be made from a read that was scoped or denied. Seeing nothing and there being
+ * nothing are the two facts this entire surface exists to separate, and this was
+ * the one place the component still conflated them.
+ */
+function inForceSentence(
+  edges: number,
+  cardinalities: number,
+  denied: boolean,
+  withheld: number,
+): string {
   if (edges === 0 && cardinalities === 0) {
+    if (denied) {
+      return "Atlas cannot show you anything that is in force in this workspace — your account is not entitled to read the claims these entries are about. This is not the same as there being none.";
+    }
+    if (withheld > 0) {
+      return `Nothing that you can see is shaping identity — but ${withheld} ${withheld === 1 ? "entry is" : "entries are"} in force that you cannot see, so this workspace's vocabulary is not empty.`;
+    }
     return "Nothing is shaping identity yet — no alias edges and no curated predicates are in force in this workspace.";
   }
   const parts: string[] = [];

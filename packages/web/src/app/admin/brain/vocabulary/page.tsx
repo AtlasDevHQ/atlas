@@ -14,6 +14,7 @@ import {
   BrainVocabularyPreviewResponseSchema,
   BrainVocabularyRemoveResponseSchema,
 } from "@/ui/lib/admin-schemas";
+import { BrainVocabularyPreviewRequestSchema } from "@/ui/lib/admin-schemas";
 import { CoverageStatement } from "./coverage-statement";
 import { BlastRadiusPreview } from "./blast-radius";
 import { NormPicker, ScopeBadge } from "./norm-picker";
@@ -43,6 +44,24 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { AlertTriangle, ArrowRight, Trash2 } from "lucide-react";
+
+/**
+ * The preview body, typed from the SERVER's own schema.
+ *
+ * `Record<string, unknown>` compiled for a misspelled `fromNorm` and failed as a
+ * 400 at runtime — on the one call whose result gates a workspace-wide re-key.
+ * `z.input` is the SSOT rather than a hand-written mirror.
+ */
+type PreviewRequest = z.input<typeof BrainVocabularyPreviewRequestSchema>;
+
+/** One preview's three states, kept together so they cannot drift apart. */
+interface PreviewSlot {
+  readonly radius: BrainVocabularyBlastRadius | null;
+  readonly pending: boolean;
+  readonly error: string | null;
+}
+
+const EMPTY_PREVIEW: PreviewSlot = { radius: null, pending: false, error: null };
 
 const POSITIONS: readonly {
   value: BrainVocabularySlotPosition;
@@ -108,13 +127,28 @@ function ClaimVocabulary() {
   const [notice, setNotice] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<BrainVocabularyEdgeEntry | null>(null);
 
-  const [radius, setRadius] = useState<BrainVocabularyBlastRadius | null>(null);
-  const [radiusPending, setRadiusPending] = useState(false);
-  const [radiusError, setRadiusError] = useState<string | null>(null);
+  /**
+   * ⚠️ TWO preview slots, not one shared one.
+   *
+   * A single `radius` looked like harmless reuse and was a cross-contamination
+   * bug: clicking Remove on an in-force edge computed a REMOVAL radius into the
+   * same state the authoring card renders — so the authoring card displayed a
+   * preview for a decision nobody was making, and with both norms picked its
+   * "Author this alias" button became enabled by it. The gate would have been
+   * satisfied by a number computed for a different pair, in the opposite
+   * direction, on a different verb.
+   *
+   * They are `authoring` and `removal` rather than one keyed slot because the
+   * two are live at the same time — the dialog renders over the card — and a
+   * keyed slot would still have to answer "whose is this?" at both call sites.
+   */
+  const [authorRadius, setAuthorRadius] = useState<PreviewSlot>(EMPTY_PREVIEW);
+  const [removeRadius, setRemoveRadius] = useState<PreviewSlot>(EMPTY_PREVIEW);
 
   const {
     data: inForce,
     error: inForceError,
+    loading: inForceLoading,
     refetch,
   } = useAdminFetch<z.infer<typeof BrainVocabularyInForceResponseSchema>>(
     "/api/v1/admin/brain-vocabulary/in-force",
@@ -138,29 +172,27 @@ function ClaimVocabulary() {
    * re-key too"* is the whole reason the *In force* pane exists, and two preview
    * paths would be two places for the disclosure to drift from the transaction.
    */
-  async function loadRadius(body: Record<string, unknown>) {
-    setRadius(null);
-    setRadiusError(null);
-    setRadiusPending(true);
+  async function loadRadius(
+    body: PreviewRequest,
+    into: (slot: PreviewSlot) => void,
+  ): Promise<void> {
+    into({ radius: null, pending: true, error: null });
     const result = await previewMutation.mutate({ body });
-    setRadiusPending(false);
     if (!result.ok) {
-      setRadiusError(friendlyError(result.error));
+      into({ radius: null, pending: false, error: friendlyError(result.error) });
       return;
     }
-    setRadius(result.data?.radius ?? null);
+    into({ radius: result.data?.radius ?? null, pending: false, error: null });
   }
 
   const bothPicked = from !== null && to !== null;
 
   async function onPreviewAuthoring() {
     if (!bothPicked) return;
-    await loadRadius({
-      kind: "alias-approval",
-      position,
-      fromNorm: from.norm,
-      toNorm: to.norm,
-    });
+    await loadRadius(
+      { kind: "alias-approval", position, fromNorm: from.norm, toNorm: to.norm },
+      setAuthorRadius,
+    );
   }
 
   async function onAuthor() {
@@ -188,7 +220,7 @@ function ClaimVocabulary() {
     );
     setFrom(null);
     setTo(null);
-    setRadius(null);
+    setAuthorRadius(EMPTY_PREVIEW);
     // Unawaited deliberately: `useAdminFetch` owns the refetch's own loading and
     // error state, so awaiting it here would only delay clearing the form. A
     // rejection surfaces through `inForceError`, which the page already renders.
@@ -209,6 +241,7 @@ function ClaimVocabulary() {
     if (!result.ok) {
       setAuthorError(friendlyError(result.error));
       setRemoveTarget(null);
+      setRemoveRadius(EMPTY_PREVIEW);
       return;
     }
     setNotice(
@@ -220,7 +253,7 @@ function ClaimVocabulary() {
             : ""),
     );
     setRemoveTarget(null);
-    setRadius(null);
+    setRemoveRadius(EMPTY_PREVIEW);
     // Unawaited deliberately — see `onAuthor`.
     void refetch();
   }
@@ -229,7 +262,11 @@ function ClaimVocabulary() {
   const cardinalities = inForce?.cardinalities ?? [];
   const counts = inForce?.counts ?? [];
   const positionMeta = POSITIONS.find((p) => p.value === position);
-  const positionScope = counts.find((c) => c.position === position)?.scope ?? "unscoped";
+  // `null`, never `?? "unscoped"`. A missing counts entry — which is what the
+  // load-failure path produces — would otherwise make the page assert
+  // WORKSPACE-WIDE visibility on the strength of an absent value, which is the
+  // fail-open reflex this whole surface refuses everywhere else.
+  const positionScope = counts.find((c) => c.position === position)?.scope ?? null;
 
   return (
     <div className="space-y-6">
@@ -270,6 +307,7 @@ function ClaimVocabulary() {
               counts={counts}
               edgeCount={edges.length}
               cardinalityCount={cardinalities.length}
+              cardinalityCounts={inForce.cardinalityCounts}
             />
           </CardContent>
         </Card>
@@ -291,10 +329,17 @@ function ClaimVocabulary() {
             <Select
               value={position}
               onValueChange={(next) => {
-                setPosition(next as BrainVocabularySlotPosition);
+                // Narrowed, not cast. `POSITIONS` is the page's own list, so a
+                // value outside it is a shadcn contract break rather than user
+                // input — but a cast here would also swallow a typo in the list
+                // itself, and the picker would then query a position the API
+                // refuses with a 400 nobody could explain.
+                const picked = POSITIONS.find((p) => p.value === next);
+                if (picked === undefined) return;
+                setPosition(picked.value);
                 setFrom(null);
                 setTo(null);
-                setRadius(null);
+                setAuthorRadius(EMPTY_PREVIEW);
                 setAuthorError(null);
               }}
             >
@@ -319,7 +364,7 @@ function ClaimVocabulary() {
               value={from}
               onChange={(next) => {
                 setFrom(next);
-                setRadius(null);
+                setAuthorRadius(EMPTY_PREVIEW);
               }}
               excludeNorm={to?.norm}
             />
@@ -329,7 +374,7 @@ function ClaimVocabulary() {
               value={to}
               onChange={(next) => {
                 setTo(next);
-                setRadius(null);
+                setAuthorRadius(EMPTY_PREVIEW);
               }}
               excludeNorm={from?.norm}
             />
@@ -348,7 +393,11 @@ function ClaimVocabulary() {
             </div>
           ) : null}
 
-          <BlastRadiusPreview radius={radius} pending={radiusPending} error={radiusError} />
+          <BlastRadiusPreview
+            radius={authorRadius.radius}
+            pending={authorRadius.pending}
+            error={authorRadius.error}
+          />
 
           {authorError !== null ? (
             <Alert variant="destructive">
@@ -358,17 +407,21 @@ function ClaimVocabulary() {
           ) : null}
 
           <div className="flex gap-2">
-            <Button variant="outline" disabled={!bothPicked || radiusPending} onClick={onPreviewAuthoring}>
+            <Button
+              variant="outline"
+              disabled={!bothPicked || authorRadius.pending}
+              onClick={onPreviewAuthoring}
+            >
               Preview the impact
             </Button>
             <Button
-              disabled={!bothPicked || authorMutation.saving || radius === null}
+              disabled={!bothPicked || authorMutation.saving || authorRadius.radius === null}
               onClick={onAuthor}
             >
               Author this alias
             </Button>
           </div>
-          {bothPicked && radius === null ? (
+          {bothPicked && authorRadius.radius === null ? (
             <p className="text-muted-foreground text-xs">
               Preview first. This decision re-keys every affected claim in the workspace, so the
               blast radius is not optional.
@@ -413,7 +466,19 @@ function ClaimVocabulary() {
 
           <Separator />
 
-          {edges.length === 0 ? (
+          {inForceError !== null ? (
+            // ⚠️ NOT "no alias edges are in force". The list falls back to `[]`
+            // on failure, so the flat sentence would state the workspace has
+            // none at the moment nobody knows what it has — the exact
+            // failed-vs-empty conflation `NormPicker` already refuses, and the
+            // one this whole surface exists to prevent.
+            <p className="text-muted-foreground text-sm">
+              What is in force could not be loaded, so this list is empty because the request
+              failed — not because your workspace has nothing in force.
+            </p>
+          ) : inForceLoading ? (
+            <p className="text-muted-foreground text-sm">Loading what is in force…</p>
+          ) : edges.length === 0 ? (
             <p className="text-muted-foreground text-sm">
               No alias edges are in force
               {counts.some((c) => c.withheld > 0) ? " that you can see" : ""}.
@@ -445,11 +510,14 @@ function ClaimVocabulary() {
                     onClick={() => {
                       setRemoveTarget(edge);
                       setAuthorError(null);
-                      void loadRadius({
-                        kind: "alias-removal",
-                        position: edge.position,
-                        fromNorm: edge.fromNorm,
-                      });
+                      void loadRadius(
+                        {
+                          kind: "alias-removal",
+                          position: edge.position,
+                          fromNorm: edge.fromNorm,
+                        },
+                        setRemoveRadius,
+                      );
                     }}
                   >
                     <Trash2 className="mr-1.5 size-3.5" aria-hidden />
@@ -503,13 +571,17 @@ function ClaimVocabulary() {
       <p className="text-muted-foreground text-xs">
         Proposals raised by Atlas itself — spellings that agree structurally, and predicates
         corrected the same way three times — get their own review queue in a later release. This
-        page is authoring and what is already in force. Position: {position} ({positionScope}).
+        page is authoring and what is already in force. Position: {position} (
+        {positionScope ?? "scope unknown"}).
       </p>
 
       <AlertDialog
         open={removeTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setRemoveTarget(null);
+          if (!open) {
+          setRemoveTarget(null);
+          setRemoveRadius(EMPTY_PREVIEW);
+        }
         }}
       >
         <AlertDialogContent>
@@ -530,16 +602,30 @@ function ClaimVocabulary() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="px-6">
-            <BlastRadiusPreview radius={radius} pending={radiusPending} error={radiusError} />
+            <BlastRadiusPreview
+              radius={removeRadius.radius}
+              pending={removeRadius.pending}
+              error={removeRadius.error}
+            />
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             {/* NOT `AlertDialogAction`: that closes the dialog on click, which
                 would tear down the blast-radius panel and the error surface at
                 the moment either has something to say. */}
+            {/* Gated on a SUCCESSFUL preview, exactly as authoring is. The
+                earlier spelling checked only `radiusPending`, so the button
+                stayed live beside "the blast radius could not be computed …
+                unknown — not zero" — on the graver of the two verbs, which
+                re-keys the corpus back and writes permanent rejection memory. */}
             <Button
               variant="destructive"
-              disabled={removeMutation.saving || radiusPending}
+              disabled={
+                removeMutation.saving ||
+                removeRadius.pending ||
+                removeRadius.radius === null ||
+                removeRadius.error !== null
+              }
               onClick={onConfirmRemove}
             >
               Remove the alias

@@ -2,7 +2,11 @@
 
 import { useState } from "react";
 import type { z } from "zod";
-import type { BrainVocabularySlotPosition, BrainVocabularySurfaceOption } from "@/ui/lib/types";
+import type {
+  BrainVocabularyScope,
+  BrainVocabularySlotPosition,
+  BrainVocabularySurfaceOption,
+} from "@/ui/lib/types";
 import { BrainVocabularySurfaceListSchema } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { Input } from "@/components/ui/input";
@@ -181,13 +185,36 @@ function describeOption(option: BrainVocabularySurfaceOption): string {
   return `${spellings} · ${option.claims} live ${option.claims === 1 ? "claim" : "claims"}`;
 }
 
-/** The scope badge the pane renders beside a position. */
-export function ScopeBadge({ scope }: { scope: string }) {
-  if (scope === "reader-scoped") {
-    return <Badge variant="outline">scoped to you</Badge>;
+/**
+ * The scope badge the pane renders beside a position.
+ *
+ * ⚠️ The unknown case renders "scope unknown", NOT "workspace-wide". The prop
+ * used to be `string` with `workspace-wide` as the fallthrough — so an
+ * unrecognised value rendered the most reassuring badge on the page, which says
+ * *nothing is hidden from you*: precisely the sentence `withheldCount` and
+ * `logFailClosedHole` exist to prevent, reintroduced by a default.
+ *
+ * Typing the prop is what makes the exhaustive `switch` possible, so a new arm
+ * on the wire union is a compile error here rather than a silent downgrade to
+ * the permissive badge. `null` is accepted for the caller that genuinely has no
+ * counts entry (a failed load) and needs to say so.
+ */
+export function ScopeBadge({ scope }: { scope: BrainVocabularyScope | null }) {
+  switch (scope) {
+    case "reader-scoped":
+      return <Badge variant="outline">scoped to you</Badge>;
+    case "deny-all":
+      return <Badge variant="destructive">nothing visible</Badge>;
+    case "unscoped":
+      return <Badge variant="secondary">workspace-wide</Badge>;
+    case null:
+      return <Badge variant="outline">scope unknown</Badge>;
+    default: {
+      // An arm the wire union grew and this page has not learned. Rendered as
+      // unknown rather than as workspace-wide, for the reason above.
+      const unrecognised: never = scope;
+      void unrecognised;
+      return <Badge variant="outline">scope unknown</Badge>;
+    }
   }
-  if (scope === "deny-all") {
-    return <Badge variant="destructive">nothing visible</Badge>;
-  }
-  return <Badge variant="secondary">workspace-wide</Badge>;
 }

@@ -1253,6 +1253,40 @@ export type BrainVocabularySlotPosition = ExportedVocabularySlotPosition;
 export type BrainVocabularyScope = "unscoped" | "reader-scoped" | "deny-all";
 
 /**
+ * Whether a canonical predicate holds one value at a time.
+ *
+ * ⚠️ A union, not `string`, and the asymmetry it fixes was live: the REQUEST
+ * schema for this field was already `z.enum(["single", "multi"])` while the
+ * RESPONSE carried `string`, in the same file. The admin pane branches on
+ * `=== "single"` to decide whether to warn that every future claim in the slot
+ * can supersede an earlier one — so a typo or a future third value dropped that
+ * warning with no compile signal at all.
+ */
+export type BrainVocabularyCardinality = "single" | "multi";
+
+/**
+ * Why a blast-radius counterfactual can produce no pairs BY CONSTRUCTION.
+ *
+ * ⚠️ Mirrors the engine's `StructurallyEmptyReason` deliberately, because this
+ * is the branch whose ENTIRE PURPOSE is saying which. The union's discriminant
+ * survived the wire; its payload did not, and `blast-radius.tsx` re-enumerated
+ * all five members as bare strings with nothing connecting the two lists — so a
+ * renamed engine reason shipped silently into the client's "a reason this page
+ * does not recognise" fallback, which is the one branch that must stay rare
+ * enough to be believed.
+ *
+ * The client keeps its `default:` arm — forward compatibility still needs one —
+ * but with a typed field that arm is provably about an API newer than the page
+ * rather than about a typo.
+ */
+export type BrainVocabularyStructurallyEmptyReason =
+  | "object-position"
+  | "already-single"
+  | "not-curated"
+  | "unkeyable-surface"
+  | "no-such-edge";
+
+/**
  * One norm the corpus has actually produced at a slot position — the authoring
  * picker's row.
  *
@@ -1349,7 +1383,7 @@ export interface BrainVocabularyCardinalityEntry {
    * approver should be able to remove.
    */
   readonly predicateSurface: string | null;
-  readonly cardinality: string;
+  readonly cardinality: BrainVocabularyCardinality;
   readonly sourceClass: string;
   readonly proposedBy: string;
   readonly reviewedBy: string | null;
@@ -1377,6 +1411,14 @@ export interface BrainVocabularyInForceResponse {
   readonly edges: readonly BrainVocabularyEdgeEntry[];
   readonly counts: readonly BrainVocabularyPositionCounts[];
   readonly cardinalities: readonly BrainVocabularyCardinalityEntry[];
+  /**
+   * The same disclosure accounting the alias edges get, for curated predicates.
+   *
+   * ⚠️ Without it the empty state asserted *"no curated predicates are in force
+   * in this workspace"* from a read that had been DENIED — a workspace-wide
+   * claim made on the strength of seeing nothing.
+   */
+  readonly cardinalityCounts: BrainVocabularyPositionCounts;
   readonly coverage: BrainVocabularyCoverage;
   readonly truncated: boolean;
 }
@@ -1401,7 +1443,10 @@ export interface BrainVocabularyBlastRadiusSide {
  * all-clear the preview exists to prevent.
  */
 export type BrainVocabularyBlastRadius =
-  | { readonly kind: "structurally-empty"; readonly reason: string }
+  | {
+      readonly kind: "structurally-empty";
+      readonly reason: BrainVocabularyStructurallyEmptyReason;
+    }
   | {
       readonly kind: "computed";
       readonly arming: BrainVocabularyBlastRadiusSide;
@@ -1427,36 +1472,61 @@ export interface BrainVocabularyPreviewResponse {
  */
 export type BrainVocabularyAuthorOutcome = "authored" | "already_approved";
 
-export interface BrainVocabularyAuthorResponse {
-  readonly outcome: BrainVocabularyAuthorOutcome;
-  /** The proposal row behind the edge — written, or converged on. */
-  readonly proposalId: string;
-  /**
-   * The human's decision landed on a proposal a producer had already queued.
-   *
-   * Worth surfacing rather than flattening: it means the row keeps the
-   * producer's `source_class`, so the audit trail will say `seam` where the
-   * approver remembers authoring — and 0190's unordered-pair constraint makes
-   * converging the only legal outcome, not a choice this seam made.
-   */
-  readonly convergedOnProposal: boolean;
-}
+/**
+ * ⚠️ DISCRIMINATED on `outcome`, for `BrainVocabularyBlastRadius`'s reason
+ * applied verbatim: a field that is meaningless on a branch must not be
+ * READABLE on it.
+ *
+ * Flat, this type forced the route to invent a fact. `convergedOnProposal` is
+ * carried only by the engine's `authored` arm, so the `already_approved` arm had
+ * to supply something — and it supplied `true`, which is FALSE whenever the
+ * pre-existing approved row was itself hand-authored. That is the common
+ * double-submit case, and the field's own docstring says the value decides what
+ * the audit trail will read as.
+ */
+export type BrainVocabularyAuthorResponse =
+  | {
+      readonly outcome: "authored";
+      /** The proposal row behind the edge — written, or converged on. */
+      readonly proposalId: string;
+      /**
+       * The human's decision landed on a proposal a producer had already queued.
+       *
+       * Worth surfacing rather than flattening: it means the row keeps the
+       * producer's `source_class`, so the audit trail will say `seam` where the
+       * approver remembers authoring — and 0190's unordered-pair constraint
+       * makes converging the only legal outcome, not a choice this seam made.
+       */
+      readonly convergedOnProposal: boolean;
+    }
+  | {
+      /** The pair was already an approved edge. Nothing was written. */
+      readonly outcome: "already_approved";
+      readonly proposalId: string;
+    };
 
 export type BrainVocabularyRemoveOutcome = "removed" | "already_removed";
 
-export interface BrainVocabularyRemoveResponse {
-  readonly outcome: BrainVocabularyRemoveOutcome;
-  readonly proposalId: string;
-  /**
-   * The removal had to CREATE the rejection memory an imported edge lacked.
-   *
-   * `true` only for an edge the region importer copied without its proposal
-   * (#5035). Surfaced because it is the one case where a removal writes a row
-   * the approver never saw — and without that row the next producer run would
-   * re-propose the pair they just deleted.
-   */
-  readonly memoryCreated: boolean;
-}
+/** Discriminated on `outcome`, for {@link BrainVocabularyAuthorResponse}'s reason. */
+export type BrainVocabularyRemoveResponse =
+  | {
+      readonly outcome: "removed";
+      readonly proposalId: string;
+      /**
+       * The removal had to CREATE the rejection memory an imported edge lacked.
+       *
+       * `true` only for an edge the region importer copied without its proposal
+       * (#5035). Surfaced because it is the one case where a removal writes a
+       * row the approver never saw — and without that row the next producer run
+       * would re-propose the pair they just deleted.
+       */
+      readonly memoryCreated: boolean;
+    }
+  | {
+      /** The pair was already removed. Idempotent, not a failure. */
+      readonly outcome: "already_removed";
+      readonly proposalId: string;
+    };
 
 /**
  * Curating or un-curating a predicate — the adjudicated record of whether values
@@ -1465,5 +1535,5 @@ export interface BrainVocabularyRemoveResponse {
  * No refusal arm, for {@link BrainVocabularyAuthorResponse}'s reason.
  */
 export interface BrainVocabularyCardinalityWriteResponse {
-  readonly cardinality: string;
+  readonly cardinality: BrainVocabularyCardinality;
 }

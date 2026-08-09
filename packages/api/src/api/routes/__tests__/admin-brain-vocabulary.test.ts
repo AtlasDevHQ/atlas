@@ -49,7 +49,16 @@ void mock.module("@atlas/api/lib/logger", () => {
 // because THIS file's assertions are about the router's branching, and the
 // resolver's own contract is pinned in `reader-context.test.ts`.
 let READER_ROLE: "owner" | "admin" | "member" = "owner";
+class TestBrainReaderIdentityError extends Error {}
 void mock.module("@atlas/api/lib/brain/reader-context", () => ({
+  // Mock-ALL-exports. The real module also exports three error classes, and the
+  // day this route learns to degrade on `BrainReaderIdentityError` — as
+  // `admin-publish-preview.ts` and `search-brain.ts` both do — a partial factory
+  // makes `instanceof undefined` throw a TypeError inside the catch that was
+  // supposed to handle it.
+  BrainReaderIdentityError: TestBrainReaderIdentityError,
+  BrainReaderUnresolvedError: class extends TestBrainReaderIdentityError {},
+  BrainRoleUnresolvedError: class extends TestBrainReaderIdentityError {},
   resolveBrainReaderContext: async () => ({
     origin: "authenticated" as const,
     workspaceId: CURRENT_ORG,
@@ -115,6 +124,7 @@ void mock.module("@atlas/api/lib/brain/vocabulary-surfaces", () => ({
   SURFACE_FILTER_MAX_CHARS: 200,
 }));
 
+let inForceOverride: Record<string, unknown> | null = null;
 void mock.module("@atlas/api/lib/brain/vocabulary-in-force", () => ({
   loadInForceVocabulary: async () => ({
     edges: [
@@ -138,7 +148,16 @@ void mock.module("@atlas/api/lib/brain/vocabulary-in-force", () => ({
       },
     ],
     cardinalities: [],
+    cardinalityCounts: {
+      position: "predicate" as const,
+      decision: "unscoped" as const,
+      total: 0,
+      scoped: 0,
+      withheld: 0,
+      consistent: true,
+    },
     truncated: false,
+    ...(inForceOverride ?? {}),
   }),
   loadVocabularyCoverage: async () => ({
     liveFacts: 47,
@@ -147,6 +166,50 @@ void mock.module("@atlas/api/lib/brain/vocabulary-in-force", () => ({
     pendingCardinalities: 0,
   }),
   IN_FORCE_PAGE_MAX: 200,
+}));
+
+let cardinalityResult: unknown = { ok: true, cardinality: "single" };
+const cardinalityCalls: unknown[] = [];
+void mock.module("@atlas/api/lib/brain/cardinality", () => ({
+  declarePredicateCardinalityForSurface: async (
+    _db: unknown,
+    workspaceId: string,
+    input: unknown,
+  ) => {
+    cardinalityCalls.push({ workspaceId, input });
+    return cardinalityResult;
+  },
+  declarePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
+  proposePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
+  decidePredicateCardinality: async () => true,
+  readPredicateCardinality: async () => null,
+  proposeFromCorrectionEvents: async () => ({}),
+  cardinalitySingleSql: () => "TRUE",
+  CARDINALITY_SOURCE_CLASSES: ["warehouse_structural", "correction_event", "human"] as const,
+  CARDINALITY_STATUSES: ["pending", "approved", "rejected"] as const,
+  CORRECTION_REPEAT_THRESHOLD: 3,
+  CORRECTION_EVENT_PRODUCER: "brain:correction-event-cardinality",
+  CORRECTION_REPEAT_COUNT_SQL: "",
+}));
+
+void mock.module("@atlas/api/lib/brain/vocabulary", () => ({
+  loadWorkspaceVocabulary: async () => ({
+    subject: (n: string) => n,
+    predicate: (n: string) => n,
+    object: (n: string) => n,
+  }),
+  loadClaimVocabulary: async () => ({
+    subject: (n: string) => n,
+    predicate: (n: string) => n,
+    object: (n: string) => n,
+  }),
+  approveAliasEdge: async () => ({ ok: true }),
+  removeAliasEdge: async () => true,
+  recomputeEffectiveTargets: async () => {},
+  VOCABULARY_LOCK_NAMESPACE: 5022,
+  VOCABULARY_LOCK_SQL: "",
+  MAX_CHAIN_DEPTH: 64,
+  VocabularyClosureError: class extends Error {},
 }));
 
 let blastRadius: unknown = { kind: "structurally-empty", reason: "object-position" };
@@ -167,6 +230,13 @@ void mock.module("@atlas/api/lib/brain/vocabulary-preview", () => ({
 // arms would look like they were passing for the right reason.
 void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono({ defaultHook: validationHook }),
+  // Mock-all-exports, same rationale as the reader-context factory above.
+  createPlatformRouter: () => new OpenAPIHono({ defaultHook: validationHook }),
+  requirePermission: () => async (_c: unknown, next: () => Promise<void>) => {
+    await next();
+  },
+  enforcePermission: async () => null,
+  NO_INTERNAL_DB_MESSAGE: "No internal database configured.",
   NO_ACTIVE_ORG_MESSAGE: "No active organization. Set an active org first.",
   noActiveOrgBody: (requestId: string) => ({
     error: "no_active_org",
@@ -223,6 +293,9 @@ beforeEach(() => {
   authorOutcome = { kind: "authored", id: "proposal-1", convergedOnProposal: false };
   removeOutcome = { kind: "removed", id: "proposal-1", memoryCreated: false };
   blastRadius = { kind: "structurally-empty", reason: "object-position" };
+  cardinalityResult = { ok: true, cardinality: "single" };
+  cardinalityCalls.length = 0;
+  inForceOverride = null;
   surfacesPage = {
     position: "predicate",
     surfaces: [{ norm: "is priced at", exampleSurface: "is priced at", claims: 2, variants: 1 }],
@@ -251,8 +324,22 @@ describe("GET /surfaces", () => {
     // they believed they were picking entities, and the authoring call that
     // followed would then be refused for an emptiness that is an artefact of
     // the wrong position.
+    //
+    // 422 rather than 400 since the declared `request.query` schema became the
+    // ENFORCED one: the refusal now comes from the same `validationHook` that
+    // guards every body on this surface, instead of from a bespoke branch that
+    // duplicated the contract and disagreed with the OpenAPI document.
     const res = await adminBrainVocabulary.request("/surfaces?position=nonsense");
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
+    expect(surfaceCalls).toHaveLength(0);
+  });
+
+  it("rejects a limit above the page cap rather than silently clamping it", async () => {
+    // The cap is a real bound (the reader controls the cost), and the schema is
+    // where it is now stated — so an over-large request is refused rather than
+    // quietly answered with a different page than was asked for.
+    const res = await adminBrainVocabulary.request("/surfaces?position=predicate&limit=99999");
+    expect(res.status).toBe(422);
     expect(surfaceCalls).toHaveLength(0);
   });
 
@@ -267,9 +354,6 @@ describe("GET /in-force", () => {
     const res = await adminBrainVocabulary.request("/in-force");
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    // The response is parsed through a `z.strictObject` on the way out, so a
-    // producer that attached a key would 500 here rather than shipping it.
-    // Asserting the serialized text keeps that true for nested objects too.
     const text = JSON.stringify(body);
     for (const key of ["subject_key", "predicate_key", "object_key", "subjectKey", "predicateKey"]) {
       expect(text, `the in-force body carries \`${key}\``).not.toContain(key);
@@ -284,6 +368,37 @@ describe("GET /in-force", () => {
         hasRejectionMemory: true,
       },
     ]);
+  });
+
+  it("⚠️ REFUSES a key on the pass-through field rather than shipping it", async () => {
+    // The assertion above is nearly vacuous on its own: the route maps `edges`
+    // field-by-field, so the strict object never sees an extra key there, and
+    // the clean mock supplies nothing to catch. `cardinalities` is the ONE field
+    // passed through unmapped — so its strict schema is genuinely the only thing
+    // between a leaked key and the browser, and this is the arm that proves it
+    // fires.
+    //
+    // A 500 is the correct outcome: the read produced something Atlas cannot
+    // stand behind, and `checked()` (not `checkedWrite`) is right here because
+    // nothing was written.
+    inForceOverride = {
+      cardinalities: [
+        {
+          predicateSurface: "reports to",
+          cardinality: "single",
+          sourceClass: "human",
+          proposedBy: "user-1",
+          reviewedBy: "user-1",
+          reviewedAt: "2026-08-08T00:00:00.000Z",
+          claims: 2,
+          // The leak, planted.
+          predicate_key: "reports to",
+        },
+      ],
+    };
+    const res = await adminBrainVocabulary.request("/in-force");
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain("predicate_key");
   });
 
   it("carries the coverage counts the empty state needs", async () => {
@@ -372,13 +487,10 @@ describe("POST /author", () => {
       });
     }
 
-    it("never returns 200 for a refusal", async () => {
-      // THE property. A failed write behind a 200 is read as success by every
-      // generic client in the stack.
-      authorOutcome = { kind: "refused", refusal: "empty-population", message: "nope" };
-      const res = await post("/author", { position: "predicate", fromNorm: "a", toNorm: "b" });
-      expect(res.status).not.toBe(200);
-    });
+    // (The "never returns 200 for a refusal" assertion that used to sit here was
+    // a restatement: the table above already pins an exact status for all nine
+    // refusals, so it added no independent failure mode while inflating the
+    // apparent coverage of the property it named.)
   });
 
   it("reports an in-flight decision as 409 rather than retrying it", async () => {
@@ -411,7 +523,7 @@ describe("POST /remove", () => {
     removeOutcome = { kind: "already_removed", id: "proposal-1" };
     const res = await post("/remove", { position: "predicate", fromNorm: "a", toNorm: "b" });
     expect(res.status).toBe(200);
-    expect((await res.json()).outcome).toBe("already_removed");
+    expect(((await res.json()) as { outcome: string }).outcome).toBe("already_removed");
   });
 
   it("maps not-in-force to 409", async () => {
@@ -462,6 +574,111 @@ describe("POST /preview", () => {
     const res = await post("/preview", { kind: "cardinality-flip", predicateKey: "reports to" });
     expect(res.status).toBe(422);
     expect(previewCalls).toHaveLength(0);
+  });
+});
+
+describe("POST /cardinality", () => {
+  it("curates a predicate through the surface-addressed seam", async () => {
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "single",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ cardinality: "single" });
+    // Addressed by SURFACE, never by key — `keys-not-on-the-wire.test.ts`'s
+    // prohibition applied to a route body, and the reason the derivation lives
+    // in `cardinality.ts` rather than here.
+    expect(cardinalityCalls).toHaveLength(1);
+    const call = cardinalityCalls[0] as { input: Record<string, unknown> };
+    expect(call.input.predicateSurface).toBe("reports to");
+    expect(call.input).not.toHaveProperty("predicateKey");
+    // The workspace's OWN vocabulary is threaded through, not an identity
+    // stand-in: curating an aliased spelling must land on its canonical target.
+    expect(typeof call.input.predicateAlias).toBe("function");
+  });
+
+  it("⚠️ refuses a plain member, and never reaches the store", async () => {
+    // THE gate this suite previously declared a knob for and never turned.
+    // A `single` entry arms retroactive supersession for every future claim in
+    // the slot, so an entitlement regression here is the gravest one on the
+    // surface — and it was, until now, entirely uncovered.
+    READER_ROLE = "member";
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "single",
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("not-entitled");
+    expect(body.message).toContain("owner or admin");
+    // Refused BEFORE the write, not after it.
+    expect(cardinalityCalls).toHaveLength(0);
+  });
+
+  it("POSITIVE CONTROL — an admin clears the same bar", async () => {
+    // Without this, a route that 403'd every caller would satisfy the arm above.
+    READER_ROLE = "admin";
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "single",
+    });
+    expect(res.status).toBe(200);
+    expect(cardinalityCalls).toHaveLength(1);
+  });
+
+  it("un-curates with `multi` — the adjudicated record that values coexist", async () => {
+    cardinalityResult = { ok: true, cardinality: "multi" };
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "multi",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ cardinality: "multi" });
+  });
+
+  it("maps a store refusal onto its status rather than a 200", async () => {
+    cardinalityResult = {
+      ok: false,
+      refusal: "already-decided",
+      message: "that predicate already carries an entry",
+    };
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "single",
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe("already-decided");
+  });
+
+  it("refuses a cardinality outside the two-member vocabulary", async () => {
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "sometimes",
+    });
+    expect(res.status).toBe(422);
+    expect(cardinalityCalls).toHaveLength(0);
+  });
+
+  it("refuses a request carrying a predicate KEY instead of a surface", async () => {
+    const res = await post("/cardinality", { predicateKey: "reports to", cardinality: "single" });
+    expect(res.status).toBe(422);
+    expect(cardinalityCalls).toHaveLength(0);
+  });
+});
+
+describe("entitlement on the alias verbs", () => {
+  it("a member's authoring is refused by the seam, and the route reports 403", async () => {
+    // The route delegates the bar to `authorAliasEdge`, so this pins the
+    // MAPPING rather than the rule — but the knob is now genuinely exercised at
+    // both roles, which it was not before.
+    READER_ROLE = "member";
+    authorOutcome = {
+      kind: "refused",
+      refusal: "not-entitled",
+      message: "Authoring an alias needs the owner or admin entitlement",
+    };
+    const res = await post("/author", { position: "predicate", fromNorm: "a", toNorm: "b" });
+    expect(res.status).toBe(403);
   });
 });
 

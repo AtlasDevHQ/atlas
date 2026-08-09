@@ -56,11 +56,21 @@ const COUNTS: readonly BrainVocabularyPositionCounts[] = [
   },
 ];
 
+const NO_CARDINALITIES: BrainVocabularyPositionCounts = {
+  position: "predicate",
+  scope: "unscoped",
+  total: 0,
+  scoped: 0,
+  withheld: 0,
+  countsConsistent: true,
+};
+
 function renderCoverage(overrides?: {
   coverage?: Partial<BrainVocabularyCoverage>;
   counts?: readonly BrainVocabularyPositionCounts[];
   edgeCount?: number;
   cardinalityCount?: number;
+  cardinalityCounts?: Partial<BrainVocabularyPositionCounts>;
 }) {
   const { container } = render(
     createElement(CoverageStatement, {
@@ -68,6 +78,7 @@ function renderCoverage(overrides?: {
       counts: overrides?.counts ?? COUNTS,
       edgeCount: overrides?.edgeCount ?? 0,
       cardinalityCount: overrides?.cardinalityCount ?? 0,
+      cardinalityCounts: { ...NO_CARDINALITIES, ...overrides?.cardinalityCounts },
     }),
   );
   return container.textContent ?? "";
@@ -144,6 +155,48 @@ describe("the empty state is a coverage statement, never a congratulation", () =
     const text = renderCoverage({ coverage: { pendingProposals: 2, pendingCardinalities: 1 } });
     expect(text).toContain("3 proposals are awaiting review");
     expect(text).not.toContain("comparable objects");
+  });
+});
+
+describe("a denied read never becomes a claim about the workspace", () => {
+  test("does NOT say the workspace has nothing in force when the read was denied", () => {
+    // ⚠️ The sentence this whole accounting exists to prevent. Seeing nothing
+    // and there being nothing are the two facts the surface separates, and this
+    // was the one place the component still conflated them — it asserted "no
+    // alias edges and no curated predicates are in force in this workspace"
+    // from a read that returned nothing because the reader was refused.
+    const text = renderCoverage({
+      counts: [{ ...COUNTS[1]!, scope: "deny-all" }],
+      cardinalityCounts: { scope: "deny-all" },
+    });
+    expect(text).not.toContain("Nothing is shaping identity yet");
+    expect(text).toContain("not entitled");
+    expect(text).toContain("not the same as there being none");
+  });
+
+  test("POSITIVE CONTROL — an entitled reader with a genuinely empty workspace is told so plainly", () => {
+    // Without this, a component that never said "nothing is in force" would
+    // satisfy the assertion above, and the plainly-zero requirement would be
+    // silently dropped.
+    const text = renderCoverage();
+    expect(text).toContain("Nothing is shaping identity yet");
+  });
+
+  test("says the vocabulary is NOT empty when everything visible is withheld", () => {
+    // The third state, between the two above: entitled to the page, but every
+    // entry scoped away. "Nothing is shaping identity" would be false.
+    const text = renderCoverage({
+      counts: [{ ...COUNTS[1]!, total: 4, scoped: 0, withheld: 4 }],
+    });
+    expect(text).toContain("not empty");
+    expect(text).not.toContain("Nothing is shaping identity yet");
+  });
+
+  test("counts withheld CURATED PREDICATES toward the same total", () => {
+    const text = renderCoverage({
+      cardinalityCounts: { total: 3, scoped: 0, withheld: 3, scope: "reader-scoped" },
+    });
+    expect(text).toContain("3 entries are in force that you cannot see");
   });
 });
 

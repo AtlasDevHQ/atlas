@@ -39,7 +39,7 @@ import { Pool, type PoolClient } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import type { SlotPosition } from "@atlas/api/lib/brain/identity";
+import { identityKeySql, type SlotPosition } from "@atlas/api/lib/brain/identity";
 import {
   REKEY_DRIFTED_FACTS_SQL,
   authorAliasEdge,
@@ -55,7 +55,8 @@ import {
   loadInForceVocabulary,
   loadVocabularyCoverage,
 } from "@atlas/api/lib/brain/vocabulary-in-force";
-import { withheldCount } from "@atlas/api/lib/brain/vocabulary-visibility";
+import { declarePredicateCardinalityForSurface } from "@atlas/api/lib/brain/cardinality";
+import { loadClaimVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import type { ReconcileTransactionRunner } from "@atlas/api/lib/brain/reconcile";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -63,42 +64,6 @@ const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 const PG_TEST_TIMEOUT_MS = 60_000;
 
 const WS = "ws-vocab-5087";
-
-// ---------------------------------------------------------------------------
-// `withheldCount` — pure, so it runs without a database
-// ---------------------------------------------------------------------------
-
-describe("the withheld count is never a silent omission (#5087, ADR-0037 §6)", () => {
-  it("reports the difference, so 'you cannot see 12' is distinguishable from 'none'", () => {
-    // THE property the pane exists for. A scoped SELECT renders those two
-    // identically, and an approver who cannot tell them apart concludes their
-    // workspace has a clean vocabulary when it may have a dozen entries they
-    // are blind to.
-    expect(withheldCount(15, 3)).toEqual({
-      total: 15,
-      scoped: 3,
-      withheld: 12,
-      consistent: true,
-    });
-    expect(withheldCount(3, 3).withheld).toBe(0);
-  });
-
-  it("reports an inverted delta rather than clamping it into a reassuring zero", () => {
-    // `loadFactOversight`'s recorded lesson, quoted in `BlastRadiusSide`:
-    // silently clamping renders as "nothing is hidden from you", which is the
-    // pre-#4825 defect reproduced by its own fix. A mutation deleting the
-    // `consistent` computation and hardcoding `true` fails here.
-    const inverted = withheldCount(2, 5);
-    expect(inverted.withheld).toBe(0);
-    expect(inverted.consistent).toBe(false);
-  });
-
-  it("refuses an unreadable count rather than rendering NaN at an approver", () => {
-    const broken = withheldCount(Number.NaN, 4);
-    expect(broken.withheld).toBe(0);
-    expect(broken.consistent).toBe(false);
-  });
-});
 
 // ---------------------------------------------------------------------------
 
@@ -192,7 +157,13 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
   }
 
   /**
-   * One live fact, keys derived the way the pipeline derives them.
+   * One live fact, keys derived by the PRODUCTION expression.
+   *
+   * ⚠️ `identityKeySql` is imported rather than transcribed. The first cut
+   * pasted the `translate(…)/regexp_replace(…)` body into the fixture — a second
+   * implementation of the norm rule, which would diverge silently the day
+   * `lexicalNorm`'s separator class changes, and the atomicity test's baseline
+   * assertion would then describe a corpus state production never produces.
    *
    * The keys matter for the cardinality join only — the visibility seam joins on
    * `lexicalNorm(surface)` deliberately, so that an alias's own approval does
@@ -211,9 +182,7 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
          (workspace_id, subject, predicate, object, source_episode_id, provenance, status,
           visible_to, subject_key, predicate_key, object_key)
        VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, 'published', $6::text[],
-               NULLIF(btrim(regexp_replace(translate($2, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
-               NULLIF(btrim(regexp_replace(translate($3, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''),
-               NULLIF(btrim(regexp_replace(translate($4, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '[ ' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || '_-]+', ' ', 'g'), ' '), ''))
+               ${identityKeySql("$2")}, ${identityKeySql("$3")}, ${identityKeySql("$4")})
        RETURNING id`,
       [WS, opts.subject, opts.predicate, opts.object, episodeId, opts.visibleTo],
     );
@@ -340,21 +309,48 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
     });
 
     it("refuses and names the TO side", async () => {
-      await seedFact({ subject: "acme", predicate: "is priced at", object: "10", visibleTo: ["org"] });
-      const outcome = await author("predicate", "is priced at", "priced at");
+      // ⚠️ DISJOINT norms, and the previous fixture is why. It used
+      // `is priced at` / `priced at`, where the TO norm is a SUBSTRING of the
+      // FROM norm — and `emptyPopulationMessage` always appends
+      // `(from: n, to: n)`. So `toContain("priced at")` matched on three
+      // separate accidents, and a mutation that always named the FROM side
+      // passed. It also never asserted the refusal KIND, so a `degenerate-norm`
+      // regression passed too.
+      await seedFact({ subject: "acme", predicate: "alpha", object: "10", visibleTo: ["org"] });
+
+      const outcome = await author("predicate", "alpha", "beta");
       expect(outcome.kind).toBe("refused");
       if (outcome.kind !== "refused") throw new Error("unreachable");
-      expect(outcome.message).toContain("priced at");
+      expect(outcome.refusal).toBe("empty-population");
+      expect(outcome.message).toContain('"beta" has no live claim');
+      expect(outcome.message).not.toContain('"alpha" has no live claim');
     });
 
-    it("refuses when BOTH sides are empty, and says so", async () => {
+    it("refuses when BOTH sides are empty, and the sentence is not a double negative", async () => {
+      // Routed through `author(...)` rather than through `loadPairPopulation` +
+      // `emptySide` directly. The old version tested the CLASSIFIER and never
+      // produced the message, so the `both` prose was unreachable by any test —
+      // and it read *"neither "a" nor "b" has no live claim"*, which asserts the
+      // opposite of the refusal it explains.
       await seedFact({ subject: "acme", predicate: "reports to", object: "bob", visibleTo: ["org"] });
+
       const population = await loadPairPopulation(pool, owner(), {
         position: "predicate",
-        fromNorm: "is priced at",
-        toNorm: "priced at",
+        fromNorm: "alpha",
+        toNorm: "beta",
       });
       expect(emptySide(population)).toBe("both");
+
+      const outcome = await author("predicate", "alpha", "beta");
+      expect(outcome.kind).toBe("refused");
+      if (outcome.kind !== "refused") throw new Error("unreachable");
+      expect(outcome.refusal).toBe("empty-population");
+      // Reads as an ASSERTION, not a double negative. "neither … has no live
+      // claim" says both sides DO have one, which is the opposite of the
+      // refusal — and it is the shape a shared `${sides} has no live claim`
+      // template produces the moment one arm starts with "neither".
+      expect(outcome.message).toContain('Neither "alpha" nor "beta" has a live claim');
+      expect(outcome.message).not.toContain("nor \"beta\" has no live claim");
     });
 
     it("POSITIVE CONTROL — the same call succeeds once both sides are populated", async () => {
@@ -716,6 +712,175 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
       expect(outcome.refusal).toBe("not-in-force");
     });
 
+    it("⚠️ refuses to remove an entity edge this reader cannot SEE", async () => {
+      // THE oracle this gate closes. Before it, removal validated the workspace,
+      // the owner/admin bar and the norm shape, then went straight to the
+      // proposal row — so a reader the *In force* pane had withheld an entity
+      // edge from could remove it by naming the pair.
+      await seedFact({
+        subject: "project atlas",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:secret"],
+      });
+      await seedFact({
+        subject: "nova",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:secret"],
+      });
+      await pool.query(
+        `INSERT INTO brain_vocabulary_edge
+           (workspace_id, slot_position, from_norm, to_norm, approved_by)
+         VALUES ($1, 'subject', 'project atlas', 'nova', 'seed-approver')`,
+        [WS],
+      );
+      await pool.query(
+        `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
+         VALUES ($1, 'subject', 'project atlas', 'nova')`,
+        [WS],
+      );
+
+      const blind = owner(["eng"]);
+      // The pane withholds it — so the removal must too, or the log line
+      // `logFailClosedHole` writes ("also un-removable by them") is false.
+      const view = await loadInForceVocabulary(pool, blind);
+      expect(view.edges).toEqual([]);
+      expect(view.counts.find((c) => c.position === "subject")!.withheld).toBe(1);
+
+      const outcome = await removeInForceAliasEdge(
+        WS,
+        { position: "subject", fromNorm: "project atlas", toNorm: "nova" },
+        blind,
+        { withTransaction: runner },
+      );
+      expect(outcome.kind).toBe("refused");
+      if (outcome.kind !== "refused") throw new Error("unreachable");
+      expect(outcome.refusal).toBe("not-in-force");
+      // …and the edge is STILL THERE. A refusal that had already dropped the
+      // edge would be the same disclosure with a politer message.
+      expect(await storedEdges()).toHaveLength(1);
+    });
+
+    it("⚠️ answers a REAL invisible edge and an IMAGINED one identically", async () => {
+      // The oracle is not the removal — it is the DIFFERENCE. Closing the write
+      // while leaving two distinguishable refusals would let a reader learn the
+      // pair exists by comparing responses, which at an entity position is the
+      // confidential bit ADR-0037 §6 is about.
+      await seedFact({
+        subject: "project atlas",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:secret"],
+      });
+      await seedFact({
+        subject: "nova",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:secret"],
+      });
+      await pool.query(
+        `INSERT INTO brain_vocabulary_edge
+           (workspace_id, slot_position, from_norm, to_norm, approved_by)
+         VALUES ($1, 'subject', 'project atlas', 'nova', 'seed-approver')`,
+        [WS],
+      );
+      await pool.query(
+        `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
+         VALUES ($1, 'subject', 'project atlas', 'nova')`,
+        [WS],
+      );
+
+      const blind = owner(["eng"]);
+      const real = await removeInForceAliasEdge(
+        WS,
+        { position: "subject", fromNorm: "project atlas", toNorm: "nova" },
+        blind,
+        { withTransaction: runner },
+      );
+      const imagined = await removeInForceAliasEdge(
+        WS,
+        { position: "subject", fromNorm: "no such thing", toNorm: "nor this" },
+        blind,
+        { withTransaction: runner },
+      );
+
+      expect(real.kind).toBe("refused");
+      expect(imagined.kind).toBe("refused");
+      if (real.kind !== "refused" || imagined.kind !== "refused") throw new Error("unreachable");
+      expect(real.refusal).toBe(imagined.refusal);
+      // BYTE-IDENTICAL prose. `notInForceMessage` names no norm precisely so
+      // this assertion can be an equality rather than a fuzzy match — a message
+      // echoing the requested pair back would differ here and the test would
+      // have to weaken to survive it.
+      expect(real.message).toBe(imagined.message);
+    });
+
+    it("POSITIVE CONTROL — a VISIBLE entity edge is removable by the same call", async () => {
+      // Without this, a `removeInForceAliasEdge` that refused every entity
+      // removal outright would satisfy both assertions above.
+      await seedFact({
+        subject: "project atlas",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:eng"],
+      });
+      await seedFact({
+        subject: "nova",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:eng"],
+      });
+      const authored = await author("subject", "project atlas", "nova", owner(["eng"]));
+      expect(authored.kind).toBe("authored");
+
+      const outcome = await removeInForceAliasEdge(
+        WS,
+        { position: "subject", fromNorm: "project atlas", toNorm: "nova" },
+        owner(["eng"]),
+        { withTransaction: runner },
+      );
+      expect(outcome.kind).toBe("removed");
+      expect(await storedEdges()).toEqual([]);
+    });
+
+    it("POSITIVE CONTROL — a PREDICATE edge stays removable by a reader who sees no claims", async () => {
+      // The predicate arm is unscoped, and the gate must not have quietly made
+      // it scoped: that would put #5000's own entry — authored at the predicate
+      // position and verified in prod — behind a grant nobody holds.
+      await seedFact({
+        subject: "acme",
+        predicate: "is priced at",
+        object: "10",
+        visibleTo: ["audience:secret"],
+      });
+      await seedFact({
+        subject: "acme",
+        predicate: "priced at",
+        object: "11",
+        visibleTo: ["audience:secret"],
+      });
+      await pool.query(
+        `INSERT INTO brain_vocabulary_edge
+           (workspace_id, slot_position, from_norm, to_norm, approved_by)
+         VALUES ($1, 'predicate', 'is priced at', 'priced at', 'seed-approver')`,
+        [WS],
+      );
+      await pool.query(
+        `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
+         VALUES ($1, 'predicate', 'is priced at', 'priced at')`,
+        [WS],
+      );
+
+      const outcome = await removeInForceAliasEdge(
+        WS,
+        { position: "predicate", fromNorm: "is priced at", toNorm: "priced at" },
+        owner([]),
+        { withTransaction: runner },
+      );
+      expect(outcome.kind).toBe("removed");
+    });
+
     it("refuses a plain member's removal", async () => {
       await authorTheEdge();
       const outcome = await removeInForceAliasEdge(
@@ -911,6 +1076,229 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
       const view = await loadInForceVocabulary(pool, owner());
       expect(view.edges).toHaveLength(1);
       expect(view.edges[0]!.proposalId).toBeNull();
+    });
+  });
+
+  // ── curated cardinalities ─────────────────────────────────────────────────
+
+  describe("the In-force pane shows curated predicates, and only approved ones", () => {
+    async function seedCardinality(opts: {
+      predicateKey: string;
+      status: "approved" | "pending";
+      cardinality?: string;
+    }) {
+      await pool.query(
+        `INSERT INTO brain_predicate_cardinality
+           (workspace_id, predicate_key, cardinality, status, source_class, proposed_by)
+         VALUES ($1, $2, $3, $4, 'human', 'user-owner')`,
+        [WS, opts.predicateKey, opts.cardinality ?? "single", opts.status],
+      );
+    }
+
+    it("renders the SURFACE and its live claim count, never the key", async () => {
+      // The whole section was previously exercised only against an EMPTY table,
+      // so the LATERAL surface resolution, the claim count and the key-stays-in-
+      // the-join property were all unasserted — and `cardinalities` is the one
+      // field the route passes through unmapped, so its strict schema was the
+      // only guard and it never saw a row.
+      await seedFact({ subject: "acme", predicate: "reports to", object: "bob", visibleTo: ["org"] });
+      await seedFact({ subject: "acme", predicate: "Reports To", object: "sue", visibleTo: ["org"] });
+      await seedCardinality({ predicateKey: "reports to", status: "approved" });
+
+      const view = await loadInForceVocabulary(pool, owner());
+      expect(view.cardinalities).toHaveLength(1);
+      const entry = view.cardinalities[0]!;
+      expect(entry.predicateSurface).toBeOneOf(["reports to", "Reports To"]);
+      // Both spellings fold into the one canonical key, so both claims count.
+      expect(entry.claims).toBe(2);
+      expect(entry.cardinality).toBe("single");
+      // ⚠️ No key on the record. `PredicateCardinalityRecord` states the same
+      // prohibition for itself; this is the pane's version of it.
+      expect(Object.keys(entry)).not.toContain("predicateKey");
+      expect(JSON.stringify(entry)).not.toContain("predicate_key");
+    });
+
+    it("excludes a PENDING entry, which is a proposal rather than a fact in force", async () => {
+      // `cardinalitySingleSql` — the one live read — filters on
+      // `status = 'approved'`. Showing a pending row here would report a
+      // predicate as shaping identity when the publish gate ignores it.
+      await seedFact({ subject: "acme", predicate: "reports to", object: "bob", visibleTo: ["org"] });
+      await seedCardinality({ predicateKey: "reports to", status: "pending" });
+
+      const view = await loadInForceVocabulary(pool, owner());
+      expect(view.cardinalities).toEqual([]);
+      // …and it is counted as PENDING work rather than vanishing entirely.
+      const coverage = await loadVocabularyCoverage(pool, WS);
+      expect(coverage.pendingCardinalities).toBe(1);
+    });
+
+    it("reports a NULL surface for an entry whose claims have all been retracted", async () => {
+      // A documented real state, and the one an approver most needs to find: an
+      // entry still arming supersession for a predicate with no live claims.
+      // Filtering it away would make it unremovable from the product.
+      await seedCardinality({ predicateKey: "reports to", status: "approved" });
+      const view = await loadInForceVocabulary(pool, owner());
+      expect(view.cardinalities).toHaveLength(1);
+      expect(view.cardinalities[0]!.predicateSurface).toBeNull();
+      expect(view.cardinalities[0]!.claims).toBe(0);
+    });
+
+    it("counts curated predicates workspace-wide so an empty list is legible", async () => {
+      await seedCardinality({ predicateKey: "reports to", status: "approved" });
+      const view = await loadInForceVocabulary(pool, owner());
+      expect(view.cardinalityCounts.total).toBe(1);
+      expect(view.cardinalityCounts.consistent).toBe(true);
+    });
+
+    it("⚠️ curating an ALIASED spelling lands on its canonical predicate", async () => {
+      // THE silent-failure mode `declarePredicateCardinalityForSurface` exists
+      // to prevent, and it had no falsifier anywhere. An identity default would
+      // write an entry keyed on `is priced at` — a norm no live claim carries
+      // once the alias is approved — which `cardinalitySingleSql` never reads:
+      // a no-op wearing the face of a successful curation.
+      await seedFact({ subject: "acme", predicate: "is priced at", object: "10", visibleTo: ["org"] });
+      await seedFact({ subject: "acme", predicate: "priced at", object: "11", visibleTo: ["org"] });
+      const authored = await author("predicate", "is priced at", "priced at");
+      expect(authored.kind).toBe("authored");
+
+      const vocabulary = await loadClaimVocabulary(pool, WS);
+      const result = await declarePredicateCardinalityForSurface(pool, WS, {
+        predicateSurface: "is priced at",
+        cardinality: "single",
+        authoredBy: "user-owner",
+        predicateAlias: vocabulary.predicate,
+      });
+      expect(result.ok).toBe(true);
+
+      const { rows } = await pool.query<{ predicate_key: string }>(
+        `SELECT predicate_key FROM brain_predicate_cardinality WHERE workspace_id = $1`,
+        [WS],
+      );
+      // The CANONICAL key, not the spelling that was typed. A mutation replacing
+      // `input.predicateAlias` with an identity lookup fails here and nowhere
+      // else in the suite.
+      expect(rows.map((r) => r.predicate_key)).toEqual(["priced at"]);
+
+      // …and the entry is genuinely in force: the pane resolves it back to a
+      // live surface, which it could not do for a key no claim carries.
+      const view = await loadInForceVocabulary(pool, owner());
+      expect(view.cardinalities).toHaveLength(1);
+      expect(view.cardinalities[0]!.claims).toBe(2);
+    });
+  });
+
+  // ── the picker at an ENTITY position ──────────────────────────────────────
+
+  describe("the picker scopes and filters at an entity position too", () => {
+    it("⚠️ binds its placeholders correctly with BOTH an ACL clause and a filter", async () => {
+      // Every other picker test uses `predicate`, which is the ONE-parameter
+      // arm. The entity arm binds two ACL params, so the filter and limit
+      // placeholders shift — an untested combination whose failure mode is a
+      // Postgres bind error surfacing as a 500 on the entity authoring picker.
+      await seedFact({
+        subject: "project atlas",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:eng"],
+      });
+      await seedFact({
+        subject: "project nimbus",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:secret"],
+      });
+
+      const page = await loadObservedSurfaces(pool, owner(["eng"]), {
+        position: "subject",
+        filter: "project",
+      });
+      expect(page.decision).toBe("reader-scoped");
+      // The visible one is offered (positive control — without it a query that
+      // returned nothing would satisfy the exclusion below).
+      expect(page.surfaces.map((s) => s.norm)).toEqual(["project atlas"]);
+    });
+
+    it("does not offer an entity norm from claims this reader cannot read", async () => {
+      await seedFact({
+        subject: "project nimbus",
+        predicate: "is",
+        object: "thing",
+        visibleTo: ["audience:secret"],
+      });
+      const page = await loadObservedSurfaces(pool, owner(["eng"]), { position: "subject" });
+      expect(page.surfaces).toEqual([]);
+    });
+  });
+
+  // ── outcome arms that had no coverage ─────────────────────────────────────
+
+  describe("outcome arms", () => {
+    it("reports already_approved when the same pair is authored twice", async () => {
+      await seedFact({ subject: "acme", predicate: "is priced at", object: "10", visibleTo: ["org"] });
+      await seedFact({ subject: "acme", predicate: "priced at", object: "11", visibleTo: ["org"] });
+      expect((await author("predicate", "is priced at", "priced at")).kind).toBe("authored");
+
+      const second = await author("predicate", "is priced at", "priced at");
+      // NOT a refusal and NOT a second write — the pair is already in the state
+      // the caller asked for, and a double submit must say so rather than
+      // surfacing `already-aliased` from the vocabulary.
+      expect(second.kind).toBe("already_approved");
+      expect(await storedEdges()).toHaveLength(1);
+    });
+
+    it("admits the local operator on a no-auth deployment", async () => {
+      // `unauthenticated-local` is the DEFAULT self-hosted deploy mode. A
+      // regression here means direct authoring is impossible on every
+      // self-hosted install — and nothing went red for it.
+      await seedFact({ subject: "acme", predicate: "is priced at", object: "10", visibleTo: ["org"] });
+      await seedFact({ subject: "acme", predicate: "priced at", object: "11", visibleTo: ["org"] });
+
+      const localOperator: BrainPrincipalContext = {
+        origin: "unauthenticated-local",
+        workspaceId: WS,
+        userId: null,
+        role: null,
+        audienceIds: [],
+      };
+      const outcome = await author("predicate", "is priced at", "priced at", localOperator);
+      expect(outcome.kind).toBe("authored");
+
+      const { rows } = await pool.query<{ approved_by: string }>(
+        `SELECT approved_by FROM brain_vocabulary_edge WHERE workspace_id = $1`,
+        [WS],
+      );
+      // `local-operator`, never NULL. Migration 0189 makes NULL mean
+      // "auto-approved, no human", so a human re-key recorded as NULL would be
+      // indistinguishable from a machine one, permanently.
+      expect(rows[0]!.approved_by).toBe("local-operator");
+    });
+
+    it("refuses an unresolved reader outright", async () => {
+      const unresolved: BrainPrincipalContext = {
+        origin: "unresolved",
+        workspaceId: WS,
+        userId: null,
+        role: null,
+        audienceIds: [],
+      };
+      const outcome = await author("predicate", "a", "b", unresolved);
+      expect(outcome.kind).toBe("refused");
+      if (outcome.kind !== "refused") throw new Error("unreachable");
+      expect(outcome.refusal).toBe("not-entitled");
+    });
+
+    it("refuses a self-edge and a degenerate norm at the seam", async () => {
+      // Previously covered only as MOCKED route outcomes, so the seam's own
+      // shape guards never ran.
+      const selfEdge = await author("predicate", "Priced At", "priced at");
+      expect(selfEdge.kind).toBe("refused");
+      if (selfEdge.kind !== "refused") throw new Error("unreachable");
+      expect(selfEdge.refusal).toBe("self-edge");
+
+      const degenerate = await author("predicate", "___", "priced at");
+      expect(degenerate.kind).toBe("refused");
+      if (degenerate.kind !== "refused") throw new Error("unreachable");
+      expect(degenerate.refusal).toBe("degenerate-norm");
     });
   });
 

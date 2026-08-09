@@ -188,6 +188,7 @@ import {
   withBrainTransaction,
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
+import { isPairVisible } from "@atlas/api/lib/brain/vocabulary-visibility";
 import {
   emptySide,
   loadPairPopulation,
@@ -1146,8 +1147,18 @@ export type AliasAuthoringRefusal =
   | "empty-population"
   /** Permanent rejection memory — this pair was rejected or removed before. */
   | "previously-rejected"
-  /** Malformed before the corpus was ever consulted. */
-  | AliasProposalRefusal
+  /**
+   * Malformed before the corpus was ever consulted.
+   *
+   * NARROWED to the two members this path can actually produce, rather than
+   * inheriting `AliasProposalRefusal` wholesale. `confidence-out-of-range` and
+   * `warehouse-key-at-predicate` are producer-shaped and unreachable here — this
+   * seam sets confidence itself and never accepts a source class — so admitting
+   * them made the route map two dead codes and made the OpenAPI 400 advertise
+   * causes that cannot occur. Same narrowing `resolveDirection`'s two members
+   * get twenty lines down, for the same reason.
+   */
+  | Extract<AliasProposalRefusal, "degenerate-norm" | "self-edge">
   /** The vocabulary itself refused the edge. */
   | AliasApprovalRefusal
   /** A direction that contradicts an existing directed proposal for the pair. */
@@ -1603,6 +1614,30 @@ export async function removeInForceAliasEdge(
   return withTransaction(async (tx) => {
     await lockIdentityMutation(tx, workspaceId);
 
+    // ⚠️ THE VISIBILITY GATE, and its absence was a disclosure hole rather than
+    // an omission. Everything below this line answers questions about a specific
+    // pair, and the answers differ — a real edge removes, an imagined one is
+    // refused — so without this a reader could learn whether an entity edge
+    // exists by naming it, which is precisely the population the *In force*
+    // pane's scoping withholds. See {@link isPairVisible}.
+    //
+    // Folded into the SAME refusal as "not in force", deliberately:
+    // `admin-brain-facts.ts`'s retract 404 is the precedent —
+    // *"deliberately indistinguishable, so the response cannot confirm the
+    // existence of a fact the reader may not see"* — and a distinct
+    // `not-visible` arm would restore in words the oracle this closes in rows.
+    //
+    // Runs on the SAME `tx` as the write, so the corpus it reads is the one the
+    // removal is about, and it runs BEFORE any proposal row is read.
+    const visible = await isPairVisible(tx, position, remover, { fromNorm, toNorm });
+    if (!visible) {
+      log.warn(
+        { workspaceId, position, origin: remover.origin, role: remover.role },
+        "Alias removal refused — the pair is not visible to this reader at this position (reported as not-in-force, which is also what an absent edge returns)",
+      );
+      return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
+    }
+
     const existing = await findProposalByPair(tx, workspaceId, position, fromNorm, toNorm);
     if (existing !== undefined) {
       if (existing.status === "rejected") return { kind: "already_removed", id: existing.id };
@@ -1611,33 +1646,24 @@ export async function removeInForceAliasEdge(
         // and an `applying` one is a decision in flight. Neither is removable
         // here, and reporting them as "not in force" is truthful: the pane this
         // call serves shows approved edges only.
-        return {
-          kind: "refused",
-          refusal: "not-in-force",
-          message:
-            `"${fromNorm}" and "${toNorm}" have a proposal at the ${position} position with status ` +
-            `"${existing.status}", not an approved edge. Only what is in force is removable here.`,
-        };
+        // Shares the sentence for `notInForceMessage`'s reason: a reader who
+        // could tell "there is a PENDING proposal for this pair" from "no such
+        // edge" has learned the pair exists, which at an entity position is the
+        // confidential bit.
+        return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
       }
       const rejected = await rejectProposal(tx, workspaceId, existing, {
         kind: "human",
         ctx: remover,
       });
-      return removalFromDecision(rejected, existing.id, false);
+      return removalFromDecision(rejected, existing.id, false, position);
     }
 
     // No proposal row. Either the edge does not exist, or it was copied in by
     // the region importer — and only the edge table can say which.
     const stored = await findApprovedEdgeByPair(tx, workspaceId, position, fromNorm, toNorm);
     if (stored === undefined) {
-      return {
-        kind: "refused",
-        refusal: "not-in-force",
-        message:
-          `No approved edge joins "${fromNorm}" and "${toNorm}" at the ${position} position, so ` +
-          "there is nothing to remove. It may already have been removed, or the closure may have " +
-          "been rebuilt by a removal further up the chain.",
-      };
+      return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
     }
 
     const id = newProposalId();
@@ -1659,10 +1685,6 @@ export async function removeInForceAliasEdge(
         recordedApprover({ kind: "human", ctx: remover }) ?? LOCAL_OPERATOR_ACTOR,
       ],
     );
-    log.info(
-      { workspaceId, position, fromNorm: stored.fromNorm, toNorm: stored.toNorm, proposalId: id },
-      "Alias removal is creating the rejection memory an imported edge never had — without it the next producer run would re-propose the pair",
-    );
     const rejected = await rejectProposal(
       tx,
       workspaceId,
@@ -1678,8 +1700,39 @@ export async function removeInForceAliasEdge(
       },
       { kind: "human", ctx: remover },
     );
-    return removalFromDecision(rejected, id, true);
+    // LOGGED AFTER the reject, not before it. `rejectProposal` can throw — the
+    // removal finds no edge, the stamp loses its row — and the whole transaction
+    // rolls back, so a line emitted first is a claim of a write that never
+    // committed, sitting in the log for an operator to find.
+    const outcome = removalFromDecision(rejected, id, true, position);
+    log.info(
+      { workspaceId, position, fromNorm: stored.fromNorm, toNorm: stored.toNorm, proposalId: id },
+      "Alias removal created the rejection memory an imported edge never had — without it the next producer run would re-propose the pair",
+    );
+    return outcome;
   });
+}
+
+/**
+ * The ONE "nothing to remove" sentence, shared by three arms.
+ *
+ * ⚠️ Shared rather than tailored, and that is the guard: it is returned for an
+ * edge that does not exist, for one the reader may not see, and for one another
+ * decision reached first. If those read differently, the difference IS the
+ * oracle — a reader could tell "no such edge" from "an edge you may not see" by
+ * comparing prose, having been stopped from telling them apart by outcome.
+ *
+ * It therefore names no norm. Echoing the requested pair back would be harmless
+ * (the caller supplied it) but it invites a future edit to add "…which is
+ * aliased onto X", and that sentence is the leak.
+ */
+function notInForceMessage(position: SlotPosition): string {
+  return (
+    `No approved edge at the ${position} position matches that pair, so there is nothing to ` +
+    "remove. It may never have existed, it may already have been removed, the closure may have " +
+    "been rebuilt by a removal further up the chain, or it may involve claims you are not " +
+    "entitled to read — this surface does not distinguish those, deliberately."
+  );
 }
 
 /** Map the shared reject arm's outcome onto this path's narrower union. */
@@ -1687,6 +1740,7 @@ function removalFromDecision(
   outcome: AliasDecisionOutcome,
   id: string,
   memoryCreated: boolean,
+  position: SlotPosition,
 ): AliasRemovalOutcome {
   if (outcome.kind === "rejected") {
     if (!outcome.removedEdge) {
@@ -1704,12 +1758,7 @@ function removalFromDecision(
     return { kind: "removed", id, memoryCreated };
   }
   if (outcome.kind === "not_decidable") {
-    return {
-      kind: "refused",
-      refusal: "not-in-force",
-      message:
-        `Proposal ${id} is no longer in a removable state — another decision reached it first.`,
-    };
+    return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
   }
   // `approved` and `refused` are both unreachable from the reject arm; the
   // exhaustive throw is what keeps a future arm from compiling into silence.
@@ -1746,14 +1795,25 @@ function emptyPopulationMessage(
   population: PairPopulation,
   empty: EmptySide,
 ): string {
-  const sides =
+  // ⚠️ Phrased per-arm rather than through a shared `${sides} has no live
+  // claim` template, because the `both` arm read as a DOUBLE NEGATIVE under it:
+  // *"neither "a" nor "b" has no live claim"* literally asserts the opposite of
+  // the refusal it is explaining. (The template also carried a ternary whose two
+  // branches were the identical string — the remains of a `has`/`have` split
+  // that had already been lost, and which no test could distinguish.)
+  // The WHOLE opening clause per arm, not a shared `${sides} has no live claim`
+  // template. Under the template the `both` arm read *"neither "a" nor "b" has
+  // no live claim"* — a double negative asserting the opposite of the refusal it
+  // explains — because "neither" already carries the negation. English does not
+  // let the two compose, so they do not share a sentence.
+  const clause =
     empty === "both"
-      ? `neither "${population.from.norm}" nor "${population.to.norm}"`
+      ? `Neither "${population.from.norm}" nor "${population.to.norm}" has a live claim at the ${position} position`
       : empty === "from"
-        ? `"${population.from.norm}"`
-        : `"${population.to.norm}"`;
+        ? `"${population.from.norm}" has no live claim at the ${position} position`
+        : `"${population.to.norm}" has no live claim at the ${position} position`;
   return (
-    `${sides} ${empty === "both" ? "has" : "has"} no live claim at the ${position} position ` +
+    `${clause} ` +
     `(${population.from.norm}: ${population.from.claims}, ${population.to.norm}: ${population.to.claims}). ` +
     "An alias for a norm the corpus has never produced inserts cleanly, recomputes the closure, " +
     "re-keys zero rows and previews as 0 — indistinguishable from a merge that worked. Pick both " +

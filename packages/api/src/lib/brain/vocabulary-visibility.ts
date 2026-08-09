@@ -307,6 +307,90 @@ export function visibleNormsSql(
   };
 }
 
+/** The reader this module's one query needs. Satisfied by a pool and a `tx`. */
+export interface PairVisibilityReader {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
+}
+
+/**
+ * *May this reader SEE the entry joining these two norms?* — the same rule
+ * {@link visibleNormsSql} applies to a list, asked about one pair.
+ *
+ * ## ⚠️ Why a WRITE path needs this, and what its absence was
+ *
+ * The *In force* pane withholds an entity edge whose two populations the reader
+ * cannot both read. Removal ran no such check: it validated the workspace, the
+ * owner/admin bar and the norm shape, then went straight to the proposal row. So
+ * a reader the pane had withheld an edge from could remove it by naming the pair
+ * — and, more sharply, could learn whether it existed at all, because a real
+ * edge answered `removed` and an imagined one answered `not-in-force`.
+ *
+ * That is an **existence oracle for exactly the population the scoping exists to
+ * withhold**: ADR-0037 §6's whole entity-position argument is that
+ * `project atlas → nova` **is** the confidential bit. And it made
+ * {@link logFailClosedHole}'s line — *"those entries are also un-removable by
+ * them"* — false, enforced only by a UI that declined to render a button.
+ *
+ * ## The caller must NOT distinguish invisible from absent
+ *
+ * This returns a boolean, and the one correct way to use it is to fold "you may
+ * not see it" into the SAME refusal as "it is not there" — `admin-brain-facts.ts`
+ * does exactly this for its retract 404, *"deliberately indistinguishable, so
+ * the response cannot confirm the existence of a fact the reader may not see."*
+ * A distinct `not-visible` refusal would restore the oracle in words after
+ * closing it in rows.
+ *
+ * ## Predicate position is unscoped, so this is `true` there
+ *
+ * Not a special case in this function — it falls out of
+ * {@link positionalScopeClause}. A predicate edge is visible to anyone who can
+ * read the workspace, so the gate costs one query and never refuses. Left
+ * uniform rather than short-circuited so the rule has one implementation and a
+ * future change to the predicate arm reaches removal automatically.
+ */
+export async function isPairVisible(
+  db: PairVisibilityReader,
+  position: SlotPosition,
+  ctx: BrainPrincipalContext,
+  pair: { readonly fromNorm: string; readonly toNorm: string },
+  options: { readonly requestId?: string } = {},
+): Promise<boolean> {
+  const visible = visibleNormsSql(position, ctx, {
+    paramIndex: 1,
+    alias: "vf",
+    requestId: options.requestId,
+  });
+  if (visible.decision === "deny-all") return false;
+
+  const params = [...visible.params, pair.fromNorm, pair.toNorm];
+  const fromParam = visible.nextParamIndex;
+  const toParam = visible.nextParamIndex + 1;
+
+  // BOTH sides, in ONE statement — the same snapshot, so a concurrent write
+  // cannot make a pair pass one half and fail the other. `EXISTS … AND EXISTS`
+  // rather than two round trips for that reason and for `loadPairPopulation`'s.
+  const { rows } = await db.query(
+    `WITH visible_norms AS ${visible.sql}
+     SELECT (EXISTS (SELECT 1 FROM visible_norms v WHERE v.norm = $${fromParam})
+         AND EXISTS (SELECT 1 FROM visible_norms v WHERE v.norm = $${toParam})) AS visible`,
+    params,
+  );
+  const raw = rows[0];
+  const row: Record<string, unknown> | undefined =
+    typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : undefined;
+  if (typeof row?.visible !== "boolean") {
+    // FAIL CLOSED, and loudly. An unreadable answer here becomes "you may not
+    // remove this", which costs an admin a retry; the permissive default would
+    // reopen the oracle this function exists to close.
+    log.error(
+      { workspaceId: ctx.workspaceId, position, requestId: options.requestId },
+      "brain vocabulary: the pair-visibility probe returned no usable answer — refusing rather than assuming the reader may see this entry",
+    );
+    return false;
+  }
+  return row.visible;
+}
+
 /**
  * `total − scoped`, floored at zero, with the clamp REPORTED rather than
  * absorbed.

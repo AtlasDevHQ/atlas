@@ -31,6 +31,7 @@ export type {
   BrainVocabularyEdgeEntry,
   BrainVocabularyInForceResponse,
   BrainVocabularyPositionCounts,
+  BrainVocabularyScope,
   BrainVocabularySlotPosition,
   BrainVocabularySurfaceOption,
   AdminRole,

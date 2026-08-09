@@ -26,13 +26,58 @@
  * would be deleted rather than fixed.
  */
 
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
+
+/**
+ * A CAPTURING logger, mocked before the module under test is imported.
+ *
+ * ⚠️ The `logFailClosedHole` tests below used to be
+ * `expect(() => logFailClosedHole({...})).not.toThrow()` with no mock at all —
+ * so a `logFailClosedHole` with an EMPTY BODY passed both of them. ADR-0037 §6's
+ * *"the fail-closed hole is logged, not skipped silently"* is the one thing that
+ * makes an un-removable entity edge findable by somebody who can reach the
+ * database, and it had no falsifier.
+ *
+ * Mock-all-exports: `lib/logger` has more than the two names used here, and a
+ * partial factory link-fails the moment anything in this graph reaches for one.
+ */
+const warnCalls: Record<string, unknown>[] = [];
+void mock.module("@atlas/api/lib/logger", () => {
+  const record = (payload: unknown) => {
+    if (typeof payload === "object" && payload !== null) {
+      warnCalls.push(payload as Record<string, unknown>);
+    }
+  };
+  const logger = {
+    info: () => {},
+    debug: () => {},
+    error: () => {},
+    warn: (payload: unknown) => record(payload),
+    child: () => logger,
+  };
+  return {
+    createLogger: () => logger,
+    getLogger: () => logger,
+    getRequestContext: () => ({ requestId: "test-req" }),
+    withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+    redactPaths: [] as string[],
+    scrubErrSerializer: (err: unknown) => err,
+    scrubLogFormatter: (obj: unknown) => obj,
+    hashShareToken: (token: string) => token,
+    setLogLevel: () => {},
+    ACTOR_KINDS: ["user", "system"] as const,
+  };
+});
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
-import {
-  logFailClosedHole,
-  positionalScopeClause,
-  visibleNormsSql,
-} from "@atlas/api/lib/brain/vocabulary-visibility";
+
+// ⚠️ `await import`, not a static import. Static imports HOIST above the
+// `mock.module` call, so the module under test would capture the real logger and
+// `warnCalls` would stay empty — which is how the first cut of this file passed
+// its "the log fires" assertions while observing nothing at all. The route
+// suites in this repo use the same shape for the same reason.
+const { logFailClosedHole, positionalScopeClause, visibleNormsSql } = await import(
+  "@atlas/api/lib/brain/vocabulary-visibility"
+);
 
 const WS = "ws-visibility";
 
@@ -197,40 +242,79 @@ describe("input guards", () => {
 });
 
 describe("the fail-closed hole is logged rather than skipped silently", () => {
-  it("is a no-op when nothing was withheld and the counts agreed", () => {
-    // A log line per page load with nothing to report would be noise, and noise
-    // is what makes the real line unfindable.
-    expect(() =>
-      logFailClosedHole({
-        workspaceId: WS,
-        position: "subject",
-        counts: { total: 3, scoped: 3, withheld: 0, consistent: true },
-        decision: "reader-scoped",
-        aclDecision: "grant-match",
-        userId: "user-1",
-      }),
-    ).not.toThrow();
+  beforeEach(() => {
+    warnCalls.length = 0;
   });
 
-  it("fires on a withheld entry, and on inconsistent counts even with none withheld", () => {
-    // Two triggers, because they are different problems: entries an admin
-    // cannot see are also ones they cannot REMOVE — so a workspace whose only
-    // admin is blind to a bad edge has no in-product recovery — while
-    // disagreeing counts mean the withheld number itself is not to be trusted.
-    for (const counts of [
-      { total: 5, scoped: 1, withheld: 4, consistent: true },
-      { total: 2, scoped: 5, withheld: 0, consistent: false },
-    ]) {
-      expect(() =>
-        logFailClosedHole({
-          workspaceId: WS,
-          position: "object",
-          counts,
-          decision: "reader-scoped",
-          aclDecision: "grant-match",
-          userId: "user-1",
-        }),
-      ).not.toThrow();
-    }
+  it("stays SILENT when nothing was withheld and the counts agreed", () => {
+    // The early-return guard's own falsifier. A line per page load with nothing
+    // to report is noise, and noise is what makes the real line unfindable — so
+    // the guard is as load-bearing as the log itself.
+    logFailClosedHole({
+      workspaceId: WS,
+      position: "subject",
+      counts: { total: 3, scoped: 3, withheld: 0, consistent: true },
+      decision: "reader-scoped",
+      aclDecision: "grant-match",
+      userId: "user-1",
+    });
+    expect(warnCalls).toHaveLength(0);
+  });
+
+  it("fires with the WITHHELD COUNT when entries are hidden from an approver", () => {
+    // ADR-0037 §6's *"the fail-closed hole is logged, not skipped silently"*.
+    // An entity edge an admin cannot see is one they cannot REMOVE, so a
+    // workspace whose only admin is blind to a bad alias has no in-product
+    // recovery — and this line is the only way somebody who CAN reach the
+    // database learns that.
+    logFailClosedHole({
+      workspaceId: WS,
+      position: "object",
+      counts: { total: 5, scoped: 1, withheld: 4, consistent: true },
+      decision: "reader-scoped",
+      aclDecision: "grant-match",
+      userId: "user-1",
+    });
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toMatchObject({
+      workspaceId: WS,
+      position: "object",
+      withheld: 4,
+      total: 5,
+      scoped: 1,
+    });
+  });
+
+  it("fires on INCONSISTENT counts even when nothing was withheld", () => {
+    // A different problem from the one above: disagreeing counts mean the
+    // withheld number itself is not to be trusted, so a zero there is not an
+    // all-clear. Two triggers, one line — and a guard written as
+    // `withheld > 0` alone would miss this one entirely.
+    logFailClosedHole({
+      workspaceId: WS,
+      position: "subject",
+      counts: { total: 2, scoped: 5, withheld: 0, consistent: false },
+      decision: "reader-scoped",
+      aclDecision: "grant-match",
+      userId: "user-1",
+    });
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toMatchObject({ countsConsistent: false });
+  });
+
+  it("logs no NORM — the content the scoping just withheld", () => {
+    // Called once per load with the aggregate, never once per withheld row: a
+    // per-row line would put the withheld pairs' norms into the log, which is
+    // exactly what the reader was refused.
+    logFailClosedHole({
+      workspaceId: WS,
+      position: "object",
+      counts: { total: 9, scoped: 0, withheld: 9, consistent: true },
+      decision: "reader-scoped",
+      aclDecision: "grant-match",
+      userId: "user-1",
+    });
+    const payload = JSON.stringify(warnCalls[0]);
+    expect(payload).not.toContain("norm");
   });
 });

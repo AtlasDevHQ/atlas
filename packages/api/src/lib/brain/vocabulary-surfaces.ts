@@ -350,16 +350,27 @@ export async function loadPairPopulation(
   // fail-closed direction: a refusal an approver can retry costs a page load,
   // where an admitted edge whose population was never actually observed is the
   // silent-success failure this module exists to prevent.
-  const fromClaims = typeof row?.from_claims === "number" ? row.from_claims : 0;
-  const toClaims = typeof row?.to_claims === "number" ? row.to_claims : 0;
-  if (row === undefined || typeof row.from_claims !== "number") {
+  const fromReadable = typeof row?.from_claims === "number";
+  const toReadable = typeof row?.to_claims === "number";
+  const fromClaims = fromReadable ? (row!.from_claims as number) : 0;
+  const toClaims = toReadable ? (row!.to_claims as number) : 0;
+  // BOTH sides checked, not just `from_claims`. A drifted `to_claims` alone
+  // silently yielded 0 — which drives `emptySide` to `"to"` and tells the
+  // approver `"<toNorm>" has no live claim at this position` when the corpus was
+  // never actually asked. The fail-closed direction is right; the SILENCE was
+  // the defect, and naming which side was unreadable is what separates "your
+  // corpus is missing this spelling" from "we could not read the answer".
+  if (!fromReadable || !toReadable) {
     log.warn(
       {
         workspaceId: ctx.workspaceId,
         position: request.position,
         requestId: request.requestId,
+        fromReadable,
+        toReadable,
+        rowPresent: row !== undefined,
       },
-      "brain vocabulary: the pair-population count returned no usable row — reading both sides as EMPTY, which refuses the authoring",
+      "brain vocabulary: the pair-population count returned no usable value — reading the unreadable side(s) as EMPTY, which refuses the authoring",
     );
   }
 

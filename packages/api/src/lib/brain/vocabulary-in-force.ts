@@ -153,6 +153,22 @@ export interface InForceView {
    */
   readonly counts: readonly InForcePositionCounts[];
   readonly cardinalities: readonly InForceCardinality[];
+  /**
+   * The same accounting the edges get, for curated predicates.
+   *
+   * ⚠️ Added because its absence let the empty state assert *"no curated
+   * predicates are in force in this workspace"* on the strength of a read that
+   * was DENIED. Cardinality entries are predicate-position and therefore
+   * unscoped, so `withheld` is zero for every reader who can see the workspace
+   * at all — but "zero because there are none" and "zero because you were
+   * denied" are the two facts this whole surface exists to separate, and only a
+   * count can.
+   *
+   * The total is workspace-wide and content-free, disclosable by exactly the
+   * argument the edge totals rest on (ADR-0037 §6: the vocabulary is
+   * workspace-global, so its SIZE is not a secret even when its contents are).
+   */
+  readonly cardinalityCounts: InForcePositionCounts;
   /** Any list was capped at {@link IN_FORCE_PAGE_MAX}. */
   readonly truncated: boolean;
 }
@@ -186,12 +202,23 @@ export async function loadInForceVocabulary(
   for (const result of edgeResults) {
     edges.push(...result.edges);
     truncated = truncated || result.truncated;
-    const total = totals.get(result.position) ?? 0;
+    const storedTotal = totals.totals.get(result.position);
+    const total = storedTotal ?? 0;
     // `scoped` is the SCOPED TOTAL, not `edges.length` — the list is capped at
     // `IN_FORCE_PAGE_MAX` and a page-sized `scoped` would turn a truncation into
     // a withheld count, which is exactly the conflation `BlastRadiusSide`
     // forbids ("truncation dressed as an ACL boundary").
-    const positionCounts = withheldCount(total, result.scopedTotal);
+    // ⚠️ `consistent` is AND-ed with both provenance flags, not just the
+    // arithmetic. `withheldCount` can only see whether the two numbers disagree;
+    // it cannot see that one of them was never read. A withheld count computed
+    // from a stand-in is not a smaller number — it is a number with no meaning,
+    // and reporting it as consistent is the "nothing is hidden from you" the
+    // whole accounting exists to refuse.
+    const arithmetic = withheldCount(total, result.scopedTotal);
+    const positionCounts: WithheldCount = {
+      ...arithmetic,
+      consistent: arithmetic.consistent && result.scopedTotalKnown && storedTotal !== undefined,
+    };
     counts.push({
       position: result.position,
       decision: result.decision,
@@ -208,7 +235,30 @@ export async function loadInForceVocabulary(
     });
   }
 
-  return { edges, counts, cardinalities: cardinalities.rows, truncated };
+  const cardinalityArithmetic = withheldCount(cardinalities.total, cardinalities.rows.length);
+  const cardinalityCounts: InForcePositionCounts = {
+    position: "predicate",
+    decision: cardinalities.decision,
+    ...cardinalityArithmetic,
+    consistent: cardinalityArithmetic.consistent && cardinalities.totalKnown,
+  };
+  logFailClosedHole({
+    workspaceId,
+    position: "predicate",
+    counts: cardinalityCounts,
+    decision: cardinalities.decision,
+    aclDecision: null,
+    userId: ctx.userId,
+    requestId: opts.requestId,
+  });
+
+  return {
+    edges,
+    counts,
+    cardinalities: cardinalities.rows,
+    cardinalityCounts,
+    truncated,
+  };
 }
 
 interface PositionEdges {
@@ -216,6 +266,15 @@ interface PositionEdges {
   readonly edges: readonly InForceAliasEdge[];
   /** Edges this reader may see, BEFORE the page cap. */
   readonly scopedTotal: number;
+  /**
+   * Whether {@link scopedTotal} came from the query or is a stand-in.
+   *
+   * Its own field rather than a nullable `scopedTotal`, because every consumer
+   * needs a number to render and only one needs to know whether to trust it —
+   * and a nullable would make every caller handle the absence, which is how a
+   * `?? 0` gets written at the call site instead.
+   */
+  readonly scopedTotalKnown: boolean;
   readonly truncated: boolean;
   readonly decision: PositionalDecision;
   readonly aclDecision: ReturnType<typeof positionalScopeClause>["aclDecision"];
@@ -251,6 +310,8 @@ async function loadPositionEdges(
     position,
     edges: [],
     scopedTotal: 0,
+    // A denied reader genuinely sees zero — that is an answer, not a drift.
+    scopedTotalKnown: true,
     truncated: false,
     decision: visible.decision,
     aclDecision: visible.aclDecision,
@@ -287,7 +348,7 @@ async function loadPositionEdges(
   );
 
   const edges: InForceAliasEdge[] = [];
-  let scopedTotal = 0;
+  let scopedTotal: number | null = null;
   let unreadable = 0;
   for (const raw of rows.slice(0, IN_FORCE_PAGE_MAX)) {
     if (typeof raw !== "object" || raw === null) {
@@ -299,13 +360,21 @@ async function loadPositionEdges(
       unreadable += 1;
       continue;
     }
+    // ⚠️ `approved_at` is DROPPED rather than defaulted to `""`. An empty string
+    // parses as a `string` on the wire and renders as an un-parseable date; the
+    // row is unreadable, and this module's contract is that unreadable rows are
+    // counted and logged, not smuggled through with a plausible-looking field.
+    if (typeof row.approved_at !== "string" || row.approved_at === "") {
+      unreadable += 1;
+      continue;
+    }
     if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
     edges.push({
       position,
       fromNorm: row.from_norm,
       toNorm: row.to_norm,
       approvedBy: typeof row.approved_by === "string" ? row.approved_by : null,
-      approvedAt: typeof row.approved_at === "string" ? row.approved_at : "",
+      approvedAt: row.approved_at,
       proposalId: typeof row.proposal_id === "string" ? row.proposal_id : null,
     });
   }
@@ -316,14 +385,32 @@ async function loadPositionEdges(
     );
   }
 
+  // ⚠️ `null` means the window function's value never arrived, and it is NOT the
+  // same as zero. The earlier spelling fell back to `edges.length` and claimed
+  // `unreadable` reported it — but `unreadable` only counts rows that failed to
+  // NARROW, and a row whose `scoped_total` drifts to a non-number narrows fine.
+  // So with 500 visible edges the pane rendered `scoped: 200, withheld: 300,
+  // countsConsistent: true`: a page cap presented to the approver as a hard ACL
+  // fact, with no server-side trace. That is the "truncation dressed as an ACL
+  // boundary" `BlastRadiusSide` forbids by name, produced here by its own
+  // fallback.
+  //
+  // Now the drift is its OWN signal: logged, and reported through
+  // `scopedTotalKnown` so `loadInForceVocabulary` can clear `countsConsistent`
+  // rather than compute a withheld count against a number nobody read.
+  if (scopedTotal === null && rows.length > 0) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, position, rows: rows.length, requestId: opts.requestId },
+      "brain vocabulary in-force: the scoped-total window value did not arrive — the withheld count for this position cannot be trusted and is reported inconsistent",
+    );
+  }
+
   return {
     position,
     edges,
-    // `scopedTotal` comes from the window function, so it survives the page cap.
-    // Falling back to the page length when NO row carried it keeps a withheld
-    // count from being computed against a zero that only means "the projection
-    // drifted"; `unreadable` above is what says so out loud.
-    scopedTotal: scopedTotal > 0 ? scopedTotal : edges.length,
+    // From the window function, so it survives the page cap.
+    scopedTotal: scopedTotal ?? edges.length,
+    scopedTotalKnown: scopedTotal !== null || rows.length === 0,
     truncated: rows.length > IN_FORCE_PAGE_MAX || unreadable > 0,
     decision: visible.decision,
     aclDecision: visible.aclDecision,
@@ -344,9 +431,9 @@ async function loadPositionEdges(
 async function loadEdgeTotals(
   db: InForceReader,
   workspaceId: string,
-): Promise<Map<SlotPosition, number>> {
+): Promise<{ totals: Map<SlotPosition, number>; unreadable: number }> {
   const totals = new Map<SlotPosition, number>();
-  if (!workspaceId) return totals;
+  if (!workspaceId) return { totals, unreadable: 0 };
   const { rows } = await db.query(
     `SELECT slot_position, COUNT(*)::int AS n
        FROM brain_vocabulary_edge
@@ -354,14 +441,33 @@ async function loadEdgeTotals(
       GROUP BY slot_position`,
     [workspaceId],
   );
+  let unreadable = 0;
   for (const raw of rows) {
-    if (typeof raw !== "object" || raw === null) continue;
+    if (typeof raw !== "object" || raw === null) {
+      unreadable += 1;
+      continue;
+    }
     const row = raw as Record<string, unknown>;
     const position = SLOT_POSITIONS.find((p) => p === row.slot_position);
-    if (position === undefined || typeof row.n !== "number") continue;
+    if (position === undefined || typeof row.n !== "number") {
+      // ⚠️ COUNTED, not skipped. The consumer reads a missing total as `0`, and
+      // for a reader scoped to no rows that yields `total: 0, scoped: 0,
+      // withheld: 0, consistent: true` — the pane saying "nothing is withheld
+      // from you" *because the count query's row did not narrow*, in the one
+      // case where the withheld number is the whole point. The count survives
+      // as unknown rather than as zero.
+      unreadable += 1;
+      continue;
+    }
     totals.set(position, row.n);
   }
-  return totals;
+  if (unreadable > 0) {
+    log.warn(
+      { workspaceId, unreadable },
+      "brain vocabulary in-force: workspace-wide edge totals would not narrow — the withheld counts they feed are reported inconsistent rather than as zero",
+    );
+  }
+  return { totals, unreadable };
 }
 
 /**
@@ -377,13 +483,31 @@ async function loadCardinalities(
   db: InForceReader,
   ctx: BrainPrincipalContext,
   opts: { readonly requestId?: string },
-): Promise<{ rows: readonly InForceCardinality[]; truncated: boolean }> {
+): Promise<{
+  rows: readonly InForceCardinality[];
+  truncated: boolean;
+  total: number;
+  totalKnown: boolean;
+  decision: PositionalDecision;
+}> {
   const scope = positionalScopeClause("predicate", ctx, {
     paramIndex: 1,
     alias: "vf",
     requestId: opts.requestId,
   });
-  if (scope.decision === "deny-all") return { rows: [], truncated: false };
+  // The workspace-wide count runs even on the DENIED path, and that is the
+  // point: it is content-free, and it is what lets the empty state say "there
+  // are N you cannot see" instead of asserting the workspace has none.
+  const total = await loadCardinalityTotal(db, ctx.workspaceId);
+  if (scope.decision === "deny-all") {
+    return {
+      rows: [],
+      truncated: false,
+      total: total.n,
+      totalKnown: total.known,
+      decision: scope.decision,
+    };
+  }
 
   const params: unknown[] = [...scope.params, ctx.workspaceId, IN_FORCE_PAGE_MAX + 1];
   const wsParam = scope.nextParamIndex;
@@ -416,10 +540,17 @@ async function loadCardinalities(
   );
 
   const out: InForceCardinality[] = [];
+  let unreadable = 0;
   for (const raw of rows.slice(0, IN_FORCE_PAGE_MAX)) {
-    if (typeof raw !== "object" || raw === null) continue;
+    if (typeof raw !== "object" || raw === null) {
+      unreadable += 1;
+      continue;
+    }
     const row = raw as Record<string, unknown>;
-    if (typeof row.cardinality !== "string") continue;
+    if (typeof row.cardinality !== "string") {
+      unreadable += 1;
+      continue;
+    }
     out.push({
       predicateSurface:
         typeof row.predicate_surface === "string" ? row.predicate_surface : null,
@@ -431,7 +562,55 @@ async function loadCardinalities(
       claims: typeof row.claims === "number" ? row.claims : 0,
     });
   }
-  return { rows: out, truncated: rows.length > IN_FORCE_PAGE_MAX };
+  if (unreadable > 0) {
+    // ⚠️ Its two sibling loaders in this module both count and log dropped rows;
+    // this one did neither, and it is the one where a drop hurts most. A dropped
+    // cardinality entry is a predicate curated `single` — arming retroactive
+    // supersession for every future claim in its slot — that the pane denies
+    // exists, and therefore that nobody can un-curate from the product.
+    log.warn(
+      { workspaceId: ctx.workspaceId, unreadable, requestId: opts.requestId },
+      "brain vocabulary in-force: curated-cardinality rows would not narrow and were dropped — entries are arming supersession that this pane is not showing",
+    );
+  }
+  return {
+    rows: out,
+    truncated: rows.length > IN_FORCE_PAGE_MAX || unreadable > 0,
+    total: total.n,
+    totalKnown: total.known,
+    decision: scope.decision,
+  };
+}
+
+/**
+ * Approved cardinality entries in the workspace — a count, never content.
+ *
+ * `/oversight`'s disclosure class (#4825): no predicate, no surface, no key.
+ * `known` distinguishes "there are none" from "the count did not narrow", for
+ * `loadEdgeTotals`' reason — a total silently read as zero produces the
+ * "nothing is withheld from you" this accounting exists to refuse.
+ */
+async function loadCardinalityTotal(
+  db: InForceReader,
+  workspaceId: string,
+): Promise<{ n: number; known: boolean }> {
+  if (!workspaceId) return { n: 0, known: true };
+  const { rows } = await db.query(
+    `SELECT COUNT(*)::int AS n FROM brain_predicate_cardinality
+      WHERE workspace_id = $1 AND status = 'approved'`,
+    [workspaceId],
+  );
+  const raw = rows[0];
+  const row: Record<string, unknown> | undefined =
+    typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : undefined;
+  if (typeof row?.n !== "number") {
+    log.warn(
+      { workspaceId },
+      "brain vocabulary in-force: the curated-predicate total did not narrow — reported as unknown rather than as zero",
+    );
+    return { n: 0, known: false };
+  }
+  return { n: row.n, known: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +692,19 @@ export async function loadVocabularyCoverage(
     return zero;
   }
   const row = raw as Record<string, unknown>;
+  // Per-COLUMN drift is logged too, not just the missing row. Every number here
+  // is load-bearing prose on the empty state, and "0 of your 0 live claims
+  // currently qualify" reads as an answer while meaning the query did not run —
+  // which is the sentence the no-row branch above already refuses to produce
+  // silently, reachable one column at a time.
+  const unreadable = ["live_facts", "comparable_facts", "pending_proposals", "pending_cardinalities"]
+    .filter((column) => typeof row[column] !== "number");
+  if (unreadable.length > 0) {
+    log.warn(
+      { workspaceId, unreadable },
+      "brain vocabulary coverage: some counts would not narrow and are reported as zero — the empty state will understate what exists",
+    );
+  }
   const n = (value: unknown): number => (typeof value === "number" ? value : 0);
   return {
     liveFacts: n(row.live_facts),

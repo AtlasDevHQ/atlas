@@ -26193,6 +26193,11 @@
           {
             "schema": {
               "type": "string",
+              "enum": [
+                "subject",
+                "predicate",
+                "object"
+              ],
               "description": "One of: subject, predicate, object"
             },
             "required": true,
@@ -26203,6 +26208,7 @@
           {
             "schema": {
               "type": "string",
+              "maxLength": 200,
               "description": "Case-insensitive substring filter over the surface and the norm"
             },
             "required": false,
@@ -26212,7 +26218,9 @@
           },
           {
             "schema": {
-              "type": "string",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
               "description": "Maximum norms (default and max 100)"
             },
             "required": false,
@@ -26290,7 +26298,7 @@
             }
           },
           "400": {
-            "description": "Invalid request — malformed norms, or no active organization",
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -26508,7 +26516,11 @@
                             ]
                           },
                           "cardinality": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "single",
+                              "multi"
+                            ]
                           },
                           "sourceClass": {
                             "type": "string"
@@ -26544,6 +26556,51 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "cardinalityCounts": {
+                      "type": "object",
+                      "properties": {
+                        "position": {
+                          "type": "string",
+                          "enum": [
+                            "subject",
+                            "predicate",
+                            "object"
+                          ]
+                        },
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "unscoped",
+                            "reader-scoped",
+                            "deny-all"
+                          ]
+                        },
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "scoped": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "withheld": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "countsConsistent": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "position",
+                        "scope",
+                        "total",
+                        "scoped",
+                        "withheld",
+                        "countsConsistent"
+                      ],
+                      "additionalProperties": false
                     },
                     "coverage": {
                       "type": "object",
@@ -26581,6 +26638,7 @@
                     "edges",
                     "counts",
                     "cardinalities",
+                    "cardinalityCounts",
                     "coverage",
                     "truncated"
                   ],
@@ -26590,7 +26648,7 @@
             }
           },
           "400": {
-            "description": "Invalid request — malformed norms, or no active organization",
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -26836,7 +26894,14 @@
                               ]
                             },
                             "reason": {
-                              "type": "string"
+                              "type": "string",
+                              "enum": [
+                                "object-position",
+                                "already-single",
+                                "not-curated",
+                                "unkeyable-surface",
+                                "no-such-edge"
+                              ]
                             }
                           },
                           "required": [
@@ -26993,7 +27058,7 @@
             }
           },
           "400": {
-            "description": "Invalid request — malformed norms, or no active organization",
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -27142,34 +27207,56 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "outcome": {
-                      "type": "string",
-                      "enum": [
-                        "authored",
-                        "already_approved"
-                      ]
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "authored"
+                          ]
+                        },
+                        "proposalId": {
+                          "type": "string"
+                        },
+                        "convergedOnProposal": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "proposalId",
+                        "convergedOnProposal"
+                      ],
+                      "additionalProperties": false
                     },
-                    "proposalId": {
-                      "type": "string"
-                    },
-                    "convergedOnProposal": {
-                      "type": "boolean"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "already_approved"
+                          ]
+                        },
+                        "proposalId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "proposalId"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "outcome",
-                    "proposalId",
-                    "convergedOnProposal"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid request — malformed norms, or no active organization",
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -27343,34 +27430,56 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "outcome": {
-                      "type": "string",
-                      "enum": [
-                        "removed",
-                        "already_removed"
-                      ]
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "removed"
+                          ]
+                        },
+                        "proposalId": {
+                          "type": "string"
+                        },
+                        "memoryCreated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "proposalId",
+                        "memoryCreated"
+                      ],
+                      "additionalProperties": false
                     },
-                    "proposalId": {
-                      "type": "string"
-                    },
-                    "memoryCreated": {
-                      "type": "boolean"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "already_removed"
+                          ]
+                        },
+                        "proposalId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "proposalId"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "outcome",
-                    "proposalId",
-                    "memoryCreated"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid request — malformed norms, or no active organization",
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -27540,7 +27649,11 @@
                   "type": "object",
                   "properties": {
                     "cardinality": {
-                      "type": "string"
+                      "type": "string",
+                      "enum": [
+                        "single",
+                        "multi"
+                      ]
                     }
                   },
                   "required": [
@@ -27552,7 +27665,7 @@
             }
           },
           "400": {
-            "description": "Invalid request — malformed norms, or no active organization",
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
             "content": {
               "application/json": {
                 "schema": {

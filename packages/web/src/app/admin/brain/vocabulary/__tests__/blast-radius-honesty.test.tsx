@@ -30,8 +30,7 @@ import { BlastRadiusPreview } from "../blast-radius";
  * that no count is rendered at all on a branch that has none.
  */
 
-const afterEachCleanup = afterEach(cleanup);
-void afterEachCleanup;
+afterEach(cleanup);
 
 function renderRadius(radius: BrainVocabularyBlastRadius | null, opts?: {
   pending?: boolean;
@@ -82,10 +81,15 @@ describe("a structurally-empty radius never renders as a count", () => {
   test("an unrecognised reason is not rendered as a zero either", () => {
     // Forward compatibility in the honest direction: an API newer than this page
     // must not degrade into the one sentence the surface exists to prevent.
+    // Cast THROUGH `unknown`, and the fact that it is now required is the pin
+    // working: since `reason` became a typed union, a bare `as` no longer
+    // compiles. This value models an API newer than the page — a state the wire
+    // type deliberately cannot express, which is exactly why the renderer still
+    // needs a `default` arm and why that arm needs a test.
     const text = renderRadius({
       kind: "structurally-empty",
       reason: "some-future-reason",
-    } as BrainVocabularyBlastRadius);
+    } as unknown as BrainVocabularyBlastRadius);
     expect(text).toContain("do not read it as one");
   });
 });

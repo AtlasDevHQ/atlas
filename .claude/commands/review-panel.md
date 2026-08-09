@@ -145,6 +145,18 @@ git show --stat HEAD          # do the files match what the message says it fixe
 file absent from the commit entirely. A message asserting a fix over a hole no
 test can see is worse than a silent hole: it stops anyone looking.
 
+**Step 5d: Check each fix against its own finding — IN FRESH CONTEXT, in this round**
+
+For every must-fix you resolved, launch `Agent(fix-vs-finding)` with exactly two things: the finding's principle **restated as a universal** (strip the file, the line, the symbol) and the fix diff. It answers one question — *does this fix exhibit the defect it fixes?* — and returns `REPRODUCED` / `CLEAN` / `CANNOT TELL`. Treat `REPRODUCED` as a must-fix of this round, not the next one.
+
+Batch them: one `Agent` call per must-fix, all in one message, `run_in_background: false`, no `name:` (Step 2's warning applies unchanged).
+
+⚠️ **Fresh context is the entire mechanism, and it is not a preference.** **Four times inside #5077's review alone**, a fix reproduced the defect it fixed, one layer over, with the principle written down correctly nearby and twice in the same commit — and one of those was the fix for the previous one. (The looser pattern, round N breaking round N−1's fix, has recurred since #4767/#4768 across #5022, #5027, #5031, #5032, #5033, #5068 and #5088; this step targets the sharper subset.) Step 5b cannot catch it: a sibling sweep searches the tree that **exists**, and the recurrence is in the new surface being written as the fix. You cannot catch it either, for the reason this whole command exists — the context that wrote the fix holds the argument for why the fix is right, which is what hides the repeat. Round 2 of #5077 caught exactly this, and caught it *a round too late*: the check is the same check, moved inside the round that produced the fix.
+
+Report one line per must-fix alongside the fixes — the same place Step 6's named falsifiers go. **A round with an unresolved `REPRODUCED` is not clean**, whatever the three code reviewers said.
+
+⚠️ **`CANNOT TELL` is not a pass.** It means the principle could not be made universal or the diff was not the whole fix — either way the check measured nothing, and a round that counts it as "not REPRODUCED" has certified a fix nothing looked at. That is the byte-blessing shape #5077 exists to refuse, reproduced in the instrument built to catch it. Re-run with a repaired universal or the complete diff; if it still cannot tell, say so in the round report as an **open** item rather than resolving it silently. Likewise, a `CLEAN` that does not name the added surface it checked is indistinguishable from one that did not look — send it back.
+
 **Step 6: Every must-fix's FIX needs a falsifier — NAMED every round, BUILT in the last one**
 
 A fix is not closed when it is written. It is closed when something can tell you
@@ -237,5 +249,6 @@ reachable.
 - Read-only. The panel reports; it never edits code.
 - Scope is the changed lines **plus their enclosing declaration** (Step 2). The strict-diff reading has a blind spot for adjacent twins and it has cost real rounds.
 - Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps. On round 2+, fresh context **plus** the previous round's fix commits named as the audit target.
+- Every fix is checked against its own finding in **fresh context, in the round that wrote it** (Step 5d). Step 5b sweeps the tree that exists; 5d is the only thing that looks at the surface the fix just added.
 - Falsifiers are **named every round and built in the closing one** (Step 6). A round that names none is not clean; a CLOSING round that has not built and run them is not clean either.
 - This is the specialist layer. The repo's `/code-review` and `/simplify` remain the canonical generic passes — don't duplicate them here.

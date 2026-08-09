@@ -24,7 +24,12 @@
 # 1 with "is stale" whether or not the guard exists — and REMOVED rather than
 # shipped green. They need a tree carrying a committed tombstone, and
 # `check()` needs to assert on a discriminating phrase rather than on an exit
-# code five failure modes share. Tracked in the #5077 follow-up.
+# code five failure modes share. Tracked in #5097.
+#
+# ⚠️ The numbers above are the ONLY numbering. The per-fixture comments below
+# are ordered to match them; an earlier draft kept labels from a seven-fixture
+# scheme, and one of those labels claimed the `.todo` bucket that this header
+# says was removed.
 
 set -euo pipefail
 
@@ -115,7 +120,7 @@ check() { # check EXPECTED_EXIT NAME TREE [ARGS...]
 
 echo ":: check-mutation-tables.sh adversarial fixtures"
 
-# 7. POSITIVE CONTROL first — everything below is vacuous without it.
+# 5. POSITIVE CONTROL, run first — everything below is vacuous without it.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1')
 check 0 "POSITIVE CONTROL — a freshly generated table passes" "$T" --all
@@ -125,8 +130,10 @@ T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; grep -q "| 2 |" scripts/mutations/f.md && sed -i "s/| 2 |/| 99 |/" scripts/mutations/f.md')
 check 1 "a hand-edited generated table is caught" "$T" --all
 
-# 2 + 3. Guardrail 4, both buckets. A skipped/todo test cannot be killed, so the
-# count deflates — and bun does NOT fold todo into skip.
+# 2. Guardrail 4, the `.skip` bucket ONLY. A skipped test cannot be killed, so
+# the count deflates. ⚠️ bun does not fold `todo` into `skip`, and the `.todo`
+# fixture that would pin that second bucket was measured vacuous and removed
+# (see the header, and #5097) — so nothing in this suite covers it.
 SKIP_TARGET='import { expect, test } from "bun:test";
 import { answer } from "./subject";
 test("a", () => { expect(answer()).toBe(42); });
@@ -135,13 +142,13 @@ T=$(make_tree "$SKIP_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
 check 1 "a target carrying .skip is REFUSED" "$T" --all
 
-# 5. The fail-safe. An unresolvable base must WIDEN to --all (and then catch the
+# 3. The fail-safe. An unresolvable base must WIDEN to --all (and then catch the
 # hand-edit), never quietly select nothing and exit 0.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; grep -q "| 2 |" scripts/mutations/f.md && sed -i "s/| 2 |/| 99 |/" scripts/mutations/f.md')
 check 1 "an unresolvable base WIDENS to --all rather than passing" "$T" --affected origin/nope
 
-# 6. Declining to verify is not passing.
+# 4. Declining to verify is not passing.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' 'true')
 rc=0
 out=$( cd "$T" && env -u TEST_DATABASE_URL MUTATION_SPEC_GLOB="scripts/mutations/f.mutations.ts" \

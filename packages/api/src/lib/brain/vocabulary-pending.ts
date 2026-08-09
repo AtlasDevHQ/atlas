@@ -1,0 +1,1270 @@
+/**
+ * The **Pending** pane — one queue, two evidence models (#5088, ADR-0037 §6 +
+ * #5025's two grill checkpoints).
+ *
+ * ## One queue means one LIST, not one row schema
+ *
+ * Both halves are machine-fed — `ALIAS_PROPOSAL_SQL` for aliases,
+ * `proposeFromCorrectionEvents` for cardinality — and what they are evidence OF
+ * is different in kind:
+ *
+ * |            | Alias                                        | Cardinality                                  |
+ * |------------|----------------------------------------------|----------------------------------------------|
+ * | Evidence   | **structural** — agreement without a slot     | **behavioral** — repeated human corrections   |
+ * | Gate       | `ALIAS_PROPOSAL_REPEAT_THRESHOLD` = **2**     | `CORRECTION_REPEAT_THRESHOLD` = **3**         |
+ * | Consequence| moves a population between slots              | arms supersession for every future claim      |
+ *
+ * So: the LIST, the ordering, the decide verbs and the preview affordance are
+ * shared — neither kind gets a bespoke approval path that can drift from the
+ * other — and the EVIDENCE rendering is not. There is deliberately no common
+ * *"seen N times"* column, because `2` and `3` are not comparable magnitudes and
+ * one column at equal visual weight inverts the epistemic ranking the thresholds
+ * encode. #5034 chose 2 rather than reusing the correction gate's 3 precisely
+ * because *agreement-without-a-slot is positive and typed where a correction
+ * event is circumstantial.*
+ *
+ * ⚠️ **The issue's own shorthand for the two units is wrong, and the surface must
+ * not repeat it.** #5088 says *"2 subjects agree"* / *"3 corrections"* — but
+ * `CORRECTION_REPEAT_COUNT_SQL` is `COUNT(DISTINCT n.subject_key)`, and its
+ * docstring argues that choice at length (*a reviewer editing one slot four times
+ * has told us about that slot, not about the predicate*). **Both thresholds are
+ * distinct-SUBJECT counts.** Rendering one as *"3 corrections"* would make the
+ * two look like different units while they are the same one, which is the
+ * comparison the AC set out to prevent, achieved by a false label. So a
+ * cardinality entry carries BOTH numbers — {@link CorrectionEvidence.subjects},
+ * the gate's own, and {@link CorrectionEvidence.events}, how many supersessions
+ * produced it — and the units are spelled as phrases rather than as nouns.
+ *
+ * ## Evidence is RE-DERIVED, because migration 0190 stores none
+ *
+ * 0190's header says so outright: *"No evidence columns (which facts generated
+ * the proposal). #5034 owns the proposal query and is where the evidence shape
+ * gets decided."* And `confidence` cannot stand in for the count —
+ * `structuralConfidence` is a saturating map, so inverting it is neither exact
+ * nor honest.
+ *
+ * Re-derivation has the same cost the positional rule has, and it is worth
+ * naming: the number moves when the corpus moves. A pair proposed at two
+ * agreeing subjects can read three by the time a human looks, or one if a claim
+ * was retracted — including BELOW the threshold that raised it. That is correct
+ * (the question is *what does the corpus say now*) and it is why the threshold
+ * travels with the count rather than being assumed by the renderer.
+ *
+ * ## Visibility is the SEAM's, imported and never re-spelled
+ *
+ * `vocabulary-visibility.ts` owns the positional rule (#5087) and this is its
+ * second consumer. `oversight.ts`'s anti-drift rule is the reason: *a disclosure
+ * that restates a rule drifts from it — import the join the transaction will
+ * run.* The alias arm splices {@link visibleNormsSql} as ONE CTE referenced by
+ * two `EXISTS` (both sides, one scan, one set), exactly as `loadPositionEdges`
+ * does; the cardinality arm takes {@link positionalScopeClause}'s predicate arm,
+ * because `brain_predicate_cardinality` is keyed on a canonical predicate and so
+ * every row in it is a predicate-position statement.
+ *
+ * ⚠️ `includeRetracted` is left DEFAULT-OFF here, and that is the correct half of
+ * the pair. These are DISPLAY reads: an entry whose claims are all withdrawn
+ * describes nothing an approver is looking at. The wider set belongs to the
+ * removal GATE, where collapsing "no live claims" into "not visible to you" would
+ * make an in-force edge permanently unremovable.
+ *
+ * ## No key reaches a caller
+ *
+ * `brain_predicate_cardinality` cannot address a row without naming
+ * `predicate_key`, so — `loadCardinalities`' shape — the key stays inside the
+ * joins and the projection carries a representative SURFACE. A decide request
+ * names that surface and `decidePredicateCardinalityForSurface` derives the key
+ * inside the module that owns the column.
+ */
+
+import { createLogger } from "@atlas/api/lib/logger";
+import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
+import { aclVisibilityClause } from "@atlas/api/lib/brain/acl";
+import { SLOT_POSITIONS, type SlotPosition } from "@atlas/api/lib/brain/identity";
+import { comparableDifferentSql, comparableSameSql } from "@atlas/api/lib/brain/object-cmp";
+import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
+import { ALIAS_PROPOSAL_REPEAT_THRESHOLD } from "@atlas/api/lib/brain/alias-proposal";
+import { CORRECTION_REPEAT_THRESHOLD } from "@atlas/api/lib/brain/cardinality";
+import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
+import {
+  logFailClosedHole,
+  positionalScopeClause,
+  visibleNormsSql,
+  withheldCount,
+  type PositionalDecision,
+  type WithheldCount,
+} from "@atlas/api/lib/brain/vocabulary-visibility";
+
+const log = createLogger("brain-vocabulary-pending");
+
+/** The reader this module needs. Satisfied by the internal pool. */
+export interface PendingReader {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
+}
+
+/**
+ * Most entries one page carries, across BOTH kinds.
+ *
+ * `IN_FORCE_PAGE_MAX`'s bound and posture, and reported through
+ * {@link PendingQueue.truncated} — a silent cap on a review queue reads as
+ * *"that is all there is to decide"*, which on this surface is the one sentence
+ * that must never be said by accident.
+ */
+export const PENDING_PAGE_MAX = 100;
+
+/**
+ * Most evidence rows one entry samples.
+ *
+ * Small on purpose: this is *what agreed*, not a corpus browser. An approver
+ * needs enough to recognise the pattern, and the COUNT beside it is what carries
+ * the magnitude.
+ */
+export const PENDING_EVIDENCE_SAMPLE_MAX = 5;
+
+// ---------------------------------------------------------------------------
+// Evidence
+// ---------------------------------------------------------------------------
+
+/** One live claim pair exhibiting the agreement an alias proposal rests on. */
+export interface AgreementExample {
+  readonly subject: string;
+  /** The object both claims assert. They agree about it — that IS the evidence. */
+  readonly object: string;
+  readonly fromPredicate: string;
+  readonly toPredicate: string;
+}
+
+/**
+ * What the corpus says about an alias pair, NOW.
+ *
+ * ⚠️ A discriminated union, and the `not-applicable` arm is the point. The
+ * structural producer is PREDICATE-ONLY — `ALIAS_PROPOSAL_SQL` holds two claims
+ * in one subject slot and compares their `predicate_key`s — so at an entity
+ * position the agreement question is not merely unanswered, it is unaskable.
+ *
+ * Reported as a reason rather than as `subjects: 0` for `StructurallyEmptyReason`'s
+ * reason exactly: *"0 subjects agree"* and *"this kind of evidence cannot exist
+ * here"* are the same number and opposite facts, and an approver reading the
+ * first concludes a warehouse-key proposal is unsupported when what is true is
+ * that its support is of a different kind and lives in `sourceClass`.
+ */
+export type AliasEvidence =
+  | {
+      readonly kind: "structural";
+      /**
+       * Distinct subjects whose live claims exhibit this pair agreeing about one
+       * object — {@link ALIAS_PROPOSAL_SQL}'s own number, re-asked.
+       *
+       * Unscoped and workspace-wide, `/oversight`'s disclosure class (#4825): a
+       * count carries no claim and no surface, and an approver has to be able to
+       * tell weak evidence from evidence they cannot read.
+       */
+      readonly subjects: number;
+      /** How many of those this reader may see. See {@link withheld}. */
+      readonly scopedSubjects: number;
+      /** `subjects − scopedSubjects`. Never a silent omission. */
+      readonly withheld: number;
+      /** Bounded, reader-scoped on BOTH claims. */
+      readonly examples: readonly AgreementExample[];
+      /**
+       * The gate that raised it, carried rather than assumed.
+       *
+       * The count is re-derived and the corpus moves, so a live entry may read
+       * BELOW its own threshold. A renderer that hard-coded 2 could not say
+       * *"this no longer meets the bar that raised it"*.
+       */
+      readonly threshold: number;
+      readonly countsConsistent: boolean;
+    }
+  | {
+      readonly kind: "not-applicable";
+      /** The structural producer proposes predicate pairs and nothing else. */
+      readonly reason: "entity-position";
+    };
+
+/** One correction a human made at this predicate — the *link* half of the AC. */
+export interface CorrectionExample {
+  readonly subject: string;
+  /** What the claim said before. */
+  readonly fromObject: string;
+  /** What the human replaced it with. */
+  readonly toObject: string;
+  /** The replacement claim's id, so a surface can link to it. */
+  readonly factId: string;
+  readonly at: string;
+}
+
+/**
+ * What a workspace's own correction history says about a predicate.
+ *
+ * ⚠️ TWO numbers, because the gate's number is not the one the AC's shorthand
+ * names. See the module header: `CORRECTION_REPEAT_COUNT_SQL` counts DISTINCT
+ * SUBJECTS, so {@link subjects} is what crossed the threshold and {@link events}
+ * is how many supersessions produced it. A surface rendering only the second
+ * would show a number no gate reads; rendering only the first would leave *"and
+ * links to them"* with nothing to link.
+ */
+export interface CorrectionEvidence {
+  /** Distinct subjects a human has superseded at this predicate. The GATE's number. */
+  readonly subjects: number;
+  /** Individual supersessions behind that. Always ≥ {@link subjects}. */
+  readonly events: number;
+  /** How many of the subjects this reader may see. */
+  readonly scopedSubjects: number;
+  readonly withheld: number;
+  /** Bounded, reader-scoped on BOTH the replacement and the retired claim. */
+  readonly examples: readonly CorrectionExample[];
+  readonly threshold: number;
+  readonly countsConsistent: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Entries
+// ---------------------------------------------------------------------------
+
+/** The two kinds in the one queue. */
+export const PENDING_ENTRY_KINDS = ["alias", "cardinality"] as const;
+export type PendingEntryKind = (typeof PENDING_ENTRY_KINDS)[number];
+
+/** The direction a producer claimed, when it could claim one. */
+export interface PendingDirection {
+  readonly fromNorm: string;
+  readonly toNorm: string;
+}
+
+/** One pending alias proposal. */
+export interface PendingAliasEntry {
+  readonly kind: "alias";
+  readonly id: string;
+  readonly position: SlotPosition;
+  /**
+   * The pair, in the order the row stores it.
+   *
+   * ⚠️ NOT a direction. For an undirected proposal this is *"the pair in the
+   * order it arrived"* (0190's own words), and treating the stored order as a
+   * default is the *"implicit first norm wins"* the approval seam refuses.
+   * {@link direction} is the only field that ever asserts one.
+   */
+  readonly pair: readonly [string, string];
+  /**
+   * The producer's direction, or `null`.
+   *
+   * ⚠️ `null` is the COMMON case, not an edge case. #5034 reads a positive
+   * `WAREHOUSE_SOURCES` allowlist and never the negation of the tier guard, so
+   * unclassifiable, neither-warehouse **and both**-warehouse all yield
+   * undirected — and on a workspace with no warehouse producer, which is every
+   * workspace until #5042, EVERY proposal is undirected.
+   *
+   * A surface must not prefill from it or from anything else. A default would
+   * launder a deliberate abstention into a machine opinion, which is the shape
+   * the positive allowlist exists to prevent.
+   */
+  readonly direction: PendingDirection | null;
+  readonly sourceClass: string;
+  readonly proposedBy: string;
+  readonly proposedAt: string;
+  /**
+   * The producer's rank — `structuralConfidence` plus any extractor-hint bonus.
+   *
+   * ⚠️ **A RANK, not a probability.** Nothing calibrated it and `0.75` does not
+   * mean three-in-four; its only job is to order a queue. Surfaced because it is
+   * the one input that can tell two equally-repeated pairs apart, and because
+   * the hint is otherwise invisible — it is never stored as a hint, only as its
+   * effect on this number.
+   */
+  readonly rank: number;
+  readonly evidence: AliasEvidence;
+}
+
+/** One pending cardinality proposal. */
+export interface PendingCardinalityEntry {
+  readonly kind: "cardinality";
+  /**
+   * A representative live surface for the canonical predicate — and the ADDRESS
+   * a decide request uses.
+   *
+   * ⚠️ NOT the predicate key (`keys-not-on-the-wire.test.ts`, ADR-0037 §6).
+   * `null` when every claim that produced the key has since been retracted,
+   * which is a real state and is reported rather than filtered: an entry
+   * proposing to arm supersession for a predicate with no live claims is exactly
+   * what an approver should be able to find and reject. Such a row is
+   * **undecidable from this surface** — there is no surface to name — and
+   * {@link PendingCardinalityEntry.decidable} says so rather than leaving a
+   * button that 400s.
+   */
+  readonly predicateSurface: string | null;
+  /** False when {@link predicateSurface} is null. See its ⚠️. */
+  readonly decidable: boolean;
+  readonly cardinality: PredicateCardinality;
+  readonly sourceClass: string;
+  readonly proposedBy: string;
+  readonly proposedAt: string;
+  /** Live claims currently in this slot. */
+  readonly claims: number;
+  readonly evidence: CorrectionEvidence;
+}
+
+export type PendingEntry = PendingAliasEntry | PendingCardinalityEntry;
+
+/** One position's disclosure accounting — `InForcePositionCounts`' shape. */
+export interface PendingPositionCounts extends WithheldCount {
+  readonly position: SlotPosition;
+  readonly decision: PositionalDecision;
+}
+
+export interface PendingQueue {
+  /** Both kinds, ONE list, newest first. */
+  readonly entries: readonly PendingEntry[];
+  /** Per position, for the alias half. */
+  readonly aliasCounts: readonly PendingPositionCounts[];
+  /** The same accounting for pending cardinality proposals. */
+  readonly cardinalityCounts: PendingPositionCounts;
+  /** Any list was capped at {@link PENDING_PAGE_MAX}, or rows would not narrow. */
+  readonly truncated: boolean;
+}
+
+export interface PendingQueueOptions {
+  readonly requestId?: string;
+  /** Show one kind only. Absent means both — the queue's whole point. */
+  readonly kind?: PendingEntryKind;
+  /** Alias rows at one position only. Cardinality rows are always predicate. */
+  readonly position?: SlotPosition;
+  readonly limit?: number;
+}
+
+// ---------------------------------------------------------------------------
+// The queue
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything awaiting a decision, under the positional rule.
+ *
+ * ## ⚠️ `status = 'pending'`, and that is what excludes direct authoring
+ *
+ * ADR-0037 §6 makes direct human authoring write THROUGH the proposal table — a
+ * `human`-sourced row decided `approved` in the SAME transaction — so the row
+ * exists and was never outstanding work. The status filter is what keeps it out
+ * of this list, and the AC states it as its own requirement because the obvious
+ * alternative reads identically until you look: filtering on
+ * `reviewed_at IS NULL` would ALSO exclude it today, and would start including
+ * `applying` rows the moment ADR-0037 §7's re-key gets its own transaction
+ * (0190's header says exactly when that becomes observable). A decision in
+ * flight rendered as outstanding work is how two approvers apply one proposal.
+ */
+export async function loadPendingQueue(
+  db: PendingReader,
+  ctx: BrainPrincipalContext,
+  opts: PendingQueueOptions = {},
+): Promise<PendingQueue> {
+  const workspaceId = ctx.workspaceId;
+  const limit = clampLimit(opts.limit);
+  const wantAlias = opts.kind === undefined || opts.kind === "alias";
+  const wantCardinality =
+    (opts.kind === undefined || opts.kind === "cardinality") &&
+    // A cardinality entry is a predicate-position statement, so a queue filtered
+    // to an entity position has none by construction. Skipped rather than
+    // queried-and-empty, so the counts below report `deny-all`-free zeros for a
+    // question that was never asked.
+    (opts.position === undefined || opts.position === "predicate");
+
+  const positions = opts.position === undefined ? SLOT_POSITIONS : [opts.position];
+
+  const [aliasResults, cardinalityResult] = await Promise.all([
+    wantAlias
+      ? Promise.all(positions.map((p) => loadAliasProposals(db, ctx, p, limit, opts)))
+      : Promise.resolve([]),
+    wantCardinality ? loadCardinalityProposals(db, ctx, limit, opts) : Promise.resolve(null),
+  ]);
+
+  const entries: PendingEntry[] = [];
+  const aliasCounts: PendingPositionCounts[] = [];
+  let truncated = false;
+
+  for (const result of aliasResults) {
+    entries.push(...result.entries);
+    truncated = truncated || result.truncated;
+    const arithmetic = withheldCount(result.total, result.scopedTotal);
+    const counts: WithheldCount = {
+      ...arithmetic,
+      // `loadInForceVocabulary`'s rule: `withheldCount` can only see whether the
+      // two numbers disagree, never that one of them was never read. A withheld
+      // count computed from a stand-in is a number with no meaning, and calling
+      // it consistent is the "nothing is hidden from you" the accounting refuses.
+      consistent: arithmetic.consistent && result.totalKnown && result.scopedTotalKnown,
+    };
+    aliasCounts.push({ position: result.position, decision: result.decision, ...counts });
+    logFailClosedHole({
+      workspaceId,
+      position: result.position,
+      counts,
+      decision: result.decision,
+      aclDecision: result.aclDecision,
+      userId: ctx.userId,
+      requestId: opts.requestId,
+    });
+  }
+
+  const cardinalityArithmetic = withheldCount(
+    cardinalityResult?.total ?? 0,
+    cardinalityResult?.scopedTotal ?? 0,
+  );
+  const cardinalityCounts: PendingPositionCounts = {
+    position: "predicate",
+    // A kind that was not asked about is `unscoped` with zeros rather than
+    // `deny-all`: nothing denied it, and `deny-all` renders as "nothing visible",
+    // which would tell an approver their permissions hid a filter they set.
+    decision: cardinalityResult?.decision ?? "unscoped",
+    ...cardinalityArithmetic,
+    consistent:
+      cardinalityArithmetic.consistent &&
+      (cardinalityResult?.totalKnown ?? true) &&
+      (cardinalityResult?.scopedTotalKnown ?? true),
+  };
+  if (cardinalityResult !== null) {
+    entries.push(...cardinalityResult.entries);
+    truncated = truncated || cardinalityResult.truncated;
+    logFailClosedHole({
+      workspaceId,
+      position: "predicate",
+      counts: cardinalityCounts,
+      decision: cardinalityResult.decision,
+      aclDecision: null,
+      userId: ctx.userId,
+      requestId: opts.requestId,
+    });
+  }
+
+  // ONE list. The two kinds are interleaved by age rather than stacked, because
+  // the AC's *shared: the list and the ordering* is what makes muscle memory
+  // transfer — and because a cardinality flip queued yesterday is more urgent
+  // than an alias queued last month regardless of which producer raised it.
+  //
+  // `toSorted` would need an ES2023 lib target this package does not set; the
+  // array is local and freshly built, so sorting in place mutates nothing a
+  // caller holds.
+  entries.sort((a, b) => (a.proposedAt < b.proposedAt ? 1 : a.proposedAt > b.proposedAt ? -1 : 0));
+  if (entries.length > limit) {
+    truncated = true;
+    entries.length = limit;
+  }
+
+  return { entries, aliasCounts, cardinalityCounts, truncated };
+}
+
+function clampLimit(requested: number | undefined): number {
+  if (requested === undefined) return PENDING_PAGE_MAX;
+  return Math.min(Math.max(1, Math.trunc(requested)), PENDING_PAGE_MAX);
+}
+
+// ---------------------------------------------------------------------------
+// The alias half
+// ---------------------------------------------------------------------------
+
+interface AliasPage {
+  readonly position: SlotPosition;
+  readonly entries: readonly PendingAliasEntry[];
+  readonly total: number;
+  readonly totalKnown: boolean;
+  readonly scopedTotal: number;
+  readonly scopedTotalKnown: boolean;
+  readonly truncated: boolean;
+  readonly decision: PositionalDecision;
+  readonly aclDecision: ReturnType<typeof positionalScopeClause>["aclDecision"];
+}
+
+/**
+ * One position's visible pending alias proposals, with their evidence.
+ *
+ * The both-sides test applies {@link visibleNormsSql}'s set from a SINGLE
+ * builder call, spliced as one CTE and referenced by two `EXISTS` —
+ * `loadPositionEdges`' shape, for its reasons: one scan, the same set on both
+ * sides, and one place for the rule to be edited.
+ *
+ * ## Evidence rides along rather than looping
+ *
+ * A `LEFT JOIN LATERAL` per row rather than a query per entry. N+1 over a
+ * hundred-row queue is a hundred round trips, and — the reason that actually
+ * matters — the counts and the list would then come from a hundred different
+ * snapshots, so a pair could be listed with evidence that never coexisted with
+ * it. `loadCardinalities` reaches for the same shape one module over.
+ */
+async function loadAliasProposals(
+  db: PendingReader,
+  ctx: BrainPrincipalContext,
+  position: SlotPosition,
+  limit: number,
+  opts: PendingQueueOptions,
+): Promise<AliasPage> {
+  const visible = visibleNormsSql(position, ctx, {
+    paramIndex: 1,
+    alias: "vf",
+    requestId: opts.requestId,
+  });
+
+  const total = await loadPendingAliasTotal(db, ctx.workspaceId, position);
+
+  if (visible.decision === "deny-all") {
+    return {
+      position,
+      entries: [],
+      total: total.n,
+      totalKnown: total.known,
+      // A denied reader genuinely sees zero — an answer, not a drift.
+      scopedTotal: 0,
+      scopedTotalKnown: true,
+      truncated: false,
+      decision: visible.decision,
+      aclDecision: visible.aclDecision,
+    };
+  }
+
+  const wsParam = visible.nextParamIndex;
+  const posParam = wsParam + 1;
+  const limitParam = wsParam + 2;
+
+  // ⚠️ The evidence clauses are built ONLY where the lateral is emitted, and
+  // their params are appended on the same condition.
+  //
+  // Built unconditionally, the entity positions pushed the reader's ACL binds
+  // onto a statement that never references them — `bind message supplies 10
+  // parameters, but prepared statement requires 5`. That is the loud failure;
+  // the quiet one is what it would have become if the arity had happened to
+  // line up, which is a slot key compared against an ACL principal token,
+  // joining nothing. `assertPlaceholdersBelowAclBase` guards that shape one
+  // module over precisely because it is silent and under-discloses.
+  const evidence =
+    position === "predicate" ? buildEvidenceClauses(ctx, limitParam + 1, opts.requestId) : null;
+
+  const params: unknown[] = [
+    ...visible.params,
+    ctx.workspaceId,
+    position,
+    limit + 1,
+    ...(evidence?.params ?? []),
+  ];
+
+  const { rows } = await db.query(
+    `WITH visible_norms AS ${visible.sql},
+     pending AS (
+       SELECT p.id,
+              p.from_norm,
+              p.to_norm,
+              p.directed,
+              p.source_class,
+              p.confidence,
+              p.proposed_by,
+              p.proposed_at::text AS proposed_at,
+              COUNT(*) OVER ()::int AS scoped_total
+         FROM brain_vocabulary_proposal p
+        WHERE p.workspace_id = $${wsParam}
+          AND p.slot_position = $${posParam}
+          AND p.status = 'pending'
+          AND EXISTS (SELECT 1 FROM visible_norms v WHERE v.norm = p.from_norm)
+          AND EXISTS (SELECT 1 FROM visible_norms v WHERE v.norm = p.to_norm)
+        ORDER BY p.proposed_at DESC, p.id
+        LIMIT $${limitParam}
+     )
+     SELECT p.*,
+            ${evidence === null ? "NULL::int AS subjects" : "ev.subjects"},
+            ${evidence === null ? "NULL::int AS scoped_subjects" : "ev.scoped_subjects"},
+            ${evidence === null ? "NULL::jsonb AS examples" : "ev.examples"}
+       FROM pending p${evidence === null ? "" : aliasEvidenceLateral(wsParam, evidence)}
+      ORDER BY p.proposed_at DESC, p.id`,
+    params,
+  );
+
+  const entries: PendingAliasEntry[] = [];
+  let unreadable = 0;
+  let scopedTotal: number | null = null;
+  let evidenceDrifted = false;
+
+  for (const raw of rows.slice(0, limit)) {
+    if (typeof raw !== "object" || raw === null) {
+      unreadable += 1;
+      continue;
+    }
+    const row = raw as Record<string, unknown>;
+    if (
+      typeof row.id !== "string" ||
+      typeof row.from_norm !== "string" ||
+      typeof row.to_norm !== "string" ||
+      typeof row.directed !== "boolean" ||
+      // ⚠️ `proposed_at` is DROPPED rather than defaulted to `""`. The queue is
+      // ordered by it and the empty string sorts to the end of a text ordering,
+      // so a defaulted row would silently take the oldest slot in the merged
+      // list — `loadPositionEdges`' rule, with an ordering consequence on top of
+      // the un-parseable date.
+      typeof row.proposed_at !== "string" ||
+      row.proposed_at === ""
+    ) {
+      unreadable += 1;
+      continue;
+    }
+    if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
+
+    const evidence = readAliasEvidence(position, row, ctx.workspaceId, opts.requestId);
+    if (evidence.kind === "structural" && !evidence.countsConsistent) evidenceDrifted = true;
+
+    entries.push({
+      kind: "alias",
+      id: row.id,
+      position,
+      pair: [row.from_norm, row.to_norm],
+      // ⚠️ The ONLY place a direction is asserted, and only when the producer
+      // claimed one. An undirected row carries `null` all the way to the client,
+      // which is what makes "never prefilled" a property of the data rather than
+      // a discipline in the renderer.
+      direction: row.directed ? { fromNorm: row.from_norm, toNorm: row.to_norm } : null,
+      sourceClass: typeof row.source_class === "string" ? row.source_class : "",
+      proposedBy: typeof row.proposed_by === "string" ? row.proposed_by : "",
+      proposedAt: row.proposed_at,
+      // NaN rather than a default, `ProposalRow.confidence`'s reason: an
+      // unreadable rank must fail every comparison rather than clear one. It is
+      // a display value here, so it travels as 0 with the drift already logged —
+      // see `readRank`.
+      rank: readRank(row.confidence, row.id, ctx.workspaceId, opts.requestId),
+      evidence,
+    });
+  }
+
+  if (unreadable > 0) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, position, unreadable, requestId: opts.requestId },
+      "brain vocabulary pending: alias proposal rows would not narrow and were dropped — the queue shows fewer entries than are awaiting a decision",
+    );
+  }
+  if (scopedTotal === null && rows.length > 0) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, position, rows: rows.length, requestId: opts.requestId },
+      "brain vocabulary pending: the scoped-total window value did not arrive — the withheld count for this position cannot be trusted and is reported inconsistent",
+    );
+  }
+
+  return {
+    position,
+    entries,
+    total: total.n,
+    totalKnown: total.known,
+    scopedTotal: scopedTotal ?? entries.length,
+    scopedTotalKnown: (scopedTotal !== null || rows.length === 0) && !evidenceDrifted,
+    truncated: rows.length > limit || unreadable > 0,
+    decision: visible.decision,
+    aclDecision: visible.aclDecision,
+  };
+}
+
+/**
+ * The reader's two visibility clauses for an evidence sample, plus the bind
+ * cursor after them.
+ *
+ * ONE builder for both halves of the queue: the alias sample gates on the two
+ * AGREEING claims, the correction sample on the replacement and the claim it
+ * retired, and in both cases the rule is `willSupersedePairsSql`'s — *"something
+ * you cannot see agrees with X"* discloses half a claim's history to a reader
+ * the grant excluded from the other half. Two copies of the arithmetic is how
+ * one of them ends up gating a sample on one side.
+ */
+interface EvidenceClauses {
+  readonly leftAcl: string;
+  readonly rightAcl: string;
+  readonly params: readonly unknown[];
+  readonly sampleParam: number;
+  /** First placeholder a caller may use AFTER the sample bound. */
+  readonly nextParamIndex: number;
+}
+
+function buildEvidenceClauses(
+  ctx: BrainPrincipalContext,
+  paramIndex: number,
+  requestId: string | undefined,
+  leftAlias = "ea",
+  rightAlias = "eb",
+  extraParams: readonly unknown[] = [],
+): EvidenceClauses {
+  const left = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: leftAlias,
+    paramIndex,
+    requestId,
+  });
+  const right = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: rightAlias,
+    paramIndex: left.nextParamIndex,
+    requestId,
+  });
+  // Anything the statement binds BETWEEN the reader's clauses and the sample
+  // bound — the correction half's episode-source filter. Passed in rather than
+  // appended by the caller so the cursor arithmetic stays in one place.
+  const sampleParam = right.nextParamIndex + extraParams.length;
+  return {
+    leftAcl: left.sql,
+    rightAcl: right.sql,
+    params: [...left.params, ...right.params, ...extraParams, PENDING_EVIDENCE_SAMPLE_MAX],
+    sampleParam,
+    nextParamIndex: sampleParam + 1,
+  };
+}
+
+/**
+ * The structural agreement behind one predicate pair, re-asked.
+ *
+ * `ALIAS_PROPOSAL_SQL`'s three arms, scoped to this pair: same subject slot,
+ * `comparableSameSql` on the objects, and the two predicate keys are the pair's
+ * two norms. The `>` orientation is dropped because the pair is already ordered
+ * by the row rather than by the self-join.
+ *
+ * ⚠️ `comparableSameSql` and NOT a hand-written `=`, so this disclosure and the
+ * producer cannot drift into disagreeing about what *provably the same object*
+ * means. Its stated residual is inherited: two byte-identical MALFORMED values
+ * compare equal, and it lands softer here than anywhere — a wrong evidence row
+ * costs an approver a look, not a merge.
+ *
+ * ⚠️ `a.object_cmp IS NOT NULL` is carried across too, and it is the arm that
+ * makes the day-one behaviour legible rather than mysterious: `object_cmp` is
+ * never backfilled, so on a workspace with no comparable objects every entry
+ * honestly reads zero agreeing subjects.
+ *
+ * Two counts: the workspace-wide one (content-free) and the reader-scoped one,
+ * so `withheld` means something. The SAMPLE is gated on both claims —
+ * `willSupersedePairsSql`'s both-sides rule, unchanged.
+ */
+function aliasEvidenceLateral(wsParam: number, evidence: EvidenceClauses): string {
+  const { leftAcl: aclA, rightAcl: aclB, sampleParam } = evidence;
+  return `
+       LEFT JOIN LATERAL (
+         ${aggregateEvidenceSql(
+           // ⚠️ `GROUP BY ea.subject_key` rather than `DISTINCT ON`, and the
+           // difference is a GUARD rather than taste.
+           // `keys-not-on-the-wire.test.ts` reads the span between `SELECT` and
+           // `FROM` — so a `DISTINCT ON (ea.subject_key)` sits in projection
+           // position and trips it, even though nothing is projected. The guard
+           // is deliberately over-broad there (a missed key is the
+           // unrecoverable direction), and it caught the first cut of this
+           // statement. Grouping puts the key in the `GROUP BY`, which the scan
+           // correctly treats as a join detail, and the aggregate still yields
+           // exactly one row per subject.
+           `SELECT min(ea.ingested_at) AS ingested_at,
+                     bool_or(${aclA} AND ${aclB}) AS readable,
+                     (array_agg(
+                        jsonb_build_object(
+                          'subject', ea.subject,
+                          'object', ea.object,
+                          'fromPredicate', ea.predicate,
+                          'toPredicate', eb.predicate)
+                        ORDER BY ea.ingested_at)
+                      FILTER (WHERE ${aclA} AND ${aclB}))[1] AS example
+                FROM brain_facts ea
+                JOIN brain_facts eb
+                  ON eb.workspace_id = ea.workspace_id
+                 AND eb.subject_key = ea.subject_key
+                 AND ${comparableSameSql("eb.object_cmp", "ea.object_cmp")}
+                 AND eb.predicate_key = p.to_norm
+                 AND eb.invalidated_at IS NULL
+                 AND eb.valid_to IS NULL
+               WHERE ea.workspace_id = $${wsParam}
+                 AND ea.predicate_key = p.from_norm
+                 AND ea.object_cmp IS NOT NULL
+                 AND ea.invalidated_at IS NULL
+                 AND ea.valid_to IS NULL
+               GROUP BY ea.subject_key`,
+           sampleParam,
+           "",
+         )}
+       ) ev ON TRUE`;
+}
+
+/**
+ * The shape BOTH evidence models share: count the rows, count the readable ones,
+ * and carry a BOUNDED sample of the readable ones as `jsonb`.
+ *
+ * ⚠️ The sample's bound is a `row_number()` **partitioned by `readable`**, not a
+ * `LIMIT`. A `LIMIT` on an aggregating `SELECT` bounds the one output row and
+ * leaves the sample unbounded — which is the mistake this helper exists to stop
+ * being made twice — and a `LIMIT` on the inner scan would bound the COUNTS too,
+ * turning the gate's own number into "at most five". Partitioning is what lets
+ * the sample carry N ROWS THIS READER MAY SEE while the counts stay whole.
+ *
+ * ⚠️ `readable` is a projected BOOLEAN rather than a `WHERE` arm, and that is the
+ * half that makes `withheld` sayable at all: filtering the scan would make the
+ * unscoped count unavailable, and the two must come from ONE statement or they
+ * can straddle a concurrent write and disagree about a corpus neither saw.
+ *
+ * @param rows a `SELECT` projecting `readable`, `example` and an orderable
+ *   column; `orderBy` names the ordering for the sample.
+ */
+function aggregateEvidenceSql(rows: string, sampleParam: number, extraColumns: string): string {
+  return `SELECT COUNT(*)::int AS subjects,
+                COUNT(*) FILTER (WHERE g.readable)::int AS scoped_subjects,${extraColumns}
+                COALESCE(
+                  jsonb_agg(g.example ORDER BY g.rn)
+                    FILTER (WHERE g.readable AND g.rn <= $${sampleParam}),
+                  '[]'::jsonb) AS examples
+           FROM (
+             SELECT d.*,
+                    row_number() OVER (PARTITION BY d.readable ORDER BY d.ingested_at DESC) AS rn
+               FROM (${rows}) d
+           ) g`;
+}
+
+/** Pending alias proposals in the workspace at one position — a count, never content. */
+async function loadPendingAliasTotal(
+  db: PendingReader,
+  workspaceId: string,
+  position: SlotPosition,
+): Promise<{ n: number; known: boolean }> {
+  if (!workspaceId) return { n: 0, known: true };
+  const { rows } = await db.query(
+    `SELECT COUNT(*)::int AS n FROM brain_vocabulary_proposal
+      WHERE workspace_id = $1 AND slot_position = $2 AND status = 'pending'`,
+    [workspaceId, position],
+  );
+  return readTotal(rows[0], workspaceId, `pending alias proposals at the ${position} position`);
+}
+
+function readAliasEvidence(
+  position: SlotPosition,
+  row: Record<string, unknown>,
+  workspaceId: string,
+  requestId: string | undefined,
+): AliasEvidence {
+  if (position !== "predicate") return { kind: "not-applicable", reason: "entity-position" };
+
+  const subjects = typeof row.subjects === "number" ? row.subjects : null;
+  const scoped = typeof row.scoped_subjects === "number" ? row.scoped_subjects : null;
+  const examples = readAgreementExamples(row.examples);
+
+  if (subjects === null || scoped === null || examples === null) {
+    // ⚠️ REPORTED, not zeroed. "No subject in your corpus exhibits this
+    // agreement" is a reason to reject; "the evidence query drifted" is a reason
+    // to fix the server, and a renderer cannot tell them apart from a zero.
+    log.warn(
+      { workspaceId, requestId, subjects: row.subjects, scoped: row.scoped_subjects },
+      "brain vocabulary pending: an alias proposal's structural evidence would not narrow — reported inconsistent rather than as zero agreeing subjects",
+    );
+    return {
+      kind: "structural",
+      subjects: subjects ?? 0,
+      scopedSubjects: scoped ?? 0,
+      withheld: 0,
+      examples: examples ?? [],
+      threshold: ALIAS_PROPOSAL_REPEAT_THRESHOLD,
+      countsConsistent: false,
+    };
+  }
+
+  const arithmetic = withheldCount(subjects, scoped);
+  return {
+    kind: "structural",
+    subjects: arithmetic.total,
+    scopedSubjects: arithmetic.scoped,
+    withheld: arithmetic.withheld,
+    examples,
+    threshold: ALIAS_PROPOSAL_REPEAT_THRESHOLD,
+    countsConsistent: arithmetic.consistent,
+  };
+}
+
+/**
+ * `null` when the aggregate did not read back as a list of agreement rows.
+ *
+ * Distinguished from `[]` on purpose — {@link readAliasEvidence} maps the two to
+ * different `countsConsistent` values, because "nothing agreed" and "the sample
+ * would not parse" are the two facts this surface exists to keep apart.
+ */
+function readAgreementExamples(value: unknown): AgreementExample[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: AgreementExample[] = [];
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const r = raw as Record<string, unknown>;
+    if (
+      typeof r.subject !== "string" ||
+      typeof r.object !== "string" ||
+      typeof r.fromPredicate !== "string" ||
+      typeof r.toPredicate !== "string"
+    ) {
+      return null;
+    }
+    out.push({
+      subject: r.subject,
+      object: r.object,
+      fromPredicate: r.fromPredicate,
+      toPredicate: r.toPredicate,
+    });
+  }
+  return out;
+}
+
+/**
+ * The queue's display rank.
+ *
+ * 0 on drift rather than NaN — this value only ever orders and renders, and NaN
+ * serializes to `null` through JSON, which the wire schema then rejects and the
+ * whole pane 500s over one bad row. The drift is LOGGED, which is the part that
+ * has to survive; `autoApproveEligible` re-reads the column itself at decision
+ * time and is where a NaN must fail every comparison.
+ */
+function readRank(
+  value: unknown,
+  proposalId: string,
+  workspaceId: string,
+  requestId: string | undefined,
+): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  log.warn(
+    { workspaceId, proposalId, requestId, rank: value },
+    "brain vocabulary pending: an alias proposal's confidence did not read back as a number — the queue orders it as 0; the decision path re-reads the column and refuses it there",
+  );
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The cardinality half
+// ---------------------------------------------------------------------------
+
+interface CardinalityPage {
+  readonly entries: readonly PendingCardinalityEntry[];
+  readonly total: number;
+  readonly totalKnown: boolean;
+  readonly scopedTotal: number;
+  readonly scopedTotalKnown: boolean;
+  readonly truncated: boolean;
+  readonly decision: PositionalDecision;
+}
+
+/**
+ * Pending cardinality proposals, at the predicate position's unscoped arm.
+ *
+ * `brain_predicate_cardinality` is keyed on a canonical predicate, so every row
+ * in it is a predicate-position statement and takes the unscoped arm by the same
+ * rule rather than by a second decision — `loadCardinalities`' argument,
+ * unchanged.
+ *
+ * The correction evidence rides along on a `LATERAL`, for
+ * {@link loadAliasProposals}' reason: one snapshot, one round trip.
+ */
+async function loadCardinalityProposals(
+  db: PendingReader,
+  ctx: BrainPrincipalContext,
+  limit: number,
+  opts: PendingQueueOptions,
+): Promise<CardinalityPage> {
+  const scope = positionalScopeClause("predicate", ctx, {
+    paramIndex: 1,
+    alias: "vf",
+    requestId: opts.requestId,
+  });
+  // The workspace-wide count runs even on the DENIED path — content-free, and it
+  // is what lets the empty state say "there are N you cannot see" instead of
+  // asserting the workspace has none.
+  const total = await loadPendingCardinalityTotal(db, ctx.workspaceId);
+  if (scope.decision === "deny-all") {
+    return {
+      entries: [],
+      total: total.n,
+      totalKnown: total.known,
+      scopedTotal: 0,
+      scopedTotalKnown: true,
+      truncated: false,
+      decision: scope.decision,
+    };
+  }
+
+  const wsParam = scope.nextParamIndex;
+  const limitParam = wsParam + 1;
+  // The SAME builder the alias half uses, with the episode-source filter passed
+  // through as an extra bind so the cursor arithmetic stays in one place.
+  const evidence = buildEvidenceClauses(
+    ctx,
+    limitParam + 1,
+    opts.requestId,
+    "cn",
+    "co",
+    [HUMAN_SOURCE],
+  );
+  const sourceParam = evidence.sampleParam - 1;
+
+  const params: unknown[] = [...scope.params, ctx.workspaceId, limit + 1, ...evidence.params];
+
+  const { rows } = await db.query(
+    // The surface is read through a LATERAL over the scoped live set, keyed on
+    // the row's predicate key — so the key stays inside the join and never
+    // reaches the projection (`keys-not-on-the-wire.test.ts` reads projection
+    // spans, and this statement's is surfaces, counts and timestamps).
+    `SELECT c.cardinality,
+            c.source_class,
+            c.proposed_by,
+            c.proposed_at::text AS proposed_at,
+            s.predicate_surface,
+            COALESCE(s.claims, 0)::int AS claims,
+            ev.subjects,
+            ev.scoped_subjects,
+            ev.events,
+            ev.examples,
+            COUNT(*) OVER ()::int AS scoped_total
+       FROM brain_predicate_cardinality c
+       LEFT JOIN LATERAL (
+         SELECT mode() WITHIN GROUP (ORDER BY vf.predicate) AS predicate_surface,
+                COUNT(*)::int AS claims
+           FROM brain_facts vf
+          WHERE ${scope.sql} AND vf.predicate_key = c.predicate_key
+       ) s ON TRUE
+       LEFT JOIN LATERAL (${correctionEvidenceSql(evidence.leftAcl, evidence.rightAcl, sourceParam, evidence.sampleParam)}) ev ON TRUE
+      WHERE c.workspace_id = $${wsParam}
+        AND c.status = 'pending'
+      ORDER BY c.proposed_at DESC, c.cardinality
+      LIMIT $${limitParam}`,
+    params,
+  );
+
+  const entries: PendingCardinalityEntry[] = [];
+  let unreadable = 0;
+  let scopedTotal: number | null = null;
+  let evidenceDrifted = false;
+
+  for (const raw of rows.slice(0, limit)) {
+    if (typeof raw !== "object" || raw === null) {
+      unreadable += 1;
+      continue;
+    }
+    const row = raw as Record<string, unknown>;
+    // Narrowed to the two-member vocabulary rather than to `string`, and a
+    // drifted value is COUNTED rather than allowed through to fail the wire
+    // schema and take the whole pane down as a 500 over one row —
+    // `loadCardinalities`' posture.
+    if (row.cardinality !== "single" && row.cardinality !== "multi") {
+      unreadable += 1;
+      continue;
+    }
+    if (typeof row.proposed_at !== "string" || row.proposed_at === "") {
+      unreadable += 1;
+      continue;
+    }
+    if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
+
+    const evidence = readCorrectionEvidence(row, ctx.workspaceId, opts.requestId);
+    if (!evidence.countsConsistent) evidenceDrifted = true;
+    const predicateSurface =
+      typeof row.predicate_surface === "string" ? row.predicate_surface : null;
+
+    entries.push({
+      kind: "cardinality",
+      predicateSurface,
+      // ⚠️ The one field that stops the surface offering a button it cannot
+      // honour. A decide request addresses the row BY SURFACE (the key never
+      // reaches the wire), so an entry whose every claim has been retracted has
+      // no address — and rendering Approve on it would 400 with a message about
+      // a surface the approver never chose.
+      decidable: predicateSurface !== null,
+      cardinality: row.cardinality,
+      sourceClass: typeof row.source_class === "string" ? row.source_class : "",
+      proposedBy: typeof row.proposed_by === "string" ? row.proposed_by : "",
+      proposedAt: row.proposed_at,
+      claims: typeof row.claims === "number" ? row.claims : 0,
+      evidence,
+    });
+  }
+
+  if (unreadable > 0) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, unreadable, requestId: opts.requestId },
+      "brain vocabulary pending: cardinality proposal rows would not narrow and were dropped — proposals are awaiting a decision that this queue is not showing",
+    );
+  }
+  if (scopedTotal === null && rows.length > 0) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, rows: rows.length, requestId: opts.requestId },
+      "brain vocabulary pending: the cardinality scoped-total window value did not arrive — the withheld count cannot be trusted and is reported inconsistent",
+    );
+  }
+
+  return {
+    entries,
+    total: total.n,
+    totalKnown: total.known,
+    scopedTotal: scopedTotal ?? entries.length,
+    scopedTotalKnown: (scopedTotal !== null || rows.length === 0) && !evidenceDrifted,
+    truncated: rows.length > limit || unreadable > 0,
+    decision: scope.decision,
+  };
+}
+
+/**
+ * `CORRECTION_REPEAT_COUNT_SQL`'s join, asked for one predicate and widened to
+ * carry the two things a queue row needs beyond the gate's number.
+ *
+ * ⚠️ **Not `CORRECTION_REPEAT_COUNT_SQL` spliced verbatim, and the difference is
+ * declared rather than hidden.** That statement is a whole `SELECT` with its own
+ * `$1..$3`, so it cannot be a `LATERAL` correlated on `c.predicate_key`; and it
+ * projects one column where this needs three plus a sample. What is COPIED is
+ * the predicate — `supersedes` edges, the replacement's episode at
+ * {@link HUMAN_SOURCE}, and {@link comparableDifferentSql} on the two objects —
+ * and it is copied arm for arm, including the `subject_key IS NOT NULL` guard.
+ *
+ * That is a real second spelling and it is the kind this subsystem warns about,
+ * so it is bounded rather than waved away: it is a DISCLOSURE and never a gate.
+ * Nothing decides anything on it. If it drifts, an approver sees a number that
+ * disagrees with the one that raised the proposal — which the falsifier in
+ * `vocabulary-pending-pg.test.ts` asserts cannot happen by running both against
+ * one corpus.
+ */
+function correctionEvidenceSql(
+  newAcl: string,
+  oldAcl: string,
+  sourceParam: number,
+  sampleParam: number,
+): string {
+  return aggregateEvidenceSql(
+    // ⚠️ GROUPED BY `cn.subject_key` so the OUTER `COUNT(*)` is the GATE's
+    // number — distinct subjects — and not the event count. The two differ
+    // exactly when a reviewer corrects one slot repeatedly, which is the case
+    // `CORRECTION_REPEAT_COUNT_SQL` chose `COUNT(DISTINCT …)` to discount.
+    // `events` is carried separately by the extra column below.
+    //
+    // `GROUP BY` rather than `DISTINCT ON` for the alias half's guard reason.
+    `SELECT max(cn.ingested_at) AS ingested_at,
+               bool_or(${newAcl} AND ${oldAcl}) AS readable,
+               (array_agg(
+                  jsonb_build_object(
+                    'subject', cn.subject,
+                    'fromObject', co.object,
+                    'toObject', cn.object,
+                    'factId', cn.id::text,
+                    'at', cn.ingested_at::text)
+                  ORDER BY cn.ingested_at DESC)
+                FILTER (WHERE ${newAcl} AND ${oldAcl}))[1] AS example
+          FROM brain_edges e
+          JOIN brain_facts cn ON cn.id = e.from_fact_id AND cn.workspace_id = e.workspace_id
+          JOIN brain_facts co ON co.id = e.to_fact_id AND co.workspace_id = e.workspace_id
+          JOIN brain_episodes ep
+            ON ep.id = cn.source_episode_id AND ep.workspace_id = cn.workspace_id
+         WHERE e.workspace_id = c.workspace_id
+           AND e.edge_type = 'supersedes'
+           AND cn.predicate_key = c.predicate_key
+           AND cn.subject_key IS NOT NULL
+           AND ep.source = $${sourceParam}
+           AND ${comparableDifferentSql("cn.object_cmp", "co.object_cmp")}
+         GROUP BY cn.subject_key`,
+    sampleParam,
+    `
+                (SELECT COUNT(*)::int
+                   FROM brain_edges e2
+                   JOIN brain_facts cn2 ON cn2.id = e2.from_fact_id
+                                       AND cn2.workspace_id = e2.workspace_id
+                   JOIN brain_facts co2 ON co2.id = e2.to_fact_id
+                                       AND co2.workspace_id = e2.workspace_id
+                   JOIN brain_episodes ep2
+                     ON ep2.id = cn2.source_episode_id AND ep2.workspace_id = cn2.workspace_id
+                  WHERE e2.workspace_id = c.workspace_id
+                    AND e2.edge_type = 'supersedes'
+                    AND cn2.predicate_key = c.predicate_key
+                    AND cn2.subject_key IS NOT NULL
+                    AND ep2.source = $${sourceParam}
+                    AND ${comparableDifferentSql("cn2.object_cmp", "co2.object_cmp")}) AS events,`,
+  );
+}
+
+async function loadPendingCardinalityTotal(
+  db: PendingReader,
+  workspaceId: string,
+): Promise<{ n: number; known: boolean }> {
+  if (!workspaceId) return { n: 0, known: true };
+  const { rows } = await db.query(
+    `SELECT COUNT(*)::int AS n FROM brain_predicate_cardinality
+      WHERE workspace_id = $1 AND status = 'pending'`,
+    [workspaceId],
+  );
+  return readTotal(rows[0], workspaceId, "pending cardinality proposals");
+}
+
+function readCorrectionEvidence(
+  row: Record<string, unknown>,
+  workspaceId: string,
+  requestId: string | undefined,
+): CorrectionEvidence {
+  const subjects = typeof row.subjects === "number" ? row.subjects : null;
+  const scoped = typeof row.scoped_subjects === "number" ? row.scoped_subjects : null;
+  const events = typeof row.events === "number" ? row.events : null;
+  const examples = readCorrectionExamples(row.examples);
+
+  if (subjects === null || scoped === null || events === null || examples === null) {
+    log.warn(
+      { workspaceId, requestId, subjects: row.subjects, events: row.events },
+      "brain vocabulary pending: a cardinality proposal's correction evidence would not narrow — reported inconsistent rather than as zero corrections",
+    );
+    return {
+      subjects: subjects ?? 0,
+      events: events ?? 0,
+      scopedSubjects: scoped ?? 0,
+      withheld: 0,
+      examples: examples ?? [],
+      threshold: CORRECTION_REPEAT_THRESHOLD,
+      countsConsistent: false,
+    };
+  }
+
+  const arithmetic = withheldCount(subjects, scoped);
+  return {
+    subjects: arithmetic.total,
+    events,
+    scopedSubjects: arithmetic.scoped,
+    withheld: arithmetic.withheld,
+    examples,
+    threshold: CORRECTION_REPEAT_THRESHOLD,
+    // ⚠️ `events < subjects` is impossible — every distinct subject contributes
+    // at least one event — so it is a third statement disagreeing with the other
+    // two, and it clears the flag rather than being clamped into a plausible
+    // pair of numbers.
+    countsConsistent: arithmetic.consistent && events >= arithmetic.total,
+  };
+}
+
+function readCorrectionExamples(value: unknown): CorrectionExample[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: CorrectionExample[] = [];
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const r = raw as Record<string, unknown>;
+    if (
+      typeof r.subject !== "string" ||
+      typeof r.fromObject !== "string" ||
+      typeof r.toObject !== "string" ||
+      typeof r.factId !== "string" ||
+      typeof r.at !== "string"
+    ) {
+      return null;
+    }
+    out.push({
+      subject: r.subject,
+      fromObject: r.fromObject,
+      toObject: r.toObject,
+      factId: r.factId,
+      at: r.at,
+    });
+  }
+  return out;
+}
+
+/**
+ * One `COUNT(*)::int` total, with `known` separating *"there are none"* from
+ * *"the count did not narrow"*.
+ *
+ * `loadCardinalityTotal`'s shape and its reason: a total silently read as zero
+ * produces the *"nothing is withheld from you"* the whole accounting refuses.
+ */
+function readTotal(
+  raw: unknown,
+  workspaceId: string,
+  what: string,
+): { n: number; known: boolean } {
+  const row: Record<string, unknown> | undefined =
+    typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : undefined;
+  if (typeof row?.n !== "number") {
+    log.warn(
+      { workspaceId, what },
+      "brain vocabulary pending: a workspace-wide pending total did not narrow — reported as unknown rather than as zero",
+    );
+    return { n: 0, known: false };
+  }
+  return { n: row.n, known: true };
+}

@@ -56,6 +56,7 @@ export {
   BrainFactRetractResponseSchema,
   BrainVocabularyAuthorResponseSchema,
   BrainVocabularyInForceResponseSchema,
+  BrainVocabularyPendingResponseSchema,
   BrainVocabularyPreviewRequestSchema,
   BrainVocabularyPreviewResponseSchema,
   BrainVocabularyRemoveResponseSchema,

@@ -1,14 +1,16 @@
 /**
- * The **Claim Vocabulary** admin surface — direct authoring and the *In force*
- * pane (#5087, ADR-0037 §6, umbrella #5025).
+ * The **Claim Vocabulary** admin surface — direct authoring, the *In force* pane
+ * and the *Pending* queue (#5087 + #5088, ADR-0037 §6, umbrella #5025).
  *
  * Mounted under `/api/v1/admin/brain-vocabulary`:
  *
  *   GET  /surfaces     — the authoring picker: norms the corpus actually produced
  *   GET  /in-force     — approved edges + curated cardinalities, plus coverage
+ *   GET  /pending      — the queue: both proposal kinds, with their evidence
  *   POST /preview      — one decision's blast radius (child 1's engine)
  *   POST /author       — write an alias edge directly
  *   POST /remove       — take one back out
+ *   POST /decide       — approve or reject one pending proposal, either kind
  *   POST /cardinality  — curate or un-curate a canonical predicate
  *
  * ## What this surface is FOR, and why it ships before the queue
@@ -20,8 +22,10 @@
  * (`is priced at → priced at`) is ever written — the structural proposer
  * provably cannot propose it, and that zero is pinned as a test.
  *
- * So this half does something the day it ships, and #5000 closes on **prod
- * verification**, which needs a surface that can show the edge in force.
+ * So the authoring half does something the day it ships, and #5000 closes on
+ * **prod verification**, which needs a surface that can show the edge in force.
+ * The queue (`/pending`, `/decide`, #5088) is correct and empty until a producer
+ * fires, which is why it landed last rather than first.
  *
  * ## Two authorities, and both are enforced
  *
@@ -75,17 +79,25 @@ import {
   loadVocabularyCoverage,
 } from "@atlas/api/lib/brain/vocabulary-in-force";
 import {
+  PENDING_PAGE_MAX,
+  loadPendingQueue,
+  type PendingPositionCounts,
+} from "@atlas/api/lib/brain/vocabulary-pending";
+import {
   loadBlastRadius,
   type StructurallyEmptyReason,
 } from "@atlas/api/lib/brain/vocabulary-preview";
 import {
   authorAliasEdge,
+  decideAliasProposal,
   removeInForceAliasEdge,
   type AliasAuthoringRefusal,
+  type AliasDecisionRefusal,
   type AliasRemovalRefusal,
 } from "@atlas/api/lib/brain/vocabulary-decide";
 import {
   declarePredicateCardinalityForSurface,
+  decidePredicateCardinalityForSurface,
   type CardinalityRefusal,
 } from "@atlas/api/lib/brain/cardinality";
 import type { PositionalDecision } from "@atlas/api/lib/brain/vocabulary-visibility";
@@ -94,17 +106,23 @@ import type {
   AuthMode,
   BrainVocabularyAuthorResponse,
   BrainVocabularyCardinalityWriteResponse,
+  BrainVocabularyDecideResponse,
+  BrainVocabularyPositionCounts,
   BrainVocabularyRemoveResponse,
   BrainVocabularyScope,
   BrainVocabularyStructurallyEmptyReason,
 } from "@useatlas/types";
 import {
+  BRAIN_VOCABULARY_PENDING_KINDS,
   BRAIN_VOCABULARY_SLOT_POSITIONS,
   BrainVocabularyAuthorRequestSchema,
   BrainVocabularyAuthorResponseSchema,
   BrainVocabularyCardinalityRequestSchema,
   BrainVocabularyCardinalityWriteResponseSchema,
+  BrainVocabularyDecideRequestSchema,
+  BrainVocabularyDecideResponseSchema,
   BrainVocabularyInForceResponseSchema,
+  BrainVocabularyPendingResponseSchema,
   BrainVocabularyPreviewRequestSchema,
   BrainVocabularyPreviewResponseSchema,
   BrainVocabularyRemoveRequestSchema,
@@ -258,11 +276,23 @@ function approverContext(
  * client-fixable.
  */
 function refusalStatus(
-  refusal: AliasAuthoringRefusal | AliasRemovalRefusal | CardinalityRefusal,
+  refusal:
+    | AliasAuthoringRefusal
+    | AliasRemovalRefusal
+    | AliasDecisionRefusal
+    | CardinalityRefusal,
 ): 400 | 403 | 409 {
   switch (refusal) {
     case "not-entitled":
     case "workspace-mismatch":
+    // ⚠️ 403, not 400, and both are UNREACHABLE from this router — every decide
+    // request it builds carries a `human` approver. Mapped anyway because the
+    // `never` default below is what forces a new seam arm to be considered, and
+    // the consideration for these two is that they are AUTHORITY denials about
+    // the actor's CLASS. A 400 would tell a caller their request was malformed
+    // when the answer is that no actor of that class may ever do this.
+    case "machine-may-not-reject":
+    case "not-auto-approvable":
       return 403;
     case "degenerate-norm":
     case "self-edge":
@@ -276,6 +306,13 @@ function refusalStatus(
     case "would-cycle":
     case "direction-conflict":
     case "direction-not-in-pair":
+    // ⚠️ 409 with its two siblings, not 400, and the grouping is the argument.
+    // All three are mismatches between the request and the STORED PAIR — a
+    // client cannot tell from its own body that a direction was needed, only
+    // from the row — which is the "try again after fixing the target" shape.
+    // Splitting this one to 400 would put the three direction refusals in two
+    // status classes while they are one kind of answer.
+    case "direction-required":
     case "not-in-force":
     case "already-decided":
       return 409;
@@ -323,9 +360,48 @@ function declarationRefusalStatus(
   }
 }
 
+/**
+ * A position's disclosure accounting, on the wire.
+ *
+ * ⚠️ ONE mapper, used by `/in-force` and `/pending` alike. The two panes render
+ * the same badge from the same four numbers, and the field rename
+ * (`decision` → `scope`, `consistent` → `countsConsistent`) is the kind of
+ * two-line map that gets copied and then diverges by one field — at which point
+ * one pane says "workspace-wide" for a read the other calls "scoped to you".
+ */
+function toWireCounts(counts: PendingPositionCounts): BrainVocabularyPositionCounts {
+  return {
+    position: counts.position,
+    scope: counts.decision,
+    total: counts.total,
+    scoped: counts.scoped,
+    withheld: counts.withheld,
+    countsConsistent: counts.consistent,
+  };
+}
+
+/**
+ * Why a reader may not curate or decide a predicate's cardinality.
+ *
+ * Spelled once because `/cardinality` and `/decide` deny on the SAME bar for the
+ * same reason, and two copies of a refusal message is how one of them stops
+ * mentioning that the consequence is retroactive.
+ */
+function cardinalityDenialMessage(ctx: BrainPrincipalContext): string {
+  return ctx.origin === "authenticated"
+    ? `Curating a predicate needs the owner or admin entitlement; this reader is ` +
+        `"${ctx.role ?? "no org role"}". A \`single\` entry makes every existing published ` +
+        "pair in that slot supersedable at the next publish, retroactively."
+    : `Curating a predicate needs a resolved reader identity; this one is "${ctx.origin}".`;
+}
+
 /** The refusal body — the seam's own prose, its code, and a requestId. */
 function refusalBody(
-  refusal: AliasAuthoringRefusal | AliasRemovalRefusal | CardinalityRefusal,
+  refusal:
+    | AliasAuthoringRefusal
+    | AliasRemovalRefusal
+    | AliasDecisionRefusal
+    | CardinalityRefusal,
   message: string,
   requestId: string,
 ) {
@@ -509,6 +585,76 @@ const removeRoute = createRoute({
   },
 });
 
+const pendingRoute = createRoute({
+  method: "get",
+  path: "/pending",
+  tags: ["Admin — Claim Vocabulary"],
+  summary: "Proposals awaiting a decision — both kinds, one queue",
+  description:
+    "The Pending queue (#5088). Alias proposals and predicate-cardinality proposals in ONE list, newest first, sharing the ordering, the filters and the decide verbs — neither kind gets a bespoke approval path that can drift from the other. " +
+    "⚠️ The EVIDENCE is not shared, and deliberately has no common \"seen N times\" column. An alias entry carries the distinct subjects whose live claims exhibit the pair agreeing about one object; a cardinality entry carries the distinct subjects a human has superseded at that predicate AND how many supersessions produced them. The two gates are 2 and 3 and they are not comparable magnitudes — agreement-without-a-slot is positive and typed where a correction event is circumstantial — so one column at equal visual weight would invert the epistemic ranking the thresholds encode. Each count carries its `threshold`, because the evidence is RE-DERIVED at read time (migration 0190 stores none) and the corpus moves: an entry can honestly read below the bar that raised it. " +
+    "⚠️ `direction` is `null` for an undirected proposal and that is the COMMON case, not an edge case — direction reads a positive warehouse allowlist and never the negation of a guard, so on a workspace with no warehouse producer every proposal is undirected. A client must NEVER prefill from it: approval of an undirected proposal is refused with `direction-required` rather than picking, because picking is the silent workspace-wide re-key the vocabulary exists to put a human in front of. " +
+    "Scoped by the SAME positional-visibility rule the In-force pane uses — the same code path, not a copy: predicate-position proposals unscoped, entity-position proposals reader-scoped on BOTH norms. `aliasCounts` and `cardinalityCounts` carry a withheld count per position, never a silent omission. " +
+    "⚠️ Rows proposed and decided in ONE transaction — direct human authoring writes through the proposal table — are excluded, so authoring never renders as outstanding work.",
+  request: {
+    query: z.object({
+      kind: z
+        .enum(BRAIN_VOCABULARY_PENDING_KINDS)
+        .optional()
+        .openapi({ description: "Show one kind only. Absent means both — the queue's whole point" }),
+      position: z
+        .enum(BRAIN_VOCABULARY_SLOT_POSITIONS)
+        .optional()
+        .openapi({ description: "Alias proposals at one position. Cardinality entries are always predicate-position" }),
+      limit: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(PENDING_PAGE_MAX)
+        .optional()
+        .openapi({ description: `Maximum entries across both kinds (default and max ${PENDING_PAGE_MAX})` }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Pending proposals with their evidence, plus the disclosure counts",
+      content: { "application/json": { schema: BrainVocabularyPendingResponseSchema } },
+    },
+    ...commonResponses,
+  },
+});
+
+const decideRoute = createRoute({
+  method: "post",
+  path: "/decide",
+  tags: ["Admin — Claim Vocabulary"],
+  summary: "Approve or reject one pending proposal",
+  description:
+    "The shared decide verb for both queue kinds (#5088). " +
+    "⚠️ **An undirected alias proposal cannot be approved without a supplied `direction`**, and the refusal is `direction-required` rather than a silent pick: `A → B` and `B → A` re-key opposite row sets and have different blast radii, so a default would launder a deliberate abstention into a machine opinion. A DIRECTED proposal may be confirmed with a matching direction but never flipped — `direction-conflict` — because the reviewer read one direction and re-keying in the other is indistinguishable afterwards. Direction is never inferred from population size: a newly-adopted canonical spelling is RARER than the sloppy one it replaces, so \"bigger wins\" points backwards during exactly the migration this feature performs. " +
+    "A rejection on an APPROVED alias row is a REMOVAL — it drops the edge, recomputes the closure and re-keys the corpus — and `removedEdge` says which transition ran. Both transitions leave permanent rejection memory; that is what stops a producer re-emitting what a human removed. " +
+    "A cardinality entry is addressed by predicate SURFACE, never by a key, and the canonical key is derived server-side through the workspace's own vocabulary. " +
+    "`nothing_to_decide` is a truthful 200, not a failure: the row is absent, already decided, or another reviewer won the race. It is never retried into a second apply.",
+  request: {
+    body: {
+      content: { "application/json": { schema: BrainVocabularyDecideRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "The decision landed, or there was nothing to decide",
+      content: { "application/json": { schema: BrainVocabularyDecideResponseSchema } },
+    },
+    ...commonResponses,
+    409: {
+      description:
+        "The decision cannot be applied — an undirected proposal with no supplied direction, a direction that is not an ordering of the proposal's pair, a direction contradicting a directed proposal, or a vocabulary refusal (already aliased, would cycle). The message says which and what to do instead",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 const cardinalityRoute = createRoute({
   method: "post",
   path: "/cardinality",
@@ -645,6 +791,200 @@ adminBrainVocabulary.openapi(inForceRoute, async (c) => {
       return c.json(checked(BrainVocabularyInForceResponseSchema, payload), 200);
     }),
     { label: "load brain vocabulary in force" },
+  );
+});
+
+adminBrainVocabulary.openapi(pendingRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const query = c.req.valid("query");
+      const ctx = yield* approverContext(mode, user, orgId, requestId);
+      const queue = yield* Effect.tryPromise({
+        try: () =>
+          loadPendingQueue(getInternalDB(), ctx, {
+            requestId,
+            kind: query.kind,
+            position: query.position,
+            limit: query.limit,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      return c.json(
+        checked(BrainVocabularyPendingResponseSchema, {
+          entries: queue.entries,
+          aliasCounts: queue.aliasCounts.map(toWireCounts),
+          cardinalityCounts: toWireCounts(queue.cardinalityCounts),
+          truncated: queue.truncated,
+        }),
+        200,
+      );
+    }),
+    { label: "list pending brain vocabulary proposals" },
+  );
+});
+
+adminBrainVocabulary.openapi(decideRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const body = c.req.valid("json");
+      const ctx = yield* approverContext(mode, user, orgId, requestId);
+
+      if (body.kind === "cardinality") {
+        // ⚠️ §6's owner/admin gate is applied HERE, and only on this arm. The
+        // asymmetry with the alias arm below LOOKS like an oversight and is the
+        // opposite: `decideAliasProposal` owns the entitlement decision for a
+        // proposal and applies the POSITION-dependent bar (`approverEntitled`),
+        // which `vocabulary-decide.ts`'s header argues at length — a predicate
+        // edge's evidence lives inside the brain's own ACL'd corpus and a verb
+        // phrase discloses nothing. Re-applying the stricter authoring bar here
+        // would be a second, contradicting spelling of a rule the seam owns.
+        //
+        // `decidePredicateCardinality` has no such check and says so: *"Entitlement
+        // is the CALLER's to enforce."* So this arm carries it, at the same bar
+        // `/cardinality` uses one route over, and for the same reason: a `single`
+        // entry re-keys nothing but arms supersession for every future claim.
+        const reviewer = recordedAuthor(ctx);
+        if (reviewer === null) {
+          log.warn(
+            { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+            "Predicate cardinality decision refused — the reader does not clear the owner/admin bar",
+          );
+          return c.json(
+            refusalBody("not-entitled", cardinalityDenialMessage(ctx), requestId),
+            403,
+          );
+        }
+
+        const decided = yield* Effect.tryPromise({
+          try: async () => {
+            const vocabulary = await loadWorkspaceVocabulary(orgId);
+            return decidePredicateCardinalityForSurface(getInternalDB(), orgId, {
+              predicateSurface: body.predicateSurface,
+              verdict: body.decision,
+              reviewedBy: reviewer,
+              predicateAlias: vocabulary.predicate,
+            });
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        });
+
+        const cardinalityResponse: BrainVocabularyDecideResponse = {
+          // ⚠️ `nothing_to_decide` on `false`, never the verb the caller asked
+          // for. `WHERE status = 'pending'` is what makes two reviewers racing
+          // one proposal produce one decision and one no-op, and reporting the
+          // no-op as `approved` would tell the loser their click armed
+          // retroactive supersession when somebody else's did.
+          outcome: decided ? body.decision : "nothing_to_decide",
+          // No id: `brain_predicate_cardinality` is keyed on the predicate key
+          // itself, and that key may not reach a body (ADR-0037 §6). `null` is
+          // the honest answer rather than echoing the surface as an identifier
+          // it is not.
+          proposalId: null,
+          removedEdge: false,
+        };
+        // `checkedWrite`: on the `approved` arm the row is COMMITTED and arms
+        // retroactive supersession, so a schema failure must not read as "it did
+        // not work". The `nothing_to_decide` arm wrote nothing, but the two
+        // travel one path and a branch here would be a second spelling of the
+        // same honesty rule for the sake of one status code.
+        const described = checkedWrite(BrainVocabularyDecideResponseSchema, cardinalityResponse, {
+          verb: "curation",
+          predicateSurface: body.predicateSurface,
+          requestId,
+        });
+        return described.ok ? c.json(described.body, 200) : c.json(described.body, 500);
+      }
+
+      const outcome = yield* Effect.tryPromise({
+        try: () =>
+          decideAliasProposal(
+            body.decision === "approved"
+              ? {
+                  id: body.proposalId,
+                  workspaceId: orgId,
+                  decision: "approved",
+                  approver: { kind: "human", ctx },
+                  // ⚠️ Passed through UNDEFINED when the client sent none. No
+                  // `??` fallback to the stored pair: `resolveDirection` refuses
+                  // an undirected proposal without one, and supplying the stored
+                  // order here would be exactly the "implicit first norm wins"
+                  // that refusal exists to prevent — spelled in the route body,
+                  // where no test of the seam would ever see it.
+                  direction: body.direction,
+                }
+              : {
+                  id: body.proposalId,
+                  workspaceId: orgId,
+                  decision: "rejected",
+                  approver: { kind: "human", ctx },
+                },
+            { requestId },
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      switch (outcome.kind) {
+        case "approved": {
+          const approvedBody: BrainVocabularyDecideResponse = {
+            outcome: "approved",
+            proposalId: outcome.id,
+            removedEdge: false,
+          };
+          const described = checkedWrite(BrainVocabularyDecideResponseSchema, approvedBody, {
+            verb: "authoring",
+            proposalId: outcome.id,
+            requestId,
+          });
+          return described.ok ? c.json(described.body, 200) : c.json(described.body, 500);
+        }
+        case "rejected": {
+          const rejectedBody: BrainVocabularyDecideResponse = {
+            outcome: "rejected",
+            proposalId: outcome.id,
+            // The one field that distinguishes a refusal from a removal. Both
+            // leave permanent rejection memory; only the second dropped an edge
+            // and re-keyed the corpus, and an approver told merely "rejected"
+            // would not know that happened.
+            removedEdge: outcome.removedEdge,
+          };
+          const described = checkedWrite(BrainVocabularyDecideResponseSchema, rejectedBody, {
+            verb: outcome.removedEdge ? "removal" : "authoring",
+            proposalId: outcome.id,
+            requestId,
+          });
+          return described.ok ? c.json(described.body, 200) : c.json(described.body, 500);
+        }
+        case "not_decidable": {
+          // 200, not 409 — `/remove`'s `already_removed` reasoning. The queue is
+          // shared and a double-click or a lost race is not a failure; the
+          // `outcome` field is what distinguishes it from a decision that ran.
+          // Nothing was written, so plain `checked()`.
+          const nothingBody: BrainVocabularyDecideResponse = {
+            outcome: "nothing_to_decide",
+            proposalId: outcome.id,
+            removedEdge: false,
+          };
+          return c.json(checked(BrainVocabularyDecideResponseSchema, nothingBody), 200);
+        }
+        case "refused":
+          return c.json(
+            refusalBody(outcome.refusal, outcome.message, requestId),
+            refusalStatus(outcome.refusal),
+          );
+      }
+    }),
+    { label: "decide brain vocabulary proposal" },
   );
 });
 
@@ -829,15 +1169,7 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
           "Predicate cardinality write refused — the reader does not clear the owner/admin bar",
         );
         return c.json(
-          refusalBody(
-            "not-entitled",
-            ctx.origin === "authenticated"
-              ? `Curating a predicate needs the owner or admin entitlement; this reader is ` +
-                  `"${ctx.role ?? "no org role"}". A \`single\` entry makes every existing published ` +
-                  "pair in that slot supersedable at the next publish, retroactively."
-              : `Curating a predicate needs a resolved reader identity; this one is "${ctx.origin}".`,
-            requestId,
-          ),
+          refusalBody("not-entitled", cardinalityDenialMessage(ctx), requestId),
           403,
         );
       }

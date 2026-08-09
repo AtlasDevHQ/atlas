@@ -104,6 +104,8 @@ let removeOutcome: AliasRemovalOutcome = {
 };
 const authorCalls: unknown[] = [];
 const removeCalls: unknown[] = [];
+const decideCalls: unknown[] = [];
+let decideOutcome: unknown = { kind: "approved", id: "proposal-1" };
 
 // Mock-all-exports: the route imports two functions and two types from this
 // module, and a partial factory link-fails the moment anything else is added.
@@ -118,7 +120,10 @@ void mock.module("@atlas/api/lib/brain/vocabulary-decide", () => ({
   },
   proposeAliasEdge: async () => ({ kind: "queued", id: "x", autoApprove: false }),
   proposeAliasEdges: async () => ({}),
-  decideAliasProposal: async () => ({ kind: "not_decidable", id: "x" }),
+  decideAliasProposal: async (request: unknown) => {
+    decideCalls.push(request);
+    return decideOutcome;
+  },
   ALIAS_SOURCE_CLASSES: ["warehouse_key", "extractor", "seam", "human"] as const,
   isAliasSourceClass: () => true,
   REKEY_DRIFTED_FACTS_SQL: { subject: "", predicate: "", object: "" },
@@ -194,6 +199,8 @@ void mock.module("@atlas/api/lib/brain/vocabulary-in-force", () => ({
 
 let cardinalityResult: unknown = { ok: true, cardinality: "single" };
 const cardinalityCalls: unknown[] = [];
+const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
+let cardinalityDecided = true;
 void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   declarePredicateCardinalityForSurface: async (
     _db: unknown,
@@ -206,6 +213,10 @@ void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   declarePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
   proposePredicateCardinality: async () => ({ ok: true, cardinality: "single" }),
   decidePredicateCardinality: async () => true,
+  decidePredicateCardinalityForSurface: async (_db: unknown, workspaceId: string, input: unknown) => {
+    cardinalityDecideCalls.push({ workspaceId, input });
+    return cardinalityDecided;
+  },
   readPredicateCardinality: async () => null,
   proposeFromCorrectionEvents: async () => ({}),
   cardinalitySingleSql: () => "TRUE",
@@ -234,6 +245,30 @@ void mock.module("@atlas/api/lib/brain/vocabulary", () => ({
   VOCABULARY_LOCK_SQL: "",
   MAX_CHAIN_DEPTH: 64,
   VocabularyClosureError: class extends Error {},
+}));
+
+let pendingQueue: Record<string, unknown> = {
+  entries: [],
+  aliasCounts: [],
+  cardinalityCounts: {
+    position: "predicate" as const,
+    decision: "unscoped" as const,
+    total: 0,
+    scoped: 0,
+    withheld: 0,
+    consistent: true,
+  },
+  truncated: false,
+};
+const pendingCalls: unknown[] = [];
+void mock.module("@atlas/api/lib/brain/vocabulary-pending", () => ({
+  loadPendingQueue: async (_db: unknown, _ctx: unknown, opts: unknown) => {
+    pendingCalls.push(opts);
+    return pendingQueue;
+  },
+  PENDING_PAGE_MAX: 100,
+  PENDING_EVIDENCE_SAMPLE_MAX: 5,
+  PENDING_ENTRY_KINDS: ["alias", "cardinality"] as const,
 }));
 
 let blastRadius: unknown = { kind: "structurally-empty", reason: "object-position" };
@@ -320,6 +355,24 @@ beforeEach(() => {
   blastRadius = { kind: "structurally-empty", reason: "object-position" };
   cardinalityResult = { ok: true, cardinality: "single" };
   cardinalityCalls.length = 0;
+  cardinalityDecideCalls.length = 0;
+  cardinalityDecided = true;
+  decideCalls.length = 0;
+  decideOutcome = { kind: "approved", id: "proposal-1" };
+  pendingCalls.length = 0;
+  pendingQueue = {
+    entries: [],
+    aliasCounts: [],
+    cardinalityCounts: {
+      position: "predicate",
+      decision: "unscoped",
+      total: 0,
+      scoped: 0,
+      withheld: 0,
+      consistent: true,
+    },
+    truncated: false,
+  };
   inForceOverride = null;
   surfacesPage = {
     position: "predicate",
@@ -844,5 +897,258 @@ describe("the org guard", () => {
       400,
     );
     expect(authorCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Pending queue and its decide verb (#5088)
+// ---------------------------------------------------------------------------
+
+/** One pending alias entry as the loader produces it. */
+const pendingAlias = (over: Record<string, unknown> = {}) => ({
+  kind: "alias" as const,
+  id: "proposal-7",
+  position: "predicate" as const,
+  pair: ["is priced at", "priced at"] as [string, string],
+  direction: null,
+  sourceClass: "seam",
+  proposedBy: "brain:alias-proposal",
+  proposedAt: "2026-08-09T00:00:00.000Z",
+  rank: 0.67,
+  evidence: {
+    kind: "structural" as const,
+    subjects: 2,
+    scopedSubjects: 2,
+    withheld: 0,
+    examples: [
+      { subject: "widget", object: "10 USD", fromPredicate: "is priced at", toPredicate: "priced at" },
+    ],
+    threshold: 2,
+    countsConsistent: true,
+  },
+  ...over,
+});
+
+describe("GET /pending", () => {
+  it("passes the shared filters through and reports the disclosure counts", async () => {
+    pendingQueue = {
+      ...pendingQueue,
+      entries: [pendingAlias()],
+      aliasCounts: [
+        {
+          position: "predicate",
+          decision: "unscoped",
+          total: 3,
+          scoped: 1,
+          withheld: 2,
+          consistent: false,
+        },
+      ],
+    };
+    const res = await adminBrainVocabulary.request(
+      "/pending?kind=alias&position=predicate&limit=10",
+    );
+    expect(res.status).toBe(200);
+    expect(pendingCalls[0]).toMatchObject({ kind: "alias", position: "predicate", limit: 10 });
+    const body = (await res.json()) as {
+      entries: { direction: unknown }[];
+      aliasCounts: Record<string, unknown>[];
+    };
+    // ⚠️ The wire renames `decision` → `scope` and `consistent` →
+    // `countsConsistent`. The In-force pane maps the same four numbers, and one
+    // mapper does both — a second copy is how one pane ends up saying
+    // "workspace-wide" for a read the other calls "scoped to you".
+    expect(body.aliasCounts[0]).toEqual({
+      position: "predicate",
+      scope: "unscoped",
+      total: 3,
+      scoped: 1,
+      withheld: 2,
+      countsConsistent: false,
+    });
+    // ⚠️ `null` survives the wire. The whole direction AC rests on a client
+    // having nothing to prefill from, and a schema that dropped the field or
+    // defaulted it would be invisible until an approver approved a guess.
+    expect(body.entries[0]!.direction).toBeNull();
+  });
+
+  it("refuses an unknown kind at the schema rather than in the loader", async () => {
+    const res = await adminBrainVocabulary.request("/pending?kind=everything");
+    expect(res.status).toBe(422);
+    expect(pendingCalls).toHaveLength(0);
+  });
+
+  it("REFUSES a response carrying an identity key rather than stripping it", async () => {
+    // Every response object on this surface is `z.strictObject` precisely
+    // because the extra key those exist to refuse is a norm-adjacent identity
+    // KEY — `z.object` would strip it and ship a 200 that silently dropped the
+    // field, and `keys-not-on-the-wire.test.ts` cannot see a runtime shape.
+    pendingQueue = {
+      ...pendingQueue,
+      entries: [pendingAlias({ predicateKey: "priced at" })],
+    };
+    const res = await adminBrainVocabulary.request("/pending");
+    expect(res.status).toBe(500);
+  });
+});
+
+describe("POST /decide", () => {
+  it("⚠️ sends NO direction when the client sent none — never the stored pair", async () => {
+    // THE falsifier for the AC. `resolveDirection` refuses an undirected
+    // proposal that supplies no direction; a route with a `?? entry.pair`
+    // fallback would satisfy that refusal with an ordering nobody chose, and no
+    // test of the SEAM could ever see it because the seam would receive a
+    // perfectly valid direction.
+    decideOutcome = {
+      kind: "refused",
+      id: "proposal-7",
+      refusal: "direction-required",
+      message: "Proposal proposal-7 is undirected — approval must supply the direction",
+    };
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "approved",
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("direction-required");
+    expect(body.message).toContain("undirected");
+    expect(decideCalls).toHaveLength(1);
+    expect((decideCalls[0] as { direction?: unknown }).direction).toBeUndefined();
+  });
+
+  it("passes a supplied direction through verbatim", async () => {
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "approved",
+      direction: { fromNorm: "is priced at", toNorm: "priced at" },
+    });
+    expect(res.status).toBe(200);
+    expect(decideCalls[0]).toMatchObject({
+      id: "proposal-7",
+      decision: "approved",
+      direction: { fromNorm: "is priced at", toNorm: "priced at" },
+    });
+    expect(await res.json()).toEqual({
+      outcome: "approved",
+      proposalId: "proposal-1",
+      removedEdge: false,
+    });
+  });
+
+  it("maps direction-conflict to 409 — a directed proposal is never flipped", async () => {
+    decideOutcome = {
+      kind: "refused",
+      id: "proposal-7",
+      refusal: "direction-conflict",
+      message: "A directed proposal is not flipped at approval",
+    };
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "approved",
+      direction: { fromNorm: "priced at", toNorm: "is priced at" },
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe("direction-conflict");
+  });
+
+  it("refuses a direction sent with a REJECTION at the schema", async () => {
+    // `AliasDecisionRequest` splits the two arms so a direction is not
+    // representable on a rejection: *a field that is representable-and-ignored
+    // is a field a caller will eventually believe in.* The wire schema makes the
+    // same split rather than accepting and discarding it.
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "rejected",
+      direction: { fromNorm: "a", toNorm: "b" },
+    });
+    expect(res.status).toBe(422);
+    expect(decideCalls).toHaveLength(0);
+  });
+
+  it("reports a REMOVAL distinctly from a plain rejection", async () => {
+    decideOutcome = { kind: "rejected", id: "proposal-7", removedEdge: true };
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "rejected",
+    });
+    expect(res.status).toBe(200);
+    // Both transitions leave permanent rejection memory; only this one dropped
+    // an edge and re-keyed the corpus, and an approver told merely "rejected"
+    // would not know that happened.
+    expect(await res.json()).toEqual({
+      outcome: "rejected",
+      proposalId: "proposal-7",
+      removedEdge: true,
+    });
+  });
+
+  it("reports a lost race as `nothing_to_decide` with a 200", async () => {
+    decideOutcome = { kind: "not_decidable", id: "proposal-7" };
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "approved",
+      direction: { fromNorm: "a", toNorm: "b" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ outcome: "nothing_to_decide" });
+  });
+
+  describe("the cardinality arm", () => {
+    it("applies the owner/admin bar AT THE ROUTE and 403s a member", async () => {
+      // `decidePredicateCardinality` has no entitlement check and says so —
+      // *"Entitlement is the CALLER's to enforce"* — so the bar lives here, at
+      // the same level `/cardinality` applies it. Deleting this branch is a
+      // silent authority hole: the seam would decide happily.
+      READER_ROLE = "member";
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "reports to",
+        decision: "approved",
+      });
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe("not-entitled");
+      expect(cardinalityDecideCalls).toHaveLength(0);
+    });
+
+    it("addresses the row by SURFACE and answers `nothing_to_decide` on a lost race", async () => {
+      cardinalityDecided = false;
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "reports to",
+        decision: "approved",
+      });
+      expect(res.status).toBe(200);
+      // ⚠️ Never the verb the caller asked for. `WHERE status = 'pending'` makes
+      // two reviewers racing one proposal produce one decision and one no-op,
+      // and reporting the no-op as `approved` would credit the loser with
+      // arming retroactive supersession.
+      expect(await res.json()).toEqual({
+        outcome: "nothing_to_decide",
+        proposalId: null,
+        removedEdge: false,
+      });
+      expect(cardinalityDecideCalls[0]!.input).toMatchObject({
+        predicateSurface: "reports to",
+        verdict: "approved",
+      });
+    });
+
+    it("refuses a request carrying a predicate KEY rather than stripping it", async () => {
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "reports to",
+        decision: "approved",
+        predicateKey: "smuggled",
+      });
+      expect(res.status).toBe(422);
+      expect(cardinalityDecideCalls).toHaveLength(0);
+    });
   });
 });

@@ -18,6 +18,7 @@ import { BrainVocabularyPreviewRequestSchema } from "@/ui/lib/admin-schemas";
 import { CoverageStatement } from "./coverage-statement";
 import { BlastRadiusPreview } from "./blast-radius";
 import { NormPicker, ScopeBadge } from "./norm-picker";
+import { PendingQueue } from "./pending-queue";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
@@ -107,9 +108,14 @@ const POSITIONS: readonly {
  * Without it, recovering from a bad alias means a database console at exactly
  * the moment it is needed.
  *
- * The Pending queue is a sibling slice and is not on this page yet. That is
- * stated in the copy rather than left as an absence, because a surface with no
- * queue and no explanation reads as a surface with nothing to review.
+ * ## Three panes, and the ordering is the argument
+ *
+ * Authoring, then *In force*, then *Pending* (#5088). The queue is last because
+ * it is empty until a producer fires and authoring is not — putting it first
+ * would open the page on the one thing it cannot do yet. It is a sibling
+ * component with its own fetch: its counts and evidence are scoped and paged
+ * differently from `/in-force`, and one merged request would make each loader's
+ * contract the other's problem.
  */
 export default function ClaimVocabularyPage() {
   return (
@@ -416,7 +422,10 @@ function ClaimVocabulary() {
                 setAuthorError(null);
               }}
             >
-              <SelectTrigger className="w-full">
+              {/* Named, because the page now carries three comboboxes — this
+                  one and the Pending pane's two filters — and an unnamed
+                  control is both an a11y gap and an ambiguous test target. */}
+              <SelectTrigger className="w-full" aria-label="Authoring position">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -639,14 +648,16 @@ function ClaimVocabulary() {
         </CardContent>
       </Card>
 
-      {/* The absent queue, STATED. A page with no queue and no explanation
-          reads as a page with nothing to review — the same false all-clear the
-          empty state exists to avoid, one level up. */}
+      {/* PENDING. Third rather than first, and the ordering is still the
+          argument #5087 made: the queue is empty until a producer fires, while
+          authoring works on day one. It owns its own fetch — the counts and the
+          evidence are scoped and paged differently from `/in-force`, and merging
+          them into one request would make each loader's contract the other's
+          problem. */}
+      <PendingQueue />
+
       <p className="text-muted-foreground text-xs">
-        Proposals raised by Atlas itself — spellings that agree structurally, and predicates
-        corrected the same way three times — get their own review queue in a later release. This
-        page is authoring and what is already in force. Position: {position} (
-        {positionScope ?? "scope unknown"}).
+        Authoring position: {position} ({positionScope ?? "scope unknown"}).
       </p>
 
       <AlertDialog

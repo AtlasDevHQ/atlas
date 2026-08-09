@@ -68,14 +68,25 @@ describe("a structurally-empty radius never renders as a count", () => {
     });
   }
 
-  test("object-position says the impact is of a different KIND, not absent", () => {
-    // The AC: an object-position alias changes what corroborates and what earns
-    // a tension edge, and that disclosure does not exist yet anywhere. Copy that
-    // said only "no impact" would be the false all-clear; copy that said "shown
-    // elsewhere" would send an approver looking for a page that does not exist.
+  test("object-position on THIS branch is a disagreement, not the answer", () => {
+    // ⚠️ This assertion changed with #5088, and the change is the AC landing
+    // rather than a rewording. An object-position alias now gets its own
+    // `object-position` radius arm carrying the corroboration and tension
+    // deltas, so the copy no longer says *"Atlas cannot yet show you that"* —
+    // it can, and a page still saying otherwise would be exactly the stale
+    // reassurance this file exists to refuse.
+    //
+    // The `structurally-empty` reason survives for a request that reaches the
+    // supersession PLANNER at this position, which is unreachable by
+    // construction and guarded anyway. So the honest copy on THIS branch is
+    // "the page and the API disagreed about how to ask" — still never a zero.
     const text = renderRadius({ kind: "structurally-empty", reason: "object-position" });
-    expect(text).toContain("not a count of zero");
-    expect(text).toContain("cannot yet show you");
+    expect(text).toContain("not a blast radius of zero");
+    expect(text).toContain("not the answer you asked for");
+    expect(text).toContain("Reload before deciding");
+    // The stale promise must be GONE. Without this the copy could drift back to
+    // claiming the disclosure does not exist while it sits one branch over.
+    expect(text).not.toContain("cannot yet show you");
   });
 
   test("an unrecognised reason is not rendered as a zero either", () => {

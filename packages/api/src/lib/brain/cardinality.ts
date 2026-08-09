@@ -761,6 +761,65 @@ export async function decidePredicateCardinality(
   return rows.length > 0;
 }
 
+/**
+ * {@link decidePredicateCardinality} addressed by SURFACE — the entry point the
+ * Pending queue's decide route uses (#5088).
+ *
+ * `declarePredicateCardinalityForSurface`'s twin, and it exists for that
+ * function's reason rather than for symmetry: `keys-not-on-the-wire.test.ts`
+ * refuses to see an identity key NAMED in a route body, as a total prohibition
+ * in the ORM arm, and a decide handler that derived `predicate_key` itself would
+ * trip it — correctly, because a route that can name a key is a route that can
+ * accept one, and `BlastRadiusRequest`'s docstring calls that *"the seam through
+ * which one reaches a route body"*.
+ *
+ * The vocabulary is REQUIRED for the same reason it is there: deciding
+ * `is priced at` once `is priced at → priced at` is approved must land on
+ * `priced at`, the slot the claims actually occupy. An identity default would
+ * address a row that does not exist and report `false` — *"nothing to decide"* —
+ * for a proposal sitting in the queue, which is a refusal indistinguishable from
+ * a race.
+ *
+ * ⚠️ Returns the same bare boolean the keyed function does, and the caller must
+ * NOT read `false` as "the proposal is gone". `WHERE status = 'pending'` is what
+ * makes two reviewers racing one proposal produce one decision and one no-op, so
+ * `false` means *somebody else decided it, or the surface never matched a row* —
+ * and those are the same answer to the only question a route has to answer,
+ * which is whether to tell this approver their click landed.
+ */
+export async function decidePredicateCardinalityForSurface(
+  executor: CardinalityExecutor,
+  workspaceId: string,
+  input: {
+    readonly predicateSurface: string;
+    readonly verdict: Exclude<CardinalityStatus, "pending">;
+    readonly reviewedBy: string | null;
+    /** The workspace's own predicate-position alias lookup. */
+    readonly predicateAlias: AliasLookup;
+  },
+): Promise<boolean> {
+  const predicateKey = slotKey(input.predicateSurface, input.predicateAlias);
+  if (predicateKey === null || predicateKey === "") {
+    // Logged rather than silently `false`: a surface that norms away cannot
+    // address a row, and this module's contract is that every arm is a refusal
+    // and never a silent no-op. The caller reports it as "nothing to decide",
+    // which is true — but an operator asked why a button did nothing needs the
+    // line that says the surface was the problem.
+    log.warn(
+      { workspaceId, predicateSurface: input.predicateSurface },
+      "brain cardinality: a decide request named a predicate surface that norms away to nothing — it addresses no row, so nothing was decided",
+    );
+    return false;
+  }
+  return decidePredicateCardinality(
+    executor,
+    workspaceId,
+    predicateKey,
+    input.verdict,
+    input.reviewedBy,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Source 2 — the repeat-gated correction-event proposer
 // ---------------------------------------------------------------------------

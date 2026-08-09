@@ -1423,6 +1423,38 @@ export interface BrainVocabularyInForceResponse {
   readonly truncated: boolean;
 }
 
+/**
+ * One pair of live claims an OBJECT merge would relate.
+ *
+ * ⚠️ Symmetric field names, deliberately not `BrainFactWillSupersedePair`'s
+ * `draft`/`superseded`. Neither claim replaces the other, and a client reading
+ * `supersededLabel` on a corroboration pair would conclude exactly the thing the
+ * object-position arm exists to stop it concluding.
+ */
+export interface BrainVocabularyObjectPair {
+  readonly leftId: string;
+  readonly leftLabel: string;
+  readonly rightId: string;
+  readonly rightLabel: string;
+}
+
+/**
+ * One side of the object-position radius.
+ *
+ * Same disclosure contract as {@link BrainVocabularyBlastRadiusSide} — unscoped
+ * `total`, reader-scoped `pairs`, `withheld` as their difference, `truncated`
+ * for the page cap and `countsConsistent` for two statements disagreeing. A
+ * separate type because its `pairs` are a different relation, not because its
+ * accounting differs.
+ */
+export interface BrainVocabularyObjectRadiusSide {
+  readonly total: number;
+  readonly pairs: readonly BrainVocabularyObjectPair[];
+  readonly withheld: number;
+  readonly truncated: boolean;
+  readonly countsConsistent: boolean;
+}
+
 /** One side of a blast-radius delta, as the preview discloses it. */
 export interface BrainVocabularyBlastRadiusSide {
   readonly total: number;
@@ -1448,6 +1480,47 @@ export type BrainVocabularyBlastRadius =
       readonly reason: BrainVocabularyStructurallyEmptyReason;
     }
   | {
+      /**
+       * An OBJECT-position alias decision — a different KIND of blast radius.
+       *
+       * ⚠️ Its own arm rather than a `computed` with relabelled sides. The
+       * collision rule never reads the object's identity, so an object alias
+       * cannot arm or disarm supersession at all; what it changes is what
+       * CORROBORATES and what is flagged as contested. Those are different
+       * relations, and `BrainVocabularyBlastRadiusSide`'s pair fields
+       * (`draftLabel`, `supersededLabel`) would be false statements here.
+       */
+      readonly kind: "object-position";
+      /** Live claim pairs that do not agree about the object today and would after. */
+      readonly corroborating: BrainVocabularyObjectRadiusSide;
+      /**
+       * Pairs that DO agree today and would not after — the removal's half.
+       *
+       * ⚠️ Its own field rather than one whose meaning depends on the verb.
+       * Empty for every approval (a merge only creates agreement) and empty for
+       * `corroborating` on every removal, so a client renders whichever is
+       * non-empty without having to know which button was pressed.
+       */
+      readonly separating: BrainVocabularyObjectRadiusSide;
+      /**
+       * `in-tension-with` edges that already exist between pairs the decision
+       * would stop treating as rivals.
+       *
+       * ⚠️ NOT edges that would be removed — see {@link staleEdgesPersist}.
+       */
+      readonly tension: BrainVocabularyObjectRadiusSide;
+      /**
+       * Always true: approving the alias rewrites `object_key` and nothing else,
+       * so every advisory edge in {@link tension} survives and becomes a
+       * contradiction Atlas still flags between two claims it now treats as
+       * agreeing. The surface has to say that, and a literal type is what makes
+       * the sentence assertable.
+       */
+      readonly staleEdgesPersist: true;
+      readonly floor: true;
+      readonly subtreeTruncated: boolean;
+    }
+  | {
       readonly kind: "computed";
       readonly arming: BrainVocabularyBlastRadiusSide;
       readonly disarming: BrainVocabularyBlastRadiusSide;
@@ -1458,6 +1531,175 @@ export type BrainVocabularyBlastRadius =
 
 export interface BrainVocabularyPreviewResponse {
   readonly radius: BrainVocabularyBlastRadius;
+}
+
+// ---------------------------------------------------------------------------
+// The Pending queue (#5088)
+// ---------------------------------------------------------------------------
+
+/** The two kinds sharing one queue. */
+export type BrainVocabularyPendingKind = "alias" | "cardinality";
+
+/** One live claim pair exhibiting the agreement an alias proposal rests on. */
+export interface BrainVocabularyAgreementExample {
+  readonly subject: string;
+  readonly object: string;
+  readonly fromPredicate: string;
+  readonly toPredicate: string;
+}
+
+/**
+ * What the corpus says about an alias pair right now.
+ *
+ * ⚠️ A discriminated union. The structural producer holds two claims in ONE
+ * subject slot and compares their predicates, so at an entity position the
+ * agreement question is unaskable rather than merely unanswered — and *"0
+ * subjects agree"* would tell an approver a warehouse-key proposal is
+ * unsupported when its support is of a different kind entirely.
+ */
+export type BrainVocabularyAliasEvidence =
+  | {
+      readonly kind: "structural";
+      /** Distinct subjects whose live claims exhibit the pair agreeing. Unscoped. */
+      readonly subjects: number;
+      readonly scopedSubjects: number;
+      /** `subjects − scopedSubjects`. Never a silent omission. */
+      readonly withheld: number;
+      readonly examples: readonly BrainVocabularyAgreementExample[];
+      /**
+       * The gate that raised the proposal, carried rather than assumed.
+       *
+       * The count is re-derived at read time and the corpus moves, so an entry
+       * can read BELOW its own threshold. A client that hard-coded the number
+       * could not say *"this no longer meets the bar that raised it"*.
+       */
+      readonly threshold: number;
+      readonly countsConsistent: boolean;
+    }
+  | { readonly kind: "not-applicable"; readonly reason: "entity-position" };
+
+/** One correction behind a cardinality proposal — the *link* half. */
+export interface BrainVocabularyCorrectionExample {
+  readonly subject: string;
+  readonly fromObject: string;
+  readonly toObject: string;
+  readonly factId: string;
+  readonly at: string;
+}
+
+/**
+ * A workspace's own correction history at one predicate.
+ *
+ * ⚠️ TWO numbers on purpose. The repeat gate counts DISTINCT SUBJECTS, not
+ * corrections — so {@link subjects} is what crossed the threshold and
+ * {@link events} is how many supersessions produced it. Rendering only the
+ * second would show a number no gate reads.
+ */
+export interface BrainVocabularyCorrectionEvidence {
+  readonly subjects: number;
+  readonly events: number;
+  readonly scopedSubjects: number;
+  readonly withheld: number;
+  readonly examples: readonly BrainVocabularyCorrectionExample[];
+  readonly threshold: number;
+  readonly countsConsistent: boolean;
+}
+
+/** The direction a producer claimed, when it could claim one. */
+export interface BrainVocabularyPendingDirection {
+  readonly fromNorm: string;
+  readonly toNorm: string;
+}
+
+/** One pending alias proposal. */
+export interface BrainVocabularyPendingAlias {
+  readonly kind: "alias";
+  readonly id: string;
+  readonly position: BrainVocabularySlotPosition;
+  /**
+   * The pair, in the order the row stores it.
+   *
+   * ⚠️ NOT a direction. For an undirected proposal this is the pair in the order
+   * it arrived, and treating that order as a default is the *"implicit first
+   * norm wins"* the approval seam refuses.
+   */
+  readonly pair: readonly [string, string];
+  /**
+   * The producer's direction, or `null` — and `null` is the COMMON case.
+   *
+   * ⚠️ A client must never prefill from it or from anything else. Direction
+   * reads a positive warehouse allowlist and never the negation of a guard, so
+   * unclassifiable, neither-warehouse and both-warehouse all yield undirected —
+   * which on a workspace with no warehouse producer is every proposal. A default
+   * would launder a deliberate abstention into a machine opinion.
+   */
+  readonly direction: BrainVocabularyPendingDirection | null;
+  readonly sourceClass: string;
+  readonly proposedBy: string;
+  readonly proposedAt: string;
+  /**
+   * The producer's rank — structural confidence plus any extractor-hint bonus.
+   *
+   * ⚠️ A RANK, not a probability. Its only job is to order a queue.
+   */
+  readonly rank: number;
+  readonly evidence: BrainVocabularyAliasEvidence;
+}
+
+/** One pending cardinality proposal. */
+export interface BrainVocabularyPendingCardinality {
+  readonly kind: "cardinality";
+  /**
+   * A representative live surface for the canonical predicate — and the ADDRESS
+   * a decide request uses. Never the predicate key (ADR-0037 §6).
+   */
+  readonly predicateSurface: string | null;
+  /**
+   * False when {@link predicateSurface} is null: every claim that produced the
+   * key has been retracted, so there is no surface to name and the entry cannot
+   * be decided from this surface. Surfaced so a client renders the reason
+   * instead of a button that 400s.
+   */
+  readonly decidable: boolean;
+  readonly cardinality: BrainVocabularyCardinality;
+  readonly sourceClass: string;
+  readonly proposedBy: string;
+  readonly proposedAt: string;
+  readonly claims: number;
+  readonly evidence: BrainVocabularyCorrectionEvidence;
+}
+
+export type BrainVocabularyPendingEntry =
+  | BrainVocabularyPendingAlias
+  | BrainVocabularyPendingCardinality;
+
+export interface BrainVocabularyPendingResponse {
+  /** Both kinds, ONE list, newest first. */
+  readonly entries: readonly BrainVocabularyPendingEntry[];
+  readonly aliasCounts: readonly BrainVocabularyPositionCounts[];
+  readonly cardinalityCounts: BrainVocabularyPositionCounts;
+  readonly truncated: boolean;
+}
+
+/** What a decision did. No refusal arm — refusals leave as 4xx. */
+export type BrainVocabularyDecideOutcome = "approved" | "rejected" | "nothing_to_decide";
+
+export interface BrainVocabularyDecideResponse {
+  readonly outcome: BrainVocabularyDecideOutcome;
+  /**
+   * The alias proposal the decision landed on, or `null` for a cardinality
+   * decision — that table has no id a wire type may carry, being keyed on the
+   * predicate key itself.
+   */
+  readonly proposalId: string | null;
+  /**
+   * A rejection on an APPROVED alias row is a removal: it dropped the edge and
+   * recomputed the closure. `false` for a plain `pending → rejected`.
+   *
+   * Carried because the two write very different amounts and an approver told
+   * only *"rejected"* would not know a corpus was re-keyed.
+   */
+  readonly removedEdge: boolean;
 }
 
 /**

@@ -26748,6 +26748,856 @@
         "operationId": "getAdminBrainVocabularyInForce"
       }
     },
+    "/api/v1/admin/brain-vocabulary/pending": {
+      "get": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "Proposals awaiting a decision — both kinds, one queue",
+        "description": "The Pending queue (#5088). Alias proposals and predicate-cardinality proposals in ONE list, newest first, sharing the ordering, the filters and the decide verbs — neither kind gets a bespoke approval path that can drift from the other. ⚠️ The EVIDENCE is not shared, and deliberately has no common \"seen N times\" column. An alias entry carries the distinct subjects whose live claims exhibit the pair agreeing about one object; a cardinality entry carries the distinct subjects a human has superseded at that predicate AND how many supersessions produced them. The two gates are 2 and 3 and they are not comparable magnitudes — agreement-without-a-slot is positive and typed where a correction event is circumstantial — so one column at equal visual weight would invert the epistemic ranking the thresholds encode. Each count carries its `threshold`, because the evidence is RE-DERIVED at read time (migration 0190 stores none) and the corpus moves: an entry can honestly read below the bar that raised it. ⚠️ `direction` is `null` for an undirected proposal and that is the COMMON case, not an edge case — direction reads a positive warehouse allowlist and never the negation of a guard, so on a workspace with no warehouse producer every proposal is undirected. A client must NEVER prefill from it: approval of an undirected proposal is refused with `direction-required` rather than picking, because picking is the silent workspace-wide re-key the vocabulary exists to put a human in front of. Scoped by the SAME positional-visibility rule the In-force pane uses — the same code path, not a copy: predicate-position proposals unscoped, entity-position proposals reader-scoped on BOTH norms. `aliasCounts` and `cardinalityCounts` carry a withheld count per position, never a silent omission. ⚠️ Rows proposed and decided in ONE transaction — direct human authoring writes through the proposal table — are excluded, so authoring never renders as outstanding work.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "alias",
+                "cardinality"
+              ],
+              "description": "Show one kind only. Absent means both — the queue's whole point"
+            },
+            "required": false,
+            "description": "Show one kind only. Absent means both — the queue's whole point",
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "subject",
+                "predicate",
+                "object"
+              ],
+              "description": "Alias proposals at one position. Cardinality entries are always predicate-position"
+            },
+            "required": false,
+            "description": "Alias proposals at one position. Cardinality entries are always predicate-position",
+            "name": "position",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Maximum entries across both kinds (default and max 100)"
+            },
+            "required": false,
+            "description": "Maximum entries across both kinds (default and max 100)",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending proposals with their evidence, plus the disclosure counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "alias"
+                                ]
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "position": {
+                                "type": "string",
+                                "enum": [
+                                  "subject",
+                                  "predicate",
+                                  "object"
+                                ]
+                              },
+                              "pair": {
+                                "type": "array",
+                                "prefixItems": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "string"
+                                  }
+                                ]
+                              },
+                              "direction": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "properties": {
+                                  "fromNorm": {
+                                    "type": "string"
+                                  },
+                                  "toNorm": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "fromNorm",
+                                  "toNorm"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "sourceClass": {
+                                "type": "string"
+                              },
+                              "proposedBy": {
+                                "type": "string"
+                              },
+                              "proposedAt": {
+                                "type": "string"
+                              },
+                              "rank": {
+                                "type": "number"
+                              },
+                              "evidence": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "structural"
+                                        ]
+                                      },
+                                      "subjects": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "scopedSubjects": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "withheld": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "examples": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "subject": {
+                                              "type": "string"
+                                            },
+                                            "object": {
+                                              "type": "string"
+                                            },
+                                            "fromPredicate": {
+                                              "type": "string"
+                                            },
+                                            "toPredicate": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "subject",
+                                            "object",
+                                            "fromPredicate",
+                                            "toPredicate"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "threshold": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "countsConsistent": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "subjects",
+                                      "scopedSubjects",
+                                      "withheld",
+                                      "examples",
+                                      "threshold",
+                                      "countsConsistent"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "not-applicable"
+                                        ]
+                                      },
+                                      "reason": {
+                                        "type": "string",
+                                        "enum": [
+                                          "entity-position"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "reason"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id",
+                              "position",
+                              "pair",
+                              "direction",
+                              "sourceClass",
+                              "proposedBy",
+                              "proposedAt",
+                              "rank",
+                              "evidence"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "cardinality"
+                                ]
+                              },
+                              "predicateSurface": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "decidable": {
+                                "type": "boolean"
+                              },
+                              "cardinality": {
+                                "type": "string",
+                                "enum": [
+                                  "single",
+                                  "multi"
+                                ]
+                              },
+                              "sourceClass": {
+                                "type": "string"
+                              },
+                              "proposedBy": {
+                                "type": "string"
+                              },
+                              "proposedAt": {
+                                "type": "string"
+                              },
+                              "claims": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "evidence": {
+                                "type": "object",
+                                "properties": {
+                                  "subjects": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "events": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "scopedSubjects": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "withheld": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "examples": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "subject": {
+                                          "type": "string"
+                                        },
+                                        "fromObject": {
+                                          "type": "string"
+                                        },
+                                        "toObject": {
+                                          "type": "string"
+                                        },
+                                        "factId": {
+                                          "type": "string"
+                                        },
+                                        "at": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "subject",
+                                        "fromObject",
+                                        "toObject",
+                                        "factId",
+                                        "at"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "threshold": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "countsConsistent": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "subjects",
+                                  "events",
+                                  "scopedSubjects",
+                                  "withheld",
+                                  "examples",
+                                  "threshold",
+                                  "countsConsistent"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "predicateSurface",
+                              "decidable",
+                              "cardinality",
+                              "sourceClass",
+                              "proposedBy",
+                              "proposedAt",
+                              "claims",
+                              "evidence"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "aliasCounts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "position": {
+                            "type": "string",
+                            "enum": [
+                              "subject",
+                              "predicate",
+                              "object"
+                            ]
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "unscoped",
+                              "reader-scoped",
+                              "deny-all"
+                            ]
+                          },
+                          "total": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "scoped": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "withheld": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "countsConsistent": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "position",
+                          "scope",
+                          "total",
+                          "scoped",
+                          "withheld",
+                          "countsConsistent"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "cardinalityCounts": {
+                      "type": "object",
+                      "properties": {
+                        "position": {
+                          "type": "string",
+                          "enum": [
+                            "subject",
+                            "predicate",
+                            "object"
+                          ]
+                        },
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "unscoped",
+                            "reader-scoped",
+                            "deny-all"
+                          ]
+                        },
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "scoped": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "withheld": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "countsConsistent": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "position",
+                        "scope",
+                        "total",
+                        "scoped",
+                        "withheld",
+                        "countsConsistent"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "entries",
+                    "aliasCounts",
+                    "cardinalityCounts",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainVocabularyPending"
+      }
+    },
+    "/api/v1/admin/brain-vocabulary/decide": {
+      "post": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "Approve or reject one pending proposal",
+        "description": "The shared decide verb for both queue kinds (#5088). ⚠️ **An undirected alias proposal cannot be approved without a supplied `direction`**, and the refusal is `direction-required` rather than a silent pick: `A → B` and `B → A` re-key opposite row sets and have different blast radii, so a default would launder a deliberate abstention into a machine opinion. A DIRECTED proposal may be confirmed with a matching direction but never flipped — `direction-conflict` — because the reviewer read one direction and re-keying in the other is indistinguishable afterwards. Direction is never inferred from population size: a newly-adopted canonical spelling is RARER than the sloppy one it replaces, so \"bigger wins\" points backwards during exactly the migration this feature performs. A rejection on an APPROVED alias row is a REMOVAL — it drops the edge, recomputes the closure and re-keys the corpus — and `removedEdge` says which transition ran. Both transitions leave permanent rejection memory; that is what stops a producer re-emitting what a human removed. A cardinality entry is addressed by predicate SURFACE, never by a key, and the canonical key is derived server-side through the workspace's own vocabulary. `nothing_to_decide` is a truthful 200, not a failure: the row is absent, already decided, or another reviewer won the race. It is never retried into a second apply.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "alias"
+                        ]
+                      },
+                      "proposalId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "decision": {
+                        "type": "string",
+                        "enum": [
+                          "approved"
+                        ]
+                      },
+                      "direction": {
+                        "type": "object",
+                        "properties": {
+                          "fromNorm": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          },
+                          "toNorm": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "fromNorm",
+                          "toNorm"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "proposalId",
+                      "decision"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "alias"
+                        ]
+                      },
+                      "proposalId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "decision": {
+                        "type": "string",
+                        "enum": [
+                          "rejected"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "proposalId",
+                      "decision"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "cardinality"
+                        ]
+                      },
+                      "predicateSurface": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      },
+                      "decision": {
+                        "type": "string",
+                        "enum": [
+                          "approved",
+                          "rejected"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "predicateSurface",
+                      "decision"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The decision landed, or there was nothing to decide",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "approved",
+                        "rejected",
+                        "nothing_to_decide"
+                      ]
+                    },
+                    "proposalId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "removedEdge": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "proposalId",
+                    "removedEdge"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — a norm that normalizes away to nothing, a pair that normalizes to one norm, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The decision cannot be applied — an undirected proposal with no supplied direction, a direction that is not an ordering of the proposal's pair, a direction contradicting a directed proposal, or a vocabulary refusal (already aliased, would cycle). The message says which and what to do instead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainVocabularyDecide"
+      }
+    },
     "/api/v1/admin/brain-vocabulary/preview": {
       "post": {
         "tags": [
@@ -26907,6 +27757,204 @@
                           "required": [
                             "kind",
                             "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "object-position"
+                              ]
+                            },
+                            "corroborating": {
+                              "type": "object",
+                              "properties": {
+                                "total": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "pairs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "leftId": {
+                                        "type": "string"
+                                      },
+                                      "leftLabel": {
+                                        "type": "string"
+                                      },
+                                      "rightId": {
+                                        "type": "string"
+                                      },
+                                      "rightLabel": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "leftId",
+                                      "leftLabel",
+                                      "rightId",
+                                      "rightLabel"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "withheld": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "truncated": {
+                                  "type": "boolean"
+                                },
+                                "countsConsistent": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "total",
+                                "pairs",
+                                "withheld",
+                                "truncated",
+                                "countsConsistent"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "separating": {
+                              "type": "object",
+                              "properties": {
+                                "total": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "pairs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "leftId": {
+                                        "type": "string"
+                                      },
+                                      "leftLabel": {
+                                        "type": "string"
+                                      },
+                                      "rightId": {
+                                        "type": "string"
+                                      },
+                                      "rightLabel": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "leftId",
+                                      "leftLabel",
+                                      "rightId",
+                                      "rightLabel"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "withheld": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "truncated": {
+                                  "type": "boolean"
+                                },
+                                "countsConsistent": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "total",
+                                "pairs",
+                                "withheld",
+                                "truncated",
+                                "countsConsistent"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "tension": {
+                              "type": "object",
+                              "properties": {
+                                "total": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "pairs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "leftId": {
+                                        "type": "string"
+                                      },
+                                      "leftLabel": {
+                                        "type": "string"
+                                      },
+                                      "rightId": {
+                                        "type": "string"
+                                      },
+                                      "rightLabel": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "leftId",
+                                      "leftLabel",
+                                      "rightId",
+                                      "rightLabel"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "withheld": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "truncated": {
+                                  "type": "boolean"
+                                },
+                                "countsConsistent": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "total",
+                                "pairs",
+                                "withheld",
+                                "truncated",
+                                "countsConsistent"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "staleEdgesPersist": {
+                              "type": "boolean",
+                              "enum": [
+                                true
+                              ]
+                            },
+                            "floor": {
+                              "type": "boolean",
+                              "enum": [
+                                true
+                              ]
+                            },
+                            "subtreeTruncated": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "corroborating",
+                            "separating",
+                            "tension",
+                            "staleEdgesPersist",
+                            "floor",
+                            "subtreeTruncated"
                           ],
                           "additionalProperties": false
                         },

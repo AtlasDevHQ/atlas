@@ -55,7 +55,15 @@ Every round:
 Final round only (or with `--final`):
 - `Agent(comment-analyzer)` — comment accuracy & idiom
 
-Each is read-only/advisory. Give every agent the same context: the base ref, the changed files, and "review only this diff against Atlas's CLAUDE.md standards; report findings with file:line + severity."
+Each is read-only/advisory. Give every agent the same context: the base ref, the changed files, and the scope rule below.
+
+**The scope is the changed lines PLUS their enclosing declaration.** Not "only the changed lines", and not the whole file. The enclosing declaration is the function, the object literal, the union, the interface — whatever construct the changed line sits inside, read whole.
+
+⚠️ **This widening is the single highest-yield change this command has had, and it is here because the narrow rule has a structural blind spot.** A defect and its twin are usually *adjacent*: in #5088 a `claims: … : 0` coalesce was fixed while `sourceClass: … : ""` and `proposedBy: … : ""` sat on the next two lines of the same object literal. Unchanged lines, therefore outside a strict diff scope, therefore invisible to the reviewer — for three consecutive rounds. A reviewer obeying "only the changed lines" *cannot* find that, no matter how good it is.
+
+Say it to the agent in those words, because "review the diff" reads as the narrow rule by default.
+
+**On a re-review (round 2+), also pass the previous round's fix commits and name them the primary target.** Fresh context is what keeps the panel from rubber-stamping, but it also means round N does not know what round N−1 fixed unless you say so. Give the SHAs and one line each on what they claimed to fix; ask the reviewer to audit those fixes specifically, and to check whether each fix's *class* was closed or only its instance. In #5088 this was improvised by hand at round 4 and that round found more than rounds 2 and 3 combined.
 
 **Step 3: Collect, dedupe, prioritize**
 
@@ -94,6 +102,48 @@ The test for (b) is *"does the smallest correct fix add a new thing?"* — not *
 ⚠️ **This step does not exist to shrink diffs, and choosing "follow-up" is not the default answer for (b).** In #5033 a round-1 finding — the tier guard refused irreversibly with no operator trace — was fixed inline, which took the diff from ~400 to ~1,900 lines and produced rounds 2 and 3. **That was the right outcome.** The fix added a savepoint primitive; round 2 found it could roll back an entire publish, and round 3 found round 2's `SAVEPOINT` itself unguarded. Capping the rounds would have shipped a diagnostic capable of rolling back a customer's publish.
 
 So the point is not fewer rounds. It is that a fix which triples the diff should be a **visible decision with a recorded reason**, made when the growth is proposed rather than discovered three rounds later — and a PR that grew that way should say so, because the reviewer's read of it changes.
+
+**Step 5b: SWEEP FOR SIBLINGS before you write the fix**
+
+⚠️ **A finding names a CLASS. Fixing only the reported instance is what makes a
+round cap bind.** Before writing each fix, spend one grep asking *"where else does
+this exact shape appear?"* — the same file first, then the module, then the twin
+half of whatever pair you are in. Fix every instance in the same commit.
+
+The shapes worth sweeping for, because they are what actually recurred:
+
+- **The adjacent field.** A coalesce, a narrowing, a default, a guard — check the
+  lines above and below it in the same literal or the same parameter list.
+- **The mirror half.** Almost every subsystem has two of something: two verbs
+  (approve/reject), two positions, two kinds, two arms of a union, a client half
+  and a server half. If the fix landed on one, the other is the first place to
+  look — and if a test landed on one, the other is where it is missing.
+- **The other caller.** A guard added at one call site of a shared helper is
+  usually missing at the rest.
+
+Report the sweep in one line per finding — *"same shape at X, Y; fixed"* or
+*"swept the module, no other instance"* — so a later round can see the class was
+closed rather than the instance.
+
+**This is measured, not theoretical.** #5088 took five rounds, and four of them
+found the previous round's fix had a twin nobody looked at: round 1's bug four
+lines away on the `computed` branch; round 2's per-side fix covering only the
+both-zero case; round 3's pin covering 4 of an arm's 7 fields; round 3's `claims`
+guard with two identically-broken fields directly beneath it. Every one of those
+was a one-grep sweep away at the moment the fix was written.
+
+**Step 5c: Verify the commit message against the commit**
+
+Before pushing, check that every fix the message claims is actually in the diff:
+
+```bash
+git show --stat HEAD          # do the files match what the message says it fixed?
+```
+
+⚠️ Cheap, mechanical, and it catches a failure with no other detector. Two of
+#5088's commit messages claimed fixes that were never in the tree — one named a
+file absent from the commit entirely. A message asserting a fix over a hole no
+test can see is worse than a silent hole: it stops anyone looking.
 
 **Step 6: Every must-fix's FIX needs a falsifier before the round is closed**
 
@@ -141,7 +191,26 @@ post-commit ordering — #5027 needed a delayed-settle fake and a `setTimeout`
 handle recorder to reach two of its arms. Pay it there especially; those are the
 arms nothing else can see.
 
+⚠️ **RUN the mutant. A falsifier you only reasoned about is not one**, and your
+own is the one most likely to be too weak — you write it knowing the fix, so you
+naturally aim it at the failure you already fixed. Two from #5088, both of which
+looked airtight and both of which passed against the broken code:
+
+- A duplicate-React-key test that rendered two colliding rows and asserted both
+  appeared. React renders both children on a first pass; the harm needs the list
+  to **change**. The real falsifier previews the second row, decides the first
+  away, and asserts the survivor keeps its own state.
+- A `never`-default test asserting on a 500's response body — in a file that
+  mocks `runEffect` away, so the body is a constant `text/plain` for *every*
+  cause. The assertion could not fail while the status was 500. It now asserts
+  the defect's cause.
+
+The second one is the general shape: **an assertion that cannot fail is not an
+assertion.** Ask what value would make it go red, and check that value is
+reachable.
+
 **Rules:**
 - Read-only. The panel reports; it never edits code.
-- Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps.
+- Scope is the changed lines **plus their enclosing declaration** (Step 2). The strict-diff reading has a blind spot for adjacent twins and it has cost real rounds.
+- Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps. On round 2+, fresh context **plus** the previous round's fix commits named as the audit target.
 - This is the specialist layer. The repo's `/code-review` and `/simplify` remain the canonical generic passes — don't duplicate them here.

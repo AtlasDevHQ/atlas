@@ -56,9 +56,11 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 /review-panel
 ```
-- Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → decide in-PR vs follow-up explicitly and record the reason in the PR body), then fix, then re-run `/review-panel` on the new diff.
+- Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → decide in-PR vs follow-up explicitly and record the reason in the PR body), then **sweep for siblings** (Step 5b — a finding names a class, and fixing only the reported instance is the main reason rounds multiply), then fix, then re-run `/review-panel` on the new diff.
+- **Re-runs are not fresh rounds.** Pass the previous round's fix commits into the panel and name them the primary audit target (`/review-panel` Step 2). Reviewers keep fresh context; what they must not have is fresh *ignorance of what you just changed*.
 - Repeat until **CLEAN**, capped at **3 rounds**. If it can't converge in 3 (usually a spec ambiguity), STOP and ask the human.
 - The cap is on ROUNDS, not on scope. A round-2 fix that adds real machinery *should* earn a round 3 — don't skip the re-review to stay under the cap. If the work genuinely needs a fourth round, that is the STOP-and-ask case, not a reason to merge unreviewed.
+- **When you STOP and ask, report the yield curve, not just the count.** A declining count (30 → 18 → 11) is a loop converging and the cap is a formality. A flat or rising one is a loop that is *not* converging, and the human needs to know which they are approving another round of. #5088 ran 30 → 18 → 11 → 21, and that rise was the real signal — the fixes kept having unswept twins, so each round manufactured the next round's work.
 
 **Step 4 — CI gate**
 

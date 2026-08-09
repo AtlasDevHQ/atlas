@@ -145,7 +145,7 @@ git show --stat HEAD          # do the files match what the message says it fixe
 file absent from the commit entirely. A message asserting a fix over a hole no
 test can see is worse than a silent hole: it stops anyone looking.
 
-**Step 6: Every must-fix's FIX needs a falsifier before the round is closed**
+**Step 6: Every must-fix's FIX needs a falsifier — NAMED every round, BUILT in the last one**
 
 A fix is not closed when it is written. It is closed when something can tell you
 it stopped working.
@@ -157,8 +157,29 @@ For each must-fix you resolved, name one of three:
 - an explicit *"this is unfalsifiable, and here is the measurement instead"* —
   carried in the docstring, not in your head.
 
-⚠️ **This is the rule that makes the round cap converge, and its absence is what
-made #5027 take four rounds.** Rounds 1 and 2 there shipped ~500 lines of fixes
+⚠️ **NAMING is every round. BUILDING and RUNNING is the closing round only.**
+The split is not a softening — it is where the cost actually falls, measured.
+Naming is the cheap tell this step already calls *"one question, and it is
+cheap"*: if you cannot say what would go red, you have not closed the finding,
+and that is the check #5027's rounds 1–2 failed. Building is the expensive half
+— write the test, apply the mutant, run it, revert — and on a non-final round
+you are paying it for code the next round may rewrite. #5088's yield went
+30 → 18 → 11 → **21**: the rise means round 3's fixes were themselves defective,
+so every falsifier built for them was built for code round 4 replaced.
+
+So: rounds 1..N−1 carry a **named** falsifier per must-fix, in the fix's
+docstring or the round report. The closing round builds and runs every one that
+is still standing, and the round is not clean until it has. **Nothing merges
+unfalsified** — which is the whole of what the rule protects — but nothing is
+falsified twice.
+
+⚠️ This is the same move `aa6ec839a` made for the comment sweep, for the same
+reason, and it is the one to check first if rounds start rising again: if the
+named-but-unbuilt falsifiers are what later rounds keep tripping over, the split
+is wrong and this paragraph is the evidence to revisit.
+
+⚠️ **Its absence entirely is what made #5027 take four rounds.** Rounds 1 and 2
+there shipped ~500 lines of fixes
 with none of the above. A reviewer probed eleven of them and got **eleven
 zeros** — so every fix was unreviewable, and each round's defect survived into
 the next:
@@ -189,9 +210,12 @@ grep the sibling suites for the thing you are about to declare untestable.
 It is the expensive half for anything touching timing, concurrency or
 post-commit ordering — #5027 needed a delayed-settle fake and a `setTimeout`
 handle recorder to reach two of its arms. Pay it there especially; those are the
-arms nothing else can see.
+arms nothing else can see. **That cost is exactly why building is the closing
+round's job** — a delayed-settle fake written for a round-2 fix that round 3
+rewrites is the purest form of the throwaway work the split removes.
 
-⚠️ **RUN the mutant. A falsifier you only reasoned about is not one**, and your
+⚠️ **RUN the mutant — in the closing round, for every falsifier you named
+along the way. A falsifier you only reasoned about is not one**, and your
 own is the one most likely to be too weak — you write it knowing the fix, so you
 naturally aim it at the failure you already fixed. Two from #5088, both of which
 looked airtight and both of which passed against the broken code:
@@ -213,4 +237,5 @@ reachable.
 - Read-only. The panel reports; it never edits code.
 - Scope is the changed lines **plus their enclosing declaration** (Step 2). The strict-diff reading has a blind spot for adjacent twins and it has cost real rounds.
 - Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps. On round 2+, fresh context **plus** the previous round's fix commits named as the audit target.
+- Falsifiers are **named every round and built in the closing one** (Step 6). A round that names none is not clean; a CLOSING round that has not built and run them is not clean either.
 - This is the specialist layer. The repo's `/code-review` and `/simplify` remain the canonical generic passes — don't duplicate them here.

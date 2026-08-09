@@ -35,7 +35,13 @@ Which round is final is not a prediction. It is determined structurally:
 
 So a `CLEAN` verdict is unreachable without a comment sweep on the same diff, and "at least once before merge" is a property of the command rather than something the author has to remember. If `comment-analyzer` then raises a must-fix, the verdict is `CHANGES REQUESTED` like any other — fix and re-run.
 
-Pass `--final` to force all four in one round (useful for a docs- or comment-heavy diff, where deferring the sweep just delays the only review that matters).
+⚠️ **"Final" means THE LAST ROUND THIS DIFF GETS — which is not the same as "no must-fix".** The caller can also leave the loop on `/ship-issue`'s live yield stop or its 3-round cap, and on those paths the diff is done being reviewed while must-fixes are still open. Read literally, rule 2 then skips the sweep forever.
+
+That is not hypothetical: **#5077 stopped on the yield rule and merged with NO comment sweep at all**, on a comment-heavy diff, because the round with no must-fix never arrived. Two rules that did not know about each other.
+
+So: **if the caller is stopping — for any reason — run `comment-analyzer` before reporting, even with must-fixes open.** Its findings then travel with the handoff instead of evaporating. `/ship-issue` Step 3 states the same obligation from the other side; if you ever change one, change both, because the failure mode is precisely that they drift apart.
+
+Pass `--final` to force all four in one round (useful for a docs- or comment-heavy diff, where deferring the sweep just delays the only review that matters — and it is the flag to reach for the moment you suspect this round is the last).
 
 Launch each round's reviewers in a single message (multiple `Agent` tool calls, one response) so they run concurrently. Each gets the diff scope and is told to review only the changed lines:
 

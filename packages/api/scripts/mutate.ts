@@ -198,6 +198,7 @@ async function runTarget(target: MutationTarget, timeoutMs: number): Promise<Sui
     return {
       pass: 0,
       fail: 0,
+      skip: 0,
       durationMs: result.durationMs,
       error: timedOut
         ? `timed out after ${Math.round(timeoutMs / 1000)}s — the mutation HANGS the suite rather than failing it`
@@ -335,6 +336,37 @@ for (const target of targets) {
       `baseline for ${target.name} (${target.file}) is RED — ${outcome.fail} failing. ` +
         "Every mutation count would be this breakage plus the mutation's, which is " +
         "indistinguishable from a strong result. Fix the tree first.",
+    );
+  }
+  // ⚠️ GUARDRAIL 4 — a baseline that SKIPPED tests is not a baseline (#5077).
+  //
+  // The three guardrails in the header all assume every test in the target ran.
+  // A skipped test cannot be killed by a mutation, so each one silently deflates
+  // the cell it would have contributed to — and unlike a red baseline, which
+  // inflates and is caught above, this one DEFLATES and reads as honest.
+  //
+  // The measured instance is the one #5077 was filed for: with `TEST_DATABASE_URL`
+  // unset, `identity-consumers-pg.test.ts` reports 6 pass / 72 skip / 0 fail, so
+  // `subject-cmp.md` regenerated its real kills (3, 1, 1, 37, 29, 3, 66) as ZEROS
+  // over a suite recorded as 6 instead of 78, with no warning anywhere.
+  //
+  // ⚠️ FAIL rather than flag-the-column, and fail BEFORE any mutation runs. The
+  // write path is the dangerous one — `--check` merely reports a false "stale",
+  // while a regenerate CLOBBERS numbers that were real — and both come through
+  // here, so one guard at the baseline closes both. It also generalises past the
+  // `-pg` case: any `.skip`/`.todo` a target picks up for any reason lands the
+  // same deflation, and this refuses all of them rather than the one cause.
+  if (outcome.skip !== 0) {
+    fail(
+      `baseline for ${target.name} (${target.file}) SKIPPED ${outcome.skip} of ` +
+        `${outcome.pass + outcome.skip} tests. A skipped test cannot be killed by a mutation, ` +
+        "so every count in this table would be silently deflated and the generated file would " +
+        "overwrite real numbers with zeros.\n" +
+        (process.env.TEST_DATABASE_URL === undefined
+          ? "         TEST_DATABASE_URL is UNSET, which is almost certainly the cause: " +
+            "*-pg.test.ts self-skips without it. Start Postgres (bun run db:up) and set it."
+          : "         TEST_DATABASE_URL is set, so this is NOT the usual -pg cause — find " +
+            "the .skip/.todo in the target before trusting any number from it."),
     );
   }
   baselines.set(target.name, outcome.pass);

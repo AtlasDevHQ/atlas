@@ -191,7 +191,7 @@ it, and that header is exactly what stops a reviewer looking closer.
       edits: [
         {
           file: SOURCE,
-          oldString: '  return text.replace(/\\|/g, "\\\\|");',
+          oldString: "  return text.replace(/\\\\?\\|/g, (match) => (match.startsWith(\"\\\\\") ? \"\\\\\\\\\\\\|\" : \"\\\\|\"));",
           newString: "  return text;",
         },
       ],

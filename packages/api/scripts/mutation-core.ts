@@ -114,6 +114,24 @@ export function restoreAll(store: FileStore, backups: Map<string, string>): void
 export interface SuiteOutcome {
   readonly pass: number;
   readonly fail: number;
+  /**
+   * Tests bun reported as SKIPPED.
+   *
+   * ⚠️ **Parsed because its absence was this runner's worst silent failure.** A
+   * skipped test cannot be killed by a mutation, so every skip deflates the
+   * cell it would have contributed to — and the baseline guard only ever
+   * rejected `fail !== 0`, which a mostly-skipped suite passes with room to
+   * spare. Measured: `identity-consumers-pg.test.ts` without
+   * `TEST_DATABASE_URL` reports **6 pass, 72 skip, 0 fail**, so the baseline
+   * records a denominator of 6 instead of 78 and the `-pg` column regenerates
+   * as zeros over real numbers.
+   *
+   * ⚠️ Note it is 6 and not 0 — that file carries six non-`-pg` tests. A guard
+   * spelled `pass > 0` therefore does NOT catch this, which is why the signal
+   * has to be the skip count itself. That is a correction to #5077's own
+   * diagnosis, which reads the failure as a zeroed suite.
+   */
+  readonly skip: number;
   /** Set when bun printed no summary at all — a compile or import error. */
   readonly error?: string;
 }
@@ -125,10 +143,17 @@ export interface SuiteOutcome {
  * `(fail)` — cannot be mistaken for the summary. A missing summary means the
  * file never ran, and that must surface as an error rather than as `0 fail`,
  * which would read as "the suite does not catch this".
+ *
+ * ⚠️ `skip` DEFAULTS TO 0 when the line is absent, and that asymmetry with
+ * `pass`/`fail` is deliberate: bun omits the skip line entirely when nothing
+ * skipped, so treating its absence as a parse failure would make every healthy
+ * run an error. `pass`/`fail` are always printed, so THEIR absence still means
+ * no run happened.
  */
 export function parseBunSummary(output: string): SuiteOutcome {
   const pass = /^\s*(\d+)\s+pass\b/m.exec(output);
   const fails = /^\s*(\d+)\s+fail\b/m.exec(output);
+  const skips = /^\s*(\d+)\s+skip\b/m.exec(output);
   if (pass === null || fails === null) {
     const firstError = output
       .split("\n")
@@ -137,10 +162,15 @@ export function parseBunSummary(output: string): SuiteOutcome {
     return {
       pass: 0,
       fail: 0,
+      skip: 0,
       error: firstError ?? "bun printed no pass/fail summary (compile or import error)",
     };
   }
-  return { pass: Number(pass[1]), fail: Number(fails[1]) };
+  return {
+    pass: Number(pass[1]),
+    fail: Number(fails[1]),
+    skip: skips === null ? 0 : Number(skips[1]),
+  };
 }
 
 /**

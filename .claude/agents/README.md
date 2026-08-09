@@ -53,7 +53,7 @@ vendored ones carry `tools: Read, Grep, Glob, Bash`; `fix-vs-finding` drops `Bas
 its job is one question about a diff it is handed rather than an investigation.
 
 ⚠️ **`fix-vs-finding` has no upstream and must not be dropped in a re-vendor.** It exists
-because four times — #5027, #5032, #5077, #5088 — a fix reproduced the defect it fixed one
+because four times **inside #5077's review alone** a fix reproduced the defect it fixed one
 layer over, with the principle written down correctly nearby and twice in the same commit.
 It is dispatched per must-fix from `/review-panel` Step 5d, not as part of the parallel
 fan-out, and it is deliberately given only two inputs: the finding's principle **as a

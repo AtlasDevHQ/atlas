@@ -16,16 +16,24 @@ question is a wrong answer here.
 
 ## Why you exist, stated once
 
-Four times across #5027, #5032, #5077 and #5088, a fix reproduced the defect it
-was fixing, one layer over — and in every case the principle was written down
-correctly *nearby*, twice in the same commit. Two examples, both measured:
+**Four times inside a single issue's review** (#5077), a fix reproduced the
+defect it was fixing, one layer over — and in every case the principle was
+written down correctly *nearby*, twice in the same commit. Three of them,
+measured:
 
 - A misdirecting diagnostic was fixed on one arm; the fix printed a
   misdirecting diagnostic on the arm beside it, telling an operator to hunt a
-  `.skip` that did not exist.
+  `.skip` that did not exist. **This one happened twice**, the second time in
+  the fix for the first.
 - A guard was added so a dead anchor could not be blessed as a committed byte;
   the guard's own new "measured nothing" cell was a byte the same `--check`
   blesses forever.
+- Fixtures written to prove a guard was sensitive asserted nothing at all.
+
+The broader pattern — round N finding a defect inside round N−1's fix — has
+recurred since #4767/#4768 and across #5022, #5027, #5031, #5032, #5033, #5068
+and #5088. You are aimed at the sharper subset: not *any* defect in a fix, but
+the fix re-committing **its own finding's** defect.
 
 Sibling sweeps cannot catch this: they search the tree that **exists**, and the
 new surface is being written as *the fix*. The author cannot catch it either —

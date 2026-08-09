@@ -65,6 +65,12 @@ export const navGroups: NavGroup[] = [
     items: [
       { href: "/admin/brain", label: "Overview" },
       { href: "/admin/brain/facts", label: "Facts" },
+      // "Vocabulary", qualified nowhere in the label and deliberately: the
+      // group already says Company Atlas, and CONTEXT.md's qualification
+      // ("Claim Vocabulary") exists to disambiguate from the `source`
+      // vocabulary — a fixed enum shipped in code that no customer touches and
+      // that has no admin surface to be confused with this one.
+      { href: "/admin/brain/vocabulary", label: "Vocabulary" },
     ],
   },
   {

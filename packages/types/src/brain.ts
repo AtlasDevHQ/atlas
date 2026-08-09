@@ -32,6 +32,7 @@
  */
 
 import type { PublishRefusedDraft } from "./mode";
+import type { ExportedVocabularySlotPosition } from "./migration";
 
 /** Which side of a subject-predicate-object claim an entity sits on. */
 export type BrainEntityRole = "subject" | "object";
@@ -1221,4 +1222,248 @@ export interface BrainFactCorrectionResponse {
   readonly supersededBy: string | null;
   /** `supersede` only: the `valid_to` stamped on the superseded fact. */
   readonly validTo: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// The Claim Vocabulary surface (#5087, ADR-0037 §6)
+// ---------------------------------------------------------------------------
+
+/**
+ * A claim's three slots, on the wire.
+ *
+ * An ALIAS of the region bundle's spelling, never a fourth copy of the union.
+ * `identity.ts` already pins its internal `SlotPosition` against
+ * `ExportedVocabularySlotPosition` in both directions, so aliasing here means
+ * this surface cannot drift from either — where a hand-written
+ * `"subject" | "predicate" | "object"` would be a third set to keep in step.
+ * The name differs because "exported" is the bundle's vocabulary and means
+ * nothing on a REST surface.
+ */
+export type BrainVocabularySlotPosition = ExportedVocabularySlotPosition;
+
+/**
+ * Which arm of the positional-visibility rule scoped a read.
+ *
+ * On the wire so the client can SAY which — *"predicate entries are shown to
+ * every approver"* vs *"entity entries are scoped to what you can read"* — and
+ * so a withheld count of zero is legible rather than merely reassuring. A client
+ * that could not tell the two apart would render the same "nothing hidden"
+ * sentence for both.
+ */
+export type BrainVocabularyScope = "unscoped" | "reader-scoped" | "deny-all";
+
+/**
+ * One norm the corpus has actually produced at a slot position — the authoring
+ * picker's row.
+ *
+ * ⚠️ **A norm, never a key.** ADR-0037 §6 forbids projecting a claim's identity
+ * KEY (`keys-not-on-the-wire.test.ts` is the guard); norms are what
+ * `brain_vocabulary_edge` has stored since migration 0189 and what a reviewer
+ * approving a merge has to be shown. `CONTEXT.md` pins surface / norm / key as
+ * three non-interchangeable levels, and this is the middle one.
+ */
+export interface BrainVocabularySurfaceOption {
+  /** The value an authoring request carries. Picked, never typed. */
+  readonly norm: string;
+  /** The most common surface folding into it — what a human recognises. */
+  readonly exampleSurface: string;
+  /** Live claims at this position whose surface norms to {@link norm}. */
+  readonly claims: number;
+  /** Distinct surfaces folding into it. `1` means the norm IS the spelling. */
+  readonly variants: number;
+}
+
+export interface BrainVocabularySurfaceList {
+  readonly position: BrainVocabularySlotPosition;
+  readonly surfaces: readonly BrainVocabularySurfaceOption[];
+  /**
+   * The corpus has more norms than this page carries.
+   *
+   * The line that tells an approver to filter rather than conclude their
+   * spelling is absent — which is the conclusion that sends them looking for a
+   * text box, and the text box is what this whole surface exists to remove.
+   */
+  readonly truncated: boolean;
+  readonly scope: BrainVocabularyScope;
+}
+
+/** One approved edge currently shaping identity. */
+export interface BrainVocabularyEdgeEntry {
+  readonly position: BrainVocabularySlotPosition;
+  readonly fromNorm: string;
+  readonly toNorm: string;
+  /**
+   * The approving user id, `local-operator`, or `null` for an auto-approved
+   * warehouse-derived edge — migration 0189's three legal values, unflattened.
+   * `approvedBy !== null` means "a human" by construction.
+   */
+  readonly approvedBy: string | null;
+  readonly approvedAt: string;
+  /**
+   * Whether a removal will leave rejection memory on a row that already exists,
+   * or has to create one.
+   *
+   * `true` for every edge this product's own seams wrote. `false` for an edge
+   * the region importer copied, which travels without its proposal (#5035) —
+   * surfaced so an approver knows the removal is doing slightly more than it
+   * looks like, rather than discovering it in the audit trail.
+   */
+  readonly hasRejectionMemory: boolean;
+}
+
+/** One position's disclosure accounting. */
+export interface BrainVocabularyPositionCounts {
+  readonly position: BrainVocabularySlotPosition;
+  readonly scope: BrainVocabularyScope;
+  /** Workspace-wide, content-free. The vocabulary's SIZE is not a secret. */
+  readonly total: number;
+  /** How many of those this reader may see. */
+  readonly scoped: number;
+  /**
+   * `total − scoped` — entries in force that this reader cannot see.
+   *
+   * ADR-0037 §6: **a withheld count, never a silent omission.** An approver must
+   * be able to tell *"12 entity edges you cannot see"* from *"none"*; a scoped
+   * `SELECT` renders those two identically.
+   */
+  readonly withheld: number;
+  /**
+   * False when the two statements behind the numbers disagreed and the delta
+   * was clamped.
+   *
+   * `loadFactOversight`'s reason: silently clamping renders as *"nothing is
+   * hidden from you"*, which is the pre-#4825 defect reproduced by its own fix.
+   */
+  readonly countsConsistent: boolean;
+}
+
+/** One curated cardinality currently arming supersession. */
+export interface BrainVocabularyCardinalityEntry {
+  /**
+   * A representative live surface for the canonical predicate.
+   *
+   * ⚠️ NOT the predicate key — `PredicateCardinalityRecord` states the same
+   * prohibition for itself. `null` when every claim that produced the key has
+   * since been retracted, which is a real state worth finding: an entry still
+   * arming supersession for a predicate with no live claims is exactly what an
+   * approver should be able to remove.
+   */
+  readonly predicateSurface: string | null;
+  readonly cardinality: string;
+  readonly sourceClass: string;
+  readonly proposedBy: string;
+  readonly reviewedBy: string | null;
+  readonly reviewedAt: string | null;
+  readonly claims: number;
+}
+
+/**
+ * What the empty state needs to be a COVERAGE STATEMENT rather than a
+ * congratulation.
+ *
+ * ⚠️ There is no caught-up state for a vocabulary — only what has been decided
+ * and what has not yet been observed. {@link comparableFacts} is the number that
+ * lets the surface say *why* Pending is empty specifically: the structural
+ * proposer fires only on claims with comparable objects.
+ */
+export interface BrainVocabularyCoverage {
+  readonly liveFacts: number;
+  readonly comparableFacts: number;
+  readonly pendingProposals: number;
+  readonly pendingCardinalities: number;
+}
+
+export interface BrainVocabularyInForceResponse {
+  readonly edges: readonly BrainVocabularyEdgeEntry[];
+  readonly counts: readonly BrainVocabularyPositionCounts[];
+  readonly cardinalities: readonly BrainVocabularyCardinalityEntry[];
+  readonly coverage: BrainVocabularyCoverage;
+  readonly truncated: boolean;
+}
+
+/** One side of a blast-radius delta, as the preview discloses it. */
+export interface BrainVocabularyBlastRadiusSide {
+  readonly total: number;
+  readonly pairs: readonly BrainFactWillSupersedePair[];
+  readonly withheld: number;
+  readonly truncated: boolean;
+  readonly countsConsistent: boolean;
+}
+
+/**
+ * The counterfactual's answer — a discriminated union, mirroring the engine's.
+ *
+ * ⚠️ The discrimination is the point and it must survive the wire. Flattened
+ * into one record with a nullable reason, a client that read `floor` before
+ * checking the reason would render *"at least 0 today, and every future claim in
+ * this slot"* for an object-position alias — a sentence that is false (no future
+ * claim in that slot can supersede) and is precisely the confident false
+ * all-clear the preview exists to prevent.
+ */
+export type BrainVocabularyBlastRadius =
+  | { readonly kind: "structurally-empty"; readonly reason: string }
+  | {
+      readonly kind: "computed";
+      readonly arming: BrainVocabularyBlastRadiusSide;
+      readonly disarming: BrainVocabularyBlastRadiusSide;
+      /** Always true — the count is a FLOOR, and the surface must say so. */
+      readonly floor: true;
+      readonly subtreeTruncated: boolean;
+    };
+
+export interface BrainVocabularyPreviewResponse {
+  readonly radius: BrainVocabularyBlastRadius;
+}
+
+/**
+ * A direct authoring attempt that SUCCEEDED.
+ *
+ * ⚠️ There is no `refused` arm, and its absence is the decision. Refusals leave
+ * as 4xx with the seam's own prose in `ErrorSchema.message` and its machine
+ * code in `ErrorSchema.error` — the house pattern (`refusalStatus` in
+ * `admin-brain-facts.ts`). A `200 { outcome: "refused" }` would put a failed
+ * write behind a success status, which every generic client — retry middleware,
+ * the admin mutation hook, an SDK — reads as "it worked".
+ */
+export type BrainVocabularyAuthorOutcome = "authored" | "already_approved";
+
+export interface BrainVocabularyAuthorResponse {
+  readonly outcome: BrainVocabularyAuthorOutcome;
+  /** The proposal row behind the edge — written, or converged on. */
+  readonly proposalId: string;
+  /**
+   * The human's decision landed on a proposal a producer had already queued.
+   *
+   * Worth surfacing rather than flattening: it means the row keeps the
+   * producer's `source_class`, so the audit trail will say `seam` where the
+   * approver remembers authoring — and 0190's unordered-pair constraint makes
+   * converging the only legal outcome, not a choice this seam made.
+   */
+  readonly convergedOnProposal: boolean;
+}
+
+export type BrainVocabularyRemoveOutcome = "removed" | "already_removed";
+
+export interface BrainVocabularyRemoveResponse {
+  readonly outcome: BrainVocabularyRemoveOutcome;
+  readonly proposalId: string;
+  /**
+   * The removal had to CREATE the rejection memory an imported edge lacked.
+   *
+   * `true` only for an edge the region importer copied without its proposal
+   * (#5035). Surfaced because it is the one case where a removal writes a row
+   * the approver never saw — and without that row the next producer run would
+   * re-propose the pair they just deleted.
+   */
+  readonly memoryCreated: boolean;
+}
+
+/**
+ * Curating or un-curating a predicate — the adjudicated record of whether values
+ * coexist in a slot.
+ *
+ * No refusal arm, for {@link BrainVocabularyAuthorResponse}'s reason.
+ */
+export interface BrainVocabularyCardinalityWriteResponse {
+  readonly cardinality: string;
 }

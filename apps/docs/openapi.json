@@ -26182,6 +26182,1501 @@
         "operationId": "postAdminBrainFactsByIdCorrect"
       }
     },
+    "/api/v1/admin/brain-vocabulary/surfaces": {
+      "get": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "Norms the corpus has actually produced at a slot position",
+        "description": "The authoring picker. Returns the lexical norms present in live `brain_facts` rows at one slot position, each with the most common surface that folds into it, its live claim count, and how many distinct spellings it merges. ⚠️ Authoring is a PICKER and never a norm text box, and this endpoint is why. `lexicalNorm` is ASCII-only case folding with a specific separator class, so a human cannot reliably predict what the pipeline produced from `499 a month` vs `499 A Month` vs `499-a-month` — and a wrong guess authors an edge whose `from_norm` no fact has ever produced. It inserts cleanly, the closure recomputes, the re-key moves zero rows and the preview reads 0: indistinguishable from a merge that worked. `q` FILTERS this list; it never supplies a value. Scoped by the positional-visibility rule: predicate-position surfaces are workspace-scoped only (a verb phrase discloses nothing an approver could not guess), entity-position surfaces are gated by the reader's own fail-closed visibility predicate. `truncated` means the corpus has more norms than this page carries — filter rather than concluding a spelling is absent.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "One of: subject, predicate, object"
+            },
+            "required": true,
+            "description": "One of: subject, predicate, object",
+            "name": "position",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Case-insensitive substring filter over the surface and the norm"
+            },
+            "required": false,
+            "description": "Case-insensitive substring filter over the surface and the norm",
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Maximum norms (default and max 100)"
+            },
+            "required": false,
+            "description": "Maximum norms (default and max 100)",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Norms observed at this position, most-used first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "position": {
+                      "type": "string",
+                      "enum": [
+                        "subject",
+                        "predicate",
+                        "object"
+                      ]
+                    },
+                    "surfaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "norm": {
+                            "type": "string"
+                          },
+                          "exampleSurface": {
+                            "type": "string"
+                          },
+                          "claims": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "variants": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "norm",
+                          "exampleSurface",
+                          "claims",
+                          "variants"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "unscoped",
+                        "reader-scoped",
+                        "deny-all"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "position",
+                    "surfaces",
+                    "truncated",
+                    "scope"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed norms, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainVocabularySurfaces"
+      }
+    },
+    "/api/v1/admin/brain-vocabulary/in-force": {
+      "get": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "What is currently shaping identity",
+        "description": "Approved alias edges and curated predicate cardinalities currently in force, plus the coverage numbers the empty state needs. Carries the SAME positional-visibility rule the pending queue uses, applied to populations: predicate-position edges unscoped, entity-position edges reader-scoped on BOTH sides — re-derived at read time by joining `brain_facts` on the two norms, because `brain_vocabulary_proposal` stores no fact ids and the vocabulary is permanently ACL-less (ADR-0037 §6, correcting T11 §5(b)). `counts` carries a WITHHELD count per position, never a silent omission: the vocabulary is workspace-global, so its SIZE is not a secret even when its contents are, and an approver must be able to tell \"12 entity edges you cannot see\" from \"none\". `countsConsistent` reports a concurrent write that made the two statements disagree, rather than clamping the delta to a reassuring zero. ⚠️ An entity edge invisible to you is also UN-REMOVABLE by you. That hole is fail-closed and correct, and it is logged server-side rather than skipped silently — a workspace whose only admin cannot see a bad edge's populations has no in-product recovery path. `coverage` is what makes the empty state a coverage statement rather than a congratulation: there is no caught-up state for a vocabulary, only what has been decided and what has not yet been observed. `comparableFacts` is why Pending is empty specifically — the structural proposer fires only on claims with comparable objects.",
+        "responses": {
+          "200": {
+            "description": "Edges, cardinalities, per-position disclosure counts, and coverage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "edges": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "position": {
+                            "type": "string",
+                            "enum": [
+                              "subject",
+                              "predicate",
+                              "object"
+                            ]
+                          },
+                          "fromNorm": {
+                            "type": "string"
+                          },
+                          "toNorm": {
+                            "type": "string"
+                          },
+                          "approvedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "approvedAt": {
+                            "type": "string"
+                          },
+                          "hasRejectionMemory": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "position",
+                          "fromNorm",
+                          "toNorm",
+                          "approvedBy",
+                          "approvedAt",
+                          "hasRejectionMemory"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "counts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "position": {
+                            "type": "string",
+                            "enum": [
+                              "subject",
+                              "predicate",
+                              "object"
+                            ]
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "unscoped",
+                              "reader-scoped",
+                              "deny-all"
+                            ]
+                          },
+                          "total": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "scoped": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "withheld": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "countsConsistent": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "position",
+                          "scope",
+                          "total",
+                          "scoped",
+                          "withheld",
+                          "countsConsistent"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "cardinalities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "predicateSurface": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "cardinality": {
+                            "type": "string"
+                          },
+                          "sourceClass": {
+                            "type": "string"
+                          },
+                          "proposedBy": {
+                            "type": "string"
+                          },
+                          "reviewedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "reviewedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "claims": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "predicateSurface",
+                          "cardinality",
+                          "sourceClass",
+                          "proposedBy",
+                          "reviewedBy",
+                          "reviewedAt",
+                          "claims"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "coverage": {
+                      "type": "object",
+                      "properties": {
+                        "liveFacts": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "comparableFacts": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "pendingProposals": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "pendingCardinalities": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "liveFacts",
+                        "comparableFacts",
+                        "pendingProposals",
+                        "pendingCardinalities"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "edges",
+                    "counts",
+                    "cardinalities",
+                    "coverage",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed norms, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainVocabularyInForce"
+      }
+    },
+    "/api/v1/admin/brain-vocabulary/preview": {
+      "post": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "One decision's blast radius",
+        "description": "The counterfactual behind every approval and every removal on this surface (#5086): what becomes supersedable if you do this, and what becomes safe again. A removal is a re-key too, so it carries the same preview an approval does — on the `disarming` side. The answer is a DISCRIMINATED union. `structurally-empty` means the counterfactual cannot produce pairs by construction and says which of five reasons — an object-position alias (the collision never reads `object_key`, so such an alias changes what corroborates, not what supersedes), a predicate already curated `single`, a predicate never curated at all, a surface that norms away to nothing, or a removal naming a norm with no approved parent. Those are NOT zeros: \"0 pairs\" and \"this decision cannot produce pairs\" are the same number and opposite facts. `computed` carries both deltas, each with a workspace-wide `total`, a reader-scoped bounded sample gated on BOTH sides, a `withheld` count, and `countsConsistent`. `floor` is always true and must be rendered as one: a cardinality flip is not a batch — it applies to every future claim in the slot. `subtreeTruncated` means the alias subtree walk hit the depth bound, so both sides describe a smaller population than was asked about. Takes a predicate SURFACE, never a predicate key.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "alias-approval"
+                        ]
+                      },
+                      "position": {
+                        "type": "string",
+                        "enum": [
+                          "subject",
+                          "predicate",
+                          "object"
+                        ]
+                      },
+                      "fromNorm": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      },
+                      "toNorm": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "position",
+                      "fromNorm",
+                      "toNorm"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "alias-removal"
+                        ]
+                      },
+                      "position": {
+                        "type": "string",
+                        "enum": [
+                          "subject",
+                          "predicate",
+                          "object"
+                        ]
+                      },
+                      "fromNorm": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "position",
+                      "fromNorm"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "cardinality-flip"
+                        ]
+                      },
+                      "predicateSurface": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "predicateSurface"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "cardinality-removal"
+                        ]
+                      },
+                      "predicateSurface": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "predicateSurface"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The blast radius",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "radius": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "structurally-empty"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "computed"
+                              ]
+                            },
+                            "arming": {
+                              "type": "object",
+                              "properties": {
+                                "total": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "pairs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "draftId": {
+                                        "type": "string"
+                                      },
+                                      "draftLabel": {
+                                        "type": "string"
+                                      },
+                                      "supersededId": {
+                                        "type": "string"
+                                      },
+                                      "supersededLabel": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "draftId",
+                                      "draftLabel",
+                                      "supersededId",
+                                      "supersededLabel"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "withheld": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "truncated": {
+                                  "type": "boolean"
+                                },
+                                "countsConsistent": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "total",
+                                "pairs",
+                                "withheld",
+                                "truncated",
+                                "countsConsistent"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "disarming": {
+                              "type": "object",
+                              "properties": {
+                                "total": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "pairs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "draftId": {
+                                        "type": "string"
+                                      },
+                                      "draftLabel": {
+                                        "type": "string"
+                                      },
+                                      "supersededId": {
+                                        "type": "string"
+                                      },
+                                      "supersededLabel": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "draftId",
+                                      "draftLabel",
+                                      "supersededId",
+                                      "supersededLabel"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "withheld": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "truncated": {
+                                  "type": "boolean"
+                                },
+                                "countsConsistent": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "total",
+                                "pairs",
+                                "withheld",
+                                "truncated",
+                                "countsConsistent"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "floor": {
+                              "type": "boolean",
+                              "enum": [
+                                true
+                              ]
+                            },
+                            "subtreeTruncated": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "arming",
+                            "disarming",
+                            "floor",
+                            "subtreeTruncated"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "radius"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed norms, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainVocabularyPreview"
+      }
+    },
+    "/api/v1/admin/brain-vocabulary/author": {
+      "post": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "Write an alias edge directly",
+        "description": "Direct human authoring (ADR-0037 §6) — the only route by which #5000's own entry is ever written, since the structural proposer provably cannot propose it. Writes THROUGH the proposal table: a `human`-sourced proposal decided `approved` in the SAME transaction. Writing the edge directly would be one line shorter and would leave a later removal with no row to stamp `rejected` on, so the next producer run re-proposes the pair a human just deleted — #4507's failure returning through the one path authoring exists to serve. Atomic: the proposal row, the edge, the closure rebuild and the workspace-wide drift re-key commit together or not at all. A failing re-key leaves no proposal row and no edge. REFUSED when either norm has no live claim at that position, and the refusal names which side is empty — an alias for a norm the corpus has never produced is indistinguishable from a merge that worked. Also refused for a pair carrying permanent rejection memory: authoring over a removal would make every removal undoable by the next producer run. Converges on an existing pending proposal rather than inserting a second row — migration 0190's unordered-pair constraint makes that not a choice — and refuses to silently flip a producer's directed proposal.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "position": {
+                    "type": "string",
+                    "enum": [
+                      "subject",
+                      "predicate",
+                      "object"
+                    ]
+                  },
+                  "fromNorm": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "toNorm": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "position",
+                  "fromNorm",
+                  "toNorm"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The edge is approved and in force. `convergedOnProposal` says whether the decision landed on a proposal a producer had already queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "authored",
+                        "already_approved"
+                      ]
+                    },
+                    "proposalId": {
+                      "type": "string"
+                    },
+                    "convergedOnProposal": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "proposalId",
+                    "convergedOnProposal"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed norms, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The edge cannot be authored — a side with no live claim, a pair carrying permanent rejection memory, a norm that already has an approved parent, an edge that would close a cycle, or a direction that contradicts an existing directed proposal. The message says which and what to do instead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainVocabularyAuthor"
+      }
+    },
+    "/api/v1/admin/brain-vocabulary/remove": {
+      "post": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "Take an alias edge back out of force",
+        "description": "Removal is a RECOMPUTATION rather than a destructive write (ADR-0037 §6): the edge is dropped, the position's closure is rebuilt from what remains — so an edge this one was hiding lands back on its prior target — and every affected claim is re-keyed from its SURFACE, which is the only expression that gets the undo direction right. It leaves permanent rejection memory, and that is what makes it stick: without it a producer re-writes what a human removed. An edge the region importer copied travels without its proposal row (#5035), so this route CREATES the memory in that case rather than removing an edge nothing can remember — `memoryCreated` says when it did. Addressed by PAIR, in either order: the edge's own stored order decides which norm is the child. Needs the same owner/admin entitlement authoring does — a removal is the graver verb of the two.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "position": {
+                    "type": "string",
+                    "enum": [
+                      "subject",
+                      "predicate",
+                      "object"
+                    ]
+                  },
+                  "fromNorm": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "toNorm": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "position",
+                  "fromNorm",
+                  "toNorm"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The edge is gone, the closure is rebuilt, and the corpus is re-keyed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "removed",
+                        "already_removed"
+                      ]
+                    },
+                    "proposalId": {
+                      "type": "string"
+                    },
+                    "memoryCreated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "proposalId",
+                    "memoryCreated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed norms, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No approved edge joins this pair at this position",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainVocabularyRemove"
+      }
+    },
+    "/api/v1/admin/brain-vocabulary/cardinality": {
+      "post": {
+        "tags": [
+          "Admin — Claim Vocabulary"
+        ],
+        "summary": "Curate or un-curate a canonical predicate",
+        "description": "Direct human authoring of a predicate's cardinality (ADR-0037 §3(d)3) — the human IS the approval, so this writes `approved` in one step. ⚠️ **The blast radius is retroactive.** Flipping a predicate to `single` makes every existing published pair in that slot supersedable at the NEXT publish, with no per-row record of the regime each fact was written under — so call `/preview` with `cardinality-flip` first and render its count as the FLOOR it is. `multi` is the un-curation: the adjudicated record that values coexist, and the only way to take a predicate back out of `single` short of deletion. Absent from the table already MEANS `multi`, so a stored `multi` is a human declining the question. Takes a predicate SURFACE. The canonical key is derived server-side through the workspace's own vocabulary, so the alias closure is applied — curating `is priced at` after `is priced at → priced at` is approved correctly curates `priced at`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "predicateSurface": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "cardinality": {
+                    "type": "string",
+                    "enum": [
+                      "single",
+                      "multi"
+                    ]
+                  }
+                },
+                "required": [
+                  "predicateSurface",
+                  "cardinality"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The entry is approved and in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "cardinality": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "cardinality"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed norms, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — direct authoring and removal need the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being written rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The predicate already carries an entry this write may not overwrite. Reachable through `declarePredicateCardinality`'s shared refusal contract; the message says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainVocabularyCardinality"
+      }
+    },
     "/api/v1/admin/sessions": {
       "get": {
         "tags": [
@@ -85564,6 +87059,9 @@
     },
     {
       "name": "Admin — Cache"
+    },
+    {
+      "name": "Admin — Claim Vocabulary"
     },
     {
       "name": "Admin — Compliance"

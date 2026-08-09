@@ -37,10 +37,10 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `TENSION_CANDIDATES_SQL` repointed at the surface columns | 7 | 1 |
 | the tension call site binds raw surfaces | 7 | 1 |
 | `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 10 | 0 |
-| `supersessionCollisionJoin` repointed at the surface columns | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches |
+| `supersessionCollisionJoin` repointed at the surface columns | 1 | 0 |
 | `supersessionCollisionPredicate` back on `object_key <> object_key` | 3 | 0 |
-| `subject_key =` dropped from the collision join | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches |
-| `predicate_key =` dropped from the collision join | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches |
+| `subject_key =` dropped from the collision join | 1 | 0 |
+| `predicate_key =` dropped from the collision join | 1 | 0 |
 | `comparableDifferentSql` loses its `split_part` tag equality arm | 1 | 0 |
 
 Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 70 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
@@ -65,11 +65,3 @@ Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests_
 - **`subject_key =` dropped from the collision join** — ⚠️ A WIDENING, and the direction that costs a stamp: two tiers priced differently would collide. Dies on `subject-differs`, whose objects are money precisely so the OBJECT arm does not block it first.
 - **`predicate_key =` dropped from the collision join** — ⚠️ The same widening one slot over, and the one the repo most needed: the whole supersession section of `promotion-pg.test.ts` runs on a single predicate, so deleting this arm broke no test anywhere before `predicate-differs` existed.
 - **`comparableDifferentSql` loses its `split_part` tag equality arm** — `number:499` and `money:USD:499` are unequal STRINGS that nothing proves are different VALUES. Dies on `cross-type-rival` here, and on `object-cmp-pg.test.ts`'s per-row parity tests at the SQL level.
-
-## ⚠️ Flagged
-
-A `whole-suite` flag means the count reached ~every test in the file. That is usually a mutation that broke SETUP rather than the behaviour under test, and the honest count is much smaller. An `ANCHOR` flag means nothing was mutated at all.
-
-- **`supersessionCollisionJoin` repointed at the surface columns** — identity-consumers-pg.test.ts: ANCHOR: 0 matches; reconcile.test.ts: ANCHOR: 0 matches
-- **`subject_key =` dropped from the collision join** — identity-consumers-pg.test.ts: ANCHOR: 0 matches; reconcile.test.ts: ANCHOR: 0 matches
-- **`predicate_key =` dropped from the collision join** — identity-consumers-pg.test.ts: ANCHOR: 0 matches; reconcile.test.ts: ANCHOR: 0 matches

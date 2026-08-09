@@ -305,20 +305,20 @@ describe("⚠️ baselineProblem — every way a baseline can lie (#5077)", () =
   });
 
   test("RED — the inflation case, which was the only one guarded before", () => {
-    expect(baselineProblem({ ...ok, fail: 3, ran: 67 })).toContain("RED");
+    expect(baselineProblem({ ...ok, fail: 3, ran: 67 })).toMatchObject({ kind: "red" });
   });
 
   test("EMPTY — zero tests is not a baseline", () => {
     // Reachable by renaming or emptying a target file, or by a rotted
     // `target.file` path. Every cell would then render an honest-looking 0
     // meaning "the suite does not catch this".
-    expect(baselineProblem({ ...ok, pass: 0, ran: 0 })).toContain("ZERO");
+    expect(baselineProblem({ ...ok, pass: 0, ran: 0 })).toMatchObject({ kind: "empty" });
   });
 
   test("SKIPPED — #5077's own case", () => {
     const problem = baselineProblem({ pass: 6, fail: 0, skip: 72, todo: 0, ran: 78 });
-    expect(problem).toContain("SKIPPED 72");
-    expect(problem).toContain("deflated");
+    expect(problem?.kind).toBe("deflated");
+    expect(problem?.message).toContain("SKIPPED 72");
   });
 
   test("⚠️ TODO — bun does not fold it into skip, and the first cut missed it", () => {
@@ -327,8 +327,8 @@ describe("⚠️ baselineProblem — every way a baseline can lie (#5077)", () =
     // todo published as 1 test, every cell deflated, guard silent — while the
     // guard's own comment claimed `.todo` was covered.
     const problem = baselineProblem({ pass: 1, fail: 0, skip: 0, todo: 1, ran: 2 });
-    expect(problem).not.toBeNull();
-    expect(problem).toContain("TODO");
+    expect(problem?.kind).toBe("deflated");
+    expect(problem?.message).toContain("TODO");
   });
 
   test("UNACCOUNTED — a bucket bun invents tomorrow is caught without naming it", () => {
@@ -336,13 +336,27 @@ describe("⚠️ baselineProblem — every way a baseline can lie (#5077)", () =
     // `Ran N` rather than enumerating buckets. `filtered out` is a fourth one
     // that already exists; this arm closes it and every future sibling.
     const problem = baselineProblem({ pass: 5, fail: 0, skip: 0, todo: 0, ran: 9 });
-    expect(problem).toContain("4 unclassified");
+    expect(problem?.kind).toBe("unaccounted");
+    expect(problem?.message).toContain("4 unclassified");
+  });
+
+  test("⚠️ RED and DEFLATED are different KINDS, so only one gets the -pg hint", () => {
+    // The caller prints "find the .skip/.todo in the target" for a deflated
+    // baseline. Appended to a RED one it sends an operator hunting a skip that
+    // does not exist — measured when a dead Postgres made two suites RED and
+    // the runner blamed a skip. The kind is what keeps the two apart.
+    expect(baselineProblem({ pass: 0, fail: 2, skip: 0, todo: 0, ran: 2 })?.kind).toBe("red");
+    expect(baselineProblem({ pass: 1, fail: 0, skip: 1, todo: 0, ran: 2 })?.kind).toBe("deflated");
+    // …and an unreadable suite is neither.
+    expect(baselineProblem({ pass: 0, fail: 0, skip: 0, todo: 0, ran: null, error: "boom" })?.kind).toBe(
+      "errored",
+    );
   });
 
   test("the accounting arm fires BEFORE the skip arm, so the message names the real gap", () => {
     // Both are true here. The unaccounted one is the more general statement and
     // must win, or an operator reads "SKIPPED 1" and misses the other three.
-    expect(baselineProblem({ pass: 1, fail: 0, skip: 1, todo: 0, ran: 5 })).toContain("unclassified");
+    expect(baselineProblem({ pass: 1, fail: 0, skip: 1, todo: 0, ran: 5 })?.kind).toBe("unaccounted");
   });
 });
 

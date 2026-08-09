@@ -17,9 +17,9 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 
 | Mutation | cardinality-pg.test.ts | cardinality.test.ts | correction.test.ts | brain-facts.test.ts | reconcile.test.ts |
 |---|---|---|---|---|---|
-| the collision reads a per-ROW cardinality again (the both-sides clause restored) | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches |
+| the collision reads a per-ROW cardinality again (the both-sides clause restored) | 9 | 0 | 0 | 4 | 0 |
 | `cardinalitySingleSql` stops filtering entries to `approved` | 1 | 1 | 0 | 2 | 0 |
-| `cardinalitySingleSql` reads `single` from anywhere in the workspace | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches | ⚠️ ANCHOR: 0 matches |
+| `cardinalitySingleSql` reads `single` from anywhere in the workspace | 2 | 1 | 0 | 1 | 0 |
 | the producer path may write `approved` instead of `pending` | 7 | 1 | 1 | 0 | 0 |
 | the producer path accepts a `multi` proposal | 1 | 5 | 0 | 0 | 0 |
 | the rejection memory is dropped (`ON CONFLICT DO NOTHING` → `DO UPDATE`) | 1 | 1 | 1 | 0 | 0 |
@@ -60,10 +60,3 @@ Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardi
 - **`logDegeneratePredicate` fires for every verb, not only `supersede`** — A `retract` or a vouch would then log *superseded a claim whose predicate normalizes away* about a verb that superseded nothing. The guard is the whole content of the line.
 - **`logDegeneratePredicate`'s call is removed** — The case is legal and permanent (`identityKey`'s ⚠️), produces no proposal, and without this line produces no record either — a supersede that vanished.
 - **the proposer runs INSIDE the correction's transaction** — Stands in for the placement change rather than reproducing it literally (the real one cannot be expressed as a local edit). What it removes is the proposer's access to the committed `supersedes` edge — which is why the placement is post-commit rather than a `SAVEPOINT`.
-
-## ⚠️ Flagged
-
-A `whole-suite` flag means the count reached ~every test in the file. That is usually a mutation that broke SETUP rather than the behaviour under test, and the honest count is much smaller. An `ANCHOR` flag means nothing was mutated at all.
-
-- **the collision reads a per-ROW cardinality again (the both-sides clause restored)** — cardinality-pg.test.ts: ANCHOR: 0 matches; cardinality.test.ts: ANCHOR: 0 matches; correction.test.ts: ANCHOR: 0 matches; brain-facts.test.ts: ANCHOR: 0 matches; reconcile.test.ts: ANCHOR: 0 matches
-- **`cardinalitySingleSql` reads `single` from anywhere in the workspace** — cardinality-pg.test.ts: ANCHOR: 0 matches; cardinality.test.ts: ANCHOR: 0 matches; correction.test.ts: ANCHOR: 0 matches; brain-facts.test.ts: ANCHOR: 0 matches; reconcile.test.ts: ANCHOR: 0 matches

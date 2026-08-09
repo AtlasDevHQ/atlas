@@ -430,13 +430,19 @@ for (const target of targets) {
     // "this is NOT the usual cause" and sent the operator hunting a `.skip`
     // that does not exist. `check-mutation-tables.sh` already uses `-z`; these
     // two must agree.
-    const pgHint =
-      process.env.TEST_DATABASE_URL === undefined || process.env.TEST_DATABASE_URL === ""
+    // ⚠️ ONLY the deflation arms get the -pg hint. A RED or ERRORED baseline
+    // told to "find the .skip/.todo" sends the operator hunting something that
+    // is not there — measured on this very change, when a dead Postgres made
+    // two suites RED and the runner blamed a skip.
+    const deflation = problem.kind === "deflated" || problem.kind === "unaccounted";
+    const pgHint = !deflation
+      ? ""
+      : process.env.TEST_DATABASE_URL === undefined || process.env.TEST_DATABASE_URL === ""
         ? "\n         TEST_DATABASE_URL is UNSET (or empty), which is almost certainly the " +
           "cause: *-pg.test.ts self-skips without it. Start Postgres (bun run db:up) and set it."
         : "\n         TEST_DATABASE_URL is set, so this is NOT the usual -pg cause — find the " +
           ".skip/.todo in the target before trusting any number from it.";
-    fail(`baseline for ${target.name} (${target.file}) ${problem}${pgHint}`);
+    fail(`baseline for ${target.name} (${target.file}) ${problem.message}${pgHint}`);
   }
   baselines.set(target.name, outcome.pass);
   timeouts.set(target.name, options.timeoutMs ?? suiteTimeoutMs(outcome.durationMs));

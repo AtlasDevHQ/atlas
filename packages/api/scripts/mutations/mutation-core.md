@@ -18,7 +18,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the anchor check is removed entirely | 4 |
 | `applyMutation` snapshots lazily instead of before any write | 2 |
 | `restoreAll` forgets to clear the backup map | 2 |
-| `parseBunSummary` reports `0 fail` for a suite that never ran | ⚠️ ANCHOR: 0 matches |
+| `parseBunSummary` reports `0 fail` for a suite that never ran | 2 |
 | `parseBunSummary` stops anchoring the count to a line start | 1 |
 | `parseBunSummary` stops anchoring the PASS count to a line start | 1 |
 | `isWholeSuite` only fires on an exact total (`>=` ratio → `>= total`) | 1 |
@@ -33,7 +33,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 46 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 58 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 
@@ -53,5 +53,4 @@ Suite sizes: **mutate-core.test.ts** 46 tests (`src/__tests__/mutate-core.test.t
 
 A `whole-suite` flag means the count reached ~every test in the file. That is usually a mutation that broke SETUP rather than the behaviour under test, and the honest count is much smaller. An `ANCHOR` flag means nothing was mutated at all.
 
-- **`parseBunSummary` reports `0 fail` for a suite that never ran** — mutate-core.test.ts: ANCHOR: 0 matches
 - **`countOccurrences` loops forever on an empty needle (guard removed)** — mutate-core.test.ts: timed out after 30s — the mutation HANGS the suite rather than failing it

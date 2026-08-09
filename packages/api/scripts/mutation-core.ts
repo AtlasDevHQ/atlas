@@ -366,27 +366,50 @@ export function anchorFailures(rows: ReadonlyMap<string, ReadonlyMap<string, Cel
  *    `Ran N tests` closes every bucket bun has now and every one it adds later,
  *    rather than chasing its release notes.
  */
-export function baselineProblem(outcome: SuiteOutcome): string | null {
-  if (outcome.error !== undefined) return `did not run: ${outcome.error}`;
+export interface BaselineProblem {
+  /**
+   * ⚠️ Present so the CALLER can decide which remediation to print.
+   *
+   * The first cut returned a bare string and `mutate.ts` appended the
+   * TEST_DATABASE_URL hint to all of them — so a suite that was simply RED got
+   * told to "find the .skip/.todo in the target", sending an operator hunting a
+   * skip that does not exist. That is the same misdirecting-diagnostic defect
+   * the empty-string env check fixed one arm over, reintroduced by the fix for
+   * it. Only `deflated` and `unaccounted` are about tests that did not run.
+   */
+  readonly kind: "errored" | "red" | "empty" | "unaccounted" | "deflated";
+  readonly message: string;
+}
+
+export function baselineProblem(outcome: SuiteOutcome): BaselineProblem | null {
+  if (outcome.error !== undefined) {
+    return { kind: "errored", message: `did not run: ${outcome.error}` };
+  }
   if (outcome.fail !== 0) {
-    return (
-      `is RED — ${outcome.fail} failing. Every mutation count would be this breakage plus the ` +
-      "mutation's, which is indistinguishable from a strong result. Fix the tree first."
-    );
+    return {
+      kind: "red",
+      message:
+        `is RED — ${outcome.fail} failing. Every mutation count would be this breakage plus the ` +
+        "mutation's, which is indistinguishable from a strong result. Fix the tree first.",
+    };
   }
   if (outcome.pass === 0) {
-    return (
-      "ran ZERO tests. A baseline of nothing is not a baseline: every cell would render an " +
-      "honest-looking 0 meaning 'the suite does not catch this'. Check the target's path."
-    );
+    return {
+      kind: "empty",
+      message:
+        "ran ZERO tests. A baseline of nothing is not a baseline: every cell would render an " +
+        "honest-looking 0 meaning 'the suite does not catch this'. Check the target's path.",
+    };
   }
   const accounted = outcome.pass + outcome.fail + outcome.skip + outcome.todo;
   if (outcome.ran !== null && accounted !== outcome.ran) {
     const missing = outcome.ran - accounted;
-    return (
-      `ran ${outcome.ran} tests but only ${accounted} are accounted for (${missing} unclassified). ` +
-      "A test that did not run cannot be killed by a mutation, so every count would be deflated."
-    );
+    return {
+      kind: "unaccounted",
+      message:
+        `ran ${outcome.ran} tests but only ${accounted} are accounted for (${missing} unclassified). ` +
+        "A test that did not run cannot be killed by a mutation, so every count would be deflated.",
+    };
   }
   if (outcome.skip !== 0 || outcome.todo !== 0) {
     const total = accounted;
@@ -396,10 +419,12 @@ export function baselineProblem(outcome: SuiteOutcome): string | null {
         : outcome.skip === 0
           ? `marked TODO on ${outcome.todo}`
           : `SKIPPED ${outcome.skip} and marked TODO on ${outcome.todo}`;
-    return (
-      `${what} of ${total} tests. A skipped test cannot be killed by a mutation, so every count ` +
-      "would be silently deflated and the generated file would overwrite real numbers with zeros."
-    );
+    return {
+      kind: "deflated",
+      message:
+        `${what} of ${total} tests. A skipped test cannot be killed by a mutation, so every count ` +
+        "would be silently deflated and the generated file would overwrite real numbers with zeros.",
+    };
   }
   return null;
 }

@@ -252,6 +252,58 @@ export type StructurallyEmptyReason =
   | "no-such-edge";
 
 /**
+ * Is the predicate slot this decision moves a population INTO curated `single`?
+ *
+ * ## The count shipped; the sentence did not
+ *
+ * {@link aliasExprs}' predicate arm already re-points the cardinality lookup, so
+ * the arming total for `is priced at → priced at` into a curated-single
+ * `priced at` ALREADY includes the pairs the merge newly arms. This field adds
+ * no arithmetic — it names where that number came from. Without it an approver
+ * sees a larger number with no explanation, which is the *magnitude but not
+ * kind* failure the module header spends four paragraphs on, and ADR-0037 §6's
+ * amendment calls this the more dangerous direction: *supersession is now armed
+ * for claims that were safe a moment earlier*.
+ *
+ * ## "Not asked" is its own arm
+ *
+ * Not a nullable boolean. The gate reads `predicate_key`, so at the SUBJECT
+ * position the question does not arise, and both cardinality verbs move the gate
+ * itself rather than moving a population under it — their version of this
+ * question is answered by {@link StructurallyEmptyReason}'s `already-single` /
+ * `not-curated`. A `false` on any of those is a fabricated zero of exactly the
+ * kind that type exists to refuse. (The object position never reaches here: it
+ * takes its own radius arm before {@link planCounterfactual} runs.)
+ *
+ * ## One question, both alias verbs
+ *
+ * The slot the population LANDS IN, not "the alias's target" — because a removal
+ * lands one too. `removalKeyExpr` re-roots the subtree onto `fromNorm`, and if
+ * `fromNorm` carries a pre-existing approved `single` entry the removal arms
+ * supersession in the freshly-rooted slot by the same mechanism. #5093's
+ * falsification asked for that sweep; it is the same shape, so it gets the same
+ * sentence rather than a follow-up.
+ */
+export type TargetCardinality =
+  /** The decision moves no population under a cardinality gate. */
+  | { readonly kind: "not-asked" }
+  /** Asked; the landing slot carries no approved `single` entry. */
+  | { readonly kind: "uncurated" }
+  /**
+   * Asked, and yes — the population lands where supersession is already armed.
+   *
+   * The norm the counterfactual SUBSTITUTES, which for an approval is `to`'s
+   * current effective target rather than `to` as typed ({@link
+   * resolveEffectiveTarget}, and `approvalKeyExpr`'s ⚠️ for why the two differ).
+   * A norm, the class `BrainVocabularyEdgeEntry.toNorm` already puts on the
+   * wire — not a key projection, which ADR-0037 §6 forbids.
+   */
+  | { readonly kind: "curated-single"; readonly targetPredicate: string };
+
+/** No population moves under a cardinality gate. Frozen, like {@link NO_SUBTREE}. */
+const NOT_ASKED: TargetCardinality = Object.freeze({ kind: "not-asked" });
+
+/**
  * The counterfactual's answer — a DISCRIMINATED UNION, and the discrimination
  * is the module's thesis made unrepresentable rather than argued.
  *
@@ -307,6 +359,16 @@ export type BlastRadius =
       readonly arming: BlastRadiusSide;
       /** Pairs it would make safe again. Empty for every approval. */
       readonly disarming: BlastRadiusSide;
+      /**
+       * Whether the slot this decision moves a population INTO is curated
+       * `single` — see {@link TargetCardinality}.
+       *
+       * ⚠️ A DISCLOSURE of `arming`'s number, never a second computation of it.
+       * `oversight.ts:800-803`'s anti-drift rule: the moment this is derived
+       * from its own count the two can disagree, and a sentence that disagrees
+       * with the number beside it is worse than no sentence.
+       */
+      readonly targetCardinality: TargetCardinality;
       /**
        * ALWAYS true, and a field rather than a comment because the surface must
        * render the floor wording and a literal type is what makes that
@@ -868,6 +930,11 @@ export async function loadBlastRadius(
     kind: "computed",
     arming,
     disarming,
+    // ⚠️ CARRIED from the plan, never re-derived from `arming.total`. The two
+    // are one fact seen twice — the count follows the cardinality gate through
+    // `aliasExprs`, and this names the gate it followed — so deriving either
+    // from the other is how the sentence and the number come to disagree.
+    targetCardinality: plan.targetCardinality,
     floor: true,
     subtreeTruncated: plan.subtree.truncated,
   };
@@ -1054,6 +1121,14 @@ interface CounterfactualPlan {
    */
   readonly subtree: SubtreeProbe;
   /**
+   * Whether the slot this plan moves a population INTO is curated `single`.
+   *
+   * REQUIRED, not optional, for `probeDrifted`'s reason one field up: every arm
+   * must SAY the question does not arise rather than omit it, so "not asked"
+   * and "forgot to ask" are different keystrokes.
+   */
+  readonly targetCardinality: TargetCardinality;
+  /**
    * An ARMING-side total that comes from a different statement.
    *
    * ONE optional record rather than three loose ones. As two independent
@@ -1107,12 +1182,27 @@ async function planCounterfactual(
         params: [fromKey, toKey],
         ctes: [],
         subtree: NO_SUBTREE,
+        // SEQUENTIAL after `resolveEffectiveTarget`, and not a waterfall to
+        // unpick: the disclosure is about the slot the re-key WRITES, so it
+        // cannot be asked until the closure has said which slot that is.
+        targetCardinality: await targetCardinalityOf(db, workspaceId, request.position, toKey),
       };
     }
     case "alias-removal": {
       if (!isCollidingSlot(request.position)) return "object-position";
       const fromKey = identityKey(request.fromNorm);
       if (fromKey === null) return "unkeyable-surface";
+      // Both probes read `fromKey` and neither feeds the other, so they run
+      // together — the no-async-waterfalls rule, and the reason the approval arm
+      // above cannot do the same.
+      const [subtree, targetCardinality] = await Promise.all([
+        subtreeHitBound(db, workspaceId, request.position, fromKey, opts),
+        // ⚠️ `fromKey`, not a target: a removal re-roots the subtree onto
+        // `fromNorm` itself, so THAT is the slot the population lands in. If it
+        // carries a pre-existing approved `single` entry the removal arms
+        // supersession there, by the same mechanism an approval does.
+        targetCardinalityOf(db, workspaceId, request.position, fromKey),
+      ]);
       return {
         hypothetical: aliasExprs(request.position, removalKeyExpr(request.position, SUBTREE_CTE, 2)),
         // `$2` is BOTH the substituted key and the subtree seed, and they are the
@@ -1122,7 +1212,8 @@ async function planCounterfactual(
         // cannot make the walk start somewhere the substitution does not land.
         params: [fromKey, request.position],
         ctes: [subtreeCteSql(SUBTREE_CTE, 1, 3, 2, maxDepth(opts))],
-        subtree: await subtreeHitBound(db, workspaceId, request.position, fromKey, opts),
+        subtree,
+        targetCardinality,
       };
     }
     case "cardinality-flip":
@@ -1142,6 +1233,14 @@ async function planCounterfactual(
         params: [canonicalKey],
         ctes: [],
         subtree: NO_SUBTREE,
+        // ⚠️ NOT ASKED, and stated rather than defaulted. A cardinality verb
+        // moves the GATE, not a population under it — no claim changes slot —
+        // so "is the landing slot curated" has no referent here. The question
+        // these verbs DO answer is `structurallyEmptyReason`'s `already-single`
+        // / `not-curated`, which run before this function. Answering `false`
+        // would put *"the target predicate is not curated single"* on a flip
+        // preview, which is both meaningless and the reassuring direction.
+        targetCardinality: NOT_ASKED,
         // ⚠️ NO `extraWhere: d.predicate_key = $2`, and its absence is the
         // decision rather than an omission. It was there, and it was a SECOND
         // mechanism doing the gate's job: given `d.predicate_key = $2`, the
@@ -1370,21 +1469,84 @@ async function structurallyEmptyReason(
   if (request.kind === "cardinality-flip" || request.kind === "cardinality-removal") {
     const canonicalKey = identityKey(request.predicateSurface);
     if (canonicalKey === null) return null;
-    const { rows } = await db.query(
-      `SELECT 1 AS hit FROM brain_predicate_cardinality
-        WHERE workspace_id = $1 AND predicate_key = $2
-          AND cardinality = 'single' AND status = 'approved'`,
-      [workspaceId, canonicalKey],
-    );
     // The two kinds read the SAME probe and branch on opposite answers: a flip
     // has nothing to compute when the entry already exists, and a removal has
     // nothing to compute when it does not. One statement rather than two so the
     // "is this predicate curated" question has one spelling.
-    const curated = rows.length > 0;
+    const curated = await curatedSingle(db, workspaceId, canonicalKey);
     if (request.kind === "cardinality-flip" && curated) return "already-single";
     if (request.kind === "cardinality-removal" && !curated) return "not-curated";
   }
   return null;
+}
+
+/**
+ * Does this predicate key carry an approved `single` entry?
+ *
+ * ⚠️ ONE spelling of the question, called from both places that ask it:
+ * {@link structurallyEmptyReason}'s two cardinality verbs and
+ * {@link targetCardinalityOf}'s disclosure. It was inline in the first when the
+ * second was written, and a second copy is how a preview comes to say *"the
+ * target is uncurated"* beside a count computed against a gate that disagreed —
+ * the module's own two-statements-disagreeing failure, in prose.
+ *
+ * It is deliberately NOT {@link cardinalitySingleSql}. That expression is
+ * correlated on `${alias}.workspace_id` and lives INSIDE the collision join,
+ * where its whole job is to be one arm of a row predicate; this is a
+ * standalone yes/no about one key. The two would have to be kept in step by
+ * hand either way, and `readPredicateCardinality`'s ⚠️ rules itself out for a
+ * different reason: it answers `null` for absent-OR-unreadable, and a caller
+ * reading that as *uncurated* makes exactly the inference it exists to prevent.
+ *
+ * Row presence is unambiguous, so there is no "drifted" third answer to carry:
+ * a statement that cannot be read THROWS, and a 500 on the preview is the
+ * fail-loud direction this surface wants.
+ */
+async function curatedSingle(
+  db: BrainCandidateReader,
+  workspaceId: string,
+  // ⚠️ NOT `predicateKey`, and the rename is not cosmetic:
+  // `keys-not-on-the-wire.test.ts` scans this file for the ORM spelling of a key
+  // column and refuses it OUTRIGHT — a fact-shaped type that grows a key field
+  // is the leak it exists to stop, and the arm is deliberately over-broad
+  // because a missed key is the unrecoverable direction. `canonicalKey` is the
+  // name `planCounterfactual` already uses for this same value.
+  canonicalKey: string,
+): Promise<boolean> {
+  const { rows } = await db.query(
+    `SELECT 1 AS hit FROM brain_predicate_cardinality
+      WHERE workspace_id = $1 AND predicate_key = $2
+        AND cardinality = 'single' AND status = 'approved'`,
+    [workspaceId, canonicalKey],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * The compound-blast-radius disclosure for one alias decision.
+ *
+ * `targetKey` is the key the counterfactual SUBSTITUTES — `toKey` for an
+ * approval, `fromKey` for a removal — rather than the norm the request named,
+ * so the sentence describes the slot the re-key actually writes. Passing the
+ * requested norm here would name a slot nothing lands in whenever `to` is
+ * itself aliased, which is `approvalKeyExpr`'s ⚠️ reproduced one layer up.
+ *
+ * ⚠️ The position check is what keeps a subject alias unanswerable. It is a
+ * runtime narrowing of {@link CollidingSlot} rather than a type-level one
+ * because `planCounterfactual` reaches here with the position still open; the
+ * TYPE-level half of the AC is that `targetPredicate` is unreadable on the two
+ * arms that do not carry it.
+ */
+async function targetCardinalityOf(
+  db: BrainCandidateReader,
+  workspaceId: string,
+  position: CollidingSlot,
+  targetKey: string,
+): Promise<TargetCardinality> {
+  if (position !== "predicate") return NOT_ASKED;
+  return (await curatedSingle(db, workspaceId, targetKey))
+    ? { kind: "curated-single", targetPredicate: targetKey }
+    : { kind: "uncurated" };
 }
 
 /**

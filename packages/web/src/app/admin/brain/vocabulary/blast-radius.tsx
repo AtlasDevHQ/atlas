@@ -4,6 +4,7 @@ import type {
   BrainVocabularyBlastRadius,
   BrainVocabularyObjectRadiusSide,
   BrainVocabularyStructurallyEmptyReason,
+  BrainVocabularyTargetCardinality,
 } from "@/ui/lib/types";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertTriangle, Info } from "lucide-react";
@@ -123,6 +124,8 @@ export function BlastRadiusPreview({
         consistent={arming.countsConsistent}
       />
 
+      <TargetCardinalityLine target={radius.targetCardinality} />
+
       <SideLine
         tone="disarming"
         label="become safe again"
@@ -156,6 +159,55 @@ export function BlastRadiusPreview({
         </ul>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The COMPOUND blast radius, in prose beside the count (#5093).
+ *
+ * ## What the number alone does not say
+ *
+ * A predicate-position alias moves a claim's `predicate_key`, and the
+ * single-valued gate is a lookup ON that key. The engine follows it, so the
+ * count above is already right — and that is precisely the problem the
+ * disclosure fixes: an approver aliasing into a curated-single predicate sees a
+ * LARGER NUMBER WITH NO EXPLANATION OF WHERE IT CAME FROM. *A number gives
+ * magnitude but not kind* is the failure this whole surface exists to prevent,
+ * and #5025 recorded this interaction as the one place the compound radius is
+ * visible at all.
+ *
+ * The sentence has to say the MECHANISM, not just the fact: nothing about these
+ * claims changed, they moved into a slot where a rule was already in force.
+ *
+ * ## Why the other two arms render nothing
+ *
+ * `uncurated` is the ordinary case and needs no sentence — adding *"the target
+ * is not curated single-valued"* would be an all-clear about a hazard nobody
+ * asked about, next to a count that has other reasons to be non-zero.
+ * `not-asked` renders nothing because there is nothing to say: at the subject
+ * position, and for both cardinality verbs, the question does not arise. That is
+ * the whole reason the wire type has three arms rather than a boolean — see
+ * `BrainVocabularyTargetCardinality`.
+ *
+ * ⚠️ Deliberately NOT gated on `arming.total > 0`. It is a structural fact about
+ * the decision, and a curated target with a zero count is exactly the case where
+ * an approver most needs to know the slot is armed for every FUTURE claim too —
+ * the `floor` argument, one field over.
+ */
+function TargetCardinalityLine({ target }: { target: BrainVocabularyTargetCardinality }) {
+  if (target.kind !== "curated-single") return null;
+  return (
+    <p className="text-foreground">
+      <span className="font-medium">
+        ⚠️ {target.targetPredicate} is already curated single-valued.
+      </span>{" "}
+      <span className="text-muted-foreground">
+        This decision moves the whole population of the aliased predicate into{" "}
+        {target.targetPredicate}&rsquo;s slot — a slot where supersession is already armed. Any
+        pairs counted above become supersedable not because a claim changed, but because it now
+        shares a slot with a rule that was already in force.
+      </span>
+    </p>
   );
 }
 

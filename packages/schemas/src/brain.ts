@@ -79,6 +79,7 @@ import type {
   BrainVocabularyStructurallyEmptyReason,
   BrainVocabularySurfaceList,
   BrainVocabularySurfaceOption,
+  BrainVocabularyTargetCardinality,
 } from "@useatlas/types";
 
 /** Mirrors `BRAIN_FACT_STATUSES` in `packages/api/src/lib/brain/types.ts`. */
@@ -985,6 +986,21 @@ export const BrainVocabularyBlastRadiusSideSchema = z.strictObject({
 }) satisfies z.ZodType<BrainVocabularyBlastRadiusSide, unknown>;
 
 /**
+ * The compound blast radius, as a DISCRIMINATED union on the wire.
+ *
+ * ⚠️ `targetPredicate` is on the `curated-single` arm ALONE, and a `z.union` of
+ * strict objects is what makes that unreadable elsewhere at runtime as well as
+ * in the type. Flattened to `{curatedSingle: boolean, targetPredicate: string |
+ * null}` a client would render *"the target predicate is not curated"* for a
+ * subject alias, which is a confident answer to a question nobody asked.
+ */
+export const BrainVocabularyTargetCardinalitySchema = z.union([
+  z.strictObject({ kind: z.literal("not-asked") }),
+  z.strictObject({ kind: z.literal("uncurated") }),
+  z.strictObject({ kind: z.literal("curated-single"), targetPredicate: z.string() }),
+]) satisfies z.ZodType<BrainVocabularyTargetCardinality, unknown>;
+
+/**
  * The counterfactual, as a DISCRIMINATED union on the wire.
  *
  * ⚠️ A union rather than one record with a nullable reason, because the engine's
@@ -1013,6 +1029,7 @@ export const BrainVocabularyBlastRadiusSchema = z.union([
     kind: z.literal("computed"),
     arming: BrainVocabularyBlastRadiusSideSchema,
     disarming: BrainVocabularyBlastRadiusSideSchema,
+    targetCardinality: BrainVocabularyTargetCardinalitySchema,
     floor: z.literal(true),
     subtreeTruncated: z.boolean(),
   }),
@@ -1088,6 +1105,26 @@ type _BlastRadiusArmsCovered = [
   : never;
 const _blastRadiusArmsCovered: _BlastRadiusArmsCovered = true;
 void _blastRadiusArmsCovered;
+
+/**
+ * Pin: every target-cardinality arm has a schema arm — `_BlastRadiusArmsCovered`'s
+ * reason, applied to the union NESTED inside the `computed` arm.
+ *
+ * It needs its own pin rather than riding the one above, which compares only the
+ * OUTER discriminant: dropping `curated-single` here leaves `kind: "computed"`
+ * covered, so the outer pin still passes and `/preview` 500s on exactly the
+ * decision this field was added to disclose.
+ */
+type _TargetCardinalityArmsCovered = [
+  Exclude<
+    BrainVocabularyTargetCardinality["kind"],
+    z.infer<typeof BrainVocabularyTargetCardinalitySchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _targetCardinalityArmsCovered: _TargetCardinalityArmsCovered = true;
+void _targetCardinalityArmsCovered;
 
 export const BrainVocabularyCardinalityWriteResponseSchema = z.strictObject({
   cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),

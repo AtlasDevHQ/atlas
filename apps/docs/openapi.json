@@ -28165,6 +28165,59 @@
                               ],
                               "additionalProperties": false
                             },
+                            "targetCardinality": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "not-asked"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "uncurated"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "curated-single"
+                                      ]
+                                    },
+                                    "targetPredicate": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "targetPredicate"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
                             "floor": {
                               "type": "boolean",
                               "enum": [
@@ -28179,6 +28232,7 @@
                             "kind",
                             "arming",
                             "disarming",
+                            "targetCardinality",
                             "floor",
                             "subtreeTruncated"
                           ],

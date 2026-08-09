@@ -170,6 +170,7 @@ function installFetchStub() {
           jsonResponse({
             radius: {
               kind: "computed",
+              targetCardinality: { kind: "not-asked" },
               arming: { total: 2, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
               disarming: {
                 total: 0,
@@ -190,6 +191,7 @@ function installFetchStub() {
           : jsonResponse({
               radius: {
                 kind: "computed",
+                targetCardinality: { kind: "not-asked" },
                 arming: {
                   total: 2,
                   pairs: [],

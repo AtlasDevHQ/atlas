@@ -271,6 +271,140 @@ describe("a predicate-position alias moves the cardinality lookup with the slot"
   });
 });
 
+describe("⚠️ the alias preview SAYS its target predicate is curated single (#5093)", () => {
+  // The count already followed the cardinality gate — that is the describe
+  // above. What did not ship is the SENTENCE, and the AC calls the compound
+  // radius *the only place this is visible*: an approver aliasing into a
+  // curated-single predicate otherwise sees a larger number with no explanation
+  // of where it came from.
+
+  /**
+   * Answer the curated-single probe affirmatively.
+   *
+   * ⚠️ Matched on `brain_predicate_cardinality`, which the DELTA statements also
+   * name (the collision's cardinality arm is a correlated `EXISTS` over that
+   * table) — so the projection is part of the match, exactly as `EDGE_EXISTS`
+   * needs it. A looser predicate feeds `{hit: 1}` to statements expecting a
+   * count and every total below reads as garbage.
+   */
+  const CURATED_PROBE = "SELECT 1 AS hit FROM brain_predicate_cardinality";
+  const curated = (sql: string) => (sql.includes(CURATED_PROBE) ? [{ hit: 1 }] : undefined);
+
+  /** The probe statements only — never a delta. */
+  function probes(captures: readonly Capture[]): readonly Capture[] {
+    return captures.filter((c) => c.sql.includes(CURATED_PROBE));
+  }
+
+  it("names the curated target on a predicate-position APPROVAL", async () => {
+    const radius = await loadBlastRadius(reader([], curated), ctx(), APPROVE_PREDICATE);
+    expect(computed(radius).targetCardinality).toEqual({
+      kind: "curated-single",
+      targetPredicate: "priced at",
+    });
+  });
+
+  it("POSITIVE CONTROL — an uncurated target answers `uncurated`, not silence", async () => {
+    // The two are different arms rather than presence/absence of a field, so
+    // "asked and no" is distinguishable from "not asked" downstream. The
+    // renderer says nothing for either; the WIRE still knows which.
+    const radius = await loadBlastRadius(reader([]), ctx(), APPROVE_PREDICATE);
+    expect(computed(radius).targetCardinality).toEqual({ kind: "uncurated" });
+  });
+
+  it("⚠️ names the EFFECTIVE target, not the norm as typed", async () => {
+    // The mutation a single-edge fixture cannot see, and it is `approvalKeyExpr`'s
+    // ⚠️ one layer up: with `priced at → unit price` already approved, the merge
+    // lands the population on **unit price**, and the count was computed against
+    // that slot. A sentence naming `priced at` would name a slot the re-key never
+    // writes — the number and the prose describing different decisions, which is
+    // strictly worse than no prose.
+    const radius = await loadBlastRadius(
+      reader([], (sql) => {
+        if (sql.includes("FROM brain_vocabulary_target")) return [{ effective_target: "unit price" }];
+        return curated(sql);
+      }),
+      ctx(),
+      APPROVE_PREDICATE,
+    );
+    expect(computed(radius).targetCardinality).toEqual({
+      kind: "curated-single",
+      targetPredicate: "unit price",
+    });
+  });
+
+  it("a predicate-position REMOVAL names the slot it RE-ROOTS into", async () => {
+    // #5093's falsification asked for this sweep. A removal re-roots the subtree
+    // onto `fromNorm` itself, so if THAT carries a pre-existing approved `single`
+    // entry the removal arms supersession there by the same mechanism — same
+    // shape, same sentence, rather than a second issue.
+    const radius = await loadBlastRadius(
+      reader([], (sql) => edgeExists(sql) ?? curated(sql)),
+      ctx(),
+      { kind: "alias-removal", position: "predicate", fromNorm: "is priced at" },
+    );
+    expect(computed(radius).targetCardinality).toEqual({
+      kind: "curated-single",
+      targetPredicate: "is priced at",
+    });
+  });
+
+  it("⚠️ a SUBJECT-position alias does not ask the question AT ALL", async () => {
+    // The gate reads `predicate_key`, which a subject alias does not move — so
+    // there is no landing slot to be curated. `uncurated` here would be a
+    // fabricated zero: a confident answer to a question that does not arise, of
+    // exactly the kind `structurallyEmptyReason` exists to refuse.
+    const captures: Capture[] = [];
+    const radius = await loadBlastRadius(reader(captures, curated), ctx(), {
+      kind: "alias-approval",
+      position: "subject",
+      fromNorm: "acme",
+      toNorm: "acme corp",
+    });
+    expect(computed(radius).targetCardinality).toEqual({ kind: "not-asked" });
+    // …and the probe never RAN. Asserted separately because an engine that asks
+    // and then discards has the answer in hand, which is one edit from leaking
+    // it onto the wire.
+    expect(probes(captures)).toHaveLength(0);
+  });
+
+  it("⚠️ neither cardinality verb answers it, even with a curated predicate", async () => {
+    // These verbs move the GATE, not a population under it. Their version of
+    // "is this predicate curated" is `already-single` / `not-curated`, which is
+    // why a `curated-single` here would put *"…moves the whole population of the
+    // aliased predicate into its slot"* on a preview with no alias in it.
+    //
+    // A removal, because with the probe answering YES a FLIP is
+    // `already-single` and never reaches the computed arm — the fixture that
+    // actually exercises a curated predicate on this path.
+    const radius = await loadBlastRadius(reader([], curated), ctx(), {
+      kind: "cardinality-removal",
+      predicateSurface: "reports to",
+    });
+    expect(computed(radius).targetCardinality).toEqual({ kind: "not-asked" });
+  });
+
+  it("⚠️ the disclosure changes NO number and adds NO delta statement", async () => {
+    // `oversight.ts:800-803`'s anti-drift rule, as a test: this field discloses
+    // where `arming.total` came from and must never be a second computation of
+    // it. Measured by running the same request with the probe answering both
+    // ways and requiring the delta statements to be BYTE-IDENTICAL — a
+    // disclosure that reached into the delta would show up here as a diff, and
+    // a total derived from the disclosure would show up as a number.
+    async function run(responder?: (sql: string) => readonly unknown[] | undefined) {
+      const captures: Capture[] = [];
+      const radius = await loadBlastRadius(reader(captures, responder), ctx(), APPROVE_PREDICATE);
+      return { deltas: deltaStatements(captures), radius: computed(radius) };
+    }
+    const [plain, disclosed] = await Promise.all([run(), run(curated)]);
+
+    expect(disclosed.deltas).toEqual(plain.deltas);
+    expect(disclosed.radius.arming.total).toBe(plain.radius.arming.total);
+    expect(disclosed.radius.disarming.total).toBe(plain.radius.disarming.total);
+    // …and the two runs genuinely DIFFERED, or the equality above is vacuous.
+    expect(disclosed.radius.targetCardinality).not.toEqual(plain.radius.targetCardinality);
+  });
+});
+
 describe("the object position gets its OWN radius, never a supersession delta", () => {
   // ⚠️ These two assertions INVERTED with #5088, and the inversion is the AC
   // landing rather than a rewording. They used to require

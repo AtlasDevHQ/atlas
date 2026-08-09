@@ -477,6 +477,110 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     }, PG_TEST_TIMEOUT_MS);
   });
 
+  // ── 1b. the compound disclosure and its own count cannot disagree (#5093) ─
+
+  describe("the sentence and the number describe the same decision", () => {
+    it("⚠️ curating the target both RAISES the count and flips the disclosure", async () => {
+      // #5093's `-pg` falsifier, and the reason it is a `-pg` test rather than a
+      // unit one: the unit suite can pin that the field is populated, and it can
+      // pin that no delta statement changed. What it CANNOT do is tie the
+      // sentence to the number over a real corpus — and a disclosure that can
+      // drift from the count it explains is worse than no disclosure, because an
+      // approver now has a specific, confident, wrong causal story.
+      //
+      // ONE corpus, measured twice. Between the two reads nothing changes but
+      // the curation, so the count's rise and the arm's flip have exactly one
+      // shared cause.
+      const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+      await publish(published);
+      await land({ subject: "widget", predicate: "is priced at", object: "12 USD" });
+
+      const request = {
+        kind: "alias-approval",
+        position: "predicate",
+        fromNorm: "is priced at",
+        toNorm: "priced at",
+      } as const;
+
+      const uncurated = computed(await loadBlastRadius(pool, owner(), request));
+      expect(uncurated.targetCardinality).toEqual({ kind: "uncurated" });
+      expect(
+        uncurated.arming.total,
+        "with the merged slot uncurated the gate holds every pair back, so the merge arms nothing",
+      ).toBe(0);
+
+      await curate("priced at");
+
+      const cured = computed(await loadBlastRadius(pool, owner(), request));
+      expect(cured.targetCardinality).toEqual({
+        kind: "curated-single",
+        targetPredicate: "priced at",
+      });
+      // STRICTLY greater. The AC's wording, and it is the half that makes the
+      // pair of assertions a property rather than two independent facts: the
+      // arm that says "armed" is the arm with the bigger number.
+      expect(cured.arming.total).toBeGreaterThan(uncurated.arming.total);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("a REMOVAL discloses the slot it re-roots into, when that slot is curated", async () => {
+      // The sweep #5093's falsification asked for, against a real schema. A
+      // removal re-roots `is priced at`'s subtree onto `is priced at` itself, so
+      // a pre-existing approved `single` entry THERE arms supersession in the
+      // freshly-rooted slot by the same mechanism an approval does.
+      const published = await land({
+        subject: "widget",
+        predicate: "is priced at",
+        object: "10 USD",
+      });
+      await publish(published);
+      await land({ subject: "widget", predicate: "priced at", object: "12 USD" });
+      await curate("priced at");
+      // Curated BEFORE the alias is approved — `declarePredicateCardinality`
+      // keys on the surface as given, and after the merge nothing would author
+      // an entry on the child norm. That ordering is what makes this fixture a
+      // real corpus rather than a contrived one: it is how a workspace that
+      // curated a predicate and later aliased it away actually looks.
+      await curate("is priced at");
+      await approve("is priced at", "priced at");
+
+      const radius = computed(
+        await loadBlastRadius(pool, owner(), {
+          kind: "alias-removal",
+          position: "predicate",
+          fromNorm: "is priced at",
+        }),
+      );
+      expect(radius.targetCardinality).toEqual({
+        kind: "curated-single",
+        targetPredicate: "is priced at",
+      });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("POSITIVE CONTROL — a SUBJECT alias over the same corpus does not answer it", async () => {
+      // The complement, and it is what stops the two assertions above from being
+      // claims about a field that is always populated: the gate reads
+      // `predicate_key`, which a subject alias does not move, so there is no
+      // landing slot whose curation could matter.
+      const published = await land({ subject: "widget", predicate: "priced at", object: "10 USD" });
+      await publish(published);
+      await land({ subject: "gadget", predicate: "priced at", object: "12 USD" });
+      await curate("priced at");
+
+      const radius = computed(
+        await loadBlastRadius(pool, owner(), {
+          kind: "alias-approval",
+          position: "subject",
+          fromNorm: "gadget",
+          toNorm: "widget",
+        }),
+      );
+      expect(radius.targetCardinality).toEqual({ kind: "not-asked" });
+      // …and the subject merge really does arm something, so this is a corpus
+      // where the question would have had a tempting answer.
+      expect(radius.arming.total).toBeGreaterThan(0);
+    }, PG_TEST_TIMEOUT_MS);
+  });
+
   // ── 2. the imported statement and the delta agree ───────────────────────
 
   it("the imported held-back count and the delta spelling agree on a real corpus", async () => {

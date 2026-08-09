@@ -154,7 +154,12 @@ import {
   isUnknownArray,
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
-import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import {
+  inheritSlotFromFactRow,
+  slotKey,
+  type ClaimVocabulary,
+  type InheritedSlot,
+} from "@atlas/api/lib/brain/identity";
 // ADR-0037 §3(d)2 — a human superseding a slot is positive evidence that it
 // holds one value. The only cardinality proposer that can be observed from
 // inside the brain (#5027).
@@ -418,6 +423,23 @@ export type CorrectionOutcome =
  * The raw `valid_to` still travels for `supersede`'s own gate (which refuses
  * ANY decided end date, future included) and for the refusal message's date.
  *
+ * ## It projects the three identity keys (#5037)
+ *
+ * `keys-not-on-the-wire.test.ts` forbids that from a read surface, and this is
+ * the second carve-out it grants — on ADR-0037 §8's row-copy rule, the same
+ * rationale the region bundle's three files carry. What the prohibition protects
+ * is a key reaching a CONSUMER that can branch on it, because the moment one
+ * does, the vocabulary stops being an internal join detail and an alias becomes
+ * un-removable. These keys reach exactly one destination: back into the slot
+ * columns of the replacement row, through {@link InheritedSlot}. No route to the
+ * wire exists — `BrainFactCorrectionResponse` carries no claim text at all, let
+ * alone a key, and the module's own comment at the `supersededPredicate` site
+ * already refuses to widen it for that reason.
+ *
+ * The alternative is what #5037 records as the defect: re-deriving
+ * `alias_now(lexicalNorm(target.subject))` and getting the stored key only while
+ * the vocabulary has not moved.
+ *
  * `aclSql` must alias the fact table `f` and is interpolated — same contract
  * as `brainFactPreviewSql` and every other clause-taking builder in the slice.
  */
@@ -426,6 +448,9 @@ export function correctionTargetSql(aclSql: string, idParam: number): string {
                 f.subject,
                 f.predicate,
                 f.object,
+                f.subject_key,
+                f.predicate_key,
+                f.object_key,
                 f.status,
                 f.provenance,
                 f.visible_to,
@@ -819,6 +844,39 @@ interface TargetRow {
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
+  /**
+   * The target's STORED slot (#5037) — read, never re-derived.
+   *
+   * Built ONCE, by `readTargetRow`, off the row it describes. That placement is
+   * load-bearing rather than tidy: an {@link InheritedSlot} records the fact id
+   * it was read from, and constructing it anywhere else would let one row's slot
+   * reach a correction about another. Built at the read, the two cannot come
+   * apart — there is no second row in scope.
+   *
+   * A `null` key inside it is legal: the columns are nullable at rest and an
+   * unkeyed legacy row genuinely has no slot. What is NOT legal is an ABSENT
+   * column, which `readTargetRow` refuses as `correctionTargetSql` drift exactly
+   * as it does for `valid_to`. A missing key defaulted to `null` would land the
+   * replacement in the `(NULL, NULL)` slot — silently un-collidable — while the
+   * id-based stamp retired the target anyway.
+   */
+  readonly slot: InheritedSlot;
+  /**
+   * The target's stored OBJECT key, read for ONE consumer: the
+   * `replacementIdentical` guard, which decides whether the replacement restates
+   * the value the fact already has.
+   *
+   * That comparison needs the target's STORED key for the same reason the slot
+   * does — a re-derivation diverges under a moved vocabulary — except that here
+   * the divergence falls on the guard deciding whether an irreversible write
+   * happens at all.
+   *
+   * It is deliberately NOT part of {@link TargetRow.slot}: the replacement's
+   * object is new, human-authored text and keys on its own terms, and a channel
+   * that could carry an object key is a channel through which one gets inherited.
+   * See {@link InheritedSlot}.
+   */
+  readonly objectKey: string | null;
   readonly status: string;
   readonly provenance: unknown;
   readonly grantTokens: readonly string[];
@@ -1109,10 +1167,35 @@ export async function correctFact(
         // Recorded plainly: this is the one place #5023 made a dormant residual
         // live, and it did so knowingly, because the alternative was leaving the
         // vocabulary unreadable by anything.
+        //
+        // ⚠️ #5037 closed it, and this site is why the fix is not only about the
+        // slot. The replacement's object key is DERIVED — it is new,
+        // human-authored text that has never been stored, so deriving is the only
+        // thing available and is correct. The TARGET's is now READ off the row.
+        // Left re-derived it carried the same divergence as the slot did, on the
+        // guard that decides whether an irreversible write happens at all: under
+        // a moved vocabulary the two spellings the vocabulary now unifies key
+        // apart, the guard reads them as different, and `Bob` → `bob` passes
+        // through to `SUPERSEDE_STAMP_EXPLICIT_SQL` — closing a published belief
+        // to stand up a successor asserting the same value in the same slot.
+        //
+        // ⚠️ TWO NULLS STILL MATCH, and that is load-bearing rather than
+        // incidental. A surface that asserts nothing keys to `null` at both
+        // positions, and the arm this refusal takes for that pair is the one that
+        // does NOT stamp `valid_to` on a row asserting nothing — the conservative
+        // direction, pinned by "refuses when BOTH objects norm away". Guarding
+        // this comparison on the target's key being non-null reads as tidier and
+        // inverts exactly that: the pair falls through to a supersede, and the
+        // module stamps where it used to refuse. Supersession has no inverse verb
+        // anywhere in the product, so the tidier spelling is the unrecoverable
+        // one.
+        //
+        // A legacy row with a stored NULL key and a non-degenerate surface is
+        // unaffected — the replacement's derived key is non-null, the two differ,
+        // and the supersession proceeds as it should.
         if (
           replacement !== null &&
-          slotKey(replacement.object, vocabulary.object) ===
-            slotKey(target.object, vocabulary.object)
+          slotKey(replacement.object, vocabulary.object) === target.objectKey
         ) {
           throw new CorrectionRefusedError(
             CORRECTION_REFUSAL_REASONS.replacementIdentical,
@@ -1221,17 +1304,23 @@ export async function correctFact(
           // `applySupersede(...)` is the second, so inlining puts a derivation
           // and a transaction-mutating call in one expression whose evaluation
           // order a reader has to work out.
-          const supersededKey = slotKey(target.predicate, vocabulary.predicate);
+          const supersededKey = target.slot.predicate;
           // The canonical predicate travels out with the response, for the
-          // post-commit cardinality proposer (#5027). Derived HERE because this
-          // is the only place both the target's predicate surface and the
-          // vocabulary are in hand — `BrainFactCorrectionResponse` carries no
-          // claim text, and widening it to carry one would put a key one step
-          // from the wire, which `keys-not-on-the-wire.test.ts` refuses.
+          // post-commit cardinality proposer (#5027). READ off the target row
+          // since #5037, not re-derived from its surface: this is the third of
+          // the module's three re-derivation sites, and it is the one whose
+          // divergence is hardest to see, because the value leaves the
+          // transaction. A key derived under a moved vocabulary proposes
+          // cardinality for a predicate slot the corrected fact is not in — so
+          // the proposal accretes evidence against a slot no correction ever
+          // touched, and the slot that WAS corrected accretes none.
           //
           // A NULL answer is legal and permanent (`identityKey`'s ⚠️) and is
           // reported POST-COMMIT — see `logDegeneratePredicate`, which cannot
-          // truthfully say "the correction is committed" from in here.
+          // truthfully say "the correction is committed" from in here. Under the
+          // read it is also reachable a second way — a stored NULL on an unkeyed
+          // legacy row — and both mean the same thing to the proposer: there is
+          // no slot to propose against.
           return withSupersededPredicate(
             supersededKey,
             applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
@@ -1797,6 +1886,28 @@ async function applySupersede(
           subject: target.subject,
           predicate: target.predicate,
           object: inputs.replacement.object,
+          // ⚠️ The SLOT is INHERITED, not re-derived (#5037, ADR-0037 §8).
+          //
+          // The surfaces above still travel — they are what lands in the
+          // replacement's SPO columns, and retention is what keeps an alias
+          // reversible — but they no longer decide the slot. Passing surfaces
+          // alone is what made this module stop carrying identity and start
+          // re-deriving it the moment keys were computed at the reconcile seam,
+          // and it is the operation ADR-0037 §1 rules out for every producer.
+          //
+          // The divergence is not hypothetical and the failure is silent: the
+          // stamp above is id-based, so it fires whatever the vocabulary says.
+          // Under a moved vocabulary — an alias removed, a correction racing the
+          // drift rewrite, or a target whose keys #5035's import carried from a
+          // FOREIGN vocabulary — a derived key retires the belief and lands its
+          // successor in a different slot, unreachable from the slot every
+          // future collision joins on. The audit trail says "superseded by X";
+          // the slot says empty.
+          //
+          // The object is NOT inherited: it is new, human-authored text and keys
+          // on its own terms. That asymmetry is the design, and `reconcile.ts`
+          // enforces it rather than trusting this call site.
+          inheritedSlot: target.slot,
           validFrom: inputs.replacement.validFrom ?? at,
           // DERIVED from the verb, not inherited from the row (#5027).
           //
@@ -2205,6 +2316,34 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
     return drift(`unreadable valid_to (${typeof row.valid_to}) for fact ${row.id}`);
   }
   const validTo: Date | string | null = row.valid_to;
+  // The three identity keys (#5037). `null` is a legal stored value — an unkeyed
+  // legacy row — so only `undefined` is drift, which is the same `pg` signal
+  // `valid_to` reads above: the column was absent from the SELECT. Defaulting it
+  // to `null` instead would hand `InheritedSlot` a `(NULL, NULL)` slot for a row
+  // that HAS one, so the replacement would land un-collidable while the id-based
+  // stamp retired the target regardless — #5037's exact defect, reintroduced
+  // through the narrowing rather than through the derivation.
+  //
+  // Narrowed through a helper that RETURNS the value rather than a loop that
+  // validates it: a loop leaves the three reads unnarrowed afterwards, and
+  // recovering them costs three `as string | null` assertions — which is the
+  // shape that lets a later edit change the check and keep the assertion.
+  const readKey = (column: "subject_key" | "predicate_key" | "object_key"): string | null => {
+    const value = row[column];
+    if (value === undefined) {
+      return drift(`${column} absent from the target projection for fact ${row.id}`);
+    }
+    if (value !== null && typeof value !== "string") {
+      return drift(`unreadable ${column} (${typeof value}) for fact ${row.id}`);
+    }
+    return value;
+  };
+  const slot = inheritSlotFromFactRow({
+    id: row.id,
+    subject_key: readKey("subject_key"),
+    predicate_key: readKey("predicate_key"),
+  });
+  const objectKey = readKey("object_key");
   if (typeof row.window_closed !== "boolean") {
     // Postgres decides this (see `correctionTargetSql`); an absent or
     // non-boolean value means the projection drifted, and defaulting it either
@@ -2217,6 +2356,8 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
     subject: row.subject,
     predicate: row.predicate,
     object: row.object,
+    slot,
+    objectKey,
     status: row.status,
     provenance: row.provenance,
     grantTokens,

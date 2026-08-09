@@ -229,7 +229,7 @@ import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
 // ONE place `alias(lexicalNorm(surface))` is assembled, and a second assembly
 // site is how the write side and a future re-key start disagreeing about what a
 // claim's slot IS.
-import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import { slotKey, type ClaimVocabulary, type InheritedSlot } from "@atlas/api/lib/brain/identity";
 // The comparable value, on the same terms: `comparableValue` is the ONE place a
 // surface becomes a typed canonical form, and `comparableSameSql` the ONE place
 // *provably same* is spelled — the two statements below negate each other and
@@ -374,6 +374,29 @@ export interface FactCandidate {
    * claim came from.
    */
   readonly detail?: Record<string, unknown>;
+  /**
+   * ADR-0037 §8's row-copy doorway (#5037) — the SLOT this claim belongs to,
+   * copied off an existing fact row instead of derived from this candidate's
+   * surfaces.
+   *
+   * ⚠️ **This is the ONE exception to *producers supply claims, never matching
+   * rules*, and it is an exception the rule always had.** §1 prohibits a producer
+   * COMPUTING identity; a row-copy path COPIES it, which is why `correction.ts`
+   * was called the immune producer in the first place. The doorway is explicit
+   * rather than implicit because the immunity was only ever true while identity
+   * == surface: the instant keys are computed at this seam, a correction passing
+   * the target's SURFACES down here stops carrying identity and starts
+   * re-deriving it, which is the operation §1 rules out for everyone.
+   *
+   * Unforgeable by construction — {@link InheritedSlot} is branded and has one
+   * constructor — so a producer can forward a slot it read off a row but cannot
+   * author one. See that type for why the brand alone is not the whole guard.
+   *
+   * ⚠️ Omit it. The absence is the correct answer for every claim-supply
+   * producer, and a producer reaching for this field is almost certainly
+   * answering the question §1 answers instead.
+   */
+  readonly inheritedSlot?: InheritedSlot;
 }
 
 /**
@@ -1124,9 +1147,29 @@ export async function reconcileFacts(
     // it cannot put an id in a key; its answers reach the row at the two `_cmp`
     // columns and nowhere else. A store's slot-side contribution travels as
     // vocabulary instead, which is what makes it re-keyable in place.
+    // ⚠️ The SLOT may be INHERITED (#5037, ADR-0037 §8) — the object never is.
+    //
+    // A row-copy producer hands down the slot it read off the row it is
+    // correcting, and copying beats re-deriving for the reason §8 gives: the two
+    // agree only while the vocabulary has not moved, and where they diverge,
+    // re-deriving lands the claim in a slot the target is not in. The failure is
+    // silent and one-directional — the target's belief is retired by an id-based
+    // stamp regardless, so the successor goes missing from the slot every future
+    // collision joins on.
+    //
+    // The OBJECT is derived here unconditionally, and the asymmetry is the whole
+    // design: the correction is *about this claim* (so the slot is the target's)
+    // while the object is new, human-authored text (so it keys on its own terms).
+    // Inheriting it too would make the replacement identical to the target at
+    // every identity position, which is precisely what a supersession is not.
+    //
+    // `null` travels as `null`. An unkeyed row's slot is `(NULL, NULL)` and joins
+    // nothing; deriving a key to fill the hole would invent identity for a row
+    // that has none and move it into a live slot.
+    const inherited = candidate.inheritedSlot;
     const keys: SlotKeys = {
-      subject: slotKey(subject, vocabulary.subject),
-      predicate: slotKey(predicate, vocabulary.predicate),
+      subject: inherited ? inherited.subject : slotKey(subject, vocabulary.subject),
+      predicate: inherited ? inherited.predicate : slotKey(predicate, vocabulary.predicate),
       object: slotKey(object, vocabulary.object),
     };
     // The comparable value, materialized beside the keys and for the same

@@ -26,11 +26,13 @@
  * and becomes a compatibility surface — which is precisely what makes an alias
  * un-removable.
  *
- * The region bundle is the one deliberate exception, granted by ADR-0037 §8 —
- * *a row-copy path carries keys verbatim* — and implemented on the v3 bundle by
- * #5035. Its three files are listed in {@link ROW_COPY_SITES}, which records
- * both why they are not the leak this guard exists to stop and what exempting
- * them costs.
+ * The ROW-COPY paths are the deliberate exception, granted by ADR-0037 §8 —
+ * *a row-copy path carries keys verbatim; a claim-supply path never supplies
+ * them.* There are two: the region bundle, implemented on the v3 bundle by
+ * #5035, and the correction path's target read (#5037), which inherits the
+ * corrected fact's slot rather than re-deriving it. Their files are listed in
+ * {@link ROW_COPY_SITES}, which records both why they are not the leak this
+ * guard exists to stop and what exempting each one costs.
  *
  * ## What this can and cannot see
  *
@@ -172,15 +174,26 @@ const DECLARATION_SITES = new Set([
 ]);
 
 /**
- * The region bundle — the ONE deliberate exception, and the one this file's
+ * The ROW-COPY paths — the deliberate exceptions, the first of which this file's
  * header said was *"not this file's to grant"* until #5035 implemented it.
  *
  * ADR-0037 §8: **a row-copy path carries keys verbatim; a claim-supply path
- * never supplies them.** Three files make that one path — the exporter's
- * projection, the wire type, and the importer's INSERT — and they are listed
- * separately from {@link DECLARATION_SITES} because the rationale is different
- * in kind. Those files are exempt for naming a column they cannot avoid naming;
- * these are exempt for genuinely putting keys on a wire, on purpose.
+ * never supplies them.** TWO paths qualify, and they are listed separately from
+ * {@link DECLARATION_SITES} because the rationale is different in kind: those
+ * files are exempt for naming a column they cannot avoid naming; these are exempt
+ * for genuinely moving keys around, on purpose.
+ *
+ *   - **The region bundle** (#5035) — three files: the exporter's projection, the
+ *     wire type, and the importer's INSERT.
+ *   - **The correction path** (#5037) — one file: the target read, whose keys
+ *     never leave the transaction they were read in.
+ *
+ * ⚠️ They are not the same risk, and the difference is worth keeping in view. The
+ * bundle genuinely puts keys ON A WIRE, so its exemption is justified by who the
+ * single consumer is. The correction path puts them on no wire at all — the
+ * exemption is needed only because the guard cannot tell a key that is read and
+ * written back one statement later from one that escapes. Each entry states its
+ * own cost below rather than inheriting this paragraph's.
  *
  * ⚠️ **Why this is not the leak the prohibition exists to stop.** What re-couples
  * retrieval to identity is a key reaching a CONSUMER that can branch on it: an
@@ -195,8 +208,8 @@ const DECLARATION_SITES = new Set([
  * nor be superseded, while the publish-time disclosure reports "nothing to
  * supersede" without being able to say the check could not run.
  *
- * ⚠️ **What the exemption COSTS, stated rather than implied.** It switches off
- * BOTH arms for all three files, so a future `SELECT … f.object_key` added to
+ * ⚠️ **What the BUNDLE exemption COSTS, stated rather than implied.** It switches
+ * off BOTH arms for its three files, so a future `SELECT … f.object_key` added to
  * `export.ts` for an unrelated read, or a key field added to a NON-brain wire
  * type in `migration.ts`, is no longer caught here. The compensating pin is
  * `bundle-identity-v3.test.ts`, which reads the projection span of the fact
@@ -204,8 +217,8 @@ const DECLARATION_SITES = new Set([
  * these five columns — file-local, and narrower than what this line turns off,
  * which is the same trade `cardinality.ts` records above.
  *
- * The three files are named individually rather than by directory. A
- * path-prefix exemption would cover every future file under `lib/residency`,
+ * Every file is named individually rather than by directory. A path-prefix
+ * exemption would cover every future file under `lib/residency` or `lib/brain`,
  * and the next one will not be a row-copy path.
  */
 const ROW_COPY_SITES = new Set([
@@ -216,6 +229,35 @@ const ROW_COPY_SITES = new Set([
   // SELECT arm, which is the arm that exists precisely because a fact-shaped
   // TYPE growing a key field IS the leak.
   "packages/types/src/migration.ts",
+  // The correction path's target read (#5037) — the SECOND row-copy path, and
+  // the one ADR-0037 §8 names in the same breath as the region bundle: *a
+  // row-copy path carries keys verbatim; a claim-supply path never supplies
+  // them.* `correctionTargetSql` projects all three keys off the fact being
+  // corrected, so the replacement can INHERIT the target's slot instead of
+  // re-deriving it from the target's surfaces.
+  //
+  // ⚠️ Why this is not the leak the prohibition exists to stop. The keys have one
+  // destination — back into the slot columns of the replacement row, through
+  // `InheritedSlot` — and no route to a consumer that could branch on them.
+  // `BrainFactCorrectionResponse` carries no claim text at all, let alone a key;
+  // the module's `supersededPredicate` comment already refuses to widen it for
+  // exactly that reason, and that refusal is now pinned rather than trusted.
+  //
+  // ⚠️ What the exemption COSTS. Both arms, whole-file — so a future `SELECT …
+  // f.object_key` added to `REPLACEMENT_ROW_SQL` for an unrelated read, or a key
+  // field grown by a correction WIRE type, is no longer caught here. That is a
+  // live risk in this file specifically: it holds four statements over
+  // `brain_facts` where the bundle's exporter holds one. The compensating pin is
+  // `correction.test.ts`'s "#5037" block, which reads the projection span of
+  // EVERY statement in the module and asserts the three keys appear in
+  // `correctionTargetSql` and nowhere else — narrower than what this line turns
+  // off, and per-statement rather than per-file, which is the trade
+  // `cardinality.ts` records above.
+  //
+  // The re-derivation this replaces was not caught by anything, which is the
+  // asymmetry worth stating: the guard can see a key being READ, and could never
+  // have seen the `slotKey(target.subject, …)` that stood in for reading one.
+  "packages/api/src/lib/brain/correction.ts",
   // The INSERT, and the null-at-import rule. This file is already allowlisted
   // in `check-brain-fact-promotion.sh` for writing `status` verbatim, on the
   // same row-copy rationale — so this extends an existing carve-out rather than

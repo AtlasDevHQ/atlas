@@ -442,6 +442,131 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// The inherit channel (#5037)
+// ---------------------------------------------------------------------------
+
+declare const inheritedSlotBrand: unique symbol;
+
+/**
+ * Slot keys COPIED off an existing fact row — the row-copy half of ADR-0037 §8's
+ * *a row-copy path carries keys verbatim; a claim-supply path never supplies
+ * them.*
+ *
+ * ## Why this exists at all
+ *
+ * ADR-0037 §1 forbids a producer supplying identity, and that prohibition is what
+ * keeps canonicalization at the one seam. `correction.ts` is the one caller that
+ * needs a doorway through it, and the distinction that earns the doorway is
+ * narrow: it does not COMPUTE a key, it COPIES one off the row it is correcting.
+ * ADR-0037 §8 calls region import and `correction.ts`'s inherit-identity-from-
+ * target the same operation for that reason.
+ *
+ * Without the doorway `correction.ts` re-derives `alias_now(lexicalNorm(
+ * target.subject))` and gets the target's stored key only while the vocabulary
+ * has not moved. Three ways it has — an alias removal, a correction racing the
+ * drift rewrite, and a row whose keys a region import carried from a FOREIGN
+ * vocabulary (#5035) — and on any of them the id-based stamp still fires, so the
+ * target is retired and its replacement lands in a DIFFERENT slot: unreachable
+ * from the slot every future collision joins on. The audit trail says
+ * "superseded by X"; the slot says empty.
+ *
+ * ## Why it is branded
+ *
+ * ADR-0037's accepted cost for the doorway is that it *"must be typed so it
+ * cannot be filled from thin air — inherited-from-a-row-id, not free strings"*.
+ * The brand is that typing: the symbol is module-private and undeclarable
+ * outside this file, so `InheritedSlot` has exactly one constructor
+ * ({@link inheritSlotFromFactRow}) and a producer cannot reach the field with a
+ * key it composed. `FactCandidate.inheritedSlot` is therefore a channel a
+ * producer can only FORWARD, never author.
+ *
+ * ⚠️ The brand alone would still admit a caller that invented `subjectKey` and
+ * handed it to the constructor. What closes that is the OTHER guard, and the two
+ * compose rather than overlap: to hold a real key you must have projected one off
+ * `brain_facts`, and `keys-not-on-the-wire.test.ts` permits that in an
+ * allowlisted row-copy file only. The brand keys the doorway; the projection
+ * guard decides who owns a key to put through it. Neither is sufficient alone,
+ * which is why {@link inheritSlotFromFactRow} takes the row's `id` and keeps it:
+ * a value carrying a fact id it was not read from is the shape a reviewer can
+ * still catch, and the field exists to be read in exactly that argument.
+ *
+ * ## What travels, and what does not
+ *
+ * The SLOT — subject and predicate. Not the object: a correction is *about this
+ * claim*, so its slot is the target's, but the replacement's object is new and
+ * human-authored and keys on its own terms. Inheriting the object key would make
+ * the replacement byte-identical to the target at every identity position, which
+ * is the one thing a supersession must not be.
+ *
+ * ## Named by ROLE, constructed from the COLUMNS
+ *
+ * The two exposed keys are `subject` / `predicate`, not `subjectKey` /
+ * `predicateKey`, for the reason `reconcile.ts`'s `SlotKeys` already gives:
+ * `keys-not-on-the-wire.test.ts` bans those three identifiers outright in any
+ * file that speaks about `brain_facts`, because a fact-shaped TYPE growing a key
+ * field is the leak it exists to catch and it cannot tell one from a local. This
+ * type never reaches a row type or a wire type, so it takes the same naming
+ * rather than a fourth exemption.
+ *
+ * Role names on a KEYS type would normally be a footgun — `{ subject, predicate }`
+ * is also the shape of a claim's SURFACES, and handing the surfaces to a function
+ * that wanted keys is a silent, exactly-wrong call. {@link inheritSlotFromFactRow}
+ * closes that by taking the raw `pg` row and its SQL column spellings
+ * (`subject_key`), which no surface-shaped object satisfies. The disambiguation
+ * lives at the one place a value can be built, so the ergonomic names are safe
+ * everywhere they are read.
+ */
+export interface InheritedSlot {
+  readonly [inheritedSlotBrand]: true;
+  /**
+   * The `brain_facts.id` these keys were read from.
+   *
+   * Carried rather than dropped so the value names its own provenance: a slot
+   * inherited from one row and attached to a candidate about another is a defect
+   * with no other detector, and this is the field that makes it visible.
+   */
+  readonly fromFactId: string;
+  /** The target's stored subject key, verbatim. `null` is a legal stored value. */
+  readonly subject: string | null;
+  /** The target's stored predicate key, verbatim. `null` is a legal stored value. */
+  readonly predicate: string | null;
+}
+
+/**
+ * The one constructor for {@link InheritedSlot}.
+ *
+ * Takes the RAW ROW — `pg`'s snake_case column keys, exactly as the driver hands
+ * them back — rather than three strings. Two things follow from that, and both
+ * are the point:
+ *
+ *   - The call site reads as a copy, and the fact id travels with the keys it
+ *     belongs to, so nothing can quietly attach one row's slot to another row's
+ *     correction.
+ *   - The parameter cannot be satisfied by a claim's surfaces. `{ subject,
+ *     predicate }` would type-check against a role-named parameter and mean the
+ *     opposite of what it says; `{ subject_key, predicate_key }` is a shape only
+ *     a fact row has.
+ *
+ * `null` keys pass through unchanged and deliberately: an unkeyed legacy row's
+ * slot is `(NULL, NULL)`, which joins nothing — and re-deriving a key for it here
+ * would invent identity for a row that has none, silently moving it into a live
+ * slot. Carrying the nulls preserves exactly today's behaviour for that row,
+ * which is the conservative direction (#5035's null-at-import rule makes the same
+ * call for the same reason).
+ */
+export function inheritSlotFromFactRow(row: {
+  readonly id: string;
+  readonly subject_key: string | null;
+  readonly predicate_key: string | null;
+}): InheritedSlot {
+  return {
+    fromFactId: row.id,
+    subject: row.subject_key,
+    predicate: row.predicate_key,
+  } as InheritedSlot;
+}
+
+// ---------------------------------------------------------------------------
 // The SQL twin (#5024)
 // ---------------------------------------------------------------------------
 

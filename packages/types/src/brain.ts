@@ -1716,7 +1716,14 @@ export interface BrainVocabularyPendingResponse {
   readonly entries: readonly BrainVocabularyPendingEntry[];
   readonly aliasCounts: readonly BrainVocabularyPositionCounts[];
   /**
-   * `null` when the caller FILTERED the cardinality kind out.
+   * `null` when this queue never asked the cardinality question.
+   *
+   * ⚠️ TWO causes. The caller filtered the cardinality kind out, **or** filtered
+   * to an ENTITY position, where a cardinality proposal cannot exist — it is a
+   * predicate-position statement, so the question is skipped rather than asked
+   * and answered empty. Neither is "asked and withheld": a client that renders
+   * `null` as an ACL boundary tells an approver a grant is hiding rows that
+   * cannot exist.
    *
    * ⚠️ Nullable rather than zeroed. A question that was never asked has no
    * answer, and `{ total: 0, scoped: 0, withheld: 0, countsConsistent: true }`

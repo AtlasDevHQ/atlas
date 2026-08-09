@@ -82,7 +82,16 @@ import { aclVisibilityClause } from "@atlas/api/lib/brain/acl";
 import { SLOT_POSITIONS, type SlotPosition } from "@atlas/api/lib/brain/identity";
 import { comparableDifferentSql, comparableSameSql } from "@atlas/api/lib/brain/object-cmp";
 import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
-import type { BrainVocabularyPendingKind } from "@useatlas/types";
+import type {
+  BrainVocabularyAgreementExample,
+  BrainVocabularyAliasEvidence,
+  BrainVocabularyCorrectionEvidence,
+  BrainVocabularyCorrectionExample,
+  BrainVocabularyPendingAlias,
+  BrainVocabularyPendingCardinality,
+  BrainVocabularyPendingDirection,
+  BrainVocabularyPendingKind,
+} from "@useatlas/types";
 import { ALIAS_PROPOSAL_REPEAT_THRESHOLD } from "@atlas/api/lib/brain/alias-proposal";
 import { CORRECTION_REPEAT_THRESHOLD } from "@atlas/api/lib/brain/cardinality";
 import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
@@ -125,117 +134,62 @@ export const PENDING_EVIDENCE_SAMPLE_MAX = 5;
 // Evidence
 // ---------------------------------------------------------------------------
 
-/** One live claim pair exhibiting the agreement an alias proposal rests on. */
-export interface AgreementExample {
-  readonly subject: string;
-  /** The object both claims assert. They agree about it — that IS the evidence. */
-  readonly object: string;
-  readonly fromPredicate: string;
-  readonly toPredicate: string;
-}
+/**
+ * ⚠️ ALIASES of the wire types below, not hand-written twins.
+ *
+ * `vocabulary-object-radius.ts`'s {@link ObjectRadiusPair} states the rule and
+ * the reason it states it: that type WAS a twin, in this same arc, and renaming
+ * a field on one spelling would have 500'd a whole pane with nothing but a
+ * runtime `z.strictObject` between the two. These five shapes are the same
+ * situation — the `/pending` handler's response annotation does NOT close it,
+ * because excess-property checking applies to the literal's own keys and not to
+ * the value of `entries`.
+ *
+ * Field-level docs live on the wire declarations in `@useatlas/types`, which is
+ * the SSOT; what is recorded here is only what a reader of THIS module needs and
+ * the wire cannot say — the producer each number comes from.
+ */
+
+/**
+ * One live claim pair exhibiting the agreement an alias proposal rests on.
+ *
+ * `object` is the object BOTH claims assert. They agree about it — that IS the
+ * evidence.
+ */
+export type AgreementExample = BrainVocabularyAgreementExample;
 
 /**
  * What the corpus says about an alias pair, NOW.
  *
- * ⚠️ A discriminated union, and the `not-applicable` arm is the point. The
- * structural producer is PREDICATE-ONLY — `ALIAS_PROPOSAL_SQL` holds two claims
- * in one subject slot and compares their `predicate_key`s — so at an entity
- * position the agreement question is not merely unanswered, it is unaskable.
+ * The `not-applicable` arm exists because the structural producer is
+ * PREDICATE-ONLY — {@link ALIAS_PROPOSAL_SQL} holds two claims in one subject
+ * slot and compares their `predicate_key`s — so at an entity position the
+ * agreement question is not merely unanswered, it is unaskable. `subjects` is
+ * that same query's number, re-asked at read time: unscoped and workspace-wide,
+ * `/oversight`'s disclosure class (#4825), because an approver has to be able to
+ * tell weak evidence from evidence they cannot read.
  *
- * Reported as a reason rather than as `subjects: 0` for `StructurallyEmptyReason`'s
- * reason exactly: *"0 subjects agree"* and *"this kind of evidence cannot exist
- * here"* are the same number and opposite facts, and an approver reading the
- * first concludes a warehouse-key proposal is unsupported when what is true is
- * that its support is of a different kind and lives in `sourceClass`.
+ * The `unreadable` arm is the same argument one level down, and it is not
+ * hypothetical: flat, this shape returned `subjects ?? 0` with
+ * `countsConsistent: false`, and the client explained the zero it never read.
+ * "0 agree", "unaskable" and "unread" are one number and three opposite facts.
  */
-export type AliasEvidence =
-  | {
-      readonly kind: "structural";
-      /**
-       * Distinct subjects whose live claims exhibit this pair agreeing about one
-       * object — {@link ALIAS_PROPOSAL_SQL}'s own number, re-asked.
-       *
-       * Unscoped and workspace-wide, `/oversight`'s disclosure class (#4825): a
-       * count carries no claim and no surface, and an approver has to be able to
-       * tell weak evidence from evidence they cannot read.
-       */
-      readonly subjects: number;
-      /** How many of those this reader may see. See {@link withheld}. */
-      readonly scopedSubjects: number;
-      /** `subjects − scopedSubjects`. Never a silent omission. */
-      readonly withheld: number;
-      /** Bounded, reader-scoped on BOTH claims. */
-      readonly examples: readonly AgreementExample[];
-      /**
-       * The gate that raised it, carried rather than assumed.
-       *
-       * The count is re-derived and the corpus moves, so a live entry may read
-       * BELOW its own threshold. A renderer that hard-coded 2 could not say
-       * *"this no longer meets the bar that raised it"*.
-       */
-      readonly threshold: number;
-      readonly countsConsistent: boolean;
-    }
-  | {
-      readonly kind: "not-applicable";
-      /** The structural producer proposes predicate pairs and nothing else. */
-      readonly reason: "entity-position";
-    }
-  | {
-      /**
-       * The evidence query drifted — the numbers were never read.
-       *
-       * ⚠️ Its own arm rather than zeros beside `countsConsistent: false`, and
-       * it is {@link AliasEvidence}'s own `not-applicable` argument applied one
-       * level down. The flat shape returned `subjects ?? 0` with the flag set,
-       * and the client rendered *"0 distinct subjects … this now reads below the
-       * bar that raised it, because the count is re-derived from the corpus as
-       * it stands"* — a confident causal story about a number nobody read.
-       * "0 agree", "unaskable" and "unread" are one number and three opposite
-       * facts, so all three are their own branch.
-       */
-      readonly kind: "unreadable";
-    };
+export type AliasEvidence = BrainVocabularyAliasEvidence;
 
 /** One correction a human made at this predicate — the *link* half of the AC. */
-export interface CorrectionExample {
-  readonly subject: string;
-  /** What the claim said before. */
-  readonly fromObject: string;
-  /** What the human replaced it with. */
-  readonly toObject: string;
-  /** The replacement claim's id, so a surface can link to it. */
-  readonly factId: string;
-  readonly at: string;
-}
+export type CorrectionExample = BrainVocabularyCorrectionExample;
 
 /**
  * What a workspace's own correction history says about a predicate.
  *
  * ⚠️ TWO numbers, because the gate's number is not the one the AC's shorthand
  * names. See the module header: `CORRECTION_REPEAT_COUNT_SQL` counts DISTINCT
- * SUBJECTS, so {@link subjects} is what crossed the threshold and {@link events}
- * is how many supersessions produced it. A surface rendering only the second
- * would show a number no gate reads; rendering only the first would leave *"and
- * links to them"* with nothing to link.
+ * SUBJECTS, so `subjects` is what crossed the threshold and `events` is how many
+ * supersessions produced it. A surface rendering only the second would show a
+ * number no gate reads; rendering only the first would leave *"and links to
+ * them"* with nothing to link.
  */
-export type CorrectionEvidence =
-  | {
-      readonly kind: "behavioral";
-      /** Distinct subjects a human has superseded at this predicate. The GATE's number. */
-      readonly subjects: number;
-      /** Individual supersessions behind that. Always ≥ `subjects`. */
-      readonly events: number;
-      /** How many of the subjects this reader may see. */
-      readonly scopedSubjects: number;
-      readonly withheld: number;
-      /** Bounded, reader-scoped on BOTH the replacement and the retired claim. */
-      readonly examples: readonly CorrectionExample[];
-      readonly threshold: number;
-      readonly countsConsistent: boolean;
-    }
-  /** The evidence query drifted — see {@link AliasEvidence}'s `unreadable` arm. */
-  | { readonly kind: "unreadable" };
+export type CorrectionEvidence = BrainVocabularyCorrectionEvidence;
 
 // ---------------------------------------------------------------------------
 // Entries
@@ -248,11 +202,8 @@ export const PENDING_ENTRY_KINDS = [
 ] as const satisfies readonly BrainVocabularyPendingKind[];
 export type PendingEntryKind = (typeof PENDING_ENTRY_KINDS)[number];
 
-/** The direction a producer claimed, when it could claim one. */
-export interface PendingDirection {
-  readonly fromNorm: string;
-  readonly toNorm: string;
-}
+/** The direction a producer claimed, when it could claim one. An ALIAS — see above. */
+export type PendingDirection = BrainVocabularyPendingDirection;
 
 /** One pending alias proposal. */
 export interface PendingAliasEntry {
@@ -330,6 +281,31 @@ export interface PendingCardinalityEntry {
 
 export type PendingEntry = PendingAliasEntry | PendingCardinalityEntry;
 
+/**
+ * ⚠️ Compile-time lock to the wire entries.
+ *
+ * These two are PINNED rather than aliased, unlike the five shapes above,
+ * because they are the two that legitimately differ in spelling: `position` is
+ * this package's {@link SlotPosition} and `cardinality` is its
+ * {@link PredicateCardinality}, each already bidirectionally pinned to its wire
+ * counterpart in the module that owns it. Aliasing would drag the wire unions
+ * into every engine-side consumer to buy a guarantee the pin gives for free.
+ *
+ * BIDIRECTIONAL, for `_ObjectRadiusSidesMatchTheWire`'s reason: a field added
+ * here is one no client can read and that `z.strictObject` rejects on the way
+ * out; a field added to the wire is one the engine never populates and the
+ * schema then demands. The `/pending` response annotation catches neither — it
+ * checks the response literal's own keys, not the value of `entries`.
+ */
+type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _pendingAliasMatchesTheWire: Exact<PendingAliasEntry, BrainVocabularyPendingAlias> = true;
+void _pendingAliasMatchesTheWire;
+const _pendingCardinalityMatchesTheWire: Exact<
+  PendingCardinalityEntry,
+  BrainVocabularyPendingCardinality
+> = true;
+void _pendingCardinalityMatchesTheWire;
+
 /** One position's disclosure accounting — `InForcePositionCounts`' shape. */
 export interface PendingPositionCounts extends WithheldCount {
   readonly position: SlotPosition;
@@ -342,8 +318,15 @@ export interface PendingQueue {
   /** Per position, for the alias half. */
   readonly aliasCounts: readonly PendingPositionCounts[];
   /**
-   * The same accounting for pending cardinality proposals — `null` when the
-   * caller FILTERED that kind out.
+   * The same accounting for pending cardinality proposals — `null` when this
+   * queue never asked the cardinality question.
+   *
+   * ⚠️ TWO causes, and a reader of only the first will misread the second. The
+   * caller filtered the kind out, **or** filtered to an ENTITY position, where a
+   * cardinality entry cannot exist: it is a predicate-position statement, so the
+   * query is skipped rather than run-and-empty. Both are "never asked"; neither
+   * is "asked and withheld", and a client that renders `null` as an ACL
+   * boundary reports a by-construction exclusion as something a grant is hiding.
    *
    * ⚠️ Nullable rather than zeroed, and it is the same rule `totalKnown` states
    * one type down: a question that was never asked has no answer, and rendering

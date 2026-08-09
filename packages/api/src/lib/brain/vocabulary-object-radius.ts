@@ -73,6 +73,7 @@ import { aclVisibilityClause, type BrainPrincipalContext } from "@atlas/api/lib/
 import { objectNotSameSql, objectSameSql } from "@atlas/api/lib/brain/object-cmp";
 import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
 import type {
+  BrainVocabularyBlastRadius,
   BrainVocabularyObjectPair,
   BrainVocabularyObjectRadiusSide,
 } from "@useatlas/types";
@@ -173,6 +174,41 @@ export interface ObjectPositionRadius {
    */
   readonly staleEdgesPersist: true;
 }
+
+/**
+ * ⚠️ Compile-time lock: this record and the wire arm carry the SAME sides.
+ *
+ * `vocabulary-preview.ts` builds the `object-position` arm by SPREADING an
+ * {@link ObjectPositionRadius}, and says why: re-listed, that arm silently lost
+ * the `separating` side the moment this module grew one. But the wire arm in
+ * `@useatlas/types` re-lists these four fields by hand, and an annotation on the
+ * response does NOT close the loop — TypeScript's excess-property check applies
+ * to a literal's own keys, not to the value spread into it. So growing a fifth
+ * side here would compile everywhere, ship through the spread, and be rejected
+ * at runtime by `z.strictObject` — a 500 on every object-position preview, from
+ * a change that looked additive.
+ *
+ * The lock is BIDIRECTIONAL on purpose. A side added here without a wire arm is
+ * a field no client can read; a side added to the wire without one here is a
+ * field the engine never populates and `z.strictObject` then demands. Both are
+ * the same class of drift and neither should be discoverable in production.
+ *
+ * `kind`, `floor` and `subtreeTruncated` are the wire arm's own — the first
+ * discriminates the union, the other two are the preview's disclosure posture
+ * rather than anything this module measures — so they are excluded rather than
+ * mirrored here.
+ */
+type _ObjectRadiusSidesMatchTheWire = Exact<
+  ObjectPositionRadius,
+  Omit<
+    Extract<BrainVocabularyBlastRadius, { kind: "object-position" }>,
+    "kind" | "floor" | "subtreeTruncated"
+  >
+>;
+/** `Exact` collapses to `never` on any mismatch, and `true` is not assignable to `never`. */
+type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _objectRadiusSidesMatchTheWire: _ObjectRadiusSidesMatchTheWire = true;
+void _objectRadiusSidesMatchTheWire;
 
 // ---------------------------------------------------------------------------
 // The counterfactual

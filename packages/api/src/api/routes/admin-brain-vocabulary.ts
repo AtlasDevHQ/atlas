@@ -1084,11 +1084,16 @@ adminBrainVocabulary.openapi(previewRoute, async (c) => {
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
-      // ANNOTATED, like `/pending` and `/author`. The radius union grew an arm
-      // in this very diff as two independent declarations, and `ObjectPositionRadius`
-      // is SPREAD into the engine's — its own docstring anticipates growth — so a
-      // fourth side would compile cleanly and then 500 every object-position
-      // preview against `z.strictObject`.
+      // ANNOTATED, like `/pending` and `/author` — it catches a RENAMED or
+      // dropped field, which is what an annotation can catch.
+      //
+      // ⚠️ It does NOT catch a field ADDED to the engine's radius: excess-property
+      // checking applies to this literal's own keys, not to the value of `radius`,
+      // so a fifth side spread out of `ObjectPositionRadius` would compile here
+      // and 500 every object-position preview against `z.strictObject`. That
+      // direction is held by `_ObjectRadiusSidesMatchTheWire` in
+      // `vocabulary-object-radius.ts`, which fails the build in the module that
+      // would grow the side rather than in this one.
       const response: BrainVocabularyPreviewResponse = { radius };
       return c.json(checked(BrainVocabularyPreviewResponseSchema, response), 200);
     }),

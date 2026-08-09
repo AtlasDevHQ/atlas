@@ -78,6 +78,38 @@ import { AlertTriangle, ArrowRight, Link2, Merge, Scale } from "lucide-react";
  * sloppy one it replaces, which is exactly the migration this feature performs.
  * Nothing here sorts, preselects or recommends by count.
  */
+/**
+ * What "nothing is awaiting a decision" is actually a statement ABOUT.
+ *
+ * ⚠️ Two different qualifiers, because `withheld > 0` and `cardinalityCounts ===
+ * null` are two different reasons the sentence is narrower than it sounds, and
+ * they were one. *"that you can see"* names an ACL boundary — rows exist and a
+ * grant is hiding them — and rendering it for `null` reported a BY-CONSTRUCTION
+ * exclusion as something the reader lacks permission for. A queue filtered to an
+ * entity position has no cardinality proposals because a cardinality proposal is
+ * a predicate-position statement, not because anyone is withholding one, and an
+ * approver who reads it the other way goes looking for an admin to widen a grant
+ * that would change nothing.
+ *
+ * ⚠️ `=== null` explicitly, never `?? 0` — that is the one coalesce the nullable
+ * was introduced to prevent, and it falls on the unsafe side: null becomes 0,
+ * every qualifier drops, and the page asserts *"Nothing is awaiting a
+ * decision."* flat for a half it never queried.
+ */
+function emptyStateQualifier(
+  data: z.infer<typeof BrainVocabularyPendingResponseSchema> | null | undefined,
+): string {
+  if (data === null || data === undefined) return "";
+  const withheld =
+    data.aliasCounts.some((c) => c.withheld > 0) ||
+    (data.cardinalityCounts !== null && data.cardinalityCounts.withheld > 0);
+  const neverAsked = data.cardinalityCounts === null;
+  if (withheld && neverAsked) return " that you can see, among the kinds this queue asked about";
+  if (withheld) return " that you can see";
+  if (neverAsked) return " among the kinds this queue asked about";
+  return "";
+}
+
 export function PendingQueue() {
   const [kind, setKind] = useState<"all" | "alias" | "cardinality">("all");
   const [position, setPosition] = useState<"all" | BrainVocabularySlotPosition>("all");
@@ -96,6 +128,7 @@ export function PendingQueue() {
 
   const entries = data?.entries ?? [];
   const aliasCounts = data?.aliasCounts ?? [];
+  const emptyQualifier = emptyStateQualifier(data);
 
   return (
     <Card>
@@ -143,9 +176,11 @@ export function PendingQueue() {
           {aliasCounts.map((c) => (
             <PositionCountBadge key={c.position} counts={c} />
           ))}
-          {/* ⚠️ `null` means the caller FILTERED this kind out, so there is no
-              count to render. Zeroed, it read "curated predicates · 0 of 0" with
-              a clean scope badge for a question nobody asked. */}
+          {/* ⚠️ `null` means the queue never asked — the caller filtered this
+              kind out, or filtered to an entity position, where a cardinality
+              proposal cannot exist. Either way there is no count to render.
+              Zeroed, it read "curated predicates · 0 of 0" with a clean scope
+              badge for a question nobody asked. */}
           {data?.cardinalityCounts != null ? (
             <PositionCountBadge counts={data.cardinalityCounts} label="curated predicates" />
           ) : null}
@@ -174,18 +209,8 @@ export function PendingQueue() {
           // this is empty; this line must not contradict it with a congratulation.
           <p className="text-muted-foreground text-sm">
             Nothing is awaiting a decision
-            {/* ⚠️ `=== null` explicitly, never `?? 0` — that is the one
-                coalesce the nullable was introduced to prevent, and it falls on
-                the unsafe side: null becomes 0, the qualifier drops, and the
-                page asserts "Nothing is awaiting a decision." flat for a half it
-                never queried. */}
-            {aliasCounts.some((c) => c.withheld > 0) ||
-            data?.cardinalityCounts === null ||
-            (data?.cardinalityCounts !== undefined && data.cardinalityCounts.withheld > 0)
-              ? " that you can see"
-              : ""}
-            . That is not the
-            same as nothing needing one — see what this workspace has observed, above.
+            {emptyQualifier}. That is not the same as nothing needing one — see what this
+            workspace has observed, above.
           </p>
         ) : (
           <ul className="space-y-3">

@@ -303,7 +303,7 @@ export interface Cell {
    * `--check` said `CHECK OK`.
    *
    * So a rotted anchor is a distinct, machine-readable state, and
-   * {@link anyAnchorFailure} is what {@link module:mutate} refuses on. A
+   * {@link anchorFailures} is what {@link module:mutate} refuses on. A
    * timeout flag must stay merely a flag — that is a real measurement of a real
    * hang — which is exactly the distinction a substring match could not draw.
    */
@@ -393,14 +393,6 @@ export function baselineProblem(outcome: SuiteOutcome): BaselineProblem | null {
         "mutation's, which is indistinguishable from a strong result. Fix the tree first.",
     };
   }
-  if (outcome.pass === 0) {
-    return {
-      kind: "empty",
-      message:
-        "ran ZERO tests. A baseline of nothing is not a baseline: every cell would render an " +
-        "honest-looking 0 meaning 'the suite does not catch this'. Check the target's path.",
-    };
-  }
   const accounted = outcome.pass + outcome.fail + outcome.skip + outcome.todo;
   if (outcome.ran !== null && accounted !== outcome.ran) {
     const missing = outcome.ran - accounted;
@@ -424,6 +416,27 @@ export function baselineProblem(outcome: SuiteOutcome): BaselineProblem | null {
       message:
         `${what} of ${total} tests. A skipped test cannot be killed by a mutation, so every count ` +
         "would be silently deflated and the generated file would overwrite real numbers with zeros.",
+    };
+  }
+  // ⚠️ LAST, and the ordering is the finding. Placed before the deflation arms
+  // it swallowed THREE OF FIVE `-pg` targets: a suite with no non-`-pg` tests
+  // reports `0 pass / 29 skip`, which is a DEFLATED baseline, but `pass === 0`
+  // claimed it first and printed "check the target's path" — sending an
+  // operator after a path that is fine while Postgres is down. That is the
+  // misdirecting diagnostic `182eb6536` removed, reintroduced by the fix for it
+  // and on the more common shape; `identity-consumers-pg` was only diagnosed
+  // correctly because it happens to carry six unrelated tests.
+  //
+  // "Ran nothing AND explains why" beats "ran nothing", so every arm that can
+  // explain goes first. Reaching here means the suite genuinely discovered no
+  // tests at all.
+  if (outcome.pass === 0) {
+    return {
+      kind: "empty",
+      message:
+        "ran ZERO tests, and reported no skips, todos or unaccounted tests to explain it. A " +
+        "baseline of nothing is not a baseline: every cell would render an honest-looking 0 " +
+        "meaning 'the suite does not catch this'. Check the target's path.",
     };
   }
   return null;

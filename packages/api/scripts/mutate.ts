@@ -290,29 +290,6 @@ async function measure(
           continue;
         }
 
-        // ⚠️ THE SAME DEFLATION, one loop over. Guardrail 4 refuses a baseline
-        // that skipped; this refuses a MUTATED RUN that skipped, and the twin
-        // was missing from the first cut. A mutation can break a `beforeAll` or
-        // the condition feeding a `describeIfPg`, and the resulting `fail` is
-        // then measured against a `total` from a baseline that ran a different
-        // population — a deflated count rendered as an honest number, which is
-        // the whole defect this change exists to close. `isWholeSuite` cannot
-        // see it either: it is built for the INFLATION case.
-        if (outcome.skip !== 0 || outcome.todo !== 0) {
-          const missing = outcome.skip + outcome.todo;
-          cells.set(target.name, {
-            kind: "error",
-            fail: 0,
-            flag: `SKIPPED ${missing} — count would be deflated`,
-          });
-          console.error(
-            `${position} ${RED}SKIP${RESET}   ${mutation.label} @ ${target.name}: ` +
-              `${missing} test(s) did not run under the mutation, so the count is not comparable ` +
-              "to the baseline.",
-          );
-          continue;
-        }
-
         const whole = isWholeSuite(outcome.fail, total);
         cells.set(target.name, {
           kind: "count",

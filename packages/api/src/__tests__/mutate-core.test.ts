@@ -308,6 +308,20 @@ describe("⚠️ baselineProblem — every way a baseline can lie (#5077)", () =
     expect(baselineProblem({ ...ok, fail: 3, ran: 67 })).toMatchObject({ kind: "red" });
   });
 
+  test("⚠️ a -pg suite with NO non-pg tests is DEFLATED, not EMPTY", () => {
+    // The falsifier that was missing, and the reason the defect survived: the
+    // EMPTY test below uses `ran: 0`, the single input where arm order cannot
+    // matter. THREE OF FIVE `-pg` targets look like this with Postgres down —
+    // `cardinality-pg` reports 0 pass / 29 skip — and while `pass === 0` was
+    // checked first they were told to "check the target's path" instead of to
+    // start Postgres. Only the deflation kinds carry that hint.
+    expect(baselineProblem({ pass: 0, fail: 0, skip: 29, todo: 0, ran: 29 })?.kind).toBe("deflated");
+    // …and a suite claiming zero pass while `Ran N` proves 78 were discovered
+    // is UNACCOUNTED: the message must not say "ran ZERO tests" over data that
+    // contradicts it.
+    expect(baselineProblem({ pass: 0, fail: 0, skip: 0, todo: 0, ran: 78 })?.kind).toBe("unaccounted");
+  });
+
   test("EMPTY — zero tests is not a baseline", () => {
     // Reachable by renaming or emptying a target file, or by a rotted
     // `target.file` path. Every cell would then render an honest-looking 0

@@ -96,12 +96,18 @@ fi
 # --- Narrow to the affected specs -------------------------------------------
 SELECTED=()
 if [ "$MODE" = "affected" ]; then
-  if ! CHANGED=$(cd "$ROOT" && git diff --name-only "$BASE"...HEAD 2>/dev/null); then
+  # ⚠️ `--no-renames` on BOTH diffs, which the comment below claimed and the code
+  # did not. git reports only the NEW path for a rename (diff.renames has
+  # defaulted true since 2.9), so a target still listed in a spec under its old
+  # path never matched — measured: a committed rename broke a spec and the gate
+  # exited 0 with "nothing to verify". Stderr is captured, not discarded, so the
+  # widen prints its reason.
+  if ! CHANGED=$(cd "$ROOT" && git diff --name-only --no-renames "$BASE"...HEAD 2>&1); then
     # ⚠️ Widen, never narrow, when the base is unresolvable (a shallow clone, a
     # detached HEAD, a deleted branch). Silently verifying NOTHING is the one
     # outcome this gate must never produce, and it is indistinguishable from a
     # clean run in the log.
-    echo "check-mutation-tables: cannot diff against '$BASE' — falling back to --all."
+    echo "check-mutation-tables: cannot diff against '$BASE' ($CHANGED) — falling back to --all."
     MODE="all"
   else
     # ⚠️ Uncommitted work counts too — pre-PR is exactly when a table goes stale
@@ -115,11 +121,19 @@ if [ "$MODE" = "affected" ]; then
       echo "check-mutation-tables: cannot diff the working tree ($UNCOMMITTED) — falling back to --all."
       MODE="all"
     else
-      # `--no-renames` on both diffs: a rename reports only the NEW path, so a
-      # target still listed in a spec under its old path would never match.
       # Untracked files too — a brand-new corpus or spec is invisible to `git
-      # diff`, and both narrow silently.
-      UNTRACKED=$(cd "$ROOT" && git ls-files --others --exclude-standard 2>/dev/null || true)
+      # diff`, and that narrows silently.
+      # ⚠️ The THIRD instance of this twin in this one file, which is why the
+      # sweep has to be mechanical rather than remembered. Same command family,
+      # same failure modes (index.lock, EACCES, an unreadable excludesFile), same
+      # consequence: an empty result narrows the selector, a brand-new spec or
+      # corpus goes invisible, and the gate prints "nothing to verify" and exits
+      # 0. No `|| true` anywhere in this selector.
+      if ! UNTRACKED=$(cd "$ROOT" && git ls-files --others --exclude-standard 2>&1); then
+        echo "check-mutation-tables: cannot list untracked files ($UNTRACKED) — falling back to --all."
+        MODE="all"
+        UNTRACKED=""
+      fi
       CHANGED="$CHANGED
 $UNCOMMITTED
 $UNTRACKED"

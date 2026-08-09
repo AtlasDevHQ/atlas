@@ -33,7 +33,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 58 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 59 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 

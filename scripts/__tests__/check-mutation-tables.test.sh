@@ -14,11 +14,17 @@
 # Locks in, in the order they would hurt:
 #   1. a hand-edited generated table is CAUGHT             (the #5060 threat model)
 #   2. a target carrying `.skip` is REFUSED                (guardrail 4, #5077)
-#   3. a target carrying `.todo` is REFUSED                (bun's other bucket)
-#   4. a DEAD ANCHOR is refused, not rendered as a byte    (the tombstone trap)
-#   5. an unresolvable base WIDENS rather than passing     (the fail-safe)
-#   6. TEST_DATABASE_URL unset exits 3, not 0              (SKIP, never PASS)
-#   7. POSITIVE CONTROL: a current table passes            (or the above is vacuous)
+#   3. an unresolvable base WIDENS rather than passing     (the fail-safe)
+#   4. TEST_DATABASE_URL unset exits 3, not 0              (SKIP, never PASS)
+#   5. POSITIVE CONTROL: a current table passes            (or the above is vacuous)
+#
+# ⚠️ EVERY fixture here was proven sensitive by DELETING the guard it pins and
+# confirming it goes red. Two more (`.todo` refused, dead anchor refused) were
+# written, measured VACUOUS — their trees generate no table, so `--check` exits
+# 1 with "is stale" whether or not the guard exists — and REMOVED rather than
+# shipped green. They need a tree carrying a committed tombstone, and
+# `check()` needs to assert on a discriminating phrase rather than on an exit
+# code five failure modes share. Tracked in the #5077 follow-up.
 
 set -euo pipefail
 
@@ -128,18 +134,6 @@ test.skip("b", () => { expect(answer()).toBe(42); });'
 T=$(make_tree "$SKIP_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
 check 1 "a target carrying .skip is REFUSED" "$T" --all
-
-TODO_TARGET='import { expect, test } from "bun:test";
-import { answer } from "./subject";
-test("a", () => { expect(answer()).toBe(42); });
-test.todo("b", () => { expect(answer()).toBe(42); });'
-T=$(make_tree "$TODO_TARGET" '"  return 42;"' 'true')
-check 1 "a target carrying .todo is REFUSED (bun's other bucket)" "$T" --all
-
-# 4. The tombstone trap: a dead anchor must be refused, never rendered as a
-# stable byte that --check then blesses forever.
-T=$(make_tree "$GOOD_TARGET" '"  return 12345;"' 'true')
-check 1 "a DEAD ANCHOR is refused rather than written as a cell" "$T" --all
 
 # 5. The fail-safe. An unresolvable base must WIDEN to --all (and then catch the
 # hand-edit), never quietly select nothing and exit 0.

@@ -30,12 +30,14 @@
 #   Stage 1  parallel  lint + lint:type-aware + syncpack + ~22 read-only
 #                      drift/check scripts.
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
-#   Stage 2  serial    `bun run test` ALONE. The full suite flakes under CPU
+#   Stage 2  serial    the tree-WRITING gate (mutation-tables). `mutate.ts` rewrites
+#                      sources in place, so it cannot share Stage 1 with ~30 scanners.
+#   Stage 3  serial    `bun run test` ALONE. The full suite flakes under CPU
 #                      contention on WSL2, so it gets the machine to itself.
 #
 # ENV TOGGLES
 #   CI_LOCAL_JOBS=N        Stage-1 concurrency (default 6).
-#   CI_LOCAL_NO_TEST=1     Skip Stage 2 (gates-only fast pass). RESULT is then
+#   CI_LOCAL_NO_TEST=1     Skip Stage 3 (gates-only fast pass). RESULT is then
 #                          flagged "tests skipped" — never reported as a clean pass.
 #   CI_LOCAL_NO_NET=1      Skip the two npm-registry gates (published-symbols,
 #                          unpublished-versions) for offline runs.
@@ -145,7 +147,7 @@ launch() {
 }
 
 echo "Atlas local CI — mirrors the required \`ci\` gate. Logs: .ci-local/<gate>.log"
-[ "$NO_TEST" = "1" ] && echo "  (CI_LOCAL_NO_TEST=1 — Stage 2 test suite skipped)"
+[ "$NO_TEST" = "1" ] && echo "  (CI_LOCAL_NO_TEST=1 — Stage 3 test suite skipped)"
 [ "$NO_NET" = "1" ]  && echo "  (CI_LOCAL_NO_NET=1 — npm-registry gates skipped)"
 if [ -n "${TEST_DATABASE_URL:-}" ]; then
   echo "  TEST_DATABASE_URL set — real-Postgres *-pg.test.ts WILL run."
@@ -241,10 +243,17 @@ fi
 # .ci-local/RESULT so a watcher polling for the file can never observe it
 # half-written. RESULT's existence = run finished; its contents = the report.
 failed=()
+# ⚠️ Tracked SEPARATELY from `failed`, because the headline has to say so. The
+# row rendered SKIP correctly and the summary line still read "all N gates
+# green" — and TEST_DATABASE_URL unset is the DEFAULT local state, so that was
+# nearly every local run. `/ci`'s protocol tells the agent that RESULT's
+# contents ARE the report, so a false green there is read as a clean pre-PR pass.
+# Same defect as the row, moved one screen down.
+skipped=()
 for name in "${GATE_NAMES[@]}"; do
   rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
-  # 3 = declined to verify (rendered SKIP). Not green, but not a failure either.
-  [ "$rc" = "0" ] || [ "$rc" = "3" ] || failed+=("$name")
+  if [ "$rc" = "3" ]; then skipped+=("$name")
+  elif [ "$rc" != "0" ]; then failed+=("$name"); fi
 done
 total="${#GATE_NAMES[@]}"
 
@@ -270,7 +279,9 @@ render_report() {
   done
   printf '%s\n' "------------------------------------------------"
 
-  if [ "${#failed[@]}" -eq 0 ]; then
+  if [ "${#failed[@]}" -eq 0 ] && [ "${#skipped[@]}" -gt 0 ]; then
+    echo "RESULT: PASS with ${#skipped[@]} DECLINED — ${skipped[*]} verified nothing; not a clean pre-PR pass."
+  elif [ "${#failed[@]}" -eq 0 ]; then
     if [ "$NO_TEST" = "1" ]; then
       echo "RESULT: PASS (tests skipped — Stage 2 not run; not a clean pre-PR pass)"
     else

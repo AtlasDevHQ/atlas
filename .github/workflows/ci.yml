@@ -248,6 +248,13 @@ jobs:
       - name: Adversarial fixtures for the brain-fact promotion gate (#4769)
         run: bash scripts/__tests__/check-brain-fact-promotion.test.sh
 
+      # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
+      # while ci-local.sh globs the directory — so a new suite runs locally and
+      # silently never runs in CI. This was the only one of thirteen missing.
+      # It builds throwaway trees and needs no Postgres; ~2 seconds.
+      - name: Adversarial fixtures for the mutation-tables gate (#5077)
+        run: bash scripts/__tests__/check-mutation-tables.test.sh
+
       - name: Check test-file discipline (1.5.4 / #2796)
         run: bash scripts/check-test-discipline.sh
 

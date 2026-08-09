@@ -668,6 +668,30 @@ export async function declarePredicateCardinality(
  * successful curation, which is the same failure shape the authoring picker
  * exists to prevent one layer up.
  */
+/**
+ * What DIRECT AUTHORING can refuse — strictly narrower than
+ * {@link CardinalityWriteResult}.
+ *
+ * `declarePredicateCardinality` is `ON CONFLICT DO UPDATE` (a human overriding
+ * their own workspace's earlier decision is the thing the gate is FOR), so it
+ * never answers `already-decided`; and `producer-proposed-multi` is the PROPOSE
+ * path's arm — a human may write `multi`, which is the whole point of the
+ * un-curation verb. Both are unreachable here.
+ *
+ * Narrowed rather than left wide because the wide union reached the route's
+ * status map and made its OpenAPI advertise a 409 no caller can provoke — the
+ * same defect `AliasAuthoringRefusal`'s `Extract` removed one module over. With
+ * this type the route's declared responses and its reachable ones agree, and the
+ * compiler is what keeps them agreeing.
+ */
+export type DeclarationResult =
+  | { readonly ok: true; readonly cardinality: PredicateCardinality }
+  | {
+      readonly ok: false;
+      readonly refusal: Extract<CardinalityRefusal, "degenerate-key" | "unattributed">;
+      readonly message: string;
+    };
+
 export async function declarePredicateCardinalityForSurface(
   executor: CardinalityExecutor,
   workspaceId: string,
@@ -678,12 +702,28 @@ export async function declarePredicateCardinalityForSurface(
     /** The workspace's own predicate-position alias lookup. */
     readonly predicateAlias: AliasLookup;
   },
-): Promise<CardinalityWriteResult> {
-  return declarePredicateCardinality(executor, workspaceId, {
+): Promise<DeclarationResult> {
+  const result = await declarePredicateCardinality(executor, workspaceId, {
     predicateKey: slotKey(input.predicateSurface, input.predicateAlias),
     cardinality: input.cardinality,
     authoredBy: input.authoredBy,
   });
+  if (result.ok) return result;
+  // RECONSTRUCTED rather than returned through a `refusal ===` guard: narrowing a
+  // non-discriminant field does not narrow the object type, so the guard alone
+  // still yields the wide union and the compile error moves rather than closing.
+  if (result.refusal === "degenerate-key" || result.refusal === "unattributed") {
+    return { ok: false, refusal: result.refusal, message: result.message };
+  }
+  // Unreachable: the two remaining members belong to the propose path. Thrown
+  // rather than widened back, because reaching it means `declarePredicateCardinality`
+  // grew an arm this seam's callers — and its OpenAPI contract — do not know about.
+  throw new Error(
+    `declarePredicateCardinalityForSurface: unexpected refusal "${result.refusal}" from the ` +
+      "direct-authoring path (workspace " +
+      workspaceId +
+      "). That refusal belongs to the producer path; the route's declared responses do not cover it.",
+  );
 }
 
 /**

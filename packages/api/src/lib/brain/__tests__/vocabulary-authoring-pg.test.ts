@@ -808,7 +808,37 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
       expect(real.kind).toBe("refused");
       expect(imagined.kind).toBe("refused");
       if (real.kind !== "refused" || imagined.kind !== "refused") throw new Error("unreachable");
+      // A THIRD arm: a pair with a PENDING proposal. That is the arm where a
+      // distinguishable answer would tell a reader "a proposal exists for this
+      // pair" — which at an entity position is the confidential bit — and it sat
+      // outside the equality until now.
+      await seedFact({ subject: "alpha", predicate: "is", object: "thing", visibleTo: ["org"] });
+      await seedFact({ subject: "beta", predicate: "is", object: "thing", visibleTo: ["org"] });
+      await proposeAliasEdge(
+        WS,
+        {
+          position: "subject",
+          fromNorm: "alpha",
+          toNorm: "beta",
+          directed: false,
+          sourceClass: "seam",
+          confidence: 0.8,
+          proposedBy: "producer",
+        },
+        { withTransaction: runner },
+      );
+      const pending = await removeInForceAliasEdge(
+        WS,
+        { position: "subject", fromNorm: "alpha", toNorm: "beta" },
+        blind,
+        { withTransaction: runner },
+      );
+      expect(pending.kind).toBe("refused");
+      if (pending.kind !== "refused") throw new Error("unreachable");
+
       expect(real.refusal).toBe(imagined.refusal);
+      expect(pending.refusal).toBe(imagined.refusal);
+      expect(pending.message).toBe(imagined.message);
       // BYTE-IDENTICAL prose. `notInForceMessage` names no norm precisely so
       // this assertion can be an equality rather than a fuzzy match — a message
       // echoing the requested pair back would differ here and the test would

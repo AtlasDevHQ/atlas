@@ -61,6 +61,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { SLOT_POSITIONS, type SlotPosition } from "@atlas/api/lib/brain/identity";
+import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
 import {
   logFailClosedHole,
   positionalScopeClause,
@@ -125,7 +126,16 @@ export interface InForceCardinality {
    * the thing an approver should be able to find and remove.
    */
   readonly predicateSurface: string | null;
-  readonly cardinality: string;
+  /**
+   * NARROWED to the two-member vocabulary, not `string`.
+   *
+   * The wire type is a union and the producer was not, so `checked()` was the
+   * only thing connecting them — and it connected them by taking the whole pane
+   * down as a 500 when a drifted value arrived. Narrowing here means such a row
+   * is counted as unreadable and logged, which is this module's stated contract
+   * for every other column.
+   */
+  readonly cardinality: PredicateCardinality;
   readonly sourceClass: string;
   readonly proposedBy: string;
   readonly reviewedBy: string | null;
@@ -202,8 +212,7 @@ export async function loadInForceVocabulary(
   for (const result of edgeResults) {
     edges.push(...result.edges);
     truncated = truncated || result.truncated;
-    const storedTotal = totals.totals.get(result.position);
-    const total = storedTotal ?? 0;
+    const total = totals.totals.get(result.position) ?? 0;
     // `scoped` is the SCOPED TOTAL, not `edges.length` — the list is capped at
     // `IN_FORCE_PAGE_MAX` and a page-sized `scoped` would turn a truncation into
     // a withheld count, which is exactly the conflation `BlastRadiusSide`
@@ -217,7 +226,22 @@ export async function loadInForceVocabulary(
     const arithmetic = withheldCount(total, result.scopedTotal);
     const positionCounts: WithheldCount = {
       ...arithmetic,
-      consistent: arithmetic.consistent && result.scopedTotalKnown && storedTotal !== undefined,
+      // ⚠️ `totals.unreadable`, NOT `storedTotal !== undefined`.
+      //
+      // `loadEdgeTotals` is `GROUP BY slot_position`, so a position with ZERO
+      // edges legitimately produces no row — and the earlier spelling could not
+      // tell that from "the row did not narrow". The result was
+      // `countsConsistent: false` on every empty position: three destructive
+      // "counts disagreed" badges and a "reload to get a consistent pair"
+      // paragraph on the day-one empty state, which no reload could ever clear,
+      // plus three `logFailClosedHole` warns per page load — drowning the one
+      // line ADR-0037 §6 requires be findable.
+      //
+      // The signal for the real case was already returned and never read. It is
+      // WORKSPACE-WIDE rather than per-position on purpose: a row that would not
+      // narrow cannot be attributed to a position, so it must taint all three
+      // rather than none.
+      consistent: arithmetic.consistent && result.scopedTotalKnown && totals.unreadable === 0,
     };
     counts.push({
       position: result.position,
@@ -235,12 +259,24 @@ export async function loadInForceVocabulary(
     });
   }
 
-  const cardinalityArithmetic = withheldCount(cardinalities.total, cardinalities.rows.length);
+  // ⚠️ `cardinalities.scopedTotal`, NOT `cardinalities.rows.length`.
+  //
+  // The list is page-capped and drops rows that will not narrow, so the page
+  // length is not "what this reader may see" — and using it reproduced, in the
+  // code that fixed it for edges, the exact conflation the sibling path forbids
+  // by name thirty lines up: 250 approved entries rendered `withheld: 50` at an
+  // UNSCOPED position, where withheld must be zero by construction. A page cap
+  // wearing an ACL boundary's face, on the surface whose entire purpose is that
+  // those two are distinguishable.
+  const cardinalityArithmetic = withheldCount(cardinalities.total, cardinalities.scopedTotal);
   const cardinalityCounts: InForcePositionCounts = {
     position: "predicate",
     decision: cardinalities.decision,
     ...cardinalityArithmetic,
-    consistent: cardinalityArithmetic.consistent && cardinalities.totalKnown,
+    consistent:
+      cardinalityArithmetic.consistent &&
+      cardinalities.totalKnown &&
+      cardinalities.scopedTotalKnown,
   };
   logFailClosedHole({
     workspaceId,
@@ -488,6 +524,9 @@ async function loadCardinalities(
   truncated: boolean;
   total: number;
   totalKnown: boolean;
+  /** Entries this reader may see, BEFORE the page cap. */
+  scopedTotal: number;
+  scopedTotalKnown: boolean;
   decision: PositionalDecision;
 }> {
   const scope = positionalScopeClause("predicate", ctx, {
@@ -505,6 +544,9 @@ async function loadCardinalities(
       truncated: false,
       total: total.n,
       totalKnown: total.known,
+      // A denied reader genuinely sees zero — an answer, not a drift.
+      scopedTotal: 0,
+      scopedTotalKnown: true,
       decision: scope.decision,
     };
   }
@@ -524,7 +566,8 @@ async function loadCardinalities(
             c.reviewed_by,
             c.reviewed_at::text AS reviewed_at,
             s.predicate_surface,
-            COALESCE(s.claims, 0)::int AS claims
+            COALESCE(s.claims, 0)::int AS claims,
+            COUNT(*) OVER ()::int AS scoped_total
        FROM brain_predicate_cardinality c
        LEFT JOIN LATERAL (
          SELECT mode() WITHIN GROUP (ORDER BY vf.predicate) AS predicate_surface,
@@ -541,16 +584,23 @@ async function loadCardinalities(
 
   const out: InForceCardinality[] = [];
   let unreadable = 0;
+  let scopedTotal: number | null = null;
   for (const raw of rows.slice(0, IN_FORCE_PAGE_MAX)) {
     if (typeof raw !== "object" || raw === null) {
       unreadable += 1;
       continue;
     }
     const row = raw as Record<string, unknown>;
-    if (typeof row.cardinality !== "string") {
+    // Narrowed to the two-member vocabulary rather than to `string`. A drifted
+    // value is COUNTED and logged like every other unreadable row in this
+    // module — not allowed through to fail the wire schema, which would take the
+    // whole pane down as a 500 over one bad row. `cardinality.ts` reads the same
+    // value as `multi` with a warn; this is that posture, one layer up.
+    if (row.cardinality !== "single" && row.cardinality !== "multi") {
       unreadable += 1;
       continue;
     }
+    if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
     out.push({
       predicateSurface:
         typeof row.predicate_surface === "string" ? row.predicate_surface : null,
@@ -573,11 +623,20 @@ async function loadCardinalities(
       "brain vocabulary in-force: curated-cardinality rows would not narrow and were dropped — entries are arming supersession that this pane is not showing",
     );
   }
+  if (scopedTotal === null && rows.length > 0) {
+    log.warn(
+      { workspaceId: ctx.workspaceId, rows: rows.length, requestId: opts.requestId },
+      "brain vocabulary in-force: the curated-predicate scoped-total window value did not arrive — the withheld count is reported inconsistent rather than computed against a page length",
+    );
+  }
+
   return {
     rows: out,
     truncated: rows.length > IN_FORCE_PAGE_MAX || unreadable > 0,
     total: total.n,
     totalKnown: total.known,
+    scopedTotal: scopedTotal ?? out.length,
+    scopedTotalKnown: scopedTotal !== null || rows.length === 0,
     decision: scope.decision,
   };
 }

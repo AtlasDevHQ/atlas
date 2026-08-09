@@ -150,6 +150,22 @@ export interface PositionalScopeOptions {
   readonly alias?: string;
   /** Correlates this clause's log lines with the originating request. */
   readonly requestId?: string;
+  /**
+   * Count RETRACTED and superseded claims toward the population too.
+   *
+   * ⚠️ Off by default, and the two callers that turn it on are answering a
+   * different question from the one the panes ask.
+   *
+   * A DISPLAY read wants the live set: an entry whose claims are all withdrawn
+   * describes nothing an approver is looking at. A REMOVAL gate wants the wider
+   * one, because "no live claims" and "not visible to you" are different facts
+   * and collapsing them makes an in-force edge permanently unremovable — by
+   * everyone, since the live-set test fails for every reader at once. The ACL
+   * arm is unchanged either way: a retracted claim is still a claim this reader
+   * was entitled to, so widening the temporal filter discloses nothing the
+   * grant does not already allow.
+   */
+  readonly includeRetracted?: boolean;
 }
 
 /**
@@ -197,7 +213,7 @@ export function positionalScopeClause(
     );
   }
 
-  const live = liveFactSql(alias);
+  const live = options.includeRetracted ? "TRUE" : liveFactSql(alias);
 
   if (position !== "predicate") {
     // ENTITY. The whole clause comes from `aclVisibilityClause` — the same
@@ -340,13 +356,18 @@ export interface PairVisibilityReader {
  * A distinct `not-visible` refusal would restore the oracle in words after
  * closing it in rows.
  *
- * ## Predicate position is unscoped, so this is `true` there
+ * ## Predicate position is unscoped, and short-circuits
  *
- * Not a special case in this function — it falls out of
- * {@link positionalScopeClause}. A predicate edge is visible to anyone who can
- * read the workspace, so the gate costs one query and never refuses. Left
- * uniform rather than short-circuited so the rule has one implementation and a
- * future change to the predicate arm reaches removal automatically.
+ * A predicate edge is visible to anyone who can read the workspace, so the
+ * answer is `true` for any resolved reader and no query runs.
+ *
+ * ⚠️ It was NOT short-circuited at first, on a "keep the rule single-sited"
+ * argument, and that was wrong in a way worth recording: the uniform path ran
+ * the population join, which tests the LIVE set — so a predicate edge whose
+ * claims had all been retracted refused, and an in-force, identity-shaping edge
+ * became permanently unremovable at a position with no confidentiality argument
+ * at all. The rule is still single-sited (`positionalScopeClause` decides the
+ * arm); what changed is that the unscoped arm now means what it says.
  */
 export async function isPairVisible(
   db: PairVisibilityReader,
@@ -355,10 +376,32 @@ export async function isPairVisible(
   pair: { readonly fromNorm: string; readonly toNorm: string },
   options: { readonly requestId?: string } = {},
 ): Promise<boolean> {
+  const scope = positionalScopeClause(position, ctx, {
+    paramIndex: 1,
+    alias: "vf",
+    requestId: options.requestId,
+  });
+  if (scope.decision === "deny-all") return false;
+  // ⚠️ PREDICATE SHORT-CIRCUITS, and this is not an optimization.
+  //
+  // The predicate arm's whole rule is workspace membership — §6 grants it the
+  // lower bar because a verb phrase discloses nothing an approver could not
+  // have guessed. Running the population join there anyway made the gate refuse
+  // whenever the two norms had no LIVE claim, so an in-force predicate edge
+  // whose claims had all been retracted became unremovable, at a position with
+  // no confidentiality argument to trade for it. An earlier version of this
+  // docstring claimed the uniform path "never refuses"; it did, and this is what
+  // makes the claim true instead of aspirational.
+  if (scope.decision === "unscoped") return true;
+
   const visible = visibleNormsSql(position, ctx, {
     paramIndex: 1,
     alias: "vf",
     requestId: options.requestId,
+    // RETRACTED-INCLUSIVE. See {@link PositionalScopeOptions.includeRetracted}:
+    // the live-set test fails for every reader at once, so using it here would
+    // make an edge invisible-and-unremovable rather than merely invisible.
+    includeRetracted: true,
   });
   if (visible.decision === "deny-all") return false;
 
@@ -471,6 +514,10 @@ export function logFailClosedHole(details: {
       userId: details.userId,
       requestId: details.requestId,
     },
-    "brain vocabulary: entity-position entries were withheld from an approver — those entries are also un-removable by them, so a bad alias here has no in-product recovery path",
+    // Position-agnostic wording. It said "entity-position entries" and is now
+    // also called for the curated-predicate accounting, where that would be a
+    // false label on the one line an operator is meant to trust — `position` is
+    // in the payload and says which.
+    "brain vocabulary: entries in force were withheld from an approver — a withheld entry is also un-removable by them, so a bad entry here has no in-product recovery path",
   );
 }

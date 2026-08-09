@@ -27736,33 +27736,8 @@
               }
             }
           },
-          "409": {
-            "description": "The predicate already carries an entry this write may not overwrite. Reachable through `declarePredicateCardinality`'s shared refusal contract; the message says which",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
           "500": {
-            "description": "Internal server error",
+            "description": "Internal server error. `response_schema_mismatch` is the one case where the write LANDED and only its description failed — reload rather than treating it as a failed write",
             "content": {
               "application/json": {
                 "schema": {

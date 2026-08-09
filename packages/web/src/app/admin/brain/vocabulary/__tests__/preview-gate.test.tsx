@@ -86,6 +86,8 @@ const IN_FORCE = {
 
 /** Whether the preview endpoint succeeds, so the failure arm is reachable. */
 let previewFails = false;
+/** When set, the preview response waits on this — for the in-flight race arm. */
+let holdPreview: Promise<void> | null = null;
 const previewCalls: unknown[] = [];
 
 const originalFetch = globalThis.fetch;
@@ -116,6 +118,27 @@ function installFetchStub() {
     }
     if (url.includes("/brain-vocabulary/preview")) {
       previewCalls.push(init?.body);
+      const held = holdPreview;
+      if (held !== null) {
+        holdPreview = null;
+        return held.then(() =>
+          jsonResponse({
+            radius: {
+              kind: "computed",
+              arming: { total: 2, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+              disarming: {
+                total: 0,
+                pairs: [],
+                withheld: 0,
+                truncated: false,
+                countsConsistent: true,
+              },
+              floor: true,
+              subtreeTruncated: false,
+            },
+          }),
+        );
+      }
       return Promise.resolve(
         previewFails
           ? jsonResponse({ error: "server_error", message: "preview blew up" }, 500)
@@ -204,6 +227,7 @@ const authorDisabled = (): boolean =>
 
 beforeEach(() => {
   previewFails = false;
+  holdPreview = null;
   previewCalls.length = 0;
   installFetchStub();
 });
@@ -258,17 +282,20 @@ describe("the two previews do not contaminate each other", () => {
     fireEvent.click((await screen.findAllByRole("button", { name: /^Remove$/i }))[0]!);
     await waitFor(() => expect(removeButton().disabled).toBe(false));
 
-    // Dismiss the dialog before asserting — Radix `aria-hidden`s the page behind
-    // it, so the authoring button is unreachable to an accessible-role query
-    // while it is open. This is also the realistic sequence: the approver looks
-    // at a removal, backs out, and returns to a form they had half-filled.
-    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /^Remove the alias$/i })).toBeNull(),
-    );
-
-    // The removal preview landed — and the authoring gate is STILL shut.
-    expect(authorDisabled()).toBe(true);
+    // ⚠️ Asserted WHILE THE DIALOG IS OPEN. The earlier version dismissed it
+    // first — but the close handler clears the removal slot, and under a
+    // single-shared-slot revert it clears the SHARED slot, so the assertion held
+    // either way. The contamination exists only while both are live.
+    //
+    // TEXT queries rather than `*ByRole`: Radix `aria-hidden`s the page behind
+    // the dialog, which hides it from role queries but not from text ones.
+    //
+    // The removal's radius is 2-arming. If it had leaked into the authoring
+    // slot, the authoring card would render the same "At least 2" line — so
+    // exactly ONE occurrence is the property.
+    expect(screen.getAllByText(/At least 2 published/)).toHaveLength(1);
+    // …and the authoring card still shows its "preview first" prompt, which it
+    // only renders while its own radius is null.
     expect(screen.getByText(/blast radius is not optional/i)).toBeTruthy();
   });
 });
@@ -305,19 +332,71 @@ describe("authoring is gated on a computed blast radius", () => {
     expect(authorDisabled()).toBe(true);
   });
 
-  test("⚠️ changing a picked norm clears the preview and re-disables the button", async () => {
-    // The stale-preview defect. Three separate `setRadius(null)` calls guard
-    // this; dropping any one leaves a radius computed for a DIFFERENT pair on
-    // screen with an enabled button beside it, and the approver authors against
-    // a number that was never about their decision.
+  test("⚠️ RE-PICKING a norm clears the preview, so the gate is not just !bothPicked", async () => {
+    // ⚠️ The previous version of this test clicked "Change" and stopped there —
+    // which un-picks a side, so `!bothPicked` disabled the button on its own and
+    // ALL THREE `clearAuthorRadius()` calls could be deleted with the test still
+    // green, despite its comment naming them. It asserted the guard it was
+    // written for and could not see it.
+    //
+    // Re-picking restores `bothPicked`, so the only thing that can keep the
+    // button disabled is the radius having been cleared.
     renderPage();
     await pickBothNorms();
     fireEvent.click(screen.getByRole("button", { name: /Preview the impact/i }));
     await waitFor(() => expect(authorDisabled()).toBe(false));
 
-    // "Change" un-picks a side, which is a different decision than the one
-    // previewed.
     fireEvent.click(screen.getAllByRole("button", { name: /^Change$/ })[0]!);
+    await waitFor(() => expect(screen.getAllByText("is priced at").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByText("is priced at")[0]!);
+
+    // Both sides picked again — and the gate is still shut, because the preview
+    // that was computed belongs to the pair before the change.
     await waitFor(() => expect(authorDisabled()).toBe(true));
+  });
+
+  test("⚠️ changing the POSITION clears the preview too", async () => {
+    // A separate reset site (`page.tsx`'s position select), and the staler of
+    // the two: the radius would be for a different POSITION entirely, whose
+    // population and blast radius have nothing to do with the new one.
+    renderPage();
+    await pickBothNorms();
+    fireEvent.click(screen.getByRole("button", { name: /Preview the impact/i }));
+    await waitFor(() => expect(authorDisabled()).toBe(false));
+
+    // The select is a shadcn/Radix trigger; changing it clears both picks AND
+    // the radius, so the assertion is that the preview banner is gone rather
+    // than only that the button is disabled.
+    expect(screen.queryByText(/At least 2/)).not.toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Change$/ })[0]!);
+    await waitFor(() => expect(screen.queryByText(/At least 2/)).toBeNull());
+  });
+
+  test("⚠️ a preview that lands AFTER a reset does not re-arm the gate", async () => {
+    // The async half. Every reset is synchronous and none of them invalidated an
+    // in-flight request, so the response for the abandoned decision arrived
+    // afterwards and repopulated the slot — re-enabling the write button with a
+    // number computed for a pair nobody was authoring.
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    holdPreview = gate;
+
+    renderPage();
+    await pickBothNorms();
+    fireEvent.click(screen.getByRole("button", { name: /Preview the impact/i }));
+
+    // Abandon the decision while the preview is still in flight.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Change$/ })[0]!);
+    await waitFor(() => expect(screen.getAllByText("is priced at").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByText("is priced at")[0]!);
+
+    // …then let the stale response land.
+    release!();
+    await gate;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(authorDisabled()).toBe(true);
   });
 });

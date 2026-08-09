@@ -432,6 +432,15 @@ export interface AliasDecideDeps {
   readonly withTransaction?: ReconcileTransactionRunner;
   /** Defaults to `randomUUID`. */
   readonly newProposalId?: () => string;
+  /**
+   * Correlates this decision's server-side lines with the originating request.
+   *
+   * Threaded rather than omitted because the refusals here are the ones an
+   * operator gets asked about — *"an admin says they cannot remove this edge"* —
+   * and without it the 409 the approver saw cannot be joined to the log line
+   * that explains it.
+   */
+  readonly requestId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1629,10 +1638,24 @@ export async function removeInForceAliasEdge(
     //
     // Runs on the SAME `tx` as the write, so the corpus it reads is the one the
     // removal is about, and it runs BEFORE any proposal row is read.
-    const visible = await isPairVisible(tx, position, remover, { fromNorm, toNorm });
+    const visible = await isPairVisible(
+      tx,
+      position,
+      remover,
+      { fromNorm, toNorm },
+      { requestId: deps.requestId },
+    );
     if (!visible) {
       log.warn(
-        { workspaceId, position, origin: remover.origin, role: remover.role },
+        {
+          workspaceId,
+          position,
+          fromNorm,
+          toNorm,
+          origin: remover.origin,
+          role: remover.role,
+          requestId: deps.requestId,
+        },
         "Alias removal refused — the pair is not visible to this reader at this position (reported as not-in-force, which is also what an absent edge returns)",
       );
       return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };

@@ -1011,6 +1011,49 @@ export const BrainVocabularyRemoveResponseSchema = z.union([
   }),
 ]) satisfies z.ZodType<BrainVocabularyRemoveResponse, unknown>;
 
+/**
+ * ⚠️ ARM-COVERAGE pins for the three tagged response unions.
+ *
+ * `satisfies z.ZodType<T, unknown>` is blind in the same direction here as it is
+ * for the enums above, and for the same reason: DROPPING an arm leaves the
+ * inferred output still assignable to the wire type, so the check passes
+ * vacuously and the missing arm fails at runtime — `/author` 500s on the
+ * double-submit path, `/preview` on an object-position alias. These close it by
+ * comparing the DISCRIMINANTS, which is the part an arm carries with it.
+ */
+type _AuthorArmsCovered = [
+  Exclude<
+    BrainVocabularyAuthorResponse["outcome"],
+    z.infer<typeof BrainVocabularyAuthorResponseSchema>["outcome"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _authorArmsCovered: _AuthorArmsCovered = true;
+void _authorArmsCovered;
+
+type _RemoveArmsCovered = [
+  Exclude<
+    BrainVocabularyRemoveResponse["outcome"],
+    z.infer<typeof BrainVocabularyRemoveResponseSchema>["outcome"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _removeArmsCovered: _RemoveArmsCovered = true;
+void _removeArmsCovered;
+
+type _BlastRadiusArmsCovered = [
+  Exclude<
+    BrainVocabularyBlastRadius["kind"],
+    z.infer<typeof BrainVocabularyBlastRadiusSchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _blastRadiusArmsCovered: _BlastRadiusArmsCovered = true;
+void _blastRadiusArmsCovered;
+
 export const BrainVocabularyCardinalityWriteResponseSchema = z.strictObject({
   cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),
 }) satisfies z.ZodType<BrainVocabularyCardinalityWriteResponse, unknown>;

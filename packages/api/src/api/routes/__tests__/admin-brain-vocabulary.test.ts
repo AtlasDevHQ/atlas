@@ -39,16 +39,31 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => INTERNAL_DB,
 }));
 
+// Mock-ALL-exports. This file cites the rule for its other three factories and
+// supplied 2 of `lib/logger`'s 10 here; the same latent link-failure shape.
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
-  return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test-req" }) };
+  return {
+    createLogger: () => logger,
+    getLogger: () => logger,
+    getRequestContext: () => ({ requestId: "test-req" }),
+    withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+    redactPaths: [] as string[],
+    scrubErrSerializer: (err: unknown) => err,
+    scrubLogFormatter: (obj: unknown) => obj,
+    hashShareToken: (token: string) => token,
+    setLogLevel: noop,
+    ACTOR_KINDS: ["user", "system"] as const,
+  };
 });
 
 // The reader context. Mocked rather than driven through the member tables
 // because THIS file's assertions are about the router's branching, and the
 // resolver's own contract is pinned in `reader-context.test.ts`.
 let READER_ROLE: "owner" | "admin" | "member" = "owner";
+/** The reader ORIGIN, so the self-hosted and unresolved arms are reachable. */
+let READER_ORIGIN: "authenticated" | "unauthenticated-local" | "unresolved" = "authenticated";
 class TestBrainReaderIdentityError extends Error {}
 void mock.module("@atlas/api/lib/brain/reader-context", () => ({
   // Mock-ALL-exports. The real module also exports three error classes, and the
@@ -59,13 +74,22 @@ void mock.module("@atlas/api/lib/brain/reader-context", () => ({
   BrainReaderIdentityError: TestBrainReaderIdentityError,
   BrainReaderUnresolvedError: class extends TestBrainReaderIdentityError {},
   BrainRoleUnresolvedError: class extends TestBrainReaderIdentityError {},
-  resolveBrainReaderContext: async () => ({
-    origin: "authenticated" as const,
-    workspaceId: CURRENT_ORG,
-    userId: "user-1",
-    role: READER_ROLE,
-    audienceIds: [] as readonly string[],
-  }),
+  resolveBrainReaderContext: async () =>
+    READER_ORIGIN === "authenticated"
+      ? {
+          origin: "authenticated" as const,
+          workspaceId: CURRENT_ORG,
+          userId: "user-1",
+          role: READER_ROLE,
+          audienceIds: [] as readonly string[],
+        }
+      : {
+          origin: READER_ORIGIN,
+          workspaceId: CURRENT_ORG,
+          userId: null,
+          role: null,
+          audienceIds: [] as readonly string[],
+        },
 }));
 
 let authorOutcome: AliasAuthoringOutcome = {
@@ -285,6 +309,7 @@ const post = (path: string, body: unknown) =>
 
 beforeEach(() => {
   READER_ROLE = "owner";
+  READER_ORIGIN = "authenticated";
   ORG_ID = CURRENT_ORG;
   authorCalls.length = 0;
   removeCalls.length = 0;
@@ -381,6 +406,12 @@ describe("GET /in-force", () => {
     // A 500 is the correct outcome: the read produced something Atlas cannot
     // stand behind, and `checked()` (not `checkedWrite`) is right here because
     // nothing was written.
+    //
+    // ⚠️ Caveat on the STATUS specifically: `runEffect` is mocked in this file,
+    // so the 500 comes from Hono's default error handling rather than from the
+    // app's real error mapping. The load-bearing assertion is therefore the one
+    // below — that the key does not reach the body — not the number. The real
+    // mapping is pinned in `runEffect`'s own tests.
     inForceOverride = {
       cardinalities: [
         {
@@ -497,6 +528,69 @@ describe("POST /author", () => {
     authorOutcome = { kind: "not_decidable", id: "proposal-9" };
     const res = await post("/author", { position: "predicate", fromNorm: "a", toNorm: "b" });
     expect(res.status).toBe(409);
+  });
+});
+
+describe("⚠️ a COMMITTED write whose response cannot be described", () => {
+  // `checkedWrite` had no test of any kind: replacing both its call sites with
+  // plain `checked()` left all 35 route tests green, which reinstates the round-1
+  // defect verbatim — "Failed to author…" over a write that landed, followed by
+  // a retry the approver reads as a second failure.
+  //
+  // The lever is an outcome whose shape the response schema refuses. The write
+  // has already committed by the time the body is built, so the ONLY correct
+  // report is "it landed, and we could not describe it".
+
+  it("does not report an authored edge as a failed authoring", async () => {
+    authorOutcome = {
+      kind: "authored",
+      id: "proposal-1",
+      convergedOnProposal: "yes" as unknown as boolean,
+    };
+    const res = await post("/author", { position: "predicate", fromNorm: "a", toNorm: "b" });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+    expect(body.error).toBe("response_schema_mismatch");
+    // THE property: it says the change landed, and it does NOT say the verb
+    // failed. A generic client reads the status; a human reads this.
+    expect(body.message).toMatch(/succeeded and is in force/);
+    expect(body.message).not.toMatch(/Failed to author/i);
+    // …and it does not tell them to avoid retrying, because both write paths
+    // are idempotent and answer 200 on a repeat.
+    expect(body.message).toMatch(/retrying is safe/i);
+    expect(body.requestId).toBe("test-req");
+  });
+
+  it("does the same for a committed removal", async () => {
+    removeOutcome = {
+      kind: "removed",
+      id: "proposal-1",
+      memoryCreated: "no" as unknown as boolean,
+    };
+    const res = await post("/remove", { position: "predicate", fromNorm: "a", toNorm: "b" });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("response_schema_mismatch");
+    expect(body.message).toMatch(/succeeded and is in force/);
+  });
+
+  it("does the same for a committed curation", async () => {
+    // The third committed write, and the one that was still on plain `checked()`
+    // — it arms retroactive supersession for every future claim in the slot.
+    cardinalityResult = { ok: true, cardinality: "sometimes" };
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "single",
+    });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toBe("response_schema_mismatch");
+  });
+
+  it("POSITIVE CONTROL — a describable write is still a plain 200", async () => {
+    // Without this, a `checkedWrite` that returned `ok: false` unconditionally
+    // would satisfy all three assertions above and every write would 500.
+    const res = await post("/author", { position: "predicate", fromNorm: "a", toNorm: "b" });
+    expect(res.status).toBe(200);
   });
 });
 
@@ -626,6 +720,49 @@ describe("POST /cardinality", () => {
     expect(cardinalityCalls).toHaveLength(1);
   });
 
+  it("admits the local operator on a no-auth deployment", async () => {
+    // `unauthenticated-local` is the DEFAULT self-hosted deploy mode. A
+    // regression here makes predicate curation impossible on every self-hosted
+    // install, and nothing else in this suite exercises the origin.
+    READER_ORIGIN = "unauthenticated-local";
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "single",
+    });
+    expect(res.status).toBe(200);
+    const call = cardinalityCalls[0] as { input: Record<string, unknown> };
+    // `local-operator`, not null and not a user id — migration 0192's sentinel,
+    // so an audit of a retroactive re-key can tell a human from a machine.
+    expect(call.input.authoredBy).toBe("local-operator");
+  });
+
+  it("refuses an unresolved reader, and says that is why", async () => {
+    READER_ORIGIN = "unresolved";
+    const res = await post("/cardinality", {
+      predicateSurface: "reports to",
+      cardinality: "single",
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { message: string }).message).toMatch(/resolved reader identity/);
+    expect(cardinalityCalls).toHaveLength(0);
+  });
+
+  it("maps the two reachable store refusals to 400", async () => {
+    // `degenerate-key` and `unattributed` are the only refusals direct authoring
+    // can produce — `DeclarationResult` narrows to exactly those, which is why
+    // this route declares no 409.
+    for (const refusal of ["degenerate-key", "unattributed"] as const) {
+      cardinalityCalls.length = 0;
+      cardinalityResult = { ok: false, refusal, message: `prose for ${refusal}` };
+      const res = await post("/cardinality", {
+        predicateSurface: "reports to",
+        cardinality: "single",
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe(refusal);
+    }
+  });
+
   it("un-curates with `multi` — the adjudicated record that values coexist", async () => {
     cardinalityResult = { ok: true, cardinality: "multi" };
     const res = await post("/cardinality", {
@@ -634,20 +771,6 @@ describe("POST /cardinality", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ cardinality: "multi" });
-  });
-
-  it("maps a store refusal onto its status rather than a 200", async () => {
-    cardinalityResult = {
-      ok: false,
-      refusal: "already-decided",
-      message: "that predicate already carries an entry",
-    };
-    const res = await post("/cardinality", {
-      predicateSurface: "reports to",
-      cardinality: "single",
-    });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toBe("already-decided");
   });
 
   it("refuses a cardinality outside the two-member vocabulary", async () => {

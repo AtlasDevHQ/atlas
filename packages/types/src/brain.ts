@@ -1501,7 +1501,7 @@ export type BrainVocabularyAuthorResponse =
     }
   | {
       /** The pair was already an approved edge. Nothing was written. */
-      readonly outcome: "already_approved";
+      readonly outcome: Extract<BrainVocabularyAuthorOutcome, "already_approved">;
       readonly proposalId: string;
     };
 
@@ -1510,7 +1510,7 @@ export type BrainVocabularyRemoveOutcome = "removed" | "already_removed";
 /** Discriminated on `outcome`, for {@link BrainVocabularyAuthorResponse}'s reason. */
 export type BrainVocabularyRemoveResponse =
   | {
-      readonly outcome: "removed";
+      readonly outcome: Extract<BrainVocabularyRemoveOutcome, "removed">;
       readonly proposalId: string;
       /**
        * The removal had to CREATE the rejection memory an imported edge lacked.
@@ -1524,7 +1524,7 @@ export type BrainVocabularyRemoveResponse =
     }
   | {
       /** The pair was already removed. Idempotent, not a failure. */
-      readonly outcome: "already_removed";
+      readonly outcome: Extract<BrainVocabularyRemoveOutcome, "already_removed">;
       readonly proposalId: string;
     };
 

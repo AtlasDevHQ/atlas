@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { z } from "zod";
 import type {
   BrainVocabularyBlastRadius,
@@ -124,6 +124,16 @@ function ClaimVocabulary() {
   const [from, setFrom] = useState<BrainVocabularySurfaceOption | null>(null);
   const [to, setTo] = useState<BrainVocabularySurfaceOption | null>(null);
   const [authorError, setAuthorError] = useState<string | null>(null);
+  /**
+   * Removal's own error, rendered IN the dialog.
+   *
+   * It used to land in `authorError`, so the server's removal prose ("No
+   * approved edge at the subject position matches that pair…") appeared under
+   * **Author an alias** with the dialog already closed and nothing to attribute
+   * it to — the same shared-slot conflation the `radius` split fixed, one state
+   * variable over.
+   */
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<BrainVocabularyEdgeEntry | null>(null);
 
@@ -144,6 +154,28 @@ function ClaimVocabulary() {
    */
   const [authorRadius, setAuthorRadius] = useState<PreviewSlot>(EMPTY_PREVIEW);
   const [removeRadius, setRemoveRadius] = useState<PreviewSlot>(EMPTY_PREVIEW);
+
+  /**
+   * ⚠️ Generation counters, one per slot — the ASYNC half of the same defect the
+   * two-slot split fixed synchronously.
+   *
+   * Every reset path (`onChange`, the position select, Cancel, a completed
+   * write) is synchronous and clears a slot immediately. None of them
+   * invalidates an in-flight preview, so a response for the OLD decision lands
+   * afterwards and repopulates the slot it was cleared from:
+   *
+   *   - pick A→B, Preview, change the `to` pick before it returns → the late
+   *     A→B radius arrives, `bothPicked` is true again, and "Author this alias"
+   *     enables against a number computed for a pair nobody is authoring;
+   *   - Remove edge 1, Cancel, Remove edge 2 → if edge 1's response lands last
+   *     it fills the slot, and the destructive button enables showing edge 1's
+   *     counterfactual for edge 2.
+   *
+   * Bumping the counter on every write to a slot means a response can prove it
+   * is still the current question before it answers.
+   */
+  const authorGeneration = useRef(0);
+  const removeGeneration = useRef(0);
 
   const {
     data: inForce,
@@ -175,14 +207,34 @@ function ClaimVocabulary() {
   async function loadRadius(
     body: PreviewRequest,
     into: (slot: PreviewSlot) => void,
+    generation: { current: number },
   ): Promise<void> {
+    const mine = ++generation.current;
     into({ radius: null, pending: true, error: null });
     const result = await previewMutation.mutate({ body });
+    // The decision moved on while this was in flight. Drop the answer — writing
+    // it would re-arm a write gate with a number about a different question.
+    if (mine !== generation.current) return;
     if (!result.ok) {
       into({ radius: null, pending: false, error: friendlyError(result.error) });
       return;
     }
     into({ radius: result.data?.radius ?? null, pending: false, error: null });
+  }
+
+  /**
+   * Clearing a slot BUMPS its generation, so an in-flight response for the
+   * decision being abandoned cannot land afterwards. Written as helpers rather
+   * than repeated at the six reset sites, because the bump is the half that is
+   * easy to forget and impossible to see missing.
+   */
+  function clearAuthorRadius() {
+    authorGeneration.current += 1;
+    setAuthorRadius(EMPTY_PREVIEW);
+  }
+  function clearRemoveRadius() {
+    removeGeneration.current += 1;
+    setRemoveRadius(EMPTY_PREVIEW);
   }
 
   const bothPicked = from !== null && to !== null;
@@ -192,6 +244,7 @@ function ClaimVocabulary() {
     await loadRadius(
       { kind: "alias-approval", position, fromNorm: from.norm, toNorm: to.norm },
       setAuthorRadius,
+      authorGeneration,
     );
   }
 
@@ -220,7 +273,7 @@ function ClaimVocabulary() {
     );
     setFrom(null);
     setTo(null);
-    setAuthorRadius(EMPTY_PREVIEW);
+    clearAuthorRadius();
     // Unawaited deliberately: `useAdminFetch` owns the refetch's own loading and
     // error state, so awaiting it here would only delay clearing the form. A
     // rejection surfaces through `inForceError`, which the page already renders.
@@ -230,6 +283,7 @@ function ClaimVocabulary() {
   async function onConfirmRemove() {
     if (removeTarget === null) return;
     setNotice(null);
+    setRemoveError(null);
     const target = removeTarget;
     const result = await removeMutation.mutate({
       body: {
@@ -239,9 +293,9 @@ function ClaimVocabulary() {
       },
     });
     if (!result.ok) {
-      setAuthorError(friendlyError(result.error));
-      setRemoveTarget(null);
-      setRemoveRadius(EMPTY_PREVIEW);
+      // The dialog STAYS OPEN on failure — it is where the message belongs, and
+      // it is why the confirm button is deliberately not `AlertDialogAction`.
+      setRemoveError(friendlyError(result.error));
       return;
     }
     setNotice(
@@ -253,7 +307,7 @@ function ClaimVocabulary() {
             : ""),
     );
     setRemoveTarget(null);
-    setRemoveRadius(EMPTY_PREVIEW);
+    clearRemoveRadius();
     // Unawaited deliberately — see `onAuthor`.
     void refetch();
   }
@@ -339,7 +393,7 @@ function ClaimVocabulary() {
                 setPosition(picked.value);
                 setFrom(null);
                 setTo(null);
-                setAuthorRadius(EMPTY_PREVIEW);
+                clearAuthorRadius();
                 setAuthorError(null);
               }}
             >
@@ -364,7 +418,7 @@ function ClaimVocabulary() {
               value={from}
               onChange={(next) => {
                 setFrom(next);
-                setAuthorRadius(EMPTY_PREVIEW);
+                clearAuthorRadius();
               }}
               excludeNorm={to?.norm}
             />
@@ -374,7 +428,7 @@ function ClaimVocabulary() {
               value={to}
               onChange={(next) => {
                 setTo(next);
-                setAuthorRadius(EMPTY_PREVIEW);
+                clearAuthorRadius();
               }}
               excludeNorm={from?.norm}
             />
@@ -509,7 +563,7 @@ function ClaimVocabulary() {
                     size="sm"
                     onClick={() => {
                       setRemoveTarget(edge);
-                      setAuthorError(null);
+                      setRemoveError(null);
                       void loadRadius(
                         {
                           kind: "alias-removal",
@@ -517,6 +571,7 @@ function ClaimVocabulary() {
                           fromNorm: edge.fromNorm,
                         },
                         setRemoveRadius,
+                        removeGeneration,
                       );
                     }}
                   >
@@ -580,7 +635,8 @@ function ClaimVocabulary() {
         onOpenChange={(open) => {
           if (!open) {
           setRemoveTarget(null);
-          setRemoveRadius(EMPTY_PREVIEW);
+          setRemoveError(null);
+          clearRemoveRadius();
         }
         }}
       >
@@ -601,7 +657,13 @@ function ClaimVocabulary() {
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="px-6">
+          <div className="space-y-3 px-6">
+            {removeError !== null ? (
+              <Alert variant="destructive">
+                <AlertTriangle className="size-4" aria-hidden />
+                <AlertDescription>{removeError}</AlertDescription>
+              </Alert>
+            ) : null}
             <BlastRadiusPreview
               radius={removeRadius.radius}
               pending={removeRadius.pending}

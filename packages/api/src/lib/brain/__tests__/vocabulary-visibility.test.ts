@@ -75,7 +75,7 @@ import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 // `warnCalls` would stay empty — which is how the first cut of this file passed
 // its "the log fires" assertions while observing nothing at all. The route
 // suites in this repo use the same shape for the same reason.
-const { logFailClosedHole, positionalScopeClause, visibleNormsSql } = await import(
+const { isPairVisible, logFailClosedHole, positionalScopeClause, visibleNormsSql } = await import(
   "@atlas/api/lib/brain/vocabulary-visibility"
 );
 
@@ -224,6 +224,75 @@ describe("visibleNormsSql is the shape both panes share", () => {
     expect(subquery.params).toEqual(scope.params);
     expect(subquery.nextParamIndex).toBe(scope.nextParamIndex);
     expect(subquery.decision).toBe(scope.decision);
+  });
+});
+
+describe("isPairVisible — the removal gate", () => {
+  const reader = (rows: readonly unknown[]) => ({ query: async () => ({ rows }) });
+  const pair = { fromNorm: "project atlas", toNorm: "nova" };
+
+  it("⚠️ answers TRUE at the predicate position without querying at all", async () => {
+    // The predicate arm's rule is workspace membership, full stop — §6 grants it
+    // the lower bar because a verb phrase discloses nothing. Running the
+    // population join there anyway made the gate refuse whenever the two norms
+    // had no LIVE claim, so an in-force predicate edge whose claims had all been
+    // retracted became permanently unremovable at a position with no
+    // confidentiality argument to trade for it.
+    let queried = false;
+    const probe = {
+      query: async () => {
+        queried = true;
+        return { rows: [] };
+      },
+    };
+    expect(await isPairVisible(probe, "predicate", authenticated(), pair)).toBe(true);
+    expect(queried, "the predicate arm ran a query it does not need").toBe(false);
+  });
+
+  it("denies an unresolved reader at every position", async () => {
+    for (const position of ["predicate", "subject", "object"] as const) {
+      expect(await isPairVisible(reader([]), position, unresolved, pair)).toBe(false);
+    }
+  });
+
+  it("⚠️ FAILS CLOSED when the probe returns no usable answer", async () => {
+    // The permissive default would reopen the existence oracle this function
+    // exists to close. Refusing costs an admin a retry.
+    expect(await isPairVisible(reader([{}]), "subject", authenticated(), pair)).toBe(false);
+    expect(await isPairVisible(reader([]), "subject", authenticated(), pair)).toBe(false);
+    expect(await isPairVisible(reader([null]), "subject", authenticated(), pair)).toBe(false);
+  });
+
+  it("POSITIVE CONTROL — answers TRUE at an entity position when the probe says so", async () => {
+    // Without this, an `isPairVisible` returning `false` unconditionally would
+    // satisfy every assertion above — and removal would be impossible at both
+    // entity positions, which is the failure the In-force pane exists to prevent.
+    expect(await isPairVisible(reader([{ visible: true }]), "subject", authenticated(), pair)).toBe(
+      true,
+    );
+    expect(await isPairVisible(reader([{ visible: false }]), "subject", authenticated(), pair)).toBe(
+      false,
+    );
+  });
+
+  it("counts RETRACTED claims toward an entity pair's population", async () => {
+    // "No live claims" and "not visible to you" are different facts, and the
+    // live-set test fails for EVERY reader at once — so using it here would make
+    // an in-force edge invisible-and-unremovable rather than merely invisible.
+    // The ACL arm is unchanged: a retracted claim is still one this reader was
+    // entitled to.
+    let seen = "";
+    const probe = {
+      query: async (sql: string) => {
+        seen = sql;
+        return { rows: [{ visible: true }] };
+      },
+    };
+    await isPairVisible(probe, "subject", authenticated(), pair);
+    expect(seen).toContain("visible_to");
+    expect(seen, "the removal gate is filtering to the live set").not.toContain(
+      "invalidated_at IS NULL",
+    );
   });
 });
 

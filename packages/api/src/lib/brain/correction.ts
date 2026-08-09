@@ -829,7 +829,21 @@ function logDegeneratePredicate(meta: {
     // production, which would make "quiet" and "healthy" indistinguishable.
     log.warn(
       meta,
-      "brain correction: superseded a claim whose TARGET ROW has no stored predicate key, so there is no canonical predicate to propose a cardinality against — the predicate surface itself is fine. The row was written before the keys existed or imported from another region unkeyed; re-key the workspace to restore cardinality proposals. The correction is committed and nothing else is affected",
+      // ⚠️ NAMES BOTH CAUSES AND ASSERTS NEITHER. An earlier cut of this line
+      // claimed the row "was written before the keys existed or imported from
+      // another region unkeyed" and told the operator to re-key the workspace.
+      // Neither is established here: a stored NULL beside a keyable surface also
+      // arises when the VOCABULARY maps that norm to nothing, and on that cause
+      // the prescribed remedy provably cannot work — `REKEY_DRIFTED_FACTS_SQL`
+      // recomputes `identityKey(alias(norm))`, the same composition, and gets the
+      // same NULL. A remedy that cannot work is the false promise this module
+      // refuses by name at `malformedSourceKind`.
+      //
+      // Distinguishing the two would mean re-deriving the target's key here,
+      // which is the operation this whole slice removes. Naming both is the
+      // honest answer available, and it is what the sibling warn in
+      // `reconcile.ts` already does for the identical ambiguity.
+      "brain correction: superseded a claim whose TARGET ROW has no stored predicate key, so there is no canonical predicate to propose a cardinality against — the predicate surface itself normalizes fine. Either the row was never keyed (written before the keys existed, or imported from another region unkeyed), or this workspace's vocabulary maps that predicate to something that normalizes away. Check the vocabulary entry for this predicate first: if it is clean, a re-key restores cardinality proposals; if it is not, no re-key will. The correction is committed and nothing else is affected",
     );
     return;
   }

@@ -2930,8 +2930,31 @@ describe("the identity keys never leave the target read (#5037)", () => {
             `without naming one, which every name-based arm here is blind to.`,
         ).toBe(false);
       }
-      if (name === "correctionTargetSql") continue;
+      // ⚠️ The target read is exempt from the KEY loop below for the three
+      // columns it legitimately inherits — and for NOTHING else. An earlier cut
+      // skipped this statement wholesale, which meant the `subject_cmp` /
+      // `object_cmp` coverage added right above was exactly zero for the one
+      // statement the whole exemption exists to permit. The plausible edit is
+      // not hypothetical: `TargetRow` already grew `objectKey` for the
+      // `replacementIdentical` guard, and "read `object_cmp` too so the guard
+      // can compare comparables" is the next edit of precisely that shape.
+      //
+      // Bounded from ABOVE rather than merely below, which is the form the
+      // sibling row-copy pin (`bundle-identity-v3.test.ts`) already takes: the
+      // target read carries EXACTLY the inherited three.
       const joined = spans.join(" ");
+      if (name === "correctionTargetSql") {
+        for (const column of KEY_COLUMNS) {
+          if ((INHERITED_COLUMNS as readonly string[]).includes(column)) continue;
+          expect(
+            joined.includes(column),
+            `the target read projects \`${column}\`. It may carry the three slot keys it INHERITS and ` +
+              `nothing else — a comparable value is not a slot, and ADR-0037 §8's row-copy exception ` +
+              `covers the keys the replacement is given, not every identity column on the row.`,
+          ).toBe(false);
+        }
+        continue;
+      }
       for (const column of KEY_COLUMNS) {
         expect(
           joined.includes(column),

@@ -253,7 +253,9 @@ const ROW_COPY_SITES = new Set([
   // module executes for a key in a projection, in a `SET` clause or `INSERT`
   // column list, and in a `*`, over all five gated columns; it proves each
   // matcher on planted SQL first; and it refuses a module-private statement the
-  // scan could not see. That is a narrower guarantee than the global arms, which
+  // scan could not see. The target read is bounded from ABOVE rather than
+  // skipped — it may carry the three keys it inherits and no other identity
+  // column — so "all five" holds for every statement including that one. That is a narrower guarantee than the global arms, which
   // is the same trade `cardinality.ts` records above.
   //
   // ⚠️ ONE HALF IS NOT REPLACED, stated rather than implied: the ORM/type arm,

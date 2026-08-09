@@ -388,9 +388,11 @@ export interface FactCandidate {
    * the target's SURFACES down here stops carrying identity and starts
    * re-deriving it, which is the operation §1 rules out for everyone.
    *
-   * Unforgeable by construction — {@link InheritedSlot} is branded and has one
-   * constructor — so a producer can forward a slot it read off a row but cannot
-   * author one. See that type for why the brand alone is not the whole guard.
+   * Unforgeable by construction — {@link InheritedSlot} is nominal (a class with
+   * a `#private` field, exported as a TYPE only) and has one exported mint — so a
+   * producer can forward a slot it read off a row but cannot author one. See that
+   * type for why neither the nominality nor the single mint is the whole guard on
+   * its own, and for what a second mint would cost.
    *
    * ⚠️ Omit it. The absence is the correct answer for every claim-supply
    * producer, and a producer reaching for this field is almost certainly
@@ -2171,11 +2173,24 @@ async function writeCandidate(
         producer: ctx.producer,
         factId,
         unkeyed,
-        // The row-copy provenance (#5037). Bound rather than dropped because it
-        // is the field that tells an operator WHICH of the three causes below
-        // they are looking at — and it is the only one this line can answer
-        // definitively, since the other two are inferences about a surface.
+        // The row-copy provenance (#5037), and the positions it actually
+        // explains.
+        //
+        // ⚠️ `inheritedFrom` alone is NOT the discriminator, and reporting it as
+        // one blames the wrong party. It is set for EVERY correction-produced
+        // candidate, but only the SUBJECT and PREDICATE are inherited — the
+        // object is always derived from the replacement's own text. So a human
+        // superseding with `"-"` lands here with `unkeyed: ["object"]` and a
+        // non-null `inheritedFrom`, and a message keyed on that field alone
+        // would send the operator to inspect a target row that is perfectly
+        // healthy while the replacement text is what asserts nothing.
         inheritedFrom: item.candidate.inheritedSlot?.fromFactId ?? null,
+        // The intersection: unkeyed positions that were actually COPIED. Empty
+        // means the target explains none of this, whatever `inheritedFrom` says.
+        inheritedUnkeyed:
+          item.candidate.inheritedSlot === undefined
+            ? []
+            : unkeyed.filter((role) => role !== "object"),
       },
       // THREE causes now, and the message names all three because it cannot
       // distinguish the first two once the vocabulary is real: the SURFACE norms
@@ -2188,9 +2203,12 @@ async function writeCandidate(
       // target is unkeyed lands here with surfaces that are perfectly fine —
       // and an operator following the first two causes would inspect
       // `Billing / is owned by`, find nothing wrong, and conclude the log is
-      // lying. `inheritedFrom` is the discriminator: when it is set, the
-      // producer and the vocabulary are both innocent.
-      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Three causes: the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3); a vocabulary entry maps that slot to nothing; or — when `inheritedFrom` is set — a row-copy path inherited a null slot from that fact, in which case this claim's surfaces are fine and the TARGET row is what has no identity",
+      // lying.
+      //
+      // The discriminator is `inheritedUnkeyed`, NOT `inheritedFrom`: only the
+      // copied positions are the target's to answer for, and the object is never
+      // one of them.
+      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Three causes: the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3); a vocabulary entry maps that slot to nothing; or — for the positions listed in `inheritedUnkeyed` — a row-copy path copied a null slot off the fact named by `inheritedFrom`, in which case those positions' surfaces are fine here and the TARGET row is what has no identity. Any position NOT in `inheritedUnkeyed` was derived from this claim's own text (the object always is), so the first two causes are the ones to follow for it",
     );
   }
 

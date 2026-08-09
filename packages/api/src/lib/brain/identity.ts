@@ -494,11 +494,20 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
  * review, and Atlas already treats one as something to justify.
  *
  * ⚠️ The type alone would still admit a caller that COMPUTED two keys and handed
- * them to the constructor — `slotKey` is exported, so no projection is needed to
- * hold a key. The compensating pin is `correction.test.ts`'s call-site
- * assertion, which keeps {@link inheritSlotFromFactRow} reachable from this file
- * and `correction.ts` only; the type stops a slot being FORGED, and that pin
- * stops one being MINTED somewhere it has no business being.
+ * them to the mint — `slotKey` is exported, so no projection is needed to hold a
+ * key. The compensating pin is `correction.test.ts`'s call-site assertion, which
+ * keeps {@link inheritSlotFromFactRow} reachable from this file and
+ * `correction.ts` only. The type stops a slot being FORGED; that pin stops one
+ * being MINTED somewhere it has no business being.
+ *
+ * ⚠️ That pin is a grep on ONE identifier, so the number of exported mints is
+ * load-bearing and not an implementation detail. An earlier cut of this fix
+ * exported the class, which made `InheritedSlot.fromRow(…)` a second, unpinned
+ * mint — the same forge the `#private` field had just closed, returning as
+ * destructure-and-rebuild, with the marker attached by the constructor for the
+ * caller. Exporting only the type is what keeps "one mint" true rather than
+ * merely intended. **Adding a second construction path means adding it to that
+ * grep in the same commit.**
  *
  * ## What travels, and what does not
  *
@@ -526,7 +535,7 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
  * lives at the one place a value can be built, so the ergonomic names are safe
  * everywhere they are read.
  */
-export class InheritedSlot {
+class InheritedSlotValue {
   /**
    * The nominal marker. `#private`, so the type cannot be satisfied by an object
    * literal or by spreading an existing instance — see the docstring above for
@@ -551,13 +560,23 @@ export class InheritedSlot {
     readonly predicate: string | null,
   ) {}
 
-  /** @internal — the one construction path. See {@link inheritSlotFromFactRow}. */
+  /**
+   * ⚠️ NOT REACHABLE OUTSIDE THIS MODULE, and that is the whole point.
+   *
+   * Only the TYPE is exported (`export type InheritedSlot = InheritedSlotValue`),
+   * so there is no exported VALUE named `InheritedSlot` and this static cannot be
+   * addressed from another file. An earlier cut exported the class, which made
+   * `InheritedSlot.fromRow({ id: slot.fromFactId, subject_key: computed, … })` a
+   * second mint — the same forge the `#private` field had just closed, returning
+   * as destructure-and-rebuild through the fix's own constructor, with the marker
+   * attached for the caller. One exported mint, one name to pin.
+   */
   static fromRow(row: {
     readonly id: string;
     readonly subject_key: string | null;
     readonly predicate_key: string | null;
-  }): InheritedSlot {
-    return new InheritedSlot(row.id, row.subject_key, row.predicate_key);
+  }): InheritedSlotValue {
+    return new InheritedSlotValue(row.id, row.subject_key, row.predicate_key);
   }
 
   /** Silences the unused-private-member reading; the field exists to be nominal. */
@@ -565,6 +584,13 @@ export class InheritedSlot {
     return this.#inherited;
   }
 }
+
+/**
+ * The nominal type. The CLASS is deliberately not exported — see
+ * {@link InheritedSlotValue.fromRow} — so {@link inheritSlotFromFactRow} is the
+ * only way to obtain one from outside this module.
+ */
+export type InheritedSlot = InheritedSlotValue;
 
 /**
  * The one constructor for {@link InheritedSlot}.
@@ -601,7 +627,7 @@ export function inheritSlotFromFactRow(row: {
   readonly subject_key: string | null;
   readonly predicate_key: string | null;
 }): InheritedSlot {
-  return InheritedSlot.fromRow(row);
+  return InheritedSlotValue.fromRow(row);
 }
 
 // ---------------------------------------------------------------------------

@@ -60,7 +60,8 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 - **Re-runs are not fresh rounds.** Pass the previous round's fix commits into the panel and name them the primary audit target (`/review-panel` Step 2). Reviewers keep fresh context; what they must not have is fresh *ignorance of what you just changed*.
 - Repeat until **CLEAN**, capped at **3 rounds**. If it can't converge in 3 (usually a spec ambiguity), STOP and ask the human.
 - The cap is on ROUNDS, not on scope. A round-2 fix that adds real machinery *should* earn a round 3 — don't skip the re-review to stay under the cap. If the work genuinely needs a fourth round, that is the STOP-and-ask case, not a reason to merge unreviewed.
-- **When you STOP and ask, report the yield curve, not just the count.** A declining count (30 → 18 → 11) is a loop converging and the cap is a formality. A flat or rising one is a loop that is *not* converging, and the human needs to know which they are approving another round of. #5088 ran 30 → 18 → 11 → 21, and that rise was the real signal — the fixes kept having unswept twins, so each round manufactured the next round's work.
+- ⚠️ **The yield curve is a LIVE stop, not a line in the final report.** After every round, compare its finding count to the previous round's. **If it did not fall, STOP and ask — immediately, that round.** Do not spend the next round to confirm what the rise already told you. A rising count means the fixes are manufacturing the next round's work, so another round buys more findings rather than fewer, and the cap is the wrong instrument for catching it: #5088 ran 30 → 18 → 11 → **21** and the stop-worthy signal was the 21, one full round before the cap conversation happened.
+- **When you do stop, report the CURVE, not just the count.** A declining count (30 → 18 → 11) is a loop converging and the cap is a formality; a flat or rising one is a loop that is not, and the human needs to know which they are approving another round of.
 
 **Step 4 — CI gate**
 
@@ -117,6 +118,9 @@ git worktree remove ../atlas-wt-<slug>
 ```
 
 **Step 7 — Report**
+
+⚠️ **Record rounds AND minutes per round in the ROADMAP entry.** Round counts have been recorded since #5027; wall clock never has, and without it there is no way to tell whether a change that makes rounds more thorough is buying fewer of them or just costing more. Two numbers per issue — `rounds: 3 (22m / 31m / 14m)` — is the whole ask, and it is what makes the Step 6 split above falsifiable.
+
 
 PR URL · issue closed · CI/merge status · panel rounds it took · **each external reviewer's verdict** (addressed / acknowledged) · anything you halted on.
 

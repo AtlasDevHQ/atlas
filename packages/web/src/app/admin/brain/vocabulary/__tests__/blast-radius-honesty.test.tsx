@@ -116,6 +116,7 @@ describe("a computed radius renders its floor as a floor", () => {
       countsConsistent: over?.consistent ?? true,
     },
     disarming: { total: 0, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+    targetCardinality: { kind: "not-asked" },
     floor: true,
     subtreeTruncated: over?.subtree ?? false,
   });
@@ -157,6 +158,81 @@ describe("a computed radius renders its floor as a floor", () => {
     const text = renderRadius(computed(5, { subtree: true }));
     expect(text).toContain("smaller population");
     expect(text).not.toContain("disagreed");
+  });
+});
+
+describe("⚠️ a curated-single target is SAID, not just counted (#5093)", () => {
+  // The count already followed the cardinality gate through the merge — the
+  // engine has done that since #5086. What an approver saw was a LARGER NUMBER
+  // WITH NO EXPLANATION OF WHERE IT CAME FROM, which is the *magnitude but not
+  // kind* failure this whole surface exists to prevent, on the interaction
+  // #5025 called the only place the compound blast radius is visible at all.
+
+  const computed = (
+    targetCardinality: Extract<
+      BrainVocabularyBlastRadius,
+      { kind: "computed" }
+    >["targetCardinality"],
+    armingTotal = 3,
+  ): BrainVocabularyBlastRadius => ({
+    kind: "computed",
+    arming: {
+      total: armingTotal,
+      pairs: [],
+      withheld: 0,
+      truncated: false,
+      countsConsistent: true,
+    },
+    disarming: { total: 0, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+    targetCardinality,
+    floor: true,
+    subtreeTruncated: false,
+  });
+
+  test("names the target predicate and says what the merge does to it", () => {
+    const text = renderRadius(
+      computed({ kind: "curated-single", targetPredicate: "priced at" }),
+    );
+    // The NAME, because "the target predicate" is not something an approver can
+    // resolve from a preview panel that never shows it.
+    expect(text).toContain("priced at");
+    expect(text).toContain("curated single-valued");
+    // …and the MECHANISM. Without this the sentence is a label; with it, it is
+    // the explanation the count on its own cannot give.
+    expect(text).toContain("supersession is already armed");
+    expect(text).toMatch(/not because a claim changed/);
+    // The count is still there — the disclosure explains the number, it does
+    // not replace it.
+    expect(text).toContain("At least 3");
+  });
+
+  test("⚠️ says it for a KNOWN ZERO too — the slot is armed for every future claim", () => {
+    // Deliberately not gated on the count. A curated target with nothing
+    // colliding today is exactly the case where the `floor` argument bites: the
+    // decision applies to every future claim in that slot as well, and an
+    // approver reading only "0" concludes the merge is free.
+    const text = renderRadius(computed({ kind: "curated-single", targetPredicate: "priced at" }, 0));
+    expect(text).toContain("priced at");
+    expect(text).toContain("supersession is already armed");
+  });
+
+  test("POSITIVE CONTROL — an uncurated target says nothing of the kind", () => {
+    // The complement, and it is what makes the assertions above meaningful
+    // rather than a claim about a string that is always rendered.
+    const text = renderRadius(computed({ kind: "uncurated" }));
+    expect(text).not.toContain("curated single-valued");
+    expect(text).not.toContain("supersession is already armed");
+    expect(text).toContain("At least 3");
+  });
+
+  test("POSITIVE CONTROL — `not-asked` says nothing either, and says no NAME", () => {
+    // A subject-position alias and both cardinality verbs land here. The
+    // dangerous rendering is not the missing sentence — it is a renderer that
+    // reached for a `targetPredicate` this arm does not carry and printed
+    // `undefined` into prose.
+    const text = renderRadius(computed({ kind: "not-asked" }));
+    expect(text).not.toContain("curated single-valued");
+    expect(text).not.toContain("undefined");
   });
 });
 
@@ -203,6 +279,7 @@ describe("⚠️ an unestablished side is never silent, even beside a non-zero o
       kind: "computed",
       arming,
       disarming,
+      targetCardinality: { kind: "not-asked" },
       floor: true,
       subtreeTruncated: false,
     }) as BrainVocabularyBlastRadius;

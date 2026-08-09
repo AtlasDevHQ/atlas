@@ -769,6 +769,7 @@ describe("POST /preview", () => {
       kind: "computed",
       arming: { total: 3, pairs: [], withheld: 3, truncated: false, countsConsistent: true },
       disarming: { total: 0, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+      targetCardinality: { kind: "not-asked" },
       floor: true,
       subtreeTruncated: false,
     };
@@ -776,6 +777,32 @@ describe("POST /preview", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { radius: { floor: boolean } };
     expect(body.radius.floor).toBe(true);
+  });
+
+  it("carries the compound disclosure — the curated target's NAME survives the wire", async () => {
+    // ⚠️ The response schema is `z.strictObject` per arm, so this is not a
+    // formality: a `targetCardinality` the engine populates and the schema does
+    // not know is a 500 on every predicate-alias preview, and a `curated-single`
+    // arm whose schema forgot `targetPredicate` is a 500 on exactly the decision
+    // the field was added to disclose. Both look additive in a diff.
+    blastRadius = {
+      kind: "computed",
+      arming: { total: 3, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+      disarming: { total: 0, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+      targetCardinality: { kind: "curated-single", targetPredicate: "priced at" },
+      floor: true,
+      subtreeTruncated: false,
+    };
+    const res = await post("/preview", {
+      kind: "alias-approval",
+      position: "predicate",
+      fromNorm: "is priced at",
+      toNorm: "priced at",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      radius: { targetCardinality: { kind: "curated-single", targetPredicate: "priced at" } },
+    });
   });
 
   it("refuses a preview request carrying a predicate KEY", async () => {

@@ -1465,6 +1465,58 @@ export interface BrainVocabularyBlastRadiusSide {
 }
 
 /**
+ * Whether the predicate slot this decision moves a population INTO is curated
+ * `single` — the COMPOUND blast radius, said rather than merely counted.
+ *
+ * ## Why the count alone was not the disclosure
+ *
+ * A predicate-position alias moves a claim's `predicate_key`, and the
+ * cardinality gate is a lookup ON that key. The engine already follows it, so
+ * the arming total is right: approving `is priced at → priced at` into a
+ * curated-single `priced at` reports the pairs the merge newly arms. What an
+ * approver sees is a LARGER NUMBER WITH NO EXPLANATION OF WHERE IT CAME FROM —
+ * *"a number gives magnitude but not kind"*, which is the failure this whole
+ * preview surface exists to prevent. ADR-0037 §6's amendment states the
+ * mechanism (*supersession is now armed for claims that were safe a moment
+ * earlier*) and neither preview alone discloses the consequence.
+ *
+ * ## Three arms, because "not asked" and "asked, no" are opposite facts
+ *
+ * A nullable boolean collapses them, and a `false` where the question does not
+ * arise is a fabricated zero of the kind
+ * {@link BrainVocabularyStructurallyEmptyReason} exists to refuse. Same shape,
+ * same reason, as {@link BrainVocabularyAliasEvidence}'s `not-applicable` arm.
+ *
+ * ⚠️ `targetPredicate` lives ONLY on the answered-yes arm, so a client cannot
+ * name a slot on a branch where none was resolved.
+ */
+export type BrainVocabularyTargetCardinality =
+  /**
+   * The decision moves no population under a cardinality gate, so the question
+   * does not arise: a SUBJECT-position alias (the gate reads `predicate_key`,
+   * which a subject alias does not move) and both cardinality verbs (they move
+   * the gate itself, and {@link BrainVocabularyStructurallyEmptyReason}'s
+   * `already-single` / `not-curated` are that question's answers).
+   *
+   * The object position never reaches this type at all — it takes its own
+   * radius arm.
+   */
+  | { readonly kind: "not-asked" }
+  /** Asked, and the slot the population lands in carries no approved `single` entry. */
+  | { readonly kind: "uncurated" }
+  /**
+   * Asked, and the answer is yes: the population lands in a slot where
+   * supersession is ALREADY armed.
+   *
+   * `targetPredicate` is the norm the counterfactual actually substitutes —
+   * `to`'s CURRENT effective target for an approval (not `to` as typed; an
+   * existing `to → z` lands the merged population on `z`), and the re-rooted
+   * norm itself for a removal. A norm, never a key projection: the same class
+   * of value `BrainVocabularyEdgeEntry.toNorm` already carries.
+   */
+  | { readonly kind: "curated-single"; readonly targetPredicate: string };
+
+/**
  * The counterfactual's answer — a discriminated union, mirroring the engine's.
  *
  * ⚠️ The discrimination is the point and it must survive the wire. Flattened
@@ -1524,6 +1576,12 @@ export type BrainVocabularyBlastRadius =
       readonly kind: "computed";
       readonly arming: BrainVocabularyBlastRadiusSide;
       readonly disarming: BrainVocabularyBlastRadiusSide;
+      /**
+       * Whether the slot this decision moves a population INTO is curated
+       * `single`. A DISCLOSURE of where {@link arming}'s number came from,
+       * never a second computation of it — see the type.
+       */
+      readonly targetCardinality: BrainVocabularyTargetCardinality;
       /** Always true — the count is a FLOOR, and the surface must say so. */
       readonly floor: true;
       readonly subtreeTruncated: boolean;

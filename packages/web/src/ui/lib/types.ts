@@ -43,6 +43,7 @@ export type {
   BrainVocabularySlotPosition,
   BrainVocabularyStructurallyEmptyReason,
   BrainVocabularySurfaceOption,
+  BrainVocabularyTargetCardinality,
   AdminRole,
   AtlasMode,
   AuthMode,

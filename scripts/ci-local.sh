@@ -205,6 +205,12 @@ launch docs-links                bun scripts/check-docs-links.ts
 launch auth-md-parity            g_auth_md_parity
 launch apex-discovery-drift      bash scripts/check-apex-discovery-drift.sh
 launch openapi-drift             g_openapi_drift
+# ⚠️ --affected, NOT --all. The full sweep is 832s MEASURED — it would more than
+# double this script — so pre-PR verifies only the specs whose targets or sources
+# this branch touched, and CI's `mutation-tables` job runs everything in parallel
+# where 14 minutes costs no wall clock. Skips entirely without TEST_DATABASE_URL,
+# the same posture this script already takes for the -pg suites themselves.
+launch mutation-tables           bash scripts/check-mutation-tables.sh --affected origin/main
 launch gate-fixtures             g_gate_fixtures
 if [ "$NO_NET" != "1" ]; then
   launch published-symbols       g_published_symbols

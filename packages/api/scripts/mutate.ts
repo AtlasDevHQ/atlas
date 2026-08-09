@@ -92,6 +92,19 @@ interface Options {
   readonly only: readonly string[];
   readonly targets: readonly string[];
   readonly check: boolean;
+  /**
+   * Print the files this spec's verdict DEPENDS ON, then exit. Runs nothing.
+   *
+   * Exists so `check-mutation-tables.sh` can verify only the specs a branch
+   * could actually have invalidated. The full sweep is 832s measured — more
+   * than the entire rest of `/ci` — so a gate that always ran everything would
+   * be disabled inside a week, and a disabled gate catches nothing.
+   *
+   * Derived from the loaded spec rather than grepped, because the paths are
+   * behind `SOURCE`-style consts that a regex would miss — and a dependency
+   * list that silently misses a file is a gate that silently stops gating.
+   */
+  readonly files: boolean;
   /** Overrides the baseline-derived per-suite timeout. */
   readonly timeoutMs?: number;
 }
@@ -101,6 +114,7 @@ function parseArgs(argv: readonly string[]): Options {
   const only: string[] = [];
   const targets: string[] = [];
   let check = false;
+  let files = false;
   let timeoutMs: number | undefined;
 
   for (let i = 0; i < argv.length; i++) {
@@ -116,6 +130,8 @@ function parseArgs(argv: readonly string[]): Options {
       timeoutMs = parsed;
     } else if (arg === "--check") {
       check = true;
+    } else if (arg === "--files") {
+      files = true;
     } else if (arg !== undefined && arg.startsWith("--")) {
       fail(`Unknown flag: ${arg}`);
     } else if (specPath === undefined) {
@@ -128,10 +144,10 @@ function parseArgs(argv: readonly string[]): Options {
   if (specPath === undefined) {
     fail(
       "Usage: bun run scripts/mutate.ts <spec.mutations.ts> " +
-        "[--only <label>] [--target <name>] [--timeout <ms>] [--check]",
+        "[--only <label>] [--target <name>] [--timeout <ms>] [--check] [--files]",
     );
   }
-  return { specPath, only, targets, check, timeoutMs };
+  return { specPath, only, targets, check, files, timeoutMs };
 }
 
 async function loadSpec(specPath: string): Promise<MutationSpec> {
@@ -290,6 +306,17 @@ async function measure(
 
 const options = parseArgs(process.argv.slice(2));
 const spec = await loadSpec(options.specPath);
+
+if (options.files) {
+  // Every file whose change could alter this spec's table: the suites that get
+  // run, and the sources that get mutated. The spec itself is added by the
+  // caller — it knows its own path and does not need us to echo it.
+  const deps = new Set<string>();
+  for (const t of spec.targets) deps.add(t.file);
+  for (const m of spec.mutations) for (const e of m.edits) deps.add(e.file);
+  for (const f of [...deps].sort()) console.log(f);
+  process.exit(0);
+}
 
 const problems = validateSpec(spec);
 if (problems.length > 0) fail(`invalid spec:\n  - ${problems.join("\n  - ")}`);

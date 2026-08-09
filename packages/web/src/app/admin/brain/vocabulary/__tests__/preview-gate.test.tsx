@@ -139,6 +139,11 @@ function installFetchStub() {
             countsConsistent: true,
           },
           truncated: false,
+          // ⚠️ REQUIRED by the strict response schema. Omitted, `useAdminFetch`
+          // fails the parse and the Pending pane renders its error card — so the
+          // comment above about not leaving an error on screen described the
+          // state this stub was actually in. Measured by a reviewer.
+          incomplete: false,
         }),
       );
     }

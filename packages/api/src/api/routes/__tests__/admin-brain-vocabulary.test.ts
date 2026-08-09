@@ -1168,9 +1168,12 @@ describe("POST /decide", () => {
       expect(body.message).toContain("normalizes away");
     });
 
-    it("⚠️ a committed curation still reports as landed when its response will not build", async () => {
-      // `checkedWrite` on the arm that WROTE, `checked` on the one that did not
-      // — the split this route previously collapsed. Here the write happened.
+    it("a COMMITTED curation answers 200 with the approved arm", async () => {
+      // ⚠️ Renamed. It was called "…when its response will not build" and never
+      // made the response fail to build — `checkedWrite`'s 500 arm is not
+      // reachable from here, so the old title described coverage the test did
+      // not have. What it does measure is the split: `checkedWrite` on the arm
+      // that WROTE, `checked` on the one that did not.
       cardinalityDecided = "decided";
       const res = await post("/decide", {
         kind: "cardinality",

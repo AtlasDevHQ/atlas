@@ -1584,7 +1584,22 @@ export type BrainVocabularyAliasEvidence =
       readonly threshold: number;
       readonly countsConsistent: boolean;
     }
-  | { readonly kind: "not-applicable"; readonly reason: "entity-position" };
+  | { readonly kind: "not-applicable"; readonly reason: "entity-position" }
+  | {
+      /**
+       * The evidence query drifted — the numbers were never read.
+       *
+       * ⚠️ Its own arm rather than zeros beside `countsConsistent: false`, and
+       * it is `not-applicable`'s argument applied one level down. Flat, a client
+       * rendered *"0 distinct subjects have claims that agree (Atlas raises a
+       * proposal at 2 — this now reads below the bar that raised it, because the
+       * count is re-derived from the corpus as it stands)"* — a confident,
+       * specific, WRONG causal explanation for a count nobody read, softened
+       * only by a trailing "these counts disagreed". "0 agree", "unaskable" and
+       * "unread" are one number and three opposite facts.
+       */
+      readonly kind: "unreadable";
+    };
 
 /** One correction behind a cardinality proposal — the *link* half. */
 export interface BrainVocabularyCorrectionExample {
@@ -1603,15 +1618,26 @@ export interface BrainVocabularyCorrectionExample {
  * {@link events} is how many supersessions produced it. Rendering only the
  * second would show a number no gate reads.
  */
-export interface BrainVocabularyCorrectionEvidence {
-  readonly subjects: number;
-  readonly events: number;
-  readonly scopedSubjects: number;
-  readonly withheld: number;
-  readonly examples: readonly BrainVocabularyCorrectionExample[];
-  readonly threshold: number;
-  readonly countsConsistent: boolean;
-}
+export type BrainVocabularyCorrectionEvidence =
+  | {
+      readonly kind: "behavioral";
+      readonly subjects: number;
+      readonly events: number;
+      readonly scopedSubjects: number;
+      readonly withheld: number;
+      readonly examples: readonly BrainVocabularyCorrectionExample[];
+      readonly threshold: number;
+      readonly countsConsistent: boolean;
+    }
+  | {
+      /**
+       * The evidence query drifted — see
+       * {@link BrainVocabularyAliasEvidence}'s `unreadable` arm. A flat record
+       * had the client explaining a zero it never read, and inventing a
+       * retraction history to do it.
+       */
+      readonly kind: "unreadable";
+    };
 
 /** The direction a producer claimed, when it could claim one. */
 export interface BrainVocabularyPendingDirection {

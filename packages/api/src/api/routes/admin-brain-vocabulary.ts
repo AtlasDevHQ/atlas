@@ -109,6 +109,7 @@ import type {
   BrainVocabularyDecideResponse,
   BrainVocabularyPendingResponse,
   BrainVocabularyPositionCounts,
+  BrainVocabularyPreviewResponse,
   BrainVocabularyRemoveResponse,
   BrainVocabularyScope,
   BrainVocabularyStructurallyEmptyReason,
@@ -206,7 +207,12 @@ function checkedWrite<T>(
    */
   context: (
     | { readonly verb: "authoring" | "removal"; readonly proposalId: string }
-    | { readonly verb: "curation"; readonly predicateSurface: string }
+    // ⚠️ `rejection` is its own verb. `checkedWrite`'s message reads *"The
+    // curation succeeded and is in force"*, and on a REJECTION nothing is in
+    // force — the predicate stays multi-valued. That is the same lie the
+    // `nothing_to_decide` split removed one branch up, carried to the outcome
+    // and not to the verdict.
+    | { readonly verb: "curation" | "rejection"; readonly predicateSurface: string }
   ) & { readonly requestId: string },
 ):
   | { readonly ok: true; readonly body: T }
@@ -217,15 +223,21 @@ function checkedWrite<T>(
   try {
     return { ok: true, body: schema.parse(payload) };
   } catch (err) {
-    const subject =
-      context.verb === "curation"
-        ? `predicate "${context.predicateSurface}"`
-        : `proposal ${context.proposalId}`;
+    // ⚠️ `"predicateSurface" in context`, not a `verb` test. `context` is an
+    // INTERSECTION (`(A | B) & { requestId }`), and TypeScript does not narrow a
+    // discriminated union through one — so the verb test compiled on the
+    // condition and failed on both branches' payloads. The `in` operator narrows
+    // an intersection correctly.
+    const named =
+      "predicateSurface" in context
+        ? {
+            subject: `predicate "${context.predicateSurface}"`,
+            field: { predicateSurface: context.predicateSurface },
+          }
+        : { subject: `proposal ${context.proposalId}`, field: { proposalId: context.proposalId } };
     log.error(
       {
-        ...(context.verb === "curation"
-          ? { predicateSurface: context.predicateSurface }
-          : { proposalId: context.proposalId }),
+        ...named.field,
         verb: context.verb,
         requestId: context.requestId,
         err: err instanceof Error ? err.message : String(err),
@@ -237,7 +249,7 @@ function checkedWrite<T>(
       body: {
         error: "response_schema_mismatch",
         message:
-          `The ${context.verb} succeeded and is in force — ${subject} — but Atlas could not ` +
+          `The ${context.verb} succeeded and is in force — ${named.subject} — but Atlas could not ` +
           "build a response describing it, which is a defect on our side. Reload the page to see " +
           "the current state; retrying is safe and will simply report the change as already " +
           "applied.",
@@ -905,7 +917,10 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
                 "not the one Atlas recorded.",
               requestId,
             ),
-            400,
+            // `refusalStatus`, not a hardcoded 400. The two agree today, and
+            // that function's `never` default exists precisely so the mapping
+            // has ONE site — a second copy is how one of them stops agreeing.
+            refusalStatus("degenerate-key"),
           );
         }
 
@@ -918,7 +933,19 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
         // retroactive supersession curation is in force when it is not, from
         // inside the helper written to stop exactly that. `/author` draws the
         // same line on its `already_approved` arm.
-        if (decided === "not-pending") {
+        // ⚠️ Branch POSITIVELY on the one member that means the write happened.
+        // The earlier shape was two `if`s and an unguarded fall-through to
+        // SUCCESS, so a fourth union member would be reported to the approver as
+        // "Curated: … now holds one value at a time" for a write that may not
+        // have happened — on the one verb that arms retroactive supersession.
+        // Every other refusal path in this file has a `never` default.
+        if (decided !== "decided") {
+          if (decided !== "not-pending") {
+            const unexpected: never = decided;
+            throw new Error(
+              `Unhandled cardinality decision result: ${JSON.stringify(unexpected)}`,
+            );
+          }
           const nothing: BrainVocabularyDecideResponse = {
             outcome: "nothing_to_decide",
             // ⚠️ No id: `brain_predicate_cardinality` is keyed on the predicate
@@ -933,7 +960,10 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
             ? { outcome: "approved", proposalId: null }
             : { outcome: "rejected", proposalId: null, removedEdge: false };
         const described = checkedWrite(BrainVocabularyDecideResponseSchema, cardinalityResponse, {
-          verb: "curation",
+          // The VERDICT, not the route. A rejection records that values coexist;
+          // saying "the curation succeeded and is in force" over it reports the
+          // opposite of what was written.
+          verb: body.decision === "approved" ? "curation" : "rejection",
           predicateSurface: body.predicateSurface,
           requestId,
         });
@@ -1044,7 +1074,13 @@ adminBrainVocabulary.openapi(previewRoute, async (c) => {
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
-      return c.json(checked(BrainVocabularyPreviewResponseSchema, { radius }), 200);
+      // ANNOTATED, like `/pending` and `/author`. The radius union grew an arm
+      // in this very diff as two independent declarations, and `ObjectPositionRadius`
+      // is SPREAD into the engine's — its own docstring anticipates growth — so a
+      // fourth side would compile cleanly and then 500 every object-position
+      // preview against `z.strictObject`.
+      const response: BrainVocabularyPreviewResponse = { radius };
+      return c.json(checked(BrainVocabularyPreviewResponseSchema, response), 200);
     }),
     { label: "preview brain vocabulary blast radius" },
   );

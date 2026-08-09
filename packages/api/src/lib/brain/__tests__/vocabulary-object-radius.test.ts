@@ -19,7 +19,7 @@
  * shape and did not get one.
  */
 
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
 
@@ -77,6 +77,9 @@ const APPROVAL_PLAN = {
     `(CASE WHEN ${alias}.object_key = $2 THEN $3 ELSE ${alias}.object_key END)`,
   params: ["bob", "bobby"] as const,
   ctes: [] as readonly string[],
+  // ⚠️ REQUIRED on the plan, so "no walk" and "forgot the probe" are different
+  // keystrokes rather than the same omission.
+  probeDrifted: false,
 };
 
 const pairRow = (over: Record<string, unknown> = {}) => ({
@@ -105,6 +108,14 @@ function reader(
 function simple(n: unknown, rows: readonly unknown[] = []): BrainCandidateReader {
   return reader((sql) => (sql.includes("delta_total") ? [{ delta_total: n }] : rows));
 }
+
+// ⚠️ RESET between tests. Every log assertion here is a `.some(...)`, so without
+// this a later test can be satisfied by an earlier one's entry — the sibling
+// suite has had this `beforeEach` from the start and this file did not.
+beforeEach(() => {
+  errorCalls.length = 0;
+  warnCalls.length = 0;
+});
 
 describe("⚠️ a total that did not read back as a number REFUSES, never degrades to 0", () => {
   it("throws, and logs first with the requestId", async () => {
@@ -253,5 +264,32 @@ describe("the page cap is reported as truncation, never as withholding", () => {
     // ⚠️ `withheld` stays 0 — truncation dressed as an ACL boundary is what the
     // wire type forbids by name.
     expect(radius.corroborating.withheld).toBe(0);
+  });
+});
+
+describe("⚠️ a reader whose clause DENIES every row is reported inconsistent, not empty", () => {
+  it("lists nothing, withholds the whole total, and says the counts are untrustworthy", async () => {
+    // The `-pg` suite's "stranger" is a `member` with no audiences, which takes
+    // the `reader-scoped` arm — so `deny-all` never ran in a test, and replacing
+    // both `decision !== "deny-all"` conjuncts with `true` left every suite
+    // green. This is the branch the module deliberately does NOT throw on: the
+    // workspace-wide total stays sayable so "N you cannot see" is expressible,
+    // and the counts are reported inconsistent because the two statements were
+    // not asked the same question.
+    const unresolved: BrainPrincipalContext = {
+      origin: "unresolved",
+      workspaceId: WS,
+      userId: null,
+      role: null,
+      audienceIds: [],
+    };
+    const radius = await loadObjectPositionRadius(simple(4), unresolved, APPROVAL_PLAN);
+    expect(radius.corroborating.total).toBe(4);
+    expect(radius.corroborating.pairs).toHaveLength(0);
+    expect(radius.corroborating.withheld).toBe(4);
+    expect(radius.corroborating.countsConsistent).toBe(false);
+    expect(
+      warnCalls.some((c) => c.msg.includes("denied every row while the reader itself resolved")),
+    ).toBe(true);
   });
 });

@@ -77,7 +77,15 @@ export function BlastRadiusPreview({
   }
 
   const { arming, disarming } = radius;
-  const nothing = arming.total === 0 && disarming.total === 0;
+  // ⚠️ Gated on the zeros being KNOWN, not merely on their being zero — the same
+  // defect #5088 closed on the object branch, four lines down, and it was live
+  // here too. `SideLine` is the only carrier of the "counts disagreed" warning
+  // and it is suppressed by `total > 0`, so a removal whose depth probe did not
+  // answer over a genuine zero delta rendered "No published claim becomes
+  // supersedable, or safe" with no warning anywhere on the page.
+  const known = arming.countsConsistent && disarming.countsConsistent;
+  const nothing = arming.total === 0 && disarming.total === 0 && known;
+  const unestablished = arming.total === 0 && disarming.total === 0 && !known;
 
   return (
     <div className="space-y-2 text-sm">
@@ -88,6 +96,13 @@ export function BlastRadiusPreview({
           </span>{" "}
           That is a floor, not a guarantee: this decision applies to every future claim in the slot
           as well.
+        </p>
+      ) : null}
+
+      {unestablished ? (
+        <p className="text-destructive">
+          Atlas could not establish these numbers, so what this decision changes is{" "}
+          <strong>unknown, not zero</strong>. Reload before deciding.
         </p>
       ) : null}
 

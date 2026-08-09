@@ -166,12 +166,13 @@ describe("evidence that will not narrow is REPORTED, never rendered as zero", ()
     );
     const entry = queue.entries[0]!;
     if (entry.kind !== "alias") throw new Error("expected an alias entry");
-    expect(entry.evidence.kind).toBe("structural");
-    if (entry.evidence.kind !== "structural") throw new Error("unreachable");
-    expect(entry.evidence.countsConsistent).toBe(false);
-    expect(warnCalls.some((c) => c.msg.includes("structural evidence would not narrow"))).toBe(
-      true,
-    );
+    // ⚠️ Its OWN ARM, not zeros beside a flag. The flat shape let the client
+    // render "0 distinct subjects … this now reads below the bar that raised it,
+    // because the count is re-derived from the corpus as it stands" — a
+    // confident causal story about a number nobody read. The numbers are now
+    // structurally unreadable on this branch.
+    expect(entry.evidence).toEqual({ kind: "unreadable" });
+    expect(warnCalls.some((c) => c.msg.includes("reported as unreadable"))).toBe(true);
   });
 
   it("POSITIVE CONTROL — a readable count is reported as a fact", async () => {
@@ -206,11 +207,8 @@ describe("evidence that will not narrow is REPORTED, never rendered as zero", ()
       owner,
     );
     const entry = queue.entries[0]!;
-    if (entry.kind !== "alias" || entry.evidence.kind !== "structural") {
-      throw new Error("expected structural alias evidence");
-    }
-    expect(entry.evidence.examples).toEqual([]);
-    expect(entry.evidence.countsConsistent).toBe(false);
+    if (entry.kind !== "alias") throw new Error("expected an alias entry");
+    expect(entry.evidence).toEqual({ kind: "unreadable" });
   });
 
   it("⚠️ fewer EVENTS than SUBJECTS is a third statement disagreeing", async () => {
@@ -224,6 +222,7 @@ describe("evidence that will not narrow is REPORTED, never rendered as zero", ()
     );
     const entry = queue.entries[0]!;
     if (entry.kind !== "cardinality") throw new Error("expected a cardinality entry");
+    if (entry.evidence.kind !== "behavioral") throw new Error("expected behavioral evidence");
     expect(entry.evidence.countsConsistent).toBe(false);
   });
 });

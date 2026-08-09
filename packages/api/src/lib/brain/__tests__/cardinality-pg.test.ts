@@ -70,6 +70,7 @@ import {
   CORRECTION_REPEAT_THRESHOLD,
   declarePredicateCardinality,
   decidePredicateCardinality,
+  decidePredicateCardinalityForSurface,
   proposeFromCorrectionEvents,
   proposePredicateCardinality,
   readPredicateCardinality,
@@ -970,6 +971,117 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         authoredBy: "curator-1",
       });
       expect(declared).toMatchObject({ ok: false, refusal: "degenerate-key" });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── the SURFACE-addressed decide seam (#5088) ──────────────────────────
+  //
+  // ⚠️ This entry point had NO test. It is referenced by the queue's decide
+  // route — which mocks it — and by nothing else, so its own docstring named a
+  // risk nothing measured: *"deciding `is priced at` once `is priced at → priced
+  // at` is approved must land on `priced at`. An identity default would address
+  // a row that does not exist and report `false`"* — i.e. a pending proposal
+  // silently reported to the approver as a lost race.
+
+  it(
+    "⚠️ applies the workspace's ALIAS CLOSURE, so a decide lands on the slot the claims occupy",
+    async () => {
+      const ws = `ws-decide-surface-${Date.now()}`;
+      await proposePredicateCardinality(pool, ws, {
+        predicateKey: "priced at",
+        cardinality: "single",
+        sourceClass: "correction_event",
+        proposedBy: CORRECTION_EVENT_PRODUCER,
+      });
+
+      // The approver names the spelling they SEE; the closure maps it onto the
+      // canonical key the proposal is stored under. An identity default would
+      // address `is priced at`, match no row, and report "nothing to decide".
+      const decided = await decidePredicateCardinalityForSurface(pool, ws, {
+        predicateSurface: "Is Priced At",
+        verdict: "approved",
+        reviewedBy: "user-owner",
+        predicateAlias: (norm) => (norm === "is priced at" ? "priced at" : norm),
+        requestId: "req-decide",
+      });
+      expect(decided).toBe("decided");
+      expect(await readPredicateCardinality(pool, ws, "priced at")).toMatchObject({
+        cardinality: "single",
+        status: "approved",
+      });
+      // `reviewedBy` is not on `PredicateCardinalityRecord` (the read model
+      // carries no reviewer), so the audit column is checked directly — it is
+      // the first thing an audit of a retroactive re-key reads.
+      const { rows } = await pool.query<{ reviewed_by: string | null }>(
+        `SELECT reviewed_by FROM brain_predicate_cardinality
+          WHERE workspace_id = $1 AND predicate_key = 'priced at'`,
+        [ws],
+      );
+      expect(rows[0]!.reviewed_by).toBe("user-owner");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "POSITIVE CONTROL — without the closure the same surface addresses NOTHING",
+    async () => {
+      // Without this the test above passes with `predicateAlias` ignored, since
+      // `slotKey` under the identity lookup would still key *some* row if the
+      // fixture happened to be stored under the un-aliased norm.
+      const ws = `ws-decide-noalias-${Date.now()}`;
+      await proposePredicateCardinality(pool, ws, {
+        predicateKey: "priced at",
+        cardinality: "single",
+        sourceClass: "correction_event",
+        proposedBy: CORRECTION_EVENT_PRODUCER,
+      });
+      const decided = await decidePredicateCardinalityForSurface(pool, ws, {
+        predicateSurface: "Is Priced At",
+        verdict: "approved",
+        reviewedBy: "user-owner",
+        predicateAlias: identityAlias,
+      });
+      expect(decided).toBe("not-pending");
+      expect(await readPredicateCardinality(pool, ws, "priced at")).toMatchObject({
+        status: "pending",
+      });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "⚠️ distinguishes UNADDRESSABLE from a lost race — they render as opposite sentences",
+    async () => {
+      // A bare boolean collapsed the two, the route mapped both to
+      // `nothing_to_decide`, and the client said *"someone else got there
+      // first"* — a confident, specific, WRONG explanation for a request that
+      // never addressed a row at all.
+      const ws = `ws-decide-degenerate-${Date.now()}`;
+      const unaddressable = await decidePredicateCardinalityForSurface(pool, ws, {
+        predicateSurface: "---",
+        verdict: "approved",
+        reviewedBy: "user-owner",
+        predicateAlias: identityAlias,
+      });
+      expect(unaddressable).toBe("unaddressable");
+
+      // ...and a REAL row decided twice is `not-pending` the second time, which
+      // is the race the first sentence must not be confused with.
+      await proposePredicateCardinality(pool, ws, {
+        predicateKey: "reports to",
+        cardinality: "single",
+        sourceClass: "correction_event",
+        proposedBy: CORRECTION_EVENT_PRODUCER,
+      });
+      const input = {
+        predicateSurface: "reports to",
+        verdict: "approved" as const,
+        reviewedBy: "user-owner",
+        predicateAlias: identityAlias,
+      };
+      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toBe("decided");
+      expect(await decidePredicateCardinalityForSurface(pool, ws, input)).toBe("not-pending");
     },
     PG_TEST_TIMEOUT_MS,
   );

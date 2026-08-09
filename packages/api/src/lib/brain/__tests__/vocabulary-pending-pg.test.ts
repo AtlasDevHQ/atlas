@@ -431,6 +431,10 @@ describeIfPg("the Pending queue against a real schema (#5088)", () => {
     const entry = queue.entries.find((e) => e.kind === "cardinality");
     expect(entry, "the cardinality proposal must be listed").toBeDefined();
     if (entry === undefined || entry.kind !== "cardinality") throw new Error("unreachable");
+    // ⚠️ Narrow the evidence union first — the `unreadable` arm carries no
+    // numbers at all, which is the whole point of splitting it out.
+    expect(entry.evidence.kind).toBe("behavioral");
+    if (entry.evidence.kind !== "behavioral") throw new Error("unreachable");
     expect(entry.evidence.subjects).toBe(gate[0]!.n);
     // ⚠️ The SECOND number, and the fixture is built so the two CANNOT coincide.
     // The gate counts distinct SUBJECTS; `events` is what "and links to them"

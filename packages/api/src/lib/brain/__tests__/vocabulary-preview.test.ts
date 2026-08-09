@@ -335,6 +335,35 @@ describe("the object position gets its OWN radius, never a supersession delta", 
     expect(deltaStatements(captures)).toHaveLength(0);
   });
 
+  it("⚠️ an unreadable depth probe reaches the object radius's countsConsistent", async () => {
+    // The unit suite proves `loadObjectPositionRadius` HONOURS the flag when it
+    // is handed one. Nothing proved the object-removal arm hands it over — which
+    // is exactly the half that was broken: mutating `probeDrifted:
+    // subtree.probeDrifted` to `false` left both suites green.
+    //
+    // `subtreeHitBound` returns `probeDrifted: true` for any non-boolean `hit`.
+    const captures: Capture[] = [];
+    const radius = await loadBlastRadius(
+      reader(captures, (sql) =>
+        sql.includes(EDGE_EXISTS)
+          ? [{ hit: 1 }]
+          : sql.includes("bool_or(depth")
+            ? [{ hit: "maybe" }]
+            : undefined,
+      ),
+      ctx(),
+      { kind: "alias-removal", position: "object", fromNorm: "nova" },
+    );
+    expect(radius.kind).toBe("object-position");
+    if (radius.kind !== "object-position") throw new Error("unreachable");
+    // ⚠️ A drifted probe is STATEMENT DRIFT, not a bound hit — the two are
+    // different facts with different sentences, and only the first belongs here.
+    expect(radius.subtreeTruncated).toBe(false);
+    for (const s of [radius.corroborating, radius.separating, radius.tension]) {
+      expect(s.countsConsistent).toBe(false);
+    }
+  });
+
   it("⚠️ a surface that norms away is STILL a reason, not a zeroed radius", async () => {
     // The one object-position path that must not reach the new arm: a decision
     // naming a surface made only of separators occupies no slot and can join

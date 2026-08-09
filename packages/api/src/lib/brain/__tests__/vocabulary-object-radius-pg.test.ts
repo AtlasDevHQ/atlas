@@ -192,10 +192,14 @@ describeIfPg("the object-position blast radius against a real schema (#5088)", (
 
   /** Write the advisory edge directly — reconcile's own gating is its test, not this one. */
   async function tensionEdge(fromId: string, toId: string): Promise<void> {
+    await edge("in-tension-with", fromId, toId);
+  }
+
+  async function edge(type: string, fromId: string, toId: string): Promise<void> {
     await pool.query(
       `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
-       VALUES ($1, 'in-tension-with', $2::uuid, $3::uuid)`,
-      [WS, fromId, toId],
+       VALUES ($1, $2, $3::uuid, $4::uuid)`,
+      [WS, type, fromId, toId],
     );
   }
 
@@ -289,6 +293,22 @@ describeIfPg("the object-position blast radius against a real schema (#5088)", (
       [WS],
     );
     expect(Number(rows[0]!.n)).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("⚠️ counts ONLY `in-tension-with` — `brain_edges` carries four edge types", async () => {
+    // Deleting `e.edge_type = 'in-tension-with'` left the whole suite green,
+    // because every fixture wrote only tension edges. `brain_edges` also holds
+    // `supersedes`, `derives-from` and `provenance` (0180), so without the
+    // filter a `derives-from` edge between two live rival claims would be
+    // counted into the number an approver reads as "contradictions Atlas has
+    // already flagged".
+    const bob = await land({ subject: "widget", predicate: "reports to", object: "Bob" });
+    const bobby = await land({ subject: "widget", predicate: "reports to", object: "Bobby" });
+    await tensionEdge(bob, bobby);
+    await edge("derives-from", bob, bobby);
+
+    const radius = objectRadius(await loadBlastRadius(pool, owner(), request("bob", "bobby")));
+    expect(radius.tension.total, "only the advisory edge counts").toBe(1);
   }, PG_TEST_TIMEOUT_MS);
 
   it("an edge whose facts are NOT both live is not counted", async () => {

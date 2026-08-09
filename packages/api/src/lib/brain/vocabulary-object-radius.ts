@@ -218,8 +218,14 @@ export interface ObjectCounterfactualPlan {
    * `countsConsistent: true` (never established): a fully trustworthy-looking
    * radius over a walk nobody could confirm, on the one verb where the walk
    * decides which rows move. The predicate path has honoured it since #5086.
+   *
+   * ⚠️ REQUIRED, not optional. Optional, the consumer reads
+   * `probeDrifted !== true` — so an omitted field silently means *"the walk was
+   * confirmed"*, which re-admits exactly the forgetting this field was added to
+   * stop. The walk-less approval path passes `false` deliberately, and the
+   * compiler is what makes that a keystroke rather than an assumption.
    */
-  readonly probeDrifted?: boolean;
+  readonly probeDrifted: boolean;
 }
 
 /**
@@ -488,7 +494,7 @@ async function loadSide(
     countsConsistent:
       !inverted &&
       !page.drifted &&
-      plan.probeDrifted !== true &&
+      !plan.probeDrifted &&
       leftAcl.decision !== "deny-all" &&
       rightAcl.decision !== "deny-all",
   };

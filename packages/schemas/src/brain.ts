@@ -1196,7 +1196,20 @@ export const BrainVocabularyAliasEvidenceSchema = z.union([
     kind: z.literal("not-applicable"),
     reason: z.literal("entity-position"),
   }),
+  z.strictObject({ kind: z.literal("unreadable") }),
 ]) satisfies z.ZodType<BrainVocabularyAliasEvidence, unknown>;
+
+/** Pin: every alias-evidence arm has a schema arm — `_BlastRadiusArmsCovered`'s reason. */
+type _AliasEvidenceArmsCovered = [
+  Exclude<
+    BrainVocabularyAliasEvidence["kind"],
+    z.infer<typeof BrainVocabularyAliasEvidenceSchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _aliasEvidenceArmsCovered: _AliasEvidenceArmsCovered = true;
+void _aliasEvidenceArmsCovered;
 
 export const BrainVocabularyCorrectionExampleSchema = z.strictObject({
   subject: z.string(),
@@ -1206,15 +1219,31 @@ export const BrainVocabularyCorrectionExampleSchema = z.strictObject({
   at: z.string(),
 }) satisfies z.ZodType<BrainVocabularyCorrectionExample, unknown>;
 
-export const BrainVocabularyCorrectionEvidenceSchema = z.strictObject({
-  subjects: z.number().int().nonnegative(),
-  events: z.number().int().nonnegative(),
-  scopedSubjects: z.number().int().nonnegative(),
-  withheld: z.number().int().nonnegative(),
-  examples: z.array(BrainVocabularyCorrectionExampleSchema),
-  threshold: z.number().int().nonnegative(),
-  countsConsistent: z.boolean(),
-}) satisfies z.ZodType<BrainVocabularyCorrectionEvidence, unknown>;
+export const BrainVocabularyCorrectionEvidenceSchema = z.union([
+  z.strictObject({
+    kind: z.literal("behavioral"),
+    subjects: z.number().int().nonnegative(),
+    events: z.number().int().nonnegative(),
+    scopedSubjects: z.number().int().nonnegative(),
+    withheld: z.number().int().nonnegative(),
+    examples: z.array(BrainVocabularyCorrectionExampleSchema),
+    threshold: z.number().int().nonnegative(),
+    countsConsistent: z.boolean(),
+  }),
+  z.strictObject({ kind: z.literal("unreadable") }),
+]) satisfies z.ZodType<BrainVocabularyCorrectionEvidence, unknown>;
+
+/** Pin: every correction-evidence arm has a schema arm. */
+type _CorrectionEvidenceArmsCovered = [
+  Exclude<
+    BrainVocabularyCorrectionEvidence["kind"],
+    z.infer<typeof BrainVocabularyCorrectionEvidenceSchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _correctionEvidenceArmsCovered: _CorrectionEvidenceArmsCovered = true;
+void _correctionEvidenceArmsCovered;
 
 export const BrainVocabularyPendingEntrySchema = z.union([
   z.strictObject({

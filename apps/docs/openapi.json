@@ -26962,6 +26962,21 @@
                                       "reason"
                                     ],
                                     "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "unreadable"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "additionalProperties": false
                                   }
                                 ]
                               }
@@ -27016,73 +27031,99 @@
                                 "minimum": 0
                               },
                               "evidence": {
-                                "type": "object",
-                                "properties": {
-                                  "subjects": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "events": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "scopedSubjects": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "withheld": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "examples": {
-                                    "type": "array",
-                                    "items": {
-                                      "type": "object",
-                                      "properties": {
-                                        "subject": {
-                                          "type": "string"
-                                        },
-                                        "fromObject": {
-                                          "type": "string"
-                                        },
-                                        "toObject": {
-                                          "type": "string"
-                                        },
-                                        "factId": {
-                                          "type": "string"
-                                        },
-                                        "at": {
-                                          "type": "string"
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "behavioral"
+                                        ]
+                                      },
+                                      "subjects": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "events": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "scopedSubjects": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "withheld": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "examples": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "subject": {
+                                              "type": "string"
+                                            },
+                                            "fromObject": {
+                                              "type": "string"
+                                            },
+                                            "toObject": {
+                                              "type": "string"
+                                            },
+                                            "factId": {
+                                              "type": "string"
+                                            },
+                                            "at": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "subject",
+                                            "fromObject",
+                                            "toObject",
+                                            "factId",
+                                            "at"
+                                          ],
+                                          "additionalProperties": false
                                         }
                                       },
-                                      "required": [
-                                        "subject",
-                                        "fromObject",
-                                        "toObject",
-                                        "factId",
-                                        "at"
-                                      ],
-                                      "additionalProperties": false
-                                    }
+                                      "threshold": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "countsConsistent": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "subjects",
+                                      "events",
+                                      "scopedSubjects",
+                                      "withheld",
+                                      "examples",
+                                      "threshold",
+                                      "countsConsistent"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "threshold": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "countsConsistent": {
-                                    "type": "boolean"
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "unreadable"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "subjects",
-                                  "events",
-                                  "scopedSubjects",
-                                  "withheld",
-                                  "examples",
-                                  "threshold",
-                                  "countsConsistent"
-                                ],
-                                "additionalProperties": false
+                                ]
                               }
                             },
                             "required": [

@@ -180,6 +180,21 @@ export type AliasEvidence =
       readonly kind: "not-applicable";
       /** The structural producer proposes predicate pairs and nothing else. */
       readonly reason: "entity-position";
+    }
+  | {
+      /**
+       * The evidence query drifted — the numbers were never read.
+       *
+       * ⚠️ Its own arm rather than zeros beside `countsConsistent: false`, and
+       * it is {@link AliasEvidence}'s own `not-applicable` argument applied one
+       * level down. The flat shape returned `subjects ?? 0` with the flag set,
+       * and the client rendered *"0 distinct subjects … this now reads below the
+       * bar that raised it, because the count is re-derived from the corpus as
+       * it stands"* — a confident causal story about a number nobody read.
+       * "0 agree", "unaskable" and "unread" are one number and three opposite
+       * facts, so all three are their own branch.
+       */
+      readonly kind: "unreadable";
     };
 
 /** One correction a human made at this predicate — the *link* half of the AC. */
@@ -204,19 +219,23 @@ export interface CorrectionExample {
  * would show a number no gate reads; rendering only the first would leave *"and
  * links to them"* with nothing to link.
  */
-export interface CorrectionEvidence {
-  /** Distinct subjects a human has superseded at this predicate. The GATE's number. */
-  readonly subjects: number;
-  /** Individual supersessions behind that. Always ≥ {@link subjects}. */
-  readonly events: number;
-  /** How many of the subjects this reader may see. */
-  readonly scopedSubjects: number;
-  readonly withheld: number;
-  /** Bounded, reader-scoped on BOTH the replacement and the retired claim. */
-  readonly examples: readonly CorrectionExample[];
-  readonly threshold: number;
-  readonly countsConsistent: boolean;
-}
+export type CorrectionEvidence =
+  | {
+      readonly kind: "behavioral";
+      /** Distinct subjects a human has superseded at this predicate. The GATE's number. */
+      readonly subjects: number;
+      /** Individual supersessions behind that. Always ≥ `subjects`. */
+      readonly events: number;
+      /** How many of the subjects this reader may see. */
+      readonly scopedSubjects: number;
+      readonly withheld: number;
+      /** Bounded, reader-scoped on BOTH the replacement and the retired claim. */
+      readonly examples: readonly CorrectionExample[];
+      readonly threshold: number;
+      readonly countsConsistent: boolean;
+    }
+  /** The evidence query drifted — see {@link AliasEvidence}'s `unreadable` arm. */
+  | { readonly kind: "unreadable" };
 
 // ---------------------------------------------------------------------------
 // Entries
@@ -648,7 +667,8 @@ async function loadAliasProposals(
     if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
 
     const evidence = readAliasEvidence(position, row, ctx.workspaceId, opts.requestId);
-    if (evidence.kind === "structural" && !evidence.countsConsistent) evidenceDrifted = true;
+    if (evidence.kind === "unreadable") evidenceDrifted = true;
+    else if (evidence.kind === "structural" && !evidence.countsConsistent) evidenceDrifted = true;
 
     entries.push({
       kind: "alias",
@@ -890,22 +910,16 @@ function readAliasEvidence(
   const examples = readAgreementExamples(row.examples);
 
   if (subjects === null || scoped === null || examples === null) {
-    // ⚠️ REPORTED, not zeroed. "No subject in your corpus exhibits this
-    // agreement" is a reason to reject; "the evidence query drifted" is a reason
-    // to fix the server, and a renderer cannot tell them apart from a zero.
+    // ⚠️ REPORTED AS ITS OWN BRANCH, not zeroed beside a flag. "No subject in
+    // your corpus exhibits this agreement" is a reason to reject; "the evidence
+    // query drifted" is a reason to fix the server — and the zeroed shape let a
+    // renderer explain the first while meaning the second, down to naming the
+    // re-derivation as the cause.
     log.warn(
       { workspaceId, requestId, subjects: row.subjects, scoped: row.scoped_subjects },
-      "brain vocabulary pending: an alias proposal's structural evidence would not narrow — reported inconsistent rather than as zero agreeing subjects",
+      "brain vocabulary pending: an alias proposal's structural evidence would not narrow — reported as unreadable rather than as zero agreeing subjects",
     );
-    return {
-      kind: "structural",
-      subjects: subjects ?? 0,
-      scopedSubjects: scoped ?? 0,
-      withheld: 0,
-      examples: examples ?? [],
-      threshold: ALIAS_PROPOSAL_REPEAT_THRESHOLD,
-      countsConsistent: false,
-    };
+    return { kind: "unreadable" };
   }
 
   const arithmetic = withheldCount(subjects, scoped);
@@ -1101,7 +1115,7 @@ async function loadCardinalityProposals(
     if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
 
     const evidence = readCorrectionEvidence(row, ctx.workspaceId, opts.requestId);
-    if (!evidence.countsConsistent) evidenceDrifted = true;
+    if (evidence.kind === "unreadable" || !evidence.countsConsistent) evidenceDrifted = true;
     const predicateSurface =
       typeof row.predicate_surface === "string" ? row.predicate_surface : null;
 
@@ -1249,21 +1263,14 @@ function readCorrectionEvidence(
   if (subjects === null || scoped === null || events === null || examples === null) {
     log.warn(
       { workspaceId, requestId, subjects: row.subjects, events: row.events },
-      "brain vocabulary pending: a cardinality proposal's correction evidence would not narrow — reported inconsistent rather than as zero corrections",
+      "brain vocabulary pending: a cardinality proposal's correction evidence would not narrow — reported as unreadable rather than as zero corrections",
     );
-    return {
-      subjects: subjects ?? 0,
-      events: events ?? 0,
-      scopedSubjects: scoped ?? 0,
-      withheld: 0,
-      examples: examples ?? [],
-      threshold: CORRECTION_REPEAT_THRESHOLD,
-      countsConsistent: false,
-    };
+    return { kind: "unreadable" };
   }
 
   const arithmetic = withheldCount(subjects, scoped);
   return {
+    kind: "behavioral",
     subjects: arithmetic.total,
     events,
     scopedSubjects: arithmetic.scoped,

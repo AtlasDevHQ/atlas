@@ -99,6 +99,7 @@ const cardinalityEntry = (over: Record<string, unknown> = {}) => ({
   proposedAt: "2026-08-08T00:00:00.000Z",
   claims: 12,
   evidence: {
+    kind: "behavioral",
     subjects: 3,
     events: 4,
     scopedSubjects: 3,
@@ -134,6 +135,10 @@ let holdPreview: Promise<void> | null = null;
 let previewFails = false;
 /** Whether `/pending` fails, so the failed-vs-empty card is reachable. */
 let pendingFails = false;
+/** Whether `/preview` answers 200 with a body the schema refuses. */
+let previewReturnsGarbage = false;
+/** How `/decide` answers: normally, unparseably, or as a lost race. */
+let decideMode: "ok" | "non-json" | "extra-key" | "nothing" = "ok";
 /** Per-test overrides for the disclosure branches every default fixture turns off. */
 let countsOverride: Record<string, unknown> | null = null;
 let truncatedOverride = false;
@@ -176,6 +181,11 @@ function installFetchStub() {
       if (previewFails) {
         return Promise.resolve(jsonResponse({ error: "server_error", message: "boom" }, 500));
       }
+      if (previewReturnsGarbage) {
+        // A 200 the schema refuses — the shape `useAdminMutation` hands back as
+        // `data: undefined`, which the old `?? null` swallowed entirely.
+        return Promise.resolve(jsonResponse({ unexpected: true }));
+      }
       const held = holdPreview;
       if (held !== null) {
         holdPreview = null;
@@ -205,6 +215,26 @@ function installFetchStub() {
     }
     if (url.includes("/brain-vocabulary/decide")) {
       decideBodies.push(String(init?.body ?? ""));
+      if (decideMode === "non-json") {
+        // A 2xx whose content-type is not JSON — `useAdminMutation` resolves
+        // `{ ok: true, data: undefined }` for this, which is the shape the old
+        // `?? ""` turned into the strongest success string.
+        return Promise.resolve(
+          new Response("ok", { status: 200, headers: { "content-type": "text/plain" } }),
+        );
+      }
+      if (decideMode === "extra-key") {
+        // Valid JSON the STRICT schema refuses — pins `safeParse` rather than
+        // only the `undefined` check.
+        return Promise.resolve(
+          jsonResponse({ outcome: "approved", proposalId: "p", removedEdge: false }),
+        );
+      }
+      if (decideMode === "nothing") {
+        return Promise.resolve(
+          jsonResponse({ outcome: "nothing_to_decide", proposalId: null }),
+        );
+      }
       return Promise.resolve(
         // ⚠️ No `removedEdge` — the union carries it on the `rejected` arm only,
         // and the client PARSES this body now, so an invented field would be
@@ -264,6 +294,8 @@ beforeEach(() => {
   holdPreview = null;
   previewFails = false;
   pendingFails = false;
+  previewReturnsGarbage = false;
+  decideMode = "ok";
   countsOverride = null;
   truncatedOverride = false;
   incompleteOverride = false;
@@ -538,6 +570,121 @@ describe("the two evidence models are rendered differently and never as a bare N
     expect(screen.queryByRole("button", { name: /^Approve$/ })).toBeNull();
     expect(document.body.textContent ?? "").toContain("has no");
     expect(document.body.textContent ?? "").toContain("cannot be decided from here");
+  });
+});
+
+describe("⚠️ a decide body Atlas could not read is never reported as the verb pressed", () => {
+  async function approveOnce(): Promise<void> {
+    renderQueue();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /Choose this/ }).length).toBe(2));
+    fireEvent.click(screen.getAllByRole("button", { name: /Choose this/ })[0]!);
+    await waitFor(() => expect(approveButton().disabled).toBe(false));
+    fireEvent.click(approveButton());
+  }
+
+  test("a NON-JSON 200 says `could not confirm`, not `re-keyed`", async () => {
+    // `use-admin-mutation` resolves `{ ok: true, data: undefined }` for any 2xx
+    // it cannot parse — a 204, a proxy, an HTML error page — and the old
+    // `result.data?.outcome ?? ""` fell through every branch into "every
+    // affected claim has been re-keyed" for a body nobody read.
+    decideMode = "non-json";
+    await approveOnce();
+    await waitFor(() => expect(screen.getByText(/could not confirm/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("has been re-keyed");
+  });
+
+  test("a STRICT-schema violation does too — the parse is what runs, not a null check", async () => {
+    // Valid JSON with an extra key. A guard written as `data === undefined`
+    // would pass this straight through; `safeParse` against `z.strictObject`
+    // is what actually refuses it.
+    decideMode = "extra-key";
+    await approveOnce();
+    await waitFor(() => expect(screen.getByText(/could not confirm/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("has been re-keyed");
+  });
+
+  test("⚠️ a LOST RACE is reported as itself, never as the approval", async () => {
+    // `nothing_to_decide` is a truthful 200 — somebody else decided it, or one
+    // is in flight — and telling this approver "approved" would credit them with
+    // a workspace-wide re-key they did not cause. The route half is pinned;
+    // replacing this client branch with `if (false)` left every test green.
+    decideMode = "nothing";
+    await approveOnce();
+    await waitFor(() => expect(screen.getByText(/had already been decided/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("has been re-keyed");
+  });
+
+  test("POSITIVE CONTROL — a parseable approval still reports the re-key", async () => {
+    await approveOnce();
+    await waitFor(() => expect(screen.getByText(/has been re-keyed/)).toBeTruthy());
+  });
+});
+
+describe("⚠️ evidence Atlas COULD NOT READ is never rendered as a zero", () => {
+  test("an alias entry says unknown-not-zero rather than explaining a count", async () => {
+    // The flat shape returned `subjects: 0, countsConsistent: false` and the
+    // client rendered "0 distinct subjects … this now reads below the bar that
+    // raised it, BECAUSE the count is re-derived from the corpus as it stands" —
+    // a confident, specific, wrong causal story about a number nobody read.
+    queueEntries = [aliasEntry({ evidence: { kind: "unreadable" } })];
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/unknown, not zero/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("0 distinct subjects");
+    expect(text).not.toContain("reads below the bar that raised it");
+  });
+
+  test("a cardinality entry does the same, and invents no retraction history", async () => {
+    // The old copy said "it may have been raised before the claims behind it
+    // were retracted" — a specific history, for a query that returned nothing.
+    queueEntries = [cardinalityEntry({ evidence: { kind: "unreadable" } })];
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/correction history/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("unknown, not zero");
+    expect(text).not.toContain("were retracted");
+  });
+
+  test("POSITIVE CONTROL — readable evidence still renders its counts", async () => {
+    queueEntries = [aliasEntry(), cardinalityEntry()];
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Curated predicate/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("unknown, not zero");
+    expect(text).toContain("2 distinct subjects");
+  });
+});
+
+describe("⚠️ approving a `multi` entry is not reported as arming supersession", () => {
+  test("the notice records coexistence, matching the row body above it", async () => {
+    // The row body branches on `entry.cardinality` and says "values in this slot
+    // coexist"; the notice did not, and reported "now holds one value at a time
+    // … can supersede an earlier one" — the opposite of what was written, in the
+    // dangerous direction, contradicting the copy two elements up.
+    queueEntries = [cardinalityEntry({ cardinality: "multi" })];
+    renderQueue();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Preview the impact/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Preview the impact/ }));
+    await waitFor(() => expect(approveButton().disabled).toBe(false));
+    fireEvent.click(approveButton());
+    await waitFor(() => expect(screen.getByText(/coexist/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("now holds one value at a time");
+  });
+});
+
+describe("⚠️ a preview body that will not PARSE is an error, never a blank pane", () => {
+  test("says so rather than leaving the gate shut with no signal", async () => {
+    // `useAdminMutation` resolves `{ok: true, data: undefined}` for any 2xx it
+    // cannot parse, and `result.data?.radius ?? null` turned that into
+    // `{radius: null, pending: false, error: null}` — the triple
+    // `BlastRadiusPreview` renders as NOTHING. No radius, no error, "Preview
+    // first" again, and an approval gate that can never open.
+    previewReturnsGarbage = true;
+    renderQueue();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /Choose this/ }).length).toBe(2));
+    fireEvent.click(screen.getAllByRole("button", { name: /Choose this/ })[0]!);
+    await waitFor(() => expect(screen.getByText(/not in a shape this page understands/)).toBeTruthy());
+    expect(approveButton().disabled).toBe(true);
   });
 });
 

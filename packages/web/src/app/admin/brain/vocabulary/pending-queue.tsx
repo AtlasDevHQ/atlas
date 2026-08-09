@@ -16,9 +16,10 @@ import type {
 import {
   BrainVocabularyDecideResponseSchema,
   BrainVocabularyPendingResponseSchema,
+  BrainVocabularyPreviewResponseSchema,
 } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
-import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useAdminMutation, type MutateResult } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { BlastRadiusPreview } from "./blast-radius";
 import { ScopeBadge } from "./norm-picker";
@@ -173,8 +174,14 @@ export function PendingQueue() {
           // this is empty; this line must not contradict it with a congratulation.
           <p className="text-muted-foreground text-sm">
             Nothing is awaiting a decision
+            {/* ⚠️ `=== null` explicitly, never `?? 0` — that is the one
+                coalesce the nullable was introduced to prevent, and it falls on
+                the unsafe side: null becomes 0, the qualifier drops, and the
+                page asserts "Nothing is awaiting a decision." flat for a half it
+                never queried. */}
             {aliasCounts.some((c) => c.withheld > 0) ||
-            (data?.cardinalityCounts?.withheld ?? 0) > 0
+            data?.cardinalityCounts === null ||
+            (data?.cardinalityCounts !== undefined && data.cardinalityCounts.withheld > 0)
               ? " that you can see"
               : ""}
             . That is not the
@@ -182,8 +189,8 @@ export function PendingQueue() {
           </p>
         ) : (
           <ul className="space-y-3">
-            {entries.map((entry) => (
-              <li key={entryKey(entry)}>
+            {entries.map((entry, index) => (
+              <li key={entryKey(entry, index)}>
                 <PendingRow
                   entry={entry}
                   onDecided={(message) => {
@@ -240,10 +247,15 @@ function narrowPosition(value: string): "all" | BrainVocabularySlotPosition | nu
  * Stable enough for a list key because the queue holds at most one pending row
  * per predicate (the table's primary key guarantees it).
  */
-function entryKey(entry: BrainVocabularyPendingEntry): string {
+function entryKey(entry: BrainVocabularyPendingEntry, index: number): string {
+  // ⚠️ The index is folded in for the NULL case only. The table's primary key
+  // guarantees one pending row per predicate — but the key is not the predicate
+  // when the surface is null, so two fully-retracted predicates collided.
   return entry.kind === "alias"
     ? `alias:${entry.id}`
-    : `cardinality:${entry.predicateSurface ?? "unaddressable"}`;
+    : entry.predicateSurface === null
+      ? `cardinality:unaddressable:${index}`
+      : `cardinality:${entry.predicateSurface}`;
 }
 
 function PositionCountBadge({
@@ -293,6 +305,38 @@ interface PreviewSlot {
 }
 
 const EMPTY_PREVIEW: PreviewSlot = { radius: null, pending: false, error: null };
+
+/**
+ * A mutation result as a preview slot — PARSED, never cast.
+ *
+ * ⚠️ `result.data?.radius ?? null` was the one response on this surface that
+ * reached `radius.arming.total` off an unchecked cast, and it failed silently in
+ * the worst way: `useAdminMutation` resolves `{ ok: true, data: undefined }` for
+ * any 2xx it cannot parse, so the slot became `{radius: null, pending: false,
+ * error: null}` — the triple `BlastRadiusPreview` renders as NOTHING. The pane
+ * showed no radius, no error, and reverted to "Preview first", so the approval
+ * gate could never open and the approver got no signal at all.
+ *
+ * An unparseable body lands in `error`, where the copy already says the right
+ * thing: *"unknown — not zero"*.
+ */
+function toPreviewSlot(
+  result: MutateResult<{ radius: BrainVocabularyBlastRadius }>,
+): PreviewSlot {
+  if (!result.ok) {
+    return { radius: null, pending: false, error: friendlyError(result.error) };
+  }
+  const parsed = BrainVocabularyPreviewResponseSchema.safeParse(result.data);
+  if (!parsed.success) {
+    return {
+      radius: null,
+      pending: false,
+      error:
+        "Atlas answered, but not in a shape this page understands. Reload before deciding.",
+    };
+  }
+  return { radius: parsed.data.radius, pending: false, error: null };
+}
 
 function PendingAliasRow({
   entry,
@@ -361,12 +405,7 @@ function PendingAliasRow({
         toNorm: ordering.toNorm,
       },
     });
-    setPreviews((prev) => ({
-      ...prev,
-      [key]: result.ok
-        ? { radius: result.data?.radius ?? null, pending: false, error: null }
-        : { radius: null, pending: false, error: friendlyError(result.error) },
-    }));
+    setPreviews((prev) => ({ ...prev, [key]: toPreviewSlot(result) }));
   }
 
   async function decide(decision: "approved" | "rejected"): Promise<void> {
@@ -403,7 +442,7 @@ function PendingAliasRow({
       );
       return;
     }
-    onDecided(decideNotice(entry, chosen, decision, outcome));
+    onDecided(decideNotice(entry, chosen, outcome));
   }
 
   const chosenKey = chosen === null ? null : orderingKey(chosen);
@@ -651,6 +690,19 @@ function DirectionChoice({
  * warehouse-key proposal as unsupported when its support is a primary key.
  */
 function AliasEvidenceBlock({ evidence }: { evidence: BrainVocabularyAliasEvidence }) {
+  if (evidence.kind === "unreadable") {
+    // ⚠️ Never a zero, and never a causal story. The flat shape rendered "0
+    // distinct subjects … this now reads below the bar that raised it, because
+    // the count is re-derived from the corpus as it stands" — a confident,
+    // specific, WRONG explanation for a number that was never read.
+    return (
+      <p className="text-destructive text-sm">
+        Atlas could not read this proposal&rsquo;s evidence, so how much support it has is{" "}
+        <strong>unknown, not zero</strong>. Reload before deciding; if it persists, this is a fault
+        on Atlas&rsquo;s side and the server-side log names it.
+      </p>
+    );
+  }
   if (evidence.kind === "not-applicable") {
     return (
       <p className="text-muted-foreground text-sm">
@@ -753,11 +805,7 @@ function PendingCardinalityRow({
     const result = await previewMutation.mutate({
       body: { kind: "cardinality-flip", predicateSurface: surface },
     });
-    setPreview(
-      result.ok
-        ? { radius: result.data?.radius ?? null, pending: false, error: null }
-        : { radius: null, pending: false, error: friendlyError(result.error) },
-    );
+    setPreview(toPreviewSlot(result));
   }
 
   async function decide(decision: "approved" | "rejected"): Promise<void> {
@@ -781,11 +829,18 @@ function PendingCardinalityRow({
       return;
     }
     onDecided(
+      // ⚠️ Branched on the ENTRY's cardinality, not only on the verb. Approving
+      // a pending `multi` row records that values COEXIST — the row body two
+      // elements up says exactly that — and the flat notice reported "now holds
+      // one value at a time … can supersede an earlier one", i.e. the opposite
+      // of what was written, in the dangerous direction.
       outcome.outcome === "nothing_to_decide"
         ? `“${surface}” had already been decided, or is being decided right now — nothing changed here.`
-        : decision === "approved"
-          ? `Curated: “${surface}” now holds one value at a time. Every future claim in that slot can supersede an earlier one at the next publish.`
-          : `Rejected: “${surface}” stays multi-valued. Atlas remembers this permanently, so its producers will not re-propose it.`,
+        : decision === "rejected"
+          ? `Rejected: “${surface}” keeps whatever cardinality it had. Atlas remembers this permanently, so its producers will not re-propose it.`
+          : entry.cardinality === "single"
+            ? `Curated: “${surface}” now holds one value at a time. Every future claim in that slot can supersede an earlier one at the next publish.`
+            : `Recorded: values in “${surface}” coexist. Nothing is superseded by this — it is the adjudicated answer that stops producers re-proposing the question.`,
     );
   }
 
@@ -899,6 +954,18 @@ function PendingCardinalityRow({
  * than 2 typed agreements, not stronger.
  */
 function CorrectionEvidenceBlock({ evidence }: { evidence: BrainVocabularyCorrectionEvidence }) {
+  if (evidence.kind === "unreadable") {
+    // See `AliasEvidenceBlock` — and here the flat shape also invented a
+    // retraction history: "it may have been raised before the claims behind it
+    // were retracted" for a count the query never returned.
+    return (
+      <p className="text-destructive text-sm">
+        Atlas could not read this proposal&rsquo;s correction history, so how much support it has
+        is <strong>unknown, not zero</strong>. Reload before deciding; if it persists, this is a
+        fault on Atlas&rsquo;s side and the server-side log names it.
+      </p>
+    );
+  }
   const { subjects, events, withheld, examples, threshold, countsConsistent } = evidence;
   return (
     <div className="space-y-1 text-sm">
@@ -992,7 +1059,6 @@ function readDecideOutcome(
 function decideNotice(
   entry: BrainVocabularyPendingAlias,
   chosen: Ordering | null,
-  decision: "approved" | "rejected",
   outcome: BrainVocabularyDecideResponse,
 ): string {
   const pair = chosen ?? { fromNorm: entry.pair[0], toNorm: entry.pair[1] };
@@ -1002,7 +1068,6 @@ function decideNotice(
   if (outcome.outcome === "approved") {
     return `Approved: “${pair.fromNorm}” now resolves to “${pair.toNorm}”, and every affected claim has been re-keyed.`;
   }
-  void decision;
   return outcome.removedEdge
     ? `Removed: the approved edge for “${entry.pair[0]}” / “${entry.pair[1]}” is gone, every affected claim has been re-keyed back, and Atlas remembers the removal permanently.`
     : `Rejected: “${entry.pair[0]}” and “${entry.pair[1]}” stay separate spellings. Atlas remembers this permanently, so its producers will not re-propose the pair.`;

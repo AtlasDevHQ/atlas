@@ -951,6 +951,10 @@ async function objectPositionRadius(
       keyExpr: (alias) => `(CASE WHEN ${alias}.object_key = $2 THEN $3 ELSE ${alias}.object_key END)`,
       params: [fromKey, toKey],
       ctes: [],
+      // No walk on an approval, so nothing could have drifted. Stated rather
+      // than omitted — the field is required precisely so "no walk" and "forgot"
+      // are different keystrokes.
+      probeDrifted: false,
     },
     opts,
   );

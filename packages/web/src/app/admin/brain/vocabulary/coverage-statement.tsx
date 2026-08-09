@@ -63,7 +63,7 @@ export function CoverageStatement({
   return (
     <div className="space-y-2 text-sm">
       <p className="text-foreground">
-        {inForceSentence(edgeCount, cardinalityCount, denied, withheld)}
+        {inForceSentence(edgeCount, cardinalityCount, denied, withheld, inconsistent)}
       </p>
 
       <p className="text-muted-foreground">{pendingSentence(coverage)}</p>
@@ -93,19 +93,30 @@ export function CoverageStatement({
  * Point 1 — what is in force, stated even when it is zero.
  *
  * ⚠️ The "nothing yet" sentence is a claim about the WORKSPACE, and it must not
- * be made from a read that was scoped or denied. Seeing nothing and there being
- * nothing are the two facts this entire surface exists to separate, and this was
- * the one place the component still conflated them.
+ * be made from a read that was scoped, denied, or INCONSISTENT. Seeing nothing
+ * and there being nothing are the two facts this entire surface exists to
+ * separate, and this was the one place the component still conflated them.
+ *
+ * The `inconsistent` arm is the least obvious of the three and was missed on the
+ * first cut: when `totals.unreadable > 0` the totals query did not narrow, so
+ * `withheld` can be `0` and `denied` `false` while the read is untrustworthy —
+ * and the flat "nothing is in force in this workspace" went out with the
+ * "these counts disagreed" caveat relegated to a later paragraph. A caveat
+ * downstream of a categorical claim does not retract it.
  */
 function inForceSentence(
   edges: number,
   cardinalities: number,
   denied: boolean,
   withheld: number,
+  inconsistent: boolean,
 ): string {
   if (edges === 0 && cardinalities === 0) {
     if (denied) {
       return "Atlas cannot show you anything that is in force in this workspace — your account is not entitled to read the claims these entries are about. This is not the same as there being none.";
+    }
+    if (inconsistent) {
+      return "Atlas cannot say whether anything is in force in this workspace — the counts this page read disagreed with each other, so an empty list here is not evidence of an empty vocabulary. Reload.";
     }
     if (withheld > 0) {
       return `Nothing that you can see is shaping identity — but ${withheld} ${withheld === 1 ? "entry is" : "entries are"} in force that you cannot see, so this workspace's vocabulary is not empty.`;

@@ -439,6 +439,13 @@ export interface AliasDecideDeps {
    * operator gets asked about — *"an admin says they cannot remove this edge"* —
    * and without it the 409 the approver saw cannot be joined to the log line
    * that explains it.
+   *
+   * ⚠️ Every refusal line on BOTH verbs stamps it, plus the removal's visibility
+   * gate and the authored-edge success line. It briefly reached only the removal
+   * gate, which made this docstring describe an intent rather than the state —
+   * an operator joining on it would have found the removal 409s and silently
+   * missed every authoring refusal, which is the worse half to lose since the
+   * authoring path is the one with five distinct refusals.
    */
   readonly requestId?: string;
 }
@@ -1296,7 +1303,7 @@ export async function authorAliasEdge(
 
   if (author.workspaceId !== workspaceId) {
     log.error(
-      { workspaceId, authorWorkspaceId: author.workspaceId, position },
+      { workspaceId, authorWorkspaceId: author.workspaceId, position, requestId: deps.requestId },
       "Alias authoring refused — the author's workspace is not the target",
     );
     return {
@@ -1310,7 +1317,7 @@ export async function authorAliasEdge(
 
   if (!authorEntitled(author)) {
     log.warn(
-      { workspaceId, position, origin: author.origin, role: author.role },
+      { workspaceId, position, origin: author.origin, role: author.role, requestId: deps.requestId },
       "Alias authoring refused — the author does not clear the owner/admin bar",
     );
     return {
@@ -1375,6 +1382,7 @@ export async function authorAliasEdge(
             toClaims: population.to.claims,
             emptySide: empty,
             decision: population.decision,
+            requestId: deps.requestId,
           },
           "Alias authoring refused — a side has no live claim at this position",
         );
@@ -1401,7 +1409,7 @@ export async function authorAliasEdge(
         // rather than being a bare button.
         if (existing.status === "rejected") {
           log.warn(
-            { workspaceId, position, fromNorm, toNorm, proposalId: existing.id },
+            { workspaceId, position, fromNorm, toNorm, proposalId: existing.id, requestId: deps.requestId },
             "Alias authoring refused — the pair carries permanent rejection memory",
           );
           return {
@@ -1471,6 +1479,7 @@ export async function authorAliasEdge(
               proposalId: decided.id,
               convergedOnProposal: existing !== undefined,
               sourceClass: row.source_class,
+              requestId: deps.requestId,
             },
             "Alias edge authored directly — a human-decided proposal and its edge committed together",
           );
@@ -1497,7 +1506,7 @@ export async function authorAliasEdge(
   } catch (err) {
     if (err instanceof AliasApplyRefusedError) {
       log.warn(
-        { workspaceId, position, fromNorm, toNorm, refusal: err.refusal },
+        { workspaceId, position, fromNorm, toNorm, refusal: err.refusal, requestId: deps.requestId },
         `Alias authoring refused by the vocabulary — ${err.refusalMessage}`,
       );
       return { kind: "refused", refusal: err.refusal, message: err.refusalMessage };
@@ -1573,7 +1582,7 @@ export async function removeInForceAliasEdge(
 
   if (remover.workspaceId !== workspaceId) {
     log.error(
-      { workspaceId, removerWorkspaceId: remover.workspaceId, position },
+      { workspaceId, removerWorkspaceId: remover.workspaceId, position, requestId: deps.requestId },
       "Alias removal refused — the remover's workspace is not the target",
     );
     return {
@@ -1592,7 +1601,7 @@ export async function removeInForceAliasEdge(
   // reader could not author `a → b` but could delete it.
   if (!authorEntitled(remover)) {
     log.warn(
-      { workspaceId, position, origin: remover.origin, role: remover.role },
+      { workspaceId, position, origin: remover.origin, role: remover.role, requestId: deps.requestId },
       "Alias removal refused — the remover does not clear the owner/admin bar",
     );
     return {
@@ -1737,11 +1746,13 @@ export async function removeInForceAliasEdge(
 }
 
 /**
- * The ONE "nothing to remove" sentence, shared by three arms.
+ * The ONE "nothing to remove" sentence, shared by four arms.
  *
  * ⚠️ Shared rather than tailored, and that is the guard: it is returned for an
- * edge that does not exist, for one the reader may not see, and for one another
- * decision reached first. If those read differently, the difference IS the
+ * edge that does not exist, for one the reader may not see, for one whose
+ * decision is still pending or applying, and for one another decision reached
+ * first (`removalFromDecision`'s `not_decidable`). If those read differently,
+ * the difference IS the
  * oracle — a reader could tell "no such edge" from "an edge you may not see" by
  * comparing prose, having been stopped from telling them apart by outcome.
  *
@@ -1818,17 +1829,14 @@ function emptyPopulationMessage(
   population: PairPopulation,
   empty: EmptySide,
 ): string {
-  // ⚠️ Phrased per-arm rather than through a shared `${sides} has no live
-  // claim` template, because the `both` arm read as a DOUBLE NEGATIVE under it:
-  // *"neither "a" nor "b" has no live claim"* literally asserts the opposite of
-  // the refusal it is explaining. (The template also carried a ternary whose two
-  // branches were the identical string — the remains of a `has`/`have` split
-  // that had already been lost, and which no test could distinguish.)
-  // The WHOLE opening clause per arm, not a shared `${sides} has no live claim`
-  // template. Under the template the `both` arm read *"neither "a" nor "b" has
-  // no live claim"* — a double negative asserting the opposite of the refusal it
-  // explains — because "neither" already carries the negation. English does not
-  // let the two compose, so they do not share a sentence.
+  // ⚠️ The WHOLE opening clause per arm, not a shared `${sides} has no live
+  // claim` template. Under the template the `both` arm read *"neither "a" nor
+  // "b" has no live claim"* — a double negative asserting the opposite of the
+  // refusal it explains — because "neither" already carries the negation.
+  // English does not let the two compose, so they do not share a sentence.
+  // (The template also carried a ternary whose two branches were the identical
+  // string — the remains of a `has`/`have` split that had already been lost,
+  // and which no test could distinguish.)
   const clause =
     empty === "both"
       ? `Neither "${population.from.norm}" nor "${population.to.norm}" has a live claim at the ${position} position`

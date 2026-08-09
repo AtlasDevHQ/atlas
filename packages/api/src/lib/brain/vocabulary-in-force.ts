@@ -186,8 +186,10 @@ export interface InForceView {
 /**
  * Everything currently in force, under the positional rule.
  *
- * Three statements per load — the scoped edges, the unscoped per-position
- * totals, and the cardinality entries — and the first two are what make
+ * Three KINDS of statement per load — the scoped edges, the unscoped
+ * per-position totals, and the cardinality entries — six round trips in all
+ * (one edge query per slot position, plus the edge totals, the cardinality
+ * entries and their total). The first two kinds are what make
  * `withheld` sayable at all. They can straddle a concurrent write, which
  * {@link withheldCount} reports through `consistent` rather than clamping into
  * *"nothing is hidden from you"*.
@@ -319,10 +321,11 @@ interface PositionEdges {
 /**
  * One position's visible edges.
  *
- * The both-sides test is `visibleNormsSql` twice — the seam's own subquery,
- * spliced as a CTE so the scan runs once and both sides ask the SAME set. Two
- * separate builder calls would bind the scope's params twice and, worse, would
- * be two places for the rule to be edited.
+ * The both-sides test applies `visibleNormsSql`'s set to BOTH norms from a
+ * single builder call — the seam's own subquery, spliced as one CTE and
+ * referenced by two `EXISTS`, so the scan runs once and both sides ask the SAME
+ * set. Two separate builder calls would bind the scope's params twice and,
+ * worse, would be two places for the rule to be edited.
  *
  * `LEFT JOIN` onto the proposal row rather than an inner one: an edge the region
  * importer copied has no proposal (see {@link InForceAliasEdge.proposalId}), and

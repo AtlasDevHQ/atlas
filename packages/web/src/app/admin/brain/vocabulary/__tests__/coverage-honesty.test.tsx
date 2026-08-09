@@ -233,4 +233,29 @@ describe("withheld entries are stated, never silently omitted", () => {
     });
     expect(text).toContain("disagreed");
   });
+
+  test("does NOT say the workspace has nothing in force when the counts disagreed", () => {
+    // ⚠️ The third way into the sentence the `denied` and `withheld` arms
+    // already close, and the least obvious: when the totals query did not
+    // narrow, `withheld` is 0 and `denied` is false, so both existing guards
+    // pass and the flat "no alias edges and no curated predicates are in force
+    // in this workspace" went out from a read that could not support it. The
+    // "these counts disagreed" caveat rendered too — as a LATER paragraph, and
+    // a caveat downstream of a categorical claim does not retract it.
+    const text = renderCoverage({
+      counts: [{ ...COUNTS[1]!, total: 0, scoped: 0, withheld: 0, countsConsistent: false }],
+    });
+    expect(text).not.toContain("Nothing is shaping identity yet");
+    expect(text).toContain("cannot say whether anything is in force");
+    // The caveat still renders; the point is that it is no longer the ONLY
+    // thing standing between the approver and a false all-clear.
+    expect(text).toContain("disagreed");
+  });
+
+  test("the inconsistency arm does not fire on a consistent empty read", () => {
+    // Negative control: without it, a component that always claimed it "cannot
+    // say" would satisfy the assertion above while destroying the plainly-zero
+    // statement the first describe block requires.
+    expect(renderCoverage()).not.toContain("cannot say whether anything is in force");
+  });
 });

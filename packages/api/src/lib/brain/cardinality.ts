@@ -638,6 +638,30 @@ export async function declarePredicateCardinality(
 }
 
 /**
+ * What DIRECT AUTHORING can refuse — strictly narrower than
+ * {@link CardinalityWriteResult}.
+ *
+ * `declarePredicateCardinality` is `ON CONFLICT DO UPDATE` (a human overriding
+ * their own workspace's earlier decision is the thing the gate is FOR), so it
+ * never answers `already-decided`; and `producer-proposed-multi` is the PROPOSE
+ * path's arm — a human may write `multi`, which is the whole point of the
+ * un-curation verb. Both are unreachable here.
+ *
+ * Narrowed rather than left wide because the wide union reached the route's
+ * status map and made its OpenAPI advertise a 409 no caller can provoke — the
+ * same defect `AliasAuthoringRefusal`'s `Extract` removed one module over. With
+ * this type the route's declared responses and its reachable ones agree, and the
+ * compiler is what keeps them agreeing.
+ */
+export type DeclarationResult =
+  | { readonly ok: true; readonly cardinality: PredicateCardinality }
+  | {
+      readonly ok: false;
+      readonly refusal: Extract<CardinalityRefusal, "degenerate-key" | "unattributed">;
+      readonly message: string;
+    };
+
+/**
  * {@link declarePredicateCardinality} addressed by SURFACE — the entry point a
  * route uses (#5087).
  *
@@ -668,30 +692,6 @@ export async function declarePredicateCardinality(
  * successful curation, which is the same failure shape the authoring picker
  * exists to prevent one layer up.
  */
-/**
- * What DIRECT AUTHORING can refuse — strictly narrower than
- * {@link CardinalityWriteResult}.
- *
- * `declarePredicateCardinality` is `ON CONFLICT DO UPDATE` (a human overriding
- * their own workspace's earlier decision is the thing the gate is FOR), so it
- * never answers `already-decided`; and `producer-proposed-multi` is the PROPOSE
- * path's arm — a human may write `multi`, which is the whole point of the
- * un-curation verb. Both are unreachable here.
- *
- * Narrowed rather than left wide because the wide union reached the route's
- * status map and made its OpenAPI advertise a 409 no caller can provoke — the
- * same defect `AliasAuthoringRefusal`'s `Extract` removed one module over. With
- * this type the route's declared responses and its reachable ones agree, and the
- * compiler is what keeps them agreeing.
- */
-export type DeclarationResult =
-  | { readonly ok: true; readonly cardinality: PredicateCardinality }
-  | {
-      readonly ok: false;
-      readonly refusal: Extract<CardinalityRefusal, "degenerate-key" | "unattributed">;
-      readonly message: string;
-    };
-
 export async function declarePredicateCardinalityForSurface(
   executor: CardinalityExecutor,
   workspaceId: string,

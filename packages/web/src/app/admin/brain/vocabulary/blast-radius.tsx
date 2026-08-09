@@ -1,6 +1,9 @@
 "use client";
 
-import type { BrainVocabularyBlastRadius } from "@/ui/lib/types";
+import type {
+  BrainVocabularyBlastRadius,
+  BrainVocabularyStructurallyEmptyReason,
+} from "@/ui/lib/types";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertTriangle, Info } from "lucide-react";
 
@@ -191,8 +194,16 @@ function SideLine({
  *
  * The `default` is deliberately not a shrug: a reason this client does not know
  * is an API newer than the page, and saying so beats printing a raw slug.
+ *
+ * ⚠️ The parameter is the wire UNION, not `string`, for the reason `ScopeBadge`
+ * gives one file over: a new arm on `BrainVocabularyStructurallyEmptyReason` must
+ * be a compile error here rather than a silent fall through to the `default`.
+ * Typing it does not make the `default` dead — a deployed page can be older than
+ * the API that answered it, and Zod parses the response before this runs only
+ * when the two agree — so the arm stays, now as the runtime backstop it was
+ * always meant to be rather than as the type system's only line.
  */
-function structurallyEmptyCopy(reason: string): string {
+function structurallyEmptyCopy(reason: BrainVocabularyStructurallyEmptyReason): string {
   switch (reason) {
     case "object-position":
       return (

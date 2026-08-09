@@ -1106,7 +1106,11 @@ export const BrainVocabularyPreviewRequestSchema = z.union([
   }),
 ]);
 
-/** Un-curating a predicate — the adjudicated record that values coexist. */
+/**
+ * Curating or un-curating a predicate — both directions, one body. `single` arms
+ * retroactive supersession; `multi` is the adjudicated record that values
+ * coexist.
+ */
 export const BrainVocabularyCardinalityRequestSchema = z.strictObject({
   predicateSurface: z.string().min(1).max(500),
   cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),

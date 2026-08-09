@@ -33,6 +33,7 @@ export type {
   BrainVocabularyPositionCounts,
   BrainVocabularyScope,
   BrainVocabularySlotPosition,
+  BrainVocabularyStructurallyEmptyReason,
   BrainVocabularySurfaceOption,
   AdminRole,
   AtlasMode,

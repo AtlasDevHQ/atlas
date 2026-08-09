@@ -19,7 +19,10 @@
  *
  * And it lands exactly where it hurts most. Per T7 §6, **#5000's own entry is
  * authored here and nowhere else** — the structural proposer provably cannot
- * propose it, and that zero is pinned as a test in `alias-proposal.test.ts`. So
+ * propose it, and that zero is pinned by `alias-proposal-corpus.ts`'s
+ * `prod-5000-pair` case (`proposes: []`), exercised by `alias-proposal-pg.test.ts`
+ * and therefore SKIPPED without `TEST_DATABASE_URL`. (Not `alias-proposal.test.ts`
+ * — that file uses the same norms as fixtures for proposals that DO fire.) So
  * the one path to closing the arc's originating bug is also the one whose
  * failure mode is indistinguishable from success.
  *

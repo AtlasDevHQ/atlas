@@ -11,9 +11,10 @@
  * two places.
  *
  * That is the failure this issue was specced to prevent. Both children of #5025
- * need this rule, whichever lands first owns it, and `oversight.ts:800-803` is
- * the standing prohibition: *a disclosure that restates a rule drifts from it —
- * import the join the transaction will run.* So the assertions below are about
+ * need this rule, whichever lands first owns it, and `loadWillSupersedeCount`'s
+ * docstring in `oversight.ts` is the standing prohibition: *a disclosure that
+ * restates a rule drifts from it — import the join the transaction will run.*
+ * So the assertions below are about
  * the SEAM: that the predicate arm drops the grant test and keeps the tenant
  * one, that the entity arm is `aclVisibilityClause`'s own output rather than a
  * re-derivation, and that both fail closed.

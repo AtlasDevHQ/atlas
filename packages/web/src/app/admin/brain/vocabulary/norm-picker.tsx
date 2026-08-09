@@ -178,7 +178,11 @@ export function NormPicker({
   );
 }
 
-/** `"is priced at" · 3 spellings · 41 claims` — the merge, made visible. */
+/**
+ * The merge, made visible — `3 spellings, e.g. “is priced at” · 41 live claims`
+ * when the norm folded several surfaces, and `“is priced at” · 41 live claims`
+ * when it folded exactly one.
+ */
 function describeOption(option: BrainVocabularySurfaceOption): string {
   const spellings =
     option.variants > 1 ? `${option.variants} spellings, e.g. “${option.exampleSurface}”` : `“${option.exampleSurface}”`;

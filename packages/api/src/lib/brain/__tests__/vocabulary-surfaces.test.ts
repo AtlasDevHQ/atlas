@@ -28,7 +28,11 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 
-/** A capturing logger. See `vocabulary-visibility.test.ts` for the hoisting trap. */
+/**
+ * A capturing logger. See `vocabulary-visibility.test.ts` for why the factory
+ * mocks ALL of `logger`'s exports (a partial factory link-fails) and why it must
+ * run before the import under test.
+ */
 const warnCalls: Record<string, unknown>[] = [];
 void mock.module("@atlas/api/lib/logger", () => {
   const logger = {

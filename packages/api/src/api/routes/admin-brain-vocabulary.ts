@@ -156,7 +156,12 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
  * `/author` finds the approved proposal and returns `already_approved` → 200;
  * `/remove` finds the rejected row and returns `already_removed` → 200. Both
  * paths are idempotent by construction, which is what the
- * converge-on-an-existing-row design buys. Telling an approver not to retry a
+ * converge-on-an-existing-row design buys. `/cardinality` is idempotent too —
+ * `declarePredicateCardinality` is `ON CONFLICT DO UPDATE` — but it answers a
+ * plain `{ cardinality }` with no "already applied" arm, so on that route the
+ * shared message's *"will simply report the change as already applied"* is the
+ * weaker claim *a retry re-asserts the same value and is a no-op*; the reload is
+ * still the right instruction, and the outcome is still safe. Telling an approver not to retry a
  * safe operation was a smaller lie than the one this helper replaced, and still
  * one — recorded here because a docstring that means two things is worth nothing
  * on the one that matters, and this is the helper whose entire job is honesty.
@@ -700,6 +705,9 @@ adminBrainVocabulary.openapi(authorRoute, async (c) => {
           return described.ok ? c.json(described.body, 200) : c.json(described.body, 500);
         }
         case "already_approved": {
+          // Plain `checked()`, not `checkedWrite()`: nothing was written on this
+          // arm, so a schema failure here is an ordinary 500 about a read.
+          //
           // No `convergedOnProposal` — the union does not carry it on this arm,
           // and the annotation is what makes adding it back a compile error. It
           // used to be hard-coded `true`, which is FALSE whenever the
@@ -712,8 +720,6 @@ adminBrainVocabulary.openapi(authorRoute, async (c) => {
           };
           return c.json(checked(BrainVocabularyAuthorResponseSchema, body), 200);
         }
-        // `already_approved` keeps the plain `checked()`: nothing was written on
-        // that arm, so a schema failure there is an ordinary 500 about a read.
         case "not_decidable":
           return c.json(
             {

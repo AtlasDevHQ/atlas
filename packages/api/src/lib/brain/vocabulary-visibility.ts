@@ -38,12 +38,14 @@
  *
  * ## ⚠️ This module is the SEAM, and #5087 owns it because it landed first
  *
- * `oversight.ts:800-803`'s anti-drift rule: *a disclosure that restates a rule
- * drifts from it — import the join the transaction will run.* Both children of
- * #5025 need this rule (the *In force* pane here, the Pending queue in child 3),
- * and two spellings of it is the likeliest thing to fall out of a split. So it
- * is one module with one exported clause builder, and child 3 imports
- * {@link normPopulationExists} rather than writing the join again.
+ * `loadWillSupersedeCount`'s docstring in `oversight.ts` states the anti-drift
+ * rule: *a disclosure that restates a rule drifts from it — import the join the
+ * transaction will run.* (Cited by name, not by line: this repo's line refs into
+ * `oversight.ts` have already rotted once.) Both children of #5025 need that
+ * rule (the *In force* pane here, the Pending queue in child 3), and two
+ * spellings of it is the likeliest thing to fall out of a split. So it is one
+ * module with one exported clause builder, and child 3 imports
+ * {@link visibleNormsSql} rather than writing the join again.
  *
  * Concretely, that means every consumer gets the rule through
  * {@link positionalScopeClause} — including the ones that are not about
@@ -131,8 +133,9 @@ const SAFE_ALIAS = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * two arms and the partial index #5019 repointed onto the identity keys.
  *
  * ⚠️ Deliberately NARROWER than the drift re-key's scope, and the asymmetry is
- * load-bearing rather than an inconsistency. `REKEY_DRIFTED_FACTS_SQL` filters
- * on nothing at all, because a tombstoned row left on a stale key is a row whose
+ * load-bearing rather than an inconsistency. `REKEY_DRIFTED_FACTS_SQL` applies
+ * no TEMPORAL arm at all (it scopes by workspace and by key disagreement, and
+ * nothing else), because a tombstoned row left on a stale key is a row whose
  * surface and key disagree forever. This clause answers a different question —
  * *is there a live claim a human could be looking at?* — and counting retracted
  * claims toward a population would let an alias be authored for a spelling the
@@ -153,7 +156,7 @@ export interface PositionalScopeOptions {
   /**
    * Count RETRACTED and superseded claims toward the population too.
    *
-   * ⚠️ Off by default, and the two callers that turn it on are answering a
+   * ⚠️ Off by default, and the caller that turns it on is answering a
    * different question from the one the panes ask.
    *
    * A DISPLAY read wants the live set: an entry whose claims are all withdrawn
@@ -171,9 +174,9 @@ export interface PositionalScopeOptions {
 /**
  * THE positional rule, as a composable WHERE fragment.
  *
- * Every consumer of the rule — this module's own {@link normPopulationExists},
- * the authoring picker, the *In force* pane, and child 3's Pending queue — goes
- * through here. That is the whole point of the seam.
+ * Every consumer of the rule — this module's own {@link visibleNormsSql} and
+ * {@link isPairVisible}, the authoring picker, the *In force* pane, and child
+ * 3's Pending queue — goes through here. That is the whole point of the seam.
  *
  * ## Why the predicate arm still emits workspace containment
  *
@@ -382,16 +385,7 @@ export async function isPairVisible(
     requestId: options.requestId,
   });
   if (scope.decision === "deny-all") return false;
-  // ⚠️ PREDICATE SHORT-CIRCUITS, and this is not an optimization.
-  //
-  // The predicate arm's whole rule is workspace membership — §6 grants it the
-  // lower bar because a verb phrase discloses nothing an approver could not
-  // have guessed. Running the population join there anyway made the gate refuse
-  // whenever the two norms had no LIVE claim, so an in-force predicate edge
-  // whose claims had all been retracted became unremovable, at a position with
-  // no confidentiality argument to trade for it. An earlier version of this
-  // docstring claimed the uniform path "never refuses"; it did, and this is what
-  // makes the claim true instead of aspirational.
+  // ⚠️ PREDICATE SHORT-CIRCUITS — see the ⚠️ in the docstring. Not an optimization.
   if (scope.decision === "unscoped") return true;
 
   const visible = visibleNormsSql(position, ctx, {
@@ -487,9 +481,11 @@ export function withheldCount(total: number, scoped: number): WithheldCount {
  * that would be the leak — so the one honest response is to make the situation
  * findable in the logs by somebody who CAN reach the database.
  *
- * Called once per load per position with the aggregate, not once per withheld
- * row: a per-row line would put the withheld pairs' norms in the log, which is
- * the content the scoping just withheld.
+ * Called once per position per load with the aggregate — plus once more for the
+ * curated-predicate accounting, which is also stamped `position: "predicate"`,
+ * so a load emits two predicate-stamped lines and not one. Never once per
+ * withheld row: a per-row line would put the withheld pairs' norms in the log,
+ * which is the content the scoping just withheld.
  */
 export function logFailClosedHole(details: {
   readonly workspaceId: string;

@@ -555,10 +555,47 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     // `object_key`, which the collision does not read — so the supersession
     // count is unchanged, and unchanged at a NON-ZERO value.
     expect(after).toBe(before);
-    // ...and the preview reported a REASON rather than a zero, which is the
-    // whole point — "0 pairs" and "this position cannot produce pairs" are the
-    // same number and opposite facts.
-    expect(emptyReason(radius)).toBe("object-position");
+    // ...and the preview reported its own KIND rather than a zero or a
+    // supersession delta, which is the whole point — "0 pairs" and "this
+    // position cannot produce pairs" are the same number and opposite facts.
+    //
+    // ⚠️ This assertion USED to be `emptyReason(radius) === "object-position"`,
+    // and #5088 replaced the refusal with the answer. Saying *"supersession
+    // cannot happen here"* and stopping was half a disclosure: the surface then
+    // said "Atlas cannot yet show you that" about the change the alias DOES
+    // make. The arm now carries the corroboration and tension deltas, and
+    // `arming`/`disarming` are UNREADABLE on it — which is what stops a renderer
+    // printing "at least 0 published claims become supersedable" here.
+    expect(radius.kind).toBe("object-position");
+    if (radius.kind !== "object-position") throw new Error("unreachable — narrowed above");
+    // The two sides exist and are numbers rather than a single conflated one.
+    expect(typeof radius.corroborating.total).toBe("number");
+    expect(typeof radius.tension.total).toBe("number");
+    // ⚠️ ALWAYS true, and the surface has to render the sentence: the re-key
+    // rewrites `object_key` and nothing else, so an advisory tension edge
+    // survives the approval and goes stale rather than being withdrawn.
+    expect(radius.staleEdgesPersist).toBe(true);
+    expect(radius.floor).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("⚠️ an object-position REMOVAL with no approved edge is a REASON, not three zeros", async () => {
+    // The object arm short-circuits BEFORE `structurallyEmptyReason`, which made
+    // `no-such-edge` unreachable at this position — so a removal naming a norm
+    // with no approved parent produced three honest zeros, and the pane renders
+    // those as *"Nothing in the corpus agrees or contradicts differently under
+    // this merge … it applies to every future claim in this slot as well"*: a
+    // floor promise about a decision that does not exist.
+    //
+    // `no-such-edge`'s own docstring argues exactly this for the supersession
+    // path — *"a renderer then says 'at least 0 today' for a decision that does
+    // nothing at all"* — and the object path has to ask the same question.
+    await land({ subject: "widget", predicate: "ships in", object: "10" });
+    const radius = await loadBlastRadius(pool, owner(), {
+      kind: "alias-removal",
+      position: "object",
+      fromNorm: "10",
+    });
+    expect(emptyReason(radius)).toBe("no-such-edge");
   }, PG_TEST_TIMEOUT_MS);
 
   // ── 4. the IS NOT TRUE equivalence, measured rather than claimed ────────

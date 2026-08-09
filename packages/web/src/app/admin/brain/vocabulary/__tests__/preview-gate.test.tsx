@@ -120,6 +120,33 @@ function installFetchStub() {
     if (url.includes("/brain-vocabulary/in-force")) {
       return Promise.resolve(jsonResponse(IN_FORCE));
     }
+    // The page grew a third pane (#5088) with its own fetch. Answered with an
+    // EMPTY queue rather than left to the `{}` fallthrough: that would fail the
+    // response schema and render an error card, which every `getByText` here
+    // would then have to step around — and a harness that renders an error while
+    // its assertions pass is how a page-level test stops covering the page.
+    if (url.includes("/brain-vocabulary/pending")) {
+      return Promise.resolve(
+        jsonResponse({
+          entries: [],
+          aliasCounts: [],
+          cardinalityCounts: {
+            position: "predicate",
+            scope: "unscoped",
+            total: 0,
+            scoped: 0,
+            withheld: 0,
+            countsConsistent: true,
+          },
+          truncated: false,
+          // ⚠️ REQUIRED by the strict response schema. Omitted, `useAdminFetch`
+          // fails the parse and the Pending pane renders its error card — so the
+          // comment above about not leaving an error on screen described the
+          // state this stub was actually in. Measured by a reviewer.
+          incomplete: false,
+        }),
+      );
+    }
     if (url.includes("/brain-vocabulary/remove")) {
       return Promise.resolve(
         removeFails
@@ -454,7 +481,12 @@ describe("authoring is gated on a computed blast radius", () => {
     await waitFor(() => expect(authorDisabled()).toBe(false));
     expect(screen.queryByText(/At least 2 published/)).not.toBeNull();
 
-    const trigger = screen.getByRole("combobox");
+    // ⚠️ BY NAME. The page grew two more comboboxes with the Pending pane
+    // (#5088), so a bare `getByRole("combobox")` throws on multiple matches —
+    // and the fix that "works" (`getAllByRole(...)[0]`) pins this test to the
+    // pane ORDER, which is exactly how it previously came to drive the wrong
+    // control and pass for four commits.
+    const trigger = screen.getByRole("combobox", { name: /Authoring position/i });
     fireEvent.keyDown(trigger, { key: "Enter" });
     const subjectOption = await screen.findByRole("option", { name: /^Subject$/ });
     fireEvent.click(subjectOption);

@@ -91,6 +91,22 @@
  * reported green because the flag was on, and only a row count separated that
  * from a source never connected.
  *
+ * ⚠️ **Since #5088 that refusal is no longer the whole answer.** Saying *"this
+ * cannot produce supersession pairs"* and stopping was half a disclosure: the
+ * surface then said *"Atlas cannot yet show you that"* about the change an object
+ * alias DOES make, which is a different confident silence in the same place. So
+ * an object-position alias now takes its own {@link BlastRadius} arm carrying the
+ * corroboration and tension deltas — a different query over a different relation,
+ * built in `vocabulary-object-radius.ts`. This module keeps the counterfactual
+ * (both object-key substitutions live here beside their supersession siblings,
+ * so `removalKeyExpr`'s *removal is not approval inverted* is spelled once) and
+ * that module owns what an object merge changes.
+ *
+ * `structurallyEmptyReason`'s `"object-position"` member survives as the answer
+ * for a request that reaches the planner anyway — see `planCounterfactual`'s two
+ * position guards, which are unreachable by construction and exist for the
+ * hypothetical where that stops being true.
+ *
  * ## Counts are FLOORS and say so
  *
  * `WILL_SUPERSEDE_TOTAL_SQL`'s deliberate over-statement is inherited (it counts
@@ -105,7 +121,8 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
-import type { BrainFactWillSupersedePair } from "@useatlas/types";
+import type { BrainFactWillSupersedePair, BrainVocabularyBlastRadius } from "@useatlas/types";
+import type { Exact } from "@atlas/api/lib/type-utils";
 import { aclVisibilityClause, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
@@ -116,6 +133,10 @@ import {
 } from "@atlas/api/lib/brain/identity";
 import { MAX_CHAIN_DEPTH } from "@atlas/api/lib/brain/vocabulary";
 import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
+import {
+  loadObjectPositionRadius,
+  type ObjectPositionRadius,
+} from "@atlas/api/lib/brain/vocabulary-object-radius";
 import {
   STORED_COLLISION_EXPRS,
   cardinalityHeldBackCountSql,
@@ -251,6 +272,31 @@ export type StructurallyEmptyReason =
 export type BlastRadius =
   /** The counterfactual cannot produce pairs BY CONSTRUCTION. No numbers. */
   | { readonly kind: "structurally-empty"; readonly reason: StructurallyEmptyReason }
+  /**
+   * An OBJECT-position alias decision. A different KIND of blast radius, not a
+   * smaller one — see `vocabulary-object-radius.ts`.
+   *
+   * ⚠️ Its own arm rather than a `computed` with two re-labelled sides. The
+   * numbers here count claim pairs that would AGREE and advisory edges that
+   * would go STALE; `arming`/`disarming` count published claims that would be
+   * REPLACED. A consumer that read one as the other would tell an approver a
+   * merge destroys beliefs when it merely reconciles them, or the reverse — and
+   * `BlastRadiusSide`'s own field names (`draftLabel`, `supersededLabel`) would
+   * be lies on this branch.
+   */
+  | ({
+      readonly kind: "object-position";
+      /** The counts describe today; the decision applies to every future claim. */
+      readonly floor: true;
+      /** The removal's subtree walk hit {@link MAX_CHAIN_DEPTH}. */
+      readonly subtreeTruncated: boolean;
+      // ⚠️ SPREAD from `ObjectPositionRadius` rather than re-listing its fields.
+      // Re-listed, this arm silently lost the `separating` side the moment that
+      // module grew one — the type still compiled, `objectPositionRadius`'s
+      // spread supplied the field at runtime, and a consumer had no way to read
+      // it. A structural copy of another module's record is the same class of
+      // duplicate `BlastRadiusPair` was collapsed into an alias to avoid.
+    } & ObjectPositionRadius)
   /** The question was asked and answered. */
   | {
       readonly kind: "computed";
@@ -284,6 +330,39 @@ export type BlastRadius =
        */
       readonly subtreeTruncated: boolean;
     };
+
+/**
+ * ⚠️ Compile-time lock: this union and the wire union are the SAME TYPE.
+ *
+ * Pinned at the UNION, not at one arm's record, and that distinction is the
+ * whole finding. A previous cut pinned `ObjectPositionRadius` — the spread half
+ * of the `object-position` arm — and its docstring claimed the arm was closed.
+ * It covered four of the arm's seven fields: `kind`, `floor` and
+ * `subtreeTruncated` live in the literal half of the intersection above, which
+ * no pin reached and which the `/preview` response annotation cannot reach
+ * either (excess-property checking reads the response literal's own keys, never
+ * the value assigned into `radius`). Measured, not reasoned: a field added to
+ * that literal half and populated at both construction sites compiled COMPLETELY
+ * CLEAN, and then `z.strictObject` rejected it — a 500 on every object-position
+ * preview, from a change that looked additive.
+ *
+ * At the union this holds for all three arms at once, including `computed`,
+ * which had the identical hole, and including `BlastRadiusSide` and
+ * `StructurallyEmptyReason`, which are hand-written twins of their wire
+ * counterparts rather than aliases.
+ *
+ * BIDIRECTIONAL: a field the engine grows is one no client can read and that the
+ * schema rejects on the way out; a field the wire grows is one the engine never
+ * populates and the schema then demands.
+ *
+ * ⚠️ `Exact`'s two holes are narrow, and `type-utils.ts` states them precisely.
+ * The one that could bite here: a field ADDED as optional to either side passes
+ * this pin. Turning an existing required field optional does NOT — that is
+ * caught — and neither is dropping `readonly` from `pairs`, because a readonly
+ * ARRAY type is compared even though a readonly property modifier is not.
+ */
+const _blastRadiusMatchesTheWire: Exact<BlastRadius, BrainVocabularyBlastRadius> = true;
+void _blastRadiusMatchesTheWire;
 
 export interface BlastRadiusSide {
   /** Unscoped, workspace-wide. A number, never content. */
@@ -746,6 +825,18 @@ export async function loadBlastRadius(
   // reachable only on the paths that did not need it.
   assertReaderResolvable(ctx, opts.requestId);
 
+  // OBJECT POSITION FIRST — before `structurallyEmptyReason`, which would
+  // otherwise answer `"object-position"` and end the request. That reason is
+  // still the right answer for a SUPERSESSION question at this position; it is
+  // no longer the right answer to the request, because the decision does change
+  // something and this branch is what says what.
+  if (
+    (request.kind === "alias-approval" || request.kind === "alias-removal") &&
+    request.position === "object"
+  ) {
+    return objectPositionRadius(db, ctx, request, opts);
+  }
+
   const structurallyEmpty = await structurallyEmptyReason(db, workspaceId, request);
   if (structurallyEmpty !== null) {
     return { kind: "structurally-empty", reason: structurallyEmpty };
@@ -780,6 +871,128 @@ export async function loadBlastRadius(
     floor: true,
     subtreeTruncated: plan.subtree.truncated,
   };
+}
+
+/**
+ * The object-position arm: build the substitution here, hand it to the module
+ * that knows what an object merge changes.
+ *
+ * ## The two substitutions are the SUPERSESSION ones, unchanged
+ *
+ * `approvalKeyExpr` and `removalKeyExpr` are position-parameterized already, and
+ * the object position is a legal argument to neither — {@link CollidingSlot}
+ * excludes it at the type, deliberately, because building a supersession bundle
+ * for it is what must stay unrepresentable. So this arm builds the same two CASE
+ * expressions against `object_key` directly rather than widening `CollidingSlot`,
+ * which would re-admit exactly the mistake that narrowing removed.
+ *
+ * ⚠️ **They are inlined and they are still not two spellings, and the difference
+ * matters.** `aliasExprs` is what a supersession bundle needs and it carries the
+ * cardinality re-point the predicate arm must have; none of that is expressible
+ * at a position the collision never reads. What IS shared — the subtree CTE, its
+ * depth bound, its truncation probe, and the effective-target resolution — is
+ * called rather than copied, and those are the parts whose two spellings would
+ * actually disagree.
+ */
+async function objectPositionRadius(
+  db: BrainCandidateReader,
+  ctx: BrainPrincipalContext,
+  request: Extract<BlastRadiusRequest, { kind: "alias-approval" | "alias-removal" }>,
+  opts: BlastRadiusOptions,
+): Promise<BlastRadius> {
+  const workspaceId = ctx.workspaceId;
+  const fromKey = identityKey(request.fromNorm);
+  if (fromKey === null) {
+    log.warn(
+      { workspaceId, requestId: opts.requestId, kind: request.kind },
+      "brain vocabulary preview: an object-position decision names a surface that norms away — disclosing a reason rather than a zero blast radius",
+    );
+    return { kind: "structurally-empty", reason: "unkeyable-surface" };
+  }
+
+  if (request.kind === "alias-removal") {
+    // ⚠️ The `no-such-edge` probe FIRST, and its absence was a real hole. This
+    // arm short-circuits before `structurallyEmptyReason`, so that reason became
+    // unreachable at the object position — and a removal naming a norm with no
+    // approved parent produced three honest zeros, which the pane renders as
+    // *"Nothing in the corpus agrees or contradicts differently under this
+    // merge … it applies to every future claim in this slot as well"*: a floor
+    // promise about a decision that does not exist. `no-such-edge`'s own
+    // docstring argues exactly this case for the supersession path; the object
+    // path has to ask the same question.
+    const { rows } = await db.query(
+      `SELECT 1 AS hit FROM brain_vocabulary_edge
+        WHERE workspace_id = $1 AND slot_position = $2 AND from_norm = $3`,
+      [workspaceId, "object", fromKey],
+    );
+    if (rows.length === 0) {
+      log.warn(
+        { workspaceId, requestId: opts.requestId, kind: request.kind },
+        "brain vocabulary preview: an object-position removal names a norm with no approved parent edge — disclosing a reason rather than a zeroed radius",
+      );
+      return { kind: "structurally-empty", reason: "no-such-edge" };
+    }
+    // Same probe the supersession removal runs, so a truncated walk is reported
+    // identically on both branches rather than silently understating one.
+    const subtree = await subtreeHitBound(db, workspaceId, "object", fromKey, opts);
+    const radius = await loadObjectPositionRadius(
+      db,
+      ctx,
+      {
+        // `$2` is BOTH the substituted key and the walk's seed, bound once —
+        // `planCounterfactual`'s reason: a future edit must not be able to start
+        // the walk somewhere the substitution does not land.
+        keyExpr: (alias) =>
+          `(CASE WHEN ${identityKeySql(`${alias}.object`)} IN (SELECT node FROM ${SUBTREE_CTE}) ` +
+          `THEN $2 ELSE ${alias}.object_key END)`,
+        params: [fromKey, "object"],
+        ctes: [subtreeCteSql(SUBTREE_CTE, 1, 3, 2, maxDepth(opts))],
+        // ⚠️ THREADED, not dropped. `SubtreeProbe` carries two facts: a genuine
+        // bound hit is a radius-wide SCOPE statement (`subtreeTruncated` below),
+        // and an unreadable probe is STATEMENT DRIFT that must clear
+        // `countsConsistent` — which is what the supersession path does. The
+        // object arm read only the first, so a probe that did not answer
+        // produced a fully trustworthy-looking radius over a walk nobody could
+        // confirm.
+        probeDrifted: subtree.probeDrifted,
+      },
+      opts,
+    );
+    return {
+      kind: "object-position",
+      ...radius,
+      floor: true,
+      subtreeTruncated: subtree.truncated,
+    };
+  }
+
+  const toNorm = lexicalNorm(request.toNorm);
+  if (toNorm === "") {
+    log.warn(
+      { workspaceId, requestId: opts.requestId, kind: request.kind },
+      "brain vocabulary preview: an object-position approval names a target that norms away — disclosing a reason rather than a zero blast radius",
+    );
+    return { kind: "structurally-empty", reason: "unkeyable-surface" };
+  }
+  // `to`'s CURRENT effective target, for `approvalKeyExpr`'s ⚠️: if `to → z` is
+  // already approved the closure lands the merged population on `z`, and a
+  // preview that used `to` would describe a slot the re-key never writes.
+  const toKey = await resolveEffectiveTarget(db, workspaceId, "object", toNorm, opts.requestId);
+  const radius = await loadObjectPositionRadius(
+    db,
+    ctx,
+    {
+      keyExpr: (alias) => `(CASE WHEN ${alias}.object_key = $2 THEN $3 ELSE ${alias}.object_key END)`,
+      params: [fromKey, toKey],
+      ctes: [],
+      // No walk on an approval, so nothing could have drifted. Stated rather
+      // than omitted — the field is required precisely so "no walk" and "forgot"
+      // are different keystrokes.
+      probeDrifted: false,
+    },
+    opts,
+  );
+  return { kind: "object-position", ...radius, floor: true, subtreeTruncated: false };
 }
 
 /**
@@ -980,7 +1193,13 @@ async function planCounterfactual(
 async function subtreeHitBound(
   db: BrainCandidateReader,
   workspaceId: string,
-  position: CollidingSlot,
+  // ⚠️ `SlotPosition`, not `CollidingSlot`. The probe asks the EDGE graph how
+  // deep a subtree is, and `brain_vocabulary_edge` stores all three positions —
+  // the narrowing next door exists to keep a supersession bundle unbuildable at
+  // the object position, which is a statement about the collision and not about
+  // this walk. Narrowing here too would have forced the object-removal arm to
+  // re-spell the CTE it already shares.
+  position: SlotPosition,
   fromKey: string,
   opts: BlastRadiusOptions,
 ): Promise<SubtreeProbe> {
@@ -1032,7 +1251,9 @@ interface SubtreeProbe {
 async function resolveEffectiveTarget(
   db: BrainCandidateReader,
   workspaceId: string,
-  position: CollidingSlot,
+  // `SlotPosition` for {@link subtreeHitBound}'s reason: the closure table is
+  // keyed by position and answers at all three.
+  position: SlotPosition,
   norm: string,
   requestId?: string,
 ): Promise<string> {
@@ -1116,6 +1337,16 @@ async function structurallyEmptyReason(
   workspaceId: string,
   request: BlastRadiusRequest,
 ): Promise<StructurallyEmptyReason | null> {
+  // ⚠️ DEAD from `loadBlastRadius`, and kept deliberately rather than deleted.
+  // #5088 made the object position take its own radius arm, so the caller
+  // short-circuits object-position requests BEFORE reaching here — this branch
+  // used to be the live path and a reader will assume it still is.
+  //
+  // It stays because this function is not the only caller's guard: the same
+  // reason is still reachable from `planCounterfactual`'s two `isCollidingSlot`
+  // checks, which is where the wire union's `"object-position"` member earns its
+  // keep. Deleting the branch here would leave that reason produced in one place
+  // and defended in none.
   if (
     (request.kind === "alias-approval" || request.kind === "alias-removal") &&
     request.position === "object"

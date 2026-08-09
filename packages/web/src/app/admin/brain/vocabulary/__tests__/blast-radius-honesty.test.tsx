@@ -68,14 +68,25 @@ describe("a structurally-empty radius never renders as a count", () => {
     });
   }
 
-  test("object-position says the impact is of a different KIND, not absent", () => {
-    // The AC: an object-position alias changes what corroborates and what earns
-    // a tension edge, and that disclosure does not exist yet anywhere. Copy that
-    // said only "no impact" would be the false all-clear; copy that said "shown
-    // elsewhere" would send an approver looking for a page that does not exist.
+  test("object-position on THIS branch is a disagreement, not the answer", () => {
+    // ⚠️ This assertion changed with #5088, and the change is the AC landing
+    // rather than a rewording. An object-position alias now gets its own
+    // `object-position` radius arm carrying the corroboration and tension
+    // deltas, so the copy no longer says *"Atlas cannot yet show you that"* —
+    // it can, and a page still saying otherwise would be exactly the stale
+    // reassurance this file exists to refuse.
+    //
+    // The `structurally-empty` reason survives for a request that reaches the
+    // supersession PLANNER at this position, which is unreachable by
+    // construction and guarded anyway. So the honest copy on THIS branch is
+    // "the page and the API disagreed about how to ask" — still never a zero.
     const text = renderRadius({ kind: "structurally-empty", reason: "object-position" });
-    expect(text).toContain("not a count of zero");
-    expect(text).toContain("cannot yet show you");
+    expect(text).toContain("not a blast radius of zero");
+    expect(text).toContain("not the answer you asked for");
+    expect(text).toContain("Reload before deciding");
+    // The stale promise must be GONE. Without this the copy could drift back to
+    // claiming the disclosure does not exist while it sits one branch over.
+    expect(text).not.toContain("cannot yet show you");
   });
 
   test("an unrecognised reason is not rendered as a zero either", () => {
@@ -167,5 +178,55 @@ describe("a failed preview is never rendered as no impact", () => {
 
   test("says it is still computing rather than showing a stale or empty answer", () => {
     expect(renderRadius(null, { pending: true })).toContain("Computing");
+  });
+});
+
+describe("⚠️ an unestablished side is never silent, even beside a non-zero one", () => {
+  // The `computed` branch's gates require BOTH totals to be zero, and `SideLine`
+  // was gated on `total > 0` at the call site — so with one side non-zero and
+  // the other an unestablished zero, NOTHING on the page mentioned the second
+  // side: no line, no "unknown, not zero", and not the "counts disagreed"
+  // clause, which lives inside the suppressed `SideLine`. A removal whose
+  // disarming statement drifted read as a clean one-sided radius.
+
+  const side = (over: Record<string, unknown> = {}) => ({
+    total: 0,
+    pairs: [],
+    withheld: 0,
+    truncated: false,
+    countsConsistent: true,
+    ...over,
+  });
+
+  const computed = (arming: unknown, disarming: unknown): BrainVocabularyBlastRadius =>
+    ({
+      kind: "computed",
+      arming,
+      disarming,
+      floor: true,
+      subtreeTruncated: false,
+    }) as BrainVocabularyBlastRadius;
+
+  test("says unknown-not-zero for the drifted side while the other reports its count", () => {
+    const text = renderRadius(
+      computed(side({ total: 5 }), side({ total: 0, countsConsistent: false })),
+    );
+    expect(text).toContain("At least 5");
+    expect(text).toContain("unknown, not zero");
+  });
+
+  test("and does so when BOTH sides are unestablished zeros", () => {
+    const text = renderRadius(
+      computed(side({ countsConsistent: false }), side({ countsConsistent: false })),
+    );
+    expect(text).toContain("unknown, not zero");
+    // ...and the all-clear must not also be on screen.
+    expect(text).not.toContain("No published claim becomes supersedable, or safe");
+  });
+
+  test("POSITIVE CONTROL — a KNOWN zero stays silent and the all-clear fires", () => {
+    const text = renderRadius(computed(side(), side()));
+    expect(text).not.toContain("unknown, not zero");
+    expect(text).toContain("No published claim becomes supersedable, or safe");
   });
 });

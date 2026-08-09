@@ -2,6 +2,7 @@
 
 import type {
   BrainVocabularyBlastRadius,
+  BrainVocabularyObjectRadiusSide,
   BrainVocabularyStructurallyEmptyReason,
 } from "@/ui/lib/types";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -71,8 +72,20 @@ export function BlastRadiusPreview({
     );
   }
 
+  if (radius.kind === "object-position") {
+    return <ObjectPositionRadius radius={radius} />;
+  }
+
   const { arming, disarming } = radius;
-  const nothing = arming.total === 0 && disarming.total === 0;
+  // ⚠️ Gated on the zeros being KNOWN, not merely on their being zero — the same
+  // defect #5088 closed in `ObjectSideLine`, and it was live here too.
+  // `SideLine` is the only carrier of the "counts disagreed" warning and its
+  // call site was GATED ON `total > 0`, so a removal whose depth probe did not
+  // answer over a genuine zero delta rendered "No published claim becomes
+  // supersedable, or safe" with no warning anywhere on the page.
+  const known = arming.countsConsistent && disarming.countsConsistent;
+  const nothing = arming.total === 0 && disarming.total === 0 && known;
+  const unestablished = arming.total === 0 && disarming.total === 0 && !known;
 
   return (
     <div className="space-y-2 text-sm">
@@ -86,29 +99,39 @@ export function BlastRadiusPreview({
         </p>
       ) : null}
 
-      {arming.total > 0 ? (
-        <SideLine
-          tone="arming"
-          label="become supersedable"
-          total={arming.total}
-          shown={arming.pairs.length}
-          withheld={arming.withheld}
-          truncated={arming.truncated}
-          consistent={arming.countsConsistent}
-        />
+      {unestablished ? (
+        <p className="text-destructive">
+          Atlas could not establish these numbers, so what this decision changes is{" "}
+          <strong>unknown, not zero</strong>. Reload before deciding.
+        </p>
       ) : null}
 
-      {disarming.total > 0 ? (
-        <SideLine
-          tone="disarming"
-          label="become safe again"
-          total={disarming.total}
-          shown={disarming.pairs.length}
-          withheld={disarming.withheld}
-          truncated={disarming.truncated}
-          consistent={disarming.countsConsistent}
-        />
-      ) : null}
+      {/* ⚠️ NOT gated on `total > 0` any more. `SideLine` carries the "counts
+          disagreed" clause, so gating on the total suppressed the warning for
+          exactly the side that had nothing to show — and with the OTHER side
+          non-zero, neither the all-clear nor the `unestablished` line fires
+          either. A removal whose disarming statement drifted read as a clean
+          one-sided radius. `ObjectSideLine` has been per-side since #5088; this
+          branch had not caught up. */}
+      <SideLine
+        tone="arming"
+        label="become supersedable"
+        total={arming.total}
+        shown={arming.pairs.length}
+        withheld={arming.withheld}
+        truncated={arming.truncated}
+        consistent={arming.countsConsistent}
+      />
+
+      <SideLine
+        tone="disarming"
+        label="become safe again"
+        total={disarming.total}
+        shown={disarming.pairs.length}
+        withheld={disarming.withheld}
+        truncated={disarming.truncated}
+        consistent={disarming.countsConsistent}
+      />
 
       {radius.subtreeTruncated ? (
         <Alert variant="destructive">
@@ -136,6 +159,217 @@ export function BlastRadiusPreview({
   );
 }
 
+/**
+ * The OBJECT-position disclosure — a different KIND of blast radius, rendered as
+ * one.
+ *
+ * ⚠️ **It must not read like a smaller supersession radius.** The collision rule
+ * never looks at the object's identity, so this decision cannot make a published
+ * claim supersedable at all; what it moves is what AGREES and what is flagged as
+ * contested. Reusing `SideLine` would have put *"become supersedable"* wording
+ * over these numbers, which is the specific false sentence the engine split the
+ * union to make unrepresentable.
+ *
+ * ## The four sentences, and why the last is the surprising one
+ *
+ * 1. **Corroboration.** After the merge these pairs occupy one object slot, so
+ *    the next re-observation of either attaches to one row instead of minting a
+ *    second belief. A floor: it applies to every future claim in the slot too.
+ * 2. **Separation.** The REMOVAL's half, and its own sentence rather than
+ *    sentence 1 with the sign flipped: pairs that agree today would stop
+ *    agreeing, nothing splits them retroactively, and no contradiction flag is
+ *    written for them until one is re-observed. Its absence from the engine was
+ *    a defect — a removal answered with three zeros — and omitting it here is
+ *    the same omission one layer up.
+ * 3. **Tension.** Advisory `in-tension-with` edges between pairs that would stop
+ *    being rivals.
+ * 4. ⚠️ **Those edges are not withdrawn.** The approval rewrites the object's
+ *    identity key and nothing else — nothing deletes an edge — so each one is
+ *    left flagging a contradiction between two claims Atlas now treats as
+ *    agreeing. `staleEdgesPersist` is a literal `true` on the wire precisely so
+ *    this paragraph is assertable rather than merely intended.
+ *
+ * A pair whose values PROVE they differ appears in neither number: the merge
+ * makes the two claims share a slot and they stay in tension, which is correct
+ * and is the thing an approver most needs to not be told otherwise.
+ */
+function ObjectPositionRadius({
+  radius,
+}: {
+  radius: Extract<BrainVocabularyBlastRadius, { kind: "object-position" }>;
+}) {
+  const { corroborating, separating, tension } = radius;
+  return (
+    <div className="space-y-2 text-sm">
+      <p className="text-muted-foreground">
+        <span className="text-foreground font-medium">
+          This is an object-position alias, so it changes nothing about what replaces what.
+        </span>{" "}
+        The rule that supersedes a published claim never reads the object&rsquo;s identity. What it
+        does change is what Atlas treats as agreeing, and what it flags as contested.
+      </p>
+
+      <ObjectSideLine
+        label={
+          corroborating.total === 1
+            ? "pair of live claims would agree about the object"
+            : "pairs of live claims would agree about the object"
+        }
+        detail="They are not merged retroactively — the next time either claim is re-observed it attaches to one row instead of minting a second."
+        side={corroborating}
+        listsPairs
+      />
+
+      {/* The REMOVAL's half. Rendered by the same component and gated only on
+          being non-empty, so this panel never has to know which verb produced
+          the radius — which is why the two are separate fields on the wire. */}
+      <ObjectSideLine
+        label={
+          separating.total === 1
+            ? "pair of live claims that agree today would stop agreeing"
+            : "pairs of live claims that agree today would stop agreeing"
+        }
+        detail="Nothing splits them retroactively either: the claims stay as they are, and Atlas stops treating them as the same object from here on. No contradiction flag is written for them until one is re-observed."
+        side={separating}
+        listsPairs={false}
+      />
+
+      {/* ⚠️ The persistence sentence is READ OFF `staleEdgesPersist`, not
+          hard-coded beside it. The field is a literal `true` on the wire for
+          exactly one purpose — so a test can assert the sentence is rendered —
+          and while the copy was hard-coded the field was dead: flipping it to
+          `false` in a fixture changed nothing, so the literal justified a claim
+          nothing checked. */}
+      <ObjectSideLine
+        label={
+          tension.total === 1
+            ? "contradiction Atlas has already flagged would stop being one"
+            : "contradictions Atlas has already flagged would stop being ones"
+        }
+        detail={
+          radius.staleEdgesPersist
+            ? "⚠️ Those flags are NOT withdrawn by this decision. Nothing deletes them, so each one is left contradicting two claims Atlas would now consider to agree."
+            : "Atlas did not report what becomes of those flags, so do not assume they are withdrawn."
+        }
+        side={tension}
+        listsPairs={false}
+      />
+
+      {/* ⚠️ Gated on the zeros being KNOWN, not merely on their being zero. This
+          is the one sentence on the branch that reads as an all-clear, so it
+          must never be reachable from a count the server could not establish. */}
+      {[corroborating, separating, tension].every((s) => s.total === 0 && s.countsConsistent) ? (
+        <p className="text-muted-foreground">
+          Nothing in the corpus agrees or contradicts differently under this merge as things stand
+          today. That is a floor, not a guarantee: it applies to every future claim in this slot as
+          well.
+        </p>
+      ) : null}
+
+      {radius.subtreeTruncated ? (
+        <Alert variant="destructive">
+          <AlertTriangle className="size-4" aria-hidden />
+          <AlertDescription>
+            The alias chain was deeper than Atlas walks, so both numbers describe a{" "}
+            <strong>smaller population</strong> than you asked about. This is not the same as the
+            numbers disagreeing — it means part of the chain was not looked at.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {corroborating.pairs.length > 0 ? (
+        <ul className="border-border divide-border divide-y rounded-md border text-xs">
+          {corroborating.pairs.map((pair) => (
+            <li key={`${pair.leftId}:${pair.rightId}`} className="px-3 py-2">
+              <span className="text-foreground">{pair.leftLabel}</span>
+              <span className="text-muted-foreground"> would agree with </span>
+              <span className="text-foreground">{pair.rightLabel}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function ObjectSideLine({
+  label,
+  detail,
+  side,
+  listsPairs,
+}: {
+  label: string;
+  detail: string;
+  side: BrainVocabularyObjectRadiusSide;
+  /**
+   * ⚠️ Whether THIS side's pairs are rendered beneath the line.
+   *
+   * Only `corroborating` lists them. Without this flag the truncation clause
+   * said *"Only the first 3 are listed"* on `separating` and `tension`, which
+   * list none — a sentence an approver reads as "scroll down for three
+   * examples" when there is nothing to scroll to. Truncation is still disclosed
+   * on those sides; it is disclosed as what it is.
+   */
+  listsPairs: boolean;
+}) {
+  // ⚠️ SILENT ONLY WHEN THE ZERO IS KNOWN. The early return used to be a bare
+  // `total === 0`, which reads `countsConsistent` four lines too late — so every
+  // condition the server clears that flag for (a pair row that would not narrow,
+  // a scoped-window value that did not read back, the two statements
+  // disagreeing, a deny-all clause) rendered as NOTHING, and the all-clear
+  // paragraph below then fired. That is this module's own named worst outcome —
+  // a count Atlas could not establish, presented as "this changes nothing" —
+  // produced by the renderer after the engine had said in-band that it did not
+  // know.
+  if (side.total === 0 && side.countsConsistent) return null;
+  if (side.total === 0) {
+    return (
+      <p className="text-destructive">
+        Atlas could not establish this number, so it is <strong>unknown, not zero</strong>. Treat
+        this preview as incomplete and reload before deciding.
+      </p>
+    );
+  }
+  return (
+    <p className="text-foreground">
+      {/* "At least" for `SideLine`'s reason — `floor` is a literal `true` on this
+          branch so the word is assertable rather than a hedge. */}
+      <span className="font-medium">
+        At least {side.total} {label}
+      </span>{" "}
+      today, and this applies to every future claim in the slot.{" "}
+      <span className="text-muted-foreground">{detail}</span>
+      {side.withheld > 0 ? (
+        <>
+          {" "}
+          <span className="text-muted-foreground">
+            {side.withheld} of those {side.withheld === 1 ? "involves a claim" : "involve claims"}{" "}
+            you cannot read, so {side.withheld === 1 ? "it is" : "they are"} counted but not listed.
+          </span>
+        </>
+      ) : null}
+      {side.truncated && side.pairs.length < side.total - side.withheld ? (
+        <>
+          {" "}
+          <span className="text-muted-foreground">
+            {listsPairs
+              ? `Only the first ${side.pairs.length} are listed.`
+              : "More were counted than this page samples, so the count is a floor."}
+          </span>
+        </>
+      ) : null}
+      {!side.countsConsistent ? (
+        <>
+          {" "}
+          <span className="text-destructive">
+            These two counts disagreed, so treat them as approximate rather than as facts.
+          </span>
+        </>
+      ) : null}
+    </p>
+  );
+}
+
 function SideLine({
   tone,
   label,
@@ -153,6 +387,20 @@ function SideLine({
   truncated: boolean;
   consistent: boolean;
 }) {
+  // ⚠️ Silent only when the zero is KNOWN — `ObjectSideLine`'s rule, and this
+  // component needed it for the same reason: it is the only carrier of the
+  // "counts disagreed" clause, so a `total > 0` gate at the call site made an
+  // unestablished side disappear entirely rather than merely render zero.
+  if (total === 0 && consistent) return null;
+  if (total === 0) {
+    return (
+      <p className="text-destructive">
+        Atlas could not establish how many published claims {label}, so that number is{" "}
+        <strong>unknown, not zero</strong>. Treat this preview as incomplete and reload before
+        deciding.
+      </p>
+    );
+  }
   return (
     <p className={tone === "arming" ? "text-foreground" : "text-muted-foreground"}>
       {/* "At least" is not hedging — `floor` is a literal `true` on this branch
@@ -206,12 +454,19 @@ function SideLine({
 function structurallyEmptyCopy(reason: BrainVocabularyStructurallyEmptyReason): string {
   switch (reason) {
     case "object-position":
+      // ⚠️ Still reachable, and no longer the ordinary path. Since #5088 an
+      // object-position alias gets its own `object-position` radius arm with the
+      // corroboration and tension deltas; this string is what a request that
+      // reaches the supersession PLANNER at that position would produce, which
+      // is unreachable by construction and guarded anyway. So the copy no longer
+      // says "Atlas cannot yet show you that" — it can, and a page still saying
+      // otherwise would be the stale reassurance this file exists to refuse.
       return (
-        "An object-position alias cannot arm or disarm supersession at all — the collision rule " +
-        "never reads the object's identity, so this is not a count of zero, it is a different " +
-        "kind of change. What it does affect is what corroborates what, and what earns a tension " +
-        "edge, and Atlas cannot yet show you that. Approve this one on what you know about the " +
-        "two spellings, not on an impact estimate — there is none to read."
+        "Atlas answered the supersession question for an object-position alias, which cannot " +
+        "produce a supersession pair at all — the collision rule never reads the object's " +
+        "identity. That is not a blast radius of zero, and it is also not the answer you asked " +
+        "for: the corroboration and tension impact is what this decision changes. Reload before " +
+        "deciding; this page and the API have disagreed about how to ask."
       );
     case "already-single":
       return "This predicate is already curated single-valued, so there is nothing to flip.";

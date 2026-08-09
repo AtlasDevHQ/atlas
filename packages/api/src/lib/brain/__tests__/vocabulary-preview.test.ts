@@ -20,9 +20,11 @@
  *   - **a predicate-position alias re-points the CARDINALITY lookup too.** The
  *     compound case ADR-0037 §6's amendment exists for is exactly the case a
  *     bundle that moved only the slot arm would report as zero.
- *   - **an object-position alias is `structurallyEmpty`, not zero.** "0 pairs"
- *     and "this position cannot produce pairs" are the same number and opposite
- *     facts.
+ *   - **an object-position alias takes its OWN radius arm, and runs no
+ *     supersession delta.** "0 pairs" and "this position cannot produce pairs"
+ *     are the same number and opposite facts — and since #5088 the honest answer
+ *     is neither, but the corroboration/tension change the decision actually
+ *     makes. What stays pinned is that no delta statement runs at that position.
  *   - **an unresolvable reader THROWS.** An empty pair list renders as "this
  *     approval arms nothing", the false all-clear the surface exists to prevent.
  *   - **no key reaches the returned value.** ADR-0037 §6's prohibition, and the
@@ -269,8 +271,22 @@ describe("a predicate-position alias moves the cardinality lookup with the slot"
   });
 });
 
-describe("the object position is structurally empty, not zero", () => {
-  it("reports a reason and runs no delta statement at all", async () => {
+describe("the object position gets its OWN radius, never a supersession delta", () => {
+  // ⚠️ These two assertions INVERTED with #5088, and the inversion is the AC
+  // landing rather than a rewording. They used to require
+  // `structurally-empty: "object-position"` — the right refusal when the
+  // corroboration/tension disclosure did not exist, and a second confident
+  // silence once it did: the pane said *"Atlas cannot yet show you that"* about
+  // the change the alias DOES make.
+  //
+  // What SURVIVES unchanged, and is the half that actually mattered, is the
+  // second assertion in each: **no supersession delta statement runs.** The
+  // collision never reads `object_key`, so a delta here would be a number about
+  // a question this position cannot ask — and a renderer holding one would say
+  // "at least 0 published claims become supersedable", the sentence the union
+  // was split to make unrepresentable.
+
+  it("computes the corroboration/tension radius and runs no supersession delta", async () => {
     const captures: Capture[] = [];
     const radius = await loadBlastRadius(reader(captures), ctx(), {
       kind: "alias-approval",
@@ -279,22 +295,89 @@ describe("the object position is structurally empty, not zero", () => {
       toNorm: "project atlas",
     });
 
-    expect(emptyReason(radius)).toBe("object-position");
-    // ⚠️ There is nothing to assert about totals, and that is the union's whole
-    // point: on this branch the numbers do not EXIST, so a renderer cannot read
-    // "at least 0 today, and every future claim in this slot" off a response
-    // that means "this position cannot produce pairs".
+    expect(radius.kind).toBe("object-position");
+    if (radius.kind !== "object-position") throw new Error("unreachable");
+    // `arming` / `disarming` are UNREADABLE on this branch — that is the union's
+    // whole point, and it is what stops a renderer reading a supersession
+    // sentence off a response that means something else entirely.
+    expect(radius.staleEdgesPersist).toBe(true);
+    expect(radius.floor).toBe(true);
     expect(deltaStatements(captures)).toHaveLength(0);
   });
 
   it("the same holds for an object-position REMOVAL", async () => {
+    // ⚠️ `edgeExists` — the object arm asks the `no-such-edge` probe FIRST, and
+    // a stub that answers "no edge" correctly gets a REASON rather than a
+    // radius. Without the responder this test asserted the object arm on a
+    // request that never reaches it.
+    const captures: Capture[] = [];
+    const radius = await loadBlastRadius(reader(captures, edgeExists), ctx(), {
+      kind: "alias-removal",
+      position: "object",
+      fromNorm: "nova",
+    });
+    expect(radius.kind).toBe("object-position");
+    expect(deltaStatements(captures)).toHaveLength(0);
+  });
+
+  it("⚠️ a removal with NO approved edge is a reason, not a zeroed radius", async () => {
+    // The short-circuit runs before `structurallyEmptyReason`, which made
+    // `no-such-edge` unreachable at this position — so a removal naming a norm
+    // with no approved parent produced three honest zeros, which the pane
+    // renders as a floor promise about a decision that does not exist.
     const captures: Capture[] = [];
     const radius = await loadBlastRadius(reader(captures), ctx(), {
       kind: "alias-removal",
       position: "object",
       fromNorm: "nova",
     });
-    expect(emptyReason(radius)).toBe("object-position");
+    expect(emptyReason(radius)).toBe("no-such-edge");
+    expect(deltaStatements(captures)).toHaveLength(0);
+  });
+
+  it("⚠️ an unreadable depth probe reaches the object radius's countsConsistent", async () => {
+    // The unit suite proves `loadObjectPositionRadius` HONOURS the flag when it
+    // is handed one. Nothing proved the object-removal arm hands it over — which
+    // is exactly the half that was broken: mutating `probeDrifted:
+    // subtree.probeDrifted` to `false` left both suites green.
+    //
+    // `subtreeHitBound` returns `probeDrifted: true` for any non-boolean `hit`.
+    const captures: Capture[] = [];
+    const radius = await loadBlastRadius(
+      reader(captures, (sql) =>
+        sql.includes(EDGE_EXISTS)
+          ? [{ hit: 1 }]
+          : sql.includes("bool_or(depth")
+            ? [{ hit: "maybe" }]
+            : undefined,
+      ),
+      ctx(),
+      { kind: "alias-removal", position: "object", fromNorm: "nova" },
+    );
+    expect(radius.kind).toBe("object-position");
+    if (radius.kind !== "object-position") throw new Error("unreachable");
+    // ⚠️ A drifted probe is STATEMENT DRIFT, not a bound hit — the two are
+    // different facts with different sentences, and only the first belongs here.
+    expect(radius.subtreeTruncated).toBe(false);
+    for (const s of [radius.corroborating, radius.separating, radius.tension]) {
+      expect(s.countsConsistent).toBe(false);
+    }
+  });
+
+  it("⚠️ a surface that norms away is STILL a reason, not a zeroed radius", async () => {
+    // The one object-position path that must not reach the new arm: a decision
+    // naming a surface made only of separators occupies no slot and can join
+    // nothing, so "0 pairs would agree" would be the same confident false
+    // all-clear one branch over. `unkeyable-surface` is the reason it already
+    // has for exactly this shape.
+    const captures: Capture[] = [];
+    const radius = await loadBlastRadius(reader(captures), ctx(), {
+      kind: "alias-approval",
+      position: "object",
+      fromNorm: "---",
+      toNorm: "project atlas",
+    });
+    expect(emptyReason(radius)).toBe("unkeyable-surface");
     expect(deltaStatements(captures)).toHaveLength(0);
   });
 });

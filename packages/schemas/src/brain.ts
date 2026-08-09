@@ -51,14 +51,25 @@ import type {
   BrainFactWillWidenEntry,
   BrainResultTier,
   BrainSearchTensionView,
+  BrainVocabularyAgreementExample,
+  BrainVocabularyAliasEvidence,
   BrainVocabularyAuthorResponse,
   BrainVocabularyBlastRadius,
   BrainVocabularyBlastRadiusSide,
   BrainVocabularyCardinalityEntry,
   BrainVocabularyCardinalityWriteResponse,
+  BrainVocabularyCorrectionEvidence,
+  BrainVocabularyCorrectionExample,
   BrainVocabularyCoverage,
+  BrainVocabularyDecideOutcome,
+  BrainVocabularyDecideResponse,
   BrainVocabularyEdgeEntry,
   BrainVocabularyInForceResponse,
+  BrainVocabularyObjectPair,
+  BrainVocabularyObjectRadiusSide,
+  BrainVocabularyPendingEntry,
+  BrainVocabularyPendingKind,
+  BrainVocabularyPendingResponse,
   BrainVocabularyPositionCounts,
   BrainVocabularyPreviewResponse,
   BrainVocabularyRemoveResponse,
@@ -950,6 +961,21 @@ export const BrainVocabularyInForceResponseSchema = z.strictObject({
   truncated: z.boolean(),
 }) satisfies z.ZodType<BrainVocabularyInForceResponse, unknown>;
 
+export const BrainVocabularyObjectPairSchema = z.strictObject({
+  leftId: z.string(),
+  leftLabel: z.string(),
+  rightId: z.string(),
+  rightLabel: z.string(),
+}) satisfies z.ZodType<BrainVocabularyObjectPair, unknown>;
+
+export const BrainVocabularyObjectRadiusSideSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  pairs: z.array(BrainVocabularyObjectPairSchema),
+  withheld: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  countsConsistent: z.boolean(),
+}) satisfies z.ZodType<BrainVocabularyObjectRadiusSide, unknown>;
+
 export const BrainVocabularyBlastRadiusSideSchema = z.strictObject({
   total: z.number().int().nonnegative(),
   pairs: z.array(BrainFactWillSupersedePairSchema),
@@ -973,6 +999,15 @@ export const BrainVocabularyBlastRadiusSchema = z.union([
   z.strictObject({
     kind: z.literal("structurally-empty"),
     reason: z.enum(BRAIN_VOCABULARY_STRUCTURALLY_EMPTY_REASONS),
+  }),
+  z.strictObject({
+    kind: z.literal("object-position"),
+    corroborating: BrainVocabularyObjectRadiusSideSchema,
+    separating: BrainVocabularyObjectRadiusSideSchema,
+    tension: BrainVocabularyObjectRadiusSideSchema,
+    staleEdgesPersist: z.literal(true),
+    floor: z.literal(true),
+    subtreeTruncated: z.boolean(),
   }),
   z.strictObject({
     kind: z.literal("computed"),
@@ -1115,3 +1150,234 @@ export const BrainVocabularyCardinalityRequestSchema = z.strictObject({
   predicateSurface: z.string().min(1).max(500),
   cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),
 });
+
+// ---------------------------------------------------------------------------
+// The Pending queue (#5088)
+// ---------------------------------------------------------------------------
+
+export const BRAIN_VOCABULARY_PENDING_KINDS = [
+  "alias",
+  "cardinality",
+] as const satisfies readonly BrainVocabularyPendingKind[];
+
+/** Pin: the tuple covers the wire union, for `BRAIN_VOCABULARY_SCOPES`' reason. */
+type _VocabularyPendingKindsCoverTheWire = [
+  Exclude<BrainVocabularyPendingKind, (typeof BRAIN_VOCABULARY_PENDING_KINDS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _vocabularyPendingKindsCoverTheWire: _VocabularyPendingKindsCoverTheWire = true;
+void _vocabularyPendingKindsCoverTheWire;
+
+export const BrainVocabularyAgreementExampleSchema = z.strictObject({
+  subject: z.string(),
+  object: z.string(),
+  fromPredicate: z.string(),
+  toPredicate: z.string(),
+}) satisfies z.ZodType<BrainVocabularyAgreementExample, unknown>;
+
+/**
+ * ⚠️ A union, mirroring the engine's. Flattened into one record with a nullable
+ * count, a client would render *"0 subjects agree"* for a warehouse-key proposal
+ * at an entity position — where the structural question cannot be asked at all,
+ * and the proposal's evidence is a primary key.
+ */
+export const BrainVocabularyAliasEvidenceSchema = z.union([
+  z.strictObject({
+    kind: z.literal("structural"),
+    subjects: z.number().int().nonnegative(),
+    scopedSubjects: z.number().int().nonnegative(),
+    withheld: z.number().int().nonnegative(),
+    examples: z.array(BrainVocabularyAgreementExampleSchema),
+    threshold: z.number().int().nonnegative(),
+    countsConsistent: z.boolean(),
+  }),
+  z.strictObject({
+    kind: z.literal("not-applicable"),
+    reason: z.literal("entity-position"),
+  }),
+  z.strictObject({ kind: z.literal("unreadable") }),
+]) satisfies z.ZodType<BrainVocabularyAliasEvidence, unknown>;
+
+/** Pin: every alias-evidence arm has a schema arm — `_BlastRadiusArmsCovered`'s reason. */
+type _AliasEvidenceArmsCovered = [
+  Exclude<
+    BrainVocabularyAliasEvidence["kind"],
+    z.infer<typeof BrainVocabularyAliasEvidenceSchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _aliasEvidenceArmsCovered: _AliasEvidenceArmsCovered = true;
+void _aliasEvidenceArmsCovered;
+
+export const BrainVocabularyCorrectionExampleSchema = z.strictObject({
+  subject: z.string(),
+  fromObject: z.string(),
+  toObject: z.string(),
+  factId: z.string(),
+  at: z.string(),
+}) satisfies z.ZodType<BrainVocabularyCorrectionExample, unknown>;
+
+export const BrainVocabularyCorrectionEvidenceSchema = z.union([
+  z.strictObject({
+    kind: z.literal("behavioral"),
+    subjects: z.number().int().nonnegative(),
+    events: z.number().int().nonnegative(),
+    scopedSubjects: z.number().int().nonnegative(),
+    withheld: z.number().int().nonnegative(),
+    examples: z.array(BrainVocabularyCorrectionExampleSchema),
+    threshold: z.number().int().nonnegative(),
+    countsConsistent: z.boolean(),
+  }),
+  z.strictObject({ kind: z.literal("unreadable") }),
+]) satisfies z.ZodType<BrainVocabularyCorrectionEvidence, unknown>;
+
+/** Pin: every correction-evidence arm has a schema arm. */
+type _CorrectionEvidenceArmsCovered = [
+  Exclude<
+    BrainVocabularyCorrectionEvidence["kind"],
+    z.infer<typeof BrainVocabularyCorrectionEvidenceSchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _correctionEvidenceArmsCovered: _CorrectionEvidenceArmsCovered = true;
+void _correctionEvidenceArmsCovered;
+
+export const BrainVocabularyPendingEntrySchema = z.union([
+  z.strictObject({
+    kind: z.literal("alias"),
+    id: z.string(),
+    position: z.enum(BRAIN_VOCABULARY_SLOT_POSITIONS),
+    // A TUPLE, not `z.array(z.string())`. The pair is exactly two norms, and a
+    // three-element array reaching a renderer that destructures two would drop
+    // one silently.
+    pair: z.tuple([z.string(), z.string()]),
+    direction: z
+      .strictObject({ fromNorm: z.string(), toNorm: z.string() })
+      .nullable(),
+    sourceClass: z.string(),
+    proposedBy: z.string(),
+    proposedAt: z.string(),
+    rank: z.number(),
+    evidence: BrainVocabularyAliasEvidenceSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("cardinality"),
+    predicateSurface: z.string().nullable(),
+    cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),
+    sourceClass: z.string(),
+    proposedBy: z.string(),
+    proposedAt: z.string(),
+    claims: z.number().int().nonnegative(),
+    evidence: BrainVocabularyCorrectionEvidenceSchema,
+  }),
+]) satisfies z.ZodType<BrainVocabularyPendingEntry, unknown>;
+
+/** Pin: both queue kinds have a schema arm — `_BlastRadiusArmsCovered`'s reason. */
+type _PendingEntryArmsCovered = [
+  Exclude<
+    BrainVocabularyPendingEntry["kind"],
+    z.infer<typeof BrainVocabularyPendingEntrySchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _pendingEntryArmsCovered: _PendingEntryArmsCovered = true;
+void _pendingEntryArmsCovered;
+
+export const BrainVocabularyPendingResponseSchema = z.strictObject({
+  entries: z.array(BrainVocabularyPendingEntrySchema),
+  aliasCounts: z.array(BrainVocabularyPositionCountsSchema),
+  cardinalityCounts: BrainVocabularyPositionCountsSchema.nullable(),
+  truncated: z.boolean(),
+  incomplete: z.boolean(),
+}) satisfies z.ZodType<BrainVocabularyPendingResponse, unknown>;
+
+/**
+ * One decision, both kinds, one body.
+ *
+ * ⚠️ **`direction` is on the ALIAS arm only, and it is optional there rather
+ * than defaulted.** The seam refuses an undirected approval that supplies none
+ * (`direction-required`) rather than picking, and a schema `.default()` here
+ * would satisfy the refusal with a value nobody chose — which is the silent
+ * workspace-wide re-key the whole surface exists to put a human in front of.
+ *
+ * ⚠️ It is also absent from the REJECT shape. A direction is meaningless on a
+ * rejection, and `AliasDecisionRequest` makes the same split at the type: *a
+ * field that is representable-and-ignored is a field a caller will eventually
+ * believe in.*
+ */
+export const BrainVocabularyDecideRequestSchema = z.union([
+  z.strictObject({
+    kind: z.literal("alias"),
+    proposalId: z.string().min(1).max(200),
+    decision: z.literal("approved"),
+    direction: z
+      .strictObject({
+        fromNorm: z.string().min(1).max(500),
+        toNorm: z.string().min(1).max(500),
+      })
+      .optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("alias"),
+    proposalId: z.string().min(1).max(200),
+    decision: z.literal("rejected"),
+  }),
+  z.strictObject({
+    kind: z.literal("cardinality"),
+    /** The ADDRESS. A predicate key never reaches this body (ADR-0037 §6). */
+    predicateSurface: z.string().min(1).max(500),
+    decision: z.enum(["approved", "rejected"]),
+  }),
+]);
+
+export const BRAIN_VOCABULARY_DECIDE_OUTCOMES = [
+  "approved",
+  "rejected",
+  "nothing_to_decide",
+] as const satisfies readonly BrainVocabularyDecideOutcome[];
+
+/** Pin: the tuple covers the wire union — `BRAIN_VOCABULARY_SCOPES`' reason. */
+type _VocabularyDecideOutcomesCoverTheWire = [
+  Exclude<BrainVocabularyDecideOutcome, (typeof BRAIN_VOCABULARY_DECIDE_OUTCOMES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _vocabularyDecideOutcomesCoverTheWire: _VocabularyDecideOutcomesCoverTheWire = true;
+void _vocabularyDecideOutcomesCoverTheWire;
+
+/**
+ * ⚠️ A union, mirroring the wire type. `removedEdge` exists only on the
+ * `rejected` arm, so the route cannot invent it on an approval or on a lost
+ * race — which is what the flat shape forced it to do on three of four paths.
+ */
+export const BrainVocabularyDecideResponseSchema = z.union([
+  z.strictObject({
+    outcome: z.literal("approved"),
+    proposalId: z.string().nullable(),
+  }),
+  z.strictObject({
+    outcome: z.literal("rejected"),
+    proposalId: z.string().nullable(),
+    removedEdge: z.boolean(),
+  }),
+  z.strictObject({
+    outcome: z.literal("nothing_to_decide"),
+    proposalId: z.string().nullable(),
+  }),
+]) satisfies z.ZodType<BrainVocabularyDecideResponse, unknown>;
+
+/** Pin: every decide arm has a schema arm — `_BlastRadiusArmsCovered`'s reason. */
+type _DecideArmsCovered = [
+  Exclude<
+    BrainVocabularyDecideResponse["outcome"],
+    z.infer<typeof BrainVocabularyDecideResponseSchema>["outcome"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _decideArmsCovered: _DecideArmsCovered = true;
+void _decideArmsCovered;

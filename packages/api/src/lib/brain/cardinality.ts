@@ -750,6 +750,8 @@ export async function decidePredicateCardinality(
   predicateKey: string,
   verdict: Exclude<CardinalityStatus, "pending">,
   reviewedBy: string | null,
+  /** Correlates the success line with the request that armed it. */
+  requestId?: string,
 ): Promise<boolean> {
   const { rows } = await executor.query(
     `UPDATE brain_predicate_cardinality
@@ -758,7 +760,112 @@ export async function decidePredicateCardinality(
       RETURNING 1 AS decided`,
     [workspaceId, predicateKey, verdict, reviewedBy],
   );
-  return rows.length > 0;
+  const decided = rows.length > 0;
+  if (decided) {
+    // ⚠️ LOGGED, with the same retroactive-consequence wording
+    // `declarePredicateCardinality` uses. The two are the only doors to an
+    // identical, irreversible write, and this one left no trace at all: an
+    // operator asked *"who armed supersession on `reports to` last Tuesday, and
+    // from which request?"* had a `reviewed_by` column and nothing to join it
+    // to. `acl.ts` names exactly this class of event as one you want in the log.
+    //
+    // ⚠️ The verdict BRANCH below has no falsifier, stated rather than left to be
+    // rediscovered. Neither suite for this module mocks the logger, and neither
+    // can cheaply: `cardinality.test.ts`'s whole premise is that it needs no
+    // `mock.module` (its executor double is the entire harness, and a logger mock
+    // would require converting its static imports to dynamic ones), and
+    // `cardinality-pg.test.ts` asserts against a real database rather than
+    // against calls. What IS measured is the fact the wording describes — a
+    // rejection stores `status = 'rejected'` and leaves `cardinalitySingleSql`
+    // unarmed (`cardinality-pg.test.ts`, *"a REJECTION is stored as a rejection"*),
+    // and the route carries the verdict through unaltered
+    // (`admin-brain-vocabulary.test.ts`). So a swapped branch here would misreport
+    // one operator log line while every behavioural assertion still held.
+    log.info(
+      { workspaceId, predicateKey, verdict, reviewedBy, requestId },
+      verdict === "approved"
+        ? "brain cardinality: a human approved a canonical predicate's cardinality — `single` makes every existing published pair in that slot supersedable at the next publish"
+        : "brain cardinality: a human rejected a proposed predicate cardinality — the row stays as permanent rejection memory, so the producer will not re-raise it",
+    );
+  }
+  return decided;
+}
+
+/**
+ * {@link decidePredicateCardinality} addressed by SURFACE — the entry point the
+ * Pending queue's decide route uses (#5088).
+ *
+ * `declarePredicateCardinalityForSurface`'s twin, and it exists for that
+ * function's reason rather than for symmetry: `keys-not-on-the-wire.test.ts`
+ * refuses to see an identity key NAMED in a route body, as a total prohibition
+ * in the ORM arm, and a decide handler that derived `predicate_key` itself would
+ * trip it — correctly, because a route that can name a key is a route that can
+ * accept one, and `BlastRadiusRequest`'s docstring calls that *"the seam through
+ * which one reaches a route body"*.
+ *
+ * The vocabulary is REQUIRED for the same reason it is there: deciding
+ * `is priced at` once `is priced at → priced at` is approved must land on
+ * `priced at`, the slot the claims actually occupy. An identity default would
+ * address a row that does not exist and report `false` — *"nothing to decide"* —
+ * for a proposal sitting in the queue, which is a refusal indistinguishable from
+ * a race.
+ *
+ * ⚠️ Returns the same bare boolean the keyed function does, and the caller must
+ * NOT read `false` as "the proposal is gone". `WHERE status = 'pending'` is what
+ * makes two reviewers racing one proposal produce one decision and one no-op, so
+ * `false` means *somebody else decided it, or the surface never matched a row* —
+ * and those are the same answer to the only question a route has to answer,
+ * which is whether to tell this approver their click landed.
+ */
+export type CardinalityDecisionResult =
+  /** The row moved. */
+  | "decided"
+  /** A row was addressed and was not `pending` — decided, or gone. */
+  | "not-pending"
+  /**
+   * The surface norms away to nothing, so it addresses NO row.
+   *
+   * ⚠️ Its own member rather than folding into `not-pending`, and the reason is
+   * the sentence a surface renders. A bare boolean collapsed the two, the route
+   * mapped both to `nothing_to_decide`, and the client then said *"someone else
+   * got there first"* — a confident, specific, WRONG explanation for a request
+   * that never addressed a row at all. The only place the truth existed was the
+   * log line below.
+   */
+  | "unaddressable";
+
+export async function decidePredicateCardinalityForSurface(
+  executor: CardinalityExecutor,
+  workspaceId: string,
+  input: {
+    readonly predicateSurface: string;
+    readonly verdict: Exclude<CardinalityStatus, "pending">;
+    readonly reviewedBy: string | null;
+    /** The workspace's own predicate-position alias lookup. */
+    readonly predicateAlias: AliasLookup;
+    readonly requestId?: string;
+  },
+): Promise<CardinalityDecisionResult> {
+  const predicateKey = slotKey(input.predicateSurface, input.predicateAlias);
+  if (predicateKey === null || predicateKey === "") {
+    // Logged rather than silently swallowed: a surface that norms away cannot
+    // address a row, and this module's contract is that every arm is a refusal
+    // and never a silent no-op.
+    log.warn(
+      { workspaceId, predicateSurface: input.predicateSurface, requestId: input.requestId },
+      "brain cardinality: a decide request named a predicate surface that norms away to nothing — it addresses no row, so nothing was decided",
+    );
+    return "unaddressable";
+  }
+  const decided = await decidePredicateCardinality(
+    executor,
+    workspaceId,
+    predicateKey,
+    input.verdict,
+    input.reviewedBy,
+    input.requestId,
+  );
+  return decided ? "decided" : "not-pending";
 }
 
 // ---------------------------------------------------------------------------

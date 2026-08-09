@@ -103,6 +103,10 @@ For every must-fix, say which of two things it is:
 - **(a) Local defect** — the fix corrects existing behaviour: a missing null check, an unhandled rejection, a wrong type, a test that cannot fail. **Fix it inline. This is the overwhelming majority and it is not a decision** — it is the repo's standing rule (*fix inline, don't farm follow-ups*), and this step does not soften it.
 - **(b) New machinery** — the fix cannot be made without introducing something that did not exist: a new primitive, a new statement, a new field threaded through a report and its audit trail. Then make the in-PR-vs-follow-up call **explicitly** and **record it in the PR body** with one line of reasoning, whichever way it goes.
 
+  ⚠️ **On a round AFTER the first, (b) defaults to a FOLLOW-UP.** Not a ban — a default, overridable in one line, and the override is the interesting case rather than the exception. The reason is arithmetic: machinery introduced by a round-N fix is unreviewed code entering the diff at the exact moment the loop is trying to converge, so it arrives with no round left to review it except the one it will itself cause. #5077's round 1 added ~600 lines of new machinery (a refusal path, a cell marker, a gate script, a fixture suite) and **round 2's rise was almost entirely defects inside it** — including two fixtures that asserted nothing and a cell that certified itself green forever.
+
+  Override when the defect is live and the machinery is what makes it safe — #5033's savepoint is the standing example, and deferring it would have shipped a diagnostic capable of rolling back a customer's publish. Do **not** override to avoid the bookkeeping of filing an issue.
+
 The test for (b) is *"does the smallest correct fix add a new thing?"* — not *"is this fix big?"* and never *"am I tired of this PR?"*. A large mechanical edit is still (a). If you cannot name the new primitive, it is (a).
 
 ⚠️ **This step does not exist to shrink diffs, and choosing "follow-up" is not the default answer for (b).** In #5033 a round-1 finding — the tier guard refused irreversibly with no operator trace — was fixed inline, which took the diff from ~400 to ~1,900 lines and produced rounds 2 and 3. **That was the right outcome.** The fix added a savepoint primitive; round 2 found it could roll back an entire publish, and round 3 found round 2's `SAVEPOINT` itself unguarded. Capping the rounds would have shipped a diagnostic capable of rolling back a customer's publish.
@@ -137,6 +141,35 @@ lines away on the `computed` branch; round 2's per-side fix covering only the
 both-zero case; round 3's pin covering 4 of an arm's 7 fields; round 3's `claims`
 guard with two identically-broken fields directly beneath it. Every one of those
 was a one-grep sweep away at the moment the fix was written.
+
+⚠️ **A PRINCIPLE VIOLATED TWICE STOPS BEING A COMMENT AND BECOMES A CHECK.**
+
+The second time you sweep for the same shape — in one issue, or across the arc —
+the sweep has failed as a mechanism and prose is the wrong instrument. Prose has
+to be re-applied by hand to every new file, and **new surface is exactly where it
+keeps failing**: the principle is usually already written down, correctly, near
+the violation.
+
+Measured in #5077: `|| true` on a git call appeared **three times in one file**,
+each time within a few lines of a comment saying *"widen, never narrow"*. It is
+one `grep`. Likewise a tombstone byte that `--check` blesses forever — a
+discriminated union makes it unrepresentable. Likewise a fixture that asserts
+nothing — delete each guard, assert exactly one fixture goes red, script it.
+
+So on the SECOND instance, do both: fix it, and add the cheapest mechanical thing
+that makes a third impossible — a `grep` in a `scripts/check-*.sh`, a type that
+refuses the state, a row in a `scripts/mutations/*.mutations.ts` spec, an
+assertion in an adversarial fixture. Name it in the round report next to the
+sweep. If you genuinely cannot mechanise it, say **why** in that line; "it is
+hard to check" is a finding about the design, and usually the design is what
+wants changing.
+
+This is the repo's existing ratchet, moved one loop over. `docs/agents/audits.md`
+already says it for audits — *"when an audit finds the same class of drift in two
+separate runs, that's the signal to promote the check to a CI guard … Audits are
+the nursery for CI gates, not a permanent home."* A review round is the same
+nursery on a shorter cycle, and a finding that recurs within a single issue has
+cleared that bar faster than any audit ever will.
 
 **Step 5c: Verify the commit message against the commit**
 
@@ -257,4 +290,6 @@ reachable.
 - Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps. On round 2+, fresh context **plus** the previous round's fix commits named as the audit target.
 - Every fix is checked against its own finding in **fresh context, in the round that wrote it** (Step 5d). Step 5b sweeps the tree that exists; 5d is the only thing that looks at the surface the fix just added.
 - Falsifiers are **named every round and built in the closing one** (Step 6). A round that names none is not clean; a CLOSING round that has not built and run them is not clean either.
+- A principle swept for **twice** gets a mechanical check, not a third comment (Step 5b). Prose does not scale to new surface, which is where it keeps failing.
+- On round 2+, a fix that adds **new machinery** defaults to a follow-up (Step 5a) — it would otherwise enter the diff with no round left to review it but the one it causes.
 - This is the specialist layer. The repo's `/code-review` and `/simplify` remain the canonical generic passes — don't duplicate them here.

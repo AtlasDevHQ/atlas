@@ -107,6 +107,7 @@ import { comparableDifferentSql } from "@atlas/api/lib/brain/object-cmp";
 import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 import type { ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";
 import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
+import { slotKey, type AliasLookup } from "@atlas/api/lib/brain/identity";
 
 const log = createLogger("brain-cardinality");
 
@@ -634,6 +635,95 @@ export async function declarePredicateCardinality(
     "brain cardinality: a human declared a canonical predicate's cardinality — `single` makes every existing published pair in that slot supersedable at the next publish",
   );
   return { ok: true, cardinality: input.cardinality };
+}
+
+/**
+ * What DIRECT AUTHORING can refuse — strictly narrower than
+ * {@link CardinalityWriteResult}.
+ *
+ * `declarePredicateCardinality` is `ON CONFLICT DO UPDATE` (a human overriding
+ * their own workspace's earlier decision is the thing the gate is FOR), so it
+ * never answers `already-decided`; and `producer-proposed-multi` is the PROPOSE
+ * path's arm — a human may write `multi`, which is the whole point of the
+ * un-curation verb. Both are unreachable here.
+ *
+ * Narrowed rather than left wide because the wide union reached the route's
+ * status map and made its OpenAPI advertise a 409 no caller can provoke — the
+ * same defect `AliasAuthoringRefusal`'s `Extract` removed one module over. With
+ * this type the route's declared responses and its reachable ones agree, and the
+ * compiler is what keeps them agreeing.
+ */
+export type DeclarationResult =
+  | { readonly ok: true; readonly cardinality: PredicateCardinality }
+  | {
+      readonly ok: false;
+      readonly refusal: Extract<CardinalityRefusal, "degenerate-key" | "unattributed">;
+      readonly message: string;
+    };
+
+/**
+ * {@link declarePredicateCardinality} addressed by SURFACE — the entry point a
+ * route uses (#5087).
+ *
+ * ## Why this exists rather than a route deriving the key itself
+ *
+ * `keys-not-on-the-wire.test.ts` refuses to see `predicateKey` named in any
+ * discovered read surface, and it refuses it in the ORM spelling as a TOTAL
+ * prohibition rather than a projection scan — deliberately over-broad, because
+ * a missed key is the unrecoverable direction. `admin-brain-vocabulary.ts`
+ * tripped that arm by naming the variable it passed here, and the guard was
+ * right: a route body is exactly where a key must not appear, since
+ * `BlastRadiusRequest`'s docstring already calls a key-accepting request type
+ * *"the seam through which one reaches a route body"*.
+ *
+ * So the derivation lives in the module keyed on `predicate_key`, which is
+ * allowlisted for naming a column it cannot address a row without naming. The
+ * route hands in a surface and a vocabulary; the key is derived, used, and
+ * never returned.
+ *
+ * ## The vocabulary is REQUIRED, not defaulted to identity
+ *
+ * `slotKey` composes the alias closure over the lexical norm, and taking a
+ * lookup as a parameter is what forces the caller to have loaded one. Curating
+ * `is priced at` after `is priced at → priced at` is approved must land on
+ * `priced at` — the slot the claims actually occupy. An identity default would
+ * write an entry keyed on a norm no live claim carries, which
+ * `cardinalitySingleSql` then never reads: a silent no-op wearing the face of a
+ * successful curation, which is the same failure shape the authoring picker
+ * exists to prevent one layer up.
+ */
+export async function declarePredicateCardinalityForSurface(
+  executor: CardinalityExecutor,
+  workspaceId: string,
+  input: {
+    readonly predicateSurface: string;
+    readonly cardinality: PredicateCardinality;
+    readonly authoredBy: string;
+    /** The workspace's own predicate-position alias lookup. */
+    readonly predicateAlias: AliasLookup;
+  },
+): Promise<DeclarationResult> {
+  const result = await declarePredicateCardinality(executor, workspaceId, {
+    predicateKey: slotKey(input.predicateSurface, input.predicateAlias),
+    cardinality: input.cardinality,
+    authoredBy: input.authoredBy,
+  });
+  if (result.ok) return result;
+  // RECONSTRUCTED rather than returned through a `refusal ===` guard: narrowing a
+  // non-discriminant field does not narrow the object type, so the guard alone
+  // still yields the wide union and the compile error moves rather than closing.
+  if (result.refusal === "degenerate-key" || result.refusal === "unattributed") {
+    return { ok: false, refusal: result.refusal, message: result.message };
+  }
+  // Unreachable: the two remaining members belong to the propose path. Thrown
+  // rather than widened back, because reaching it means `declarePredicateCardinality`
+  // grew an arm this seam's callers — and its OpenAPI contract — do not know about.
+  throw new Error(
+    `declarePredicateCardinalityForSurface: unexpected refusal "${result.refusal}" from the ` +
+      "direct-authoring path (workspace " +
+      workspaceId +
+      "). That refusal belongs to the producer path; the route's declared responses do not cover it.",
+  );
 }
 
 /**

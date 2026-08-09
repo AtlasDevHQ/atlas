@@ -170,6 +170,7 @@ import {
   IDENTITY_MUTATION_LOCK_SQL,
   IDENTITY_MUTATION_LOCK_RESET_SQL,
   IDENTITY_MUTATION_LOCK_TIMEOUT_SQL,
+  SLOT_COLUMNS,
   identityKeySql,
   isSlotPosition,
   lexicalNorm,
@@ -187,6 +188,13 @@ import {
   withBrainTransaction,
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
+import { isPairVisible } from "@atlas/api/lib/brain/vocabulary-visibility";
+import {
+  emptySide,
+  loadPairPopulation,
+  type EmptySide,
+  type PairPopulation,
+} from "@atlas/api/lib/brain/vocabulary-surfaces";
 
 const log = createLogger("brain-vocabulary-decide");
 
@@ -424,6 +432,22 @@ export interface AliasDecideDeps {
   readonly withTransaction?: ReconcileTransactionRunner;
   /** Defaults to `randomUUID`. */
   readonly newProposalId?: () => string;
+  /**
+   * Correlates this decision's server-side lines with the originating request.
+   *
+   * Threaded rather than omitted because the refusals here are the ones an
+   * operator gets asked about — *"an admin says they cannot remove this edge"* —
+   * and without it the 409 the approver saw cannot be joined to the log line
+   * that explains it.
+   *
+   * ⚠️ Every refusal line on BOTH verbs stamps it, plus the removal's visibility
+   * gate and the authored-edge success line. It briefly reached only the removal
+   * gate, which made this docstring describe an intent rather than the state —
+   * an operator joining on it would have found the removal 409s and silently
+   * missed every authoring refusal, which is the worse half to lose since the
+   * authoring path is the one with five distinct refusals.
+   */
+  readonly requestId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,6 +1133,769 @@ export async function decideAliasProposal(
 }
 
 // ---------------------------------------------------------------------------
+// Author (#5087)
+// ---------------------------------------------------------------------------
+
+/** One edge a human writes directly. Norms, picked — never typed. */
+export interface AliasAuthoringInput {
+  readonly position: SlotPosition;
+  /** The norm being aliased away. Re-normed before anything reads it. */
+  readonly fromNorm: string;
+  /** The norm it is authored onto. */
+  readonly toNorm: string;
+}
+
+/** Why direct authoring was refused. */
+export type AliasAuthoringRefusal =
+  /** The author does not clear the owner/admin bar. */
+  | "not-entitled"
+  /** The author's workspace is not the target. A scope escalation. */
+  | "workspace-mismatch"
+  /**
+   * One or both norms have no live claim at that position for this reader.
+   *
+   * Its own member rather than a `degenerate-norm` reuse, because the two are
+   * opposite diagnoses: `degenerate-norm` says the string asserts nothing,
+   * this says the string is fine and the CORPUS has never produced it. An
+   * approver told the first would retype; told the second they go look for the
+   * spelling that does exist, which is the correct next action.
+   */
+  | "empty-population"
+  /** Permanent rejection memory — this pair was rejected or removed before. */
+  | "previously-rejected"
+  /**
+   * Malformed before the corpus was ever consulted.
+   *
+   * NARROWED to the two members this path can actually produce, rather than
+   * inheriting `AliasProposalRefusal` wholesale. `confidence-out-of-range` and
+   * `warehouse-key-at-predicate` are producer-shaped and unreachable here — this
+   * seam sets confidence itself and never accepts a source class — so admitting
+   * them made the route map two dead codes and made the OpenAPI 400 advertise
+   * causes that cannot occur. Same narrowing `resolveDirection`'s two members
+   * get twenty lines down, for the same reason.
+   */
+  | Extract<AliasProposalRefusal, "degenerate-norm" | "self-edge">
+  /** The vocabulary itself refused the edge. */
+  | AliasApprovalRefusal
+  /** A direction that contradicts an existing directed proposal for the pair. */
+  | "direction-conflict"
+  | "direction-not-in-pair";
+
+/** What direct authoring did. */
+export type AliasAuthoringOutcome =
+  /** The edge is approved and in force. `id` is the proposal row behind it. */
+  | { readonly kind: "authored"; readonly id: string; readonly convergedOnProposal: boolean }
+  /** The pair is already an approved edge. Nothing to author. */
+  | { readonly kind: "already_approved"; readonly id: string }
+  /**
+   * A decision on this pair is in flight in another transaction (`applying`).
+   *
+   * Unreachable while the workspace lock is held by every writer, and reported
+   * rather than thrown for {@link AliasDecisionOutcome.not_decidable}'s reason:
+   * *"nothing for you to decide"* is a truthful answer, and retrying it into a
+   * second apply is the thing the claim exists to prevent.
+   */
+  | { readonly kind: "not_decidable"; readonly id: string }
+  | {
+      readonly kind: "refused";
+      readonly refusal: AliasAuthoringRefusal;
+      readonly message: string;
+    };
+
+/** {@link authorAliasEdge}'s seams. Both default to the real thing. */
+export interface AliasAuthoringDeps extends AliasDecideDeps {
+  /**
+   * The population check. Defaults to {@link loadPairPopulation}.
+   *
+   * Injectable because the refusal it drives is the one AC whose falsifier has
+   * to observe a corpus state — and because it must run on the SAME `tx` as the
+   * write, which a caller cannot arrange from outside.
+   */
+  readonly loadPopulation?: typeof loadPairPopulation;
+}
+
+/**
+ * The AUTHORING bar — owner/admin at EVERY position.
+ *
+ * ⚠️ Deliberately stricter than {@link approverEntitled}, which grants any
+ * authenticated member the predicate position. That is not an inconsistency and
+ * the difference is worth stating, because the obvious tidy-up is to call the
+ * existing function:
+ *
+ *   - **Approving** a predicate alias adjudicates evidence a producer gathered
+ *     from inside the brain's own ACL'd corpus. The reviewer is checking a
+ *     claim somebody else made, and the content (a verb phrase) discloses
+ *     nothing.
+ *   - **Authoring** one creates the assertion from nothing. There is no
+ *     evidence, no producer and no threshold — the entire authority is that a
+ *     person took it — and what it produces is a workspace-wide re-key.
+ *
+ * ADR-0037 §6 says exactly this: *"direct human authoring is admitted, on the
+ * owner/admin entitlement"* — the only owner/admin gate the brain has
+ * (`acl.ts:1015-1019` is the same bar, spelled for the audit override).
+ *
+ * `unauthenticated-local` clears it, matching `approverEntitled` and
+ * `correctFact`: that deployment has DECLARED the local operator is the only
+ * identity there is. `unresolved` clears neither.
+ */
+function authorEntitled(ctx: BrainPrincipalContext): boolean {
+  if (ctx.origin === "unauthenticated-local") return true;
+  if (ctx.origin !== "authenticated") return false;
+  return ctx.role === "owner" || ctx.role === "admin";
+}
+
+/**
+ * Write one alias edge directly — a `human`-sourced proposal DECIDED `approved`
+ * in the same transaction (#5087, ADR-0037 §6 as amended 2026-08-06).
+ *
+ * ## Why this is new machinery and not a compose
+ *
+ * {@link proposeAliasEdge} and {@link decideAliasProposal} each open their OWN
+ * transaction. Calling them in sequence gives two commits, and the window
+ * between them is not academic: a crash there leaves a `pending` human proposal
+ * that no queue existed to show (the Pending pane is child 3), and a re-key
+ * failure in the second leaves a committed proposal for an edge that was never
+ * applied. One transaction is the only shape in which *"authored means in
+ * force"* holds by construction.
+ *
+ * ## Why it writes THROUGH the proposal table rather than calling
+ * {@link approveAliasEdge} directly
+ *
+ * The direct spelling is one line shorter and it has a hole. **Rejection memory
+ * lives on the proposal row.** A hand-authored edge later removed would leave
+ * nothing to stamp `rejected` on — `rejectProposal` needs a row — so the next
+ * producer run re-proposes the pair a human just deleted, and the removal does
+ * not stick. That is #4507's failure returning through the one path authoring
+ * exists to serve, and it is why ADR-0037 §6's amendment names the proposal
+ * table explicitly.
+ *
+ * ## Converging on an existing pending row is FORCED, not preferred
+ *
+ * Migration 0190 has a unique constraint on the unordered pair, so a second row
+ * for a pair already queued cannot be inserted at all. The choice is therefore
+ * between converging and refusing — and converging is also the honest reading:
+ * a human authoring a pair a producer already proposed IS deciding that
+ * proposal. The row keeps the producer's `source_class`, because the proposal
+ * genuinely came from there; what the human supplies is the decision and the
+ * direction.
+ *
+ * ## Order of checks
+ *
+ * Entitlement and shape are refused BEFORE the transaction opens — they need no
+ * corpus and a scope escalation must not read a row under another workspace's
+ * identity. The population check runs INSIDE it, on the same `tx`, so the
+ * corpus it observes is the one the re-key will rewrite.
+ *
+ * @throws when the underlying write fails — including a closure that does not
+ *   converge (`VocabularyClosureError`). The transaction has already rolled
+ *   back, so there is no proposal row and no edge.
+ */
+export async function authorAliasEdge(
+  workspaceId: string,
+  input: AliasAuthoringInput,
+  author: BrainPrincipalContext,
+  deps: AliasAuthoringDeps = {},
+): Promise<AliasAuthoringOutcome> {
+  const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  const newProposalId = deps.newProposalId ?? randomUUID;
+  const loadPopulation = deps.loadPopulation ?? loadPairPopulation;
+  const { position } = input;
+
+  if (author.workspaceId !== workspaceId) {
+    log.error(
+      { workspaceId, authorWorkspaceId: author.workspaceId, position, requestId: deps.requestId },
+      "Alias authoring refused — the author's workspace is not the target",
+    );
+    return {
+      kind: "refused",
+      refusal: "workspace-mismatch",
+      message:
+        `The author's workspace (${author.workspaceId}) is not the target (${workspaceId}). ` +
+        "One workspace's admin never authors another's vocabulary.",
+    };
+  }
+
+  if (!authorEntitled(author)) {
+    log.warn(
+      { workspaceId, position, origin: author.origin, role: author.role, requestId: deps.requestId },
+      "Alias authoring refused — the author does not clear the owner/admin bar",
+    );
+    return {
+      kind: "refused",
+      refusal: "not-entitled",
+      message:
+        author.origin === "authenticated"
+          ? `Authoring an alias needs the owner or admin entitlement; this reader is ` +
+            `"${author.role ?? "no org role"}". Direct authoring creates an assertion from no ` +
+            "evidence at all and re-keys the workspace, so ADR-0037 §6 puts it behind the only " +
+            "owner/admin gate the brain has — a bar higher than APPROVING a predicate alias, " +
+            "where a producer gathered the evidence and a reviewer is only adjudicating it."
+          : `Authoring an alias needs a resolved reader identity; this one is "${author.origin}". ` +
+            "An unresolvable identity at a write that re-keys a corpus is refused rather than assumed.",
+    };
+  }
+
+  // Re-normed, never trusted — `approveAliasEdge`'s reason, applied before the
+  // corpus is consulted so the population check and the write ask about the
+  // same string.
+  const fromNorm = lexicalNorm(input.fromNorm);
+  const toNorm = lexicalNorm(input.toNorm);
+
+  if (fromNorm === "" || toNorm === "") {
+    return {
+      kind: "refused",
+      refusal: "degenerate-norm",
+      message:
+        `An alias edge needs two non-empty norms; "${input.fromNorm}" → "${input.toNorm}" ` +
+        `normalizes to "${fromNorm}" → "${toNorm}". A surface made only of separators asserts ` +
+        "nothing and has no slot to alias.",
+    };
+  }
+  if (fromNorm === toNorm) {
+    return {
+      kind: "refused",
+      refusal: "self-edge",
+      message:
+        `"${input.fromNorm}" and "${input.toNorm}" both normalize to "${fromNorm}", so they ` +
+        "already share an identity key and there is nothing to alias.",
+    };
+  }
+
+  try {
+    return await withTransaction(async (tx) => {
+      // 5022 then 5024, the fixed order every writer here takes.
+      await lockIdentityMutation(tx, workspaceId);
+
+      // THE population check, on the same `tx` and therefore the same snapshot
+      // as the write. See `vocabulary-surfaces.ts` for why an edge whose norm no
+      // fact ever produced is the failure that looks exactly like success.
+      const population = await loadPopulation(tx, author, { position, fromNorm, toNorm });
+      const empty = emptySide(population);
+      if (empty !== null) {
+        log.warn(
+          {
+            workspaceId,
+            position,
+            fromNorm,
+            toNorm,
+            fromClaims: population.from.claims,
+            toClaims: population.to.claims,
+            emptySide: empty,
+            decision: population.decision,
+            requestId: deps.requestId,
+          },
+          "Alias authoring refused — a side has no live claim at this position",
+        );
+        return {
+          kind: "refused",
+          refusal: "empty-population",
+          message: emptyPopulationMessage(position, population, empty),
+        };
+      }
+
+      const existing = await findProposalByPair(tx, workspaceId, position, fromNorm, toNorm);
+
+      if (existing !== undefined) {
+        // Rejection memory FIRST, exactly as `proposeAliasEdge` orders it. A
+        // pair a human rejected or REMOVED is refused forever, and authoring is
+        // not an exemption from that — it is the path the removal was protecting
+        // against being undone by a producer, and letting it undo the removal
+        // itself would make the rule mean nothing.
+        //
+        // ⚠️ This is a real cost and it is the one an operator will hit: a pair
+        // removed by mistake cannot be re-authored. 0190's rejection memory is
+        // permanent by design (#4507), so the recovery is a database console —
+        // which is why the removal confirmation carries the blast-radius preview
+        // rather than being a bare button.
+        if (existing.status === "rejected") {
+          log.warn(
+            { workspaceId, position, fromNorm, toNorm, proposalId: existing.id, requestId: deps.requestId },
+            "Alias authoring refused — the pair carries permanent rejection memory",
+          );
+          return {
+            kind: "refused",
+            refusal: "previously-rejected",
+            message:
+              `"${fromNorm}" and "${toNorm}" were previously rejected or removed at the ${position} ` +
+              "position, and that decision is permanent (#4507): the rejected row is what stops a " +
+              "producer re-proposing what a human removed, so authoring over it would make every " +
+              "removal undoable by the next run. Re-establishing this merge needs the rejection " +
+              "cleared at the database.",
+          };
+        }
+        if (existing.status === "approved") {
+          return { kind: "already_approved", id: existing.id };
+        }
+        if (existing.status !== "pending") {
+          return { kind: "not_decidable", id: existing.id };
+        }
+      }
+
+      // The proposal row. INSERTED when the pair is new, converged on when a
+      // producer already queued it — 0190's unordered-pair constraint makes
+      // that not a choice (see the docstring).
+      const row =
+        existing ??
+        (await insertAuthoredProposal(tx, workspaceId, newProposalId(), position, {
+          fromNorm,
+          toNorm,
+          proposedBy: recordedApprover({ kind: "human", ctx: author }) ?? LOCAL_OPERATOR_ACTOR,
+        }));
+
+      // Routed through `resolveDirection` rather than passing the authored pair
+      // straight to `approveProposal`. For a freshly inserted row it agrees by
+      // construction; for a CONVERGED one it is what refuses to silently flip a
+      // producer's directed proposal — the same protection an approval gets, and
+      // skipping it here would make authoring the way around it.
+      const resolved = resolveDirection(row, { fromNorm, toNorm });
+      if (!resolved.ok) {
+        return {
+          kind: "refused",
+          // Narrowed to the two members `resolveDirection` can return for a
+          // SUPPLIED direction. `direction-required` is unreachable — authoring
+          // always supplies one — and admitting it to the union would put a
+          // refusal in the type that no caller can render a sentence for.
+          refusal:
+            resolved.refusal === "direction-conflict"
+              ? "direction-conflict"
+              : "direction-not-in-pair",
+          message: resolved.message,
+        };
+      }
+
+      const decided = await approveProposal(tx, workspaceId, row, resolved, {
+        kind: "human",
+        ctx: author,
+      });
+
+      switch (decided.kind) {
+        case "approved":
+          log.info(
+            {
+              workspaceId,
+              position,
+              fromNorm,
+              toNorm,
+              proposalId: decided.id,
+              convergedOnProposal: existing !== undefined,
+              sourceClass: row.source_class,
+              requestId: deps.requestId,
+            },
+            "Alias edge authored directly — a human-decided proposal and its edge committed together",
+          );
+          return {
+            kind: "authored",
+            id: decided.id,
+            convergedOnProposal: existing !== undefined,
+          };
+        case "not_decidable":
+          return { kind: "not_decidable", id: decided.id };
+        case "refused":
+          // Unreachable: `approveProposal` refuses only through the thrown
+          // `AliasApplyRefusedError` the outer catch converts. Kept so a future
+          // arm cannot compile into an authored-but-not-applied report.
+          return { kind: "refused", refusal: "already-aliased", message: decided.message };
+        case "rejected":
+          throw new Error(
+            `authorAliasEdge: the approve path reported a rejection for proposal ${decided.id} ` +
+              `(workspace ${workspaceId}). That transition is unreachable from here — refusing ` +
+              "rather than reporting an authoring that removed an edge.",
+          );
+      }
+    });
+  } catch (err) {
+    if (err instanceof AliasApplyRefusedError) {
+      log.warn(
+        { workspaceId, position, fromNorm, toNorm, refusal: err.refusal, requestId: deps.requestId },
+        `Alias authoring refused by the vocabulary — ${err.refusalMessage}`,
+      );
+      return { kind: "refused", refusal: err.refusal, message: err.refusalMessage };
+    }
+    throw err;
+  }
+}
+
+/** Why a removal was refused. */
+export type AliasRemovalRefusal =
+  | "not-entitled"
+  | "workspace-mismatch"
+  | "degenerate-norm"
+  /** No approved edge joins this pair at this position. */
+  | "not-in-force";
+
+/** What a removal did. */
+export type AliasRemovalOutcome =
+  /**
+   * The edge is gone, the closure is rebuilt, the corpus is re-keyed, and the
+   * pair carries permanent rejection memory. `id` is the row that holds it.
+   */
+  | { readonly kind: "removed"; readonly id: string; readonly memoryCreated: boolean }
+  /** The pair was already rejected or removed. Idempotent, not an error. */
+  | { readonly kind: "already_removed"; readonly id: string }
+  | {
+      readonly kind: "refused";
+      readonly refusal: AliasRemovalRefusal;
+      readonly message: string;
+    };
+
+/**
+ * Remove one approved edge from the *In force* pane, leaving rejection memory
+ * (#5087).
+ *
+ * ## Why this exists rather than a bare `decideAliasProposal(rejected)` call
+ *
+ * For an edge this seam authored or approved there IS a proposal row, and
+ * rejecting it by id is exactly right. But an edge copied by the region importer
+ * has NO proposal row — #5035's bundle scope classifies
+ * `brain_vocabulary_proposal` as `stays`, so edges travel and proposals do not.
+ * Removing such an edge through `removeAliasEdge` alone drops it with nothing to
+ * stamp `rejected` on, and the next producer run re-proposes the pair a human
+ * just deleted. That is #4507's failure, and it would arrive through the exact
+ * surface the grill added to make removal recoverable.
+ *
+ * So the memory is CREATED when it is absent: a `human` row recording the edge
+ * that exists, immediately rejected in the same transaction. The row is inserted
+ * `approved` rather than `pending` because that is what it describes — an edge
+ * already in force — and because {@link rejectProposal}'s `approved → rejected`
+ * arm is the transition that performs the removal and the re-key.
+ *
+ * ## Addressed by PAIR, not by proposal id
+ *
+ * The pane renders norms, and the removal request should carry what the pane
+ * rendered. It also makes the call direction-agnostic — `findProposalByPair`
+ * asks 0190's unordered-pair question, and the edge's own stored order decides
+ * which norm is the child — so a UI that transposed the pair removes the right
+ * edge instead of failing to find one.
+ *
+ * @throws when the underlying write fails. The transaction rolls back whole, so
+ *   the edge is still in force and nothing was stamped.
+ */
+export async function removeInForceAliasEdge(
+  workspaceId: string,
+  input: AliasAuthoringInput,
+  remover: BrainPrincipalContext,
+  deps: AliasDecideDeps = {},
+): Promise<AliasRemovalOutcome> {
+  const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  const newProposalId = deps.newProposalId ?? randomUUID;
+  const { position } = input;
+
+  if (remover.workspaceId !== workspaceId) {
+    log.error(
+      { workspaceId, removerWorkspaceId: remover.workspaceId, position, requestId: deps.requestId },
+      "Alias removal refused — the remover's workspace is not the target",
+    );
+    return {
+      kind: "refused",
+      refusal: "workspace-mismatch",
+      message:
+        `The remover's workspace (${remover.workspaceId}) is not the target (${workspaceId}). ` +
+        "One workspace's admin never edits another's vocabulary.",
+    };
+  }
+
+  // The AUTHORING bar, not the approving one. A removal is the graver verb of
+  // the two — it drops an edge somebody approved, re-keys the corpus back, and
+  // writes memory no producer can undo — so admitting it at the lower predicate
+  // bar would make the strictness of {@link authorEntitled} decorative: the same
+  // reader could not author `a → b` but could delete it.
+  if (!authorEntitled(remover)) {
+    log.warn(
+      { workspaceId, position, origin: remover.origin, role: remover.role, requestId: deps.requestId },
+      "Alias removal refused — the remover does not clear the owner/admin bar",
+    );
+    return {
+      kind: "refused",
+      refusal: "not-entitled",
+      message:
+        remover.origin === "authenticated"
+          ? `Removing an alias needs the owner or admin entitlement; this reader is ` +
+            `"${remover.role ?? "no org role"}". A removal drops an edge a human approved, ` +
+            "re-keys every affected claim back, and writes permanent rejection memory — the same " +
+            "authority direct authoring needs, in the other direction."
+          : `Removing an alias needs a resolved reader identity; this one is "${remover.origin}".`,
+    };
+  }
+
+  const fromNorm = lexicalNorm(input.fromNorm);
+  const toNorm = lexicalNorm(input.toNorm);
+  if (fromNorm === "" || toNorm === "" || fromNorm === toNorm) {
+    return {
+      kind: "refused",
+      refusal: "degenerate-norm",
+      message:
+        `A removal needs two distinct non-empty norms; "${input.fromNorm}" → "${input.toNorm}" ` +
+        `normalizes to "${fromNorm}" → "${toNorm}".`,
+    };
+  }
+
+  return withTransaction(async (tx) => {
+    await lockIdentityMutation(tx, workspaceId);
+
+    // ⚠️ THE VISIBILITY GATE, and its absence was a disclosure hole rather than
+    // an omission. Everything below this line answers questions about a specific
+    // pair, and the answers differ — a real edge removes, an imagined one is
+    // refused — so without this a reader could learn whether an entity edge
+    // exists by naming it, which is precisely the population the *In force*
+    // pane's scoping withholds. See {@link isPairVisible}.
+    //
+    // Folded into the SAME refusal as "not in force", deliberately:
+    // `admin-brain-facts.ts`'s retract 404 is the precedent —
+    // *"deliberately indistinguishable, so the response cannot confirm the
+    // existence of a fact the reader may not see"* — and a distinct
+    // `not-visible` arm would restore in words the oracle this closes in rows.
+    //
+    // Runs on the SAME `tx` as the write, so the corpus it reads is the one the
+    // removal is about, and it runs BEFORE any proposal row is read.
+    const visible = await isPairVisible(
+      tx,
+      position,
+      remover,
+      { fromNorm, toNorm },
+      { requestId: deps.requestId },
+    );
+    if (!visible) {
+      log.warn(
+        {
+          workspaceId,
+          position,
+          fromNorm,
+          toNorm,
+          origin: remover.origin,
+          role: remover.role,
+          requestId: deps.requestId,
+        },
+        "Alias removal refused — the pair is not visible to this reader at this position (reported as not-in-force, which is also what an absent edge returns)",
+      );
+      return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
+    }
+
+    const existing = await findProposalByPair(tx, workspaceId, position, fromNorm, toNorm);
+    if (existing !== undefined) {
+      if (existing.status === "rejected") return { kind: "already_removed", id: existing.id };
+      if (existing.status !== "approved") {
+        // A `pending` row is not an in-force edge — it is child 3's queue item —
+        // and an `applying` one is a decision in flight. Neither is removable
+        // here, and reporting them as "not in force" is truthful: the pane this
+        // call serves shows approved edges only.
+        // Shares the sentence for `notInForceMessage`'s reason: a reader who
+        // could tell "there is a PENDING proposal for this pair" from "no such
+        // edge" has learned the pair exists, which at an entity position is the
+        // confidential bit.
+        return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
+      }
+      const rejected = await rejectProposal(tx, workspaceId, existing, {
+        kind: "human",
+        ctx: remover,
+      });
+      return removalFromDecision(rejected, existing.id, false, position);
+    }
+
+    // No proposal row. Either the edge does not exist, or it was copied in by
+    // the region importer — and only the edge table can say which.
+    const stored = await findApprovedEdgeByPair(tx, workspaceId, position, fromNorm, toNorm);
+    if (stored === undefined) {
+      return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
+    }
+
+    const id = newProposalId();
+    // The memory row, recording the edge as it is STORED — `stored.fromNorm` is
+    // the child, whatever order the caller asked in. Inserted `approved` and
+    // rejected below in the same transaction, so it never commits describing an
+    // edge that is still in force.
+    await tx.query(
+      `INSERT INTO brain_vocabulary_proposal
+         (id, workspace_id, slot_position, from_norm, to_norm, directed, source_class,
+          confidence, status, proposed_by, reviewed_by, reviewed_at)
+       VALUES ($1, $2, $3, $4, $5, TRUE, 'human', 1, 'approved', $6, $6, now())`,
+      [
+        id,
+        workspaceId,
+        position,
+        stored.fromNorm,
+        stored.toNorm,
+        recordedApprover({ kind: "human", ctx: remover }) ?? LOCAL_OPERATOR_ACTOR,
+      ],
+    );
+    const rejected = await rejectProposal(
+      tx,
+      workspaceId,
+      {
+        id,
+        slot_position: position,
+        from_norm: stored.fromNorm,
+        to_norm: stored.toNorm,
+        directed: true,
+        source_class: "human",
+        confidence: 1,
+        status: "approved",
+      },
+      { kind: "human", ctx: remover },
+    );
+    // LOGGED AFTER the reject, not before it. `rejectProposal` can throw — the
+    // removal finds no edge, the stamp loses its row — and the whole transaction
+    // rolls back, so a line emitted first is a claim of a write that never
+    // committed, sitting in the log for an operator to find.
+    const outcome = removalFromDecision(rejected, id, true, position);
+    log.info(
+      { workspaceId, position, fromNorm: stored.fromNorm, toNorm: stored.toNorm, proposalId: id },
+      "Alias removal created the rejection memory an imported edge never had — without it the next producer run would re-propose the pair",
+    );
+    return outcome;
+  });
+}
+
+/**
+ * The ONE "nothing to remove" sentence, shared by four arms.
+ *
+ * ⚠️ Shared rather than tailored, and that is the guard: it is returned for an
+ * edge that does not exist, for one the reader may not see, for one whose
+ * decision is still pending or applying, and for one another decision reached
+ * first (`removalFromDecision`'s `not_decidable`). If those read differently,
+ * the difference IS the
+ * oracle — a reader could tell "no such edge" from "an edge you may not see" by
+ * comparing prose, having been stopped from telling them apart by outcome.
+ *
+ * It therefore names no norm. Echoing the requested pair back would be harmless
+ * (the caller supplied it) but it invites a future edit to add "…which is
+ * aliased onto X", and that sentence is the leak.
+ */
+function notInForceMessage(position: SlotPosition): string {
+  return (
+    `No approved edge at the ${position} position matches that pair, so there is nothing to ` +
+    "remove. It may never have existed, it may already have been removed, the closure may have " +
+    "been rebuilt by a removal further up the chain, or it may involve claims you are not " +
+    "entitled to read — this surface does not distinguish those, deliberately."
+  );
+}
+
+/** Map the shared reject arm's outcome onto this path's narrower union. */
+function removalFromDecision(
+  outcome: AliasDecisionOutcome,
+  id: string,
+  memoryCreated: boolean,
+  position: SlotPosition,
+): AliasRemovalOutcome {
+  if (outcome.kind === "rejected") {
+    if (!outcome.removedEdge) {
+      // `rejectProposal` reports `removedEdge: false` only for a `pending →
+      // rejected` transition, which the caller above has already excluded.
+      // Thrown rather than reported as a removal, because the one thing this
+      // function must never do is tell an approver an edge is gone while it is
+      // still shaping identity.
+      throw new Error(
+        `removeInForceAliasEdge: proposal ${id} was rejected without removing an edge. The row was ` +
+          "read as approved and the reject arm disagreed — refusing rather than reporting a " +
+          "removal that removed nothing.",
+      );
+    }
+    return { kind: "removed", id, memoryCreated };
+  }
+  if (outcome.kind === "not_decidable") {
+    return { kind: "refused", refusal: "not-in-force", message: notInForceMessage(position) };
+  }
+  // `approved` and `refused` are both unreachable from the reject arm; the
+  // exhaustive throw is what keeps a future arm from compiling into silence.
+  throw new Error(
+    `removeInForceAliasEdge: unexpected decision outcome "${outcome.kind}" for proposal ${id}.`,
+  );
+}
+
+/** The stored order of an approved edge joining a pair, in either direction. */
+async function findApprovedEdgeByPair(
+  tx: VocabularyExecutor,
+  workspaceId: string,
+  position: SlotPosition,
+  a: string,
+  b: string,
+): Promise<{ fromNorm: string; toNorm: string } | undefined> {
+  const { rows } = await tx.query(
+    `SELECT from_norm, to_norm FROM brain_vocabulary_edge
+      WHERE workspace_id = $1 AND slot_position = $2
+        AND LEAST(from_norm, to_norm) = LEAST($3::text, $4::text)
+        AND GREATEST(from_norm, to_norm) = GREATEST($3::text, $4::text)`,
+    [workspaceId, position, a, b],
+  );
+  const raw = rows[0];
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const row = raw as Record<string, unknown>;
+  if (typeof row.from_norm !== "string" || typeof row.to_norm !== "string") return undefined;
+  return { fromNorm: row.from_norm, toNorm: row.to_norm };
+}
+
+/** The refusal prose, naming WHICH side is empty. */
+function emptyPopulationMessage(
+  position: SlotPosition,
+  population: PairPopulation,
+  empty: EmptySide,
+): string {
+  // ⚠️ The WHOLE opening clause per arm, not a shared `${sides} has no live
+  // claim` template. Under the template the `both` arm read *"neither "a" nor
+  // "b" has no live claim"* — a double negative asserting the opposite of the
+  // refusal it explains — because "neither" already carries the negation.
+  // English does not let the two compose, so they do not share a sentence.
+  // (The template also carried a ternary whose two branches were the identical
+  // string — the remains of a `has`/`have` split that had already been lost,
+  // and which no test could distinguish.)
+  const clause =
+    empty === "both"
+      ? `Neither "${population.from.norm}" nor "${population.to.norm}" has a live claim at the ${position} position`
+      : empty === "from"
+        ? `"${population.from.norm}" has no live claim at the ${position} position`
+        : `"${population.to.norm}" has no live claim at the ${position} position`;
+  return (
+    `${clause} ` +
+    `(${population.from.norm}: ${population.from.claims}, ${population.to.norm}: ${population.to.claims}). ` +
+    "An alias for a norm the corpus has never produced inserts cleanly, recomputes the closure, " +
+    "re-keys zero rows and previews as 0 — indistinguishable from a merge that worked. Pick both " +
+    "sides from the surfaces actually present rather than typing a norm: `lexicalNorm` folds case " +
+    "and separators, so the spelling you expect is often not the one the pipeline produced." +
+    (population.decision === "reader-scoped"
+      ? " This position is reader-scoped, so a side you cannot see reads as empty here."
+      : "")
+  );
+}
+
+/** Insert the `human`-sourced row, and hand back the shape the decide path takes. */
+async function insertAuthoredProposal(
+  tx: VocabularyExecutor,
+  workspaceId: string,
+  id: string,
+  position: SlotPosition,
+  input: { readonly fromNorm: string; readonly toNorm: string; readonly proposedBy: string },
+): Promise<ProposalRow> {
+  await tx.query(
+    `INSERT INTO brain_vocabulary_proposal
+       (id, workspace_id, slot_position, from_norm, to_norm, directed, source_class,
+        confidence, status, proposed_by)
+     VALUES ($1, $2, $3, $4, $5, TRUE, 'human', 1, 'pending', $6)`,
+    [id, workspaceId, position, input.fromNorm, input.toNorm, input.proposedBy],
+  );
+  // CONSTRUCTED, not read back. A `RETURNING` round trip would re-narrow values
+  // this function just supplied, and every field below is a literal in the
+  // INSERT above — so a mismatch would mean the two statements disagree with
+  // each other rather than with the database.
+  //
+  // `directed: TRUE` because a human authoring a merge STATES the direction;
+  // there is no evidence to abstain on the way `#5034`'s undirected proposals
+  // do. `confidence: 1` for the same reason — it is not a producer's estimate,
+  // and the auto-approve threshold never reads a `human` row anyway
+  // (`autoApproveEligible` requires an entity position AND a knob-listed source
+  // class, and `human` reaching that knob would be an operator decision to
+  // auto-approve human proposals, which is a no-op: this path decides them).
+  return {
+    id,
+    slot_position: position,
+    from_norm: input.fromNorm,
+    to_norm: input.toNorm,
+    directed: true,
+    source_class: "human",
+    confidence: 1,
+    status: "pending",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
 
@@ -1159,23 +1946,6 @@ async function lockIdentityMutation(tx: VocabularyExecutor, workspaceId: string)
   await tx.query(IDENTITY_MUTATION_LOCK_SQL, [IDENTITY_MUTATION_LOCK_NAMESPACE, workspaceId]);
   await tx.query(IDENTITY_MUTATION_LOCK_RESET_SQL);
 }
-
-/**
- * The `brain_facts` surface and key columns at one slot position.
- *
- * The value type is a MAPPED type rather than `{ surface: string; key: string }`,
- * so `object: { surface: "subject", key: "object_key" }` — the cross-position
- * slip ADR-0037 §6 calls unrecoverable — does not compile, and neither does a
- * misspelled key column. The looser spelling left both to a `-pg` suite.
- */
-type SlotColumns = {
-  readonly [P in SlotPosition]: { readonly surface: P; readonly key: `${P}_key` };
-};
-const SLOT_COLUMNS: SlotColumns = {
-  subject: { surface: "subject", key: "subject_key" },
-  predicate: { surface: "predicate", key: "predicate_key" },
-  object: { surface: "object", key: "object_key" },
-};
 
 /**
  * ADR-0037 §7's DRIFT RE-KEY — one statement per {@link SlotPosition}, built once.

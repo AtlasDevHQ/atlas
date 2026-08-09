@@ -51,6 +51,23 @@ import type {
   BrainFactWillWidenEntry,
   BrainResultTier,
   BrainSearchTensionView,
+  BrainVocabularyAuthorResponse,
+  BrainVocabularyBlastRadius,
+  BrainVocabularyBlastRadiusSide,
+  BrainVocabularyCardinalityEntry,
+  BrainVocabularyCardinalityWriteResponse,
+  BrainVocabularyCoverage,
+  BrainVocabularyEdgeEntry,
+  BrainVocabularyInForceResponse,
+  BrainVocabularyPositionCounts,
+  BrainVocabularyPreviewResponse,
+  BrainVocabularyRemoveResponse,
+  BrainVocabularyCardinality,
+  BrainVocabularyScope,
+  BrainVocabularySlotPosition,
+  BrainVocabularyStructurallyEmptyReason,
+  BrainVocabularySurfaceList,
+  BrainVocabularySurfaceOption,
 } from "@useatlas/types";
 
 /** Mirrors `BRAIN_FACT_STATUSES` in `packages/api/src/lib/brain/types.ts`. */
@@ -780,3 +797,321 @@ export const BrainFactOversightClientSchema = z.object({
   // `BrainFactWillWidenEnvelopeSchema`.
   willWiden: BrainFactWillWidenEnvelopeSchema.optional(),
 }) satisfies z.ZodType<BrainFactOversight, unknown>;
+
+// ---------------------------------------------------------------------------
+// The Claim Vocabulary surface (#5087, ADR-0037 §6)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three slot positions, as a request enum.
+ *
+ * The tuple lives HERE rather than in `@useatlas/types` because that package is
+ * types-only (see its header: a value export forces a publish-first merge
+ * dance). `_VocabularySlotPositionsCoverTheWire` below is what keeps the tuple
+ * and the union the same set — the same shape `_BrainFactStatusesCovered` uses,
+ * and the reason a hand-kept enum here is affordable at all.
+ */
+export const BRAIN_VOCABULARY_SLOT_POSITIONS = [
+  "subject",
+  "predicate",
+  "object",
+] as const satisfies readonly BrainVocabularySlotPosition[];
+
+/** Pin: the tuple above covers the wire union, so neither can shrink alone. */
+type _VocabularySlotPositionsCoverTheWire = [
+  Exclude<BrainVocabularySlotPosition, (typeof BRAIN_VOCABULARY_SLOT_POSITIONS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _vocabularySlotPositionsCoverTheWire: _VocabularySlotPositionsCoverTheWire = true;
+void _vocabularySlotPositionsCoverTheWire;
+
+/**
+ * ⚠️ `satisfies` and the `Exclude` pin are BOTH required, and the reason is a
+ * measured property of Zod rather than belt-and-braces.
+ *
+ * A schema whose enum is NARROWER than the wire union satisfies
+ * `z.ZodType<T, unknown>` **vacuously** — only a WIDER one is rejected
+ * (measured against zod 4.4.3). So the missing-member direction, which is
+ * exactly the direction that produces a runtime parse failure on a live pane, is
+ * the direction `satisfies` cannot see. `_VocabularySlotPositionsCoverTheWire`
+ * above exists for the same reason; this tuple was simply missed.
+ */
+export const BRAIN_VOCABULARY_SCOPES = [
+  "unscoped",
+  "reader-scoped",
+  "deny-all",
+] as const satisfies readonly BrainVocabularyScope[];
+
+/** Pin: the tuple covers the wire union, so neither can shrink alone. */
+type _VocabularyScopesCoverTheWire = [
+  Exclude<BrainVocabularyScope, (typeof BRAIN_VOCABULARY_SCOPES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _vocabularyScopesCoverTheWire: _VocabularyScopesCoverTheWire = true;
+void _vocabularyScopesCoverTheWire;
+
+export const BRAIN_VOCABULARY_CARDINALITIES = [
+  "single",
+  "multi",
+] as const satisfies readonly BrainVocabularyCardinality[];
+
+type _VocabularyCardinalitiesCoverTheWire = [
+  Exclude<BrainVocabularyCardinality, (typeof BRAIN_VOCABULARY_CARDINALITIES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _vocabularyCardinalitiesCoverTheWire: _VocabularyCardinalitiesCoverTheWire = true;
+void _vocabularyCardinalitiesCoverTheWire;
+
+export const BRAIN_VOCABULARY_STRUCTURALLY_EMPTY_REASONS = [
+  "object-position",
+  "already-single",
+  "not-curated",
+  "unkeyable-surface",
+  "no-such-edge",
+] as const satisfies readonly BrainVocabularyStructurallyEmptyReason[];
+
+type _VocabularyReasonsCoverTheWire = [
+  Exclude<
+    BrainVocabularyStructurallyEmptyReason,
+    (typeof BRAIN_VOCABULARY_STRUCTURALLY_EMPTY_REASONS)[number]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _vocabularyReasonsCoverTheWire: _VocabularyReasonsCoverTheWire = true;
+void _vocabularyReasonsCoverTheWire;
+
+/**
+ * One picker row. **Strict**, and for `BrainFactWillSupersedePairSchema`'s
+ * reason applied one level up: this object legitimately carries CONTENT (a
+ * surface), because the list is scoped by the positional rule — and exactly
+ * because content is allowed, an extra key must be REFUSED rather than
+ * stripped. The extra key this guards against is a `predicateKey` / `norm`-key
+ * confusion reaching the browser, which ADR-0037 §6 forbids outright.
+ */
+export const BrainVocabularySurfaceOptionSchema = z.strictObject({
+  norm: z.string(),
+  exampleSurface: z.string(),
+  claims: z.number().int().nonnegative(),
+  variants: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainVocabularySurfaceOption, unknown>;
+
+export const BrainVocabularySurfaceListSchema = z.strictObject({
+  position: z.enum(BRAIN_VOCABULARY_SLOT_POSITIONS),
+  surfaces: z.array(BrainVocabularySurfaceOptionSchema),
+  truncated: z.boolean(),
+  scope: z.enum(BRAIN_VOCABULARY_SCOPES),
+}) satisfies z.ZodType<BrainVocabularySurfaceList, unknown>;
+
+export const BrainVocabularyEdgeEntrySchema = z.strictObject({
+  position: z.enum(BRAIN_VOCABULARY_SLOT_POSITIONS),
+  fromNorm: z.string(),
+  toNorm: z.string(),
+  approvedBy: z.string().nullable(),
+  approvedAt: z.string(),
+  hasRejectionMemory: z.boolean(),
+}) satisfies z.ZodType<BrainVocabularyEdgeEntry, unknown>;
+
+export const BrainVocabularyPositionCountsSchema = z.strictObject({
+  position: z.enum(BRAIN_VOCABULARY_SLOT_POSITIONS),
+  scope: z.enum(BRAIN_VOCABULARY_SCOPES),
+  total: z.number().int().nonnegative(),
+  scoped: z.number().int().nonnegative(),
+  withheld: z.number().int().nonnegative(),
+  countsConsistent: z.boolean(),
+}) satisfies z.ZodType<BrainVocabularyPositionCounts, unknown>;
+
+export const BrainVocabularyCardinalityEntrySchema = z.strictObject({
+  predicateSurface: z.string().nullable(),
+  cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),
+  sourceClass: z.string(),
+  proposedBy: z.string(),
+  reviewedBy: z.string().nullable(),
+  reviewedAt: z.string().nullable(),
+  claims: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainVocabularyCardinalityEntry, unknown>;
+
+export const BrainVocabularyCoverageSchema = z.strictObject({
+  liveFacts: z.number().int().nonnegative(),
+  comparableFacts: z.number().int().nonnegative(),
+  pendingProposals: z.number().int().nonnegative(),
+  pendingCardinalities: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainVocabularyCoverage, unknown>;
+
+export const BrainVocabularyInForceResponseSchema = z.strictObject({
+  edges: z.array(BrainVocabularyEdgeEntrySchema),
+  counts: z.array(BrainVocabularyPositionCountsSchema),
+  cardinalities: z.array(BrainVocabularyCardinalityEntrySchema),
+  cardinalityCounts: BrainVocabularyPositionCountsSchema,
+  coverage: BrainVocabularyCoverageSchema,
+  truncated: z.boolean(),
+}) satisfies z.ZodType<BrainVocabularyInForceResponse, unknown>;
+
+export const BrainVocabularyBlastRadiusSideSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  pairs: z.array(BrainFactWillSupersedePairSchema),
+  withheld: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  countsConsistent: z.boolean(),
+}) satisfies z.ZodType<BrainVocabularyBlastRadiusSide, unknown>;
+
+/**
+ * The counterfactual, as a DISCRIMINATED union on the wire.
+ *
+ * ⚠️ A union rather than one record with a nullable reason, because the engine's
+ * own type is one and flattening it here would undo the fix. `BlastRadius`'s
+ * docstring records what the flat shape produced: a renderer that read `floor`
+ * before checking `structurallyEmpty` said *"at least 0 today, and every future
+ * claim in this slot"* for an object-position alias — false, and the exact
+ * confident all-clear the preview exists to prevent. A `z.union` is what makes
+ * the numbers UNREADABLE on the branch where they are meaningless.
+ */
+export const BrainVocabularyBlastRadiusSchema = z.union([
+  z.strictObject({
+    kind: z.literal("structurally-empty"),
+    reason: z.enum(BRAIN_VOCABULARY_STRUCTURALLY_EMPTY_REASONS),
+  }),
+  z.strictObject({
+    kind: z.literal("computed"),
+    arming: BrainVocabularyBlastRadiusSideSchema,
+    disarming: BrainVocabularyBlastRadiusSideSchema,
+    floor: z.literal(true),
+    subtreeTruncated: z.boolean(),
+  }),
+]) satisfies z.ZodType<BrainVocabularyBlastRadius, unknown>;
+
+export const BrainVocabularyPreviewResponseSchema = z.strictObject({
+  radius: BrainVocabularyBlastRadiusSchema,
+}) satisfies z.ZodType<BrainVocabularyPreviewResponse, unknown>;
+
+export const BrainVocabularyAuthorResponseSchema = z.union([
+  z.strictObject({
+    outcome: z.literal("authored"),
+    proposalId: z.string(),
+    convergedOnProposal: z.boolean(),
+  }),
+  z.strictObject({
+    outcome: z.literal("already_approved"),
+    proposalId: z.string(),
+  }),
+]) satisfies z.ZodType<BrainVocabularyAuthorResponse, unknown>;
+
+export const BrainVocabularyRemoveResponseSchema = z.union([
+  z.strictObject({
+    outcome: z.literal("removed"),
+    proposalId: z.string(),
+    memoryCreated: z.boolean(),
+  }),
+  z.strictObject({
+    outcome: z.literal("already_removed"),
+    proposalId: z.string(),
+  }),
+]) satisfies z.ZodType<BrainVocabularyRemoveResponse, unknown>;
+
+/**
+ * ⚠️ ARM-COVERAGE pins for the three tagged response unions.
+ *
+ * `satisfies z.ZodType<T, unknown>` is blind in the same direction here as it is
+ * for the enums above, and for the same reason: DROPPING an arm leaves the
+ * inferred output still assignable to the wire type, so the check passes
+ * vacuously and the missing arm fails at runtime — `/author` 500s on the
+ * double-submit path, `/preview` on an object-position alias. These close it by
+ * comparing the DISCRIMINANTS, which is the part an arm carries with it.
+ */
+type _AuthorArmsCovered = [
+  Exclude<
+    BrainVocabularyAuthorResponse["outcome"],
+    z.infer<typeof BrainVocabularyAuthorResponseSchema>["outcome"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _authorArmsCovered: _AuthorArmsCovered = true;
+void _authorArmsCovered;
+
+type _RemoveArmsCovered = [
+  Exclude<
+    BrainVocabularyRemoveResponse["outcome"],
+    z.infer<typeof BrainVocabularyRemoveResponseSchema>["outcome"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _removeArmsCovered: _RemoveArmsCovered = true;
+void _removeArmsCovered;
+
+type _BlastRadiusArmsCovered = [
+  Exclude<
+    BrainVocabularyBlastRadius["kind"],
+    z.infer<typeof BrainVocabularyBlastRadiusSchema>["kind"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _blastRadiusArmsCovered: _BlastRadiusArmsCovered = true;
+void _blastRadiusArmsCovered;
+
+export const BrainVocabularyCardinalityWriteResponseSchema = z.strictObject({
+  cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),
+}) satisfies z.ZodType<BrainVocabularyCardinalityWriteResponse, unknown>;
+
+/**
+ * The authoring request. `position` is an enum and both norms are picked
+ * values, so a client that never rendered a picker still cannot smuggle a
+ * position the store does not know.
+ *
+ * The norms are NOT bounded to a picker's contents here — that check needs the
+ * corpus and lives server-side in `authorAliasEdge`'s population refusal, which
+ * is the arm that holds for a caller posting JSON directly. A schema-level
+ * allowlist would be a second, weaker copy of it.
+ */
+export const BrainVocabularyAuthorRequestSchema = z.strictObject({
+  position: z.enum(BRAIN_VOCABULARY_SLOT_POSITIONS),
+  fromNorm: z.string().min(1).max(500),
+  toNorm: z.string().min(1).max(500),
+});
+
+export const BrainVocabularyRemoveRequestSchema = BrainVocabularyAuthorRequestSchema;
+
+/**
+ * A preview request — the four counterfactual kinds child 1's engine answers.
+ *
+ * `predicateSurface`, never a predicate key. `BlastRadiusRequest`'s own
+ * docstring makes that a prohibition: *"a request type that accepted a key would
+ * be the seam through which one reaches a route body"*, and this schema is
+ * literally that route body.
+ */
+export const BrainVocabularyPreviewRequestSchema = z.union([
+  z.strictObject({
+    kind: z.literal("alias-approval"),
+    position: z.enum(BRAIN_VOCABULARY_SLOT_POSITIONS),
+    fromNorm: z.string().min(1).max(500),
+    toNorm: z.string().min(1).max(500),
+  }),
+  z.strictObject({
+    kind: z.literal("alias-removal"),
+    position: z.enum(BRAIN_VOCABULARY_SLOT_POSITIONS),
+    fromNorm: z.string().min(1).max(500),
+  }),
+  z.strictObject({
+    kind: z.literal("cardinality-flip"),
+    predicateSurface: z.string().min(1).max(500),
+  }),
+  z.strictObject({
+    kind: z.literal("cardinality-removal"),
+    predicateSurface: z.string().min(1).max(500),
+  }),
+]);
+
+/**
+ * Curating or un-curating a predicate — both directions, one body. `single` arms
+ * retroactive supersession; `multi` is the adjudicated record that values
+ * coexist.
+ */
+export const BrainVocabularyCardinalityRequestSchema = z.strictObject({
+  predicateSurface: z.string().min(1).max(500),
+  cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),
+});

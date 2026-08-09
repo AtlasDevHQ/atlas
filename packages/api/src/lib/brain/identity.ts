@@ -296,6 +296,30 @@ const _slotPositionsCoverTheWire: _SlotPositionsCoverTheWire = true;
 void _slotPositionsCoverTheWire;
 
 /**
+ * The `brain_facts` surface and key columns at one slot position.
+ *
+ * The value type is a MAPPED type rather than `{ surface: string; key: string }`,
+ * so `object: { surface: "subject", key: "object_key" }` — the cross-position
+ * slip ADR-0037 §6 calls unrecoverable — does not compile, and neither does a
+ * misspelled key column. The looser spelling left both to a `-pg` suite.
+ *
+ * Lives HERE rather than in a consumer because it has two of them and the
+ * question it answers ("which column carries this position") is identity's, not
+ * either caller's. It arrived as a private const in `vocabulary-decide.ts` (the
+ * drift re-key's), and #5087's positional-visibility seam needed the same map —
+ * at which point a second copy would have been two spellings of the slip this
+ * type exists to make uncompilable.
+ */
+export type SlotColumns = {
+  readonly [P in SlotPosition]: { readonly surface: P; readonly key: `${P}_key` };
+};
+export const SLOT_COLUMNS: SlotColumns = {
+  subject: { surface: "subject", key: "subject_key" },
+  predicate: { surface: "predicate", key: "predicate_key" },
+  object: { surface: "object", key: "object_key" },
+};
+
+/**
  * Narrow an untrusted value to a {@link SlotPosition}.
  *
  * Shaped on `isEpisodeSource` (`lib/brain/sources.ts`), and it exists for the

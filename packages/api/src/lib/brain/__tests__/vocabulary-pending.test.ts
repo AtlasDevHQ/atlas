@@ -161,7 +161,15 @@ describe("evidence that will not narrow is REPORTED, never rendered as zero", ()
     // renderer cannot tell them apart from a zero, so the flag is the only thing
     // that can.
     const queue = await loadPendingQueue(
-      stubReader({ alias: { predicate: [aliasRow({ subjects: "not-a-number" })] } }),
+      // ⚠️ The workspace-wide total MATCHES the scoped one, so `withheldCount`'s
+      // own arithmetic is consistent and `totalKnown` is true. Left at the stub's
+      // `{n: 0}` default the badge assertion below would be vacuous — it would go
+      // red for the 1-visible-row-against-a-0-total inversion and pass with the
+      // evidence conjunct deleted.
+      stubReader({
+        alias: { predicate: [aliasRow({ subjects: "not-a-number" })] },
+        aliasTotals: { predicate: [{ n: 1 }] },
+      }),
       owner,
     );
     const entry = queue.entries[0]!;
@@ -173,6 +181,15 @@ describe("evidence that will not narrow is REPORTED, never rendered as zero", ()
     // structurally unreadable on this branch.
     expect(entry.evidence).toEqual({ kind: "unreadable" });
     expect(warnCalls.some((c) => c.msg.includes("reported as unreadable"))).toBe(true);
+    // ⚠️ …and it reaches the POSITION BADGE. `scopedTotalKnown` folds in
+    // `evidenceDrifted`, and that conjunct was dead to this suite: dropping it
+    // left every test green while the badge went on asserting "N of N ·
+    // consistent" over a row whose evidence was never read. The badge is the one
+    // place the page states its counts are trustworthy, so a drifted evidence
+    // read that leaves it clean is the disclosure failing in the reassuring
+    // direction.
+    const counts = queue.aliasCounts.find((c) => c.position === "predicate")!;
+    expect(counts.consistent).toBe(false);
   });
 
   it("POSITIVE CONTROL — a readable count is reported as a fact", async () => {
@@ -209,6 +226,49 @@ describe("evidence that will not narrow is REPORTED, never rendered as zero", ()
     const entry = queue.entries[0]!;
     if (entry.kind !== "alias") throw new Error("expected an alias entry");
     expect(entry.evidence).toEqual({ kind: "unreadable" });
+  });
+
+  it("⚠️ an unreadable CORRECTION count gets the same arm the alias half got", async () => {
+    // The twin of the first test in this block, and its absence was the pattern
+    // the round-3 panel named: the cardinality half kept shipping the fix
+    // without the test. Restoring the pre-fix zeroed `behavioral` shape
+    // (`subjects ?? 0, events ?? 0, countsConsistent: false`) left this suite,
+    // the `-pg` suite AND the route suite green — on the half whose approval
+    // arms RETROACTIVE supersession.
+    const queue = await loadPendingQueue(
+      // The total matches the scoped one for the alias twin's reason — otherwise
+      // the badge assertion below passes on the arithmetic instead.
+      stubReader({
+        cardinality: [cardinalityRow({ events: "nope" })],
+        cardinalityTotal: [{ n: 1 }],
+      }),
+      owner,
+    );
+    const entry = queue.entries[0]!;
+    if (entry.kind !== "cardinality") throw new Error("expected a cardinality entry");
+    expect(entry.evidence).toEqual({ kind: "unreadable" });
+    expect(warnCalls.some((c) => c.msg.includes("reported as unreadable"))).toBe(true);
+    // And the badge, for the alias twin's reason.
+    expect(queue.cardinalityCounts?.consistent).toBe(false);
+  });
+
+  it("POSITIVE CONTROL — a readable correction pair is reported as a fact", async () => {
+    // Without this, an unconditional `unreadable` satisfies the assertion above.
+    const queue = await loadPendingQueue(
+      stubReader({
+        cardinality: [cardinalityRow()],
+        cardinalityTotal: [{ n: 1 }],
+      }),
+      owner,
+    );
+    const entry = queue.entries[0]!;
+    if (entry.kind !== "cardinality" || entry.evidence.kind !== "behavioral") {
+      throw new Error("expected behavioral cardinality evidence");
+    }
+    expect(entry.evidence.subjects).toBe(3);
+    expect(entry.evidence.events).toBe(5);
+    expect(entry.evidence.countsConsistent).toBe(true);
+    expect(queue.cardinalityCounts?.consistent).toBe(true);
   });
 
   it("⚠️ fewer EVENTS than SUBJECTS is a third statement disagreeing", async () => {
@@ -308,6 +368,38 @@ describe("rows that will not narrow are DROPPED and counted, never smuggled thro
     );
     expect(queue.entries).toHaveLength(0);
     expect(queue.incomplete).toBe(true);
+  });
+
+  it("⚠️ drops a cardinality row whose live-claim count will not narrow", async () => {
+    // `claims: row.claims ?? 0` was the shipped shape, and 0 is not a neutral
+    // default here — it is the single strongest REJECT signal on the row. The
+    // client renders *"N live claims in this slot"*, and
+    // `PendingCardinalityEntry.predicateSurface`'s own docstring says an entry
+    // proposing to arm supersession for a predicate with no live claims is
+    // exactly what an approver should find and reject. So an unread count
+    // rendered as a confident argument for rejecting.
+    //
+    // `COALESCE(s.claims, 0)::int` means Postgres cannot produce this, which is
+    // why only a stub can reach it — and why nothing caught it for three rounds.
+    const queue = await loadPendingQueue(
+      stubReader({ cardinality: [cardinalityRow({ claims: null })] }),
+      owner,
+    );
+    expect(queue.entries).toHaveLength(0);
+    // ⚠️ `incomplete`, never `truncated` — no filter reaches a dropped row.
+    expect(queue.incomplete).toBe(true);
+    expect(warnCalls.some((c) => c.msg.includes("would not narrow and were dropped"))).toBe(true);
+  });
+
+  it("POSITIVE CONTROL — a readable claim count reaches the entry intact", async () => {
+    const queue = await loadPendingQueue(
+      stubReader({ cardinality: [cardinalityRow({ claims: 4 })] }),
+      owner,
+    );
+    const entry = queue.entries[0]!;
+    if (entry.kind !== "cardinality") throw new Error("expected a cardinality entry");
+    expect(entry.claims).toBe(4);
+    expect(queue.incomplete).toBe(false);
   });
 
   it("an unreadable rank renders as 0 and LOGS, rather than reaching the wire as NaN", async () => {

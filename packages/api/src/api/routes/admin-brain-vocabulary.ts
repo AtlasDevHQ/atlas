@@ -966,6 +966,14 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
           body.decision === "approved"
             ? { outcome: "approved", proposalId: null }
             : { outcome: "rejected", proposalId: null, removedEdge: false };
+        // ⚠️ `checkedWrite`'s refusal arm is UNREACHABLE from here today, and
+        // that is stated rather than left for a reviewer to hunt for the missing
+        // test. `cardinalityResponse` is a literal two lines up with no dynamic
+        // field, so it always parses; the arm exists because the write has
+        // already COMMITTED at this point, and the day this response carries a
+        // value read back from the row, a 200 with an unparsed body would report
+        // a retroactive supersession curation whose shape nobody checked. The
+        // verb below is on the same footing — defensive, not exercised.
         const described = checkedWrite(BrainVocabularyDecideResponseSchema, cardinalityResponse, {
           // The VERDICT, not the route. A rejection records that values coexist;
           // saying "the curation succeeded and is in force" over it reports the

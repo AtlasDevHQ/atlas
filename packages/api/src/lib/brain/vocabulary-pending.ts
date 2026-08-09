@@ -1095,6 +1095,19 @@ async function loadCardinalityProposals(
       unreadable += 1;
       continue;
     }
+    // ⚠️ DROPPED, never coalesced to 0 — this was `row.claims ?? 0` and that is
+    // the module's own defect one field over. `claims` is load-bearing in the
+    // ZERO direction: {@link PendingCardinalityEntry.predicateSurface}'s
+    // docstring says an entry proposing to arm supersession for a predicate with
+    // no live claims is exactly what an approver should find and reject, and the
+    // client renders the number as *"N live claims in this slot"*. So a count
+    // nobody read rendered as the strongest reject signal on the row. `COALESCE(…,
+    // 0)::int` means Postgres cannot produce a non-number here; this is query
+    // drift, and drift belongs in `incomplete` with the other unnarrowable rows.
+    if (typeof row.claims !== "number") {
+      unreadable += 1;
+      continue;
+    }
     if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
 
     const evidence = readCorrectionEvidence(row, ctx.workspaceId, opts.requestId);
@@ -1114,7 +1127,7 @@ async function loadCardinalityProposals(
       sourceClass: typeof row.source_class === "string" ? row.source_class : "",
       proposedBy: typeof row.proposed_by === "string" ? row.proposed_by : "",
       proposedAt: row.proposed_at,
-      claims: typeof row.claims === "number" ? row.claims : 0,
+      claims: row.claims,
       evidence,
     });
   }

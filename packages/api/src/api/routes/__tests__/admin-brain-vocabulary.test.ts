@@ -200,7 +200,19 @@ void mock.module("@atlas/api/lib/brain/vocabulary-in-force", () => ({
 let cardinalityResult: unknown = { ok: true, cardinality: "single" };
 const cardinalityCalls: unknown[] = [];
 const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
-let cardinalityDecided: "decided" | "not-pending" | "unaddressable" = "decided";
+/**
+ * ⚠️ Widened to `string`, deliberately, so a FOURTH member is injectable.
+ *
+ * The route branches positively on `"decided"` and throws on a `never` default,
+ * and that default is the whole point of the three-way result: the earlier shape
+ * fell through to SUCCESS, so a new member would have been reported to the
+ * approver as *"Curated: … now holds one value at a time"* for a write that may
+ * not have happened, on the one verb that arms retroactive supersession.
+ *
+ * Typed to the union, the default is unreachable from any test — collapsing it
+ * back to the fall-through left all 60 tests in this file green.
+ */
+let cardinalityDecided: string = "decided";
 void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   declarePredicateCardinalityForSurface: async (
     _db: unknown,
@@ -1236,6 +1248,32 @@ describe("POST /decide", () => {
       });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ outcome: "approved", proposalId: null });
+    });
+
+    it("⚠️ a result this route does not recognise REFUSES, never falls through to success", async () => {
+      // The `never` default, exercised. A fourth member of
+      // `CardinalityDecisionResult` is what this models — the seam growing a
+      // result the route has not been taught — and the honest answer to it is a
+      // 500 with a requestId, not the strongest success string in the file.
+      //
+      // Reachable only because the mock's field is typed `string`; with the
+      // union's own type nothing can inject this, which is exactly why the
+      // branch was unfalsified.
+      cardinalityDecided = "quantum-superposed";
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "reports to",
+        decision: "approved",
+      });
+      expect(res.status).toBe(500);
+      // ⚠️ The STATUS and the absent success string are the assertions, not the
+      // body's shape. This file mounts the router on a bare `OpenAPIHono`; the
+      // `requestId` envelope every 500 carries in production comes from
+      // `app.onError` in `api/index.ts`, which is not installed here. What
+      // matters at this seam is that an unrecognised result refuses instead of
+      // telling the approver that a retroactive supersession curation is in
+      // force.
+      expect(await res.text()).not.toContain("approved");
     });
   });
 });

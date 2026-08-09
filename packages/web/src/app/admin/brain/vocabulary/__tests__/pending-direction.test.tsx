@@ -143,6 +143,16 @@ let decideMode: "ok" | "non-json" | "extra-key" | "nothing" = "ok";
 let countsOverride: Record<string, unknown> | null = null;
 let truncatedOverride = false;
 let incompleteOverride = false;
+/**
+ * Whether `/pending` answers `cardinalityCounts: null` — the queue never asked
+ * the cardinality question.
+ *
+ * ⚠️ Its own switch rather than folded into {@link countsOverride}, because
+ * `null` is not a count with different numbers in it. It is the ABSENCE of the
+ * question, and the empty state says something different for it than for a
+ * withheld row.
+ */
+let cardinalityCountsNull = false;
 
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -170,7 +180,7 @@ function installFetchStub() {
         jsonResponse({
           entries: queueEntries,
           aliasCounts: [countsOverride ?? COUNTS],
-          cardinalityCounts: { ...COUNTS, total: 0, scoped: 0 },
+          cardinalityCounts: cardinalityCountsNull ? null : { ...COUNTS, total: 0, scoped: 0 },
           truncated: truncatedOverride,
           incomplete: incompleteOverride,
         }),
@@ -299,6 +309,7 @@ beforeEach(() => {
   countsOverride = null;
   truncatedOverride = false;
   incompleteOverride = false;
+  cardinalityCountsNull = false;
 });
 
 afterEach(() => {
@@ -620,6 +631,59 @@ describe("⚠️ a decide body Atlas could not read is never reported as the ver
   });
 });
 
+describe("⚠️ …and the CARDINALITY half gets the same three arms, not just the alias half", () => {
+  // The panel's round-3 finding, and the pattern it named across this whole
+  // diff: the alias row's `readDecideOutcome === null` arm is falsified three
+  // ways above, and its cardinality twin — whose own comment says *"this one
+  // arms RETROACTIVE supersession"* — had none of them. Replacing that arm with
+  // `?? { outcome: "approved" }` left all 25 tests in this file green, on the
+  // higher-consequence half of the pair.
+  //
+  // The success string it falls through to is not a soft one: *"Every future
+  // claim in that slot can supersede an earlier one at the next publish"*, said
+  // about a response nobody read.
+  async function approveCardinalityOnce(): Promise<void> {
+    queueEntries = [cardinalityEntry()];
+    renderQueue();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Preview the impact/ })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Preview the impact/ }));
+    await waitFor(() => expect(approveButton().disabled).toBe(false));
+    fireEvent.click(approveButton());
+  }
+
+  test("a NON-JSON 200 says `could not confirm`, not `can supersede`", async () => {
+    decideMode = "non-json";
+    await approveCardinalityOnce();
+    await waitFor(() => expect(screen.getByText(/could not confirm/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("can supersede an earlier one");
+  });
+
+  test("a STRICT-schema violation does too", async () => {
+    decideMode = "extra-key";
+    await approveCardinalityOnce();
+    await waitFor(() => expect(screen.getByText(/could not confirm/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("can supersede an earlier one");
+  });
+
+  test("⚠️ a LOST RACE is reported as itself here too", async () => {
+    // The alias twin's test comment says the fix was measured by replacing the
+    // branch with `if (false)` — and that is exactly what stayed green on this
+    // component. On a lost race the approver is told they armed retroactive
+    // supersession for a write somebody else made.
+    decideMode = "nothing";
+    await approveCardinalityOnce();
+    await waitFor(() => expect(screen.getByText(/had already been decided/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("can supersede an earlier one");
+  });
+
+  test("POSITIVE CONTROL — a parseable approval still reports the arming", async () => {
+    await approveCardinalityOnce();
+    await waitFor(() => expect(screen.getByText(/can supersede an earlier one/)).toBeTruthy());
+  });
+});
+
 describe("⚠️ evidence Atlas COULD NOT READ is never rendered as a zero", () => {
   test("an alias entry says unknown-not-zero rather than explaining a count", async () => {
     // The flat shape returned `subjects: 0, countsConsistent: false` and the
@@ -713,5 +777,108 @@ describe("the empty state is a coverage statement, never a congratulation", () =
     expect(text.toLowerCase()).not.toContain("caught up");
     expect(text.toLowerCase()).not.toContain("all clear");
     expect(text).toContain("not the same as nothing needing one");
+  });
+
+  test("⚠️ a question never ASKED is not reported as one you may not see", async () => {
+    // `cardinalityCounts === null` and `withheld > 0` are two different reasons
+    // the sentence is narrower than it sounds, and one qualifier carried both:
+    // *"that you can see"* names an ACL boundary, and it was rendered for a
+    // queue that simply never asked the cardinality question — filtered out, or
+    // filtered to an entity position where a cardinality proposal cannot exist.
+    // An approver who reads that goes looking for an admin to widen a grant that
+    // would change nothing.
+    queueEntries = [];
+    cardinalityCountsNull = true;
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Nothing is awaiting a decision/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("among the kinds this queue asked about");
+    expect(text).not.toContain("that you can see");
+  });
+
+  test("a WITHHELD row still says `that you can see`", async () => {
+    // The other side of the split, and the reason it is a split rather than a
+    // reword: this qualifier is the honest one when rows exist and a grant is
+    // hiding them.
+    queueEntries = [];
+    countsOverride = { ...COUNTS, total: 4, scoped: 0, withheld: 4 };
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Nothing is awaiting a decision/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("that you can see");
+    expect(text).not.toContain("among the kinds this queue asked about");
+  });
+
+  test("POSITIVE CONTROL — nothing withheld and everything asked carries NO qualifier", async () => {
+    // Without this, an unconditional qualifier satisfies both assertions above,
+    // and the page would hedge a sentence it is entitled to state flat.
+    queueEntries = [];
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Nothing is awaiting a decision/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("that you can see");
+    expect(text).not.toContain("among the kinds this queue asked about");
+  });
+});
+
+describe("⚠️ two UNADDRESSABLE cardinality rows are two rows, not one", () => {
+  test("both render, because the key folds in the index", async () => {
+    // `entryKey` used to key a cardinality row on `predicateSurface ??
+    // "unaddressable"`, so every row whose claims have all been retracted shared
+    // one React key. React renders the first and drops the rest — and these are
+    // precisely the rows an approver is meant to find and reject, so the
+    // collision hides them at the one moment they matter. Only one such row was
+    // ever constructed in this file, so the collision was never built.
+    // ⚠️ The console spy is the assertion that BITES, and the row count is the
+    // control beside it. Measured: React renders both children on a first pass
+    // even with one key between them, so *"two rows appear"* passes on the
+    // collided key and pins nothing. What the collision breaks is
+    // RECONCILIATION — the two rows share an identity, so per-row state
+    // (a chosen direction, a preview, a decide error) follows the key rather
+    // than the row on any subsequent render. React says so, once, and that
+    // warning is the only observable at render time.
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      queueEntries = [
+        cardinalityEntry({ predicateSurface: null, proposedAt: "2026-08-08T00:00:00.000Z" }),
+        cardinalityEntry({ predicateSurface: null, proposedAt: "2026-08-07T00:00:00.000Z" }),
+      ];
+      renderQueue();
+      await waitFor(() => expect(screen.getAllByText(/Curated predicate/).length).toBe(2));
+      expect(screen.getAllByText(/no live claim carries this predicate/)).toHaveLength(2);
+      expect(errors.filter((e) => /same key|duplicate key/i.test(e))).toEqual([]);
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  test("POSITIVE CONTROL — the spy above sees a real duplicate-key warning", async () => {
+    // Without this, a harness that swallows React's warning (a production build,
+    // a different renderer, a future React that drops the message) turns the
+    // assertion above into a permanent pass, and the key fix becomes
+    // unfalsifiable without anyone noticing.
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      render(
+        createElement(
+          "ul",
+          null,
+          [1, 2].map(() => createElement("li", { key: "collide" }, "row")),
+        ),
+      );
+      await waitFor(() =>
+        expect(errors.filter((e) => /same key|duplicate key/i.test(e)).length).toBeGreaterThan(0),
+      );
+    } finally {
+      console.error = realError;
+    }
   });
 });

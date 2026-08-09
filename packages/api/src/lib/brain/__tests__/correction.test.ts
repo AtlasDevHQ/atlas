@@ -18,6 +18,7 @@
  *   - a correction is admin-authority, ACL-gated, and episode-recorded.
  */
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
@@ -1382,6 +1383,53 @@ describe("supersede", () => {
     expect(store.episodes).toHaveLength(0);
   });
 
+  test("an UNKEYED target still refuses a restatement — the guard does not switch off (#5037)", async () => {
+    // ⚠️ THE REGRESSION THE FIRST CUT OF #5037 SHIPPED, and the reason this test
+    // exists rather than the reasoning that said it could not happen.
+    //
+    // Reading the target's key instead of deriving it is right whenever there IS
+    // a stored key. When there is not — a region-imported corpus, every fact
+    // unkeyed — a derived replacement key can never equal a stored NULL, so the
+    // comparison stops being a comparison: the refusal cannot fire for ANY
+    // input, and a byte-identical restatement reaches
+    // `SUPERSEDE_STAMP_EXPLICIT_SQL`. A published belief is retired in favour of
+    // a successor asserting the same value, with a `supersedes` edge recording an
+    // arbitration that settled nothing, and there is no inverse verb.
+    //
+    // The near-miss is the instructive part: "an UNKEYED target inherits its null
+    // slot" (below) seeds the identical fixture and supersedes with a DIFFERENT
+    // object, so it passes over this defect without touching it. The two tests
+    // differ only in whether the replacement restates — which is the whole of
+    // what the guard decides.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "unkeyed",
+      object: "Ana",
+      slot: { subject: null, predicate: null, object: null },
+    });
+
+    // The precondition that makes this the unkeyed case rather than a duplicate
+    // of the stored-key test above: nothing to read, and a surface that keys
+    // perfectly well.
+    expect(store.fact("unkeyed").slot.object).toBeNull();
+    expect(slotKey("Ana", identityVocabulary.object)).toBe("ana");
+
+    const outcome = await run(store, {
+      factId: "unkeyed",
+      verb: "supersede",
+      replacement: { object: "Ana" },
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+    });
+    // The load-bearing half: nothing was retired, and no successor was minted.
+    expect(store.fact("unkeyed").validTo).toBeNull();
+    expect(store.facts).toHaveLength(1);
+    expect(store.episodes).toHaveLength(0);
+  });
+
   test("the replacement claim lands keyed under the workspace's vocabulary (#5022)", async () => {
     // The OTHER half of the threading, and the one the guard tests cannot see:
     // `applySupersede` passes the vocabulary through to `reconcileFacts`, and
@@ -2280,6 +2328,27 @@ describe("re-authority and pin", () => {
   // rather than flow on to `iso()` and render a refusal with no date in it.
   // (The compile side is held separately — `TargetRow.validTo` is
   // `Date | string | null`, so the assignment itself would not type-check.)
+  // The same second arm for the three key columns (#5037). Dropping a column can
+  // only ever produce `undefined`, so the loop above exercises the ABSENT arm and
+  // leaves the TYPE arm untouched — the reason this file already carries a
+  // wrong-type test for `valid_to` one test down. The mutant it catches is
+  // `typeof value !== "string" ? null : value`, which compiles, keeps every
+  // absent-column test green, and lands the replacement in the `(NULL, NULL)`
+  // slot while the id-based stamp retires the target: #5037's exact defect,
+  // reached through the narrowing instead of through the derivation.
+  for (const column of ["subject_key", "predicate_key", "object_key"] as const) {
+    test(`a target projection whose \`${column}\` decodes to the wrong type THROWS`, async () => {
+      const store = new FakeCorrectionStore();
+      store.overrideTargetColumns = { [column]: 12345 };
+      store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+      await expect(
+        run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } }),
+      ).rejects.toThrow(`unreadable ${column}`);
+      expect(store.episodes).toHaveLength(0);
+    });
+  }
+
   test("a target projection whose `valid_to` decodes to the wrong type THROWS", async () => {
     const store = new FakeCorrectionStore();
     store.overrideTargetColumns = { valid_to: 1735689600000 };
@@ -2569,7 +2638,27 @@ describe("shared gates", () => {
  * a second time here would claim a coverage this file cannot honestly provide.
  */
 describe("the identity keys never leave the target read (#5037)", () => {
-  const KEY_COLUMNS = ["subject_key", "predicate_key", "object_key"] as const;
+  /**
+   * ALL FIVE gated columns, not the three this slice reads.
+   *
+   * ⚠️ The exemption this block compensates for switches off `subject_cmp` and
+   * `object_cmp` too (`keys-not-on-the-wire.test.ts`'s `KEY_COLUMNS`), and a pin
+   * that replaces a five-column guard with a three-column one has quietly
+   * narrowed the prohibition while claiming to preserve it. `object_cmp` in
+   * particular is the arm that proves DIFFERENCE at the publish gate, so a
+   * `SELECT f.object_cmp` added to `REPLACEMENT_ROW_SQL` is exactly the leak
+   * worth catching.
+   */
+  const KEY_COLUMNS = [
+    "subject_key",
+    "predicate_key",
+    "object_key",
+    "subject_cmp",
+    "object_cmp",
+  ] as const;
+
+  /** The three THIS module legitimately reads. Everything else is a leak. */
+  const INHERITED_COLUMNS = ["subject_key", "predicate_key", "object_key"] as const;
 
   /** The ACL clause shape `correctFact` passes in — any true predicate will do. */
   const TARGET_READ = correctionTargetSql("f.workspace_id = $1", 2);
@@ -2583,9 +2672,11 @@ describe("the identity keys never leave the target read (#5037)", () => {
    * files instead of naming them.
    */
   const statements = async (): Promise<[string, string][]> => {
-    const module: Record<string, unknown> = await import("@atlas/api/lib/brain/correction");
+    // NOT named `module`: `next(no-assign-module-variable)` is a CI-blocking
+    // error on that identifier, and the whole repo lints under one config.
+    const exports: Record<string, unknown> = await import("@atlas/api/lib/brain/correction");
     const found: [string, string][] = [];
-    for (const [name, value] of Object.entries(module)) {
+    for (const [name, value] of Object.entries(exports)) {
       if (typeof value !== "string") continue;
       if (!/\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(value)) continue;
       found.push([name, value]);
@@ -2600,6 +2691,28 @@ describe("the identity keys never leave the target read (#5037)", () => {
     ...[...sql.matchAll(/\bRETURNING\b([^;]*)/gi)].map((m) => m[1]!),
   ];
 
+  /**
+   * WRITE spans — an `UPDATE … SET …` clause and an `INSERT INTO … (columns)`
+   * list.
+   *
+   * ⚠️ Without this the block is blind to the failure THREE separate places name
+   * it as the guard against. `correction.ts` is whole-file allowlisted in
+   * `check-brain-fact-promotion.sh` (covering all five gated columns) AND
+   * whole-file exempt in `keys-not-on-the-wire.test.ts`, and a projection scan
+   * cannot see a `SET`. A future `UPDATE brain_facts SET subject_key = …` added
+   * to this module — the plausible "re-key the target while we're here" edit —
+   * was therefore caught by NOTHING, while three rationales asserted it was
+   * caught here. A hole with a stop sign pointing the wrong way is worse than an
+   * open one.
+   */
+  const writesOf = (sql: string): string[] => [
+    ...[...sql.matchAll(/\bSET\b([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|$)/gi)].map((m) => m[1]!),
+    ...[...sql.matchAll(/\bINSERT\s+INTO\b[^(]*\(([^)]*)\)/gi)].map((m) => m[1]!),
+  ];
+
+  /** `*` or `f.*` in projection position — the arm the exemption also switched off. */
+  const STAR_PROJECTION = /(^|[\s,(])(?:"?[\w$]+"?\.)?\*(?!\s*\))/;
+
   test("finds the module's statements at all", async () => {
     // Everything below is vacuous if the export scan breaks — a renamed constant
     // or a statement built at runtime would turn the two tests into green
@@ -2612,16 +2725,128 @@ describe("the identity keys never leave the target read (#5037)", () => {
     expect(found.map(([name]) => name)).toContain("REPLACEMENT_ROW_SQL");
   });
 
+  test("the scan's matchers detect planted violations", () => {
+    // Every assertion in this block is of the `toEqual([])` shape, which passes
+    // just as happily when a matcher matches nothing at all. So each matcher
+    // proves itself on planted SQL first. `keys-not-on-the-wire.test.ts` carries
+    // the same control and records that its star matcher's FIRST CUT read green
+    // over a planted violation — the failure is real, not hypothetical.
+    expect(projectionsOf("SELECT f.subject_key FROM brain_facts f").join(" ")).toContain(
+      "subject_key",
+    );
+    expect(projectionsOf("UPDATE brain_facts SET x = 1 RETURNING object_cmp").join(" ")).toContain(
+      "object_cmp",
+    );
+    expect(writesOf("UPDATE brain_facts SET subject_key = $1 WHERE id = $2").join(" ")).toContain(
+      "subject_key",
+    );
+    expect(
+      writesOf("INSERT INTO brain_facts (subject, predicate_key) VALUES ($1, $2)").join(" "),
+    ).toContain("predicate_key");
+    expect(STAR_PROJECTION.test(" f.* ")).toBe(true);
+    // …and does NOT fire on an aggregate's star, which is what makes the arm
+    // usable on real statements rather than a source of false alarms.
+    expect(STAR_PROJECTION.test("COUNT(*)")).toBe(false);
+  });
+
+  test("every executed statement is one the scan can see", async () => {
+    // The scan reads EXPORTED string constants. A module-private const, or a SQL
+    // literal inlined at a `tx.query(…)` call site, is invisible to it — and the
+    // whole-file exemption is precisely the incentive to add one. This turns the
+    // docstring's claim ("a NEW statement is covered the day it is added") into
+    // something enforced rather than asserted.
+    const source = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+    const known = new Set((await statements()).map(([name]) => name));
+    // Statements IMPORTED from another module are fine and must not be flagged:
+    // they are that module's to guard, and none of the modules this file imports
+    // SQL from (`content-mode/adapters/brain-facts.ts`, `reconcile.ts`) carries
+    // an exemption — the global scan still reads them. What this arm is for is a
+    // statement declared HERE and not exported, which the whole-file exemption
+    // makes invisible to everything.
+    for (const [, names] of source.matchAll(/\bimport\s*\{([^}]*)\}\s*from/g)) {
+      for (const raw of names!.split(",")) {
+        const name = raw.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop()?.trim();
+        if (name) known.add(name);
+      }
+    }
+    const args = [...source.matchAll(/\btx\.query\(\s*([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!);
+    expect(args.length, "found no tx.query call sites — the scan below is vacuous").toBeGreaterThan(
+      5,
+    );
+    const unknown = args.filter((name) => !known.has(name) && name !== "correctionTargetSql");
+    expect(
+      unknown,
+      "this module executes a statement declared here but not exported, so the key scan cannot see " +
+        "it. Export it, so the projection and write arms above cover it — `correction.ts` is exempt " +
+        "from keys-not-on-the-wire.test.ts whole-file, so a module-private statement is guarded by " +
+        "nothing at all.",
+    ).toEqual([]);
+  });
+
   test("the target read projects all three keys", async () => {
     // The POSITIVE control. Without it the prohibition below is satisfied by a
     // module that reads no key at all — which is the pre-#5037 code, whose whole
     // defect was re-deriving what it should have read.
     const spans = projectionsOf(TARGET_READ).join(" ");
-    for (const column of KEY_COLUMNS) {
+    for (const column of INHERITED_COLUMNS) {
       expect(spans, `the target read must project ${column} — the slot is INHERITED`).toContain(
         column,
       );
     }
+  });
+
+  test("the inherit channel is reachable from the row-copy path and nowhere else", () => {
+    // ⚠️ The type stops a slot being FORGED; it does not stop one being MINTED.
+    // `slotKey` is exported, so any producer can COMPUTE two keys and hand them
+    // to `inheritSlotFromFactRow({ id, subject_key: computed, … })` — no
+    // projection required, and invisible to both arms of
+    // `keys-not-on-the-wire.test.ts` (its SQL arm reads only SELECT/RETURNING
+    // spans; its identifier arm matches the camelCase spellings, not
+    // `subject_key`). That call reintroduces exactly the defect #5037 removes,
+    // in a file nobody is watching.
+    //
+    // So the doorway is pinned by CALL SITE, mirroring `ROW_COPY_SITES` itself:
+    // ADR-0037 §8 grants the row-copy path an exception, and a row-copy path is
+    // a specific, short list of files rather than a shape any producer can adopt.
+    const ALLOWED = new Set([
+      // Declares it.
+      "packages/api/src/lib/brain/identity.ts",
+      // The row-copy path — reads the keys off the target it is correcting.
+      "packages/api/src/lib/brain/correction.ts",
+    ]);
+    const found = execFileSync(
+      "grep",
+      [
+        "-rl",
+        "inheritSlotFromFactRow",
+        "packages",
+        "ee",
+        "plugins",
+        "apps",
+        "--include=*.ts",
+        "--exclude=*.test.ts",
+        "--exclude-dir=__tests__",
+        "--exclude-dir=node_modules",
+        "--exclude-dir=dist",
+      ],
+      { cwd: join(import.meta.dir, "..", "..", "..", "..", "..", ".."), encoding: "utf8" },
+    )
+      .split("\n")
+      .filter(Boolean);
+    // Vacuity guard: a renamed export or a moved directory would empty this list
+    // and the assertion below would pass having checked nothing.
+    expect(found, "the inherit-channel grep found no files — this assertion is vacuous").toContain(
+      "packages/api/src/lib/brain/identity.ts",
+    );
+    expect(
+      found.filter((f) => !ALLOWED.has(f)),
+      "a new caller is minting an inherited slot. ADR-0037 §1 forbids a producer COMPUTING identity; " +
+        "the doorway exists only for a path that COPIES it off a row it already holds. If this really " +
+        "is a row-copy path, add it here AND to ROW_COPY_SITES in keys-not-on-the-wire.test.ts, with " +
+        "the rationale both places ask for.",
+    ).toEqual([]);
   });
 
   test("the module never re-derives a key it could read off the target", () => {
@@ -2643,29 +2868,94 @@ describe("the identity keys never leave the target read (#5037)", () => {
     // inherit tests, the stored-object-key guard test, and the proposer's
     // stored-predicate test), never a replacement for them. What it adds is
     // coverage of the site that does not exist yet.
-    const source = readFileSync(
-      join(import.meta.dir, "..", "correction.ts"),
-      "utf8",
-    ).replace(/\/\*[\s\S]*?\*\//g, " ");
-    const offenders = [...source.matchAll(/slotKey\(\s*target\.\w+/g)].map((m) => m[0]);
+    // ⚠️ ONE SPELLING IS PERMITTED: `<stored> ?? slotKey(target.…)`. A stored NULL
+    // means the row has no identity to inherit, and there the derivation is the
+    // only honest answer — it is what `main` did for those rows, and removing it
+    // is what switched the `replacementIdentical` guard off for an imported
+    // corpus. The exemption is the `??` itself, so a BARE re-derivation is still
+    // refused and the fallback cannot be spelled without admitting it is one.
+    //
+    // Written as a lookbehind on the operator rather than by hoisting the surface
+    // into a local: hoisting would satisfy this matcher while changing nothing
+    // about the code, and a guard a rename defeats is worse than no guard.
+    const offendersIn = (text: string): string[] =>
+      [...text.matchAll(/(\?\?\s*)?slotKey\(\s*target\.\w+/g)]
+        .filter((m) => m[1] === undefined)
+        .map((m) => m[0]);
+
+    // ── The positive control ───────────────────────────────────────────────
+    // `expect(offenders).toEqual([])` is the always-green shape: weaken the
+    // regex to match nothing and this test passes forever with no signal. So the
+    // matcher proves itself on planted source first — one violation it must
+    // catch, and one permitted fallback it must not — before it is trusted on
+    // the real file. `keys-not-on-the-wire.test.ts` carries the same control for
+    // the same reason, and records that its star matcher's FIRST CUT read green
+    // over a planted violation.
     expect(
-      offenders,
+      offendersIn("const k = slotKey(target.subject, vocabulary.subject);"),
+      "the matcher does not detect a planted re-derivation — every assertion below is vacuous",
+    ).toEqual(["slotKey(target.subject"]);
+    expect(
+      offendersIn("const k = target.objectKey ?? slotKey(target.object, vocabulary.object);"),
+      "the matcher rejects the permitted `??` fallback — it would force the hoist it exists to prevent",
+    ).toEqual([]);
+
+    // BOTH comment forms are stripped. Stripping only `/* */` leaves a `//` line
+    // mentioning `slotKey(target.subject, …)` — prose that already exists in this
+    // repo — to false-fire the ratchet, and the repair anyone reaches for first
+    // is weakening the regex, which disarms it silently.
+    const source = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+    expect(
+      offendersIn(source),
       "the target's keys are STORED — read them off the row instead of re-deriving them from its surfaces. " +
         "A derived key equals the stored one only until the vocabulary moves (ADR-0037 §8), and every " +
-        "divergence lands in the irreversible direction.",
+        "divergence lands in the irreversible direction. The one permitted spelling is " +
+        "`<stored> ?? slotKey(target.…)`, for a row that has no stored key to read.",
     ).toEqual([]);
   });
 
-  test("no other statement projects a key", async () => {
+  test("no other statement projects a key, and none STARS brain_facts", async () => {
     for (const [name, sql] of await statements()) {
+      const spans = projectionsOf(sql);
+      // The star arm, for EVERY statement including the target read: `SELECT f.*`
+      // projects all five keys without naming one, so the column loop below
+      // cannot see it. This is the arm `keys-not-on-the-wire.test.ts` documents
+      // as the reason a star check exists at all, and the exemption turned it off.
+      for (const span of spans) {
+        expect(
+          STAR_PROJECTION.test(span),
+          `${name} star-projects. A \`*\` over brain_facts carries all five identity columns ` +
+            `without naming one, which every name-based arm here is blind to.`,
+        ).toBe(false);
+      }
       if (name === "correctionTargetSql") continue;
-      const spans = projectionsOf(sql).join(" ");
+      const joined = spans.join(" ");
       for (const column of KEY_COLUMNS) {
         expect(
-          spans.includes(column),
+          joined.includes(column),
           `${name} projects \`${column}\`. Only the target read may, and only so the replacement can ` +
             `INHERIT the target's slot (ADR-0037 §8). \`correction.ts\` is exempt from ` +
             `keys-not-on-the-wire.test.ts whole-file, so this is the only thing looking.`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  test("NO statement writes a key — not even the target read's own module", async () => {
+    // The arm the promotion guard's rationale names and the projection scan
+    // could not provide. `correction.ts` copies keys; it must never author one.
+    // The single sanctioned key writer is `vocabulary-decide.ts`'s re-key, and
+    // `reconcile.ts` binds them on INSERT — neither is this module.
+    for (const [name, sql] of await statements()) {
+      const spans = writesOf(sql).join(" ");
+      for (const column of KEY_COLUMNS) {
+        expect(
+          spans.includes(column),
+          `${name} WRITES \`${column}\`. This module is a row-copy path: it inherits keys and never ` +
+            `authors them. Whole-file allowlisted in check-brain-fact-promotion.sh, so its identity ` +
+            `arm will not catch this — which is why the rationale there points here.`,
         ).toBe(false);
       }
     }

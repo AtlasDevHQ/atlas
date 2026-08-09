@@ -1166,12 +1166,26 @@ export async function reconcileFacts(
     // `null` travels as `null`. An unkeyed row's slot is `(NULL, NULL)` and joins
     // nothing; deriving a key to fill the hole would invent identity for a row
     // that has none and move it into a live slot.
+    //
+    // ONE ternary over the whole slot, not one per position. Two independent
+    // ternaries let a future edit inherit the subject and derive the predicate
+    // with nothing objecting — a half-inherited slot, which is neither the
+    // target's nor the candidate's and joins whatever it happens to land on.
+    // "The slot is copied whole" is the invariant; this spelling is what makes
+    // it structural instead of conventional.
     const inherited = candidate.inheritedSlot;
-    const keys: SlotKeys = {
-      subject: inherited ? inherited.subject : slotKey(subject, vocabulary.subject),
-      predicate: inherited ? inherited.predicate : slotKey(predicate, vocabulary.predicate),
-      object: slotKey(object, vocabulary.object),
-    };
+    const keys: SlotKeys =
+      inherited !== undefined
+        ? {
+            subject: inherited.subject,
+            predicate: inherited.predicate,
+            object: slotKey(object, vocabulary.object),
+          }
+        : {
+            subject: slotKey(subject, vocabulary.subject),
+            predicate: slotKey(predicate, vocabulary.predicate),
+            object: slotKey(object, vocabulary.object),
+          };
     // The comparable value, materialized beside the keys and for the same
     // reason: computing it per statement is how the corroboration lookup and
     // the INSERT would start disagreeing about what a claim's value IS.
@@ -2157,13 +2171,26 @@ async function writeCandidate(
         producer: ctx.producer,
         factId,
         unkeyed,
+        // The row-copy provenance (#5037). Bound rather than dropped because it
+        // is the field that tells an operator WHICH of the three causes below
+        // they are looking at — and it is the only one this line can answer
+        // definitively, since the other two are inferences about a surface.
+        inheritedFrom: item.candidate.inheritedSlot?.fromFactId ?? null,
       },
-      // Two causes, and the message names both because it cannot distinguish
-      // them once the vocabulary is real: the SURFACE norms away (`-`, `___`,
-      // and the only reachable cause today), or an alias entry maps a real slot
-      // to something that does. Naming only the producer would send an operator
-      // after the wrong subsystem the day #5016 lands.
-      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Either the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3) or a vocabulary entry maps that slot to nothing",
+      // THREE causes now, and the message names all three because it cannot
+      // distinguish the first two once the vocabulary is real: the SURFACE norms
+      // away (`-`, `___`), or an alias entry maps a real slot to something that
+      // does. Naming only the producer would send an operator after the wrong
+      // subsystem the day #5016 lands.
+      //
+      // ⚠️ The third arrived with #5037's row-copy path and inverts the advice.
+      // An inherited slot is copied off the TARGET row, so a correction whose
+      // target is unkeyed lands here with surfaces that are perfectly fine —
+      // and an operator following the first two causes would inspect
+      // `Billing / is owned by`, find nothing wrong, and conclude the log is
+      // lying. `inheritedFrom` is the discriminator: when it is set, the
+      // producer and the vocabulary are both innocent.
+      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Three causes: the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3); a vocabulary entry maps that slot to nothing; or — when `inheritedFrom` is set — a row-copy path inherited a null slot from that fact, in which case this claim's surfaces are fine and the TARGET row is what has no identity",
     );
   }
 

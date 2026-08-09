@@ -244,15 +244,28 @@ const ROW_COPY_SITES = new Set([
   // exactly that reason, and that refusal is now pinned rather than trusted.
   //
   // ⚠️ What the exemption COSTS. Both arms, whole-file — so a future `SELECT …
-  // f.object_key` added to `REPLACEMENT_ROW_SQL` for an unrelated read, or a key
-  // field grown by a correction WIRE type, is no longer caught here. That is a
-  // live risk in this file specifically: it holds four statements over
-  // `brain_facts` where the bundle's exporter holds one. The compensating pin is
-  // `correction.test.ts`'s "#5037" block, which reads the projection span of
-  // EVERY statement in the module and asserts the three keys appear in
-  // `correctionTargetSql` and nowhere else — narrower than what this line turns
-  // off, and per-statement rather than per-file, which is the trade
-  // `cardinality.ts` records above.
+  // f.object_key` added to `REPLACEMENT_ROW_SQL` for an unrelated read is no
+  // longer caught here. That is a live risk in this file specifically: it holds
+  // four statements over `brain_facts` where the bundle's exporter holds one.
+  //
+  // The compensating pin is `correction.test.ts`'s "#5037" block, which is
+  // per-STATEMENT where this exemption is per-file: it scans every statement the
+  // module executes for a key in a projection, in a `SET` clause or `INSERT`
+  // column list, and in a `*`, over all five gated columns; it proves each
+  // matcher on planted SQL first; and it refuses a module-private statement the
+  // scan could not see. That is a narrower guarantee than the global arms, which
+  // is the same trade `cardinality.ts` records above.
+  //
+  // ⚠️ ONE HALF IS NOT REPLACED, stated rather than implied: the ORM/type arm,
+  // which exists precisely because *a fact-shaped TYPE growing a key field* is
+  // the leak. `TargetRow` grows exactly such a field here (`objectKey`), and the
+  // pin reads SQL strings only, so nothing in this repo would object if a second
+  // one appeared. It is benign today — `TargetRow` is module-private, never
+  // serialized, and `BrainFactCorrectionResponse` carries no claim text — and
+  // the wire itself is still covered, because `packages/types/src/brain.ts` and
+  // `packages/schemas/src/brain.ts` hold the response types and neither is
+  // exempt. The residual risk is a key reaching a NEW correction wire type
+  // declared in this file, and that is what a reviewer here is holding.
   //
   // The re-derivation this replaces was not caught by anything, which is the
   // asymmetry worth stating: the guard can see a key being READ, and could never

@@ -445,8 +445,6 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
 // The inherit channel (#5037)
 // ---------------------------------------------------------------------------
 
-declare const inheritedSlotBrand: unique symbol;
-
 /**
  * Slot keys COPIED off an existing fact row — the row-copy half of ADR-0037 §8's
  * *a row-copy path carries keys verbatim; a claim-supply path never supplies
@@ -470,25 +468,37 @@ declare const inheritedSlotBrand: unique symbol;
  * from the slot every future collision joins on. The audit trail says
  * "superseded by X"; the slot says empty.
  *
- * ## Why it is branded
+ * ## Why it is a CLASS with a private field, and not a phantom-symbol brand
  *
  * ADR-0037's accepted cost for the doorway is that it *"must be typed so it
  * cannot be filled from thin air — inherited-from-a-row-id, not free strings"*.
- * The brand is that typing: the symbol is module-private and undeclarable
- * outside this file, so `InheritedSlot` has exactly one constructor
- * ({@link inheritSlotFromFactRow}) and a producer cannot reach the field with a
- * key it composed. `FactCandidate.inheritedSlot` is therefore a channel a
- * producer can only FORWARD, never author.
  *
- * ⚠️ The brand alone would still admit a caller that invented `subjectKey` and
- * handed it to the constructor. What closes that is the OTHER guard, and the two
- * compose rather than overlap: to hold a real key you must have projected one off
- * `brain_facts`, and `keys-not-on-the-wire.test.ts` permits that in an
- * allowlisted row-copy file only. The brand keys the doorway; the projection
- * guard decides who owns a key to put through it. Neither is sufficient alone,
- * which is why {@link inheritSlotFromFactRow} takes the row's `id` and keeps it:
- * a value carrying a fact id it was not read from is the shape a reviewer can
- * still catch, and the field exists to be read in exactly that argument.
+ * ⚠️ A `unique symbol` phantom brand — the repo's usual shape, and what this
+ * type carried first — does NOT deliver that, because **a symbol-keyed brand
+ * survives object spread**. This compiles, with no assertion and without
+ * importing the constructor:
+ *
+ * ```ts
+ * const forged: InheritedSlot = { ...target.slot, subject: slotKey(surface, vocab) };
+ * ```
+ *
+ * That is not an exotic bypass. *"Copy the slot but recompute one position"* is
+ * the single most likely future edit at this seam, it reintroduces exactly the
+ * defect #5037 removes, and it slips past a `slotKey(target.…)` lexical ratchet
+ * because the argument is a surface rather than the target. A `#private` field
+ * is not spreadable, so the same line fails to type-check — the guarantee is the
+ * compiler's rather than a reviewer's.
+ *
+ * A single `as InheritedSlot` still forges either shape. That is inherent to
+ * nominal typing in TypeScript and is acceptable: an assertion is visible in
+ * review, and Atlas already treats one as something to justify.
+ *
+ * ⚠️ The type alone would still admit a caller that COMPUTED two keys and handed
+ * them to the constructor — `slotKey` is exported, so no projection is needed to
+ * hold a key. The compensating pin is `correction.test.ts`'s call-site
+ * assertion, which keeps {@link inheritSlotFromFactRow} reachable from this file
+ * and `correction.ts` only; the type stops a slot being FORGED, and that pin
+ * stops one being MINTED somewhere it has no business being.
  *
  * ## What travels, and what does not
  *
@@ -516,20 +526,44 @@ declare const inheritedSlotBrand: unique symbol;
  * lives at the one place a value can be built, so the ergonomic names are safe
  * everywhere they are read.
  */
-export interface InheritedSlot {
-  readonly [inheritedSlotBrand]: true;
+export class InheritedSlot {
   /**
-   * The `brain_facts.id` these keys were read from.
-   *
-   * Carried rather than dropped so the value names its own provenance: a slot
-   * inherited from one row and attached to a candidate about another is a defect
-   * with no other detector, and this is the field that makes it visible.
+   * The nominal marker. `#private`, so the type cannot be satisfied by an object
+   * literal or by spreading an existing instance — see the docstring above for
+   * why the phantom-symbol spelling was not enough.
    */
-  readonly fromFactId: string;
-  /** The target's stored subject key, verbatim. `null` is a legal stored value. */
-  readonly subject: string | null;
-  /** The target's stored predicate key, verbatim. `null` is a legal stored value. */
-  readonly predicate: string | null;
+  readonly #inherited = true;
+
+  private constructor(
+    /**
+     * The `brain_facts.id` these keys were read from.
+     *
+     * Carried rather than dropped so the value names its own provenance, and
+     * READ rather than merely stored: `applySupersede` asserts it against the
+     * target it is correcting. A slot built from one row and attached to a
+     * candidate about another has no other detector, and a field nothing checks
+     * would be documentation with a runtime cost.
+     */
+    readonly fromFactId: string,
+    /** The target's stored subject key, verbatim. `null` is a legal stored value. */
+    readonly subject: string | null,
+    /** The target's stored predicate key, verbatim. `null` is a legal stored value. */
+    readonly predicate: string | null,
+  ) {}
+
+  /** @internal — the one construction path. See {@link inheritSlotFromFactRow}. */
+  static fromRow(row: {
+    readonly id: string;
+    readonly subject_key: string | null;
+    readonly predicate_key: string | null;
+  }): InheritedSlot {
+    return new InheritedSlot(row.id, row.subject_key, row.predicate_key);
+  }
+
+  /** Silences the unused-private-member reading; the field exists to be nominal. */
+  get inherited(): boolean {
+    return this.#inherited;
+  }
 }
 
 /**
@@ -550,20 +584,24 @@ export interface InheritedSlot {
  * `null` keys pass through unchanged and deliberately: an unkeyed legacy row's
  * slot is `(NULL, NULL)`, which joins nothing — and re-deriving a key for it here
  * would invent identity for a row that has none, silently moving it into a live
- * slot. Carrying the nulls preserves exactly today's behaviour for that row,
- * which is the conservative direction (#5035's null-at-import rule makes the same
- * call for the same reason).
+ * slot. Carrying the nulls preserves today's behaviour for that row, which is the
+ * conservative direction (#5035's null-at-import rule makes the same call for the
+ * same reason).
+ *
+ * ⚠️ That preservation is not PERMANENT, and saying so matters because the
+ * conservative argument above reads as if it were. `REKEY_DRIFTED_FACTS_SQL`
+ * (`vocabulary-decide.ts`, #5024) rewrites every key in the workspace that is not
+ * a fixpoint of the local vocabulary at the next alias decision — inherited nulls
+ * included. Nothing breaks: the target is rewritten by the same statement, so the
+ * pair moves together and stays in one slot. What expires is the *unkeyedness*,
+ * not the inheritance.
  */
 export function inheritSlotFromFactRow(row: {
   readonly id: string;
   readonly subject_key: string | null;
   readonly predicate_key: string | null;
 }): InheritedSlot {
-  return {
-    fromFactId: row.id,
-    subject: row.subject_key,
-    predicate: row.predicate_key,
-  } as InheritedSlot;
+  return InheritedSlot.fromRow(row);
 }
 
 // ---------------------------------------------------------------------------

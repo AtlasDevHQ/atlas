@@ -155,6 +155,7 @@ import {
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import {
+  identityKey,
   inheritSlotFromFactRow,
   slotKey,
   type ClaimVocabulary,
@@ -796,11 +797,42 @@ async function proposeUnderDeadline(
  * dispatch is not the only place that knows the verb: `verb` is in scope
  * post-commit too, which is where this can say what it says and be true.
  */
+/**
+ * Why a `supersede` produced no canonical predicate key (#5037).
+ *
+ * Two states, deliberately not collapsed. Before the key was READ off the target
+ * there was only one — a predicate surface that norms away — and the reporter's
+ * message says exactly that. Reading the key added a second cause with an
+ * entirely different meaning and remedy, and a shared message would state the
+ * first one's diagnosis about the second one's event.
+ */
+type DegeneratePredicateCause = "degenerate-surface" | "unkeyed-target";
+
 function logDegeneratePredicate(meta: {
   readonly workspaceId: string;
   readonly factId: string;
   readonly requestId: string | undefined;
+  /**
+   * WHY there is no key (#5037). Two states reach here and they are not the same
+   * event, so they are not the same line — collapsing them is how the second one
+   * hid.
+   */
+  readonly cause: "degenerate-surface" | "unkeyed-target";
 }): void {
+  if (meta.cause === "unkeyed-target") {
+    // ⚠️ `warn`, not `debug`, and the severity is the point. This is not one odd
+    // claim — it says the TARGET row carries no identity while its predicate
+    // surface reads perfectly well, which is a corpus-level gap (a region import
+    // that landed unkeyed is the documented cause). Every correction against such
+    // a corpus silently stops feeding the ADR-0037 §3(d)2 cardinality proposer,
+    // so the subsystem goes quiet with no other signal — and `debug` is off in
+    // production, which would make "quiet" and "healthy" indistinguishable.
+    log.warn(
+      meta,
+      "brain correction: superseded a claim whose TARGET ROW has no stored predicate key, so there is no canonical predicate to propose a cardinality against — the predicate surface itself is fine. The row was written before the keys existed or imported from another region unkeyed; re-key the workspace to restore cardinality proposals. The correction is committed and nothing else is affected",
+    );
+    return;
+  }
   log.debug(
     meta,
     "brain correction: superseded a claim whose predicate normalizes away, so there is no canonical predicate to propose a cardinality against — the correction is committed and nothing else is affected",
@@ -828,15 +860,38 @@ function logDegeneratePredicate(meta: {
  */
 async function withSupersededPredicate(
   supersededPredicate: string | null,
+  /**
+   * WHY the key is absent, when it is (#5037). A `null` key has two causes now
+   * that it is READ rather than derived — a predicate surface that norms away,
+   * and a target row that carries no stored key — and the post-commit reporter
+   * cannot tell them apart from the key alone. Decided here, where the surface,
+   * the vocabulary and the stored key are all still in hand; irrelevant and
+   * ignored when the key is non-null.
+   */
+  cause: DegeneratePredicateCause,
   response: Promise<BrainFactCorrectionResponse>,
-): Promise<{ response: BrainFactCorrectionResponse; supersededPredicate: string | null }> {
-  return { response: await response, supersededPredicate };
+): Promise<{
+  response: BrainFactCorrectionResponse;
+  supersededPredicate: string | null;
+  supersededPredicateCause: DegeneratePredicateCause;
+}> {
+  return { response: await response, supersededPredicate, supersededPredicateCause: cause };
 }
 
 async function noSupersededPredicate(
   response: Promise<BrainFactCorrectionResponse>,
-): Promise<{ response: BrainFactCorrectionResponse; supersededPredicate: null }> {
-  return { response: await response, supersededPredicate: null };
+): Promise<{
+  response: BrainFactCorrectionResponse;
+  supersededPredicate: null;
+  supersededPredicateCause: DegeneratePredicateCause;
+}> {
+  // The three non-supersede verbs never reach the proposer at all, so the cause
+  // is never read; `degenerate-surface` is the inert value rather than a claim.
+  return {
+    response: await response,
+    supersededPredicate: null,
+    supersededPredicateCause: "degenerate-surface",
+  };
 }
 
 interface TargetRow {
@@ -987,6 +1042,7 @@ export async function correctFact(
   let outcome: {
     readonly response: BrainFactCorrectionResponse;
     readonly supersededPredicate: string | null;
+    readonly supersededPredicateCause: DegeneratePredicateCause;
   } | null;
   try {
     outcome = await withTransaction(async (tx) => {
@@ -1190,12 +1246,32 @@ export async function correctFact(
         // anywhere in the product, so the tidier spelling is the unrecoverable
         // one.
         //
-        // A legacy row with a stored NULL key and a non-degenerate surface is
-        // unaffected — the replacement's derived key is non-null, the two differ,
-        // and the supersession proceeds as it should.
+        // ⚠️ THE STORED KEY WINS WHEN THERE IS ONE; OTHERWISE THE DERIVATION DOES.
+        //
+        // The `??` is not defensive tidiness, and an earlier cut of this slice
+        // omitted it and inverted the guard. A row can hold a NULL `object_key`
+        // beside a perfectly keyable surface — that is a region-imported corpus
+        // (`admin-migrate.ts` documents an exporter drift landing every fact
+        // unkeyed with a green 200 at both ends), and it is the very population
+        // #5037 exists for. Compare a DERIVED replacement key against a stored
+        // NULL and the two can never be equal, so the refusal cannot fire at all:
+        // a byte-identical restatement walks through to
+        // `SUPERSEDE_STAMP_EXPLICIT_SQL` and retires a published belief in favour
+        // of a successor asserting the same thing. `main` refused that input.
+        //
+        // A stored NULL means "this row has no identity", NOT "this row differs
+        // from everything". Reading it as the latter turns the guard off for a
+        // whole corpus, in the direction that has no inverse verb.
+        //
+        // So: read the key when the corpus has one, derive when it does not —
+        // which is exactly the pre-#5037 behaviour for exactly the rows that
+        // still have nothing to inherit. The two-nulls-match arm survives
+        // unchanged (a degenerate surface derives NULL, so the fallback is NULL
+        // too), and every row with a real stored key is judged against it.
+        const targetObjectKey = target.objectKey ?? slotKey(target.object, vocabulary.object);
         if (
           replacement !== null &&
-          slotKey(replacement.object, vocabulary.object) === target.objectKey
+          slotKey(replacement.object, vocabulary.object) === targetObjectKey
         ) {
           throw new CorrectionRefusedError(
             CORRECTION_REFUSAL_REASONS.replacementIdentical,
@@ -1321,8 +1397,25 @@ export async function correctFact(
           // read it is also reachable a second way — a stored NULL on an unkeyed
           // legacy row — and both mean the same thing to the proposer: there is
           // no slot to propose against.
+          // WHICH null this is, decided where both halves are readable (#5037).
+          // A stored key that is absent while the surface keys perfectly well is
+          // an unkeyed TARGET — a corpus-level gap — and not the degenerate
+          // surface the reporter's original message describes.
+          //
+          // `identityKey`, NOT `slotKey`: the question is whether the SURFACE
+          // itself asserts anything, which is a lexical fact about the text and
+          // needs no vocabulary. Reaching for `slotKey(target.predicate, …)`
+          // here would be a re-derivation of the very key just read — the thing
+          // this slice removes, and the ratchet in `correction.test.ts` refuses
+          // it. That the honest spelling is also the permitted one is the
+          // ratchet working rather than a coincidence.
+          const supersededCause: DegeneratePredicateCause =
+            supersededKey === null && identityKey(target.predicate) !== null
+              ? "unkeyed-target"
+              : "degenerate-surface";
           return withSupersededPredicate(
             supersededKey,
+            supersededCause,
             applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
               replacement,
               sourcePrincipal,
@@ -1365,7 +1458,7 @@ export async function correctFact(
     );
     return { kind: "not-found" };
   }
-  const { response: result, supersededPredicate } = outcome;
+  const { response: result, supersededPredicate, supersededPredicateCause } = outcome;
 
   log.info(
     {
@@ -1427,7 +1520,12 @@ export async function correctFact(
     // committed, and only `verb` distinguishes this from the three verbs that
     // legitimately send `null`.
     if (verb === "supersede") {
-      logDegeneratePredicate({ workspaceId: ctx.workspaceId, factId: result.factId, requestId });
+      logDegeneratePredicate({
+        workspaceId: ctx.workspaceId,
+        factId: result.factId,
+        requestId,
+        cause: supersededPredicateCause,
+      });
     }
   } else {
     await proposeUnderDeadline(
@@ -1844,11 +1942,14 @@ async function applySupersede(
   // replacement reconciles. The ordering is load-bearing: reconcile's tension
   // pass flags every LIVE rival in the same SLOT (`subject_key`,
   // `predicate_key` since #5020) of a new single-cardinality claim, and the
-  // target is exactly such a rival until its window closes — more surely than
-  // before, since the replacement inherits the target's own subject and
-  // predicate SURFACES below and therefore keys into the target's slot — by
-  // construction for a KEYED target, and vacuously for an unkeyed one, whose
-  // slot is `(NULL, NULL)` and joins nothing either way. Stamping first means
+  // target is exactly such a rival until its window closes — and since #5037
+  // that holds unconditionally rather than "while the vocabulary has not
+  // moved": the replacement inherits the target's STORED slot keys below, so it
+  // keys into the target's slot by construction for a KEYED target, and
+  // vacuously for an unkeyed one, whose slot is `(NULL, NULL)` and joins nothing
+  // either way. (This paragraph used to reason from the inherited SURFACES,
+  // which is the premise #5037 refutes — a surface re-derived under a moved
+  // vocabulary lands in a DIFFERENT slot.) Stamping first means
   // the belief being retired is already
   // settled history when the pass runs (`TENSION_CANDIDATES_SQL` filters
   // `valid_to IS NULL`), so this verb cannot mint a permanent
@@ -1856,6 +1957,19 @@ async function applySupersede(
   // resolves. Any OTHER live rival still earns its advisory edge, which is
   // correct — the human arbitrated this pair, not the whole field. A failure
   // later in the verb rolls the stamp back with everything else.
+  // The inherited slot must be THIS target's (#5037). Trivially true today —
+  // `readTargetRow` builds it off the row it narrows, and there is no second row
+  // in scope — which is exactly why it is asserted rather than assumed: the
+  // docstring on `InheritedSlot.fromFactId` claims the field is what makes a
+  // mis-attached slot visible, and a field nothing reads makes nothing visible.
+  // A future refactor that constructs the slot anywhere else gets the guarantee
+  // the type advertises instead of the one a reader inferred.
+  if (target.slot.fromFactId !== target.id) {
+    throw new Error(
+      `brain correction: the inherited slot was read from fact ${target.slot.fromFactId} but this correction targets ${target.id} — a slot was built outside readTargetRow`,
+    );
+  }
+
   const stampResult = await tx.query(SUPERSEDE_STAMP_EXPLICIT_SQL, [workspaceId, [target.id]]);
   const stampedId = firstId(stampResult.rows);
   if (stampedId === null) {
@@ -2328,13 +2442,19 @@ function readTargetRow(row: unknown, workspaceId: string): TargetRow | null {
   // validates it: a loop leaves the three reads unnarrowed afterwards, and
   // recovering them costs three `as string | null` assertions — which is the
   // shape that lets a later edit change the check and keep the assertion.
+  // `factId` hoisted out of the closure deliberately: `row.id` was narrowed to
+  // `string` above, but TypeScript does not carry a PROPERTY narrowing into an
+  // arrow function, so `${row.id}` inside the closure is `unknown` and both
+  // messages raise `restrict-template-expressions`. Hoisting keeps the narrowing
+  // rather than suppressing the rule.
+  const factId: string = row.id;
   const readKey = (column: "subject_key" | "predicate_key" | "object_key"): string | null => {
     const value = row[column];
     if (value === undefined) {
-      return drift(`${column} absent from the target projection for fact ${row.id}`);
+      return drift(`${column} absent from the target projection for fact ${factId}`);
     }
     if (value !== null && typeof value !== "string") {
-      return drift(`unreadable ${column} (${typeof value}) for fact ${row.id}`);
+      return drift(`unreadable ${column} (${typeof value}) for fact ${factId}`);
     }
     return value;
   };

@@ -180,3 +180,53 @@ describe("a failed preview is never rendered as no impact", () => {
     expect(renderRadius(null, { pending: true })).toContain("Computing");
   });
 });
+
+describe("⚠️ an unestablished side is never silent, even beside a non-zero one", () => {
+  // The `computed` branch's gates require BOTH totals to be zero, and `SideLine`
+  // was gated on `total > 0` at the call site — so with one side non-zero and
+  // the other an unestablished zero, NOTHING on the page mentioned the second
+  // side: no line, no "unknown, not zero", and not the "counts disagreed"
+  // clause, which lives inside the suppressed `SideLine`. A removal whose
+  // disarming statement drifted read as a clean one-sided radius.
+
+  const side = (over: Record<string, unknown> = {}) => ({
+    total: 0,
+    pairs: [],
+    withheld: 0,
+    truncated: false,
+    countsConsistent: true,
+    ...over,
+  });
+
+  const computed = (arming: unknown, disarming: unknown): BrainVocabularyBlastRadius =>
+    ({
+      kind: "computed",
+      arming,
+      disarming,
+      floor: true,
+      subtreeTruncated: false,
+    }) as BrainVocabularyBlastRadius;
+
+  test("says unknown-not-zero for the drifted side while the other reports its count", () => {
+    const text = renderRadius(
+      computed(side({ total: 5 }), side({ total: 0, countsConsistent: false })),
+    );
+    expect(text).toContain("At least 5");
+    expect(text).toContain("unknown, not zero");
+  });
+
+  test("and does so when BOTH sides are unestablished zeros", () => {
+    const text = renderRadius(
+      computed(side({ countsConsistent: false }), side({ countsConsistent: false })),
+    );
+    expect(text).toContain("unknown, not zero");
+    // ...and the all-clear must not also be on screen.
+    expect(text).not.toContain("No published claim becomes supersedable, or safe");
+  });
+
+  test("POSITIVE CONTROL — a KNOWN zero stays silent and the all-clear fires", () => {
+    const text = renderRadius(computed(side(), side()));
+    expect(text).not.toContain("unknown, not zero");
+    expect(text).toContain("No published claim becomes supersedable, or safe");
+  });
+});

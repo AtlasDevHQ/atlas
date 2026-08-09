@@ -1086,6 +1086,60 @@ describe("POST /decide", () => {
     });
   });
 
+  it("⚠️ a REJECTION is never described as an authoring in force", async () => {
+    // `checkedWrite`'s 500 arm, reached by making the response fail its own
+    // schema: `removedEdge` must be a boolean, so a string trips `safeParse`
+    // after the transaction has committed. That is the ONE path that renders the
+    // verb, and it is why this defect survived two rounds — the route tests
+    // covered `/author`, `/remove` and `/cardinality`, and no test reached the
+    // alias-rejection arm at all.
+    //
+    // The verb matters because the approver REJECTED a pair. Told "The authoring
+    // succeeded and is in force — proposal abc", they read a workspace-wide
+    // re-key that did not happen: the worst-direction misreport of a committed
+    // write, which is the single thing `checkedWrite` exists to prevent.
+    decideOutcome = {
+      kind: "rejected",
+      id: "proposal-7",
+      // ⚠️ FALSY and non-boolean. `""` picks the `rejection` verb (the route
+      // branches on truthiness) and still fails `z.boolean()`. A truthy string
+      // would take the `removal` arm and test the wrong sentence — which is what
+      // the first cut of this test did.
+      removedEdge: "" as unknown as boolean,
+    };
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "rejected",
+    });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("response_schema_mismatch");
+    expect(body.message).toContain("The rejection was recorded");
+    // ⚠️ Both halves. A verb fix that left the sentence saying "is in force"
+    // would swap one false claim for another.
+    expect(body.message).not.toContain("authoring");
+    expect(body.message).not.toContain("is in force");
+  });
+
+  it("a REMOVAL keeps its own verb — it really did drop an edge", async () => {
+    // The control: `removedEdge: true` is a removal, not a rejection, and it DID
+    // put something back. Without this, mapping every rejection to "rejection"
+    // would satisfy the test above while losing the distinction.
+    decideOutcome = {
+      kind: "rejected",
+      id: "proposal-7",
+      removedEdge: 1 as unknown as boolean,
+    };
+    const res = await post("/decide", {
+      kind: "alias",
+      proposalId: "proposal-7",
+      decision: "rejected",
+    });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { message: string }).message).toContain("The removal succeeded");
+  });
+
   it("reports a lost race as `nothing_to_decide` with a 200", async () => {
     decideOutcome = { kind: "not_decidable", id: "proposal-7" };
     const res = await post("/decide", {

@@ -106,29 +106,32 @@ export function BlastRadiusPreview({
         </p>
       ) : null}
 
-      {arming.total > 0 ? (
-        <SideLine
-          tone="arming"
-          label="become supersedable"
-          total={arming.total}
-          shown={arming.pairs.length}
-          withheld={arming.withheld}
-          truncated={arming.truncated}
-          consistent={arming.countsConsistent}
-        />
-      ) : null}
+      {/* ⚠️ NOT gated on `total > 0` any more. `SideLine` carries the "counts
+          disagreed" clause, so gating on the total suppressed the warning for
+          exactly the side that had nothing to show — and with the OTHER side
+          non-zero, neither the all-clear nor the `unestablished` line fires
+          either. A removal whose disarming statement drifted read as a clean
+          one-sided radius. `ObjectSideLine` has been per-side since #5088; this
+          branch had not caught up. */}
+      <SideLine
+        tone="arming"
+        label="become supersedable"
+        total={arming.total}
+        shown={arming.pairs.length}
+        withheld={arming.withheld}
+        truncated={arming.truncated}
+        consistent={arming.countsConsistent}
+      />
 
-      {disarming.total > 0 ? (
-        <SideLine
-          tone="disarming"
-          label="become safe again"
-          total={disarming.total}
-          shown={disarming.pairs.length}
-          withheld={disarming.withheld}
-          truncated={disarming.truncated}
-          consistent={disarming.countsConsistent}
-        />
-      ) : null}
+      <SideLine
+        tone="disarming"
+        label="become safe again"
+        total={disarming.total}
+        shown={disarming.pairs.length}
+        withheld={disarming.withheld}
+        truncated={disarming.truncated}
+        consistent={disarming.countsConsistent}
+      />
 
       {radius.subtreeTruncated ? (
         <Alert variant="destructive">
@@ -362,6 +365,20 @@ function SideLine({
   truncated: boolean;
   consistent: boolean;
 }) {
+  // ⚠️ Silent only when the zero is KNOWN — `ObjectSideLine`'s rule, and this
+  // component needed it for the same reason: it is the only carrier of the
+  // "counts disagreed" clause, so a `total > 0` gate at the call site made an
+  // unestablished side disappear entirely rather than merely render zero.
+  if (total === 0 && consistent) return null;
+  if (total === 0) {
+    return (
+      <p className="text-destructive">
+        Atlas could not establish how many published claims {label}, so that number is{" "}
+        <strong>unknown, not zero</strong>. Treat this preview as incomplete and reload before
+        deciding.
+      </p>
+    );
+  }
   return (
     <p className={tone === "arming" ? "text-foreground" : "text-muted-foreground"}>
       {/* "At least" is not hedging — `floor` is a literal `true` on this branch

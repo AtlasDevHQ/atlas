@@ -206,12 +206,15 @@ function checkedWrite<T>(
    * them about committed writes.
    */
   context: (
-    | { readonly verb: "authoring" | "removal"; readonly proposalId: string }
-    // ⚠️ `rejection` is its own verb. `checkedWrite`'s message reads *"The
-    // curation succeeded and is in force"*, and on a REJECTION nothing is in
-    // force — the predicate stays multi-valued. That is the same lie the
-    // `nothing_to_decide` split removed one branch up, carried to the outcome
-    // and not to the verdict.
+    // ⚠️ `rejection` appears on BOTH arms, and binding it to only one was a
+    // defect this helper's own rule forbids. Round 2 added it to the
+    // predicate-surface arm — but an ALIAS rejection carries a `proposalId`, so
+    // it structurally could not say `"rejection"` and fell back to
+    // `"authoring"`. An approver who rejected a pair was told *"The authoring
+    // succeeded and is in force — proposal abc"*: a claimed workspace-wide
+    // re-key that did not happen, which is the worst-direction misreport
+    // `checkedWrite` exists to prevent.
+    | { readonly verb: "authoring" | "removal" | "rejection"; readonly proposalId: string }
     | { readonly verb: "curation" | "rejection"; readonly predicateSurface: string }
   ) & { readonly requestId: string },
 ):
@@ -249,7 +252,11 @@ function checkedWrite<T>(
       body: {
         error: "response_schema_mismatch",
         message:
-          `The ${context.verb} succeeded and is in force — ${named.subject} — but Atlas could not ` +
+          // ⚠️ "is in force" only for the verbs that PUT something in force. A
+          // rejection records that a pair stays separate or a predicate stays
+          // multi-valued; nothing is in force, and saying so is the same
+          // misreport in the opposite direction.
+          `The ${context.verb} ${context.verb === "rejection" ? "was recorded" : "succeeded and is in force"} — ${named.subject} — but Atlas could not ` +
           "build a response describing it, which is a defect on our side. Reload the page to see " +
           "the current state; retrying is safe and will simply report the change as already " +
           "applied.",
@@ -1022,7 +1029,10 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
             removedEdge: outcome.removedEdge,
           };
           const described = checkedWrite(BrainVocabularyDecideResponseSchema, rejectedBody, {
-            verb: outcome.removedEdge ? "removal" : "authoring",
+            // A rejection that dropped an edge is a REMOVAL; one that did not is
+            // a REJECTION. Neither is an authoring, and calling it one claimed a
+            // re-key that never ran.
+            verb: outcome.removedEdge ? "removal" : "rejection",
             proposalId: outcome.id,
             requestId,
           });

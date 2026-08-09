@@ -205,12 +205,6 @@ launch docs-links                bun scripts/check-docs-links.ts
 launch auth-md-parity            g_auth_md_parity
 launch apex-discovery-drift      bash scripts/check-apex-discovery-drift.sh
 launch openapi-drift             g_openapi_drift
-# ⚠️ --affected, NOT --all. The full sweep is 832s MEASURED — it would more than
-# double this script — so pre-PR verifies only the specs whose targets or sources
-# this branch touched, and CI's `mutation-tables` job runs everything in parallel
-# where 14 minutes costs no wall clock. Skips entirely without TEST_DATABASE_URL,
-# the same posture this script already takes for the -pg suites themselves.
-launch mutation-tables           bash scripts/check-mutation-tables.sh --affected origin/main
 launch gate-fixtures             g_gate_fixtures
 if [ "$NO_NET" != "1" ]; then
   launch published-symbols       g_published_symbols
@@ -218,9 +212,27 @@ if [ "$NO_NET" != "1" ]; then
 fi
 wait
 
-# ---- Stage 2: full test suite, isolated ----
+# ---- Stage 2: gates that WRITE to the tree, then the full test suite ----
+#
+# ⚠️ `mutation-tables` cannot live in Stage 1, and the reason is not load — it is
+# CORRECTNESS. Stage 1 is labelled read-only because every gate there SCANS the
+# tree, and `mutate.ts` REWRITES source files in place (apply → run → restore),
+# by design. Run in parallel, a brain mutation is live on disk while
+# `check-brain-fact-promotion.sh`, `check-no-legacy-connections-sql.sh`,
+# `lint-type-aware` and the rest read those very files — so they go red on a line
+# the developer never wrote, the developer re-runs, it passes, and they learn the
+# gate is flaky. The hazard is worst exactly when the gate is doing its job:
+# on a branch that touches the runner it widens to --all, which is 832 seconds
+# of continuous mutation.
+#
+# --affected, NOT --all: the full sweep would more than double this script. CI's
+# `mutation-tables` job runs everything in parallel, where 14 minutes costs no
+# wall clock. Skips entirely without TEST_DATABASE_URL.
+status "stage 2: tree-writing gates (serial — these mutate sources in place) …"
+run_fg mutation-tables bash scripts/check-mutation-tables.sh --affected origin/main
+
 if [ "$NO_TEST" != "1" ]; then
-  status "stage 2: full test suite (isolated — no parallel load) …"
+  status "stage 3: full test suite (isolated — no parallel load) …"
   run_fg test g_test
 fi
 
@@ -231,7 +243,8 @@ fi
 failed=()
 for name in "${GATE_NAMES[@]}"; do
   rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
-  [ "$rc" = "0" ] || failed+=("$name")
+  # 3 = declined to verify (rendered SKIP). Not green, but not a failure either.
+  [ "$rc" = "0" ] || [ "$rc" = "3" ] || failed+=("$name")
 done
 total="${#GATE_NAMES[@]}"
 
@@ -243,7 +256,13 @@ render_report() {
   for name in "${GATE_NAMES[@]}"; do
     rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
     secs="$(cat "$LOG_DIR/$name.secs" 2>/dev/null || echo '?')"
-    if [ "$rc" = "0" ]; then
+    if [ "$rc" = "3" ]; then
+      # ⚠️ Exit 3 means "declined to verify", and it is NOT PASS. A gate that
+      # cannot tell "verified" from "did not run" in its own summary line is the
+      # same defect class as the deflated table `mutation-tables` exists to
+      # refuse — and the compact table is what the /ci agent protocol reads.
+      printf '%-28s %-7s %4ss\n' "$name" "SKIP" "$secs"
+    elif [ "$rc" = "0" ]; then
       printf '%-28s %-7s %4ss\n' "$name" "PASS" "$secs"
     else
       printf '%-28s %-7s %4ss\n' "$name" "FAIL" "$secs"

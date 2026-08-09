@@ -79,12 +79,8 @@ it, and that header is exactly what stops a reviewer looking closer.
       edits: [
         {
           file: SOURCE,
-          oldString: `    return {
-      pass: 0,
-      fail: 0,
-      error: firstError ?? "bun printed no pass/fail summary (compile or import error)",
-    };`,
-          newString: `    return { pass: 0, fail: 0 };`,
+          oldString: "    return {\n      pass: 0,\n      fail: 0,\n      skip: 0,\n      todo: 0,\n      ran: null,\n      error: firstError ?? \"bun printed no pass/fail summary (compile or import error)\",\n    };",
+          newString: `    return { pass: 0, fail: 0, skip: 0, todo: 0, ran: null };`,
         },
       ],
       note: "The single most misleading cell the table can contain: a compile error rendered as *the suite does not catch this mutation*.",

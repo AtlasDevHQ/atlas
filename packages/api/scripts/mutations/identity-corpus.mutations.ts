@@ -255,8 +255,10 @@ else, so a row non-zero there is one a default local run still catches.
       edits: [
         {
           file: ADAPTER,
+          // Re-anchored: #5086 parameterised the slots through `CollisionExprs`,
+          // so the join no longer names the key columns literally.
           oldString:
-            "  return `${p}.workspace_id = ${d}.workspace_id\n     AND ${p}.subject_key = ${d}.subject_key\n     AND ${p}.predicate_key = ${d}.predicate_key",
+            "  return `${p}.workspace_id = ${d}.workspace_id\n     AND ${exprs.subjectSlot(p)} = ${exprs.subjectSlot(d)}\n     AND ${exprs.predicateSlot(p)} = ${exprs.predicateSlot(d)}",
           newString:
             "  return `${p}.workspace_id = ${d}.workspace_id\n     AND ${p}.subject = ${d}.subject\n     AND ${p}.predicate = ${d}.predicate",
         },
@@ -279,7 +281,7 @@ else, so a row non-zero there is one a default local run still catches.
       edits: [
         {
           file: ADAPTER,
-          oldString: "     AND ${p}.subject_key = ${d}.subject_key\n",
+          oldString: "     AND ${exprs.subjectSlot(p)} = ${exprs.subjectSlot(d)}\n",
           newString: "",
         },
       ],
@@ -290,7 +292,7 @@ else, so a row non-zero there is one a default local run still catches.
       edits: [
         {
           file: ADAPTER,
-          oldString: "     AND ${p}.predicate_key = ${d}.predicate_key\n",
+          oldString: "     AND ${exprs.predicateSlot(p)} = ${exprs.predicateSlot(d)}\n",
           newString: "",
         },
       ],

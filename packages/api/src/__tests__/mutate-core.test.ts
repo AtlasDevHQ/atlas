@@ -18,7 +18,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   AnchorError,
+  anchorFailures,
   applyMutation,
+  baselineProblem,
   countOccurrences,
   escapeCell,
   isWholeSuite,
@@ -209,8 +211,8 @@ describe("restore", () => {
 
 describe("parseBunSummary", () => {
   test("reads the summary block", () => {
-    expect(parseBunSummary("\n 58 pass\n 0 fail\n 200 expect() calls\n")).toEqual({ pass: 58, fail: 0, skip: 0 });
-    expect(parseBunSummary("\n 55 pass\n 3 fail\n")).toEqual({ pass: 55, fail: 3, skip: 0 });
+    expect(parseBunSummary("\n 58 pass\n 0 fail\n 200 expect() calls\n")).toEqual({ pass: 58, fail: 0, skip: 0, todo: 0, ran: null });
+    expect(parseBunSummary("\n 55 pass\n 3 fail\n")).toEqual({ pass: 55, fail: 3, skip: 0, todo: 0, ran: null });
   });
 
   test("a count EARLIER in the output cannot be mistaken for the summary", () => {
@@ -224,12 +226,12 @@ describe("parseBunSummary", () => {
       " 56 pass",
       " 2 fail",
     ].join("\n");
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0 });
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0, todo: 0, ran: null });
   });
 
   test("a pass count mid-line is likewise not mistaken for the summary", () => {
     const output = ["(fail) mutate > reports 9 pass rows", " 56 pass", " 2 fail"].join("\n");
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0 });
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0, todo: 0, ran: null });
   });
 
   test("a suite that never ran reports an ERROR, not `0 fail`", () => {
@@ -255,6 +257,8 @@ describe("parseBunSummary", () => {
       pass: 6,
       fail: 0,
       skip: 72,
+      todo: 0,
+      ran: null,
     });
   });
 
@@ -285,7 +289,90 @@ describe("parseBunSummary", () => {
     const output = ["(fail) mutate > reports 12 skip rows", " 56 pass", " 3 skip", " 2 fail"].join(
       "\n",
     );
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 3 });
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 3, todo: 0, ran: null });
+  });
+});
+
+describe("⚠️ baselineProblem — every way a baseline can lie (#5077)", () => {
+  const ok = { pass: 64, fail: 0, skip: 0, todo: 0, ran: 64 };
+
+  test("POSITIVE CONTROL: a clean baseline has no problem", () => {
+    // A refusal test alone is satisfied by a function that refuses everything.
+    expect(baselineProblem(ok)).toBeNull();
+    // …and a suite with no `Ran N` line at all is still acceptable: the
+    // accounting arm is a cross-check, not a requirement.
+    expect(baselineProblem({ ...ok, ran: null })).toBeNull();
+  });
+
+  test("RED — the inflation case, which was the only one guarded before", () => {
+    expect(baselineProblem({ ...ok, fail: 3, ran: 67 })).toContain("RED");
+  });
+
+  test("EMPTY — zero tests is not a baseline", () => {
+    // Reachable by renaming or emptying a target file, or by a rotted
+    // `target.file` path. Every cell would then render an honest-looking 0
+    // meaning "the suite does not catch this".
+    expect(baselineProblem({ ...ok, pass: 0, ran: 0 })).toContain("ZERO");
+  });
+
+  test("SKIPPED — #5077's own case", () => {
+    const problem = baselineProblem({ pass: 6, fail: 0, skip: 72, todo: 0, ran: 78 });
+    expect(problem).toContain("SKIPPED 72");
+    expect(problem).toContain("deflated");
+  });
+
+  test("⚠️ TODO — bun does not fold it into skip, and the first cut missed it", () => {
+    // A `test.todo` does not run even WITH a body, so it deflates the
+    // denominator exactly like a `.skip`. Measured: a 2-test file with one
+    // todo published as 1 test, every cell deflated, guard silent — while the
+    // guard's own comment claimed `.todo` was covered.
+    const problem = baselineProblem({ pass: 1, fail: 0, skip: 0, todo: 1, ran: 2 });
+    expect(problem).not.toBeNull();
+    expect(problem).toContain("TODO");
+  });
+
+  test("UNACCOUNTED — a bucket bun invents tomorrow is caught without naming it", () => {
+    // The general form, and the reason the guard cross-checks the SUM against
+    // `Ran N` rather than enumerating buckets. `filtered out` is a fourth one
+    // that already exists; this arm closes it and every future sibling.
+    const problem = baselineProblem({ pass: 5, fail: 0, skip: 0, todo: 0, ran: 9 });
+    expect(problem).toContain("4 unclassified");
+  });
+
+  test("the accounting arm fires BEFORE the skip arm, so the message names the real gap", () => {
+    // Both are true here. The unaccounted one is the more general statement and
+    // must win, or an operator reads "SKIPPED 1" and misses the other three.
+    expect(baselineProblem({ pass: 1, fail: 0, skip: 1, todo: 0, ran: 5 })).toContain("unclassified");
+  });
+});
+
+describe("⚠️ anchorFailures — a dead anchor must never become a committed byte", () => {
+  const count = (fail: number): Cell => ({ kind: "count", fail });
+  const anchor = (): Cell => ({ kind: "error", fail: 0, flag: "ANCHOR: 0 matches", anchorFailed: true });
+  const timeout = (): Cell => ({ kind: "error", fail: 0, flag: "timed out after 30s" });
+
+  test("POSITIVE CONTROL: a table of real counts reports nothing", () => {
+    expect(anchorFailures(new Map([["m1", new Map([["t", count(3)]])]]))).toEqual([]);
+  });
+
+  test("names the mutation whose anchor rotted", () => {
+    const rows = new Map([
+      ["healthy", new Map([["t", count(3)]])],
+      ["rotted", new Map([["t", anchor()]])],
+    ]);
+    expect(anchorFailures(rows)).toEqual(["rotted"]);
+  });
+
+  test("⚠️ a TIMEOUT is not an anchor failure — that is a real measurement", () => {
+    // The distinction a substring match on the flag could not draw, and the
+    // reason `anchorFailed` is its own field rather than prose. A hang is a
+    // genuine result about a genuine mutation; a dead anchor measured nothing.
+    expect(anchorFailures(new Map([["slow", new Map([["t", timeout()]])]]))).toEqual([]);
+  });
+
+  test("reports each mutation once even when several targets rotted", () => {
+    const rows = new Map([["rotted", new Map([["a", anchor()], ["b", anchor()]])]]);
+    expect(anchorFailures(rows)).toEqual(["rotted"]);
   });
 });
 

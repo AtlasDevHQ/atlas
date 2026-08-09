@@ -44,8 +44,10 @@
 # no longer be produced at all; this script therefore only has to decide whether
 # it can measure, not whether the numbers are honest.
 #
-# ⚠️ The skip path exits 0 deliberately, matching ci-local.sh's existing posture
-# for the -pg suites themselves. CI sets the variable, so the gate genuinely
+# ⚠️ The skip path exits **3**, not 0 — `ci-local.sh` renders that as SKIP rather
+# than PASS. A green row for a gate that verified nothing is the same defect
+# class as the deflated table this exists to refuse, and the compact table is
+# what the /ci agent protocol reads. CI sets the variable, so the gate genuinely
 # runs where it counts.
 
 set -euo pipefail
@@ -68,7 +70,11 @@ done
 
 cd "$ROOT/packages/api"
 
-SPECS=(scripts/mutations/*.mutations.ts)
+# ⚠️ A SEAM, so the adversarial fixture can point this at a throwaway tree.
+# `scripts/__tests__/check-mutation-tables.test.sh` needs to prove the gate
+# CATCHES a hand-edited table and a skipped target; without an override it could
+# only ever be run against the real specs, which is a 14-minute assertion.
+SPECS=(${MUTATION_SPEC_GLOB:-scripts/mutations/*.mutations.ts})
 if [ ${#SPECS[@]} -eq 0 ] || [ ! -e "${SPECS[0]}" ]; then
   echo "check-mutation-tables: no specs found under packages/api/scripts/mutations/ — did the directory move?" >&2
   exit 1
@@ -79,7 +85,12 @@ if [ -z "${TEST_DATABASE_URL:-}" ]; then
   echo "  ${#SPECS[@]} spec(s) not verified. Several target *-pg.test.ts, which self-skip"
   echo "  without a live Postgres; their counts would be deflated. Run 'bun run db:up' and"
   echo "  export TEST_DATABASE_URL to verify locally."
-  exit 0
+  # ⚠️ 3, not 0. `ci-local.sh` renders 3 as SKIP; exiting 0 put a green PASS row
+  # in the compact table for a gate that verified NOTHING — which the /ci agent
+  # protocol reads as a clean pre-PR pass. A gate unable to distinguish
+  # "verified" from "declined to verify" is the same defect class as the
+  # deflated table this whole change exists to refuse.
+  exit 3
 fi
 
 # --- Narrow to the affected specs -------------------------------------------
@@ -93,11 +104,30 @@ if [ "$MODE" = "affected" ]; then
     echo "check-mutation-tables: cannot diff against '$BASE' — falling back to --all."
     MODE="all"
   else
-    # Uncommitted work counts too: pre-PR is exactly when the table goes stale.
-    CHANGED="$CHANGED
-$(cd "$ROOT" && git diff --name-only HEAD 2>/dev/null || true)"
+    # ⚠️ Uncommitted work counts too — pre-PR is exactly when a table goes stale
+    # — and this MIRRORS the base-diff handling above rather than swallowing the
+    # failure. The first cut wrote `2>/dev/null || true` here, six lines under
+    # the comment forbidding exactly that: an index lock or a corrupt index then
+    # yielded an empty append, the branch's own work became invisible, and the
+    # gate printed "nothing to verify" and exited 0 — indistinguishable from
+    # clean. Widen, never narrow.
+    if ! UNCOMMITTED=$(cd "$ROOT" && git diff --name-only --no-renames HEAD 2>&1); then
+      echo "check-mutation-tables: cannot diff the working tree ($UNCOMMITTED) — falling back to --all."
+      MODE="all"
+    else
+      # `--no-renames` on both diffs: a rename reports only the NEW path, so a
+      # target still listed in a spec under its old path would never match.
+      # Untracked files too — a brand-new corpus or spec is invisible to `git
+      # diff`, and both narrow silently.
+      UNTRACKED=$(cd "$ROOT" && git ls-files --others --exclude-standard 2>/dev/null || true)
+      CHANGED="$CHANGED
+$UNCOMMITTED
+$UNTRACKED"
+    fi
     RUNNER_TOUCHED=0
-    for f in scripts/mutate.ts scripts/mutation-core.ts scripts/mutation-spec.ts; do
+    # signal-retry.ts decides how EVERY suite is spawned, so it belongs here with
+    # the runner and the renderer — it was missing from the first cut.
+    for f in scripts/mutate.ts scripts/mutation-core.ts scripts/mutation-spec.ts scripts/signal-retry.ts; do
       if printf '%s\n' "$CHANGED" | grep -qxF "packages/api/$f"; then RUNNER_TOUCHED=1; fi
     done
     if [ "$RUNNER_TOUCHED" -eq 1 ]; then
@@ -108,7 +138,13 @@ $(cd "$ROOT" && git diff --name-only HEAD 2>/dev/null || true)"
         DEPS="$spec"$'\n'"$(bun run scripts/mutate.ts "$spec" --files)"
         while IFS= read -r dep; do
           [ -z "$dep" ] && continue
-          if printf '%s\n' "$CHANGED" | grep -qxF "packages/api/$dep"; then
+          # ⚠️ NORMALISE. A spec may legitimately reach outside packages/api —
+          # `bundle-identity` mutates `../types/src/migration.ts` — and naive
+          # prefixing produced `packages/api/../types/src/migration.ts`, which
+          # git never emits, so that dependency could NEVER select its spec.
+          # Silently, and only for the cross-package case.
+          rel=$(cd "$ROOT/packages/api" && realpath -m --relative-to="$ROOT" "$dep")
+          if printf '%s\n' "$CHANGED" | grep -qxF "$rel"; then
             SELECTED+=("$spec"); break
           fi
         done <<< "$DEPS"
@@ -127,13 +163,19 @@ if [ "$MODE" = "all" ]; then SELECTED=("${SPECS[@]}"); fi
 echo "check-mutation-tables: verifying ${#SELECTED[@]} generated table(s)…"
 echo "  (each spec re-runs its suites under every mutation — minutes, not seconds)"
 
+# ⚠️ mktemp, not a fixed /tmp path. This runs from a parallel harness, and a
+# pre-existing root-owned or symlinked `/tmp/mutate-check.log` makes the redirect
+# fail — which the `if` reads as STALE, a false red on a healthy table.
+LOG=$(mktemp)
+trap 'rm -f "$LOG"' EXIT
+
 STALE=()
 for spec in "${SELECTED[@]}"; do
-  if bun run scripts/mutate.ts "$spec" --check >/tmp/mutate-check.log 2>&1; then
+  if bun run scripts/mutate.ts "$spec" --check >"$LOG" 2>&1; then
     echo "  OK    $spec"
   else
     echo "  STALE $spec"
-    sed 's/^/        /' /tmp/mutate-check.log | tail -20
+    sed 's/^/        /' "$LOG" | tail -20
     STALE+=("$spec")
   fi
 done

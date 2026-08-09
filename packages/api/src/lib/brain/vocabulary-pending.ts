@@ -103,6 +103,7 @@ import {
   type PositionalDecision,
   type WithheldCount,
 } from "@atlas/api/lib/brain/vocabulary-visibility";
+import type { Exact } from "@atlas/api/lib/type-utils";
 
 const log = createLogger("brain-vocabulary-pending");
 
@@ -287,9 +288,16 @@ export type PendingEntry = PendingAliasEntry | PendingCardinalityEntry;
  * These two are PINNED rather than aliased, unlike the five shapes above,
  * because they are the two that legitimately differ in spelling: `position` is
  * this package's {@link SlotPosition} and `cardinality` is its
- * {@link PredicateCardinality}, each already bidirectionally pinned to its wire
- * counterpart in the module that owns it. Aliasing would drag the wire unions
- * into every engine-side consumer to buy a guarantee the pin gives for free.
+ * {@link PredicateCardinality}. Aliasing would drag the wire unions into every
+ * engine-side consumer to buy a guarantee the pin gives for free.
+ *
+ * ⚠️ An earlier version of this sentence claimed both unions were "already
+ * bidirectionally pinned in the module that owns it". Only `SlotPosition` is
+ * (`identity.ts`, a `satisfies` plus an `Exclude` pin); `PredicateCardinality`
+ * is pinned NOWHERE ELSE. There is no functional gap — the `Exact` below
+ * compares both unions bidirectionally itself, which is the whole point — but a
+ * reader trusting that sentence would go looking for a guard that does not
+ * exist, and might delete this one believing it redundant.
  *
  * BIDIRECTIONAL, for `_ObjectRadiusSidesMatchTheWire`'s reason: a field added
  * here is one no client can read and that `z.strictObject` rejects on the way
@@ -297,7 +305,6 @@ export type PendingEntry = PendingAliasEntry | PendingCardinalityEntry;
  * schema then demands. The `/pending` response annotation catches neither — it
  * checks the response literal's own keys, not the value of `entries`.
  */
-type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 const _pendingAliasMatchesTheWire: Exact<PendingAliasEntry, BrainVocabularyPendingAlias> = true;
 void _pendingAliasMatchesTheWire;
 const _pendingCardinalityMatchesTheWire: Exact<
@@ -442,8 +449,17 @@ export async function loadPendingQueue(
   // `kind=alias` shipped `{ total: 0, scoped: 0, withheld: 0, countsConsistent:
   // true }` for a question nobody asked. The client rendered that as
   // "curated predicates · 0 of 0" with a clean scope badge, on the surface whose
-  // whole purpose is what is awaiting a decision. The alias half already got
-  // this right by being simply absent (`aliasCounts: []`).
+  // whole purpose is what is awaiting a decision.
+  //
+  // ⚠️ The alias half signals the same fact DIFFERENTLY — `aliasCounts: []` —
+  // and an earlier version of this comment called the two equivalent. They are
+  // not, to a consumer: `[]` is unambiguous only because `positions` is never
+  // empty, which is a runtime invariant nothing in the type states, and a client
+  // reading `null` for one half and `[]` for the other has to know that to get
+  // the empty state right. It did not, and printed the flat sentence for a queue
+  // filtered to `kind=cardinality`. Making the encodings symmetric is a wire
+  // change and is deliberately NOT made here; `emptyStateQualifier` reads both
+  // spellings instead, and says so.
   const cardinalityCounts: PendingPositionCounts | null =
     cardinalityResult === null
       ? null
@@ -621,13 +637,22 @@ async function loadAliasProposals(
   );
 
   const entries: PendingAliasEntry[] = [];
+  // ⚠️ Counted PER COLUMN, not as one total. Four arms drop a row here, and the
+  // single aggregate said only "3 rows would not narrow" — from which an
+  // operator cannot tell an `::int` cast regression from an enum drift from a
+  // renamed column, which is the whole reason the line exists.
+  const dropped: Record<string, number> = {};
+  const drop = (column: string): void => {
+    dropped[column] = (dropped[column] ?? 0) + 1;
+    unreadable += 1;
+  };
   let unreadable = 0;
   let scopedTotal: number | null = null;
   let evidenceDrifted = false;
 
   for (const raw of rows.slice(0, limit)) {
     if (typeof raw !== "object" || raw === null) {
-      unreadable += 1;
+      drop("row");
       continue;
     }
     const row = raw as Record<string, unknown>;
@@ -644,7 +669,21 @@ async function loadAliasProposals(
       typeof row.proposed_at !== "string" ||
       row.proposed_at === ""
     ) {
-      unreadable += 1;
+      drop("identity/proposed_at");
+      continue;
+    }
+    // ⚠️ PROVENANCE is dropped like every other unnarrowable column, and it was
+    // the `claims` defect one field over: `: ""` for both. Neither column is
+    // nullable (0190 declares them `NOT NULL`, and `source_class` carries a
+    // CHECK), so `""` is unreachable from Postgres and means the query drifted —
+    // yet the pane renders it as the positive fact *"Raised by an unnamed
+    // producer (unrecorded source)"*. That is the fabricated-zero shape wearing
+    // a string's clothes, and it is MORE load-bearing here than a count: at an
+    // entity position the evidence block has no structural answer to give and
+    // tells the approver in as many words to judge the proposal on where it came
+    // from. This is that.
+    if (!readableProvenance(row, ctx.workspaceId, opts.requestId)) {
+      drop("provenance");
       continue;
     }
     if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
@@ -663,8 +702,8 @@ async function loadAliasProposals(
       // which is what makes "never prefilled" a property of the data rather than
       // a discipline in the renderer.
       direction: row.directed ? { fromNorm: row.from_norm, toNorm: row.to_norm } : null,
-      sourceClass: typeof row.source_class === "string" ? row.source_class : "",
-      proposedBy: typeof row.proposed_by === "string" ? row.proposed_by : "",
+      sourceClass: row.source_class,
+      proposedBy: row.proposed_by,
       proposedAt: row.proposed_at,
       // NaN rather than a default, `ProposalRow.confidence`'s reason: an
       // unreadable rank must fail every comparison rather than clear one. It is
@@ -677,7 +716,7 @@ async function loadAliasProposals(
 
   if (unreadable > 0) {
     log.warn(
-      { workspaceId: ctx.workspaceId, position, unreadable, requestId: opts.requestId },
+      { workspaceId: ctx.workspaceId, position, unreadable, dropped, requestId: opts.requestId },
       "brain vocabulary pending: alias proposal rows would not narrow and were dropped — the queue shows fewer entries than are awaiting a decision",
     );
   }
@@ -866,7 +905,18 @@ async function loadPendingAliasTotal(
   // ⚠️ `known: false`. An absent workspace means the count was never ASKED, and
   // this module's whole accounting exists to keep that distinguishable from
   // "there are none" — the same shape the cardinality-counts fix above closes.
-  if (!workspaceId) return { n: 0, known: false };
+  // ⚠️ `known: false`, and it LOGS — `readTotal` three lines down logs the
+  // byte-identical "unknown rather than zero" outcome, and a silent twin beside
+  // it is a return value indistinguishable from a genuine drift. Unreachable
+  // from the route (`/pending` refuses without an org) but this is an exported
+  // library entry point.
+  if (!workspaceId) {
+    log.warn(
+      { requestId },
+      "brain vocabulary pending: asked for a workspace-wide total with no workspace — the total is reported UNKNOWN rather than zero",
+    );
+    return { n: 0, known: false };
+  }
   const { rows } = await db.query(
     `SELECT COUNT(*)::int AS n FROM brain_vocabulary_proposal
       WHERE workspace_id = $1 AND slot_position = $2 AND status = 'pending'`,
@@ -888,8 +938,9 @@ function readAliasEvidence(
 ): AliasEvidence {
   if (position !== "predicate") return { kind: "not-applicable", reason: "entity-position" };
 
-  const subjects = typeof row.subjects === "number" ? row.subjects : null;
-  const scoped = typeof row.scoped_subjects === "number" ? row.scoped_subjects : null;
+  // `isCount` for `readCorrectionEvidence`'s reason.
+  const subjects = isCount(row.subjects) ? row.subjects : null;
+  const scoped = isCount(row.scoped_subjects) ? row.scoped_subjects : null;
   const examples = readAgreementExamples(row.examples);
 
   if (subjects === null || scoped === null || examples === null) {
@@ -957,6 +1008,47 @@ function readAgreementExamples(value: unknown): AgreementExample[] | null {
  * has to survive; `autoApproveEligible` re-reads the column itself at decision
  * time and is where a NaN must fail every comparison.
  */
+/**
+ * A count as the WIRE defines one — finite, integral, non-negative.
+ *
+ * ⚠️ Every response schema here says `z.number().int().nonnegative()`, so this
+ * predicate and that schema have to agree or the disagreement becomes a 500 over
+ * one row. `typeof x === "number"` does not agree with it: `NaN`, `Infinity`,
+ * `-1` and `1.5` all pass the `typeof` and all fail the schema, which is exactly
+ * the class of drifted value a narrowing guard exists to catch — so the loose
+ * check let the interesting failures through and stopped only the boring ones.
+ */
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Whether a proposal row's PROVENANCE columns were actually read.
+ *
+ * Shared by both halves because both project the same two `NOT NULL` columns and
+ * both rendered `""` as a fact. Returns a boolean rather than throwing so the
+ * caller keeps its drop-and-count posture: one bad row must not take down a pane
+ * that is showing an approver what is awaiting a decision.
+ */
+function readableProvenance(
+  row: Record<string, unknown>,
+  workspaceId: string,
+  requestId: string | undefined,
+): row is Record<string, unknown> & { source_class: string; proposed_by: string } {
+  const ok =
+    typeof row.source_class === "string" &&
+    row.source_class !== "" &&
+    typeof row.proposed_by === "string" &&
+    row.proposed_by !== "";
+  if (!ok) {
+    log.warn(
+      { workspaceId, requestId, sourceClass: row.source_class, proposedBy: row.proposed_by },
+      "brain vocabulary pending: a proposal's provenance columns would not narrow — dropped rather than rendered as 'an unnamed producer (unrecorded source)', which is a fact the approver would weigh",
+    );
+  }
+  return ok;
+}
+
 function readRank(
   value: unknown,
   proposalId: string,
@@ -1073,13 +1165,18 @@ async function loadCardinalityProposals(
   );
 
   const entries: PendingCardinalityEntry[] = [];
+  const dropped: Record<string, number> = {};
+  const drop = (column: string): void => {
+    dropped[column] = (dropped[column] ?? 0) + 1;
+    unreadable += 1;
+  };
   let unreadable = 0;
   let scopedTotal: number | null = null;
   let evidenceDrifted = false;
 
   for (const raw of rows.slice(0, limit)) {
     if (typeof raw !== "object" || raw === null) {
-      unreadable += 1;
+      drop("row");
       continue;
     }
     const row = raw as Record<string, unknown>;
@@ -1088,11 +1185,16 @@ async function loadCardinalityProposals(
     // schema and take the whole pane down as a 500 over one row —
     // `loadCardinalities`' posture.
     if (row.cardinality !== "single" && row.cardinality !== "multi") {
-      unreadable += 1;
+      drop("cardinality");
       continue;
     }
     if (typeof row.proposed_at !== "string" || row.proposed_at === "") {
-      unreadable += 1;
+      drop("proposed_at");
+      continue;
+    }
+    // The alias half's provenance rule, on the half that shares the columns.
+    if (!readableProvenance(row, ctx.workspaceId, opts.requestId)) {
+      drop("provenance");
       continue;
     }
     // ⚠️ DROPPED, never coalesced to 0 — this was `row.claims ?? 0` and that is
@@ -1104,8 +1206,15 @@ async function loadCardinalityProposals(
     // nobody read rendered as the strongest reject signal on the row. `COALESCE(…,
     // 0)::int` means Postgres cannot produce a non-number here; this is query
     // drift, and drift belongs in `incomplete` with the other unnarrowable rows.
-    if (typeof row.claims !== "number") {
-      unreadable += 1;
+    //
+    // ⚠️ `isCount`, not `typeof === "number"`. The wire schema is
+    // `z.number().int().nonnegative()`, so `NaN`, `Infinity`, `-1` and `1.5` are
+    // all refused there — and a bare `typeof` check admits every one of them,
+    // sending exactly the drifted values this guard exists for past the
+    // drop-and-count path to 500 the whole pane at `checked()`. `readRank` a few
+    // functions down already requires `Number.isFinite` for the same reason.
+    if (!isCount(row.claims)) {
+      drop("claims");
       continue;
     }
     if (typeof row.scoped_total === "number") scopedTotal = row.scoped_total;
@@ -1124,8 +1233,8 @@ async function loadCardinalityProposals(
       // client narrows on this field; it is not restated as a boolean.
       predicateSurface,
       cardinality: row.cardinality,
-      sourceClass: typeof row.source_class === "string" ? row.source_class : "",
-      proposedBy: typeof row.proposed_by === "string" ? row.proposed_by : "",
+      sourceClass: row.source_class,
+      proposedBy: row.proposed_by,
       proposedAt: row.proposed_at,
       claims: row.claims,
       evidence,
@@ -1134,7 +1243,7 @@ async function loadCardinalityProposals(
 
   if (unreadable > 0) {
     log.warn(
-      { workspaceId: ctx.workspaceId, unreadable, requestId: opts.requestId },
+      { workspaceId: ctx.workspaceId, unreadable, dropped, requestId: opts.requestId },
       "brain vocabulary pending: cardinality proposal rows would not narrow and were dropped — proposals are awaiting a decision that this queue is not showing",
     );
   }
@@ -1237,7 +1346,18 @@ async function loadPendingCardinalityTotal(
   workspaceId: string,
   requestId: string | undefined,
 ): Promise<{ n: number; known: boolean }> {
-  if (!workspaceId) return { n: 0, known: false };
+  // ⚠️ `known: false`, and it LOGS — `readTotal` three lines down logs the
+  // byte-identical "unknown rather than zero" outcome, and a silent twin beside
+  // it is a return value indistinguishable from a genuine drift. Unreachable
+  // from the route (`/pending` refuses without an org) but this is an exported
+  // library entry point.
+  if (!workspaceId) {
+    log.warn(
+      { requestId },
+      "brain vocabulary pending: asked for a workspace-wide total with no workspace — the total is reported UNKNOWN rather than zero",
+    );
+    return { n: 0, known: false };
+  }
   const { rows } = await db.query(
     `SELECT COUNT(*)::int AS n FROM brain_predicate_cardinality
       WHERE workspace_id = $1 AND status = 'pending'`,
@@ -1251,9 +1371,12 @@ function readCorrectionEvidence(
   workspaceId: string,
   requestId: string | undefined,
 ): CorrectionEvidence {
-  const subjects = typeof row.subjects === "number" ? row.subjects : null;
-  const scoped = typeof row.scoped_subjects === "number" ? row.scoped_subjects : null;
-  const events = typeof row.events === "number" ? row.events : null;
+  // `isCount`, not `typeof` — the wire says `int().nonnegative()`, and a
+  // negative or fractional count reaching it 500s the pane instead of taking
+  // this arm.
+  const subjects = isCount(row.subjects) ? row.subjects : null;
+  const scoped = isCount(row.scoped_subjects) ? row.scoped_subjects : null;
+  const events = isCount(row.events) ? row.events : null;
   const examples = readCorrectionExamples(row.examples);
 
   if (subjects === null || scoped === null || events === null || examples === null) {

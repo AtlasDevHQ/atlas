@@ -121,7 +121,8 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
-import type { BrainFactWillSupersedePair } from "@useatlas/types";
+import type { BrainFactWillSupersedePair, BrainVocabularyBlastRadius } from "@useatlas/types";
+import type { Exact } from "@atlas/api/lib/type-utils";
 import { aclVisibilityClause, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
@@ -329,6 +330,38 @@ export type BlastRadius =
        */
       readonly subtreeTruncated: boolean;
     };
+
+/**
+ * ⚠️ Compile-time lock: this union and the wire union are the SAME TYPE.
+ *
+ * Pinned at the UNION, not at one arm's record, and that distinction is the
+ * whole finding. A previous cut pinned `ObjectPositionRadius` — the spread half
+ * of the `object-position` arm — and its docstring claimed the arm was closed.
+ * It covered four of the arm's seven fields: `kind`, `floor` and
+ * `subtreeTruncated` live in the literal half of the intersection above, which
+ * no pin reached and which the `/preview` response annotation cannot reach
+ * either (excess-property checking reads the response literal's own keys, never
+ * the value assigned into `radius`). Measured, not reasoned: a field added to
+ * that literal half and populated at both construction sites compiled COMPLETELY
+ * CLEAN, and then `z.strictObject` rejected it — a 500 on every object-position
+ * preview, from a change that looked additive.
+ *
+ * At the union this holds for all three arms at once, including `computed`,
+ * which had the identical hole, and including `BlastRadiusSide` and
+ * `StructurallyEmptyReason`, which are hand-written twins of their wire
+ * counterparts rather than aliases.
+ *
+ * BIDIRECTIONAL: a field the engine grows is one no client can read and that the
+ * schema rejects on the way out; a field the wire grows is one the engine never
+ * populates and the schema then demands.
+ *
+ * ⚠️ Two things `Exact` does NOT compare, both verified: an OPTIONAL field added
+ * to either side, and a lost `readonly`. Every field on both sides is required
+ * today, so neither is reachable — but a `?:` here would be invisible to this
+ * pin and still refused by `z.strictObject`.
+ */
+const _blastRadiusMatchesTheWire: Exact<BlastRadius, BrainVocabularyBlastRadius> = true;
+void _blastRadiusMatchesTheWire;
 
 export interface BlastRadiusSide {
   /** Unscoped, workspace-wide. A number, never content. */

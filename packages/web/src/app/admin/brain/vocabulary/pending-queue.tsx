@@ -225,6 +225,15 @@ export function PendingQueue() {
 }
 
 /** Narrowed, not cast — the page's own list, so a value outside it is a break. */
+function narrowKind(value: string): "all" | "alias" | "cardinality" | null {
+  return value === "all" || value === "alias" || value === "cardinality" ? value : null;
+}
+function narrowPosition(value: string): "all" | BrainVocabularySlotPosition | null {
+  return value === "all" || value === "subject" || value === "predicate" || value === "object"
+    ? value
+    : null;
+}
+
 /**
  * What "nothing is awaiting a decision" is actually a statement ABOUT.
  *
@@ -250,20 +259,28 @@ function emptyStateQualifier(
   const withheld =
     data.aliasCounts.some((c) => c.withheld > 0) ||
     (data.cardinalityCounts !== null && data.cardinalityCounts.withheld > 0);
-  const neverAsked = data.cardinalityCounts === null;
-  if (withheld && neverAsked) return " that you can see, among the kinds this queue asked about";
-  if (withheld) return " that you can see";
-  if (neverAsked) return " among the kinds this queue asked about";
-  return "";
-}
-
-function narrowKind(value: string): "all" | "alias" | "cardinality" | null {
-  return value === "all" || value === "alias" || value === "cardinality" ? value : null;
-}
-function narrowPosition(value: string): "all" | BrainVocabularySlotPosition | null {
-  return value === "all" || value === "subject" || value === "predicate" || value === "object"
-    ? value
-    : null;
+  // ⚠️ BOTH spellings of "never asked". The cardinality half signals it with
+  // `null`; the alias half signals it by being absent (`aliasCounts: []`), and
+  // an earlier cut read only the first — so `?kind=cardinality` on an empty
+  // result printed the flat sentence, which is the exact defect the split was
+  // written to stop, on the mirror half. The engine's own comment used to call
+  // the two encodings equivalent; they are not, to a consumer.
+  const neverAsked = data.cardinalityCounts === null || data.aliasCounts.length === 0;
+  // ⚠️ The THIRD reason the sentence is narrower than it sounds: a count that was
+  // never established. `readTotal` failing to narrow yields `withheld: 0` and a
+  // non-null record, so both flags above are false and the page said "Nothing is
+  // awaiting a decision." flat for a workspace whose pending total nobody read.
+  // `incomplete` is the same shape — rows dropped, and no filter reaches them.
+  const unestablished =
+    data.incomplete ||
+    data.aliasCounts.some((c) => !c.countsConsistent) ||
+    (data.cardinalityCounts !== null && !data.cardinalityCounts.countsConsistent);
+  const clauses = [
+    withheld ? "that you can see" : null,
+    neverAsked ? "among the kinds this queue asked about" : null,
+    unestablished ? "as far as Atlas could establish" : null,
+  ].filter((c): c is string => c !== null);
+  return clauses.length === 0 ? "" : ` ${clauses.join(", ")}`;
 }
 
 /**
@@ -353,6 +370,14 @@ function toPreviewSlot(
   }
   const parsed = BrainVocabularyPreviewResponseSchema.safeParse(result.data);
   if (!parsed.success) {
+    // ⚠️ LOGGED, because `issues` is the only artefact that names the offending
+    // field. A `safeParse` guard that emits nothing is a catch that emits
+    // nothing: the server's own `checked()` parsed this body successfully
+    // against ITS copy of the schema, so a rename between `@useatlas/schemas`
+    // and the deployed API produces a 200 that is correct server-side, an
+    // approver reading "not in a shape this page understands", and an empty
+    // console. `useAdminFetch` warns with exactly this for the same failure.
+    console.warn("pending-queue: the preview response failed its schema:", parsed.error.issues);
     return {
       radius: null,
       pending: false,
@@ -828,7 +853,25 @@ function PendingCardinalityRow({
     if (surface === null) return;
     setPreview({ radius: null, pending: true, error: null });
     const result = await previewMutation.mutate({
-      body: { kind: "cardinality-flip", predicateSurface: surface },
+      // ⚠️ The kind follows the ENTRY, not the route. `cardinality-flip` models
+      // *"this predicate becomes single-valued"* — which is what approving a
+      // `single` row does, and is NOT what approving a `multi` row does.
+      // Hard-coded to `flip`, a pending `multi` row previewed the blast radius
+      // of a decision nobody was about to take: *"At least N published claims
+      // become supersedable"*, rendered directly beneath its own copy saying
+      // *"Nothing is superseded by this."* The pane contradicted itself, and the
+      // number was the more believable half.
+      //
+      // `cardinality-removal` is the honest question for `multi`. The table's PK
+      // is `(workspace_id, predicate_key)`, so a row pending `multi` is by
+      // construction not an approved `single` — the server answers
+      // `structurally-empty: "not-curated"` ("no approved single-valued entry,
+      // so there is nothing to un-curate"), which is prose rather than a count
+      // and is exactly what approving `multi` does to supersession: nothing.
+      body: {
+        kind: entry.cardinality === "single" ? "cardinality-flip" : "cardinality-removal",
+        predicateSurface: surface,
+      },
     });
     setPreview(toPreviewSlot(result));
   }
@@ -1065,7 +1108,14 @@ function readDecideOutcome(
   data: BrainVocabularyDecideResponse | undefined,
 ): BrainVocabularyDecideResponse | null {
   const parsed = BrainVocabularyDecideResponseSchema.safeParse(data);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) {
+    // See `toPreviewSlot`. Louder here, because this body describes a decide
+    // transaction that has ALREADY COMMITTED — the write happened and the only
+    // record of what shape came back is these issues.
+    console.warn("pending-queue: the decide response failed its schema:", parsed.error.issues);
+    return null;
+  }
+  return parsed.data;
 }
 
 /**

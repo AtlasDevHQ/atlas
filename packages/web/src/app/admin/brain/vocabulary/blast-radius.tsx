@@ -211,6 +211,7 @@ function ObjectPositionRadius({
         }
         detail="They are not merged retroactively — the next time either claim is re-observed it attaches to one row instead of minting a second."
         side={corroborating}
+        listsPairs
       />
 
       {/* The REMOVAL's half. Rendered by the same component and gated only on
@@ -224,6 +225,7 @@ function ObjectPositionRadius({
         }
         detail="Nothing splits them retroactively either: the claims stay as they are, and Atlas stops treating them as the same object from here on. No contradiction flag is written for them until one is re-observed."
         side={separating}
+        listsPairs={false}
       />
 
       {/* ⚠️ The persistence sentence is READ OFF `staleEdgesPersist`, not
@@ -244,6 +246,7 @@ function ObjectPositionRadius({
             : "Atlas did not report what becomes of those flags, so do not assume they are withdrawn."
         }
         side={tension}
+        listsPairs={false}
       />
 
       {/* ⚠️ Gated on the zeros being KNOWN, not merely on their being zero. This
@@ -287,10 +290,21 @@ function ObjectSideLine({
   label,
   detail,
   side,
+  listsPairs,
 }: {
   label: string;
   detail: string;
   side: BrainVocabularyObjectRadiusSide;
+  /**
+   * ⚠️ Whether THIS side's pairs are rendered beneath the line.
+   *
+   * Only `corroborating` lists them. Without this flag the truncation clause
+   * said *"Only the first 3 are listed"* on `separating` and `tension`, which
+   * list none — a sentence an approver reads as "scroll down for three
+   * examples" when there is nothing to scroll to. Truncation is still disclosed
+   * on those sides; it is disclosed as what it is.
+   */
+  listsPairs: boolean;
 }) {
   // ⚠️ SILENT ONLY WHEN THE ZERO IS KNOWN. The early return used to be a bare
   // `total === 0`, which reads `countsConsistent` four lines too late — so every
@@ -332,7 +346,9 @@ function ObjectSideLine({
         <>
           {" "}
           <span className="text-muted-foreground">
-            Only the first {side.pairs.length} are listed.
+            {listsPairs
+              ? `Only the first ${side.pairs.length} are listed.`
+              : "More were counted than this page samples, so the count is a floor."}
           </span>
         </>
       ) : null}

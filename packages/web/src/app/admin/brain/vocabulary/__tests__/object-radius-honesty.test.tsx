@@ -218,3 +218,62 @@ describe("the disclosure accounting survives onto this branch", () => {
     expect(text).toContain("smaller population");
   });
 });
+
+describe("⚠️ each side is described in ITS OWN words, not the neighbouring side's", () => {
+  // The panel's round-4 finding, and the object-radius instance of the pattern
+  // that has recurred all through this diff: `corroborating`'s detail is pinned,
+  // `tension`'s is pinned in both directions, and `separating` — the REMOVAL's
+  // half — appeared three times in this file without ever being asserted for its
+  // own words. Giving it the corroborating label and detail left all 13 tests
+  // green, and an object-position REMOVAL then read *"pairs of live claims would
+  // agree about the object … They are not merged retroactively"*: a merge
+  // described for the decision that un-merges. Exactly inverted, on the verb
+  // whose own engine header warns it is NOT approval inverted.
+
+  test("`separating` says pairs would STOP agreeing, and says what is not written", () => {
+    const text = renderRadius(objectRadius({ separating: side({ total: 4 }) }));
+    expect(text).toContain("would stop agreeing");
+    expect(text).toContain("No contradiction flag is written for them until one is re-observed");
+    // …and it must NOT borrow the corroboration sentence.
+    expect(text).not.toContain("would agree about the object");
+    expect(text).not.toContain("not merged retroactively");
+  });
+
+  test("POSITIVE CONTROL — `corroborating` still says the merge sentence", () => {
+    // Without this, swapping the two labels satisfies the assertions above.
+    const text = renderRadius(objectRadius({ corroborating: side({ total: 4 }) }));
+    expect(text).toContain("would agree about the object");
+    expect(text).toContain("not merged retroactively");
+    expect(text).not.toContain("would stop agreeing");
+  });
+});
+
+describe("⚠️ a truncated side says what was truncated, on a side that lists nothing", () => {
+  // Deleting the truncation clause outright left all 13 tests green — no test set
+  // `truncated` on any object side. And the clause itself was wrong on two of the
+  // three: only `corroborating` renders its pairs, so *"Only the first N are
+  // listed"* on `separating`/`tension` told an approver to look for examples that
+  // are not on the page.
+
+  test("`corroborating` lists pairs, so it says how many are listed", () => {
+    const text = renderRadius(
+      objectRadius({
+        corroborating: side({
+          total: 40,
+          truncated: true,
+          pairs: [{ leftId: "a", leftLabel: "A", rightId: "b", rightLabel: "B" }],
+        }),
+      }),
+    );
+    expect(text).toContain("Only the first 1 are listed");
+  });
+
+  test("`separating` lists none, so it reports a FLOOR rather than a sample size", () => {
+    const text = renderRadius(
+      objectRadius({ separating: side({ total: 40, truncated: true, pairs: [] }) }),
+    );
+    expect(text).toContain("More were counted than this page samples");
+    expect(text).toContain("floor");
+    expect(text).not.toContain("are listed");
+  });
+});

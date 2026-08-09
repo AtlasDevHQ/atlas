@@ -77,6 +77,7 @@ import type {
   BrainVocabularyObjectPair,
   BrainVocabularyObjectRadiusSide,
 } from "@useatlas/types";
+import type { Exact } from "@atlas/api/lib/type-utils";
 
 const log = createLogger("brain-vocabulary-object-radius");
 
@@ -193,10 +194,19 @@ export interface ObjectPositionRadius {
  * field the engine never populates and `z.strictObject` then demands. Both are
  * the same class of drift and neither should be discoverable in production.
  *
+ * ## ⚠️ This pin covers the SIDES ONLY, and that is not the whole arm
+ *
  * `kind`, `floor` and `subtreeTruncated` are the wire arm's own — the first
  * discriminates the union, the other two are the preview's disclosure posture
- * rather than anything this module measures — so they are excluded rather than
- * mirrored here.
+ * rather than anything this module measures — so they are excluded here. An
+ * earlier version of this docstring stopped at that sentence and read as though
+ * the arm were closed. It is not, by this pin: those three live in the literal
+ * half of `vocabulary-preview.ts`'s intersection, and a field added THERE
+ * compiled clean and 500'd at runtime.
+ *
+ * `_blastRadiusMatchesTheWire` in `vocabulary-preview.ts` is what closes the
+ * whole union, arm by arm. This one is kept because it fails in the module that
+ * would GROW a side — a build error next to the edit rather than two files away.
  */
 type _ObjectRadiusSidesMatchTheWire = Exact<
   ObjectPositionRadius,
@@ -205,8 +215,6 @@ type _ObjectRadiusSidesMatchTheWire = Exact<
     "kind" | "floor" | "subtreeTruncated"
   >
 >;
-/** `Exact` collapses to `never` on any mismatch, and `true` is not assignable to `never`. */
-type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 const _objectRadiusSidesMatchTheWire: _ObjectRadiusSidesMatchTheWire = true;
 void _objectRadiusSidesMatchTheWire;
 
@@ -493,8 +501,16 @@ async function loadSide(
     ]),
   ]);
 
+  // Guarded like every other row narrowing in this module, rather than cast and
+  // trusted to `?.`. The optional chain does make the old spelling runtime-safe,
+  // but it was the one `as Record<string, unknown>` here with no `typeof ===
+  // "object"` in front of it, and "safe because of a `?.` two tokens away" is a
+  // property a later edit removes without noticing.
+  const totalRow = totalResult.rows[0];
   const total = readNonNegativeInt(
-    (totalResult.rows[0] as Record<string, unknown> | undefined)?.delta_total,
+    typeof totalRow === "object" && totalRow !== null
+      ? (totalRow as Record<string, unknown>).delta_total
+      : undefined,
   );
   if (total === null) {
     // A THROW, not a degraded 0 — `loadBlastRadiusSide`'s reason exactly. Zero

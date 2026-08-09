@@ -271,19 +271,115 @@ describe("evidence that will not narrow is REPORTED, never rendered as zero", ()
     expect(queue.cardinalityCounts?.consistent).toBe(true);
   });
 
+  it("⚠️ …on every disjunct of the guard, not only the one the fix was written for", async () => {
+    // The guard is `subjects === null || scoped === null || events === null ||
+    // examples === null`, and the test above picks `events`. Coalescing
+    // `subjects`/`scoped` to 0 instead — literally half the pre-fix shape the
+    // commit message names — left every suite green, and rendered *"A human has
+    // replaced a value at this predicate for 0 distinct subjects, across 5
+    // corrections"* with `countsConsistent: true`: two numbers that cannot both
+    // be true, presented as facts.
+    for (const over of [
+      { subjects: "nope" },
+      { scoped_subjects: null },
+      // The alias half has had a dedicated test for the examples aggregate since
+      // round 1 (*"NOT the same as an empty one"*); the cardinality half did not.
+      { examples: "oops" },
+    ]) {
+      warnCalls.length = 0;
+      const queue = await loadPendingQueue(
+        stubReader({ cardinality: [cardinalityRow(over)], cardinalityTotal: [{ n: 1 }] }),
+        owner,
+      );
+      const entry = queue.entries[0]!;
+      if (entry.kind !== "cardinality") throw new Error("expected a cardinality entry");
+      expect(entry.evidence, `override ${JSON.stringify(over)} did not take the arm`).toEqual({
+        kind: "unreadable",
+      });
+    }
+  });
+
+  it("⚠️ a count outside the WIRE's own domain takes the arm too", async () => {
+    // `typeof x === "number"` and `z.number().int().nonnegative()` disagree about
+    // `NaN`, `Infinity`, `-1` and `1.5` — so a bare typeof check passed exactly
+    // the drifted values a guard exists to catch, and they 500'd the whole pane
+    // at `checked()` instead of taking the drop-and-count path this module
+    // argues for.
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+      const queue = await loadPendingQueue(
+        stubReader({
+          cardinality: [cardinalityRow({ subjects: value })],
+          cardinalityTotal: [{ n: 1 }],
+        }),
+        owner,
+      );
+      const entry = queue.entries[0]!;
+      if (entry.kind !== "cardinality") throw new Error("expected a cardinality entry");
+      expect(entry.evidence, `subjects=${String(value)} reached the wire`).toEqual({
+        kind: "unreadable",
+      });
+    }
+  });
+
+  it("⚠️ a scoped window that will not narrow does not fabricate a WITHHELD claim", async () => {
+    // Coalesced to 0, `subjects: 2, scoped: 0` renders *"2 of them involve claims
+    // you cannot read, so they are counted but not shown"* with the counts
+    // reported consistent — an ACL disclosure invented from a column nobody read,
+    // on the surface whose entire product is honest notice.
+    const queue = await loadPendingQueue(
+      stubReader({
+        alias: { predicate: [aliasRow({ scoped_subjects: "nope" })] },
+        aliasTotals: { predicate: [{ n: 1 }] },
+      }),
+      owner,
+    );
+    const entry = queue.entries[0]!;
+    if (entry.kind !== "alias") throw new Error("expected an alias entry");
+    expect(entry.evidence).toEqual({ kind: "unreadable" });
+  });
+
   it("⚠️ fewer EVENTS than SUBJECTS is a third statement disagreeing", async () => {
     // Every distinct subject contributes at least one correction, so `events <
     // subjects` is arithmetically impossible. Clamping it into a plausible pair
     // would hand the approver two numbers that cannot both be true, presented as
     // facts.
     const queue = await loadPendingQueue(
-      stubReader({ cardinality: [cardinalityRow({ subjects: 3, events: 1 })] }),
+      stubReader({
+        cardinality: [cardinalityRow({ subjects: 3, events: 1 })],
+        cardinalityTotal: [{ n: 1 }],
+      }),
       owner,
     );
     const entry = queue.entries[0]!;
     if (entry.kind !== "cardinality") throw new Error("expected a cardinality entry");
     if (entry.evidence.kind !== "behavioral") throw new Error("expected behavioral evidence");
     expect(entry.evidence.countsConsistent).toBe(false);
+    // ⚠️ …and it reaches the BADGE. `evidenceDrifted` has two triggers — evidence
+    // that could not be read, and evidence that was read and disagrees with
+    // itself — and only the first was measured. Removing this second one left
+    // every suite green, so a row carrying two numbers that cannot both be true
+    // sat under a scope badge asserting the counts were trustworthy.
+    expect(queue.cardinalityCounts?.consistent).toBe(false);
+  });
+
+  it("⚠️ the alias half's second drift trigger reaches its badge too", async () => {
+    // The twin. `scoped_subjects` above `subjects` is arithmetically impossible —
+    // a reader cannot see more agreeing subjects than exist — so it is the alias
+    // half's readable-but-self-disagreeing state.
+    const queue = await loadPendingQueue(
+      stubReader({
+        alias: { predicate: [aliasRow({ subjects: 2, scoped_subjects: 5 })] },
+        aliasTotals: { predicate: [{ n: 1 }] },
+      }),
+      owner,
+    );
+    const entry = queue.entries[0]!;
+    if (entry.kind !== "alias" || entry.evidence.kind !== "structural") {
+      throw new Error("expected structural alias evidence");
+    }
+    expect(entry.evidence.countsConsistent).toBe(false);
+    const counts = queue.aliasCounts.find((c) => c.position === "predicate")!;
+    expect(counts.consistent).toBe(false);
   });
 });
 
@@ -389,6 +485,35 @@ describe("rows that will not narrow are DROPPED and counted, never smuggled thro
     // ⚠️ `incomplete`, never `truncated` — no filter reaches a dropped row.
     expect(queue.incomplete).toBe(true);
     expect(warnCalls.some((c) => c.msg.includes("would not narrow and were dropped"))).toBe(true);
+  });
+
+  it("⚠️ drops a row whose PROVENANCE will not narrow, on both halves", async () => {
+    // `: ""` was the shipped shape for `source_class` and `proposed_by`, and it
+    // is the `claims` defect two lines further down the same literal. Neither
+    // column is nullable and `source_class` carries a CHECK, so `""` is
+    // unreachable from Postgres and means the query drifted — while the pane
+    // renders it as the positive fact *"Raised by an unnamed producer
+    // (unrecorded source)"*.
+    //
+    // ⚠️ MORE load-bearing than a count, not less: at an entity position the
+    // evidence block has no structural answer to give and tells the approver in
+    // as many words to judge the proposal on where it came from. This is that.
+    for (const over of [{ source_class: "" }, { proposed_by: null }]) {
+      const aliasQueue = await loadPendingQueue(
+        stubReader({ alias: { predicate: [aliasRow(over)] } }),
+        owner,
+      );
+      expect(aliasQueue.entries, `alias ${JSON.stringify(over)}`).toHaveLength(0);
+      expect(aliasQueue.incomplete).toBe(true);
+
+      const cardinalityQueue = await loadPendingQueue(
+        stubReader({ cardinality: [cardinalityRow(over)] }),
+        owner,
+      );
+      expect(cardinalityQueue.entries, `cardinality ${JSON.stringify(over)}`).toHaveLength(0);
+      expect(cardinalityQueue.incomplete).toBe(true);
+    }
+    expect(warnCalls.some((c) => c.msg.includes("provenance columns would not narrow"))).toBe(true);
   });
 
   it("POSITIVE CONTROL — a readable claim count reaches the entry intact", async () => {

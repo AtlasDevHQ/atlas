@@ -28,6 +28,7 @@ import type {
   AliasAuthoringOutcome,
   AliasRemovalOutcome,
 } from "@atlas/api/lib/brain/vocabulary-decide";
+import type { CardinalityDecisionResult } from "@atlas/api/lib/brain/cardinality";
 
 const CURRENT_ORG = "org-1";
 
@@ -201,7 +202,7 @@ let cardinalityResult: unknown = { ok: true, cardinality: "single" };
 const cardinalityCalls: unknown[] = [];
 const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
 /**
- * ⚠️ Widened to `string`, deliberately, so a FOURTH member is injectable.
+ * ⚠️ Typed to the union, so the four LEGITIMATE values stay pinned to the seam.
  *
  * The route branches positively on `"decided"` and throws on a `never` default,
  * and that default is the whole point of the three-way result: the earlier shape
@@ -209,10 +210,15 @@ const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
  * approver as *"Curated: … now holds one value at a time"* for a write that may
  * not have happened, on the one verb that arms retroactive supersession.
  *
- * Typed to the union, the default is unreachable from any test — collapsing it
+ * The one hostile value casts AT ITS OWN SITE (`as CardinalityDecisionResult`),
+ * which is the point: widening this declaration to `string` also un-pinned the
+ * four real arms, so a rename in the seam would stop breaking the mock. One
+ * deliberate violation, legible as a violation.
+ *
+ * Without it the `never` default is unreachable from any test — collapsing it
  * back to the fall-through left all 60 tests in this file green.
  */
-let cardinalityDecided: string = "decided";
+let cardinalityDecided: CardinalityDecisionResult = "decided";
 void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   declarePredicateCardinalityForSurface: async (
     _db: unknown,
@@ -324,6 +330,19 @@ void mock.module("../admin-router", () => ({
 
 const { AuthContext, RequestContext } = await import("@atlas/api/lib/effect/services");
 let ORG_ID: string | undefined = CURRENT_ORG;
+/**
+ * What the stubbed `runEffect` rejected with, if anything.
+ *
+ * ⚠️ Recorded because this stub is NOT the real bridge, and the difference is
+ * load-bearing for one test. The real `runEffect` turns a defect into an
+ * `HTTPException(500)` whose body carries `{ error, message, requestId }`; this
+ * stub is a bare `Effect.runPromise`, so a defect propagates and Hono's built-in
+ * handler answers a constant `text/plain` "Internal Server Error". That means
+ * asserting on the BODY here proves nothing — every 500 from this router,
+ * whatever caused it, produces the identical bytes. The cause is the only thing
+ * that separates *"the `never` default fired"* from *"anything at all threw"*.
+ */
+let lastDefect: string | null = null;
 void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: (_c: unknown, program: Effect.Effect<unknown, unknown, never>) =>
     Effect.runPromise(
@@ -343,7 +362,10 @@ void mock.module("@atlas/api/lib/effect/hono", () => ({
           }),
         ),
       ) as Effect.Effect<unknown, never, never>,
-    ),
+    ).catch((err: unknown) => {
+      lastDefect = err instanceof Error ? err.message : String(err);
+      throw err;
+    }),
 }));
 
 const { adminBrainVocabulary } = await import("../admin-brain-vocabulary");
@@ -370,6 +392,7 @@ beforeEach(() => {
   cardinalityCalls.length = 0;
   cardinalityDecideCalls.length = 0;
   cardinalityDecided = "decided";
+  lastDefect = null;
   decideCalls.length = 0;
   decideOutcome = { kind: "approved", id: "proposal-1" };
   pendingCalls.length = 0;
@@ -1250,6 +1273,38 @@ describe("POST /decide", () => {
       expect(await res.json()).toEqual({ outcome: "approved", proposalId: null });
     });
 
+    it("⚠️ a REJECTION answers the rejected arm, and reaches the seam as a rejection", async () => {
+      // ⚠️ Every other test in this block sends `decision: "approved"` — the 403,
+      // the lost race, the key-smuggling 422, the `unaddressable` 400, the
+      // committed 200 and the `never` default. Collapsing this arm to always
+      // answer `{ outcome: "approved" }` left all 61 of them green.
+      //
+      // That is verbatim the defect a round-3 commit fixed on the ALIAS half,
+      // whose own message reads: *"An alias REJECTION was described as an
+      // authoring in force… It survived two rounds because no test reached the
+      // alias-rejection arm at all."* The fix landed on both halves. The
+      // falsifier landed on one.
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "reports to",
+        decision: "rejected",
+      });
+      expect(res.status).toBe(200);
+      // ⚠️ `removedEdge: false` and NOT absent: the wire union carries the field
+      // on the rejected arm only, so this is the one arm where it is readable —
+      // and a cardinality rejection removes no edge, which is what it says.
+      expect(await res.json()).toEqual({
+        outcome: "rejected",
+        proposalId: null,
+        removedEdge: false,
+      });
+      // …and the verdict reached the seam as itself rather than as the route's
+      // default. A rejection recorded as an approval arms retroactive
+      // supersession for every future claim in the slot.
+      expect(cardinalityDecideCalls).toHaveLength(1);
+      expect((cardinalityDecideCalls[0]!.input as { verdict: string }).verdict).toBe("rejected");
+    });
+
     it("⚠️ a result this route does not recognise REFUSES, never falls through to success", async () => {
       // The `never` default, exercised. A fourth member of
       // `CardinalityDecisionResult` is what this models — the seam growing a
@@ -1259,21 +1314,23 @@ describe("POST /decide", () => {
       // Reachable only because the mock's field is typed `string`; with the
       // union's own type nothing can inject this, which is exactly why the
       // branch was unfalsified.
-      cardinalityDecided = "quantum-superposed";
+      cardinalityDecided = "quantum-superposed" as CardinalityDecisionResult;
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",
         decision: "approved",
       });
       expect(res.status).toBe(500);
-      // ⚠️ The STATUS and the absent success string are the assertions, not the
-      // body's shape. This file mounts the router on a bare `OpenAPIHono`; the
-      // `requestId` envelope every 500 carries in production comes from
-      // `app.onError` in `api/index.ts`, which is not installed here. What
-      // matters at this seam is that an unrecognised result refuses instead of
-      // telling the approver that a retroactive supersession curation is in
-      // force.
-      expect(await res.text()).not.toContain("approved");
+      // ⚠️ The CAUSE, not the body. An earlier version of this test asserted
+      // `not.toContain("approved")` on the body and explained the missing
+      // `requestId` envelope as `app.onError` not being mounted. Both were
+      // wrong: the envelope comes from `runEffect` (`lib/effect/hono.ts`), which
+      // THIS FILE mocks away — so the body is Hono's constant `text/plain`
+      // "Internal Server Error" for every possible cause, and an assertion on it
+      // can never fail while the status is 500. The cause is what distinguishes
+      // "the `never` default fired" from "something threw".
+      expect(lastDefect).toContain("Unhandled cardinality decision result");
+      expect(lastDefect).toContain("quantum-superposed");
     });
   });
 });

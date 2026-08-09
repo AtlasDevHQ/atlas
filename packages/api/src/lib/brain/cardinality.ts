@@ -768,6 +768,19 @@ export async function decidePredicateCardinality(
     // operator asked *"who armed supersession on `reports to` last Tuesday, and
     // from which request?"* had a `reviewed_by` column and nothing to join it
     // to. `acl.ts` names exactly this class of event as one you want in the log.
+    //
+    // ⚠️ The verdict BRANCH below has no falsifier, stated rather than left to be
+    // rediscovered. Neither suite for this module mocks the logger, and neither
+    // can cheaply: `cardinality.test.ts`'s whole premise is that it needs no
+    // `mock.module` (its executor double is the entire harness, and a logger mock
+    // would require converting its static imports to dynamic ones), and
+    // `cardinality-pg.test.ts` asserts against a real database rather than
+    // against calls. What IS measured is the fact the wording describes — a
+    // rejection stores `status = 'rejected'` and leaves `cardinalitySingleSql`
+    // unarmed (`cardinality-pg.test.ts`, *"a REJECTION is stored as a rejection"*),
+    // and the route carries the verdict through unaltered
+    // (`admin-brain-vocabulary.test.ts`). So a swapped branch here would misreport
+    // one operator log line while every behavioural assertion still held.
     log.info(
       { workspaceId, predicateKey, verdict, reviewedBy, requestId },
       verdict === "approved"

@@ -1024,6 +1024,48 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
   );
 
   it(
+    "⚠️ a REJECTION is stored as a rejection, never as the approval",
+    async () => {
+      // Every other decide test on this seam passes `verdict: "approved"` — so
+      // the verdict was, in effect, a constant, and the route half had the same
+      // hole (a rejection answering the approved arm left 61 tests green). The
+      // consequence of getting it backwards is the maximal one available on this
+      // surface: `single` + `approved` arms retroactive supersession for every
+      // published pair in the slot at the next publish.
+      const ws = `ws-decide-reject-${Date.now()}`;
+      await proposePredicateCardinality(pool, ws, {
+        predicateKey: "reports to",
+        cardinality: "single",
+        sourceClass: "correction_event",
+        proposedBy: CORRECTION_EVENT_PRODUCER,
+      });
+      const decided = await decidePredicateCardinalityForSurface(pool, ws, {
+        predicateSurface: "Reports To",
+        verdict: "rejected",
+        reviewedBy: "user-owner",
+        predicateAlias: identityAlias,
+        requestId: "req-reject",
+      });
+      expect(decided).toBe("decided");
+      const record = await readPredicateCardinality(pool, ws, "reports to");
+      expect(record).toMatchObject({ status: "rejected" });
+      // ⚠️ And the GATE is not armed. `cardinalitySingleSql` requires
+      // `status = 'approved'`, so this is the assertion that would catch a
+      // verdict silently defaulted to approved even if the column read back
+      // correctly for some other reason.
+      const { rows } = await pool.query<{ armed: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM brain_predicate_cardinality c
+            WHERE c.workspace_id = $1 AND c.predicate_key = 'reports to'
+              AND c.cardinality = 'single' AND c.status = 'approved') AS armed`,
+        [ws],
+      );
+      expect(rows[0]!.armed).toBe(false);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "POSITIVE CONTROL — without the closure the same surface addresses NOTHING",
     async () => {
       // Without this the test above passes with `predicateAlias` ignored, since

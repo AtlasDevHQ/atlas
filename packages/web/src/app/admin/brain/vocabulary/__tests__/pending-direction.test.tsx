@@ -153,6 +153,14 @@ let incompleteOverride = false;
  * withheld row.
  */
 let cardinalityCountsNull = false;
+/**
+ * Whether `/pending` answers `aliasCounts: []` — the ALIAS half was never asked.
+ *
+ * ⚠️ A second switch beside {@link cardinalityCountsNull} because the response
+ * encodes one fact two ways, and that asymmetry is itself the defect under test:
+ * `null` for one half, an empty array for the other.
+ */
+let aliasCountsEmpty = false;
 
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -179,7 +187,7 @@ function installFetchStub() {
       return Promise.resolve(
         jsonResponse({
           entries: queueEntries,
-          aliasCounts: [countsOverride ?? COUNTS],
+          aliasCounts: aliasCountsEmpty ? [] : [countsOverride ?? COUNTS],
           cardinalityCounts: cardinalityCountsNull ? null : { ...COUNTS, total: 0, scoped: 0 },
           truncated: truncatedOverride,
           incomplete: incompleteOverride,
@@ -310,6 +318,7 @@ beforeEach(() => {
   truncatedOverride = false;
   incompleteOverride = false;
   cardinalityCountsNull = false;
+  aliasCountsEmpty = false;
 });
 
 afterEach(() => {
@@ -614,6 +623,33 @@ describe("⚠️ a decide body Atlas could not read is never reported as the ver
     expect(document.body.textContent ?? "").not.toContain("has been re-keyed");
   });
 
+  test("⚠️ …and the schema ISSUES are logged, not dropped on the floor", async () => {
+    // A `safeParse` guard that emits nothing is a catch that emits nothing. The
+    // server's own `checked()` parsed this body successfully against ITS copy of
+    // the schema, so a rename between `@useatlas/schemas` and the deployed API
+    // produces a 200 that is correct server-side, an approver reading "could not
+    // confirm", and — without this — an empty console. `issues[0].path` is the
+    // only artefact that names the offending field, and this body describes a
+    // decide transaction that has already COMMITTED.
+    const warnings: unknown[][] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      decideMode = "extra-key";
+      await approveOnce();
+      await waitFor(() => expect(screen.getByText(/could not confirm/)).toBeTruthy());
+      const decideWarn = warnings.find((w) => String(w[0]).includes("decide response failed"));
+      expect(decideWarn, "the decide safeParse failure was silent").toBeTruthy();
+      // ⚠️ The ISSUES, not just a message. A log line that says "it failed"
+      // without saying which field is the same dead end as no log line.
+      expect(JSON.stringify(decideWarn?.[1] ?? null)).toContain("removedEdge");
+    } finally {
+      console.warn = realWarn;
+    }
+  });
+
   test("⚠️ a LOST RACE is reported as itself, never as the approval", async () => {
     // `nothing_to_decide` is a truthful 200 — somebody else decided it, or one
     // is in flight — and telling this approver "approved" would credit them with
@@ -682,6 +718,90 @@ describe("⚠️ …and the CARDINALITY half gets the same three arms, not just 
     await approveCardinalityOnce();
     await waitFor(() => expect(screen.getByText(/can supersede an earlier one/)).toBeTruthy());
   });
+
+  test("⚠️ REJECT sends `rejected`, and the verb is read from the button pressed", async () => {
+    // ⚠️ The single highest-consequence hole the panel found in this file, and
+    // it was structural: `decideBodies` was asserted TWICE on the alias half and
+    // ZERO times on the cardinality half. Replacing `decision` in the request
+    // body with the literal `"approved"` left all 34 tests green — so pressing
+    // *Reject* would arm retroactive supersession workspace-wide while the
+    // notice read "Rejected: … keeps whatever cardinality it had." The click,
+    // the write and the receipt, all disagreeing, in the worst direction.
+    queueEntries = [cardinalityEntry()];
+    renderQueue();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Reject$/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /^Reject$/ }));
+    await waitFor(() => expect(decideBodies.length).toBe(1));
+    expect(JSON.parse(decideBodies[0]!)).toEqual({
+      kind: "cardinality",
+      predicateSurface: "reports to",
+      decision: "rejected",
+    });
+  });
+
+  test("POSITIVE CONTROL — Approve sends `approved` through the same field", async () => {
+    // Without this, hard-coding the body to `"rejected"` satisfies the test
+    // above — the mirror of the defect it exists for.
+    await approveCardinalityOnce();
+    await waitFor(() => expect(decideBodies.length).toBe(1));
+    expect(JSON.parse(decideBodies[0]!)).toEqual({
+      kind: "cardinality",
+      predicateSurface: "reports to",
+      decision: "approved",
+    });
+  });
+
+  test("⚠️ a rejection is NOT reported as an armed curation", async () => {
+    // The fourth arm of the notice ternary, and the one with no test: deleting
+    // the `decision === "rejected"` branch left every test green and rendered
+    // "Curated: … Every future claim in that slot can supersede an earlier one"
+    // for a decision that curated nothing.
+    queueEntries = [cardinalityEntry()];
+    renderQueue();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Reject$/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /^Reject$/ }));
+    await waitFor(() => expect(screen.getByText(/keeps whatever cardinality it had/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("can supersede an earlier one");
+  });
+});
+
+describe("⚠️ the cardinality preview asks about the decision that is actually offered", () => {
+  // The preview gates Approve, so a preview of a DIFFERENT decision is a gate
+  // that opens on the wrong evidence. The alias half asserts its preview body
+  // three times; the cardinality half asserted it zero times, and pointing it at
+  // an unrelated predicate with the opposite verb left all 34 tests green.
+  async function previewOnce(entry: Record<string, unknown>): Promise<void> {
+    queueEntries = [entry];
+    renderQueue();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Preview the impact/ })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Preview the impact/ }));
+    await waitFor(() => expect(previewBodies.length).toBe(1));
+  }
+
+  test("a `single` entry previews the FLIP — the decision approving it would make", async () => {
+    await previewOnce(cardinalityEntry({ cardinality: "single" }));
+    expect(JSON.parse(previewBodies[0]!)).toEqual({
+      kind: "cardinality-flip",
+      predicateSurface: "reports to",
+    });
+  });
+
+  test("⚠️ a `multi` entry does NOT preview the flip — that decision is not on offer", async () => {
+    // Hard-coded to `cardinality-flip`, a pending `multi` row previewed "At
+    // least N published claims become supersedable" directly beneath its own
+    // copy saying "Nothing is superseded by this" — the pane contradicting
+    // itself, with the number as the more believable half. Approving `multi`
+    // arms nothing, and `cardinality-removal` is the question whose honest
+    // answer says so.
+    await previewOnce(cardinalityEntry({ cardinality: "multi" }));
+    const body = JSON.parse(previewBodies[0]!) as Record<string, unknown>;
+    expect(body.kind).toBe("cardinality-removal");
+    expect(body.kind).not.toBe("cardinality-flip");
+    // ...and it is the SAME predicate the row is about.
+    expect(body.predicateSurface).toBe("reports to");
+  });
 });
 
 describe("⚠️ evidence Atlas COULD NOT READ is never rendered as a zero", () => {
@@ -743,12 +863,28 @@ describe("⚠️ a preview body that will not PARSE is an error, never a blank p
     // `{radius: null, pending: false, error: null}` — the triple
     // `BlastRadiusPreview` renders as NOTHING. No radius, no error, "Preview
     // first" again, and an approval gate that can never open.
-    previewReturnsGarbage = true;
-    renderQueue();
-    await waitFor(() => expect(screen.getAllByRole("button", { name: /Choose this/ }).length).toBe(2));
-    fireEvent.click(screen.getAllByRole("button", { name: /Choose this/ })[0]!);
-    await waitFor(() => expect(screen.getByText(/not in a shape this page understands/)).toBeTruthy());
-    expect(approveButton().disabled).toBe(true);
+    const warnings: unknown[][] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      previewReturnsGarbage = true;
+      renderQueue();
+      await waitFor(() =>
+        expect(screen.getAllByRole("button", { name: /Choose this/ }).length).toBe(2),
+      );
+      fireEvent.click(screen.getAllByRole("button", { name: /Choose this/ })[0]!);
+      await waitFor(() =>
+        expect(screen.getByText(/not in a shape this page understands/)).toBeTruthy(),
+      );
+      expect(approveButton().disabled).toBe(true);
+      // ⚠️ …and the issues reach the console — see the decide twin. Same silent
+      // `safeParse`, same reason it must not be silent.
+      expect(warnings.some((w) => String(w[0]).includes("preview response failed"))).toBe(true);
+    } finally {
+      console.warn = realWarn;
+    }
   });
 });
 
@@ -809,6 +945,46 @@ describe("the empty state is a coverage statement, never a congratulation", () =
     expect(text).not.toContain("among the kinds this queue asked about");
   });
 
+  test("⚠️ BOTH reasons at once are both stated, not collapsed to one", async () => {
+    // The fourth arm. Collapsing the combined case back to " that you can see"
+    // left every test green — the pre-split defect (a by-construction exclusion
+    // reported as a permission boundary) resurfacing in the case where the
+    // permission boundary is also real, which is the hardest one to notice.
+    queueEntries = [];
+    cardinalityCountsNull = true;
+    countsOverride = { ...COUNTS, total: 4, scoped: 0, withheld: 4 };
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Nothing is awaiting a decision/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("that you can see");
+    expect(text).toContain("among the kinds this queue asked about");
+  });
+
+  test("⚠️ an ALIAS half that was never asked gets the qualifier too", async () => {
+    // The mirror encoding. The cardinality half signals "not asked" with `null`;
+    // the alias half signals it with `[]`, and reading only the first meant
+    // `?kind=cardinality` on an empty result printed the flat sentence — the
+    // exact defect the split was written to stop, one half over.
+    queueEntries = [];
+    aliasCountsEmpty = true;
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Nothing is awaiting a decision/)).toBeTruthy());
+    expect(document.body.textContent ?? "").toContain("among the kinds this queue asked about");
+  });
+
+  test("⚠️ a count nobody ESTABLISHED is not reported as a clean nothing", async () => {
+    // The third reason the sentence is narrower than it sounds, and the one both
+    // earlier cuts missed: `readTotal` failing to narrow yields `withheld: 0` on
+    // a non-null record, so neither existing flag fires and the page asserted
+    // "Nothing is awaiting a decision." flat for a workspace whose pending total
+    // was never read.
+    queueEntries = [];
+    countsOverride = { ...COUNTS, countsConsistent: false };
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Nothing is awaiting a decision/)).toBeTruthy());
+    expect(document.body.textContent ?? "").toContain("as far as Atlas could establish");
+  });
+
   test("POSITIVE CONTROL — nothing withheld and everything asked carries NO qualifier", async () => {
     // Without this, an unconditional qualifier satisfies both assertions above,
     // and the page would hedge a sentence it is entitled to state flat.
@@ -854,6 +1030,80 @@ describe("⚠️ two UNADDRESSABLE cardinality rows are two rows, not one", () =
     } finally {
       console.error = realError;
     }
+  });
+
+  test("⚠️ two ADDRESSABLE rows keep their own preview state", async () => {
+    // ⚠️ The BEHAVIOURAL half, and the reason the console spy above is not
+    // enough on its own. My first comment claimed the warning was "the only
+    // observable at render time" — that was wrong twice over: an unaddressable
+    // row renders nothing but an Alert, so the state-follows-the-key harm cannot
+    // even occur on the rows that test constructs; and on addressable rows there
+    // is a direct observable, which is this.
+    //
+    // It also pins what the spy cannot: that the key is the row's IDENTITY. A
+    // key of `` `row:${index}` `` is perfectly distinct and passes the spy — and
+    // is a live defect class, because after a decided row is refetched away every
+    // later row shifts index and its preview follows the position instead.
+    queueEntries = [
+      cardinalityEntry({ predicateSurface: "reports to" }),
+      cardinalityEntry({ predicateSurface: "works at" }),
+    ];
+    renderQueue();
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /Preview the impact/ }).length).toBe(2),
+    );
+    // Preview the SECOND row only.
+    fireEvent.click(screen.getAllByRole("button", { name: /Preview the impact/ })[1]!);
+    await waitFor(() => expect(previewBodies.length).toBe(1));
+    expect(JSON.parse(previewBodies[0]!).predicateSurface).toBe("works at");
+    // The first row's gate must still be shut and its button unpressed. Sharing
+    // one identity between the rows is what makes the second row's radius open
+    // the first row's Approve.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /Preview the impact/ }).length).toBe(1),
+    );
+    const approves = screen.getAllByRole("button", { name: /^Approve$/ }) as HTMLButtonElement[];
+    expect(approves.filter((b) => b.disabled)).toHaveLength(1);
+    expect(approves.filter((b) => !b.disabled)).toHaveLength(1);
+  });
+
+  test("⚠️ …and keep it when an EARLIER row is decided away", async () => {
+    // ⚠️ The assertion that pins the key to the row's IDENTITY, and the one the
+    // test above cannot make. Within a single render pass an index key is
+    // perfectly distinct — so `` `row:${index}` `` passes both the console spy
+    // and the two-rows probe. The harm needs the list to CHANGE.
+    //
+    // Here it changes the way it always does in production: a row is decided and
+    // the refetch drops it. Keyed by index, the surviving row inherits the
+    // decided row's slot and therefore its state — its computed blast radius
+    // vanishes and its Approve shuts, for a preview the approver did run. Keyed
+    // by identity, the state follows the row.
+    queueEntries = [
+      cardinalityEntry({ predicateSurface: "reports to" }),
+      cardinalityEntry({ predicateSurface: "works at" }),
+    ];
+    renderQueue();
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /Preview the impact/ }).length).toBe(2),
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: /Preview the impact/ })[1]!);
+    await waitFor(() =>
+      expect(
+        (screen.getAllByRole("button", { name: /^Approve$/ }) as HTMLButtonElement[]).filter(
+          (b) => !b.disabled,
+        ),
+      ).toHaveLength(1),
+    );
+
+    // The first row is decided, and the refetch returns only the second.
+    queueEntries = [cardinalityEntry({ predicateSurface: "works at" })];
+    fireEvent.click(screen.getAllByRole("button", { name: /^Reject$/ })[0]!);
+    await waitFor(() => expect(screen.getAllByText(/Curated predicate/).length).toBe(1));
+
+    // The survivor still holds ITS preview: one Approve, and it is open.
+    const approves = screen.getAllByRole("button", { name: /^Approve$/ }) as HTMLButtonElement[];
+    expect(approves).toHaveLength(1);
+    expect(approves[0]!.disabled).toBe(false);
   });
 
   test("POSITIVE CONTROL — the spy above sees a real duplicate-key warning", async () => {

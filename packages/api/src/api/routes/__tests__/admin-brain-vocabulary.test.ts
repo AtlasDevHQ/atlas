@@ -462,6 +462,27 @@ describe("POST /author", () => {
     });
   });
 
+  it("⚠️ reports an already-approved pair WITHOUT inventing convergedOnProposal", async () => {
+    // Removing the `already_approved` arm from the response schema left all 41
+    // route tests green — the branch had no runtime coverage at all, and it is
+    // the one round 1 changed substantively by dropping a hard-coded
+    // `convergedOnProposal: true` that lied on the common double-submit.
+    //
+    // `toEqual` rather than `toMatchObject`: the ABSENT field is the property,
+    // and only an exact comparison pins it.
+    authorOutcome = { kind: "already_approved", id: "proposal-9" };
+    const res = await post("/author", {
+      position: "predicate",
+      fromNorm: "is priced at",
+      toNorm: "priced at",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      outcome: "already_approved",
+      proposalId: "proposal-9",
+    });
+  });
+
   it("refuses an unknown position at the schema rather than in the seam", async () => {
     const res = await post("/author", { position: "verb", fromNorm: "a", toNorm: "b" });
     expect(res.status).toBe(422);
@@ -574,7 +595,7 @@ describe("⚠️ a COMMITTED write whose response cannot be described", () => {
     expect(body.message).toMatch(/succeeded and is in force/);
   });
 
-  it("does the same for a committed curation", async () => {
+  it("does the same for a committed curation, and calls it a PREDICATE", async () => {
     // The third committed write, and the one that was still on plain `checked()`
     // — it arms retroactive supersession for every future claim in the slot.
     cardinalityResult = { ok: true, cardinality: "sometimes" };
@@ -583,7 +604,14 @@ describe("⚠️ a COMMITTED write whose response cannot be described", () => {
       cardinality: "single",
     });
     expect(res.status).toBe(500);
-    expect(((await res.json()) as { error: string }).error).toBe("response_schema_mismatch");
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("response_schema_mismatch");
+    // ⚠️ A curation has NO PROPOSAL — it is an upsert on
+    // `brain_predicate_cardinality`. The flat context rendered "proposal reports
+    // to", handing the approver a nonexistent identifier from inside the helper
+    // whose entire job is not lying to them about a committed write.
+    expect(body.message).toContain('predicate "reports to"');
+    expect(body.message).not.toContain("proposal");
   });
 
   it("POSITIVE CONTROL — a describable write is still a plain 200", async () => {

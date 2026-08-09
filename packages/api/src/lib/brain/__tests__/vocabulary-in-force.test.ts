@@ -24,15 +24,22 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 
-const warnCalls: Record<string, unknown>[] = [];
+const warnCalls: { payload: Record<string, unknown>; msg: string }[] = [];
 void mock.module("@atlas/api/lib/logger", () => {
   const logger = {
     info: () => {},
     debug: () => {},
     error: () => {},
-    warn: (payload: unknown) => {
+    // BOTH arguments. Capturing only the payload made every drift log assertable
+    // by an incidental field at best — and the one assertion that tried reduced
+    // to `String(x).length >= 0`, which is always true, so both new warns could
+    // be deleted with the suite green.
+    warn: (payload: unknown, msg?: unknown) => {
       if (typeof payload === "object" && payload !== null) {
-        warnCalls.push(payload as Record<string, unknown>);
+        warnCalls.push({
+          payload: payload as Record<string, unknown>,
+          msg: typeof msg === "string" ? msg : "",
+        });
       }
     },
     child: () => logger,
@@ -103,11 +110,12 @@ function stubReader(rows: StubRows) {
       if (sql.includes("brain_predicate_cardinality c")) {
         return { rows: rows.cardinalities ?? [] };
       }
-      if (sql.includes("brain_predicate_cardinality")) {
-        return { rows: rows.cardinalityTotal ?? [{ n: 0 }] };
-      }
-      // The coverage query — not this file's subject.
-      return { rows: [{}] };
+      // ⚠️ THROWS rather than answering with a plausible shape. A statement that
+      // stops matching its arm — after any SQL edit — would otherwise be
+      // answered with the wrong rows and the fixture would quietly test
+      // something else. `loadInForceVocabulary` issues exactly the statements
+      // above; there is no default worth serving.
+      throw new Error(`vocabulary-in-force stub: unmatched statement — ${sql.slice(0, 90)}`);
     },
   };
 }
@@ -177,7 +185,7 @@ describe("a position with no edges is an ANSWER, not a failure to read one", () 
     for (const position of ["subject", "predicate", "object"]) {
       expect(countsFor(view, position).consistent).toBe(false);
     }
-    expect(warnCalls.some((c) => c.unreadable === 1)).toBe(true);
+    expect(warnCalls.some((c) => c.payload.unreadable === 1)).toBe(true);
   });
 });
 
@@ -213,9 +221,14 @@ describe("the scoped total comes from the window function, never the page length
       owner,
     );
     expect(countsFor(view, "predicate").consistent).toBe(false);
-    expect(
-      warnCalls.some((c) => String(c.msg ?? "").length >= 0 && c.position === "predicate"),
-    ).toBe(true);
+    // ⚠️ Asserted on the MESSAGE. The earlier predicate was
+    // `String(c.msg ?? "").length >= 0 && c.position === "predicate"` — always
+    // true on its first term, so it reduced to "some warn carries this
+    // position", which `logFailClosedHole` already satisfies from the same path.
+    // Both scoped-total drift warns could be deleted with all 11 tests green.
+    expect(warnCalls.some((c) => /scoped-total window value did not arrive/.test(c.msg))).toBe(
+      true,
+    );
   });
 
   it("drops an edge row with an unusable timestamp rather than shipping an empty one", async () => {
@@ -276,7 +289,7 @@ describe("curated predicates get the same accounting as the edges", () => {
     );
     expect(view.cardinalities).toEqual([]);
     expect(view.truncated).toBe(true);
-    expect(warnCalls.some((c) => c.unreadable === 1)).toBe(true);
+    expect(warnCalls.some((c) => c.payload.unreadable === 1)).toBe(true);
   });
 
   it("POSITIVE CONTROL — a readable entry comes through with its surface", async () => {
@@ -287,6 +300,23 @@ describe("curated predicates get the same accounting as the edges", () => {
     expect(view.cardinalities).toHaveLength(1);
     expect(view.cardinalities[0]!.predicateSurface).toBe("reports to");
     expect(view.cardinalityCounts.consistent).toBe(true);
+  });
+
+  it("⚠️ reports INCONSISTENT when the curated-predicate window value never arrives", async () => {
+    // The edge path has this arm; the curated-predicate path did not, so
+    // dropping `cardinalities.scopedTotalKnown` from the `consistent` term left
+    // all 11 tests green. The uncovered state is the one the fix was written
+    // for: 500 entries whose `scoped_total` drifts falls back to the page
+    // length, yielding `withheld: 499, consistent: true` at an UNSCOPED position.
+    const view = await loadInForceVocabulary(
+      stubReader({
+        cardinalityTotal: [{ n: 500 }],
+        cardinalities: [cardinalityRow("p", "not-a-number")],
+      }),
+      owner,
+    );
+    expect(view.cardinalityCounts.consistent).toBe(false);
+    expect(warnCalls.some((c) => /curated-predicate scoped-total/.test(c.msg))).toBe(true);
   });
 
   it("reports the total as UNKNOWN rather than zero when it will not narrow", async () => {
@@ -325,6 +355,6 @@ describe("a denied reader is told nothing, and the counts say so", () => {
 
     // …and the fail-closed hole is logged, because those entries are also
     // un-removable by this reader.
-    expect(warnCalls.some((c) => c.withheld === 7)).toBe(true);
+    expect(warnCalls.some((c) => c.payload.withheld === 7)).toBe(true);
   });
 });

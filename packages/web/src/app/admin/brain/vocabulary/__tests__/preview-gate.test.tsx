@@ -88,6 +88,10 @@ const IN_FORCE = {
 let previewFails = false;
 /** When set, the preview response waits on this — for the in-flight race arm. */
 let holdPreview: Promise<void> | null = null;
+/** Successive previews wait on these, in order — for the two-in-flight arm. */
+let holdQueue: Promise<void>[] = [];
+/** Whether `POST /remove` fails, so the dialog's error arm is reachable. */
+let removeFails = false;
 const previewCalls: unknown[] = [];
 
 const originalFetch = globalThis.fetch;
@@ -116,10 +120,24 @@ function installFetchStub() {
     if (url.includes("/brain-vocabulary/in-force")) {
       return Promise.resolve(jsonResponse(IN_FORCE));
     }
+    if (url.includes("/brain-vocabulary/remove")) {
+      return Promise.resolve(
+        removeFails
+          ? jsonResponse(
+              {
+                error: "not-in-force",
+                message: "That alias could not be removed — no approved edge matches that pair.",
+                requestId: "req-1",
+              },
+              409,
+            )
+          : jsonResponse({ outcome: "removed", proposalId: "p-1", memoryCreated: false }),
+      );
+    }
     if (url.includes("/brain-vocabulary/preview")) {
       previewCalls.push(init?.body);
-      const held = holdPreview;
-      if (held !== null) {
+      const held = holdQueue.length > 0 ? holdQueue.shift()! : holdPreview;
+      if (held !== null && held !== undefined) {
         holdPreview = null;
         return held.then(() =>
           jsonResponse({
@@ -228,6 +246,8 @@ const authorDisabled = (): boolean =>
 beforeEach(() => {
   previewFails = false;
   holdPreview = null;
+  holdQueue = [];
+  removeFails = false;
   previewCalls.length = 0;
   installFetchStub();
 });
@@ -252,6 +272,68 @@ describe("removal is gated on the SAME computed blast radius", () => {
     fireEvent.click((await screen.findAllByRole("button", { name: /^Remove$/i }))[0]!);
     await waitFor(() => expect(screen.getByText(/could not be computed/i)).toBeTruthy());
     expect(removeButton().disabled).toBe(true);
+  });
+
+  test("⚠️ a removal preview that lands after the dialog moved on does not re-arm it", async () => {
+    // The removal half of the async race. Its own docstring names the scenario —
+    // "Remove edge 1, Cancel, Remove edge 2 → if edge 1's response lands last it
+    // fills the slot, and the destructive button enables showing edge 1's
+    // counterfactual for edge 2" — and deleting the bump from
+    // `clearRemoveRadius()` left all 38 web tests green, on the graver verb.
+    // TWO held previews, because the bump only matters in one ordering: the
+    // abandoned response has to land AFTER the replacement has started. If it
+    // lands before, `loadRadius`'s own opening `{pending: true, radius: null}`
+    // clears the slot anyway and the guard is not what saved it.
+    let releaseFirst: (() => void) | null = null;
+    let releaseSecond: (() => void) | null = null;
+    const first = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const second = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    holdQueue = [first, second];
+
+    renderPage();
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Remove$/i }))[0]!);
+    // Abandon it while its preview is still in flight.
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /^Remove the alias$/i })).toBeNull(),
+    );
+
+    // Re-open — a SECOND preview starts and is also held, so the button is
+    // legitimately disabled while it is pending.
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Remove$/i }))[0]!);
+    await waitFor(() => expect(removeButton().disabled).toBe(true));
+
+    // Now let the ABANDONED response land, on top of a pending replacement.
+    releaseFirst!();
+    await first;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The stale radius must not have armed the destructive button.
+    expect(removeButton().disabled).toBe(true);
+    releaseSecond!();
+  });
+
+  test("⚠️ a FAILED removal keeps the dialog open and reports inside it", async () => {
+    // Round 1's defect class, re-introducible silently: the failure arm used to
+    // call `setAuthorError(...)` AND close the dialog, so the server's removal
+    // prose appeared under "Author an alias" with nothing left to attribute it
+    // to. Reverting it left all 38 web tests green — nothing anywhere rendered a
+    // failing `/remove`.
+    removeFails = true;
+    renderPage();
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Remove$/i }))[0]!);
+    await waitFor(() => expect(removeButton().disabled).toBe(false));
+    fireEvent.click(removeButton());
+
+    // The dialog is STILL open, and the message is in it.
+    await waitFor(() => expect(screen.getByText(/could not be removed/i)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /^Remove the alias$/i })).not.toBeNull();
+    // …and the authoring card carries no error it cannot explain.
+    expect(screen.queryByText(/Author an alias/i)).not.toBeNull();
   });
 
   test("POSITIVE CONTROL — it enables once the removal preview lands", async () => {
@@ -356,20 +438,34 @@ describe("authoring is gated on a computed blast radius", () => {
   });
 
   test("⚠️ changing the POSITION clears the preview too", async () => {
-    // A separate reset site (`page.tsx`'s position select), and the staler of
-    // the two: the radius would be for a different POSITION entirely, whose
-    // population and blast radius have nothing to do with the new one.
+    // ⚠️ This test used to click `getAllByRole("button", {name: /^Change$/})[0]`
+    // — the picker's UN-PICK button, not the position select — so it was a
+    // duplicate of the re-picking test above and deleting `clearAuthorRadius()`
+    // from the position handler left it green, despite its own comment naming
+    // that handler. It described an interaction it did not perform.
+    //
+    // The select is a Radix trigger exposed as a `combobox`. Driving it is the
+    // only thing that reaches the third reset site, and this is the STALEST of
+    // the three: the radius would belong to a different POSITION entirely, whose
+    // population has nothing to do with the new one.
     renderPage();
     await pickBothNorms();
     fireEvent.click(screen.getByRole("button", { name: /Preview the impact/i }));
     await waitFor(() => expect(authorDisabled()).toBe(false));
+    expect(screen.queryByText(/At least 2 published/)).not.toBeNull();
 
-    // The select is a shadcn/Radix trigger; changing it clears both picks AND
-    // the radius, so the assertion is that the preview banner is gone rather
-    // than only that the button is disabled.
-    expect(screen.queryByText(/At least 2/)).not.toBeNull();
-    fireEvent.click(screen.getAllByRole("button", { name: /^Change$/ })[0]!);
-    await waitFor(() => expect(screen.queryByText(/At least 2/)).toBeNull());
+    const trigger = screen.getByRole("combobox");
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    const subjectOption = await screen.findByRole("option", { name: /^Subject$/ });
+    fireEvent.click(subjectOption);
+
+    // Polled by hand and asserted as a BOOLEAN. `waitFor(() =>
+    // expect(queryByText(...)).toBeNull())` serialises the entire container on
+    // timeout, and with Radix's portal that is a two-million-line dump which
+    // buries the actual failure and makes a red CI run unreadable.
+    await waitFor(() => expect(screen.queryByRole("option")).toBeNull());
+    const stillShowingStaleRadius = screen.queryByText(/At least 2 published/) !== null;
+    expect(stillShowingStaleRadius).toBe(false);
   });
 
   test("⚠️ a preview that lands AFTER a reset does not re-arm the gate", async () => {

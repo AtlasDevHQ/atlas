@@ -93,6 +93,7 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type {
   AuthMode,
   BrainVocabularyAuthorResponse,
+  BrainVocabularyCardinalityWriteResponse,
   BrainVocabularyRemoveResponse,
   BrainVocabularyScope,
   BrainVocabularyStructurallyEmptyReason,
@@ -136,12 +137,11 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
  * The same guard on a WRITE route, where a failure means something different.
  *
  * ⚠️ On a read, `checked()` throwing is exactly right: nothing happened, and a
- * 500 is the honest answer. On `/author` and `/remove` the transaction has
- * **already committed** — the edge is in force and the corpus has been re-keyed
- * — so the same throw produces *"Failed to author brain vocabulary alias edge."*
- * over a write that succeeded. An approver reads that as "it did not work" and
- * retries; the retry is refused with `already-aliased`, which reads as a second
- * failure for a decision that landed on the first attempt.
+ * 500 is the honest answer. On the three WRITE routes the transaction has
+ * **already committed** — the edge is in force and the corpus has been re-keyed,
+ * or the predicate is curated — so the same throw produces *"Failed to author
+ * brain vocabulary alias edge."* over a write that succeeded. An approver reads
+ * that as "it did not work".
  *
  * That is the mirror image of the rule this file's header already states about
  * refusals behind a 200 — a write's outcome must not be misreported in either
@@ -149,15 +149,17 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
  * is reported as having LANDED, with the description problem named as the
  * server-side defect it is.
  *
- * ⚠️ **The message says RELOAD, not "do not retry", and the earlier wording was
- * itself the defect this helper exists to prevent.** It claimed a retry "is
- * refused with `already-aliased`, which reads as a second failure". It is not:
- * re-POSTing `/author` finds the approved proposal and returns
- * `already_approved` → 200, and `/remove` finds the rejected row and returns
- * `already_removed` → 200. Both paths are idempotent by construction — that is
- * what the converge-on-an-existing-row design buys — so telling an approver not
- * to retry a safe operation was a smaller lie than the one it replaced, and
- * still one.
+ * ⚠️ **The message says RELOAD, not "do not retry".** An earlier cut of this
+ * docstring justified the helper by claiming a retry "is refused with
+ * `already-aliased`, which reads as a second failure" — and that claim was
+ * itself false, sitting one paragraph above its own refutation. Re-POSTing
+ * `/author` finds the approved proposal and returns `already_approved` → 200;
+ * `/remove` finds the rejected row and returns `already_removed` → 200. Both
+ * paths are idempotent by construction, which is what the
+ * converge-on-an-existing-row design buys. Telling an approver not to retry a
+ * safe operation was a smaller lie than the one this helper replaced, and still
+ * one — recorded here because a docstring that means two things is worth nothing
+ * on the one that matters, and this is the helper whose entire job is honesty.
  *
  * The 500 status stays. A body that says "landed" behind a 200 is read as
  * success by exactly the generic clients this file's header worries about, and
@@ -167,12 +169,21 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
 function checkedWrite<T>(
   schema: { parse: (value: unknown) => T },
   payload: unknown,
-  context: {
-    /** Typed, not `string`: two call sites, two values, interpolated into prose. */
-    readonly verb: "authoring" | "removal" | "curation";
-    readonly proposalId: string;
-    readonly requestId: string;
-  },
+  /**
+   * ⚠️ DISCRIMINATED on the verb, because the three writes do not share an
+   * identifier.
+   *
+   * A flat `{ verb, proposalId }` rendered *"The curation succeeded and is in
+   * force — proposal is priced at"* for a cardinality write, which has no
+   * proposal at all: it is an upsert on `brain_predicate_cardinality`. That
+   * handed the approver a nonexistent identifier for the one write that arms
+   * retroactive supersession, from inside the helper written to stop lying to
+   * them about committed writes.
+   */
+  context: (
+    | { readonly verb: "authoring" | "removal"; readonly proposalId: string }
+    | { readonly verb: "curation"; readonly predicateSurface: string }
+  ) & { readonly requestId: string },
 ):
   | { readonly ok: true; readonly body: T }
   | {
@@ -182,9 +193,15 @@ function checkedWrite<T>(
   try {
     return { ok: true, body: schema.parse(payload) };
   } catch (err) {
+    const subject =
+      context.verb === "curation"
+        ? `predicate "${context.predicateSurface}"`
+        : `proposal ${context.proposalId}`;
     log.error(
       {
-        proposalId: context.proposalId,
+        ...(context.verb === "curation"
+          ? { predicateSurface: context.predicateSurface }
+          : { proposalId: context.proposalId }),
         verb: context.verb,
         requestId: context.requestId,
         err: err instanceof Error ? err.message : String(err),
@@ -196,10 +213,10 @@ function checkedWrite<T>(
       body: {
         error: "response_schema_mismatch",
         message:
-          `The ${context.verb} succeeded and is in force — proposal ${context.proposalId} — but ` +
-          "Atlas could not build a response describing it, which is a defect on our side. Reload " +
-          "the page to see the current state; retrying is safe and will simply report the change " +
-          "as already applied.",
+          `The ${context.verb} succeeded and is in force — ${subject} — but Atlas could not ` +
+          "build a response describing it, which is a defect on our side. Reload the page to see " +
+          "the current state; retrying is safe and will simply report the change as already " +
+          "applied.",
         requestId: context.requestId,
       },
     };
@@ -279,6 +296,13 @@ function refusalStatus(
  * responses and its reachable ones agree at COMPILE time rather than by
  * inspection; the `never` default is what keeps them agreeing when the seam
  * grows an arm.
+ *
+ * ⚠️ **Swapping this back to {@link refusalStatus} is undetectable at runtime by
+ * construction** — both map the two reachable refusals to 400, so no test can
+ * tell them apart. Stated so a reviewer does not go hunting for the falsifier
+ * that cannot exist: the guarantee lives in the return TYPE and in the
+ * committed `openapi.json` (which records no 409 on this route), and the
+ * openapi-drift gate is what enforces it.
  */
 function declarationRefusalStatus(
   refusal: Extract<CardinalityRefusal, "degenerate-key" | "unattributed">,
@@ -384,7 +408,7 @@ const inForceRoute = createRoute({
     "Approved alias edges and curated predicate cardinalities currently in force, plus the coverage numbers the empty state needs. " +
     "Carries the SAME positional-visibility rule the pending queue uses, applied to populations: predicate-position edges unscoped, entity-position edges reader-scoped on BOTH sides — re-derived at read time by joining `brain_facts` on the two norms, because `brain_vocabulary_proposal` stores no fact ids and the vocabulary is permanently ACL-less (ADR-0037 §6, correcting T11 §5(b)). " +
     "`counts` carries a WITHHELD count per position, never a silent omission: the vocabulary is workspace-global, so its SIZE is not a secret even when its contents are, and an approver must be able to tell \"12 entity edges you cannot see\" from \"none\". `countsConsistent` reports a concurrent write that made the two statements disagree, rather than clamping the delta to a reassuring zero. " +
-    "⚠️ An entity edge invisible to you is also UN-REMOVABLE by you. That hole is fail-closed and correct, and it is logged server-side rather than skipped silently — a workspace whose only admin cannot see a bad edge's populations has no in-product recovery path. " +
+    "⚠️ An entity edge withheld because you cannot READ its populations is also un-removable by you. That hole is fail-closed and correct, and it is logged server-side rather than skipped silently — a workspace whose only admin cannot see a bad edge's populations has no in-product recovery path. An edge withheld only because its claims have all been retracted is NOT in that position: the removal gate counts retracted claims, so it stays recoverable. " +
     "`coverage` is what makes the empty state a coverage statement rather than a congratulation: there is no caught-up state for a vocabulary, only what has been decided and what has not yet been observed. `comparableFacts` is why Pending is empty specifically — the structural proposer fires only on claims with comparable objects.",
   responses: {
     200: {
@@ -848,10 +872,18 @@ adminBrainVocabulary.openapi(cardinalityRoute, async (c) => {
       // arms retroactive supersession for every future claim in the slot. The
       // third committed write on this surface, and it was the one still reporting
       // a landed change as a plain failure.
+      // ANNOTATED like the other two writes. Round 2's own rationale — the
+      // discriminated unions buy nothing while the payload is `unknown` —
+      // reached `/author` and `/remove` and skipped this one, so an extra key
+      // here still compiled and failed at runtime as the 500 the annotation
+      // exists to prevent.
+      const cardinalityBody: BrainVocabularyCardinalityWriteResponse = {
+        cardinality: result.cardinality,
+      };
       const described = checkedWrite(
         BrainVocabularyCardinalityWriteResponseSchema,
-        { cardinality: result.cardinality },
-        { verb: "curation", proposalId: body.predicateSurface, requestId },
+        cardinalityBody,
+        { verb: "curation", predicateSurface: body.predicateSurface, requestId },
       );
       return described.ok ? c.json(described.body, 200) : c.json(described.body, 500);
     }),

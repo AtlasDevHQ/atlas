@@ -481,7 +481,7 @@ export function withheldCount(total: number, scoped: number): WithheldCount {
  *
  * ADR-0037 §6's rule: **the fail-closed hole is logged, not skipped silently.**
  * The pane is correct and fail-closed, and the cost is real: a workspace whose
- * only admin cannot see a bad edge's populations has no console recovery for it,
+ * only admin cannot READ a bad edge's populations has no console recovery for it,
  * at exactly the moment recovery is needed (`led_by → leads` approved, `valid_to`
  * stamping across the manager graph). Nothing here can widen the disclosure —
  * that would be the leak — so the one honest response is to make the situation
@@ -518,6 +518,12 @@ export function logFailClosedHole(details: {
     // also called for the curated-predicate accounting, where that would be a
     // false label on the one line an operator is meant to trust — `position` is
     // in the payload and says which.
-    "brain vocabulary: entries in force were withheld from an approver — a withheld entry is also un-removable by them, so a bad entry here has no in-product recovery path",
+    // ⚠️ Qualified to the ACL case. The unqualified claim went false the moment
+    // the removal gate started counting RETRACTED claims: `withheld` is still
+    // computed from the live set, so an entry withheld only because its claims
+    // were retracted is now recoverable. Over-alarming rather than
+    // under-disclosing, but this surface's premise is that these sentences are
+    // exact.
+    "brain vocabulary: entries in force were withheld from an approver — an entry withheld because its populations are unreadable to them is also un-removable by them, so a bad entry there has no in-product recovery path",
   );
 }

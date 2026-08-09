@@ -626,7 +626,11 @@ async function loadCardinalities(
   if (scopedTotal === null && rows.length > 0) {
     log.warn(
       { workspaceId: ctx.workspaceId, rows: rows.length, requestId: opts.requestId },
-      "brain vocabulary in-force: the curated-predicate scoped-total window value did not arrive — the withheld count is reported inconsistent rather than computed against a page length",
+      // Matches the sibling edge warn's wording. The earlier text said the count
+      // was reported inconsistent "rather than computed against a page length" —
+      // but it is BOTH: the fallback below is `out.length`. An operator reading
+      // that would not go looking for the wrong number the badge is rendering.
+      "brain vocabulary in-force: the curated-predicate scoped-total window value did not arrive — the withheld count for curated predicates cannot be trusted and is reported inconsistent",
     );
   }
 

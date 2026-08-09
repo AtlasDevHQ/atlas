@@ -22,14 +22,17 @@ _openapi:
           are, and an approver must be able to tell "12 entity edges you cannot
           see" from "none". `countsConsistent` reports a concurrent write that
           made the two statements disagree, rather than clamping the delta to a
-          reassuring zero. ⚠️ An entity edge invisible to you is also
-          UN-REMOVABLE by you. That hole is fail-closed and correct, and it is
-          logged server-side rather than skipped silently — a workspace whose
-          only admin cannot see a bad edge's populations has no in-product
-          recovery path. `coverage` is what makes the empty state a coverage
-          statement rather than a congratulation: there is no caught-up state
-          for a vocabulary, only what has been decided and what has not yet been
-          observed. `comparableFacts` is why Pending is empty specifically — the
+          reassuring zero. ⚠️ An entity edge withheld because you cannot READ
+          its populations is also un-removable by you. That hole is fail-closed
+          and correct, and it is logged server-side rather than skipped silently
+          — a workspace whose only admin cannot see a bad edge's populations has
+          no in-product recovery path. An edge withheld only because its claims
+          have all been retracted is NOT in that position: the removal gate
+          counts retracted claims, so it stays recoverable. `coverage` is what
+          makes the empty state a coverage statement rather than a
+          congratulation: there is no caught-up state for a vocabulary, only
+          what has been decided and what has not yet been observed.
+          `comparableFacts` is why Pending is empty specifically — the
           structural proposer fires only on claims with comparable objects.
 ---
 

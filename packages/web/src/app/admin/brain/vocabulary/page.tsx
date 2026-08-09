@@ -227,6 +227,25 @@ function ClaimVocabulary() {
    * decision being abandoned cannot land afterwards. Written as helpers rather
    * than repeated at the six reset sites, because the bump is the half that is
    * easy to forget and impossible to see missing.
+   *
+   * ⚠️ **The two bumps are not equally load-bearing, and only one is
+   * falsifiable — stated rather than left for the next reader to re-derive.**
+   *
+   * `loadRadius` bumps on ENTRY, so any reset followed by a new preview is
+   * already covered. The clear-bump matters only where a reset is followed by NO
+   * new request, and the slot is read afterwards:
+   *
+   *   - AUTHOR: real and tested. Re-picking a norm resets without previewing, so
+   *     a stale response would land into a slot nothing has re-pended and re-arm
+   *     the write gate (`preview-gate.test.tsx`, "a preview that lands AFTER a
+   *     reset"; deleting this bump turns it red).
+   *   - REMOVE: **unfalsifiable by construction.** Every path back into that slot
+   *     goes through the Remove button, which calls `loadRadius` and bumps on
+   *     entry — so a stale write is always overwritten before anything reads it.
+   *     Deleting this bump breaks no test, and no test can be written for it. It
+   *     is kept for symmetry: the asymmetry is an accident of which buttons exist
+   *     today, not a property of the design, and a future "re-preview" affordance
+   *     on the dialog would make it load-bearing overnight.
    */
   function clearAuthorRadius() {
     authorGeneration.current += 1;

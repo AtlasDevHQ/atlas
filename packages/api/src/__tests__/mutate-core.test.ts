@@ -209,8 +209,8 @@ describe("restore", () => {
 
 describe("parseBunSummary", () => {
   test("reads the summary block", () => {
-    expect(parseBunSummary("\n 58 pass\n 0 fail\n 200 expect() calls\n")).toEqual({ pass: 58, fail: 0 });
-    expect(parseBunSummary("\n 55 pass\n 3 fail\n")).toEqual({ pass: 55, fail: 3 });
+    expect(parseBunSummary("\n 58 pass\n 0 fail\n 200 expect() calls\n")).toEqual({ pass: 58, fail: 0, skip: 0 });
+    expect(parseBunSummary("\n 55 pass\n 3 fail\n")).toEqual({ pass: 55, fail: 3, skip: 0 });
   });
 
   test("a count EARLIER in the output cannot be mistaken for the summary", () => {
@@ -224,12 +224,12 @@ describe("parseBunSummary", () => {
       " 56 pass",
       " 2 fail",
     ].join("\n");
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2 });
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0 });
   });
 
   test("a pass count mid-line is likewise not mistaken for the summary", () => {
     const output = ["(fail) mutate > reports 9 pass rows", " 56 pass", " 2 fail"].join("\n");
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2 });
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0 });
   });
 
   test("a suite that never ran reports an ERROR, not `0 fail`", () => {
@@ -243,6 +243,49 @@ describe("parseBunSummary", () => {
 
   test("empty output reports an error rather than silently passing", () => {
     expect(parseBunSummary("").error).toBeDefined();
+  });
+
+  // ⚠️ The skip count is the signal behind `mutate.ts`'s guardrail 4 (#5077).
+  // Without it the runner accepted a self-skipped `-pg` suite as a green
+  // baseline and regenerated a whole column as zeros over real numbers.
+  test("reads the SKIP count — a skipped test cannot be killed by a mutation", () => {
+    // bun's real summary for `identity-consumers-pg.test.ts` with no
+    // TEST_DATABASE_URL: the exact shape that caused #5077.
+    expect(parseBunSummary("\n 6 pass\n 72 skip\n 0 fail\n 49 expect() calls\n")).toEqual({
+      pass: 6,
+      fail: 0,
+      skip: 72,
+    });
+  });
+
+  test("⚠️ the deflated baseline is 6 pass, NOT 0 — `pass > 0` would not catch it", () => {
+    // The correction to #5077's own diagnosis, and the reason the guard reads
+    // `skip` rather than `pass`. That file carries six non-`-pg` tests, so a
+    // suite whose 72 real tests all vanished still reports a positive pass count
+    // and a zero fail count — indistinguishable from health by every signal the
+    // runner had before this.
+    const deflated = parseBunSummary("\n 6 pass\n 72 skip\n 0 fail\n");
+    expect(deflated.pass).toBeGreaterThan(0);
+    expect(deflated.fail).toBe(0);
+    // …so the ONLY thing separating it from a healthy run is this:
+    expect(deflated.skip).toBeGreaterThan(0);
+  });
+
+  test("a healthy run reports skip 0 — an absent line is not an absent verdict", () => {
+    // bun omits the skip line entirely when nothing skipped, so it must default
+    // rather than fail the parse the way a missing pass/fail line does. Without
+    // this the guard would refuse every healthy suite and get reverted within a
+    // day.
+    expect(parseBunSummary("\n 64 pass\n 0 fail\n").skip).toBe(0);
+  });
+
+  test("a skip count mid-line is not mistaken for the summary either", () => {
+    // The anchoring the pass/fail arms already have, extended to the new one: a
+    // test whose NAME contains `12 skip` must not become the summary.
+    const output = ["(fail) mutate > reports 12 skip rows", " 56 pass", " 3 skip", " 2 fail"].join(
+      "\n",
+    );
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 3 });
   });
 });
 

@@ -15,12 +15,12 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 
 | Mutation | object-cmp.test.ts |
 |---|---|
-| `DECIMAL_RE` loses its anchors (`^…$`) | 22 |
+| `DECIMAL_RE` loses its anchors (`^…$`) | 23 |
 | `parseSurface` returns `{tag:"number", payload: trimmed}` for any unmatched surface — the raw-surface collapse | 13 |
 | `canonicalCurrency` loses its upper-case fold | 4 |
-| `canonicalCurrency` drops the `ISO_4217` membership test (back to any three letters) | 4 |
+| `canonicalCurrency` drops the `ISO_4217` membership test (back to any three letters) | 5 |
 | `canonicalInstant` loses its calendar round-trip | 2 |
-| `canonicalDate` loses its calendar round-trip | 2 |
+| `canonicalDate` loses its calendar round-trip | 4 |
 | `canonicalDecimal` loses its trailing-zero trim | 2 |
 | a declaration OVERRIDES the surface instead of narrowing it | 4 |
 | `comparableValueWithReason` collapses `declaration-rejected` into `abstained` | 3 |
@@ -32,7 +32,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `comparableDifferentSql` loses its known-tag `IN` arm | 0 |
 | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | 0 |
 
-Suite sizes: **object-cmp.test.ts** 59 tests (`src/lib/brain/__tests__/object-cmp.test.ts`).
+Suite sizes: **object-cmp.test.ts** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`).
 
 ## Notes
 

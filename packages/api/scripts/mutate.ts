@@ -56,7 +56,9 @@ import { dirname, relative, resolve } from "node:path";
 import { runFileWithSignalRetry } from "./signal-retry";
 import {
   AnchorError,
+  anchorFailures,
   applyMutation,
+  baselineProblem,
   diskStore,
   isWholeSuite,
   parseBunSummary,
@@ -92,6 +94,19 @@ interface Options {
   readonly only: readonly string[];
   readonly targets: readonly string[];
   readonly check: boolean;
+  /**
+   * Print the files this spec's verdict DEPENDS ON, then exit. Runs nothing.
+   *
+   * Exists so `check-mutation-tables.sh` can verify only the specs a branch
+   * could actually have invalidated. The full sweep is 832s measured — more
+   * than the entire rest of `/ci` — so a gate that always ran everything would
+   * be disabled inside a week, and a disabled gate catches nothing.
+   *
+   * Derived from the loaded spec rather than grepped, because the paths are
+   * behind `SOURCE`-style consts that a regex would miss — and a dependency
+   * list that silently misses a file is a gate that silently stops gating.
+   */
+  readonly files: boolean;
   /** Overrides the baseline-derived per-suite timeout. */
   readonly timeoutMs?: number;
 }
@@ -101,6 +116,7 @@ function parseArgs(argv: readonly string[]): Options {
   const only: string[] = [];
   const targets: string[] = [];
   let check = false;
+  let files = false;
   let timeoutMs: number | undefined;
 
   for (let i = 0; i < argv.length; i++) {
@@ -116,6 +132,8 @@ function parseArgs(argv: readonly string[]): Options {
       timeoutMs = parsed;
     } else if (arg === "--check") {
       check = true;
+    } else if (arg === "--files") {
+      files = true;
     } else if (arg !== undefined && arg.startsWith("--")) {
       fail(`Unknown flag: ${arg}`);
     } else if (specPath === undefined) {
@@ -128,10 +146,10 @@ function parseArgs(argv: readonly string[]): Options {
   if (specPath === undefined) {
     fail(
       "Usage: bun run scripts/mutate.ts <spec.mutations.ts> " +
-        "[--only <label>] [--target <name>] [--timeout <ms>] [--check]",
+        "[--only <label>] [--target <name>] [--timeout <ms>] [--check] [--files]",
     );
   }
-  return { specPath, only, targets, check, timeoutMs };
+  return { specPath, only, targets, check, files, timeoutMs };
 }
 
 async function loadSpec(specPath: string): Promise<MutationSpec> {
@@ -182,7 +200,15 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
  * infinite), and an unbounded wait stalls the whole run in the one state where
  * the operator's instinct — Ctrl-C — lands between apply and restore.
  */
-async function runTarget(target: MutationTarget, timeoutMs: number): Promise<SuiteOutcome & { durationMs: number }> {
+async function runTarget(
+  target: MutationTarget,
+  timeoutMs: number,
+  // ⚠️ The baseline runs through here too, and there is NO mutation applied
+  // then — so the timeout text below must not say there is. Measured: a loaded
+  // machine timed out a 113ms baseline and the runner reported "the mutation
+  // HANGS the suite", sending the operator to audit a spec that was fine.
+  phase: "baseline" | "mutation" = "mutation",
+): Promise<SuiteOutcome & { durationMs: number }> {
   const abs = resolve(ROOT, target.file);
   const result = await runFileWithSignalRetry(
     abs,
@@ -198,9 +224,15 @@ async function runTarget(target: MutationTarget, timeoutMs: number): Promise<Sui
     return {
       pass: 0,
       fail: 0,
+      skip: 0,
+      todo: 0,
+      ran: null,
       durationMs: result.durationMs,
       error: timedOut
-        ? `timed out after ${Math.round(timeoutMs / 1000)}s — the mutation HANGS the suite rather than failing it`
+        ? phase === "baseline"
+          ? `timed out after ${Math.round(timeoutMs / 1000)}s on the UNMUTATED tree — no mutation ` +
+            "was applied, so the suite is slower than the floor or the machine is loaded"
+          : `timed out after ${Math.round(timeoutMs / 1000)}s — the mutation HANGS the suite rather than failing it`
         : `killed by ${result.signalCode}`,
     };
   }
@@ -237,6 +269,9 @@ async function measure(
           kind: "error",
           fail: 0,
           flag: `ANCHOR: ${err.matches} matches`,
+          // Machine-readable, so the run can REFUSE this rather than rendering
+          // it as a stable byte that `--check` then blesses forever.
+          anchorFailed: true,
         });
       }
       continue;
@@ -293,6 +328,25 @@ const spec = await loadSpec(options.specPath);
 const problems = validateSpec(spec);
 if (problems.length > 0) fail(`invalid spec:\n  - ${problems.join("\n  - ")}`);
 
+if (options.files) {
+  // ⚠️ AFTER `validateSpec`, not before. A spec with an empty `edits` array is
+  // a validation problem AND emits a dependency list missing that source file —
+  // so `--affected` would not select it, `--check` would never run, and the log
+  // would read "nothing to verify", which is indistinguishable from a clean run.
+  // A broken spec must fail loudly here rather than quietly under-select.
+  const deps = new Set<string>();
+  for (const t of spec.targets) deps.add(t.file);
+  for (const m of spec.mutations) for (const e of m.edits) deps.add(e.file);
+  // ⚠️ The GENERATED TABLE is a dependency of its own verdict. Without it, a
+  // hand-edited `.md` — bumping a number so it "matches" — selects no spec and
+  // the gate prints "nothing to verify". That hand-edit is #5060's original
+  // threat model, so omitting it left the gate blind to the exact input it was
+  // built for.
+  deps.add(spec.out);
+  for (const f of [...deps].sort()) console.log(f);
+  process.exit(0);
+}
+
 const targets =
   options.targets.length === 0
     ? spec.targets
@@ -326,16 +380,46 @@ const timeouts = new Map<string, number>();
 for (const target of targets) {
   // The baseline itself gets the floor: there is no measured duration to scale
   // off yet, and a baseline that hangs must not hang the run either.
-  const outcome = await runTarget(target, options.timeoutMs ?? SUITE_TIMEOUT_FLOOR_MS);
-  if (outcome.error !== undefined) {
-    fail(`baseline for ${target.name} (${target.file}) did not run: ${outcome.error}`);
-  }
-  if (outcome.fail !== 0) {
-    fail(
-      `baseline for ${target.name} (${target.file}) is RED — ${outcome.fail} failing. ` +
-        "Every mutation count would be this breakage plus the mutation's, which is " +
-        "indistinguishable from a strong result. Fix the tree first.",
-    );
+  const outcome = await runTarget(target, options.timeoutMs ?? SUITE_TIMEOUT_FLOOR_MS, "baseline");
+  // ⚠️ GUARDRAIL 4 — every way a baseline can lie, in ONE tested function.
+  //
+  // The three guardrails in the header all assume every test in the target ran.
+  // A red baseline INFLATES and was always caught; a deflated one reads as
+  // honest, which is the #5077 case: with `TEST_DATABASE_URL` unset,
+  // `identity-consumers-pg.test.ts` reports 6 pass / 72 skip / 0 fail, so
+  // `subject-cmp.md` regenerated its real kills as ZEROS over a suite recorded
+  // as 6 rather than 78, with no warning anywhere.
+  //
+  // ⚠️ The decision lives in `mutation-core.ts` as `baselineProblem`, NOT
+  // inline here, and that is this module's own stated split — guardrails 1-3
+  // are pure tested functions and only the PROCESS is in this file. Written
+  // inline, guardrail 4 could be deleted whole and every test stayed green and
+  // every table regenerated byte-identically. Measured, and the reason it moved.
+  //
+  // Fails BEFORE any mutation runs, so one guard closes both directions:
+  // `--check` cannot report a false "stale", and a regenerate cannot clobber
+  // numbers that were real.
+  const problem = baselineProblem(outcome);
+  if (problem !== null) {
+    // ⚠️ Truthiness, not `=== undefined`. The suites gate on
+    // `TEST_DB_URL ? describe : describe.skip`, so an EXPORTED-EMPTY variable
+    // skips them for the ordinary `-pg` reason while `=== undefined` reported
+    // "this is NOT the usual cause" and sent the operator hunting a `.skip`
+    // that does not exist. `check-mutation-tables.sh` already uses `-z`; these
+    // two must agree.
+    // ⚠️ ONLY the deflation arms get the -pg hint. A RED or ERRORED baseline
+    // told to "find the .skip/.todo" sends the operator hunting something that
+    // is not there — measured on this very change, when a dead Postgres made
+    // two suites RED and the runner blamed a skip.
+    const deflation = problem.kind === "deflated" || problem.kind === "unaccounted";
+    const pgHint = !deflation
+      ? ""
+      : process.env.TEST_DATABASE_URL === undefined || process.env.TEST_DATABASE_URL === ""
+        ? "\n         TEST_DATABASE_URL is UNSET (or empty), which is almost certainly the " +
+          "cause: *-pg.test.ts self-skips without it. Start Postgres (bun run db:up) and set it."
+        : "\n         TEST_DATABASE_URL is set, so this is NOT the usual -pg cause — find the " +
+          ".skip/.todo in the target before trusting any number from it.";
+    fail(`baseline for ${target.name} (${target.file}) ${problem.message}${pgHint}`);
   }
   baselines.set(target.name, outcome.pass);
   timeouts.set(target.name, options.timeoutMs ?? suiteTimeoutMs(outcome.durationMs));
@@ -352,6 +436,34 @@ try {
   // measure() restores per mutation; this covers a throw between apply and the
   // inner finally, and costs nothing when the map is already empty.
   restoreAll(diskStore, backups);
+}
+
+// ⚠️ A DEAD ANCHOR IS NOT A RESULT, and it must never become a committed byte.
+//
+// Guardrail 2 calls a 0-match "a number for a mutation that was never
+// performed, which is worse than reporting nothing" — but `--check` compares
+// BYTES, so once `⚠️ ANCHOR: 0 matches` is in the file it IS the expected
+// output and the table passes forever. Measured on the change that added this:
+// a new field on `SuiteOutcome` rotted the anchor mirroring that literal, the
+// table regenerated with a tombstone where a measured `2` had been, and
+// `--check` said `CHECK OK`. The gate would have ratcheted rot in as green.
+//
+// `measure()` still keeps going after an `AnchorError` — one bad anchor should
+// not cost the other twenty measurements — so this refuses at the END, naming
+// every rotted row at once.
+//
+// ⚠️ Deliberately NOT gated on `--check`. The write path is the one that
+// PRODUCES the tombstone; refusing only on check would let a regenerate commit
+// it and the next check bless it.
+const dead = anchorFailures(rows);
+if (dead.length > 0) {
+  fail(
+    `${dead.length} mutation(s) in ${options.specPath} have a DEAD ANCHOR — their oldString no ` +
+      "longer matches the source exactly once, so they measured nothing:\n" +
+      dead.map((label) => `           - ${label}`).join("\n") +
+      "\n         Repair the anchors in the spec. Writing this table would record a tombstone " +
+      "where a real number belongs, and every later --check would accept it as current.",
+  );
 }
 
 const markdown = render(spec, targets, mutations, baselines, rows, options.specPath);

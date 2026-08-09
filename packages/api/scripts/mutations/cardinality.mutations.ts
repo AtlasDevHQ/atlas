@@ -57,7 +57,7 @@ human behind it.
       edits: [
         {
           file: "src/lib/content-mode/adapters/brain-facts.ts",
-          oldString: "  return `${collisionCorePredicate(d, p)}\n     AND ${cardinalitySingleSql(d)}`;",
+          oldString: "  return `${collisionCorePredicate(d, p, exprs)}\n     AND ${exprs.cardinalitySingle(d)}`;",
           newString:
             "  return `${collisionCorePredicate(d, p)}\n     AND ${p}.predicate_cardinality = 'single'\n     AND ${d}.predicate_cardinality = 'single'`;",
         },
@@ -80,7 +80,7 @@ human behind it.
       edits: [
         {
           file: CARDINALITY,
-          oldString: "          AND c.predicate_key = ${alias}.predicate_key\n",
+          oldString: "          AND c.predicate_key = ${predicateKeyExpr}\n",
           newString: "",
         },
       ],

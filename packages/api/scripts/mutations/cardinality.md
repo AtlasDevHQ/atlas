@@ -20,7 +20,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the collision reads a per-ROW cardinality again (the both-sides clause restored) | 9 | 0 | 0 | 4 | 0 |
 | `cardinalitySingleSql` stops filtering entries to `approved` | 1 | 1 | 0 | 2 | 0 |
 | `cardinalitySingleSql` reads `single` from anywhere in the workspace | 2 | 1 | 0 | 1 | 0 |
-| the producer path may write `approved` instead of `pending` | 3 | 1 | 1 | 0 | 0 |
+| the producer path may write `approved` instead of `pending` | 7 | 1 | 1 | 0 | 0 |
 | the producer path accepts a `multi` proposal | 1 | 5 | 0 | 0 | 0 |
 | the rejection memory is dropped (`ON CONFLICT DO NOTHING` → `DO UPDATE`) | 1 | 1 | 1 | 0 | 0 |
 | the repeat gate counts CORRECTIONS instead of distinct subjects | 1 | 2 | 0 | 0 | 0 |
@@ -37,7 +37,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `logDegeneratePredicate`'s call is removed | 0 | 0 | 1 | 0 | 0 |
 | the proposer runs INSIDE the correction's transaction | 0 | 0 | 7 | 0 | 0 |
 
-Suite sizes: **cardinality-pg.test.ts** 23 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 61 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 70 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 61 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 70 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 

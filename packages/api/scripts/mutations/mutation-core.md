@@ -28,12 +28,12 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `countOccurrences` loops forever on an empty needle (guard removed) | ⚠️ timed out after 30s — the mutation HANGS the suite rather than failing it |
 | an errored cell renders as its `fail` number instead of a warning | 2 |
 | `render` defaults an unmeasured cell to `0` instead of a dash | 1 |
-| `escapeCell` stops escaping `\|` | 1 |
+| `escapeCell` stops escaping `\|` | 2 |
 | `render` stamps the output with a date (determinism lost) | 1 |
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 41 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 59 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 

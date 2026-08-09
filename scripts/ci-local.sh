@@ -30,12 +30,14 @@
 #   Stage 1  parallel  lint + lint:type-aware + syncpack + ~22 read-only
 #                      drift/check scripts.
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
-#   Stage 2  serial    `bun run test` ALONE. The full suite flakes under CPU
+#   Stage 2  serial    the tree-WRITING gate (mutation-tables). `mutate.ts` rewrites
+#                      sources in place, so it cannot share Stage 1 with ~30 scanners.
+#   Stage 3  serial    `bun run test` ALONE. The full suite flakes under CPU
 #                      contention on WSL2, so it gets the machine to itself.
 #
 # ENV TOGGLES
 #   CI_LOCAL_JOBS=N        Stage-1 concurrency (default 6).
-#   CI_LOCAL_NO_TEST=1     Skip Stage 2 (gates-only fast pass). RESULT is then
+#   CI_LOCAL_NO_TEST=1     Skip Stage 3 (gates-only fast pass). RESULT is then
 #                          flagged "tests skipped" — never reported as a clean pass.
 #   CI_LOCAL_NO_NET=1      Skip the two npm-registry gates (published-symbols,
 #                          unpublished-versions) for offline runs.
@@ -145,7 +147,7 @@ launch() {
 }
 
 echo "Atlas local CI — mirrors the required \`ci\` gate. Logs: .ci-local/<gate>.log"
-[ "$NO_TEST" = "1" ] && echo "  (CI_LOCAL_NO_TEST=1 — Stage 2 test suite skipped)"
+[ "$NO_TEST" = "1" ] && echo "  (CI_LOCAL_NO_TEST=1 — Stage 3 test suite skipped)"
 [ "$NO_NET" = "1" ]  && echo "  (CI_LOCAL_NO_NET=1 — npm-registry gates skipped)"
 if [ -n "${TEST_DATABASE_URL:-}" ]; then
   echo "  TEST_DATABASE_URL set — real-Postgres *-pg.test.ts WILL run."
@@ -212,9 +214,27 @@ if [ "$NO_NET" != "1" ]; then
 fi
 wait
 
-# ---- Stage 2: full test suite, isolated ----
+# ---- Stage 2: gates that WRITE to the tree, then the full test suite ----
+#
+# ⚠️ `mutation-tables` cannot live in Stage 1, and the reason is not load — it is
+# CORRECTNESS. Stage 1 is labelled read-only because every gate there SCANS the
+# tree, and `mutate.ts` REWRITES source files in place (apply → run → restore),
+# by design. Run in parallel, a brain mutation is live on disk while
+# `check-brain-fact-promotion.sh`, `check-no-legacy-connections-sql.sh`,
+# `lint-type-aware` and the rest read those very files — so they go red on a line
+# the developer never wrote, the developer re-runs, it passes, and they learn the
+# gate is flaky. The hazard is worst exactly when the gate is doing its job:
+# on a branch that touches the runner it widens to --all, which is 832 seconds
+# of continuous mutation.
+#
+# --affected, NOT --all: the full sweep would more than double this script. CI's
+# `mutation-tables` job runs everything in parallel, where 14 minutes costs no
+# wall clock. Skips entirely without TEST_DATABASE_URL.
+status "stage 2: tree-writing gates (serial — these mutate sources in place) …"
+run_fg mutation-tables bash scripts/check-mutation-tables.sh --affected origin/main
+
 if [ "$NO_TEST" != "1" ]; then
-  status "stage 2: full test suite (isolated — no parallel load) …"
+  status "stage 3: full test suite (isolated — no parallel load) …"
   run_fg test g_test
 fi
 
@@ -223,9 +243,17 @@ fi
 # .ci-local/RESULT so a watcher polling for the file can never observe it
 # half-written. RESULT's existence = run finished; its contents = the report.
 failed=()
+# ⚠️ Tracked SEPARATELY from `failed`, because the headline has to say so. The
+# row rendered SKIP correctly and the summary line still read "all N gates
+# green" — and TEST_DATABASE_URL unset is the DEFAULT local state, so that was
+# nearly every local run. `/ci`'s protocol tells the agent that RESULT's
+# contents ARE the report, so a false green there is read as a clean pre-PR pass.
+# Same defect as the row, moved one screen down.
+skipped=()
 for name in "${GATE_NAMES[@]}"; do
   rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
-  [ "$rc" = "0" ] || failed+=("$name")
+  if [ "$rc" = "3" ]; then skipped+=("$name")
+  elif [ "$rc" != "0" ]; then failed+=("$name"); fi
 done
 total="${#GATE_NAMES[@]}"
 
@@ -237,7 +265,13 @@ render_report() {
   for name in "${GATE_NAMES[@]}"; do
     rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
     secs="$(cat "$LOG_DIR/$name.secs" 2>/dev/null || echo '?')"
-    if [ "$rc" = "0" ]; then
+    if [ "$rc" = "3" ]; then
+      # ⚠️ Exit 3 means "declined to verify", and it is NOT PASS. A gate that
+      # cannot tell "verified" from "did not run" in its own summary line is the
+      # same defect class as the deflated table `mutation-tables` exists to
+      # refuse — and the compact table is what the /ci agent protocol reads.
+      printf '%-28s %-7s %4ss\n' "$name" "SKIP" "$secs"
+    elif [ "$rc" = "0" ]; then
       printf '%-28s %-7s %4ss\n' "$name" "PASS" "$secs"
     else
       printf '%-28s %-7s %4ss\n' "$name" "FAIL" "$secs"
@@ -245,7 +279,9 @@ render_report() {
   done
   printf '%s\n' "------------------------------------------------"
 
-  if [ "${#failed[@]}" -eq 0 ]; then
+  if [ "${#failed[@]}" -eq 0 ] && [ "${#skipped[@]}" -gt 0 ]; then
+    echo "RESULT: PASS with ${#skipped[@]} DECLINED — ${skipped[*]} verified nothing; not a clean pre-PR pass."
+  elif [ "${#failed[@]}" -eq 0 ]; then
     if [ "$NO_TEST" = "1" ]; then
       echo "RESULT: PASS (tests skipped — Stage 2 not run; not a clean pre-PR pass)"
     else

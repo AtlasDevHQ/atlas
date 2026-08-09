@@ -18,7 +18,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   AnchorError,
+  anchorFailures,
   applyMutation,
+  baselineProblem,
   countOccurrences,
   escapeCell,
   isWholeSuite,
@@ -209,8 +211,8 @@ describe("restore", () => {
 
 describe("parseBunSummary", () => {
   test("reads the summary block", () => {
-    expect(parseBunSummary("\n 58 pass\n 0 fail\n 200 expect() calls\n")).toEqual({ pass: 58, fail: 0 });
-    expect(parseBunSummary("\n 55 pass\n 3 fail\n")).toEqual({ pass: 55, fail: 3 });
+    expect(parseBunSummary("\n 58 pass\n 0 fail\n 200 expect() calls\n")).toEqual({ pass: 58, fail: 0, skip: 0, todo: 0, ran: null });
+    expect(parseBunSummary("\n 55 pass\n 3 fail\n")).toEqual({ pass: 55, fail: 3, skip: 0, todo: 0, ran: null });
   });
 
   test("a count EARLIER in the output cannot be mistaken for the summary", () => {
@@ -224,12 +226,12 @@ describe("parseBunSummary", () => {
       " 56 pass",
       " 2 fail",
     ].join("\n");
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2 });
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0, todo: 0, ran: null });
   });
 
   test("a pass count mid-line is likewise not mistaken for the summary", () => {
     const output = ["(fail) mutate > reports 9 pass rows", " 56 pass", " 2 fail"].join("\n");
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2 });
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 0, todo: 0, ran: null });
   });
 
   test("a suite that never ran reports an ERROR, not `0 fail`", () => {
@@ -243,6 +245,162 @@ describe("parseBunSummary", () => {
 
   test("empty output reports an error rather than silently passing", () => {
     expect(parseBunSummary("").error).toBeDefined();
+  });
+
+  // ⚠️ The skip count is the signal behind `mutate.ts`'s guardrail 4 (#5077).
+  // Without it the runner accepted a self-skipped `-pg` suite as a green
+  // baseline and regenerated a whole column as zeros over real numbers.
+  test("reads the SKIP count — a skipped test cannot be killed by a mutation", () => {
+    // bun's real summary for `identity-consumers-pg.test.ts` with no
+    // TEST_DATABASE_URL: the exact shape that caused #5077.
+    expect(parseBunSummary("\n 6 pass\n 72 skip\n 0 fail\n 49 expect() calls\n")).toEqual({
+      pass: 6,
+      fail: 0,
+      skip: 72,
+      todo: 0,
+      ran: null,
+    });
+  });
+
+  test("⚠️ the deflated baseline is 6 pass, NOT 0 — `pass > 0` would not catch it", () => {
+    // The correction to #5077's own diagnosis, and the reason the guard reads
+    // `skip` rather than `pass`. That file carries six non-`-pg` tests, so a
+    // suite whose 72 real tests all vanished still reports a positive pass count
+    // and a zero fail count — indistinguishable from health by every signal the
+    // runner had before this.
+    const deflated = parseBunSummary("\n 6 pass\n 72 skip\n 0 fail\n");
+    expect(deflated.pass).toBeGreaterThan(0);
+    expect(deflated.fail).toBe(0);
+    // …so the ONLY thing separating it from a healthy run is this:
+    expect(deflated.skip).toBeGreaterThan(0);
+  });
+
+  test("a healthy run reports skip 0 — an absent line is not an absent verdict", () => {
+    // bun omits the skip line entirely when nothing skipped, so it must default
+    // rather than fail the parse the way a missing pass/fail line does. Without
+    // this the guard would refuse every healthy suite and get reverted within a
+    // day.
+    expect(parseBunSummary("\n 64 pass\n 0 fail\n").skip).toBe(0);
+  });
+
+  test("a skip count mid-line is not mistaken for the summary either", () => {
+    // The anchoring the pass/fail arms already have, extended to the new one: a
+    // test whose NAME contains `12 skip` must not become the summary.
+    const output = ["(fail) mutate > reports 12 skip rows", " 56 pass", " 3 skip", " 2 fail"].join(
+      "\n",
+    );
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 3, todo: 0, ran: null });
+  });
+});
+
+describe("⚠️ baselineProblem — every way a baseline can lie (#5077)", () => {
+  const ok = { pass: 64, fail: 0, skip: 0, todo: 0, ran: 64 };
+
+  test("POSITIVE CONTROL: a clean baseline has no problem", () => {
+    // A refusal test alone is satisfied by a function that refuses everything.
+    expect(baselineProblem(ok)).toBeNull();
+    // …and a suite with no `Ran N` line at all is still acceptable: the
+    // accounting arm is a cross-check, not a requirement.
+    expect(baselineProblem({ ...ok, ran: null })).toBeNull();
+  });
+
+  test("RED — the inflation case, which was the only one guarded before", () => {
+    expect(baselineProblem({ ...ok, fail: 3, ran: 67 })).toMatchObject({ kind: "red" });
+  });
+
+  test("⚠️ a -pg suite with NO non-pg tests is DEFLATED, not EMPTY", () => {
+    // The falsifier that was missing, and the reason the defect survived: the
+    // EMPTY test below uses `ran: 0`, the single input where arm order cannot
+    // matter. THREE OF FIVE `-pg` targets look like this with Postgres down —
+    // `cardinality-pg` reports 0 pass / 29 skip — and while `pass === 0` was
+    // checked first they were told to "check the target's path" instead of to
+    // start Postgres. Only the deflation kinds carry that hint.
+    expect(baselineProblem({ pass: 0, fail: 0, skip: 29, todo: 0, ran: 29 })?.kind).toBe("deflated");
+    // …and a suite claiming zero pass while `Ran N` proves 78 were discovered
+    // is UNACCOUNTED: the message must not say "ran ZERO tests" over data that
+    // contradicts it.
+    expect(baselineProblem({ pass: 0, fail: 0, skip: 0, todo: 0, ran: 78 })?.kind).toBe("unaccounted");
+  });
+
+  test("EMPTY — zero tests is not a baseline", () => {
+    // Reachable by renaming or emptying a target file, or by a rotted
+    // `target.file` path. Every cell would then render an honest-looking 0
+    // meaning "the suite does not catch this".
+    expect(baselineProblem({ ...ok, pass: 0, ran: 0 })).toMatchObject({ kind: "empty" });
+  });
+
+  test("SKIPPED — #5077's own case", () => {
+    const problem = baselineProblem({ pass: 6, fail: 0, skip: 72, todo: 0, ran: 78 });
+    expect(problem?.kind).toBe("deflated");
+    expect(problem?.message).toContain("SKIPPED 72");
+  });
+
+  test("⚠️ TODO — bun does not fold it into skip, and the first cut missed it", () => {
+    // A `test.todo` does not run even WITH a body, so it deflates the
+    // denominator exactly like a `.skip`. Measured: a 2-test file with one
+    // todo published as 1 test, every cell deflated, guard silent — while the
+    // guard's own comment claimed `.todo` was covered.
+    const problem = baselineProblem({ pass: 1, fail: 0, skip: 0, todo: 1, ran: 2 });
+    expect(problem?.kind).toBe("deflated");
+    expect(problem?.message).toContain("TODO");
+  });
+
+  test("UNACCOUNTED — a bucket bun invents tomorrow is caught without naming it", () => {
+    // The general form, and the reason the guard cross-checks the SUM against
+    // `Ran N` rather than enumerating buckets. `filtered out` is a fourth one
+    // that already exists; this arm closes it and every future sibling.
+    const problem = baselineProblem({ pass: 5, fail: 0, skip: 0, todo: 0, ran: 9 });
+    expect(problem?.kind).toBe("unaccounted");
+    expect(problem?.message).toContain("4 unclassified");
+  });
+
+  test("⚠️ RED and DEFLATED are different KINDS, so only one gets the -pg hint", () => {
+    // The caller prints "find the .skip/.todo in the target" for a deflated
+    // baseline. Appended to a RED one it sends an operator hunting a skip that
+    // does not exist — measured when a dead Postgres made two suites RED and
+    // the runner blamed a skip. The kind is what keeps the two apart.
+    expect(baselineProblem({ pass: 0, fail: 2, skip: 0, todo: 0, ran: 2 })?.kind).toBe("red");
+    expect(baselineProblem({ pass: 1, fail: 0, skip: 1, todo: 0, ran: 2 })?.kind).toBe("deflated");
+    // …and an unreadable suite is neither.
+    expect(baselineProblem({ pass: 0, fail: 0, skip: 0, todo: 0, ran: null, error: "boom" })?.kind).toBe(
+      "errored",
+    );
+  });
+
+  test("the accounting arm fires BEFORE the skip arm, so the message names the real gap", () => {
+    // Both are true here. The unaccounted one is the more general statement and
+    // must win, or an operator reads "SKIPPED 1" and misses the other three.
+    expect(baselineProblem({ pass: 1, fail: 0, skip: 1, todo: 0, ran: 5 })?.kind).toBe("unaccounted");
+  });
+});
+
+describe("⚠️ anchorFailures — a dead anchor must never become a committed byte", () => {
+  const count = (fail: number): Cell => ({ kind: "count", fail });
+  const anchor = (): Cell => ({ kind: "error", fail: 0, flag: "ANCHOR: 0 matches", anchorFailed: true });
+  const timeout = (): Cell => ({ kind: "error", fail: 0, flag: "timed out after 30s" });
+
+  test("POSITIVE CONTROL: a table of real counts reports nothing", () => {
+    expect(anchorFailures(new Map([["m1", new Map([["t", count(3)]])]]))).toEqual([]);
+  });
+
+  test("names the mutation whose anchor rotted", () => {
+    const rows = new Map([
+      ["healthy", new Map([["t", count(3)]])],
+      ["rotted", new Map([["t", anchor()]])],
+    ]);
+    expect(anchorFailures(rows)).toEqual(["rotted"]);
+  });
+
+  test("⚠️ a TIMEOUT is not an anchor failure — that is a real measurement", () => {
+    // The distinction a substring match on the flag could not draw, and the
+    // reason `anchorFailed` is its own field rather than prose. A hang is a
+    // genuine result about a genuine mutation; a dead anchor measured nothing.
+    expect(anchorFailures(new Map([["slow", new Map([["t", timeout()]])]]))).toEqual([]);
+  });
+
+  test("reports each mutation once even when several targets rotted", () => {
+    const rows = new Map([["rotted", new Map([["a", anchor()], ["b", anchor()]])]]);
+    expect(anchorFailures(rows)).toEqual(["rotted"]);
   });
 });
 

@@ -248,6 +248,13 @@ jobs:
       - name: Adversarial fixtures for the brain-fact promotion gate (#4769)
         run: bash scripts/__tests__/check-brain-fact-promotion.test.sh
 
+      # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
+      # while ci-local.sh globs the directory — so a new suite runs locally and
+      # silently never runs in CI. This was the only one of thirteen missing.
+      # It builds throwaway trees and needs no Postgres; ~2 seconds.
+      - name: Adversarial fixtures for the mutation-tables gate (#5077)
+        run: bash scripts/__tests__/check-mutation-tables.test.sh
+
       - name: Check test-file discipline (1.5.4 / #2796)
         run: bash scripts/check-test-discipline.sh
 
@@ -459,7 +466,7 @@ jobs:
   # be `success`, including `changes` itself.
   ci:
     name: ci
-    needs: [changes, drift, lint, lint-type-aware, type, build, test-others, test-e2e-integration, api-tests, ee-stub-build]
+    needs: [changes, drift, lint, lint-type-aware, type, build, test-others, test-e2e-integration, api-tests, mutation-tables, ee-stub-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -474,11 +481,12 @@ jobs:
           TEST_OTHERS_RESULT: ${{ needs.test-others.result }}
           TEST_E2E_RESULT: ${{ needs.test-e2e-integration.result }}
           API_TESTS_RESULT: ${{ needs.api-tests.result }}
+          MUTATION_TABLES_RESULT: ${{ needs.mutation-tables.result }}
           EE_STUB_RESULT: ${{ needs.ee-stub-build.result }}
         run: |
           set -euo pipefail
           fail=0
-          for pair in "changes=$CHANGES_RESULT" "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "lint-type-aware=$LINT_TYPE_AWARE_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT" "api-tests=$API_TESTS_RESULT"; do
+          for pair in "changes=$CHANGES_RESULT" "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "lint-type-aware=$LINT_TYPE_AWARE_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT" "api-tests=$API_TESTS_RESULT" "mutation-tables=$MUTATION_TABLES_RESULT"; do
             name=${pair%%=*}
             result=${pair#*=}
             if [ "$result" != "success" ]; then
@@ -494,6 +502,55 @@ jobs:
           fi
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "All CI gates passed."
+
+  mutation-tables:
+    # The generated mutation tables (packages/api/scripts/mutations/*.md) must
+    # equal what re-running their specs produces (#5077). `mutate.ts --check`
+    # existed from #5060 and nothing ran it, so FOUR of eight were stale on
+    # `main` — including mutation-core.md, the runner's own table, whose
+    # `escapeCell` row had been a dead ANCHOR since #5060/#4389 rewrote the
+    # escape it pointed at.
+    #
+    # ⚠️ Its OWN job rather than a step in `api-tests`, which is a 4-way shard
+    # matrix and would run this four times over. ~14 minutes measured for the
+    # full sweep, which is FREE here: jobs run in parallel and `Built image
+    # (docs)` already takes ~25, so this lands well inside the existing critical
+    # path. `ci-local.sh` runs the `--affected` subset instead, because 14
+    # minutes added to a ~10-minute pre-PR loop is how a gate gets deleted.
+    name: mutation-tables
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: ./.github/actions/setup-bun-cached
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Build @useatlas/types + @useatlas/plugin-sdk
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
+
+      - name: Verify every generated mutation table
+        env:
+          # Required, not optional: several specs target *-pg.test.ts, which
+          # self-skip without it. The runner refuses a baseline that skipped
+          # anything, so an absent URL fails this job loudly rather than
+          # regenerating zeros over real measurements.
+          TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
+        run: bash scripts/check-mutation-tables.sh --all
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atlas"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
   api-tests:
     name: api-tests (${{ matrix.shard }}/4)

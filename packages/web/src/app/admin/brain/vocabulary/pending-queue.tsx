@@ -290,9 +290,8 @@ function emptyStateQualifier(
  * per predicate (the table's primary key guarantees it).
  */
 function entryKey(entry: BrainVocabularyPendingEntry, index: number): string {
-  // ⚠️ The index is folded in for the NULL case only. The table's primary key
-  // guarantees one pending row per predicate — but the key is not the predicate
-  // when the surface is null, so two fully-retracted predicates collided.
+  // ⚠️ The index is folded in for the NULL case only — see the docstring: there
+  // is no predicate to key on when the surface is null.
   return entry.kind === "alias"
     ? `alias:${entry.id}`
     : entry.predicateSurface === null
@@ -354,7 +353,8 @@ const EMPTY_PREVIEW: PreviewSlot = { radius: null, pending: false, error: null }
  * ⚠️ `result.data?.radius ?? null` was the one response on this surface that
  * reached `radius.arming.total` off an unchecked cast, and it failed silently in
  * the worst way: `useAdminMutation` resolves `{ ok: true, data: undefined }` for
- * any 2xx it cannot parse, so the slot became `{radius: null, pending: false,
+ * a 204 or any 2xx that does not declare JSON, so the slot became
+ * `{radius: null, pending: false,
  * error: null}` — the triple `BlastRadiusPreview` renders as NOTHING. The pane
  * showed no radius, no error, and reverted to "Preview first", so the approval
  * gate could never open and the approver got no signal at all.
@@ -483,7 +483,8 @@ function PendingAliasRow({
     const outcome = readDecideOutcome(result.data);
     if (outcome === null) {
       // ⚠️ NOT reported as the verb they pressed. `useAdminMutation` resolves
-      // `{ ok: true, data: undefined }` for any 2xx whose body is not JSON, and
+      // `{ ok: true, data: undefined }` for a 204 or a 2xx that does not declare
+      // JSON, and
       // `outcome ?? ""` fell straight through to the STRONGEST success string —
       // "every affected claim has been re-keyed" — for a response nobody read.
       setDecideError(
@@ -1098,7 +1099,8 @@ function CorrectionEvidenceBlock({ evidence }: { evidence: BrainVocabularyCorrec
  * Parse the decide response, or `null` when it did not read back as one.
  *
  * ⚠️ `null` is a STATE, not a fallback. `useAdminMutation` resolves
- * `{ ok: true, data: undefined }` for any 2xx whose body is not JSON, and the
+ * `{ ok: true, data: undefined }` for a 204 or a 2xx that does not declare
+ * JSON, and the
  * earlier `result.data?.outcome ?? ""` fell through every branch into the
  * strongest success sentence. On a surface where one of those sentences means
  * *"retroactive supersession is now armed"*, a body nobody read must produce an

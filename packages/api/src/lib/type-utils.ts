@@ -1,9 +1,9 @@
 /**
  * Compile-time assertions that have no runtime.
  *
- * These exist because the two failure modes they catch are both silent at build
- * time and loud in production: an engine type and its `@useatlas/types` wire
- * twin drifting apart, with only a runtime `z.strictObject` between them.
+ * {@link Exact} exists because the failure it catches is silent at build time
+ * and loud in production: an engine type and its `@useatlas/types` wire twin
+ * drifting apart, with only a runtime `z.strictObject` between them.
  */
 
 /**
@@ -15,17 +15,25 @@
  *
  * ## ⚠️ What it does NOT compare
  *
- * Both verified, and both matter only because a `z.strictObject` on the wire is
- * stricter than this pin:
+ * Two narrow holes, and BOTH are narrower than they first look — measured with
+ * `tsgo`, because an over-broad warning here is worse than none: a maintainer
+ * told "`readonly` is invisible" who then hits a real build break concludes the
+ * pin is broken rather than that the docs were.
  *
- * - **Optionality.** `{ a: string }` and `{ a: string; b?: string }` are mutually
- *   assignable, so a `?:` added to either side passes here and is still refused
- *   at runtime. Prefer required fields on wire types; that is the house style
- *   anyway.
- * - **`readonly`.** Mutual assignability ignores the modifier, so a wire field
- *   losing `readonly` is invisible to this.
+ * - **A NEWLY ADDED optional field.** `Exact<{a: string}, {a: string; b?: string}>`
+ *   is `true`. Turning an EXISTING required field optional is caught
+ *   (`Exact<{a: string}, {a?: string}>` is `never`), so only the additive case
+ *   slips through — and it is refused at runtime by `z.strictObject` only if the
+ *   engine actually populates it. Prefer required fields on wire types; that is
+ *   the house style anyway.
+ * - **A `readonly` PROPERTY MODIFIER.** `Exact<{readonly a: string}, {a: string}>`
+ *   is `true`. This does NOT extend to readonly array and tuple TYPES, which are
+ *   compared and do fail: `Exact<{a: readonly string[]}, {a: string[]}>` and the
+ *   tuple equivalent are both `never`. That matters here because the pinned wire
+ *   types are full of them — `pairs: readonly Pair[]`, `pair: readonly [string,
+ *   string]`.
  *
- * Anything required and non-optional — added, removed, renamed, or retyped,
- * including a nested union narrowing — does fail, in both directions.
+ * Everything else — a required field added, removed, renamed or retyped,
+ * including a nested union narrowing — fails, in both directions.
  */
 export type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;

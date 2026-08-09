@@ -648,12 +648,8 @@ function ClaimVocabulary() {
         </CardContent>
       </Card>
 
-      {/* PENDING. Third rather than first, and the ordering is still the
-          argument #5087 made: the queue is empty until a producer fires, while
-          authoring works on day one. It owns its own fetch — the counts and the
-          evidence are scoped and paged differently from `/in-force`, and merging
-          them into one request would make each loader's contract the other's
-          problem. */}
+      {/* PENDING. Third rather than first — see the module docstring for the
+          ordering and for why it owns its own fetch. */}
       <PendingQueue />
 
       <p className="text-muted-foreground text-xs">

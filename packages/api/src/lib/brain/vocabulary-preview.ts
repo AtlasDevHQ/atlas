@@ -355,10 +355,11 @@ export type BlastRadius =
  * schema rejects on the way out; a field the wire grows is one the engine never
  * populates and the schema then demands.
  *
- * ⚠️ Two things `Exact` does NOT compare, both verified: an OPTIONAL field added
- * to either side, and a lost `readonly`. Every field on both sides is required
- * today, so neither is reachable — but a `?:` here would be invisible to this
- * pin and still refused by `z.strictObject`.
+ * ⚠️ `Exact`'s two holes are narrow, and `type-utils.ts` states them precisely.
+ * The one that could bite here: a field ADDED as optional to either side passes
+ * this pin. Turning an existing required field optional does NOT — that is
+ * caught — and neither is dropping `readonly` from `pairs`, because a readonly
+ * ARRAY type is compared even though a readonly property modifier is not.
  */
 const _blastRadiusMatchesTheWire: Exact<BlastRadius, BrainVocabularyBlastRadius> = true;
 void _blastRadiusMatchesTheWire;
@@ -1336,6 +1337,16 @@ async function structurallyEmptyReason(
   workspaceId: string,
   request: BlastRadiusRequest,
 ): Promise<StructurallyEmptyReason | null> {
+  // ⚠️ DEAD from `loadBlastRadius`, and kept deliberately rather than deleted.
+  // #5088 made the object position take its own radius arm, so the caller
+  // short-circuits object-position requests BEFORE reaching here — this branch
+  // used to be the live path and a reader will assume it still is.
+  //
+  // It stays because this function is not the only caller's guard: the same
+  // reason is still reachable from `planCounterfactual`'s two `isCollidingSlot`
+  // checks, which is where the wire union's `"object-position"` member earns its
+  // keep. Deleting the branch here would leave that reason produced in one place
+  // and defended in none.
   if (
     (request.kind === "alias-approval" || request.kind === "alias-removal") &&
     request.position === "object"

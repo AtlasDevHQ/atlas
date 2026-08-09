@@ -603,8 +603,8 @@ describe("⚠️ a decide body Atlas could not read is never reported as the ver
   }
 
   test("a NON-JSON 200 says `could not confirm`, not `re-keyed`", async () => {
-    // `use-admin-mutation` resolves `{ ok: true, data: undefined }` for any 2xx
-    // it cannot parse — a 204, a proxy, an HTML error page — and the old
+    // `use-admin-mutation` resolves `{ ok: true, data: undefined }` for a 204 or
+    // any 2xx that does not declare JSON — a proxy, an HTML error page — and the old
     // `result.data?.outcome ?? ""` fell through every branch into "every
     // affected claim has been re-keyed" for a body nobody read.
     decideMode = "non-json";
@@ -672,7 +672,7 @@ describe("⚠️ …and the CARDINALITY half gets the same three arms, not just 
   // diff: the alias row's `readDecideOutcome === null` arm is falsified three
   // ways above, and its cardinality twin — whose own comment says *"this one
   // arms RETROACTIVE supersession"* — had none of them. Replacing that arm with
-  // `?? { outcome: "approved" }` left all 25 tests in this file green, on the
+  // `?? { outcome: "approved" }` left every other test in this file green, on the
   // higher-consequence half of the pair.
   //
   // The success string it falls through to is not a soft one: *"Every future
@@ -723,7 +723,7 @@ describe("⚠️ …and the CARDINALITY half gets the same three arms, not just 
     // ⚠️ The single highest-consequence hole the panel found in this file, and
     // it was structural: `decideBodies` was asserted TWICE on the alias half and
     // ZERO times on the cardinality half. Replacing `decision` in the request
-    // body with the literal `"approved"` left all 34 tests green — so pressing
+    // body with the literal `"approved"` left every other test in this file green — so pressing
     // *Reject* would arm retroactive supersession workspace-wide while the
     // notice read "Rejected: … keeps whatever cardinality it had." The click,
     // the write and the receipt, all disagreeing, in the worst direction.
@@ -769,7 +769,7 @@ describe("⚠️ the cardinality preview asks about the decision that is actuall
   // The preview gates Approve, so a preview of a DIFFERENT decision is a gate
   // that opens on the wrong evidence. The alias half asserts its preview body
   // three times; the cardinality half asserted it zero times, and pointing it at
-  // an unrelated predicate with the opposite verb left all 34 tests green.
+  // an unrelated predicate with the opposite verb left every other test in this file green.
   async function previewOnce(entry: Record<string, unknown>): Promise<void> {
     queueEntries = [entry];
     renderQueue();
@@ -858,8 +858,8 @@ describe("⚠️ approving a `multi` entry is not reported as arming supersessio
 
 describe("⚠️ a preview body that will not PARSE is an error, never a blank pane", () => {
   test("says so rather than leaving the gate shut with no signal", async () => {
-    // `useAdminMutation` resolves `{ok: true, data: undefined}` for any 2xx it
-    // cannot parse, and `result.data?.radius ?? null` turned that into
+    // `useAdminMutation` resolves `{ok: true, data: undefined}` for a 204 or a
+    // 2xx that does not declare JSON, and `result.data?.radius ?? null` turned that into
     // `{radius: null, pending: false, error: null}` — the triple
     // `BlastRadiusPreview` renders as NOTHING. No radius, no error, "Preview
     // first" again, and an approval gate that can never open.

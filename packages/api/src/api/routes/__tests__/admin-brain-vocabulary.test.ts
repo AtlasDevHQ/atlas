@@ -216,7 +216,7 @@ const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
  * deliberate violation, legible as a violation.
  *
  * Without it the `never` default is unreachable from any test — collapsing it
- * back to the fall-through left all 60 tests in this file green.
+ * back to the fall-through left every other test in this file green.
  */
 let cardinalityDecided: CardinalityDecisionResult = "decided";
 void mock.module("@atlas/api/lib/brain/cardinality", () => ({
@@ -1277,7 +1277,7 @@ describe("POST /decide", () => {
       // ⚠️ Every other test in this block sends `decision: "approved"` — the 403,
       // the lost race, the key-smuggling 422, the `unaddressable` 400, the
       // committed 200 and the `never` default. Collapsing this arm to always
-      // answer `{ outcome: "approved" }` left all 61 of them green.
+      // answer `{ outcome: "approved" }` left every one of them green.
       //
       // That is verbatim the defect a round-3 commit fixed on the ALIAS half,
       // whose own message reads: *"An alias REJECTION was described as an

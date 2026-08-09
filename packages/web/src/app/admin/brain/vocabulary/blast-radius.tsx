@@ -78,9 +78,9 @@ export function BlastRadiusPreview({
 
   const { arming, disarming } = radius;
   // ⚠️ Gated on the zeros being KNOWN, not merely on their being zero — the same
-  // defect #5088 closed on the object branch, four lines down, and it was live
-  // here too. `SideLine` is the only carrier of the "counts disagreed" warning
-  // and it is suppressed by `total > 0`, so a removal whose depth probe did not
+  // defect #5088 closed in `ObjectSideLine`, and it was live here too.
+  // `SideLine` is the only carrier of the "counts disagreed" warning and its
+  // call site was GATED ON `total > 0`, so a removal whose depth probe did not
   // answer over a genuine zero delta rendered "No published claim becomes
   // supersedable, or safe" with no warning anywhere on the page.
   const known = arming.countsConsistent && disarming.countsConsistent;
@@ -170,14 +170,20 @@ export function BlastRadiusPreview({
  * over these numbers, which is the specific false sentence the engine split the
  * union to make unrepresentable.
  *
- * ## The three sentences, and why the third is the surprising one
+ * ## The four sentences, and why the last is the surprising one
  *
  * 1. **Corroboration.** After the merge these pairs occupy one object slot, so
  *    the next re-observation of either attaches to one row instead of minting a
  *    second belief. A floor: it applies to every future claim in the slot too.
- * 2. **Tension.** Advisory `in-tension-with` edges between pairs that would stop
+ * 2. **Separation.** The REMOVAL's half, and its own sentence rather than
+ *    sentence 1 with the sign flipped: pairs that agree today would stop
+ *    agreeing, nothing splits them retroactively, and no contradiction flag is
+ *    written for them until one is re-observed. Its absence from the engine was
+ *    a defect — a removal answered with three zeros — and omitting it here is
+ *    the same omission one layer up.
+ * 3. **Tension.** Advisory `in-tension-with` edges between pairs that would stop
  *    being rivals.
- * 3. ⚠️ **Those edges are not withdrawn.** The approval rewrites the object's
+ * 4. ⚠️ **Those edges are not withdrawn.** The approval rewrites the object's
  *    identity key and nothing else — nothing deletes an edge — so each one is
  *    left flagging a contradiction between two claims Atlas now treats as
  *    agreeing. `staleEdgesPersist` is a literal `true` on the wire precisely so

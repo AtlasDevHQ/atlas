@@ -194,19 +194,20 @@ export interface ObjectPositionRadius {
  * field the engine never populates and `z.strictObject` then demands. Both are
  * the same class of drift and neither should be discoverable in production.
  *
- * ## ⚠️ This pin covers the SIDES ONLY, and that is not the whole arm
+ * ## ⚠️ This pin covers this record's FIELDS ONLY, and that is not the whole arm
  *
  * `kind`, `floor` and `subtreeTruncated` are the wire arm's own — the first
  * discriminates the union, the other two are the preview's disclosure posture
  * rather than anything this module measures — so they are excluded here. An
  * earlier version of this docstring stopped at that sentence and read as though
- * the arm were closed. It is not, by this pin: those three live in the literal
- * half of `vocabulary-preview.ts`'s intersection, and a field added THERE
- * compiled clean and 500'd at runtime.
+ * the arm were closed. It is not, by this pin: this record carries four fields
+ * (three sides plus `staleEdgesPersist`) and the wire arm carries seven — the
+ * other three live in the literal half of `vocabulary-preview.ts`'s
+ * intersection, and a field added THERE compiled clean and 500'd at runtime.
  *
  * `_blastRadiusMatchesTheWire` in `vocabulary-preview.ts` is what closes the
  * whole union, arm by arm. This one is kept because it fails in the module that
- * would GROW a side — a build error next to the edit rather than two files away.
+ * would GROW a field — a build error next to the edit rather than two files away.
  */
 type _ObjectRadiusSidesMatchTheWire = Exact<
   ObjectPositionRadius,

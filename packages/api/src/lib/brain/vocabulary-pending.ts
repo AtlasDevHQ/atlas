@@ -115,7 +115,8 @@ export interface PendingReader {
 /**
  * Most entries one page carries, across BOTH kinds.
  *
- * `IN_FORCE_PAGE_MAX`'s bound and posture, and reported through
+ * `IN_FORCE_PAGE_MAX`'s POSTURE — half its bound, because a review queue is read
+ * row by row and each row here carries evidence — and reported through
  * {@link PendingQueue.truncated} — a silent cap on a review queue reads as
  * *"that is all there is to decide"*, which on this surface is the one sentence
  * that must never be said by accident.
@@ -498,9 +499,8 @@ export async function loadPendingQueue(
   // transfer — and because a cardinality flip queued yesterday is more urgent
   // than an alias queued last month regardless of which producer raised it.
   //
-  // `toSorted` would need an ES2023 lib target this package does not set; the
-  // array is local and freshly built, so sorting in place mutates nothing a
-  // caller holds.
+  // Sorted IN PLACE rather than with `toSorted`: the array is local and freshly
+  // built here, so mutating it mutates nothing a caller holds.
   entries.sort((a, b) => (a.proposedAt < b.proposedAt ? 1 : a.proposedAt > b.proposedAt ? -1 : 0));
   if (entries.length > limit) {
     truncated = true;
@@ -637,8 +637,8 @@ async function loadAliasProposals(
   );
 
   const entries: PendingAliasEntry[] = [];
-  // ⚠️ Counted PER COLUMN, not as one total. Four arms drop a row here, and the
-  // single aggregate said only "3 rows would not narrow" — from which an
+  // ⚠️ Counted PER COLUMN, not as one total. Several arms drop a row here, and
+  // the single aggregate said only "3 rows would not narrow" — from which an
   // operator cannot tell an `::int` cast regression from an enum drift from a
   // renamed column, which is the whole reason the line exists.
   const dropped: Record<string, number> = {};
@@ -705,10 +705,11 @@ async function loadAliasProposals(
       sourceClass: row.source_class,
       proposedBy: row.proposed_by,
       proposedAt: row.proposed_at,
-      // NaN rather than a default, `ProposalRow.confidence`'s reason: an
-      // unreadable rank must fail every comparison rather than clear one. It is
-      // a display value here, so it travels as 0 with the drift already logged —
-      // see `readRank`.
+      // 0 on drift, with the drift LOGGED — see `readRank`. That is a
+      // deliberate departure from `ProposalRow.confidence`'s rule (an unreadable
+      // rank must fail every comparison rather than clear one), and it is safe
+      // only because this value orders and renders and never decides: the
+      // decision path re-reads the column itself, and NaN would 500 the pane.
       rank: readRank(row.confidence, row.id, ctx.workspaceId, opts.requestId),
       evidence,
     });
@@ -1000,15 +1001,6 @@ function readAgreementExamples(value: unknown): AgreementExample[] | null {
 }
 
 /**
- * The queue's display rank.
- *
- * 0 on drift rather than NaN — this value only ever orders and renders, and NaN
- * serializes to `null` through JSON, which the wire schema then rejects and the
- * whole pane 500s over one bad row. The drift is LOGGED, which is the part that
- * has to survive; `autoApproveEligible` re-reads the column itself at decision
- * time and is where a NaN must fail every comparison.
- */
-/**
  * A count as the WIRE defines one — finite, integral, non-negative.
  *
  * ⚠️ Every response schema here says `z.number().int().nonnegative()`, so this
@@ -1049,6 +1041,15 @@ function readableProvenance(
   return ok;
 }
 
+/**
+ * The queue's display rank.
+ *
+ * 0 on drift rather than NaN — this value only ever orders and renders, and NaN
+ * serializes to `null` through JSON, which the wire schema then rejects and the
+ * whole pane 500s over one bad row. The drift is LOGGED, which is the part that
+ * has to survive; `autoApproveEligible` re-reads the column itself at decision
+ * time and is where a NaN must fail every comparison.
+ */
 function readRank(
   value: unknown,
   proposalId: string,

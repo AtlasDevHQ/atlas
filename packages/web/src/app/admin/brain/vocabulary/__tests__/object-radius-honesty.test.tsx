@@ -224,7 +224,7 @@ describe("⚠️ each side is described in ITS OWN words, not the neighbouring s
   // that has recurred all through this diff: `corroborating`'s detail is pinned,
   // `tension`'s is pinned in both directions, and `separating` — the REMOVAL's
   // half — appeared three times in this file without ever being asserted for its
-  // own words. Giving it the corroborating label and detail left all 13 tests
+  // own words. Giving it the corroborating label and detail left every other test in this file
   // green, and an object-position REMOVAL then read *"pairs of live claims would
   // agree about the object … They are not merged retroactively"*: a merge
   // described for the decision that un-merges. Exactly inverted, on the verb
@@ -249,7 +249,7 @@ describe("⚠️ each side is described in ITS OWN words, not the neighbouring s
 });
 
 describe("⚠️ a truncated side says what was truncated, on a side that lists nothing", () => {
-  // Deleting the truncation clause outright left all 13 tests green — no test set
+  // Deleting the truncation clause outright left every other test in this file green — no test set
   // `truncated` on any object side. And the clause itself was wrong on two of the
   // three: only `corroborating` renders its pairs, so *"Only the first N are
   // listed"* on `separating`/`tension` told an approver to look for examples that

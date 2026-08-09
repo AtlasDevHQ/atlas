@@ -1028,7 +1028,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
     async () => {
       // Every other decide test on this seam passes `verdict: "approved"` — so
       // the verdict was, in effect, a constant, and the route half had the same
-      // hole (a rejection answering the approved arm left 61 tests green). The
+      // hole (a rejection answering the approved arm left the whole route suite green). The
       // consequence of getting it backwards is the maximal one available on this
       // surface: `single` + `approved` arms retroactive supersession for every
       // published pair in the slot at the next publish.

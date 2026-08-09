@@ -199,7 +199,8 @@ function structurallyEmptyCopy(reason: string): string {
         "An object-position alias cannot arm or disarm supersession at all — the collision rule " +
         "never reads the object's identity, so this is not a count of zero, it is a different " +
         "kind of change. What it does affect is what corroborates what, and what earns a tension " +
-        "edge. That is not measured here."
+        "edge, and Atlas cannot yet show you that. Approve this one on what you know about the " +
+        "two spellings, not on an impact estimate — there is none to read."
       );
     case "already-single":
       return "This predicate is already curated single-valued, so there is nothing to flip.";

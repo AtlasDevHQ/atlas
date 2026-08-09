@@ -61,6 +61,7 @@ import type {
   BrainVocabularyCorrectionEvidence,
   BrainVocabularyCorrectionExample,
   BrainVocabularyCoverage,
+  BrainVocabularyDecideOutcome,
   BrainVocabularyDecideResponse,
   BrainVocabularyEdgeEntry,
   BrainVocabularyInForceResponse,
@@ -1236,7 +1237,6 @@ export const BrainVocabularyPendingEntrySchema = z.union([
   z.strictObject({
     kind: z.literal("cardinality"),
     predicateSurface: z.string().nullable(),
-    decidable: z.boolean(),
     cardinality: z.enum(BRAIN_VOCABULARY_CARDINALITIES),
     sourceClass: z.string(),
     proposedBy: z.string(),
@@ -1261,8 +1261,9 @@ void _pendingEntryArmsCovered;
 export const BrainVocabularyPendingResponseSchema = z.strictObject({
   entries: z.array(BrainVocabularyPendingEntrySchema),
   aliasCounts: z.array(BrainVocabularyPositionCountsSchema),
-  cardinalityCounts: BrainVocabularyPositionCountsSchema,
+  cardinalityCounts: BrainVocabularyPositionCountsSchema.nullable(),
   truncated: z.boolean(),
+  incomplete: z.boolean(),
 }) satisfies z.ZodType<BrainVocabularyPendingResponse, unknown>;
 
 /**
@@ -1304,8 +1305,50 @@ export const BrainVocabularyDecideRequestSchema = z.union([
   }),
 ]);
 
-export const BrainVocabularyDecideResponseSchema = z.strictObject({
-  outcome: z.enum(["approved", "rejected", "nothing_to_decide"]),
-  proposalId: z.string().nullable(),
-  removedEdge: z.boolean(),
-}) satisfies z.ZodType<BrainVocabularyDecideResponse, unknown>;
+export const BRAIN_VOCABULARY_DECIDE_OUTCOMES = [
+  "approved",
+  "rejected",
+  "nothing_to_decide",
+] as const satisfies readonly BrainVocabularyDecideOutcome[];
+
+/** Pin: the tuple covers the wire union — `BRAIN_VOCABULARY_SCOPES`' reason. */
+type _VocabularyDecideOutcomesCoverTheWire = [
+  Exclude<BrainVocabularyDecideOutcome, (typeof BRAIN_VOCABULARY_DECIDE_OUTCOMES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _vocabularyDecideOutcomesCoverTheWire: _VocabularyDecideOutcomesCoverTheWire = true;
+void _vocabularyDecideOutcomesCoverTheWire;
+
+/**
+ * ⚠️ A union, mirroring the wire type. `removedEdge` exists only on the
+ * `rejected` arm, so the route cannot invent it on an approval or on a lost
+ * race — which is what the flat shape forced it to do on three of four paths.
+ */
+export const BrainVocabularyDecideResponseSchema = z.union([
+  z.strictObject({
+    outcome: z.literal("approved"),
+    proposalId: z.string().nullable(),
+  }),
+  z.strictObject({
+    outcome: z.literal("rejected"),
+    proposalId: z.string().nullable(),
+    removedEdge: z.boolean(),
+  }),
+  z.strictObject({
+    outcome: z.literal("nothing_to_decide"),
+    proposalId: z.string().nullable(),
+  }),
+]) satisfies z.ZodType<BrainVocabularyDecideResponse, unknown>;
+
+/** Pin: every decide arm has a schema arm — `_BlastRadiusArmsCovered`'s reason. */
+type _DecideArmsCovered = [
+  Exclude<
+    BrainVocabularyDecideResponse["outcome"],
+    z.infer<typeof BrainVocabularyDecideResponseSchema>["outcome"]
+  >,
+] extends [never]
+  ? true
+  : never;
+const _decideArmsCovered: _DecideArmsCovered = true;
+void _decideArmsCovered;

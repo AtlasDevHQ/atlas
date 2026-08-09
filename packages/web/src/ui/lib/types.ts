@@ -30,6 +30,8 @@ export type {
   BrainVocabularyCardinalityEntry,
   BrainVocabularyCorrectionEvidence,
   BrainVocabularyCoverage,
+  BrainVocabularyDecideOutcome,
+  BrainVocabularyDecideResponse,
   BrainVocabularyEdgeEntry,
   BrainVocabularyInForceResponse,
   BrainVocabularyObjectRadiusSide,

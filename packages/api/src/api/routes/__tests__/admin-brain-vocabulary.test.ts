@@ -200,7 +200,7 @@ void mock.module("@atlas/api/lib/brain/vocabulary-in-force", () => ({
 let cardinalityResult: unknown = { ok: true, cardinality: "single" };
 const cardinalityCalls: unknown[] = [];
 const cardinalityDecideCalls: { workspaceId: string; input: unknown }[] = [];
-let cardinalityDecided = true;
+let cardinalityDecided: "decided" | "not-pending" | "unaddressable" = "decided";
 void mock.module("@atlas/api/lib/brain/cardinality", () => ({
   declarePredicateCardinalityForSurface: async (
     _db: unknown,
@@ -259,6 +259,7 @@ let pendingQueue: Record<string, unknown> = {
     consistent: true,
   },
   truncated: false,
+  incomplete: false,
 };
 const pendingCalls: unknown[] = [];
 void mock.module("@atlas/api/lib/brain/vocabulary-pending", () => ({
@@ -356,7 +357,7 @@ beforeEach(() => {
   cardinalityResult = { ok: true, cardinality: "single" };
   cardinalityCalls.length = 0;
   cardinalityDecideCalls.length = 0;
-  cardinalityDecided = true;
+  cardinalityDecided = "decided";
   decideCalls.length = 0;
   decideOutcome = { kind: "approved", id: "proposal-1" };
   pendingCalls.length = 0;
@@ -372,6 +373,7 @@ beforeEach(() => {
       consistent: true,
     },
     truncated: false,
+    incomplete: false,
   };
   inForceOverride = null;
   surfacesPage = {
@@ -1031,11 +1033,7 @@ describe("POST /decide", () => {
       decision: "approved",
       direction: { fromNorm: "is priced at", toNorm: "priced at" },
     });
-    expect(await res.json()).toEqual({
-      outcome: "approved",
-      proposalId: "proposal-1",
-      removedEdge: false,
-    });
+    expect(await res.json()).toEqual({ outcome: "approved", proposalId: "proposal-1" });
   });
 
   it("maps direction-conflict to 409 — a directed proposal is never flipped", async () => {
@@ -1118,7 +1116,7 @@ describe("POST /decide", () => {
     });
 
     it("addresses the row by SURFACE and answers `nothing_to_decide` on a lost race", async () => {
-      cardinalityDecided = false;
+      cardinalityDecided = "not-pending";
       const res = await post("/decide", {
         kind: "cardinality",
         predicateSurface: "reports to",
@@ -1129,10 +1127,12 @@ describe("POST /decide", () => {
       // two reviewers racing one proposal produce one decision and one no-op,
       // and reporting the no-op as `approved` would credit the loser with
       // arming retroactive supersession.
+      // ⚠️ No `removedEdge`. The union carries it only on the `rejected` arm, so
+      // the route cannot invent `false` here — which is what the flat shape
+      // forced it to do on three of its four paths.
       expect(await res.json()).toEqual({
         outcome: "nothing_to_decide",
         proposalId: null,
-        removedEdge: false,
       });
       expect(cardinalityDecideCalls[0]!.input).toMatchObject({
         predicateSurface: "reports to",
@@ -1150,5 +1150,61 @@ describe("POST /decide", () => {
       expect(res.status).toBe(422);
       expect(cardinalityDecideCalls).toHaveLength(0);
     });
+
+    it("⚠️ an UNADDRESSABLE surface is a 400, never `nothing_to_decide`", async () => {
+      // The seam's three-way result exists for this: a surface that norms away
+      // addresses no row, and folding it into the race arm made the client say
+      // "someone else got there first" — a confident, specific, wrong
+      // explanation for a request that never reached a row at all.
+      cardinalityDecided = "unaddressable";
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "---",
+        decision: "approved",
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("degenerate-key");
+      expect(body.message).toContain("normalizes away");
+    });
+
+    it("⚠️ a committed curation still reports as landed when its response will not build", async () => {
+      // `checkedWrite` on the arm that WROTE, `checked` on the one that did not
+      // — the split this route previously collapsed. Here the write happened.
+      cardinalityDecided = "decided";
+      const res = await post("/decide", {
+        kind: "cardinality",
+        predicateSurface: "reports to",
+        decision: "approved",
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ outcome: "approved", proposalId: null });
+    });
+  });
+});
+
+describe("the queue response cannot fabricate a count for a kind nobody asked about", () => {
+  it("⚠️ carries `cardinalityCounts: null` rather than a zeroed record", async () => {
+    // The loader returns `null` when the caller filtered the cardinality half
+    // out. Zeroed, the client rendered "curated predicates · 0 of 0" with a
+    // clean scope badge — a fabricated zero asserted as a fact, on the surface
+    // whose whole purpose is what is awaiting a decision.
+    pendingQueue = { ...pendingQueue, cardinalityCounts: null };
+    const res = await adminBrainVocabulary.request("/pending?kind=alias");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ cardinalityCounts: null });
+  });
+
+  it("reports a CAPPED page and a DROPPED row as different facts", async () => {
+    // Two remedies: filtering reaches a capped page and reaches nothing that was
+    // dropped for failing to narrow. One boolean made the client state the first
+    // remedy for both.
+    pendingQueue = { ...pendingQueue, truncated: true, incomplete: true };
+    const body = (await (await adminBrainVocabulary.request("/pending")).json()) as {
+      truncated: boolean;
+      incomplete: boolean;
+    };
+    expect(body.truncated).toBe(true);
+    expect(body.incomplete).toBe(true);
   });
 });

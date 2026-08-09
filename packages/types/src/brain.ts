@@ -1537,8 +1537,16 @@ export interface BrainVocabularyPreviewResponse {
 // The Pending queue (#5088)
 // ---------------------------------------------------------------------------
 
-/** The two kinds sharing one queue. */
-export type BrainVocabularyPendingKind = "alias" | "cardinality";
+/**
+ * The two kinds sharing one queue.
+ *
+ * ⚠️ DERIVED from {@link BrainVocabularyPendingEntry}, not hand-written beside
+ * it. Independently spelled, a third entry arm would grow the schema union, keep
+ * `_PendingEntryArmsCovered` satisfied, keep the tuple pin satisfied — and the
+ * `/pending?kind=` filter would silently be unable to select the new kind. This
+ * makes the existing tuple pin load-bearing for free.
+ */
+export type BrainVocabularyPendingKind = BrainVocabularyPendingEntry["kind"];
 
 /** One live claim pair exhibiting the agreement an alias proposal rests on. */
 export interface BrainVocabularyAgreementExample {
@@ -1652,15 +1660,19 @@ export interface BrainVocabularyPendingCardinality {
   /**
    * A representative live surface for the canonical predicate — and the ADDRESS
    * a decide request uses. Never the predicate key (ADR-0037 §6).
+   *
+   * ⚠️ `null` means every claim that produced the key has been retracted, so the
+   * entry has NO address and cannot be decided from this surface. A client must
+   * narrow on `predicateSurface !== null` before offering a decide button.
+   *
+   * ⚠️ **There is deliberately no `decidable` boolean beside this.** There was,
+   * and it was fully derived from this field — so the pair admitted
+   * `{ predicateSurface: null, decidable: true }`, which renders exactly the
+   * Approve button that 400s: the state the flag was added to prevent, made
+   * spellable by the flag. `BrainEpisodeExtraction` states the same rule for the
+   * same shape. One field, narrowed at the use site.
    */
   readonly predicateSurface: string | null;
-  /**
-   * False when {@link predicateSurface} is null: every claim that produced the
-   * key has been retracted, so there is no surface to name and the entry cannot
-   * be decided from this surface. Surfaced so a client renders the reason
-   * instead of a button that 400s.
-   */
-  readonly decidable: boolean;
   readonly cardinality: BrainVocabularyCardinality;
   readonly sourceClass: string;
   readonly proposedBy: string;
@@ -1677,30 +1689,70 @@ export interface BrainVocabularyPendingResponse {
   /** Both kinds, ONE list, newest first. */
   readonly entries: readonly BrainVocabularyPendingEntry[];
   readonly aliasCounts: readonly BrainVocabularyPositionCounts[];
-  readonly cardinalityCounts: BrainVocabularyPositionCounts;
+  /**
+   * `null` when the caller FILTERED the cardinality kind out.
+   *
+   * ⚠️ Nullable rather than zeroed. A question that was never asked has no
+   * answer, and `{ total: 0, scoped: 0, withheld: 0, countsConsistent: true }`
+   * renders as a fact — on a queue whose whole purpose is what is awaiting a
+   * decision.
+   */
+  readonly cardinalityCounts: BrainVocabularyPositionCounts | null;
+  /** A list was CAPPED. The remedy is to filter. */
   readonly truncated: boolean;
+  /**
+   * Rows were DROPPED because they would not narrow — no filter reaches them.
+   *
+   * ⚠️ Separate from {@link truncated} because the two have different remedies
+   * and one boolean made the client state the wrong one confidently.
+   */
+  readonly incomplete: boolean;
 }
 
 /** What a decision did. No refusal arm — refusals leave as 4xx. */
 export type BrainVocabularyDecideOutcome = "approved" | "rejected" | "nothing_to_decide";
 
-export interface BrainVocabularyDecideResponse {
-  readonly outcome: BrainVocabularyDecideOutcome;
-  /**
-   * The alias proposal the decision landed on, or `null` for a cardinality
-   * decision — that table has no id a wire type may carry, being keyed on the
-   * predicate key itself.
-   */
-  readonly proposalId: string | null;
-  /**
-   * A rejection on an APPROVED alias row is a removal: it dropped the edge and
-   * recomputed the closure. `false` for a plain `pending → rejected`.
-   *
-   * Carried because the two write very different amounts and an approver told
-   * only *"rejected"* would not know a corpus was re-keyed.
-   */
-  readonly removedEdge: boolean;
-}
+/**
+ * ⚠️ DISCRIMINATED on `outcome`, for {@link BrainVocabularyAuthorResponse}'s
+ * reason applied verbatim: a field that is meaningless on a branch must not be
+ * READABLE on it.
+ *
+ * Flat, this type forced the route to invent facts on three of its four paths —
+ * `removedEdge: false` on an approval and on a lost race, `proposalId: null` on
+ * every cardinality decision. `removedEdge` is meaningful only on a rejection
+ * (it is what separates *"this pair was refused"* from *"an approved edge was
+ * dropped and the corpus re-keyed back"*), and a client could not tell
+ * `proposalId: null` *because cardinality* from `null` *because there was
+ * nothing to decide*.
+ */
+export type BrainVocabularyDecideResponse =
+  | {
+      readonly outcome: Extract<BrainVocabularyDecideOutcome, "approved">;
+      /** `null` for a cardinality decision — that table is keyed on a key. */
+      readonly proposalId: string | null;
+    }
+  | {
+      readonly outcome: Extract<BrainVocabularyDecideOutcome, "rejected">;
+      readonly proposalId: string | null;
+      /**
+       * A rejection on an APPROVED alias row is a REMOVAL: it dropped the edge,
+       * recomputed the closure and re-keyed the corpus. `false` for a plain
+       * `pending → rejected`.
+       *
+       * On this arm only — an approval cannot remove an edge, and a lost race
+       * wrote nothing at all, so on those branches the field has no value to
+       * report rather than a false one.
+       */
+      readonly removedEdge: boolean;
+    }
+  | {
+      /**
+       * The row was absent, already decided, or another reviewer won the race.
+       * Truthful, and never retried into a second apply.
+       */
+      readonly outcome: Extract<BrainVocabularyDecideOutcome, "nothing_to_decide">;
+      readonly proposalId: string | null;
+    };
 
 /**
  * A direct authoring attempt that SUCCEEDED.

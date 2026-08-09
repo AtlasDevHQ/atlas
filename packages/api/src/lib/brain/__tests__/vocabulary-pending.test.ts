@@ -295,7 +295,8 @@ describe("rows that will not narrow are DROPPED and counted, never smuggled thro
       owner,
     );
     expect(queue.entries).toHaveLength(1);
-    expect(queue.truncated).toBe(true);
+    // ⚠️ `incomplete`, not `truncated` — see the block at the end of this file.
+    expect(queue.incomplete).toBe(true);
     expect(warnCalls.some((c) => c.msg.includes("would not narrow and were dropped"))).toBe(true);
   });
 
@@ -307,7 +308,7 @@ describe("rows that will not narrow are DROPPED and counted, never smuggled thro
       owner,
     );
     expect(queue.entries).toHaveLength(0);
-    expect(queue.truncated).toBe(true);
+    expect(queue.incomplete).toBe(true);
   });
 
   it("an unreadable rank renders as 0 and LOGS, rather than reaching the wire as NaN", async () => {
@@ -337,8 +338,11 @@ describe("the shape the queue promises its client", () => {
     );
     const entry = queue.entries[0]!;
     if (entry.kind !== "cardinality") throw new Error("expected a cardinality entry");
+    // ⚠️ `null` IS the undecidability, carried by one field rather than two.
+    // The client narrows on it; a `decidable` boolean beside it admitted
+    // `{ predicateSurface: null, decidable: true }`, which is the button that
+    // 400s — the state the flag was added to prevent.
     expect(entry.predicateSurface).toBeNull();
-    expect(entry.decidable).toBe(false);
   });
 
   it("⚠️ never asserts a direction the producer did not claim", async () => {
@@ -397,5 +401,47 @@ describe("the shape the queue promises its client", () => {
     // decide", which on this surface is the one sentence that must never be said
     // by accident.
     expect(capped.truncated).toBe(true);
+  });
+});
+
+describe("⚠️ a kind that was NOT ASKED ABOUT has no counts, never a zeroed record", () => {
+  it("returns `cardinalityCounts: null` when the caller filtered it out", async () => {
+    // `?? true` defaulted "never read" to "known", so a queue filtered to
+    // `kind=alias` shipped `{ total: 0, scoped: 0, withheld: 0, consistent:
+    // true }` — rendered as "curated predicates · 0 of 0" with a clean scope
+    // badge, for a question nobody asked. The alias half already got this right
+    // by being simply ABSENT.
+    const queue = await loadPendingQueue(stubReader({}), owner, { kind: "alias" });
+    expect(queue.cardinalityCounts).toBeNull();
+  });
+
+  it("POSITIVE CONTROL — an unfiltered read DOES carry them", async () => {
+    const queue = await loadPendingQueue(stubReader({ cardinalityTotal: [{ n: 4 }] }), owner);
+    expect(queue.cardinalityCounts).not.toBeNull();
+    expect(queue.cardinalityCounts?.total).toBe(4);
+  });
+});
+
+describe("⚠️ a CAPPED page and a DROPPED row are different facts", () => {
+  it("reports a dropped row as `incomplete`, not as `truncated`", async () => {
+    // One boolean carried both, and the client stated one remedy for both:
+    // "Filter to reach them". No filter reaches a row that would not narrow, so
+    // that sends an approver hunting for a proposal no query returns.
+    const queue = await loadPendingQueue(
+      stubReader({ alias: { predicate: [aliasRow({ proposed_at: "" })] } }),
+      owner,
+    );
+    expect(queue.incomplete).toBe(true);
+    expect(queue.truncated).toBe(false);
+  });
+
+  it("reports a capped page as `truncated`, not as `incomplete`", async () => {
+    const queue = await loadPendingQueue(
+      stubReader({ alias: { predicate: [aliasRow(), aliasRow({ id: "p-2" })] } }),
+      owner,
+      { limit: 1 },
+    );
+    expect(queue.truncated).toBe(true);
+    expect(queue.incomplete).toBe(false);
   });
 });

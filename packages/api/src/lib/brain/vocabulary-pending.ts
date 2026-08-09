@@ -82,6 +82,7 @@ import { aclVisibilityClause } from "@atlas/api/lib/brain/acl";
 import { SLOT_POSITIONS, type SlotPosition } from "@atlas/api/lib/brain/identity";
 import { comparableDifferentSql, comparableSameSql } from "@atlas/api/lib/brain/object-cmp";
 import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
+import type { BrainVocabularyPendingKind } from "@useatlas/types";
 import { ALIAS_PROPOSAL_REPEAT_THRESHOLD } from "@atlas/api/lib/brain/alias-proposal";
 import { CORRECTION_REPEAT_THRESHOLD } from "@atlas/api/lib/brain/cardinality";
 import { HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
@@ -222,7 +223,10 @@ export interface CorrectionEvidence {
 // ---------------------------------------------------------------------------
 
 /** The two kinds in the one queue. */
-export const PENDING_ENTRY_KINDS = ["alias", "cardinality"] as const;
+export const PENDING_ENTRY_KINDS = [
+  "alias",
+  "cardinality",
+] as const satisfies readonly BrainVocabularyPendingKind[];
 export type PendingEntryKind = (typeof PENDING_ENTRY_KINDS)[number];
 
 /** The direction a producer claimed, when it could claim one. */
@@ -287,13 +291,15 @@ export interface PendingCardinalityEntry {
    * which is a real state and is reported rather than filtered: an entry
    * proposing to arm supersession for a predicate with no live claims is exactly
    * what an approver should be able to find and reject. Such a row is
-   * **undecidable from this surface** — there is no surface to name — and
-   * {@link PendingCardinalityEntry.decidable} says so rather than leaving a
-   * button that 400s.
+   * **undecidable from this surface** — there is no surface to name it by.
+   *
+   * ⚠️ There is deliberately no `decidable` boolean beside this. There was, and
+   * it was fully derived from `predicateSurface !== null` — so the pair admitted
+   * `{ predicateSurface: null, decidable: true }`, which renders exactly the
+   * Approve button that 400s: the state the flag existed to prevent, made
+   * spellable by the flag.
    */
   readonly predicateSurface: string | null;
-  /** False when {@link predicateSurface} is null. See its ⚠️. */
-  readonly decidable: boolean;
   readonly cardinality: PredicateCardinality;
   readonly sourceClass: string;
   readonly proposedBy: string;
@@ -316,10 +322,32 @@ export interface PendingQueue {
   readonly entries: readonly PendingEntry[];
   /** Per position, for the alias half. */
   readonly aliasCounts: readonly PendingPositionCounts[];
-  /** The same accounting for pending cardinality proposals. */
-  readonly cardinalityCounts: PendingPositionCounts;
-  /** Any list was capped at {@link PENDING_PAGE_MAX}, or rows would not narrow. */
+  /**
+   * The same accounting for pending cardinality proposals — `null` when the
+   * caller FILTERED that kind out.
+   *
+   * ⚠️ Nullable rather than zeroed, and it is the same rule `totalKnown` states
+   * one type down: a question that was never asked has no answer, and rendering
+   * it as `0 of 0 · consistent` is a fabricated zero asserted as a fact.
+   */
+  readonly cardinalityCounts: PendingPositionCounts | null;
+  /**
+   * A list was CAPPED at {@link PENDING_PAGE_MAX}. The remedy is to filter.
+   */
   readonly truncated: boolean;
+  /**
+   * Rows were DROPPED because they would not narrow. The remedy is not filtering
+   * — no filter reaches them — it is a server-side fix.
+   *
+   * ⚠️ Its own field, and the conflation it replaces was a confidently wrong
+   * instruction. One boolean carried both facts, and the client stated one
+   * remedy for both: *"Filter to reach them — their absence does not mean they
+   * were decided."* For a dropped row that is false, and it sends an approver
+   * hunting through filters for a proposal no query will return.
+   * `BrainFactWillWiden` splits exactly this into `truncated` vs `incomplete`
+   * and argues the case.
+   */
+  readonly incomplete: boolean;
 }
 
 export interface PendingQueueOptions {
@@ -378,10 +406,12 @@ export async function loadPendingQueue(
   const entries: PendingEntry[] = [];
   const aliasCounts: PendingPositionCounts[] = [];
   let truncated = false;
+  let incomplete = false;
 
   for (const result of aliasResults) {
     entries.push(...result.entries);
     truncated = truncated || result.truncated;
+    incomplete = incomplete || result.incomplete;
     const arithmetic = withheldCount(result.total, result.scopedTotal);
     const counts: WithheldCount = {
       ...arithmetic,
@@ -403,25 +433,37 @@ export async function loadPendingQueue(
     });
   }
 
-  const cardinalityArithmetic = withheldCount(
-    cardinalityResult?.total ?? 0,
-    cardinalityResult?.scopedTotal ?? 0,
-  );
-  const cardinalityCounts: PendingPositionCounts = {
-    position: "predicate",
-    // A kind that was not asked about is `unscoped` with zeros rather than
-    // `deny-all`: nothing denied it, and `deny-all` renders as "nothing visible",
-    // which would tell an approver their permissions hid a filter they set.
-    decision: cardinalityResult?.decision ?? "unscoped",
-    ...cardinalityArithmetic,
-    consistent:
-      cardinalityArithmetic.consistent &&
-      (cardinalityResult?.totalKnown ?? true) &&
-      (cardinalityResult?.scopedTotalKnown ?? true),
-  };
-  if (cardinalityResult !== null) {
+  // ⚠️ `null` when the cardinality half was FILTERED OUT, and that is not a
+  // zero. This module invented `totalKnown` precisely to separate *"there are
+  // none"* from *"the count was not read"*, and the earlier spelling —
+  // `?? true` — defaulted the not-read case to KNOWN, so a queue filtered to
+  // `kind=alias` shipped `{ total: 0, scoped: 0, withheld: 0, countsConsistent:
+  // true }` for a question nobody asked. The client rendered that as
+  // "curated predicates · 0 of 0" with a clean scope badge, on the surface whose
+  // whole purpose is what is awaiting a decision. The alias half already got
+  // this right by being simply absent (`aliasCounts: []`).
+  const cardinalityCounts: PendingPositionCounts | null =
+    cardinalityResult === null
+      ? null
+      : (() => {
+          const arithmetic = withheldCount(
+            cardinalityResult.total,
+            cardinalityResult.scopedTotal,
+          );
+          return {
+            position: "predicate" as const,
+            decision: cardinalityResult.decision,
+            ...arithmetic,
+            consistent:
+              arithmetic.consistent &&
+              cardinalityResult.totalKnown &&
+              cardinalityResult.scopedTotalKnown,
+          };
+        })();
+  if (cardinalityResult !== null && cardinalityCounts !== null) {
     entries.push(...cardinalityResult.entries);
     truncated = truncated || cardinalityResult.truncated;
+    incomplete = incomplete || cardinalityResult.incomplete;
     logFailClosedHole({
       workspaceId,
       position: "predicate",
@@ -447,7 +489,7 @@ export async function loadPendingQueue(
     entries.length = limit;
   }
 
-  return { entries, aliasCounts, cardinalityCounts, truncated };
+  return { entries, aliasCounts, cardinalityCounts, truncated, incomplete };
 }
 
 function clampLimit(requested: number | undefined): number {
@@ -466,7 +508,10 @@ interface AliasPage {
   readonly totalKnown: boolean;
   readonly scopedTotal: number;
   readonly scopedTotalKnown: boolean;
+  /** The page was capped. */
   readonly truncated: boolean;
+  /** Rows were dropped because they would not narrow. See {@link PendingQueue.incomplete}. */
+  readonly incomplete: boolean;
   readonly decision: PositionalDecision;
   readonly aclDecision: ReturnType<typeof positionalScopeClause>["aclDecision"];
 }
@@ -500,7 +545,7 @@ async function loadAliasProposals(
     requestId: opts.requestId,
   });
 
-  const total = await loadPendingAliasTotal(db, ctx.workspaceId, position);
+  const total = await loadPendingAliasTotal(db, ctx.workspaceId, position, opts.requestId);
 
   if (visible.decision === "deny-all") {
     return {
@@ -512,6 +557,7 @@ async function loadAliasProposals(
       scopedTotal: 0,
       scopedTotalKnown: true,
       truncated: false,
+      incomplete: false,
       decision: visible.decision,
       aclDecision: visible.aclDecision,
     };
@@ -646,7 +692,8 @@ async function loadAliasProposals(
     totalKnown: total.known,
     scopedTotal: scopedTotal ?? entries.length,
     scopedTotalKnown: (scopedTotal !== null || rows.length === 0) && !evidenceDrifted,
-    truncated: rows.length > limit || unreadable > 0,
+    truncated: rows.length > limit,
+    incomplete: unreadable > 0,
     decision: visible.decision,
     aclDecision: visible.aclDecision,
   };
@@ -811,14 +858,23 @@ async function loadPendingAliasTotal(
   db: PendingReader,
   workspaceId: string,
   position: SlotPosition,
+  requestId: string | undefined,
 ): Promise<{ n: number; known: boolean }> {
-  if (!workspaceId) return { n: 0, known: true };
+  // ⚠️ `known: false`. An absent workspace means the count was never ASKED, and
+  // this module's whole accounting exists to keep that distinguishable from
+  // "there are none" — the same shape the cardinality-counts fix above closes.
+  if (!workspaceId) return { n: 0, known: false };
   const { rows } = await db.query(
     `SELECT COUNT(*)::int AS n FROM brain_vocabulary_proposal
       WHERE workspace_id = $1 AND slot_position = $2 AND status = 'pending'`,
     [workspaceId, position],
   );
-  return readTotal(rows[0], workspaceId, `pending alias proposals at the ${position} position`);
+  return readTotal(
+    rows[0],
+    workspaceId,
+    `pending alias proposals at the ${position} position`,
+    requestId,
+  );
 }
 
 function readAliasEvidence(
@@ -929,6 +985,7 @@ interface CardinalityPage {
   readonly scopedTotal: number;
   readonly scopedTotalKnown: boolean;
   readonly truncated: boolean;
+  readonly incomplete: boolean;
   readonly decision: PositionalDecision;
 }
 
@@ -957,7 +1014,7 @@ async function loadCardinalityProposals(
   // The workspace-wide count runs even on the DENIED path — content-free, and it
   // is what lets the empty state say "there are N you cannot see" instead of
   // asserting the workspace has none.
-  const total = await loadPendingCardinalityTotal(db, ctx.workspaceId);
+  const total = await loadPendingCardinalityTotal(db, ctx.workspaceId, opts.requestId);
   if (scope.decision === "deny-all") {
     return {
       entries: [],
@@ -966,6 +1023,7 @@ async function loadCardinalityProposals(
       scopedTotal: 0,
       scopedTotalKnown: true,
       truncated: false,
+      incomplete: false,
       decision: scope.decision,
     };
   }
@@ -1049,13 +1107,12 @@ async function loadCardinalityProposals(
 
     entries.push({
       kind: "cardinality",
+      // ⚠️ `null` is what stops the surface offering a button it cannot honour.
+      // A decide request addresses the row BY SURFACE (the key never reaches the
+      // wire), so an entry whose every claim has been retracted has no address —
+      // and rendering Approve on it would 400 about a surface nobody chose. The
+      // client narrows on this field; it is not restated as a boolean.
       predicateSurface,
-      // ⚠️ The one field that stops the surface offering a button it cannot
-      // honour. A decide request addresses the row BY SURFACE (the key never
-      // reaches the wire), so an entry whose every claim has been retracted has
-      // no address — and rendering Approve on it would 400 with a message about
-      // a surface the approver never chose.
-      decidable: predicateSurface !== null,
       cardinality: row.cardinality,
       sourceClass: typeof row.source_class === "string" ? row.source_class : "",
       proposedBy: typeof row.proposed_by === "string" ? row.proposed_by : "",
@@ -1084,7 +1141,8 @@ async function loadCardinalityProposals(
     totalKnown: total.known,
     scopedTotal: scopedTotal ?? entries.length,
     scopedTotalKnown: (scopedTotal !== null || rows.length === 0) && !evidenceDrifted,
-    truncated: rows.length > limit || unreadable > 0,
+    truncated: rows.length > limit,
+    incomplete: unreadable > 0,
     decision: scope.decision,
   };
 }
@@ -1167,14 +1225,15 @@ function correctionEvidenceSql(
 async function loadPendingCardinalityTotal(
   db: PendingReader,
   workspaceId: string,
+  requestId: string | undefined,
 ): Promise<{ n: number; known: boolean }> {
-  if (!workspaceId) return { n: 0, known: true };
+  if (!workspaceId) return { n: 0, known: false };
   const { rows } = await db.query(
     `SELECT COUNT(*)::int AS n FROM brain_predicate_cardinality
       WHERE workspace_id = $1 AND status = 'pending'`,
     [workspaceId],
   );
-  return readTotal(rows[0], workspaceId, "pending cardinality proposals");
+  return readTotal(rows[0], workspaceId, "pending cardinality proposals", requestId);
 }
 
 function readCorrectionEvidence(
@@ -1256,12 +1315,16 @@ function readTotal(
   raw: unknown,
   workspaceId: string,
   what: string,
+  requestId: string | undefined,
 ): { n: number; known: boolean } {
   const row: Record<string, unknown> | undefined =
     typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : undefined;
   if (typeof row?.n !== "number") {
+    // ⚠️ `requestId` — this is the line that fires when the number behind a
+    // disclosure badge could not be read, i.e. the one an operator correlates
+    // with a user's screenshot. Every other drift log in this module carries it.
     log.warn(
-      { workspaceId, what },
+      { workspaceId, what, requestId },
       "brain vocabulary pending: a workspace-wide pending total did not narrow — reported as unknown rather than as zero",
     );
     return { n: 0, known: false };

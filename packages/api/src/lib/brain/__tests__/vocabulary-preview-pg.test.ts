@@ -578,6 +578,26 @@ describeIfPg("the blast-radius preview against a real schema (#5086)", () => {
     expect(radius.floor).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
+  it("⚠️ an object-position REMOVAL with no approved edge is a REASON, not three zeros", async () => {
+    // The object arm short-circuits BEFORE `structurallyEmptyReason`, which made
+    // `no-such-edge` unreachable at this position — so a removal naming a norm
+    // with no approved parent produced three honest zeros, and the pane renders
+    // those as *"Nothing in the corpus agrees or contradicts differently under
+    // this merge … it applies to every future claim in this slot as well"*: a
+    // floor promise about a decision that does not exist.
+    //
+    // `no-such-edge`'s own docstring argues exactly this for the supersession
+    // path — *"a renderer then says 'at least 0 today' for a decision that does
+    // nothing at all"* — and the object path has to ask the same question.
+    await land({ subject: "widget", predicate: "ships in", object: "10" });
+    const radius = await loadBlastRadius(pool, owner(), {
+      kind: "alias-removal",
+      position: "object",
+      fromNorm: "10",
+    });
+    expect(emptyReason(radius)).toBe("no-such-edge");
+  }, PG_TEST_TIMEOUT_MS);
+
   // ── 4. the IS NOT TRUE equivalence, measured rather than claimed ────────
 
   it("a `{\"source\": null}` pair is excluded by the JOIN, not by the exclusion arm", async () => {

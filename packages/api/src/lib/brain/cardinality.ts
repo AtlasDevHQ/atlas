@@ -750,6 +750,8 @@ export async function decidePredicateCardinality(
   predicateKey: string,
   verdict: Exclude<CardinalityStatus, "pending">,
   reviewedBy: string | null,
+  /** Correlates the success line with the request that armed it. */
+  requestId?: string,
 ): Promise<boolean> {
   const { rows } = await executor.query(
     `UPDATE brain_predicate_cardinality
@@ -758,7 +760,22 @@ export async function decidePredicateCardinality(
       RETURNING 1 AS decided`,
     [workspaceId, predicateKey, verdict, reviewedBy],
   );
-  return rows.length > 0;
+  const decided = rows.length > 0;
+  if (decided) {
+    // ⚠️ LOGGED, with the same retroactive-consequence wording
+    // `declarePredicateCardinality` uses. The two are the only doors to an
+    // identical, irreversible write, and this one left no trace at all: an
+    // operator asked *"who armed supersession on `reports to` last Tuesday, and
+    // from which request?"* had a `reviewed_by` column and nothing to join it
+    // to. `acl.ts` names exactly this class of event as one you want in the log.
+    log.info(
+      { workspaceId, predicateKey, verdict, reviewedBy, requestId },
+      verdict === "approved"
+        ? "brain cardinality: a human approved a canonical predicate's cardinality — `single` makes every existing published pair in that slot supersedable at the next publish"
+        : "brain cardinality: a human rejected a proposed predicate cardinality — the row stays as permanent rejection memory, so the producer will not re-raise it",
+    );
+  }
+  return decided;
 }
 
 /**
@@ -787,6 +804,23 @@ export async function decidePredicateCardinality(
  * and those are the same answer to the only question a route has to answer,
  * which is whether to tell this approver their click landed.
  */
+export type CardinalityDecisionResult =
+  /** The row moved. */
+  | "decided"
+  /** A row was addressed and was not `pending` — decided, or gone. */
+  | "not-pending"
+  /**
+   * The surface norms away to nothing, so it addresses NO row.
+   *
+   * ⚠️ Its own member rather than folding into `not-pending`, and the reason is
+   * the sentence a surface renders. A bare boolean collapsed the two, the route
+   * mapped both to `nothing_to_decide`, and the client then said *"someone else
+   * got there first"* — a confident, specific, WRONG explanation for a request
+   * that never addressed a row at all. The only place the truth existed was the
+   * log line below.
+   */
+  | "unaddressable";
+
 export async function decidePredicateCardinalityForSurface(
   executor: CardinalityExecutor,
   workspaceId: string,
@@ -796,28 +830,29 @@ export async function decidePredicateCardinalityForSurface(
     readonly reviewedBy: string | null;
     /** The workspace's own predicate-position alias lookup. */
     readonly predicateAlias: AliasLookup;
+    readonly requestId?: string;
   },
-): Promise<boolean> {
+): Promise<CardinalityDecisionResult> {
   const predicateKey = slotKey(input.predicateSurface, input.predicateAlias);
   if (predicateKey === null || predicateKey === "") {
-    // Logged rather than silently `false`: a surface that norms away cannot
+    // Logged rather than silently swallowed: a surface that norms away cannot
     // address a row, and this module's contract is that every arm is a refusal
-    // and never a silent no-op. The caller reports it as "nothing to decide",
-    // which is true — but an operator asked why a button did nothing needs the
-    // line that says the surface was the problem.
+    // and never a silent no-op.
     log.warn(
-      { workspaceId, predicateSurface: input.predicateSurface },
+      { workspaceId, predicateSurface: input.predicateSurface, requestId: input.requestId },
       "brain cardinality: a decide request named a predicate surface that norms away to nothing — it addresses no row, so nothing was decided",
     );
-    return false;
+    return "unaddressable";
   }
-  return decidePredicateCardinality(
+  const decided = await decidePredicateCardinality(
     executor,
     workspaceId,
     predicateKey,
     input.verdict,
     input.reviewedBy,
+    input.requestId,
   );
+  return decided ? "decided" : "not-pending";
 }
 
 // ---------------------------------------------------------------------------

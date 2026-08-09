@@ -93,7 +93,6 @@ const aliasEntry = (over: Record<string, unknown> = {}) => ({
 const cardinalityEntry = (over: Record<string, unknown> = {}) => ({
   kind: "cardinality",
   predicateSurface: "reports to",
-  decidable: true,
   cardinality: "single",
   sourceClass: "correction_event",
   proposedBy: "brain:correction-event-cardinality",
@@ -122,6 +121,23 @@ const cardinalityEntry = (over: Record<string, unknown> = {}) => ({
 let queueEntries: unknown[] = [aliasEntry()];
 const previewBodies: string[] = [];
 const decideBodies: string[] = [];
+/**
+ * When set, `/preview` waits on this before answering.
+ *
+ * ⚠️ Without it the second gate is UNOBSERVABLE: the stub resolves
+ * synchronously, so there is no window between "an ordering was picked" and
+ * "its radius arrived" — and reducing the gate to `chosen !== null` passed all
+ * eleven tests. Measured.
+ */
+let holdPreview: Promise<void> | null = null;
+/** Whether `/preview` fails, so the third arm of the gate is reachable. */
+let previewFails = false;
+/** Whether `/pending` fails, so the failed-vs-empty card is reachable. */
+let pendingFails = false;
+/** Per-test overrides for the disclosure branches every default fixture turns off. */
+let countsOverride: Record<string, unknown> | null = null;
+let truncatedOverride = false;
+let incompleteOverride = false;
 
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -140,17 +156,41 @@ function installFetchStub() {
   globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/brain-vocabulary/pending")) {
+      if (pendingFails) {
+        return Promise.resolve(
+          jsonResponse({ error: "server_error", message: "the queue blew up" }, 500),
+        );
+      }
       return Promise.resolve(
         jsonResponse({
           entries: queueEntries,
-          aliasCounts: [COUNTS],
+          aliasCounts: [countsOverride ?? COUNTS],
           cardinalityCounts: { ...COUNTS, total: 0, scoped: 0 },
-          truncated: false,
+          truncated: truncatedOverride,
+          incomplete: incompleteOverride,
         }),
       );
     }
     if (url.includes("/brain-vocabulary/preview")) {
       previewBodies.push(String(init?.body ?? ""));
+      if (previewFails) {
+        return Promise.resolve(jsonResponse({ error: "server_error", message: "boom" }, 500));
+      }
+      const held = holdPreview;
+      if (held !== null) {
+        holdPreview = null;
+        return held.then(() =>
+          jsonResponse({
+            radius: {
+              kind: "computed",
+              arming: { total: 2, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+              disarming: { total: 0, pairs: [], withheld: 0, truncated: false, countsConsistent: true },
+              floor: true,
+              subtreeTruncated: false,
+            },
+          }),
+        );
+      }
       return Promise.resolve(
         jsonResponse({
           radius: {
@@ -166,7 +206,10 @@ function installFetchStub() {
     if (url.includes("/brain-vocabulary/decide")) {
       decideBodies.push(String(init?.body ?? ""));
       return Promise.resolve(
-        jsonResponse({ outcome: "approved", proposalId: "proposal-7", removedEdge: false }),
+        // ⚠️ No `removedEdge` — the union carries it on the `rejected` arm only,
+        // and the client PARSES this body now, so an invented field would be
+        // refused by `z.strictObject` rather than silently ignored.
+        jsonResponse({ outcome: "approved", proposalId: "proposal-7" }),
       );
     }
     return Promise.resolve(jsonResponse({}));
@@ -218,6 +261,12 @@ beforeEach(() => {
   queueEntries = [aliasEntry()];
   previewBodies.length = 0;
   decideBodies.length = 0;
+  holdPreview = null;
+  previewFails = false;
+  pendingFails = false;
+  countsOverride = null;
+  truncatedOverride = false;
+  incompleteOverride = false;
 });
 
 afterEach(() => {
@@ -245,6 +294,15 @@ describe("an UNDIRECTED proposal offers both orderings and preselects neither", 
   });
 
   test("⚠️ picking one is still not enough — its own preview has to come back", async () => {
+    // ⚠️ The preview is HELD, and that is the whole test. Without the hold there
+    // is no window in which the second gate is observable, and reducing
+    // `chosen !== null && radius !== null && error === null` to `chosen !== null`
+    // passed every assertion in this file. Measured.
+    let release!: () => void;
+    holdPreview = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
     renderQueue();
     await waitFor(() => expect(screen.getAllByRole("button", { name: /Choose this/ }).length).toBe(2));
     fireEvent.click(screen.getAllByRole("button", { name: /Choose this/ })[0]!);
@@ -256,7 +314,27 @@ describe("an UNDIRECTED proposal offers both orderings and preselects neither", 
     expect(body.fromNorm).toBe("is priced at");
     expect(body.toNorm).toBe("priced at");
 
+    // A direction IS chosen and Approve is still refused — the second gate.
+    expect(screen.getByRole("button", { name: /^Chosen$/ })).toBeTruthy();
+    expect(approveButton().disabled).toBe(true);
+
+    release();
     await waitFor(() => expect(approveButton().disabled).toBe(false));
+  });
+
+  test("⚠️ a preview that FAILED does not arm Approve either", async () => {
+    // The third arm of the same gate, and the one the removal dialog shipped
+    // broken in #5087: the button stayed live beside "the blast radius could not
+    // be computed … unknown — not zero".
+    previewFails = true;
+    renderQueue();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /Choose this/ }).length).toBe(2));
+    fireEvent.click(screen.getAllByRole("button", { name: /Choose this/ })[0]!);
+    await waitFor(() => expect(previewBodies.length).toBe(1));
+    await waitFor(() =>
+      expect(screen.getByText(/could not be computed/)).toBeTruthy(),
+    );
+    expect(approveButton().disabled).toBe(true);
   });
 
   test("⚠️ the two orderings preview SEPARATELY — one slot cannot gate the other", async () => {
@@ -380,6 +458,47 @@ describe("the two evidence models are rendered differently and never as a bare N
     expect(text).toContain("retroactively");
   });
 
+  test("⚠️ the disclosure branches render — withheld, disagreed, below-threshold, truncated", async () => {
+    // Every fixture above turns these OFF, so five branches were unrendered by
+    // any test: the withheld sentence, the counts-disagreed sentence, the
+    // "reads below the bar that raised it" clause, the withheld badge and the
+    // truncation notice. The below-threshold clause is the one worth naming —
+    // the whole "evidence is RE-DERIVED, so an entry can read below its own
+    // gate" argument exists for that sentence.
+    queueEntries = [
+      aliasEntry({
+        evidence: {
+          ...STRUCTURAL_EVIDENCE,
+          subjects: 1,
+          scopedSubjects: 0,
+          withheld: 1,
+          examples: [],
+          countsConsistent: false,
+        },
+      }),
+    ];
+    countsOverride = { ...COUNTS, total: 5, scoped: 1, withheld: 4, countsConsistent: false };
+    truncatedOverride = true;
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Alias/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("reads below the bar that raised it");
+    expect(text).toContain("cannot read");
+    expect(text).toContain("treat them as approximate");
+    expect(text).toContain("4 withheld");
+    expect(text).toContain("counts disagreed");
+    expect(text).toContain("More proposals are awaiting a decision");
+  });
+
+  test("⚠️ a DROPPED row is not reported as reachable by filtering", async () => {
+    // Two facts, two remedies. One boolean made the client state the filtering
+    // remedy for a row no filter reaches.
+    incompleteOverride = true;
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/not listed here at all/)).toBeTruthy());
+    expect(document.body.textContent ?? "").toContain("fault on Atlas");
+  });
+
   test("an entity-position proposal reports its evidence as unaskable, not as zero", async () => {
     queueEntries = [
       aliasEntry({
@@ -398,13 +517,41 @@ describe("the two evidence models are rendered differently and never as a bare N
     expect(text).not.toContain("0 distinct subject");
   });
 
+  test("⚠️ the cardinality Approve is gated on its own preview too", async () => {
+    // The STRICTER of the two gates on the page — this decision is retroactive —
+    // and nothing measured it: reducing it to `decideMutation.saving` passed
+    // every test in this file.
+    queueEntries = [cardinalityEntry()];
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/Curated predicate/)).toBeTruthy());
+    expect(approveButton().disabled).toBe(true);
+    expect(screen.getByText(/Preview first/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Preview the impact/ }));
+    await waitFor(() => expect(approveButton().disabled).toBe(false));
+  });
+
   test("a cardinality entry with no addressable surface says so instead of offering a button", async () => {
-    queueEntries = [cardinalityEntry({ predicateSurface: null, decidable: false })];
+    queueEntries = [cardinalityEntry({ predicateSurface: null })];
     renderQueue();
     await waitFor(() => expect(screen.getByText(/Curated predicate/)).toBeTruthy());
     expect(screen.queryByRole("button", { name: /^Approve$/ })).toBeNull();
     expect(document.body.textContent ?? "").toContain("has no");
     expect(document.body.textContent ?? "").toContain("cannot be decided from here");
+  });
+});
+
+describe("a FAILED load is never rendered as an empty queue", () => {
+  test("⚠️ says the list is empty because the request failed", async () => {
+    // The surface's own headline failure mode, and the fetch stub never returned
+    // a non-200 for `/pending`, so nothing rendered this card.
+    pendingFails = true;
+    renderQueue();
+    await waitFor(() => expect(screen.getByText(/because the request/)).toBeTruthy());
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("not because there is nothing awaiting a decision");
+    // ...and the empty-state sentence must NOT also be on screen.
+    expect(text).not.toContain("Nothing is awaiting a decision");
   });
 });
 

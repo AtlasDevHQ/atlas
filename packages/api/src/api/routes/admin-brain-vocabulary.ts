@@ -107,6 +107,7 @@ import type {
   BrainVocabularyAuthorResponse,
   BrainVocabularyCardinalityWriteResponse,
   BrainVocabularyDecideResponse,
+  BrainVocabularyPendingResponse,
   BrainVocabularyPositionCounts,
   BrainVocabularyRemoveResponse,
   BrainVocabularyScope,
@@ -815,15 +816,24 @@ adminBrainVocabulary.openapi(pendingRoute, async (c) => {
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
-      return c.json(
-        checked(BrainVocabularyPendingResponseSchema, {
-          entries: queue.entries,
-          aliasCounts: queue.aliasCounts.map(toWireCounts),
-          cardinalityCounts: toWireCounts(queue.cardinalityCounts),
-          truncated: queue.truncated,
-        }),
-        200,
-      );
+      // ⚠️ ANNOTATED, not handed straight to `checked()`. `checked` takes
+      // `payload: unknown`, so without this the whole queue — two entry arms,
+      // two evidence unions, four nested record types — crossed engine→wire with
+      // nothing compile-checking it, and any rename would have been a 500 on the
+      // entire pane discovered by whichever test happened to run the pg path.
+      // `/author` and `/remove` already annotate for exactly this reason.
+      const response: BrainVocabularyPendingResponse = {
+        entries: queue.entries,
+        aliasCounts: queue.aliasCounts.map(toWireCounts),
+        // `null` travels as `null` — a kind the caller filtered out has no
+        // counts, and synthesizing zeros here would put the fabricated fact back
+        // one layer up from where the loader stopped producing it.
+        cardinalityCounts:
+          queue.cardinalityCounts === null ? null : toWireCounts(queue.cardinalityCounts),
+        truncated: queue.truncated,
+        incomplete: queue.incomplete,
+      };
+      return c.json(checked(BrainVocabularyPendingResponseSchema, response), 200);
     }),
     { label: "list pending brain vocabulary proposals" },
   );
@@ -874,30 +884,54 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
               verdict: body.decision,
               reviewedBy: reviewer,
               predicateAlias: vocabulary.predicate,
+              requestId,
             });
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         });
 
-        const cardinalityResponse: BrainVocabularyDecideResponse = {
-          // ⚠️ `nothing_to_decide` on `false`, never the verb the caller asked
-          // for. `WHERE status = 'pending'` is what makes two reviewers racing
-          // one proposal produce one decision and one no-op, and reporting the
-          // no-op as `approved` would tell the loser their click armed
-          // retroactive supersession when somebody else's did.
-          outcome: decided ? body.decision : "nothing_to_decide",
-          // No id: `brain_predicate_cardinality` is keyed on the predicate key
-          // itself, and that key may not reach a body (ADR-0037 §6). `null` is
-          // the honest answer rather than echoing the surface as an identifier
-          // it is not.
-          proposalId: null,
-          removedEdge: false,
-        };
-        // `checkedWrite`: on the `approved` arm the row is COMMITTED and arms
-        // retroactive supersession, so a schema failure must not read as "it did
-        // not work". The `nothing_to_decide` arm wrote nothing, but the two
-        // travel one path and a branch here would be a second spelling of the
-        // same honesty rule for the sake of one status code.
+        // `unaddressable` is a REQUEST problem, not a race — the surface norms
+        // away to nothing, so it addresses no row and no retry will change that.
+        // Folded into `nothing_to_decide` it produced the client sentence
+        // *"someone else got there first"*, which is a confident, specific and
+        // wrong explanation. 409 with the seam's own vocabulary instead.
+        if (decided === "unaddressable") {
+          return c.json(
+            refusalBody(
+              "degenerate-key",
+              `"${body.predicateSurface}" normalizes away to nothing, so it names no predicate ` +
+                "and addresses no proposal. Pick the surface from the queue row rather than " +
+                "typing it — case and separator folding means the spelling you expect is often " +
+                "not the one Atlas recorded.",
+              requestId,
+            ),
+            400,
+          );
+        }
+
+        // ⚠️ Two arms, and the split is `checkedWrite`'s own rule applied to
+        // itself. Its failure message says *"The curation succeeded and is in
+        // force"* — true on `decided`, and a LIE on `nothing_to_decide`, where
+        // nothing was written. An earlier cut weighed the branch as "a second
+        // spelling of the same honesty rule for the sake of one status code";
+        // the cost is not the status code, it is telling an approver that a
+        // retroactive supersession curation is in force when it is not, from
+        // inside the helper written to stop exactly that. `/author` draws the
+        // same line on its `already_approved` arm.
+        if (decided === "not-pending") {
+          const nothing: BrainVocabularyDecideResponse = {
+            outcome: "nothing_to_decide",
+            // ⚠️ No id: `brain_predicate_cardinality` is keyed on the predicate
+            // key itself, and that key may not reach a body (ADR-0037 §6).
+            proposalId: null,
+          };
+          return c.json(checked(BrainVocabularyDecideResponseSchema, nothing), 200);
+        }
+
+        const cardinalityResponse: BrainVocabularyDecideResponse =
+          body.decision === "approved"
+            ? { outcome: "approved", proposalId: null }
+            : { outcome: "rejected", proposalId: null, removedEdge: false };
         const described = checkedWrite(BrainVocabularyDecideResponseSchema, cardinalityResponse, {
           verb: "curation",
           predicateSurface: body.predicateSurface,
@@ -939,7 +973,6 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
           const approvedBody: BrainVocabularyDecideResponse = {
             outcome: "approved",
             proposalId: outcome.id,
-            removedEdge: false,
           };
           const described = checkedWrite(BrainVocabularyDecideResponseSchema, approvedBody, {
             verb: "authoring",
@@ -970,10 +1003,18 @@ adminBrainVocabulary.openapi(decideRoute, async (c) => {
           // shared and a double-click or a lost race is not a failure; the
           // `outcome` field is what distinguishes it from a decision that ran.
           // Nothing was written, so plain `checked()`.
+          //
+          // ⚠️ FOUR causes, and the seam does not distinguish them on purpose
+          // (`AliasDecisionOutcome.not_decidable`): absent, another workspace's,
+          // already `rejected`, or no transition from the current status — which
+          // includes `applying`, i.e. a decision IN FLIGHT. The client's copy
+          // says "already decided, or being decided right now" rather than
+          // asserting somebody else finished, because this module's own header
+          // calls rendering an in-flight decision as settled the thing that must
+          // not happen.
           const nothingBody: BrainVocabularyDecideResponse = {
             outcome: "nothing_to_decide",
             proposalId: outcome.id,
-            removedEdge: false,
           };
           return c.json(checked(BrainVocabularyDecideResponseSchema, nothingBody), 200);
         }

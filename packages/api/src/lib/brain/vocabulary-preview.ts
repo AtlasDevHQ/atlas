@@ -877,6 +877,27 @@ async function objectPositionRadius(
   }
 
   if (request.kind === "alias-removal") {
+    // ⚠️ The `no-such-edge` probe FIRST, and its absence was a real hole. This
+    // arm short-circuits before `structurallyEmptyReason`, so that reason became
+    // unreachable at the object position — and a removal naming a norm with no
+    // approved parent produced three honest zeros, which the pane renders as
+    // *"Nothing in the corpus agrees or contradicts differently under this
+    // merge … it applies to every future claim in this slot as well"*: a floor
+    // promise about a decision that does not exist. `no-such-edge`'s own
+    // docstring argues exactly this case for the supersession path; the object
+    // path has to ask the same question.
+    const { rows } = await db.query(
+      `SELECT 1 AS hit FROM brain_vocabulary_edge
+        WHERE workspace_id = $1 AND slot_position = $2 AND from_norm = $3`,
+      [workspaceId, "object", fromKey],
+    );
+    if (rows.length === 0) {
+      log.warn(
+        { workspaceId, requestId: opts.requestId, kind: request.kind },
+        "brain vocabulary preview: an object-position removal names a norm with no approved parent edge — disclosing a reason rather than a zeroed radius",
+      );
+      return { kind: "structurally-empty", reason: "no-such-edge" };
+    }
     // Same probe the supersession removal runs, so a truncated walk is reported
     // identically on both branches rather than silently understating one.
     const subtree = await subtreeHitBound(db, workspaceId, "object", fromKey, opts);
@@ -892,6 +913,14 @@ async function objectPositionRadius(
           `THEN $2 ELSE ${alias}.object_key END)`,
         params: [fromKey, "object"],
         ctes: [subtreeCteSql(SUBTREE_CTE, 1, 3, 2, maxDepth(opts))],
+        // ⚠️ THREADED, not dropped. `SubtreeProbe` carries two facts: a genuine
+        // bound hit is a radius-wide SCOPE statement (`subtreeTruncated` below),
+        // and an unreadable probe is STATEMENT DRIFT that must clear
+        // `countsConsistent` — which is what the supersession path does. The
+        // object arm read only the first, so a probe that did not answer
+        // produced a fully trustworthy-looking radius over a walk nobody could
+        // confirm.
+        probeDrifted: subtree.probeDrifted,
       },
       opts,
     );

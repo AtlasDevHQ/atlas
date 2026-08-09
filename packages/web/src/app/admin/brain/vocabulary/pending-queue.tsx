@@ -6,13 +6,17 @@ import type {
   BrainVocabularyAliasEvidence,
   BrainVocabularyBlastRadius,
   BrainVocabularyCorrectionEvidence,
+  BrainVocabularyDecideResponse,
   BrainVocabularyPendingAlias,
   BrainVocabularyPendingCardinality,
   BrainVocabularyPendingEntry,
   BrainVocabularyPositionCounts,
   BrainVocabularySlotPosition,
 } from "@/ui/lib/types";
-import { BrainVocabularyPendingResponseSchema } from "@/ui/lib/admin-schemas";
+import {
+  BrainVocabularyDecideResponseSchema,
+  BrainVocabularyPendingResponseSchema,
+} from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
@@ -138,7 +142,10 @@ export function PendingQueue() {
           {aliasCounts.map((c) => (
             <PositionCountBadge key={c.position} counts={c} />
           ))}
-          {data !== null && data !== undefined ? (
+          {/* ⚠️ `null` means the caller FILTERED this kind out, so there is no
+              count to render. Zeroed, it read "curated predicates · 0 of 0" with
+              a clean scope badge for a question nobody asked. */}
+          {data?.cardinalityCounts != null ? (
             <PositionCountBadge counts={data.cardinalityCounts} label="curated predicates" />
           ) : null}
         </div>
@@ -166,7 +173,11 @@ export function PendingQueue() {
           // this is empty; this line must not contradict it with a congratulation.
           <p className="text-muted-foreground text-sm">
             Nothing is awaiting a decision
-            {aliasCounts.some((c) => c.withheld > 0) ? " that you can see" : ""}. That is not the
+            {aliasCounts.some((c) => c.withheld > 0) ||
+            (data?.cardinalityCounts?.withheld ?? 0) > 0
+              ? " that you can see"
+              : ""}
+            . That is not the
             same as nothing needing one — see what this workspace has observed, above.
           </p>
         ) : (
@@ -188,11 +199,25 @@ export function PendingQueue() {
           </ul>
         )}
 
+        {/* ⚠️ TWO facts, two remedies. One boolean carried both and the copy
+            stated one of them unconditionally — so a row DROPPED because it
+            would not narrow was reported as reachable by filtering, sending an
+            approver hunting for a proposal no query returns. */}
         {data?.truncated ? (
           <p className="text-muted-foreground text-xs">
             More proposals are awaiting a decision than are listed here. Filter to reach them —
             their absence from this page does not mean they were decided.
           </p>
+        ) : null}
+        {data?.incomplete ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="size-4" aria-hidden />
+            <AlertDescription>
+              Some proposals could not be read and are <strong>not listed here at all</strong>.
+              Filtering will not reach them — this is a fault on Atlas&rsquo;s side, and the
+              server-side log names it.
+            </AlertDescription>
+          </Alert>
         ) : null}
       </CardContent>
     </Card>
@@ -287,9 +312,13 @@ function PendingAliasRow({
    * is sent nothing), but the UI would have shown a selected radio nobody chose —
    * which is the half of the defect a server check cannot catch.
    */
-  const [chosen, setChosen] = useState<Ordering | null>(
-    entry.direction === null ? null : forward,
-  );
+  // ⚠️ Seeded from `entry.direction` ITSELF, never from `forward`. "`direction`,
+  // when non-null, is `[pair[0], pair[1]]`" is prose the wire does not enforce —
+  // a payload whose direction is the REVERSE ordering of `pair` is representable
+  // in both the type and the schema, and seeding from `forward` would then
+  // preselect the ordering the producer did NOT claim, on the surface whose
+  // entire product is honest notice.
+  const [chosen, setChosen] = useState<Ordering | null>(entry.direction);
   const [previews, setPreviews] = useState<Record<string, PreviewSlot>>({});
   const [decideError, setDecideError] = useState<string | null>(null);
 
@@ -297,11 +326,16 @@ function PendingAliasRow({
     path: "/api/v1/admin/brain-vocabulary/preview",
     method: "POST",
   });
-  const decideMutation = useAdminMutation<{
-    outcome: string;
-    proposalId: string | null;
-    removedEdge: boolean;
-  }>({ path: "/api/v1/admin/brain-vocabulary/decide", method: "POST" });
+  // ⚠️ The SHARED wire type, not a hand-rolled structural twin. The twin widened
+  // `outcome` to `string`, so `outcome === "nothing_to_decide"` was a bare string
+  // comparison in two files: rename the wire member and both still compile, and
+  // `decideNotice` then tells the approver who LOST the race that every affected
+  // claim has been re-keyed — the exact miscredit its own docstring exists to
+  // prevent.
+  const decideMutation = useAdminMutation<BrainVocabularyDecideResponse>({
+    path: "/api/v1/admin/brain-vocabulary/decide",
+    method: "POST",
+  });
 
   /**
    * Load ONE ordering's blast radius.
@@ -357,7 +391,19 @@ function PendingAliasRow({
       setDecideError(friendlyError(result.error));
       return;
     }
-    onDecided(decideNotice(entry, chosen, decision, result.data?.outcome ?? "", result.data?.removedEdge === true));
+    const outcome = readDecideOutcome(result.data);
+    if (outcome === null) {
+      // ⚠️ NOT reported as the verb they pressed. `useAdminMutation` resolves
+      // `{ ok: true, data: undefined }` for any 2xx whose body is not JSON, and
+      // `outcome ?? ""` fell straight through to the STRONGEST success string —
+      // "every affected claim has been re-keyed" — for a response nobody read.
+      setDecideError(
+        "Atlas could not confirm what happened to this proposal — the server answered, but not " +
+          "in a shape this page understands. Reload before deciding again rather than retrying.",
+      );
+      return;
+    }
+    onDecided(decideNotice(entry, chosen, decision, outcome));
   }
 
   const chosenKey = chosen === null ? null : orderingKey(chosen);
@@ -522,8 +568,12 @@ function DirectionChoice({
           abstention into a machine opinion.
         </p>
       ) : null}
-      {[forward, reverse].map((ordering, index) => {
-        const isProducers = directed && index === 0;
+      {[forward, reverse].map((ordering) => {
+        // ⚠️ Compared BY VALUE against the producer's claim, not by index. The
+        // index test assumed `direction === [pair[0], pair[1]]`, which is prose
+        // rather than a wire invariant — see the `useState` seed above.
+        const isProducers =
+          entry.direction !== null && orderingsEqual(ordering, entry.direction);
         const selectable = !directed || isProducers;
         const slot = previews[orderingKey(ordering)] ?? EMPTY_PREVIEW;
         return (
@@ -686,11 +736,15 @@ function PendingCardinalityRow({
     path: "/api/v1/admin/brain-vocabulary/preview",
     method: "POST",
   });
-  const decideMutation = useAdminMutation<{ outcome: string }>({
+  const decideMutation = useAdminMutation<BrainVocabularyDecideResponse>({
     path: "/api/v1/admin/brain-vocabulary/decide",
     method: "POST",
   });
 
+  // ⚠️ The narrowing IS the decidability. There is no `decidable` boolean beside
+  // this any more: it was fully derived from the same field and the pair admitted
+  // `{ predicateSurface: null, decidable: true }`, which renders the Approve
+  // button that 400s — the state the flag was added to prevent.
   const surface = entry.predicateSurface;
 
   async function loadPreview(): Promise<void> {
@@ -716,9 +770,19 @@ function PendingCardinalityRow({
       setDecideError(friendlyError(result.error));
       return;
     }
+    const outcome = readDecideOutcome(result.data);
+    if (outcome === null) {
+      // See the alias arm: an unreadable body must never be reported as the
+      // strongest success, and this one arms RETROACTIVE supersession.
+      setDecideError(
+        "Atlas could not confirm what happened to this proposal — the server answered, but not " +
+          "in a shape this page understands. Reload before deciding again rather than retrying.",
+      );
+      return;
+    }
     onDecided(
-      result.data?.outcome === "nothing_to_decide"
-        ? `“${surface}” had already been decided — someone else got there first, and nothing changed.`
+      outcome.outcome === "nothing_to_decide"
+        ? `“${surface}” had already been decided, or is being decided right now — nothing changed here.`
         : decision === "approved"
           ? `Curated: “${surface}” now holds one value at a time. Every future claim in that slot can supersede an earlier one at the next publish.`
           : `Rejected: “${surface}” stays multi-valued. Atlas remembers this permanently, so its producers will not re-propose it.`,
@@ -896,28 +960,50 @@ function CorrectionEvidenceBlock({ evidence }: { evidence: BrainVocabularyCorrec
 }
 
 /**
+ * Parse the decide response, or `null` when it did not read back as one.
+ *
+ * ⚠️ `null` is a STATE, not a fallback. `useAdminMutation` resolves
+ * `{ ok: true, data: undefined }` for any 2xx whose body is not JSON, and the
+ * earlier `result.data?.outcome ?? ""` fell through every branch into the
+ * strongest success sentence. On a surface where one of those sentences means
+ * *"retroactive supersession is now armed"*, a body nobody read must produce an
+ * explicit "Atlas could not confirm" rather than the most consequential guess.
+ */
+function readDecideOutcome(
+  data: BrainVocabularyDecideResponse | undefined,
+): BrainVocabularyDecideResponse | null {
+  const parsed = BrainVocabularyDecideResponseSchema.safeParse(data);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
  * What actually happened, in the approver's words.
  *
  * ⚠️ `nothing_to_decide` is reported as itself rather than as the verb they
- * pressed. It is a truthful 200 — somebody else decided the row, or it is gone —
- * and telling them "approved" would credit them with a workspace-wide re-key
- * they did not cause.
+ * pressed. It is a truthful 200 — somebody else decided the row, or one is in
+ * flight — and telling them "approved" would credit them with a workspace-wide
+ * re-key they did not cause.
+ *
+ * ⚠️ `removedEdge` is read off the REJECTED arm only, because that is the only
+ * arm that carries it. Flat, the type let the route invent `false` on an
+ * approval and on a lost race; discriminated, this function cannot read it
+ * anywhere it would be a fabrication.
  */
 function decideNotice(
   entry: BrainVocabularyPendingAlias,
   chosen: Ordering | null,
   decision: "approved" | "rejected",
-  outcome: string,
-  removedEdge: boolean,
+  outcome: BrainVocabularyDecideResponse,
 ): string {
   const pair = chosen ?? { fromNorm: entry.pair[0], toNorm: entry.pair[1] };
-  if (outcome === "nothing_to_decide") {
-    return `“${entry.pair[0]}” / “${entry.pair[1]}” had already been decided — someone else got there first, and nothing changed.`;
+  if (outcome.outcome === "nothing_to_decide") {
+    return `“${entry.pair[0]}” / “${entry.pair[1]}” had already been decided, or is being decided right now — nothing changed here.`;
   }
-  if (decision === "approved") {
+  if (outcome.outcome === "approved") {
     return `Approved: “${pair.fromNorm}” now resolves to “${pair.toNorm}”, and every affected claim has been re-keyed.`;
   }
-  return removedEdge
+  void decision;
+  return outcome.removedEdge
     ? `Removed: the approved edge for “${entry.pair[0]}” / “${entry.pair[1]}” is gone, every affected claim has been re-keyed back, and Atlas remembers the removal permanently.`
     : `Rejected: “${entry.pair[0]}” and “${entry.pair[1]}” stay separate spellings. Atlas remembers this permanently, so its producers will not re-propose the pair.`;
 }

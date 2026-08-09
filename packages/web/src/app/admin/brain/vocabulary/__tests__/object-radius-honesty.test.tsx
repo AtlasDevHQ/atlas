@@ -128,6 +128,56 @@ describe("every count is rendered as a FLOOR", () => {
   });
 });
 
+describe("⚠️ a zero Atlas COULD NOT ESTABLISH is never rendered as an all-clear", () => {
+  // THE defect this block exists for, and it survived the first cut of this
+  // file: `ObjectSideLine` returned `null` on `total === 0` BEFORE reading
+  // `countsConsistent`, so every condition the engine clears that flag for — a
+  // pair row that would not narrow, a scoped window that did not read back, the
+  // two statements disagreeing, a deny-all clause — rendered as nothing, and the
+  // all-clear paragraph then fired. A count Atlas said in-band it could not
+  // establish, presented to an approver as "this changes nothing".
+
+  test("a side with an unestablished zero says UNKNOWN, not silence", () => {
+    const text = renderRadius(
+      objectRadius({ corroborating: side({ total: 0, countsConsistent: false }) }),
+    );
+    expect(text).toContain("unknown, not zero");
+    expect(text).toContain("incomplete");
+  });
+
+  test("and the all-clear paragraph does NOT fire beside it", () => {
+    const text = renderRadius(
+      objectRadius({ tension: side({ total: 0, countsConsistent: false }) }),
+    );
+    expect(text).not.toContain("Nothing in the corpus agrees or contradicts differently");
+  });
+
+  test("POSITIVE CONTROL — a KNOWN zero is still silent, and still says all-clear", () => {
+    // Without this, rendering the unknown-zero sentence unconditionally would
+    // satisfy both assertions above and the ordinary empty case would shout.
+    const text = renderRadius(objectRadius());
+    expect(text).not.toContain("unknown, not zero");
+    expect(text).toContain("Nothing in the corpus agrees or contradicts differently");
+  });
+});
+
+describe("⚠️ the stale-flag sentence is READ OFF the wire, not hard-coded", () => {
+  test("a radius that does not assert persistence does not claim it", () => {
+    // `staleEdgesPersist` is a literal `true` on the wire for exactly one
+    // purpose — so this sentence is assertable. While the copy was hard-coded
+    // the field was DEAD: flipping it in a fixture changed nothing, so the
+    // literal justified a claim nothing checked. Cast through `unknown` because
+    // the wire type deliberately cannot express `false`; this models a payload
+    // from an API that stopped asserting it.
+    const text = renderRadius({
+      ...(objectRadius({ tension: side({ total: 2 }) }) as object),
+      staleEdgesPersist: false,
+    } as unknown as BrainVocabularyBlastRadius);
+    expect(text).not.toContain("NOT withdrawn");
+    expect(text).toContain("did not report what becomes of those flags");
+  });
+});
+
 describe("⚠️ the stale-flag sentence, which is the surprising one", () => {
   test("says the existing contradiction flags are NOT withdrawn", () => {
     const text = renderRadius(objectRadius({ tension: side({ total: 2 }) }));

@@ -72,6 +72,10 @@ import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
 import { aclVisibilityClause, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { objectNotSameSql, objectSameSql } from "@atlas/api/lib/brain/object-cmp";
 import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
+import type {
+  BrainVocabularyObjectPair,
+  BrainVocabularyObjectRadiusSide,
+} from "@useatlas/types";
 
 const log = createLogger("brain-vocabulary-object-radius");
 
@@ -86,42 +90,31 @@ export const OBJECT_RADIUS_PAIR_MAX = 50;
 /**
  * One pair of live claims an object merge would relate.
  *
+ * ⚠️ An ALIAS of the wire type, not a hand-written twin — `BlastRadiusPair`'s
+ * shape and its reason. It WAS a twin, in the same diff whose `BlastRadius` arm
+ * cites collapsing that exact duplicate as its precedent: renaming `leftLabel`
+ * here would have 500'd the whole preview pane for object aliases, with nothing
+ * but a runtime `z.strictObject` between the two spellings.
+ *
  * ⚠️ SYMMETRIC field names, deliberately not `BrainFactWillSupersedePair`'s
- * `draft`/`superseded`. Reusing that type would have been one import and would
- * have said something false in the type: neither of these claims replaces the
- * other, and a consumer reading `supersededLabel` on a corroboration pair learns
- * exactly the thing this whole module exists to stop it concluding.
+ * `draft`/`superseded`. Neither of these claims replaces the other, and a
+ * consumer reading `supersededLabel` on a corroboration pair learns exactly the
+ * thing this whole module exists to stop it concluding.
  *
  * Labels, never keys — ADR-0037 §6, `keys-not-on-the-wire.test.ts`.
  */
-export interface ObjectRadiusPair {
-  readonly leftId: string;
-  readonly leftLabel: string;
-  readonly rightId: string;
-  readonly rightLabel: string;
-}
+export type ObjectRadiusPair = BrainVocabularyObjectPair;
 
 /**
  * One side's accounting — `BlastRadiusSide`'s contract, over a different
- * relation.
+ * relation, and an ALIAS of the wire type for {@link ObjectRadiusPair}'s reason.
  *
  * Every field means what it means there, including the two that are easy to
  * conflate: `withheld` is what the ACL kept back, `truncated` is what the page
  * cap dropped, and folding either into the other is truncation wearing an ACL
  * boundary's face.
  */
-export interface ObjectRadiusSide {
-  /** Unscoped, workspace-wide. A number, never content. */
-  readonly total: number;
-  /** Reader-scoped on BOTH sides. */
-  readonly pairs: readonly ObjectRadiusPair[];
-  /** `total − scopedTotal`: pairs that happen regardless, listing rows this reader may not read. */
-  readonly withheld: number;
-  /** The sample lists fewer pairs than the reader is entitled to. */
-  readonly truncated: boolean;
-  /** Whether the two statements behind the numbers agree well enough to render as facts. */
-  readonly countsConsistent: boolean;
-}
+export type ObjectRadiusSide = BrainVocabularyObjectRadiusSide;
 
 /** What an object-position decision actually changes. */
 export interface ObjectPositionRadius {
@@ -213,6 +206,20 @@ export interface ObjectCounterfactualPlan {
   readonly params: readonly string[];
   /** CTEs the expression references, spliced under one `WITH RECURSIVE`. */
   readonly ctes: readonly string[];
+  /**
+   * The caller's depth probe did not answer, so nothing about the walk is
+   * established.
+   *
+   * ⚠️ Its own field because `SubtreeProbe` carries TWO facts and they have
+   * different destinations: `truncated` is a radius-wide SCOPE statement, and
+   * this one is STATEMENT DRIFT and belongs in `countsConsistent`. The object
+   * arm read only the first and dropped this on the floor — so an unreadable
+   * probe produced `subtreeTruncated: false` (correct) beside
+   * `countsConsistent: true` (never established): a fully trustworthy-looking
+   * radius over a walk nobody could confirm, on the one verb where the walk
+   * decides which rows move. The predicate path has honoured it since #5086.
+   */
+  readonly probeDrifted?: boolean;
 }
 
 /**
@@ -421,7 +428,14 @@ async function loadSide(
   const totalSql = build({ plan, select: "COUNT(*)::int AS delta_total", extraWhere: "", tail: "" });
   const pairsSql = build({
     plan,
-    select: PAIR_SELECT,
+    // ⚠️ `` `${PAIR_SELECT}` `` rather than the bare identifier, and it is a
+    // GUARD rather than noise. `keys-not-on-the-wire.test.ts` inlines
+    // module-level column-list constants only where they appear as a `${NAME}`
+    // template interpolation; passed as a plain property the projection was
+    // invisible to it, and adding `a.object_key,` to the front of `PAIR_SELECT`
+    // left the guard green — measured. The interpolation is what puts this
+    // module's one projection back inside the scan.
+    select: `${PAIR_SELECT}`,
     extraWhere: `\n     AND ${leftAcl.sql}\n     AND ${rightAcl.sql}`,
     tail: `\n   ORDER BY a.ingested_at, a.id, b.ingested_at, b.id\n   LIMIT $${limitParam}`,
   });
@@ -474,6 +488,7 @@ async function loadSide(
     countsConsistent:
       !inverted &&
       !page.drifted &&
+      plan.probeDrifted !== true &&
       leftAcl.decision !== "deny-all" &&
       rightAcl.decision !== "deny-all",
   };

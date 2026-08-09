@@ -377,6 +377,9 @@ describeIfPg("the Pending queue against a real schema (#5088)", () => {
     // stops it drifting into a number no gate reads.
     const seq: [string, string, string][] = [
       ["widget", "10", "20"],
+      // A SECOND correction on the same subject — the gate must count it once
+      // and `events` must count it twice. See the assertion below.
+      ["widget", "20", "25"],
       ["gadget", "30", "40"],
       ["doohickey", "50", "60"],
     ];
@@ -388,8 +391,9 @@ describeIfPg("the Pending queue against a real schema (#5088)", () => {
       // own test, and this file's claim is about the two COUNTS agreeing.
       const { rows } = await pool.query<{ id: string; object: string }>(
         `SELECT id::text AS id, object FROM brain_facts
-          WHERE workspace_id = $1 AND subject = $2 ORDER BY ingested_at`,
-        [WS, subject],
+          WHERE workspace_id = $1 AND subject = $2 AND object IN ($3, $4)
+          ORDER BY ingested_at`,
+        [WS, subject, before, after],
       );
       expect(rows).toHaveLength(2);
       const episode = await seedEpisode(["audience:eng"]);
@@ -428,17 +432,20 @@ describeIfPg("the Pending queue against a real schema (#5088)", () => {
     expect(entry, "the cardinality proposal must be listed").toBeDefined();
     if (entry === undefined || entry.kind !== "cardinality") throw new Error("unreachable");
     expect(entry.evidence.subjects).toBe(gate[0]!.n);
-    // ⚠️ The SECOND number, and the reason it exists: the gate counts distinct
-    // SUBJECTS, so `events` is what makes "and links to them" possible. One
-    // correction per subject here, so they coincide — which is exactly why the
-    // assertion below has to name both rather than one standing in for the other.
-    expect(entry.evidence.events).toBe(3);
+    // ⚠️ The SECOND number, and the fixture is built so the two CANNOT coincide.
+    // The gate counts distinct SUBJECTS; `events` is what "and links to them"
+    // links to. With one correction per subject they are both 3, and computing
+    // `events` as `subjects` survives — measured. `widget` is corrected twice,
+    // so 3 subjects produced 4 corrections and only a real `COUNT(*)` says 4.
+    expect(entry.evidence.subjects).toBe(3);
+    expect(entry.evidence.events).toBe(4);
+    // Capped at the sample bound, and one row per SUBJECT — `DISTINCT ON`
+    // collapses `widget`'s two corrections to its most recent.
     expect(entry.evidence.examples).toHaveLength(3);
     expect(entry.evidence.examples[0]!.fromObject).not.toBe(
       entry.evidence.examples[0]!.toObject,
     );
     expect(entry.predicateSurface).toBe("headcount is");
-    expect(entry.decidable).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
   it("ONE list — both kinds, interleaved by age rather than stacked by kind", async () => {

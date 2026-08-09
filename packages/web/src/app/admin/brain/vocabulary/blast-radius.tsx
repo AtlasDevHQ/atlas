@@ -208,17 +208,30 @@ function ObjectPositionRadius({
         side={separating}
       />
 
+      {/* ⚠️ The persistence sentence is READ OFF `staleEdgesPersist`, not
+          hard-coded beside it. The field is a literal `true` on the wire for
+          exactly one purpose — so a test can assert the sentence is rendered —
+          and while the copy was hard-coded the field was dead: flipping it to
+          `false` in a fixture changed nothing, so the literal justified a claim
+          nothing checked. */}
       <ObjectSideLine
         label={
           tension.total === 1
             ? "contradiction Atlas has already flagged would stop being one"
             : "contradictions Atlas has already flagged would stop being ones"
         }
-        detail="⚠️ Those flags are NOT withdrawn by this decision. Nothing deletes them, so each one is left contradicting two claims Atlas would now consider to agree."
+        detail={
+          radius.staleEdgesPersist
+            ? "⚠️ Those flags are NOT withdrawn by this decision. Nothing deletes them, so each one is left contradicting two claims Atlas would now consider to agree."
+            : "Atlas did not report what becomes of those flags, so do not assume they are withdrawn."
+        }
         side={tension}
       />
 
-      {corroborating.total === 0 && separating.total === 0 && tension.total === 0 ? (
+      {/* ⚠️ Gated on the zeros being KNOWN, not merely on their being zero. This
+          is the one sentence on the branch that reads as an all-clear, so it
+          must never be reachable from a count the server could not establish. */}
+      {[corroborating, separating, tension].every((s) => s.total === 0 && s.countsConsistent) ? (
         <p className="text-muted-foreground">
           Nothing in the corpus agrees or contradicts differently under this merge as things stand
           today. That is a floor, not a guarantee: it applies to every future claim in this slot as
@@ -261,7 +274,24 @@ function ObjectSideLine({
   detail: string;
   side: BrainVocabularyObjectRadiusSide;
 }) {
-  if (side.total === 0) return null;
+  // ⚠️ SILENT ONLY WHEN THE ZERO IS KNOWN. The early return used to be a bare
+  // `total === 0`, which reads `countsConsistent` four lines too late — so every
+  // condition the server clears that flag for (a pair row that would not narrow,
+  // a scoped-window value that did not read back, the two statements
+  // disagreeing, a deny-all clause) rendered as NOTHING, and the all-clear
+  // paragraph below then fired. That is this module's own named worst outcome —
+  // a count Atlas could not establish, presented as "this changes nothing" —
+  // produced by the renderer after the engine had said in-band that it did not
+  // know.
+  if (side.total === 0 && side.countsConsistent) return null;
+  if (side.total === 0) {
+    return (
+      <p className="text-destructive">
+        Atlas could not establish this number, so it is <strong>unknown, not zero</strong>. Treat
+        this preview as incomplete and reload before deciding.
+      </p>
+    );
+  }
   return (
     <p className="text-foreground">
       {/* "At least" for `SideLine`'s reason — `floor` is a literal `true` on this

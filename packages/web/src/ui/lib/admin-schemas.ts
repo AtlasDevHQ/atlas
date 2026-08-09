@@ -55,6 +55,7 @@ export {
   BrainFactOversightClientSchema,
   BrainFactRetractResponseSchema,
   BrainVocabularyAuthorResponseSchema,
+  BrainVocabularyDecideResponseSchema,
   BrainVocabularyInForceResponseSchema,
   BrainVocabularyPendingResponseSchema,
   BrainVocabularyPreviewRequestSchema,

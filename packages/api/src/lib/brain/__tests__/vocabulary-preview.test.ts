@@ -306,13 +306,32 @@ describe("the object position gets its OWN radius, never a supersession delta", 
   });
 
   it("the same holds for an object-position REMOVAL", async () => {
+    // ⚠️ `edgeExists` — the object arm asks the `no-such-edge` probe FIRST, and
+    // a stub that answers "no edge" correctly gets a REASON rather than a
+    // radius. Without the responder this test asserted the object arm on a
+    // request that never reaches it.
+    const captures: Capture[] = [];
+    const radius = await loadBlastRadius(reader(captures, edgeExists), ctx(), {
+      kind: "alias-removal",
+      position: "object",
+      fromNorm: "nova",
+    });
+    expect(radius.kind).toBe("object-position");
+    expect(deltaStatements(captures)).toHaveLength(0);
+  });
+
+  it("⚠️ a removal with NO approved edge is a reason, not a zeroed radius", async () => {
+    // The short-circuit runs before `structurallyEmptyReason`, which made
+    // `no-such-edge` unreachable at this position — so a removal naming a norm
+    // with no approved parent produced three honest zeros, which the pane
+    // renders as a floor promise about a decision that does not exist.
     const captures: Capture[] = [];
     const radius = await loadBlastRadius(reader(captures), ctx(), {
       kind: "alias-removal",
       position: "object",
       fromNorm: "nova",
     });
-    expect(radius.kind).toBe("object-position");
+    expect(emptyReason(radius)).toBe("no-such-edge");
     expect(deltaStatements(captures)).toHaveLength(0);
   });
 

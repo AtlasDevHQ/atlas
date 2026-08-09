@@ -228,14 +228,27 @@ describeIfPg("the object-position blast radius against a real schema (#5088)", (
     expect(`${pair.leftLabel} | ${pair.rightLabel}`).toContain("Bobby");
     expect(radius.corroborating.countsConsistent).toBe(true);
     expect(radius.corroborating.withheld).toBe(0);
+    // ⚠️ THE assertion that makes the tension side its own query. No
+    // `in-tension-with` edge was written for this fixture, so a `tension`
+    // builder pointed at the corroboration delta would report 1 here. Measured:
+    // without this line, deleting the entire `brain_edges` read the module
+    // header argues for is invisible to the whole file — the Bob/Bobby fixtures
+    // give both sides the same number and the 10/20 fixture gives both zero.
+    expect(radius.tension.total, "the tension side must read brain_edges, not re-derive rivals").toBe(0);
     // The floor and the persistence sentence are LITERALS so a renderer's copy
     // is assertable rather than merely intended.
     expect(radius.floor).toBe(true);
     expect(radius.staleEdgesPersist).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("POSITIVE CONTROL — a pair the store PROVES differs is on NEITHER side", async () => {
-    // ⚠️ Without this the suite would pass with `objectSameSql`'s veto deleted
+  it("DISCRIMINATING CONTROL — a pair the store PROVES differs is on NEITHER side", async () => {
+    // ⚠️ An all-zero assertion, and deliberately NOT labelled a positive
+    // control — this repo has been burned by controls that pass because the
+    // fixture makes every outcome zero, and the next reader must be able to tell
+    // the two apart from the name. It is non-vacuous: deleting `objectSameSql`'s
+    // veto makes `corroborating` 1 and fails it.
+    //
+    // Without this the suite would pass with `objectSameSql`'s veto deleted
     // and with the tension side reduced to "the complement of corroboration".
     // `10` and `20` both parse, `comparableDifferentSql` is TRUE, so merging
     // their object keys puts two claims in one slot that the store has already

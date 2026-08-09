@@ -26995,9 +26995,6 @@
                                   "null"
                                 ]
                               },
-                              "decidable": {
-                                "type": "boolean"
-                              },
                               "cardinality": {
                                 "type": "string",
                                 "enum": [
@@ -27091,7 +27088,6 @@
                             "required": [
                               "kind",
                               "predicateSurface",
-                              "decidable",
                               "cardinality",
                               "sourceClass",
                               "proposedBy",
@@ -27153,7 +27149,10 @@
                       }
                     },
                     "cardinalityCounts": {
-                      "type": "object",
+                      "type": [
+                        "object",
+                        "null"
+                      ],
                       "properties": {
                         "position": {
                           "type": "string",
@@ -27199,13 +27198,17 @@
                     },
                     "truncated": {
                       "type": "boolean"
+                    },
+                    "incomplete": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "entries",
                     "aliasCounts",
                     "cardinalityCounts",
-                    "truncated"
+                    "truncated",
+                    "incomplete"
                   ],
                   "additionalProperties": false
                 }
@@ -27442,32 +27445,78 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "outcome": {
-                      "type": "string",
-                      "enum": [
-                        "approved",
-                        "rejected",
-                        "nothing_to_decide"
-                      ]
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        "proposalId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "proposalId"
+                      ],
+                      "additionalProperties": false
                     },
-                    "proposalId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        },
+                        "proposalId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "removedEdge": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "proposalId",
+                        "removedEdge"
+                      ],
+                      "additionalProperties": false
                     },
-                    "removedEdge": {
-                      "type": "boolean"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "nothing_to_decide"
+                          ]
+                        },
+                        "proposalId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "proposalId"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "outcome",
-                    "proposalId",
-                    "removedEdge"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }

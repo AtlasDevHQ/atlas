@@ -181,11 +181,69 @@ echo "  (each spec re-runs its suites under every mutation — minutes, not seco
 # pre-existing root-owned or symlinked `/tmp/mutate-check.log` makes the redirect
 # fail — which the `if` reads as STALE, a false red on a healthy table.
 LOG=$(mktemp)
-trap 'rm -f "$LOG"' EXIT
+
+# ⚠️ **AN INTERRUPT HERE LEAVES MUTATED SOURCE IN THE TREE UNLESS THIS TRAP
+# EXISTS, and it is not hypothetical — it happened twice in one session.**
+#
+# `mutate.ts` REWRITES SOURCE FILES in place and restores them when it finishes;
+# it installs its own SIGINT/SIGTERM handler for exactly this reason. But that
+# handler only helps if the signal REACHES it. Kill this script — or the
+# `ci-local.sh` above it — and bash dies immediately while the `bun` child keeps
+# running, gets re-parented to init, and marches on through the remaining specs,
+# rewriting files the whole way. The operator sees the harness "stop", then finds
+# modified sources appearing in `git status` minutes later, from a process no
+# longer in any obvious process tree. A `git commit -o` in that window commits a
+# DELIBERATE FAULT INJECTION as production code — one such mutant strips a
+# `timedOut` guard from a circuit breaker.
+#
+# So: run the child in the background, record its PID, and forward the signal to
+# it rather than dying alone. `wait` lets its own restore handler run to
+# completion before this script exits — the whole point is to give it that
+# chance, so do NOT `kill -9` here and do not skip the wait.
+CHILD_PID=""
+cleanup() {
+  local sig="${1:-}"
+  if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
+    kill -TERM "$CHILD_PID" 2>/dev/null || true
+    # Bounded, because an unbounded wait on a wedged child would hang the very
+    # interrupt the operator reached for. 15s is generous for a restore, which
+    # is a handful of file writes.
+    for _ in $(seq 1 150); do
+      kill -0 "$CHILD_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$CHILD_PID" 2>/dev/null; then
+      kill -KILL "$CHILD_PID" 2>/dev/null || true
+      echo "" >&2
+      echo "WARNING: mutate.ts did not restore within 15s and was killed hard." >&2
+      echo "  RUN \`git status\` — a mutated source file may be left in the tree." >&2
+    fi
+  fi
+  rm -f "$LOG"
+  if [ -n "$sig" ]; then
+    echo "" >&2
+    echo "interrupted — sources restored." >&2
+    # 128 + signal number, the shell convention, matching mutate.ts's own exit.
+    case "$sig" in
+      INT) exit 130 ;;
+      *) exit 143 ;;
+    esac
+  fi
+}
+trap 'cleanup INT' INT
+trap 'cleanup TERM' TERM
+trap 'cleanup' EXIT
 
 STALE=()
 for spec in "${SELECTED[@]}"; do
-  if bun run scripts/mutate.ts "$spec" --check >"$LOG" 2>&1; then
+  bun run scripts/mutate.ts "$spec" --check >"$LOG" 2>&1 &
+  CHILD_PID=$!
+  # `set -e` is on, so a non-zero `wait` would abort the loop before the STALE
+  # arm could report which spec failed; `|| rc=$?` keeps the status.
+  rc=0
+  wait "$CHILD_PID" || rc=$?
+  CHILD_PID=""
+  if [ "$rc" -eq 0 ]; then
     echo "  OK    $spec"
   else
     echo "  STALE $spec"

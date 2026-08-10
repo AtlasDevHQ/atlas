@@ -52,6 +52,51 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# ⚠️ **TAKE THE WHOLE PROCESS TREE DOWN ON AN INTERRUPT. Killing this script
+# alone leaves its children running, and one of them REWRITES SOURCE FILES.**
+#
+# Measured, twice in one session: `pkill -f ci-local.sh` killed this script;
+# `check-mutation-tables.sh` two layers down did not match that pattern, was
+# re-parented to init, and kept spawning `bun run scripts/mutate.ts` per spec —
+# mutating the working tree for minutes after the harness appeared to stop.
+# Modified files then surface in `git status` from a process the operator can no
+# longer see, and a `git commit -o` naming one commits a deliberate fault
+# injection as production code.
+#
+# `setsid` is deliberately NOT used: this must stay in the caller's job control
+# so an interactive Ctrl-C reaches it at all. Instead every child is killed by
+# PROCESS GROUP, which is what catches the grandchildren a name-based `pkill`
+# structurally cannot.
+#
+# TERM, never KILL, and the wait is load-bearing: `mutate.ts` restores the
+# sources it rewrote in its own signal handler, and a hard kill is precisely
+# what strands a mutant on disk.
+ci_local_cleanup() {
+  local sig="${1:-}"
+  trap - INT TERM EXIT
+  # Negative PID = the whole process group. `kill 0` targets our own group,
+  # which includes every gate and everything they spawned.
+  kill -TERM 0 2>/dev/null || true
+  for _ in $(seq 1 200); do
+    # `jobs -rp` is empty once every background gate has reaped.
+    [ -z "$(jobs -rp 2>/dev/null)" ] && break
+    sleep 0.1
+  done
+  if [ -n "$sig" ]; then
+    echo "" >&2
+    echo "interrupted — children signalled; sources should be restored." >&2
+    echo "⚠️  RUN \`git status\` before committing: mutate.ts rewrites sources in" >&2
+    echo "   place, and an interrupt is the one path that can strand a mutant." >&2
+    echo "interrupted" >"$LOG_DIR/RESULT" 2>/dev/null || true
+    case "$sig" in
+      INT) exit 130 ;;
+      *) exit 143 ;;
+    esac
+  fi
+}
+trap 'ci_local_cleanup INT' INT
+trap 'ci_local_cleanup TERM' TERM
+
 LOG_DIR="$ROOT/.ci-local"
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"

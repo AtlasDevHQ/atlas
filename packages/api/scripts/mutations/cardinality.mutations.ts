@@ -299,40 +299,41 @@ human behind it.
       ],
       note: "Fires *COMPLETED after its deadline* on every ordinary supersede — alert fatigue on the happy path, and the reason the arm needs a prohibition as well as an assertion. Deleting the arm outright is the milder mutation; inverting it is the one a reader would call a typo.",
     },
+    // ⚠️ TWO MUTATIONS WERE DELETED HERE BY #5047, not re-anchored, and the
+    // difference matters. They mutated `logDegeneratePredicate` — its
+    // `verb === "supersede"` guard, and its call — and #5047 DELETED that
+    // function. A mutation whose target no longer exists cannot be repaired by
+    // moving its anchor; there is nothing to move it to.
+    //
+    // The reporter existed for a `supersede` that COMMITTED while closing no
+    // canonical predicate slot. #5047 makes that state unrepresentable: the
+    // replacement inherits the target's slot, `reconcile.ts` refuses a null slot
+    // key, and `brain_facts`' key columns are `NOT NULL` as of migration 0194.
+    // So the verb now REFUSES where it used to commit-and-report.
+    //
+    // No successor mutation was written for the arm that replaced it — the
+    // `log.error` at `correction.ts`'s post-commit block — and that omission is
+    // deliberate rather than lazy. That arm fires only if one of those three
+    // invariants moves, so it is unreachable by construction and a mutation on
+    // it would measure `0` for every suite. `mutate.ts`'s own header calls a
+    // published `0` a claim; recording one here would assert *"no test covers
+    // this"* when the truth is *"no input reaches this"*, which is the tombstone
+    // the dead-anchor arm exists to keep out of these tables.
+    //
+    // What IS measurable is the guard that made the state unreachable, so that
+    // is the mutation below.
     {
-      label: "`logDegeneratePredicate` fires for every verb, not only `supersede`",
+      label: "the supersede refusal gates on the failing POSITION instead of its CAUSE",
       edits: [
         {
           file: CORRECTION,
-          oldString: '    if (verb === "supersede") {\n      logDegeneratePredicate(',
-          newString: "    if (true) {\n      logDegeneratePredicate(",
+          oldString: `    (outcome.unkeyed ?? []).some(
+      (slot) => slot.role === "object" && slot.cause === "degenerate-surface",
+    )`,
+          newString: `    (outcome.unkeyed ?? []).some((slot) => slot.role === "object")`,
         },
       ],
-      note: "A `retract` or a vouch would then log *superseded a claim whose predicate normalizes away* about a verb that superseded nothing. The guard is the whole content of the line.",
-    },
-    {
-      label: "`logDegeneratePredicate`'s call is removed",
-      edits: [
-        {
-          file: CORRECTION,
-          // ⚠️ Re-anchored by #5037, which threaded a `cause` discriminant through
-          // this call and turned it from one line into an object literal. The old
-          // anchor then matched nothing and the mutation MEASURED NOTHING —
-          // caught by `--check`'s dead-anchor arm rather than by anyone reading
-          // the diff, which is the arm #5077 added for exactly this and the
-          // reason it refuses to write a table it cannot measure.
-          oldString: `    if (verb === "supersede") {
-      logDegeneratePredicate({
-        workspaceId: ctx.workspaceId,
-        factId: result.factId,
-        requestId,
-        cause: supersededPredicateCause,
-      });
-    }`,
-          newString: "    void verb;",
-        },
-      ],
-      note: "The case is legal and permanent (`identityKey`'s ⚠️), produces no proposal, and without this line produces no record either — a supersede that vanished.",
+      note: "This is the mutation #5047's review round found LIVE — the first cut of the guard gated on the position alone, on the argument that the object is the caller's own text where the slot is copied off the target. `slotKey` is `identityKey(alias(identityKey(surface)))`, so an object key is ALSO null when the workspace's object-position vocabulary maps a real norm to something that normalizes away: a human superseding with good text is then told their replacement *normalizes away to nothing*, on a request no retry can satisfy. Fix-your-correct-input, from a guard written to stop exactly that.",
     },
     {
       label: "the proposer runs INSIDE the correction's transaction",

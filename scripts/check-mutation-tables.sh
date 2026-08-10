@@ -165,7 +165,7 @@ $UNTRACKED"
       done
       if [ ${#SELECTED[@]} -eq 0 ]; then
         echo "check-mutation-tables: no spec's targets or sources changed vs $BASE — nothing to verify."
-        echo "  (CI runs --all regardless, so a table that drifted for another reason is still caught.)"
+        echo "  (push: main runs --all, so a table that drifted for another reason is still caught there.)"
         exit 0
       fi
       echo "check-mutation-tables: ${#SELECTED[@]} of ${#SPECS[@]} spec(s) affected by this branch."

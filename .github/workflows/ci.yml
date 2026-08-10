@@ -521,6 +521,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          # Full history: `--affected` diffs against the PR base SHA, which is
+          # not reachable from a shallow clone. The script widens to `--all` if
+          # the diff fails, so a shallow clone would silently cost 14 minutes
+          # rather than break — which is exactly the failure nobody notices.
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-bun-cached
         with:
@@ -529,14 +535,36 @@ jobs:
       - name: Build @useatlas/types + @useatlas/plugin-sdk
         run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
 
-      - name: Verify every generated mutation table
+      - name: Verify the generated mutation tables
         env:
           # Required, not optional: several specs target *-pg.test.ts, which
           # self-skip without it. The runner refuses a baseline that skipped
           # anything, so an absent URL fails this job loudly rather than
           # regenerating zeros over real measurements.
           TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
-        run: bash scripts/check-mutation-tables.sh --all
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # ⚠️ The SWEEP still happens — it MOVED, it was not deleted. #5077's
+          # finding was that four of eight tables were stale on `main` because
+          # `--check` existed and nothing ran it; `push: main` below is what
+          # keeps that closed. What changed is only WHEN a full sweep blocks:
+          # not on a PR whose diff cannot have touched a table.
+          #
+          # The `--all` justification this job shipped with was "14 minutes is
+          # FREE, jobs run in parallel and `Built image (docs)` already takes
+          # ~25". That premise is conditional on a job that is itself
+          # path-gated — when the image scan skips, this job IS the critical
+          # path, and it gated every docs-only and ROADMAP-only PR on a
+          # 14-minute Postgres sweep. `--affected` widens to `--all` on any
+          # unresolvable diff, so the narrow path can never silently verify
+          # nothing.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            bash scripts/check-mutation-tables.sh --affected "$BASE_SHA"
+          else
+            bash scripts/check-mutation-tables.sh --all
+          fi
     services:
       postgres:
         image: postgres:16-alpine

@@ -125,9 +125,12 @@ import {
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
   identityAlias,
+  identityKey,
   identityVocabulary,
+  inheritSlotFromFactRow,
   slotKey,
   type ClaimVocabulary,
+  type InheritedSlot,
 } from "@atlas/api/lib/brain/identity";
 import {
   CORRECTION_EVENT_PRODUCER,
@@ -1846,6 +1849,68 @@ describe("cardinality proposer", () => {
     ]);
   });
 
+  test("an UNKEYED target reports a CORPUS gap, not a degenerate surface (#5037)", async () => {
+    // The round-2 fix split one `log.debug` into two arms because a null
+    // `supersededKey` acquired a second cause — and shipped with nothing holding
+    // it. Deleting the whole `unkeyed-target` arm, or collapsing the discriminant
+    // to a constant, left every gate green.
+    //
+    // The severity is why it matters: `debug` is off in production, so before the
+    // split "this corpus has no identity and the cardinality proposer has gone
+    // silent" was indistinguishable from "healthy". A revert restores exactly
+    // that silence, invisibly.
+    //
+    // Keyed on the structured `cause` field rather than message prose, so a
+    // reworded message does not fail this but a re-collapsed one does.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "unkeyed",
+      object: "Ana",
+      status: "published",
+      slot: { subject: null, predicate: null, object: null },
+    });
+    // The discriminator's premise: the surface itself keys perfectly well, so
+    // "normalizes away" would be a false diagnosis of this row.
+    expect(identityKey("is owned by")).not.toBeNull();
+
+    await run(store, { factId: "unkeyed", verb: "supersede", replacement: { object: "Bo" } });
+
+    const unkeyedWarns = warns().filter(
+      (c) => (c.payload as { cause?: string }).cause === "unkeyed-target",
+    );
+    expect(
+      unkeyedWarns,
+      "an unkeyed TARGET must WARN — debug is off in production, so the corpus-wide silence would be invisible",
+    ).toHaveLength(1);
+    // …and it must name both remaining causes rather than asserting one. The
+    // round-2 fix removed a prescription ("re-key the workspace") that provably
+    // cannot work when the vocabulary is what maps the norm away.
+    expect(unkeyedWarns[0]!.message).toContain("vocabulary");
+    expect(unkeyedWarns[0]!.message).toContain("never keyed");
+    // The prohibition arm: this row must NOT be reported as a degenerate surface.
+    expect(
+      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
+    ).toEqual([]);
+  });
+
+  test("a DEGENERATE predicate surface still reports as such, not as a corpus gap (#5037)", async () => {
+    // The control. Without it the assertion above is satisfied by an
+    // implementation that reports EVERY null key as `unkeyed-target`, which is
+    // the collapse in the other direction.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "degenerate", predicate: "-", object: "Ana", status: "published" });
+    expect(identityKey("-")).toBeNull();
+
+    await run(store, { factId: "degenerate", verb: "supersede", replacement: { object: "Bo" } });
+
+    expect(warns().filter((c) => (c.payload as { cause?: string }).cause === "unkeyed-target")).toEqual(
+      [],
+    );
+    expect(
+      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
+    ).toHaveLength(1);
+  });
+
   test("stays silent below the repeat threshold", async () => {
     const store = new FakeCorrectionStore();
     store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 2;
@@ -2850,6 +2915,64 @@ describe("the identity keys never leave the target read (#5037)", () => {
         column,
       );
     }
+  });
+
+  test("an inherited slot can be neither spread nor rebuilt (#5037)", () => {
+    // The round-2 fix made `InheritedSlot` nominal (a class with a `#private`
+    // field) and then module-private (only the TYPE is exported). Both halves
+    // were argued at length in docstrings and pinned by NOTHING: re-exporting the
+    // class, or swapping back to a phantom-symbol brand, left every gate green.
+    //
+    // `@ts-expect-error` is the mechanism — an UNUSED one is itself an error, so
+    // each line below fails the moment its forge starts compiling.
+    // `packages/api/tsconfig.json` includes `src/**/*.ts`, so `bun run type`
+    // covers this file and the pin is CI-enforced.
+    const slot = inheritSlotFromFactRow({
+      id: "f1",
+      subject_key: "billing",
+      predicate_key: "is owned by",
+    });
+    void ((): InheritedSlot => slot);
+    // ⚠️ LEXICAL, not `@ts-expect-error`, and that was measured rather than
+    // assumed: this repo type-checks with `tsgo`, which does NOT report an unused
+    // `@ts-expect-error` directive. A pin written that way passes identically
+    // whether the forge compiles or not — the always-green shape, in the guard
+    // written to stop an always-green shape. Reverting the class to
+    // `export class InheritedSlot` produced ZERO type errors with the directive
+    // form in place, which is how this was caught.
+    //
+    // So the two properties are asserted against the source instead. Both are
+    // one-line reverts and neither has any other detector:
+    //
+    //   - the class must stay MODULE-PRIVATE. Exporting it restores
+    //     `InheritedSlot.fromRow(…)` as a second mint — carrying the marker for
+    //     the caller — which the call-site grep below cannot see, because it
+    //     greps the other name.
+    //   - the marker must stay a `#private` FIELD. A `unique symbol` brand
+    //     survives object spread, so `{ ...slot, subject: computed }` type-checks
+    //     and reintroduces the defect at the likeliest future edit.
+    const identitySrc = readFileSync(join(import.meta.dir, "..", "identity.ts"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      " ",
+    );
+    expect(
+      /^\s*class InheritedSlotValue\b/m.test(identitySrc),
+      "the InheritedSlot class must stay module-private — only `export type` may leave this module, " +
+        "or `InheritedSlot.fromRow` becomes a second, unpinned mint",
+    ).toBe(true);
+    expect(
+      /export\s+class\s+InheritedSlot/.test(identitySrc),
+      "the InheritedSlot class is exported again — that is the round-1 defect, restored",
+    ).toBe(false);
+    expect(
+      /readonly\s+#\w+\s*=/.test(identitySrc),
+      "the nominal marker must be a `#private` field — a `unique symbol` brand survives object spread, " +
+        "so copy-but-recompute-one-position would type-check",
+    ).toBe(true);
+    // The runtime half, so the test still asserts something if the type ever
+    // becomes structurally satisfiable.
+    expect(slot.fromFactId).toBe("f1");
+    expect(slot.subject).toBe("billing");
   });
 
   test("the inherit channel is reachable from the row-copy path and nowhere else", () => {

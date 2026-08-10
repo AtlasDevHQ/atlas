@@ -59,6 +59,8 @@ interface Captured {
 }
 
 const infos: Captured[] = [];
+/** Separate sink: the LEVEL is part of what this file pins, not just the payload. */
+const warns: Captured[] = [];
 
 /**
  * Every value export of `lib/logger`, replaced.
@@ -70,13 +72,14 @@ const infos: Captured[] = [];
  * `bun:test`.
  */
 void mock.module("@atlas/api/lib/logger", () => {
+  const record = (sink: Captured[]) => (payload: unknown, message?: unknown) =>
+    sink.push({
+      payload: (payload ?? {}) as Record<string, unknown>,
+      message: typeof message === "string" ? message : String(payload),
+    });
   const capture = {
-    info: (payload: unknown, message?: unknown) =>
-      infos.push({
-        payload: (payload ?? {}) as Record<string, unknown>,
-        message: typeof message === "string" ? message : String(payload),
-      }),
-    warn: () => {},
+    info: record(infos),
+    warn: record(warns),
     error: () => {},
     debug: () => {},
     level: "info",
@@ -151,6 +154,7 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
     await pool.query("DELETE FROM brain_facts");
     await pool.query("DELETE FROM brain_episodes");
     infos.length = 0;
+    warns.length = 0;
   });
 
   const owner = (): BrainPrincipalContext => ({
@@ -236,15 +240,32 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
   }
 
   /** The one re-key completion line, refused if there is not exactly one. */
-  function theLine(): Captured {
-    const lines = infos.filter((entry) => entry.message.includes("Drift re-key complete"));
+  /**
+   * The completion line and THE SINK IT LANDED IN.
+   *
+   * ⚠️ Returning the payload alone is not enough, and the first cut of this file
+   * did exactly that: dropping the actionable arm from `warn` back to `info`
+   * SURVIVED every assertion here, because a helper that merges the sinks cannot
+   * see the level. The level is half of what makes this line discoverable — a
+   * deployment filtering `info`, which is the ordinary posture for a path this
+   * chatty, loses it entirely — so the sink travels with the line.
+   */
+  function theLineAt(): { line: Captured; level: "info" | "warn" } {
+    const hit = (sink: Captured[]) =>
+      sink.filter((entry) => entry.message.includes("Drift re-key complete"));
+    const atInfo = hit(infos);
+    const atWarn = hit(warns);
+    const lines = [...atInfo, ...atWarn];
     expect(
       lines,
       "expected exactly one re-key completion line — the approval runs the statement for ONE " +
         "position, and more than one means these assertions are reading an arbitrary member",
     ).toHaveLength(1);
-    return lines[0]!;
+    return { line: lines[0]!, level: atWarn.length === 1 ? "warn" : "info" };
   }
+
+  /** The payload alone, where the level is not what the case is about. */
+  const theLine = (): Captured => theLineAt().line;
 
   it("carries BOTH counts — the declined rows beside the moved ones", async () => {
     // ⭐ The assertion this file exists for. Two healthy rows drift onto the
@@ -279,11 +300,16 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
 
     await approveObjectAlias("friday", "fri");
 
-    expect(theLine().payload).toMatchObject({
+    const clean = theLineAt();
+    expect(clean.line.payload).toMatchObject({
       rekeyed: 1,
       skippedDegenerateSurface: 0,
       skippedVocabularyTarget: 0,
     });
+    // INFO on the happy path. The other direction of the level split: a line
+    // that warned on every ordinary approval is alert fatigue, which makes the
+    // real warning unreadable — the failure mode the conditional exists to avoid.
+    expect(clean.level).toBe("info");
   });
 
   it("distinguishes `nothing drifted` from `everything was declined`", async () => {
@@ -302,7 +328,11 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
     // …and the message stays the ordinary one: a tombstoned population needs no
     // human, so an alarming line here would be the alert fatigue that makes the
     // real one unreadable.
-    expect(theLine().message).toContain("existing facts now carry the keys this vocabulary decides");
+    const degenerateOnly = theLineAt();
+    expect(degenerateOnly.line.message).toContain(
+      "existing facts now carry the keys this vocabulary decides",
+    );
+    expect(degenerateOnly.level).toBe("info");
   });
 
   it("⭐ says so IN THE MESSAGE when a live row was declined by a vocabulary target", async () => {
@@ -334,8 +364,18 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
     // An unrelated real approval, so the re-key runs at the object position.
     await approveObjectAlias("friday", "fri");
 
-    const line = theLine();
+    const { line, level } = theLineAt();
     expect(line.payload).toMatchObject({ skippedVocabularyTarget: 1, skippedDegenerateSurface: 0 });
+    // ⚠️ WARN, not INFO. The payload being right is worth nothing if the record
+    // is filtered out before anyone reads it: this is an operator-actionable
+    // data-integrity divergence, emitted at the same severity as the routine
+    // success line until #5106's review round caught it.
+    expect(
+      level,
+      "the actionable arm went out at `info` — a deployment filtering info-level logs, which is " +
+        "the ordinary posture for a path this chatty, loses the only record that live rows were " +
+        "left on keys the previous vocabulary decided",
+    ).toBe("warn");
     expect(
       line.message,
       "the line reported a clean completion over a live row whose key the vocabulary now " +

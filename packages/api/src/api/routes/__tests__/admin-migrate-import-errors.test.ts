@@ -57,16 +57,27 @@ let queryFailure: Error | null = null;
 /** Statements the fake client saw — `ROLLBACK` is asserted from here. */
 let statements: string[] = [];
 
+/**
+ * When set, `ROLLBACK` itself throws this — the path where the handler cannot
+ * know whether anything committed (#5106 round 2).
+ */
+let rollbackFailure: Error | null = null;
+/** What `release()` was called WITH. `undefined` = pooled; an Error = destroyed. */
+let releasedWith: unknown[] = [];
+
 const FAKE_CLIENT = {
   query: async (sql: string) => {
     statements.push(typeof sql === "string" ? sql : String(sql));
-    // BEGIN and ROLLBACK must both succeed: a ROLLBACK that throws sends the
-    // handler down its own `.catch` and would mask the arm under test.
+    if (sql === "ROLLBACK" && rollbackFailure !== null) throw rollbackFailure;
+    // BEGIN and COMMIT always succeed: a failure there is a different test, and
+    // one here would mask the arm under test.
     if (sql === "BEGIN" || sql === "ROLLBACK" || sql === "COMMIT") return { rows: [], rowCount: 0 };
     if (queryFailure !== null) throw queryFailure;
     return { rows: [], rowCount: 0 };
   },
-  release: () => {},
+  release: (err?: unknown) => {
+    releasedWith.push(err);
+  },
 };
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
@@ -134,6 +145,13 @@ const { adminMigrate, internalMigrate, RegionImportUnkeyableError, RegionImportV
  * `BEGIN`/`COMMIT` and nothing between them, so the injected failure never
  * fires and every assertion here passes against a 200 — the first cut of this
  * file did exactly that, and read as fifteen green tests of nothing.
+ *
+ * ⚠️ NO CAST. The return annotation is this fixture's ONLY compile-time check:
+ * `validateBundle` is a hand-rolled shallow validator that tests top-level
+ * array-ness and nothing else, so `as unknown as ExportBundle` (which the first
+ * cut carried) would let the fixture go stale in silence the day `ExportBundle`
+ * gains a required section — the suite would keep passing against a bundle the
+ * importer rejects.
  */
 function minimalBundle(): ExportBundle {
   return {
@@ -147,7 +165,7 @@ function minimalBundle(): ExportBundle {
     semanticEntities: [],
     learnedPatterns: [],
     settings: [{ key: "theme", value: "dark" }],
-  } as unknown as ExportBundle;
+  };
 }
 
 interface ErrorBody {
@@ -194,6 +212,8 @@ const HANDLERS: Handler[] = [
 describe("the import's error responses — both handlers", () => {
   beforeEach(() => {
     queryFailure = null;
+    rollbackFailure = null;
+    releasedWith = [];
     statements = [];
     logged.length = 0;
     process.env.ATLAS_INTERNAL_SECRET = INTERNAL_SECRET;
@@ -331,6 +351,97 @@ describe("the import's error responses — both handlers", () => {
           "subsystems with different remedies, and the message is the only thing that says which",
       ).toBe(refusal.message);
       expect(body.requestId).toBeTruthy();
+    });
+
+    it("⭐ a FAILED rollback gets its own body — it never claims nothing was written", async () => {
+      // ⚠️ THE assertion this round added. `IMPORT_FAILED_MESSAGE` promises
+      // "nothing was written … re-sending the same bundle is safe". On this path
+      // the handler issued a ROLLBACK and the request FAILED, so whether the
+      // transaction aborted, is still open, or committed is unknown to it.
+      //
+      // Returning the confident sentence here is the same defect #5106 fixed one
+      // layer up — a body asserting a state nobody established — and the
+      // consequence is worse than the leak was: the leak exposed detail, this
+      // would tell an operator to retry over a possibly-committed import.
+      queryFailure = new Error("duplicate key value violates unique constraint");
+      rollbackFailure = new Error("Connection terminated unexpectedly");
+
+      const res = await post(minimalBundle());
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as ErrorBody;
+
+      // A DISTINCT code, because callers branch on it and these two answers are
+      // the furthest apart this endpoint gives.
+      expect(
+        body.error,
+        "a failed rollback returned the ordinary `import_failed` code — a caller cannot tell " +
+          "'retry is safe' from 'a human must inspect the destination'",
+      ).toBe("import_rollback_uncertain");
+      expect(body.message).toContain("UNKNOWN");
+      expect(body.message).toContain("Do NOT re-send");
+      expect(body.message).not.toContain("re-sending the same bundle is safe");
+      // …and still no driver text, at either status.
+      expect(body.message).not.toContain("duplicate key");
+      expect(body.message).not.toContain("Connection terminated");
+      expect(body.requestId).toBeTruthy();
+    });
+
+    it("⭐ DESTROYS the client when the rollback failed, instead of pooling it", async () => {
+      // The corruption path, and why this is a defect rather than a wording nit.
+      // `pg` destroys the socket when `release(err)` is called with a truthy
+      // arg. Released bare, a client still inside an open transaction goes back
+      // to the pool — and Postgres answers a second `BEGIN` on an open
+      // transaction with a WARNING, not an error, so the next borrower's work
+      // silently joins this failed import's transaction and ITS commit commits
+      // the partial import, under a different requestId, minutes later.
+      queryFailure = new Error("duplicate key value violates unique constraint");
+      rollbackFailure = new Error("Connection terminated unexpectedly");
+
+      await post(minimalBundle());
+
+      expect(releasedWith).toHaveLength(1);
+      expect(
+        releasedWith[0],
+        "the client was released bare after a FAILED rollback — it may still hold an open " +
+          "transaction, and pooling it lets an unrelated later request commit this import",
+      ).toBeInstanceOf(Error);
+    });
+
+    it("…and POOLS the client normally when the rollback succeeded", async () => {
+      // The control, and it is not decoration: `release(err)` closes the socket,
+      // so a handler that passed a truthy arg unconditionally would throw away a
+      // healthy connection on every ordinary import failure — a fix that turns a
+      // recoverable error into pool churn. Both directions, one pair.
+      queryFailure = new Error("duplicate key value violates unique constraint");
+
+      await post(minimalBundle());
+
+      expect(releasedWith).toHaveLength(1);
+      expect(
+        releasedWith[0],
+        "a healthy client was destroyed after a SUCCESSFUL rollback — release(err) closes the " +
+          "socket, so this churns the pool on every ordinary import failure",
+      ).toBeUndefined();
+    });
+
+    it("records the rollback failure server-side, with the workspace it may have corrupted", async () => {
+      // The other half: the response says "inspect the destination", and this
+      // line is what tells the operator WHICH destination. It is the one log
+      // line naming a possibly-corrupted workspace, so `orgId` is not optional.
+      queryFailure = new Error("duplicate key value violates unique constraint");
+      rollbackFailure = new Error("Connection terminated unexpectedly");
+
+      await post(minimalBundle());
+
+      const rollbackLine = logged.find((entry) => entry.message.includes("ROLLBACK failed"));
+      expect(rollbackLine, "a failed rollback left no log line").toBeDefined();
+      const payload = rollbackLine?.payload as { err?: Error; orgId?: string; requestId?: string };
+      expect(payload.err).toBeInstanceOf(Error);
+      expect(payload.err?.message).toBe("Connection terminated unexpectedly");
+      expect(payload.orgId, "the line that names a possibly-corrupted workspace omits it").toBe(
+        CURRENT_ORG,
+      );
+      expect(payload.requestId).toBeTruthy();
     });
 
     it("a refusal and a driver error do not converge on one body", async () => {

@@ -2233,6 +2233,30 @@ export const REKEY_DRIFTED_FACTS_SQL: Readonly<Record<SlotPosition, string>> = O
  * per-workspace, and the alternative trades a bounded latency for an unbounded
  * correctness window.
  */
+/**
+ * A `count(*)::int` this function is willing to act on.
+ *
+ * ⚠️ `typeof v === "number"` IS NOT ENOUGH, and the gap fails OPEN on the one
+ * value that decides the alarm. `NaN` is a number, and `NaN > 0` is **false** —
+ * so a `NaN` in `skipped_vocabulary_target` would sail past a `typeof` guard and
+ * then silently select *"existing facts now carry the keys this vocabulary
+ * decides"*: a success sentence about the exact population the split exists to
+ * make visible. The guard meant to prevent that would be the thing delivering it.
+ *
+ * `NaN` is reachable without a bug in Postgres. `VocabularyExecutor` is
+ * deliberately satisfiable by any `{ query }`, and `pg`'s int4 parser is
+ * `parseInt`, which yields `NaN` on any non-numeric text.
+ *
+ * Written in the DENY polarity for `vocabulary.ts`'s stated reason — its lock
+ * probe guards the identical "read an int off a one-row probe" with
+ * `Number.isFinite` and argues that *"a deny point written in the permissive
+ * polarity is how the fix becomes the defect."* `Number.isInteger` also encodes
+ * what `count(*)` can return and the type cannot: a non-negative whole number.
+ */
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 async function rekeyDriftedFacts(
   tx: VocabularyExecutor,
   workspaceId: string,
@@ -2278,9 +2302,9 @@ async function rekeyDriftedFacts(
         }
       | undefined;
     if (
-      typeof row?.rekeyed !== "number" ||
-      typeof row.skipped_degenerate_surface !== "number" ||
-      typeof row.skipped_vocabulary_target !== "number"
+      !isCount(row?.rekeyed) ||
+      !isCount(row.skipped_degenerate_surface) ||
+      !isCount(row.skipped_vocabulary_target)
     ) {
       throw new Error(
         `rekeyDriftedFacts: the executor answered the ${position} re-key without the three counts ` +
@@ -2302,12 +2326,19 @@ async function rekeyDriftedFacts(
     // that arrive here are all operationally distinct and all look identical
     // from the route: `40P01` deadlock, `55P03` lock timeout, `57014` statement
     // cancellation on the scan, `42P01` on a partially-migrated region.
+    // ⚠️ THE `Error` INSTANCE, NOT ITS `.message`. The comment above enumerates
+    // `40P01`, `55P03`, `57014` and `42P01` and says they "all look identical
+    // from the route" — and the ONE field that tells them apart is `pg`'s `code`,
+    // which lives on the error object. Binding `.message` satisfies the
+    // type-narrow rule and then throws away the discriminator the line exists to
+    // carry, along with the stack: pino's `err` serializer needs an `Error` to
+    // serialize. `admin-migrate.ts` passes the instance for the same reason.
     log.error(
       {
         workspaceId,
         proposalId,
         position,
-        err: err instanceof Error ? err.message : String(err),
+        err: err instanceof Error ? err : new Error(String(err)),
       },
       "Drift re-key failed — the alias decision is rolling back whole, so no key moved and no edge was applied",
     );
@@ -2361,22 +2392,34 @@ async function rekeyDriftedFacts(
   // sounded an alarm on a closed self-healing population is the alert fatigue
   // that makes the real one unreadable. The count is there for whoever wants
   // the number.
-  log.info(
-    {
-      workspaceId,
-      proposalId,
-      position,
-      rekeyed: counts.rekeyed,
-      skippedDegenerateSurface: counts.skippedDegenerateSurface,
-      skippedVocabularyTarget: counts.skippedVocabularyTarget,
-    },
-    counts.skippedVocabularyTarget > 0
-      ? "Drift re-key complete, but NOT total — some facts keep the keys the previous vocabulary " +
+  //
+  // ⚠️ THE LEVEL SPLITS WITH THE MESSAGE, and a conditional message at a flat
+  // `info` would have been the same defect one layer out. The comment above
+  // calls `skippedVocabularyTarget` "THE ONE TO ACT ON" — a data-integrity
+  // divergence a human must repair by hand — and a deployment filtering `info`,
+  // which is the ordinary posture for a path this chatty, would drop the only
+  // record that it happened. Emitting an actionable state at the same severity
+  // as the routine success line is how a signal becomes undiscoverable without
+  // ever being deleted.
+  const payload = {
+    workspaceId,
+    proposalId,
+    position,
+    rekeyed: counts.rekeyed,
+    skippedDegenerateSurface: counts.skippedDegenerateSurface,
+    skippedVocabularyTarget: counts.skippedVocabularyTarget,
+  };
+  if (counts.skippedVocabularyTarget > 0) {
+    log.warn(
+      payload,
+      "Drift re-key complete, but NOT total — some facts keep the keys the previous vocabulary " +
         "decided because this workspace's vocabulary maps their norm to something that normalizes " +
-        "away. Their surfaces key fine, they are live, and no re-key repairs them: fix the " +
-        "`brain_vocabulary_target` entry at this position"
-      : "Drift re-key complete — existing facts now carry the keys this vocabulary decides",
-  );
+        "away. Their surfaces key fine and no re-key repairs them: fix the " +
+        "`brain_vocabulary_target` entry at this position",
+    );
+  } else {
+    log.info(payload, "Drift re-key complete — existing facts now carry the keys this vocabulary decides");
+  }
 }
 
 /**

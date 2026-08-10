@@ -187,15 +187,20 @@ function run(
         predicate: "is",
         object: "Thursdays",
         ...c,
+        // This cast IS load-bearing, unlike the one below it used to be: the
+        // local `inheritedSlot?: unknown` is deliberately WIDER than
+        // `InheritedSlot`, so the cases here can drive the runtime narrowing.
       })) as Parameters<typeof reconcileFacts>[0]["candidates"],
       producer: PRODUCER,
       extractedAt: new Date("2026-06-21T10:00:00.000Z"),
       vocabulary,
     },
+    // No cast on `withTransaction`: `noopRunner` is assignable to
+    // `ReconcileTransactionRunner` as written, and a cast that is not
+    // load-bearing is worse than none — it would absorb a genuine future
+    // incompatibility in that type silently.
     {
-      withTransaction: noopRunner as NonNullable<
-        Parameters<typeof reconcileFacts>[1]
-      >["withTransaction"],
+      withTransaction: noopRunner,
       now: () => new Date("2026-06-21T10:00:01.000Z"),
     },
   );

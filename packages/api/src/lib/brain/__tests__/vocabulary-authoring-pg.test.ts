@@ -445,6 +445,58 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
       expect(rows.map((r) => r.predicate_key).toSorted()).toEqual(["is priced at", "priced at"]);
     });
 
+    it("⭐ REFUSES a re-key count that is not a whole number — the alarm must not fail open", async () => {
+      // ⚠️ `typeof v === "number"` admits `NaN`, and `NaN > 0` is FALSE — so a
+      // `NaN` in `skipped_vocabulary_target` would sail past a `typeof` guard and
+      // then select the message *"existing facts now carry the keys this
+      // vocabulary decides"*: a clean-run sentence about the exact population the
+      // count exists to surface. The guard meant to prevent that would be the
+      // thing delivering it.
+      //
+      // Reachable without a Postgres bug: `VocabularyExecutor` is deliberately
+      // satisfiable by any `{ query }`, and `pg`'s int4 parser is `parseInt`,
+      // which yields `NaN` on any non-numeric text. Simulated exactly that way.
+      await seedBothSides();
+
+      const nanRunner: ReconcileTransactionRunner = async (fn) =>
+        runner(async (tx) => {
+          const guarded = {
+            query: async (sql: string, params?: unknown[]) => {
+              if (sql === REKEY_DRIFTED_FACTS_SQL.predicate) {
+                return {
+                  rows: [
+                    {
+                      rekeyed: 1,
+                      skipped_degenerate_surface: 0,
+                      // What `parseInt("not a number")` hands back.
+                      skipped_vocabulary_target: Number.NaN,
+                    },
+                  ],
+                };
+              }
+              return tx.query(sql, params);
+            },
+          };
+          return fn(guarded as unknown as PoolClient);
+        });
+
+      await expect(
+        authorAliasEdge(
+          WS,
+          { position: "predicate", fromNorm: "is priced at", toNorm: "priced at" },
+          owner(),
+          { withTransaction: nanRunner },
+        ),
+        "an unreadable count was accepted — the approval committed and the operator was told the " +
+          "corpus is consistent, on the one value that decides whether it is",
+      ).rejects.toThrow(/without the three counts/);
+
+      // Refused means refused: the decision rolls back whole, exactly as the
+      // failing-statement case above.
+      expect(await proposals()).toEqual([]);
+      expect(await storedEdges()).toEqual([]);
+    });
+
     it("converges on a producer's pending proposal rather than inserting a second row", async () => {
       await seedBothSides();
       const queued = await proposeAliasEdge(

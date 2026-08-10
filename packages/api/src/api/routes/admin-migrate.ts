@@ -875,11 +875,51 @@ const importRoute = createRoute({
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
-      description: "Internal server error",
+      description:
+        "Import failed and the transaction rolled back — nothing was written. The `message` is " +
+        "deliberately GENERIC and the `requestId` is the handle: the underlying driver error is " +
+        "recorded server-side against that id and is not echoed here, because a `pg` message " +
+        "routinely embeds row content, constraint and column names, and — on a connection " +
+        "failure — the internal host and port (#5106).",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });
+
+/**
+ * The 500 body's entire `message` — the driver's own text NEVER reaches it (#5106).
+ *
+ * A `pg` error message is not a description of what went wrong, it is a fragment
+ * of the database: `duplicate key value violates unique constraint "…" Key
+ * (id)=(…)` carries ROW CONTENT, every constraint violation names internal
+ * constraint and column spellings, and a connection failure carries the internal
+ * host and port. CLAUDE.md § Product invariants: *never expose connection
+ * strings, API keys, or stack traces to the user or agent.*
+ *
+ * ⚠️ THE DETAIL IS NOT DROPPED, it is MOVED. The `log.error` at each call site
+ * records the real error — as an `Error` instance, so pino's `err` serializer
+ * keeps the message AND the stack — beside the same `requestId` this body
+ * carries. That pairing is the whole design: the operator loses nothing and the
+ * caller learns nothing they should not. A fix that scrubbed the response and
+ * also stopped logging would close the leak by destroying the evidence, which is
+ * the failure this note exists to prevent.
+ *
+ * ⚠️ NOT routed through `audit/error-scrub.ts`'s `errorMessage`. That helper is
+ * for `admin_action_log.metadata` — a JSONB column compliance reviewers read —
+ * and its own docstring rules itself out for a pino `err` field, which the
+ * serializer handles with full stack preservation. Scrubbing userinfo out of a
+ * message that is not going to a caller at all would only cost the operator
+ * detail.
+ *
+ * ONE constant, read by BOTH handlers. The admin route and the internal
+ * service-to-service route are copies of each other, and #5106 exists because a
+ * leak lived in both; a second string literal is how the next fix reaches one and
+ * misses the other.
+ */
+const IMPORT_FAILED_MESSAGE =
+  "Import failed — all changes rolled back, so nothing was written and the source region is " +
+  "unchanged. The failure detail is recorded server-side against this response's `requestId`; " +
+  "quote it when reporting this. Re-sending the same bundle is safe once the cause is resolved.";
 
 // ---------------------------------------------------------------------------
 // Import logic (runs inside a transaction)
@@ -2287,6 +2327,13 @@ adminMigrate.openapi(importRoute, async (c) => {
     await client.query("ROLLBACK").catch((rollbackErr) => {
       log.warn({ err: rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr)), requestId }, "Rollback failed");
     });
+    // ⚠️ FOR THE 409 ARM ONLY (#5106). `RegionImportUnkeyableError` and
+    // `RegionImportVocabularyTargetError` AUTHOR their own messages, and those
+    // carry a fact UUID and position names and nothing else — no surfaces, no
+    // row content, no connection detail — so echoing one verbatim is safe and
+    // is what makes the refusal actionable. Everything else arriving here is a
+    // driver error, and its text is not echoed at any status; see
+    // {@link IMPORT_FAILED_MESSAGE}.
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Migration import failed, rolled back");
     // A refused bundle is not a server fault (#5047). TWO causes with two
@@ -2306,7 +2353,7 @@ adminMigrate.openapi(importRoute, async (c) => {
     ) {
       return c.json({ error: "import_refused", message: detail, requestId }, 409);
     }
-    return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
+    return c.json({ error: "import_failed", message: IMPORT_FAILED_MESSAGE, requestId }, 500);
   } finally {
     client.release();
   }
@@ -2383,6 +2430,13 @@ internalMigrate.post("/import", async (c) => {
     await client.query("ROLLBACK").catch((rollbackErr) => {
       log.warn({ err: rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr)), requestId }, "Rollback failed");
     });
+    // ⚠️ FOR THE 409 ARM ONLY (#5106). `RegionImportUnkeyableError` and
+    // `RegionImportVocabularyTargetError` AUTHOR their own messages, and those
+    // carry a fact UUID and position names and nothing else — no surfaces, no
+    // row content, no connection detail — so echoing one verbatim is safe and
+    // is what makes the refusal actionable. Everything else arriving here is a
+    // driver error, and its text is not echoed at any status; see
+    // {@link IMPORT_FAILED_MESSAGE}.
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Internal import failed, rolled back");
     // A refused bundle is not a server fault (#5047). TWO causes with two
@@ -2402,7 +2456,7 @@ internalMigrate.post("/import", async (c) => {
     ) {
       return c.json({ error: "import_refused", message: detail, requestId }, 409);
     }
-    return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
+    return c.json({ error: "import_failed", message: IMPORT_FAILED_MESSAGE, requestId }, 500);
   } finally {
     client.release();
   }

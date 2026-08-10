@@ -170,6 +170,7 @@ const REFUSAL_REASONS = {
   targetNotCurrent: "TARGET_NOT_CURRENT",
   replacementMissing: "REPLACEMENT_MISSING",
   replacementIdentical: "REPLACEMENT_IDENTICAL",
+  replacementMalformed: "REPLACEMENT_MALFORMED",
   replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
 } as const satisfies typeof import("@atlas/api/lib/brain/correction").CORRECTION_REFUSAL_REASONS;
 let correctCalls: Array<Record<string, unknown>> = [];
@@ -1097,6 +1098,10 @@ describe("POST /{id}/correct", () => {
       notAuthorized: 403,
       replacementMissing: 400,
       replacementIdentical: 400,
+      // #5047 — a request-shape refusal, not a target-state one: the target is
+      // fine and the replacement TEXT asserts nothing, so the identical request
+      // can never succeed. That is what separates it from every 409 below.
+      replacementMalformed: 400,
       warehouseTarget: 409,
       // #4964 — rationale lives at `refusalStatus` in `admin-brain-facts.ts`,
       // so the argument has one home rather than two that can drift.

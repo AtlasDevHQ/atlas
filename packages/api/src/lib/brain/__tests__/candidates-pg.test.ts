@@ -798,6 +798,79 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
   );
 
   it(
+    "a DEGENERATE replacement is refused, and the valid_to stamp rolls back with it (#5047)",
+    async () => {
+      // The acceptance criterion #5047 asks to be PINNED rather than assumed:
+      // `correct_fact`'s supersede verb inherits the tightened `MALFORMED_CLAIM`
+      // guard for free, because its replacement routes through `reconcileFacts`.
+      //
+      // The ordering is what makes it worth a live transaction.
+      // `SUPERSEDE_STAMP_EXPLICIT_SQL` runs FIRST inside `applySupersede`,
+      // before the replacement reconciles — so the target's `valid_to` is
+      // already closed by the time the guard refuses the candidate. If that did
+      // not roll back, a human typing `-` would retire a published belief in
+      // favour of a successor that was never stored, and supersession has no
+      // inverse verb anywhere in the product. The unit fake applies statements
+      // to in-memory state and models no rollback, so this is the only place the
+      // property can be observed.
+      //
+      // Before #5047 this input did not refuse at all: `null !== "ana"` clears
+      // the `replacementIdentical` guard, so it committed and installed a
+      // successor with no identity.
+      const ep = await seedEpisode({ sourceId: "degenerate-replacement-1" });
+      const oldId = await seedFact({
+        subject: "Degenerate",
+        predicate: "is owned by",
+        object: "Ana",
+        episodeId: ep,
+        status: "published",
+        cardinality: "single",
+      });
+
+      const outcome = await correctFact(
+        {
+          vocabulary: identityVocabulary,
+          ctx: reviewer(),
+          factId: oldId,
+          verb: "supersede",
+          replacement: { object: "-" },
+        },
+        { withTransaction: poolTx },
+      );
+      expect(outcome).toMatchObject({
+        kind: "refused",
+        reason: CORRECTION_REFUSAL_REASONS.replacementMalformed,
+      });
+
+      // The stamp rolled back — the target is still the current belief.
+      const target = await pool.query<{ valid_to: Date | null }>(
+        `SELECT valid_to FROM brain_facts WHERE id = $1`,
+        [oldId],
+      );
+      expect(
+        target.rows[0]!.valid_to,
+        "the target was retired in favour of a successor that was never stored",
+      ).toBeNull();
+      // …and nothing half-happened beside it: no successor row, no authored
+      // correction episode claiming one.
+      const successor = await pool.query(
+        `SELECT 1 FROM brain_facts WHERE workspace_id = $1 AND object = '-'`,
+        [WS],
+      );
+      expect(successor.rows).toHaveLength(0);
+      const episodes = await pool.query(
+        `SELECT 1 FROM brain_episodes
+          WHERE workspace_id = $1
+            AND source_id LIKE 'correction:%'
+            AND body::jsonb ->> 'factId' = $2`,
+        [WS, oldId],
+      );
+      expect(episodes.rows).toHaveLength(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "a refusal AFTER the episode insert rolls the whole correction back",
     async () => {
       // The one refusal reachable past the episode write: the replacement

@@ -1604,18 +1604,19 @@ describe("supersede", () => {
     expect(replacement?.slot.object).toBe("bob");
   });
 
-  test("an UNKEYED target inherits its null slot rather than acquiring one (#5037)", async () => {
-    // The other arm of the inherit, and the one that says what "verbatim" means
-    // when there is nothing to copy. A region import leaves rows whose keys came
-    // from a foreign vocabulary, and rows written before #5020 have none at all.
+  test("an UNKEYED target REFUSES the supersede rather than installing an unkeyed successor (#5047)", async () => {
+    // #5037's other inherit arm, inverted by #5047. It used to carry the target's
+    // nulls into the successor on the argument that this kept the replacement
+    // exactly as un-collidable as the fact it replaced — the recoverable
+    // direction, and correct while an unkeyed row was a legal thing to be.
     //
-    // Deriving a key to fill the hole is the tempting repair and it is the wrong
-    // one: it would invent identity for a row that has none and move its
-    // successor into a LIVE slot, where it can collide with — and at the publish
-    // gate supersede — claims the unkeyed row never had any relationship to.
-    // Carrying the nulls keeps the successor exactly as un-collidable as the
-    // fact it replaces, which is today's behaviour for that row and the
-    // recoverable direction.
+    // It is not one any more. `brain_facts`' key columns are `NOT NULL` as of
+    // migration 0194, so this target cannot exist in the database at all, and
+    // the inherit channel is the one path that could still put a null in front
+    // of `reconcile.ts` — which now refuses it. The verb REFUSES instead of
+    // committing, which is the honest outcome: the alternative was retiring a
+    // published belief in favour of a successor nothing can ever corroborate,
+    // contradict, or supersede in turn.
     const store = new FakeCorrectionStore();
     store.seedFact({
       id: "unkeyed",
@@ -1623,20 +1624,109 @@ describe("supersede", () => {
       slot: { subject: null, predicate: null, object: null },
     });
 
-    const outcome = await run(store, {
+    const outcome = run(store, {
       factId: "unkeyed",
       verb: "supersede",
       replacement: { object: "Bo" },
     });
 
+    // A THROW, not a refusal — and which one it is, is the point. The unkeyed
+    // position here is the INHERITED slot, copied off the target row; the
+    // replacement's own text is fine. `REPLACEMENT_MALFORMED` would tell the
+    // human to retype input that is already correct, and no retry could ever
+    // succeed. A 500 with a `requestId` is the honest shape for a corpus state
+    // that #5047 makes impossible (target keys are `NOT NULL`, and 0194
+    // tombstoned the legacy rows, which `correctionTargetSql` then excludes).
+    await expect(outcome).rejects.toThrow(/reconcile blocked the replacement claim/);
+    // No successor was installed. That the target's `valid_to` STAMP is rolled
+    // back with the refusal is the other half and is pinned in
+    // `candidates-pg.test.ts` — this fake applies its statements to in-memory
+    // state and models no rollback, so asserting it here would assert the fake.
+    expect(store.facts.find((f) => f.object === "Bo")).toBeUndefined();
+  });
+
+  test("a DEGENERATE replacement refuses, and rolls the valid_to stamp back with it (#5047)", async () => {
+    // The case `replacementIdentical`'s docstring records as deliberately
+    // uncovered by that guard: `-` against a real target is `null !== "ana"`, so
+    // it passes the restatement check. Before #5047 it went on to close a
+    // published belief and stand up a successor with no identity.
+    //
+    // Closed at the INGEST seam rather than by a second refusal here — the
+    // acceptance criterion says the verb inherits the fix "for free", and this
+    // is the test it asks for rather than an assumption. What `applySupersede`
+    // adds is the TRANSLATION of reconcile's block into a typed refusal, so the
+    // human sees a 400 naming their text instead of a 500 about a seam contract.
+    for (const degenerate of ["-", "___", "  -_- "]) {
+      const store = new FakeCorrectionStore();
+      store.seedFact({ id: "f1", object: "Ana" });
+
+      const outcome = await run(store, {
+        factId: "f1",
+        verb: "supersede",
+        replacement: { object: degenerate },
+      });
+
+      expect(outcome, `"${degenerate}" was not refused`).toMatchObject({
+        kind: "refused",
+        reason: CORRECTION_REFUSAL_REASONS.replacementMalformed,
+      });
+      // No successor was stored. The `valid_to` rollback is
+      // `candidates-pg.test.ts`'s — see the sibling test above for why.
+      expect(store.facts).toHaveLength(1);
+    }
+  });
+
+  test("a VOCABULARY-caused object failure is a 500, not a 400 blaming the caller (#5047)", async () => {
+    // ⚠️ THE FALSIFIER FOR GATING ON THE POSITION INSTEAD OF THE CAUSE, which is
+    // what the first cut of this split did — and a fresh-context check caught it
+    // reproducing the defect it was written to fix.
+    //
+    // `slotKey` is `identityKey(alias(identityKey(surface)))`, so an object key
+    // is null for TWO reasons: the caller's text asserts nothing, or this
+    // workspace's object-position vocabulary maps a real norm to something that
+    // does. Only the first is the caller's to fix. Told "your replacement
+    // normalizes away to nothing" about the second, a human retypes correct text
+    // forever and no retry can succeed.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "f1", object: "Ana" });
+
+    await expect(
+      run(store, {
+        factId: "f1",
+        verb: "supersede",
+        replacement: { object: "Bo" },
+        // A vocabulary whose OBJECT position maps the norm `bo` to a string that
+        // normalizes away. Authoring refuses this today; a hand-written or
+        // imported closure row reaches it, which is why the guard tests the
+        // composed expression rather than trusting the authoring gate.
+        vocabulary: {
+          ...identityVocabulary,
+          object: (norm: string) => (norm === "bo" ? " - " : norm),
+        },
+      }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim \(MALFORMED_CLAIM\)/);
+
+    // No successor was stored. The `valid_to` ROLLBACK is `candidates-pg.test.ts`'s
+    // — this fake applies its statements to in-memory state and models no
+    // rollback, so asserting it here would assert the fake.
+    expect(store.facts.find((f) => f.object === "Bo")).toBeUndefined();
+  });
+
+  test("a replacement that merely CONTAINS separators is not degenerate", async () => {
+    // The falsifier for the guard over-reaching. `-` is a separator, so a
+    // refusal written on "contains a separator" rather than on "normalizes away"
+    // would reject `Ana-Maria` — an ordinary claim whose key is `ana maria`.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "f1", object: "Ana" });
+
+    const outcome = await run(store, {
+      factId: "f1",
+      verb: "supersede",
+      replacement: { object: "Ana-Maria" },
+    });
+
     expect(outcome.kind).toBe("corrected");
-    const replacement = store.facts.find((f) => f.object === "Bo");
-    expect(replacement?.slot.subject).toBeNull();
-    expect(replacement?.slot.predicate).toBeNull();
-    // The object still keys — it is derived, not inherited, so an unkeyed TARGET
-    // does not make an unkeyed successor at every position. This is what
-    // distinguishes "the slot was copied" from "the candidate lost its keys".
-    expect(replacement?.slot.object).toBe("bo");
+    expect(store.facts.find((f) => f.object === "Ana-Maria")?.slot.object).toBe("ana maria");
   });
 
   test("refuses a replacement that restates the object in a DIFFERENT SPELLING (#5020)", async () => {
@@ -1849,19 +1939,20 @@ describe("cardinality proposer", () => {
     ]);
   });
 
-  test("an UNKEYED target reports a CORPUS gap, not a degenerate surface (#5037)", async () => {
-    // The round-2 fix split one `log.debug` into two arms because a null
-    // `supersededKey` acquired a second cause — and shipped with nothing holding
-    // it. Deleting the whole `unkeyed-target` arm, or collapsing the discriminant
-    // to a constant, left every gate green.
+  test("an UNKEYED target is REFUSED, so the proposer is never reached (#5047)", async () => {
+    // What #5037's two-arm `logDegeneratePredicate` used to report, and why that
+    // reporter is gone rather than retested. It fired for a `supersede` that
+    // COMMITTED while closing no canonical predicate slot, which had two causes:
+    // an unkeyed TARGET row (this test) and a predicate SURFACE that normalizes
+    // away (the next one). Both are now unrepresentable at a committed
+    // supersede — the replacement inherits the target's slot, and reconcile
+    // refuses a null slot key — so the verb refuses and the post-commit reporter
+    // is never reached.
     //
-    // The severity is why it matters: `debug` is off in production, so before the
-    // split "this corpus has no identity and the cardinality proposer has gone
-    // silent" was indistinguishable from "healthy". A revert restores exactly
-    // that silence, invisibly.
-    //
-    // Keyed on the structured `cause` field rather than message prose, so a
-    // reworded message does not fail this but a re-collapsed one does.
+    // The severity argument that justified the warn is answered better by the
+    // refusal than it was by the log: the operator no longer has to READ
+    // anything to find out that this corpus cannot feed the cardinality
+    // proposer. The correction fails, loudly, at the request.
     const store = new FakeCorrectionStore();
     store.seedFact({
       id: "unkeyed",
@@ -1869,46 +1960,38 @@ describe("cardinality proposer", () => {
       status: "published",
       slot: { subject: null, predicate: null, object: null },
     });
-    // The discriminator's premise: the surface itself keys perfectly well, so
-    // "normalizes away" would be a false diagnosis of this row.
+    // The premise that made this row distinguishable from a degenerate surface:
+    // the surface itself keys perfectly well, so the row's own text is fine and
+    // only its stored identity is missing.
     expect(identityKey("is owned by")).not.toBeNull();
 
-    await run(store, { factId: "unkeyed", verb: "supersede", replacement: { object: "Bo" } });
-
-    const unkeyedWarns = warns().filter(
-      (c) => (c.payload as { cause?: string }).cause === "unkeyed-target",
-    );
-    expect(
-      unkeyedWarns,
-      "an unkeyed TARGET must WARN — debug is off in production, so the corpus-wide silence would be invisible",
-    ).toHaveLength(1);
-    // …and it must name both remaining causes rather than asserting one. The
-    // round-2 fix removed a prescription ("re-key the workspace") that provably
-    // cannot work when the vocabulary is what maps the norm away.
-    expect(unkeyedWarns[0]!.message).toContain("vocabulary");
-    expect(unkeyedWarns[0]!.message).toContain("never keyed");
-    // The prohibition arm: this row must NOT be reported as a degenerate surface.
-    expect(
-      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
-    ).toEqual([]);
+    // A THROW rather than a refusal: the unkeyed position is the TARGET's
+    // inherited slot, not the human's replacement text. See the supersede suite
+    // for why that distinction decides the status code.
+    await expect(
+      run(store, { factId: "unkeyed", verb: "supersede", replacement: { object: "Bo" } }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim/);
+    // The proposer is downstream of the commit, so a failure must not reach it.
+    // Asserted on the statement rather than on the proposal list, because a
+    // proposer that RAN and found nothing would leave the same empty list.
+    expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
+    expect(store.cardinalityProposals).toEqual([]);
   });
 
-  test("a DEGENERATE predicate surface still reports as such, not as a corpus gap (#5037)", async () => {
-    // The control. Without it the assertion above is satisfied by an
-    // implementation that reports EVERY null key as `unkeyed-target`, which is
-    // the collapse in the other direction.
+  test("a DEGENERATE predicate surface is refused on the same terms — one guard, not two (#5047)", async () => {
+    // The control, kept for the reason #5037 wrote it: without a second case the
+    // assertion above is satisfied by an implementation that special-cases the
+    // unkeyed row. These two arrive at the guard by different roads — a stored
+    // null versus a surface that normalizes to one — and #5047's point is that
+    // they now reach the SAME verdict, where #5037 had to tell them apart.
     const store = new FakeCorrectionStore();
     store.seedFact({ id: "degenerate", predicate: "-", object: "Ana", status: "published" });
     expect(identityKey("-")).toBeNull();
 
-    await run(store, { factId: "degenerate", verb: "supersede", replacement: { object: "Bo" } });
-
-    expect(warns().filter((c) => (c.payload as { cause?: string }).cause === "unkeyed-target")).toEqual(
-      [],
-    );
-    expect(
-      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
-    ).toHaveLength(1);
+    await expect(
+      run(store, { factId: "degenerate", verb: "supersede", replacement: { object: "Bo" } }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim/);
+    expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
   });
 
   test("stays silent below the repeat threshold", async () => {
@@ -2194,47 +2277,42 @@ describe("cardinality proposer", () => {
     expect(warns().filter((c) => c.message.includes("cardinality repeat gate"))).toEqual([]);
   }, 5_000);
 
-  test("a supersede whose predicate NORMS AWAY leaves a trace, and no other verb does", async () => {
-    // `logDegeneratePredicate`'s whole reason for existing, and it was
-    // unobserved in both directions: deleting the call was green, and so was
-    // removing its `verb === "supersede"` guard so it fired for all four.
-    //
-    // The predicate `---` normalizes to nothing, so `slotKey` answers `null` —
-    // the same `null` the other three verbs send — and the proposer is skipped.
-    // Without the line that is a supersede producing no proposal and no record
-    // at all.
+  test("a supersede whose predicate NORMS AWAY is refused, and the proposer is skipped", async () => {
+    // `logDegeneratePredicate`'s case, now answered by the guard instead of by a
+    // log line. The predicate `---` normalizes to nothing, so the slot the
+    // replacement inherits is `(null, null)` and reconcile refuses the
+    // candidate — which is a better outcome than the line it replaces: the
+    // supersede used to COMMIT, produce no proposal, and say so only at `debug`.
     const store = new FakeCorrectionStore();
     store.seedFact({ id: "old", predicate: "---", object: "Ana", status: "published" });
 
-    const outcome = await run(store, {
-      factId: "old",
-      verb: "supersede",
-      replacement: { object: "Bo" },
-    });
-    expect(outcome.kind).toBe("corrected");
-    expect(
-      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
-    ).toHaveLength(1);
-    // …and the proposer was not reached, which is the behaviour the line
-    // documents rather than merely accompanies.
+    await expect(
+      run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim/);
     expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
   });
 
   test.each(["retract", "re-authority", "pin"] as const)(
-    "%s never leaves that trace — only a supersede is evidence about cardinality",
+    "%s still applies to such a target — only a supersede supplies a claim to refuse",
     async (verb) => {
-      // The prohibition half. Without it, removing the `verb === \"supersede\"`
-      // guard is green: every verb would log "superseded a claim whose predicate
-      // normalizes away", including the ones that superseded nothing.
+      // The prohibition half, rewritten to assert what still HOLDS rather than
+      // the absence of a log line that no longer exists — an absence assertion
+      // against deleted machinery passes vacuously and pins nothing.
+      //
+      // The invariant is the one that makes `REPLACEMENT_MALFORMED` a
+      // supersede-only refusal: the other three verbs supply no claim, reconcile
+      // nothing, and therefore cannot be refused for a malformed one. A guard
+      // that widened to "the TARGET has no canonical predicate" would break
+      // every one of them on a corpus these verbs are meant to be able to clean
+      // up.
       const store = new FakeCorrectionStore();
       store.seedFact({ id: "old", predicate: "---", object: "Ana", status: "published" });
 
-      await run(store, { factId: "old", verb });
+      const outcome = await run(store, { factId: "old", verb });
 
-      expect(
-        logCalls.filter((c) => c.message.includes("normalizes away")),
-        `${verb} claimed it superseded a claim — that line is a supersede's alone`,
-      ).toEqual([]);
+      expect(outcome.kind, `${verb} was refused on a target it should still accept`).toBe(
+        "corrected",
+      );
     },
   );
 

@@ -28,7 +28,11 @@ import { exportWorkspaceBundle } from "../export";
 import { approveAliasEdge, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { reconcileFacts } from "@atlas/api/lib/brain/reconcile";
-import { importBundle, validateBundle } from "../../../api/routes/admin-migrate";
+import {
+  RegionImportUnkeyableError,
+  importBundle,
+  validateBundle,
+} from "../../../api/routes/admin-migrate";
 import { PROVISIONAL_PREDICATE } from "@atlas/api/lib/brain/candidates";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
 import type { ImportResult } from "@useatlas/types";
@@ -1545,8 +1549,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       );
       await pool.query(
         `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object,
+                                  subject_key, predicate_key, object_key,
                                   source_episode_id, provenance, visible_to)
-         VALUES ($1, $2, 's', 'p', 'o', $3, '{"actor":"u"}'::jsonb, ARRAY['org'])`,
+         VALUES ($1, $2, 's', 'p', 'o', 's', 'p', 'o', $3, '{"actor":"u"}'::jsonb, ARRAY['org'])`,
         [cleanFact, CLEAN_ORG, cleanEpisode],
       );
       await pool.query(
@@ -1633,8 +1638,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         );
         await pool.query(
           `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, ingested_at,
+                                    subject_key, predicate_key, object_key,
                                     source_episode_id, provenance, status, visible_to)
-           VALUES ($1, $2, 's', 'p', 'o', now(), $3, '{"actor":"u"}'::jsonb, 'draft', ARRAY['org'])`,
+           VALUES ($1, $2, 's', 'p', 'o', now(), 's', 'p', 'o', $3, '{"actor":"u"}'::jsonb, 'draft', ARRAY['org'])`,
           [SPARED_FACT, SPARED_ORG, SPARED_EPISODE],
         );
 
@@ -1729,6 +1735,250 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         if (savedRegion === undefined) delete process.env.ATLAS_API_REGION;
         else process.env.ATLAS_API_REGION = savedRegion;
       }
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The import's answer to a fact with no identity (#5047)
+// ---------------------------------------------------------------------------
+
+describeIfPg("region import: a fact whose key cannot be supplied (#5047)", () => {
+  let pool: Pool;
+  const schemaName = `import_unkeyed_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const ORG = "org-unkeyed-import";
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        console.error(
+          `import-unkeyed: SET search_path failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+  }, PG_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  /**
+   * A minimal v3 bundle carrying one episode and one fact.
+   *
+   * `episodeId` is a parameter because `brain_episodes_pkey` is on `id` alone
+   * rather than `(workspace_id, id)`, so two cases reusing one id collide even
+   * in different orgs.
+   */
+  function bundleWith(
+    fact: Record<string, unknown>,
+    episodeId = "aaaaaaaa-0000-4000-8000-0000000000e1",
+  ): Record<string, unknown> {
+    return {
+      manifest: {
+        version: 3,
+        exportedAt: new Date().toISOString(),
+        source: { label: "region-a" },
+        counts: {
+          conversations: 0,
+          messages: 0,
+          semanticEntities: 0,
+          learnedPatterns: 0,
+          settings: 0,
+          brainEpisodes: 1,
+          brainFacts: 1,
+        },
+      },
+      conversations: [],
+      semanticEntities: [],
+      learnedPatterns: [],
+      settings: [],
+      // Required from v2 on: a producer that claims the version and drops a
+      // section is exporter drift, and `validateBundle` refuses it rather than
+      // stranding a pillar silently.
+      dashboards: [],
+      knowledgeDocuments: [],
+      scheduledTasks: [],
+      agentSessionMemory: [],
+      // Facts travel NESTED under their episode — the bundle has no top-level
+      // `brainFacts` section, and the episode is the evidence the fact hangs off.
+      brainEpisodes: [
+        {
+          id: episodeId,
+          source: "slack",
+          sourceId: `unkeyed-import-${episodeId}`,
+          sourceActor: "U1",
+          body: "evidence",
+          locator: null,
+          occurredAt: new Date().toISOString(),
+          ingestedAt: new Date().toISOString(),
+          extractedAt: null,
+          visibleTo: ["org"],
+          createdAt: new Date().toISOString(),
+          facts: [fact],
+        },
+      ],
+      brainEdges: [],
+      factAudienceMembers: [],
+    };
+  }
+
+  const baseFact = {
+    id: "aaaaaaaa-0000-4000-8000-0000000000f1",
+    // Overwritten per case below, alongside the episode id.
+    subject: "billing",
+    predicate: "is owned by",
+    object: "-",
+    subjectKey: "billing",
+    predicateKey: "is owned by",
+    objectKey: null,
+    subjectCmp: null,
+    objectCmp: null,
+    validFrom: null,
+    validTo: null,
+    ingestedAt: new Date().toISOString(),
+    invalidatedAt: null,
+    extractedAt: null,
+    sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e1",
+    provenance: { source: "slack", actor: "U1" },
+    status: "draft",
+    visibleTo: ["org"],
+    preWideningVisibleTo: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  async function runImport(body: Record<string, unknown>, org: string) {
+    const validation = validateBundle(body);
+    if (!validation.ok) throw new Error(`fixture bundle is invalid: ${validation.error}`);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await importBundle(client, validation.bundle, org);
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  it(
+    "TOMBSTONES a fact whose surface normalizes away, with a per-row placeholder",
+    async () => {
+      // The one state where a null key is honest: `-` has no identity in any
+      // region under any vocabulary, so there is nothing to carry and nothing to
+      // compute. Migration 0194 does exactly this to the same state, and this is
+      // the second key writer agreeing with it.
+      const result = await runImport(bundleWith(baseFact), ORG);
+      expect(result.brainFacts.imported).toBe(1);
+
+      const { rows } = await pool.query<{
+        subject_key: string;
+        predicate_key: string;
+        object_key: string;
+        invalidated_at: Date | null;
+      }>(
+        `SELECT subject_key, predicate_key, object_key, invalidated_at
+           FROM brain_facts WHERE workspace_id = $1`,
+        [ORG],
+      );
+      expect(rows).toHaveLength(1);
+      // Per-row, so two such facts can never share a slot — the difference from
+      // the shared sentinel 0187's header rejects.
+      expect(rows[0]!.object_key).toBe(`-unkeyable:${baseFact.id}`);
+      // The keyable positions keep their CARRIED keys: a row valueless at one
+      // slot must not become unreachable at all three.
+      expect([rows[0]!.subject_key, rows[0]!.predicate_key]).toEqual(["billing", "is owned by"]);
+      // The tombstone is the load-bearing half — all three slot consumers
+      // require `invalidated_at IS NULL`, so this is what keeps the placeholder
+      // out of every join rather than the key's shape.
+      expect(
+        rows[0]!.invalidated_at,
+        "the placeholder landed LIVE — it is non-null and unequal to every real key, so the `<>` arm now reads it as a rival",
+      ).not.toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "REFUSES the import when the key is absent but the surface has one",
+    async () => {
+      // ⚠️ The falsifier for treating both null-key causes alike, which is what
+      // the first cut of #5047 did. This row's surface keys perfectly well, so
+      // it is REPAIRABLE — the next drift re-key computes a real key and it
+      // rejoins every consumer. Tombstoning it retires a healthy belief that no
+      // verb in the product can restore, and re-deriving its key here is what
+      // ADR-0037 §8 forbids. Refusing is the only outcome that writes nothing.
+      //
+      // This is the exporter-drift shape: a projection that stops returning the
+      // key columns exports null for every fact, and the destination would
+      // otherwise accept the whole corpus with a green 200.
+      const REFUSE_ORG = "org-unkeyed-refuse";
+      await expect(
+        runImport(
+          bundleWith(
+            {
+              ...baseFact,
+              id: "aaaaaaaa-0000-4000-8000-0000000000f3",
+              object: "platform team",
+              objectKey: null,
+              sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e2",
+            },
+            "aaaaaaaa-0000-4000-8000-0000000000e2",
+          ),
+          REFUSE_ORG,
+        ),
+      ).rejects.toBeInstanceOf(RegionImportUnkeyableError);
+
+      // Nothing landed — the refusal rolled the whole transaction back, so the
+      // episode is gone too rather than left orphaned.
+      const { rows: facts } = await pool.query(
+        `SELECT 1 FROM brain_facts WHERE workspace_id = $1`,
+        [REFUSE_ORG],
+      );
+      expect(facts).toHaveLength(0);
+      const { rows: episodes } = await pool.query(
+        `SELECT 1 FROM brain_episodes WHERE workspace_id = $1`,
+        [REFUSE_ORG],
+      );
+      expect(episodes).toHaveLength(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "preserves a SOURCE tombstone rather than restamping it",
+    async () => {
+      // The `COALESCE` on `invalidated_at`. When a claim stopped being a belief
+      // is a fact about the corpus, not about the import that moved it.
+      const KEEP_ORG = "org-unkeyed-keep";
+      const original = "2026-01-02T03:04:05.000Z";
+      await runImport(
+        bundleWith(
+          {
+            ...baseFact,
+            id: "aaaaaaaa-0000-4000-8000-0000000000f2",
+            invalidatedAt: original,
+            sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e3",
+          },
+          "aaaaaaaa-0000-4000-8000-0000000000e3",
+        ),
+        KEEP_ORG,
+      );
+
+      const { rows } = await pool.query<{ invalidated_at: Date }>(
+        `SELECT invalidated_at FROM brain_facts WHERE workspace_id = $1`,
+        [KEEP_ORG],
+      );
+      expect(rows[0]!.invalidated_at.toISOString()).toBe(original);
     },
     PG_TEST_TIMEOUT_MS,
   );

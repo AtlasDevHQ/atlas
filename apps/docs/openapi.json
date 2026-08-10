@@ -56606,6 +56606,31 @@
               }
             }
           },
+          "409": {
+            "description": "Bundle refused — a fact has no identity key at a position whose surface normalizes to a real one, so landing it would either retire a healthy belief or re-derive its key under this region's vocabulary, and neither is reversible (#5047). NOTHING WAS WRITTEN. Two causes with two different remedies, and the `message` says which: on a v3 bundle the key was supposed to travel and did not — re-export from the source region, checking it for identity drift and that it has applied migration 0194 — while on a v1/v2 bundle the key is computed at import, so a refusal means THIS region's vocabulary maps that norm away and the fix is a local `brain_vocabulary_target` entry, which re-exporting cannot change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {

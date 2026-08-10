@@ -174,6 +174,25 @@ The shapes worth sweeping for, because they are what actually recurred:
   look — and if a test landed on one, the other is where it is missing.
 - **The other caller.** A guard added at one call site of a shared helper is
   usually missing at the rest.
+- **The PROSE COPY of the same claim, including generated and public ones.** A
+  finding about *what the code says to a human* — a message naming the wrong
+  cause, a remedy that cannot work, an error blaming the wrong party — almost
+  always has a twin outside the code: an OpenAPI `description`, a docstring, a
+  migration header, a `RAISE NOTICE`, a route's response contract. Fixing the
+  code and leaving the contract is fixing the instance.
+
+  ⚠️ **Generated artifacts are the half that gets missed, because the sweep is a
+  grep over source and the copy lives in a build output.** #5047 spent a round
+  removing wrong-subsystem blame from a refusal — then regenerated
+  `apps/docs/openapi.json` and found the same blame sitting in the 409's public
+  `description`, naming one of two causes and one remedy that is unfollowable for
+  the other. That description is what a caller actually reads, so the defect had
+  survived in the one place it mattered most. It was caught by a drift gate
+  failing for an unrelated reason, not by the sweep.
+
+  So when a finding is about wording, grep the generated surfaces too — and if
+  the fix changes a route, a schema or a migration, REGENERATE before deciding
+  the class is closed.
 
 Report the sweep in one line per finding — *"same shape at X, Y; fixed"* or
 *"swept the module, no other instance"* — so a later round can see the class was

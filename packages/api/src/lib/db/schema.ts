@@ -3297,30 +3297,30 @@ export const brainFacts = pgTable(
     // reading the surface, so a vocabulary edit cannot silently re-rank
     // `searchBrain`.
     //
-    // NULLABLE, and for longer than one slice. `alias` is the identity function
-    // until the vocabulary lands, so 0187 fills every existing row with
-    // `identityKey(surface)`. `INSERT_FACT_SQL` names all three since #5020;
-    // the region import names all three since #5035 — carried verbatim on a v3
-    // bundle, computed once against the destination's post-merge vocabulary
-    // below it. BOTH writers are now in place; what still blocks `SET NOT NULL`
-    // is the third prerequisite, the ingest guard (#5047).
+    // NOT NULL since migration 0194 (#5047), which took three slices to reach.
+    // They landed nullable in 0187 because neither INSERT site named them; #5020
+    // keyed `INSERT_FACT_SQL`, #5035 made the region import carry them verbatim
+    // on a v3 bundle (computed once against the destination's post-merge
+    // vocabulary for a legacy one), and #5047 supplied the third prerequisite
+    // 0187's header enumerates: `reconcile.ts`'s `MALFORMED_CLAIM` guard now
+    // refuses a candidate whose `slotKey` is null.
     //
-    // NULL carries TWO meanings, and conflating them is how the constraint
-    // plan goes wrong: "no writer has keyed this row yet" (transient, what
-    // `SET NOT NULL` exists to eliminate) and "this surface norms away to
-    // nothing" (permanent, and a legal state of a storable claim — see
-    // `identityKey`). Either way it joins nothing, which is why one column can
-    // carry both; but the second means `SET NOT NULL` needs an ingest-guard
-    // change as well as a writer. 0187's header enumerates all three
-    // prerequisites — read it there rather than trusting a one-line summary
-    // here, which is what an earlier version of this comment was.
+    // NULL used to carry TWO meanings, and eliminating the first is what the
+    // constraint is FOR: "no writer has keyed this row yet" (transient) and
+    // "this surface normalizes away to nothing" (permanent, and a legal state of
+    // a claim that was storable until #5047 — see `identityKey`). Either way it
+    // joined nothing, which is why one column could carry both, and why the
+    // constraint needed a guard change and not just a writer. The legacy rows
+    // holding the second meaning are tombstoned and carry a per-row placeholder;
+    // 0194's header is the argument, and it is the one to read rather than this
+    // summary.
     //
     // Never projected to the wire. No read surface selects a key column —
     // `keys-not-on-the-wire.test.ts` makes that a prohibition rather than an
     // accident of what has been written so far.
-    subjectKey: text("subject_key"),
-    predicateKey: text("predicate_key"),
-    objectKey: text("object_key"),
+    subjectKey: text("subject_key").notNull(),
+    predicateKey: text("predicate_key").notNull(),
+    objectKey: text("object_key").notNull(),
     // The comparable value — the column that can prove DIFFERENCE, where the
     // three keys above prove only SAMENESS (#5030, ADR-0037 §2, migration
     // 0191). A typed canonical value, tagged (`money:USD:499`, `number:499`,

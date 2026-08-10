@@ -37,9 +37,9 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 
 | Mutation | roundtrip-pg | admin-migrate | export | object-cmp | v3 pin | logging |
 |---|---|---|---|---|---|---|
-| the importer RE-DERIVES a v3 fact's keys instead of carrying them | 1 | 0 | 0 | 0 | 0 | 0 |
+| the importer RE-DERIVES a v3 fact's keys instead of carrying them | 2 | 0 | 0 | 0 | 0 | 1 |
 | a store-local `entity:` id travels verbatim | 1 | 0 | 0 | 2 | 0 | 1 |
-| a LEGACY bundle's facts are left unkeyed | 1 | 0 | 0 | 0 | 0 | 0 |
+| a LEGACY bundle's facts are left unkeyed | 2 | 3 | 0 | 0 | 0 | 3 |
 | the legacy arm keys against an EMPTY vocabulary (the load deleted) | 1 | 0 | 0 | 0 | 0 | 2 |
 | `provisional` is never written for a nulled row | 1 | 0 | 0 | 0 | 0 | 0 |
 | `provisional` is written for EVERY imported row | 1 | 0 | 0 | 0 | 0 | 0 |
@@ -63,9 +63,9 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the required-sections gate reads `=== CURRENT` again | 0 | 1 | 0 | 0 | 0 | 0 |
 | the exporter stops projecting the identity columns | 1 | 0 | 0 | 0 | 1 | 0 |
 | the exporter feeds identity values through a cast instead of `textOrNull` | 0 | 0 | 2 | 0 | 0 | 0 |
-| the importer writes `predicate_cardinality` again (from the legacy field) | 1 | 0 | 0 | 0 | 1 | 0 |
+| the importer writes `predicate_cardinality` again (from the legacy field) | 6 | 0 | 0 | 0 | 1 | 0 |
 
-Suite sizes: **roundtrip-pg** 8 tests (`src/lib/residency/__tests__/migrate-roundtrip-pg.test.ts`) · **admin-migrate** 96 tests (`src/api/__tests__/admin-migrate.test.ts`) · **export** 24 tests (`src/lib/residency/__tests__/export.test.ts`) · **object-cmp** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **v3 pin** 6 tests (`src/lib/residency/__tests__/bundle-identity-v3.test.ts`) · **logging** 7 tests (`src/lib/residency/__tests__/migrate-identity-logging.test.ts`).
+Suite sizes: **roundtrip-pg** 11 tests (`src/lib/residency/__tests__/migrate-roundtrip-pg.test.ts`) · **admin-migrate** 96 tests (`src/api/__tests__/admin-migrate.test.ts`) · **export** 24 tests (`src/lib/residency/__tests__/export.test.ts`) · **object-cmp** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **v3 pin** 6 tests (`src/lib/residency/__tests__/bundle-identity-v3.test.ts`) · **logging** 8 tests (`src/lib/residency/__tests__/migrate-identity-logging.test.ts`).
 
 ## Notes
 

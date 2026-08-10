@@ -60,21 +60,49 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 
   ⚠️ **Fixing the reported instance and not the class is THE reason rounds multiply, and the class has members in two directions.** The grep finds siblings in space; the delta table finds siblings in the input domain at one site. #5037 swept diligently for the first and lost three rounds to the second — one guard, edited three times, each edit closing the symptom a reviewer named and opening the input class beside it.
 - **Re-runs are not fresh rounds.** Pass the previous round's fix commits into the panel and name them the primary audit target (`/review-panel` Step 2). Reviewers keep fresh context; what they must not have is fresh *ignorance of what you just changed*.
-- Repeat until **CLEAN**, capped at **3 rounds**. If it can't converge in 3 (usually a spec ambiguity), STOP and ask the human.
-- The cap is on ROUNDS, not on scope. A round-2 fix that adds real machinery *should* earn a round 3 — don't skip the re-review to stay under the cap. If the work genuinely needs a fourth round, that is the STOP-and-ask case, not a reason to merge unreviewed.
-- ⚠️ **The yield curve is a LIVE stop, not a line in the final report.** After every round, compare its finding count to the previous round's. **If it did not fall, STOP and ask — immediately, that round.** Do not spend the next round to confirm what the rise already told you. A rising count means the fixes are manufacturing the next round's work, so another round buys more findings rather than fewer, and the cap is the wrong instrument for catching it: #5088 ran 30 → 18 → 11 → **21** and the stop-worthy signal was the 21, one full round before the cap conversation happened.
+
+⚠️ **"STOP" IN THIS STEP ENDS THE ROUNDS, NOT THE RUN. Read this before any stop rule below.**
+
+Every stop in Step 3 means *this diff gets no more review rounds* — fix what is
+confirmed, pay the closing round's costs, and **continue to Step 4's pre-flight and Step 5's PR.**
+It does **not** mean park the issue and wait for a human. `/ship-issue` is the
+autonomous loop; the human boundaries are Step 5's HARD HALTS (a fork PR, a
+structurally missing required check) and a genuine blocker — a spec ambiguity you
+cannot resolve, a dependency that is not merged. A yield stop is none of those:
+it is a statement about the REVIEW, and the review's verdict travels in the PR
+body, where the reviewer reads it.
+
+The tell is one question: **does the stop reason make the work unshippable, or
+only unreviewable-further?** Only the first halts. A loop eating its own fixes
+still has a correct diff at the head of it — that is precisely why you stopped
+rather than churning it more.
+
+Measured on #5047, which is why this block exists: the ratio rule fired at round
+2 (~13 defect-in-prior-fix vs ~4 new surface), everything confirmed was fixed and
+1052/1052 tests were green — and the run then **parked with no PR at all**,
+because "STOP and ask the human" reads as a halt while the closing-round rule
+below says *"whichever way you leave the loop"* and #5077's precedent says the
+yield stop **merged**. Two readings of one word, with evidence in the file for
+both. The human had to ask why it was not done.
+
+So: below, "stop" means **stop the rounds**. Where a halt is meant, it says HALT
+and names the boundary.
+
+- Repeat until **CLEAN**, capped at **3 rounds**. If it can't converge in 3, stop the rounds. **HALT only if the reason is a spec ambiguity you cannot resolve** — that is a blocker, and shipping a diff whose requirements are unsettled is the one thing the cap must not do. Any other non-convergence ships with the curve reported.
+- The cap is on ROUNDS, not on scope. A round-2 fix that adds real machinery *should* earn a round 3 — don't skip the re-review to stay under the cap. If the work genuinely needs a fourth round, stop the rounds and say so in the PR body; that is not a reason to skip the panel's earlier verdicts, and it is not by itself a halt.
+- ⚠️ **The yield curve is a LIVE stop, not a line in the final report.** After every round, compare its finding count to the previous round's. **If it did not fall, stop the rounds — immediately, that round.** Do not spend the next round to confirm what the rise already told you. A rising count means the fixes are manufacturing the next round's work, so another round buys more findings rather than fewer, and the cap is the wrong instrument for catching it: #5088 ran 30 → 18 → 11 → **21** and the stop-worthy signal was the 21, one full round before the cap conversation happened.
 - ⚠️ **SPLIT the count two ways before you read it. A raw total conflates two situations that demand OPPOSITE responses.**
   - **NEW SURFACE** — the round looked somewhere no round had looked. Rising new-surface findings mean the review is getting *deeper*, and another round is earning its keep. #5033 is the precedent: a round-1 fix added a savepoint primitive, round 2 found it could roll back an entire publish, round 3 found round 2's `SAVEPOINT` unguarded. Capping there would have shipped a diagnostic capable of rolling back a customer's publish.
   - **DEFECT-IN-PRIOR-FIX** — the previous round's fix broke it, or failed to close the class it claimed to. Rising here means **the loop is eating itself**: each round manufactures the next one's work, and another round adds more than it removes.
 
-  Report both numbers, always: *"round 2: 22 findings — 6 new surface, 16 defect-in-prior-fix."* **The stop decision keys on the SECOND number.** A total that rose on new surface is a reason to continue; a total that rose on defect-in-prior-fix is a reason to stop and change how the fixes are being written, not to buy another round of the same.
+  Report both numbers, always: *"round 2: 22 findings — 6 new surface, 16 defect-in-prior-fix."* **The stop decision keys on the SECOND number.** A total that rose on new surface is a reason to continue; a total that rose on defect-in-prior-fix is a reason to stop the rounds and change how the fixes are being written, not to buy another round of the same. Changing how they are written is the NEXT issue's lesson — on this one, the rounds are over and the diff ships.
 
   ⚠️ **THE HARD STOP IS THE RATIO, NOT THE ROUND COUNT: if defect-in-prior-fix EXCEEDS new-surface in any round, stop that round.** The 3-round cap is the wrong instrument and always was — it bounds how long you spend, not whether you are making things better, and a loop can burn all three rounds cleaning up after itself. When the majority of a round's findings are defects the previous round's fixes introduced, more review cannot help: the fixes are the defect source, so another round adds work faster than it removes it.
 
   Measured on #5037: round 1 returned 21 findings, all new surface; round 2 returned ~26, of which ~20 were defects inside round 1's own fixes. The raw total *and* the ratio both said stop, one round before the cap would have. Under the old rule the cap allowed a third round, which would have been spent on the second round's fixes.
 
   ⚠️ This split exists because the raw rule shipped without it and gave the wrong reading first time out. #5077 ran 17 → ~22 and the rise looked like a loop failing; decomposed, it was almost entirely defects in round 1's own fixes — three of them reproducing the very defect being fixed, one layer over. Those two diagnoses point at different remedies and the total cannot tell them apart.
-- **When you do stop, report the CURVE, not just the count.** A declining count (30 → 18 → 11) is a loop converging and the cap is a formality; a flat or rising one is a loop that is not, and the human needs to know which they are approving another round of.
+- **When you do stop, report the CURVE, not just the count** — in the PR body, which is where a reviewer meets it, and in the Step 7 report. A declining count (30 → 18 → 11) is a loop converging and the cap is a formality; a flat or rising one is a loop that is not, and the reviewer needs to know which shape produced the diff in front of them. Reporting the curve is the whole obligation the stop creates: it is a disclosure, not a request for permission.
 - ⚠️ **A STOP IS A CLOSING ROUND. Do not stop without paying the closing round's costs.** Whichever way you leave the loop — CLEAN, the yield stop, or the 3-round cap — that round is the last one the diff gets, so it owes everything a final round owes: `comment-analyzer` run on this diff (`/review-panel` Step 2), and every named falsifier BUILT and RUN (Step 6). Stopping early is correct; stopping cheaply is not.
 
   Measured: #5077 stopped on the yield rule and **merged with no comment sweep at all**, because the sweep is gated on "a round with no must-fix" and that round never arrived. Two rules that did not know about each other, and a comment-heavy diff went out unreviewed on the one axis dedicated to it.
@@ -93,10 +121,92 @@ So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` —
 
 **Run the full `/ci` only when:**
 - remote CI is itself broken or unavailable, and you need a local answer;
-- you are touching `scripts/mutations/**` or the mutation gate itself, which remote CI does not exercise the same way;
+- you renamed or deleted a test, deleted a function, or reshaped a block a mutation anchors on — see the mutation-gate note below. Remote CI DOES run `mutation-tables`, so this is about pre-empting a round-trip rather than about coverage;
 - you are about to `/release`, where the mutation gate and the full serial battery are the point.
 
-⚠️ **Never kill `ci-local.sh` mid-run.** `mutate.ts` rewrites source files in place and reverts them at the end, so an interrupted run leaves a MUTATED source file in the tree — silently, and it will be committed by the next `git commit -o` that names it. If you must stop one, `git status` afterwards and restore anything it left behind.
+⚠️ **THE MUTATION-GATE TRIGGER ABOVE IS WRITTEN ON THE WRONG THING, and this is
+the one pre-flight gap that actually costs remote round-trips.** `mutation-tables`
+does not break when you touch `scripts/mutations/**`. It breaks when you touch
+anything a spec **TARGETS** — and the commonest way to do that is to **RENAME OR
+REWRITE A TEST**, which goes nowhere near that directory. The generated tables
+record *"first test to die"* BY NAME plus a count per suite, so renaming a test
+makes them stale, and a refactor that moves the code a mutation anchors on kills
+the anchor outright.
+
+So add one cheap command to the pre-flight whenever the branch renamed a test,
+deleted a function, or reshaped a block a mutation might anchor on:
+
+```bash
+TEST_DATABASE_URL=… bash scripts/check-mutation-tables.sh --affected origin/main
+```
+
+It reports which specs the branch touched and exits instantly when the answer is
+none, which is the common PR. **It is NOT free when the answer is non-zero** —
+it re-runs whole `-pg` suites once per mutation, tens of minutes — so run it in
+the BACKGROUND and carry on; do not block the loop on it, and do not put it in
+the default pre-flight.
+
+Measured on #5047: the branch renamed tests across five suites and deleted one
+function. `mutation-tables` failed remote CI **twice**, and the second failure
+cost a full CI round-trip that a background `--affected` run started at PR time
+would have pre-empted. Three anchors were dead, and one of them had been
+re-anchored once already by the previous issue for the same reason.
+
+⚠️ **A DEAD ANCHOR IS NOT ALWAYS RE-ANCHORABLE, and reaching for a replacement
+mutation is how a tombstone gets into a table.** If the PR deleted the code a
+mutation targets, there is nothing to move the anchor to: DELETE the mutation and
+say why. Do not invent a successor pointing at whatever replaced it unless that
+successor is genuinely killable — a defensive arm for a state your change just
+made unreachable measures `0` in every suite, and `mutate.ts`'s header calls a
+published `0` a claim. Recording one asserts *"no test covers this"* where the
+truth is *"no input reaches this"*, which is precisely the tombstone the
+dead-anchor arm refuses to write. Point the replacement at the guard that made
+the state unreachable instead — that one has a test and a real number.
+
+⚠️ **NEVER COMMIT WHILE A MUTATION RUN IS LIVE — and that includes obeying a
+hook that tells you to.** `ci-local.sh`, `check-mutation-tables.sh` and a bare
+`mutate.ts` all rewrite source files in place and revert them at the end, so a
+dirty tree during one is EXPECTED and committing it ships sabotaged source that
+reads as a legitimate change in review. Check before every commit in this window:
+
+```bash
+ps -o pid=,args= -C bun | grep 'mutate\.ts' && echo "MUTATION RUN LIVE — do not commit"
+```
+
+(`ps -C` is procps — Linux. On BSD/macOS use `ps -eo comm=,args= | awk '$1=="bun"'`.)
+
+⚠️ **`pgrep -f` is the obvious spelling and it FALSE-POSITIVES, including on the
+bracket trick (`[m]utate.ts`).** `-f` matches other processes' full command
+lines, and your own shell's command line is one of them — so the moment the
+pattern appears anywhere else in the command you are running, the check reports a
+live run that does not exist. Measured on #5047 in the most pointed way
+available: the check fired while committing, because the COMMIT MESSAGE
+documented the check, putting the literal string in the shell's argv. A guard
+that cries wolf gets ignored, which is worse than no guard. `-C bun` matches on
+the EXECUTABLE, so a shell can never satisfy it.
+
+Measured on #5047: a stop hook asked for a commit four times during a 40-minute
+regeneration, while `git status` showed a different mutated file each time
+(`extract.ts`, then `alias-proposal.ts`, then `cardinality.ts`) as the runner
+worked through its list. The hook is not wrong in general; it is wrong in this
+window, and the `pgrep` is how you tell the two apart.
+
+⚠️ **Never kill `ci-local.sh` — or any mutation run — mid-run.** `mutate.ts`
+rewrites source files in place and reverts them at the end, so an interrupted run
+leaves a MUTATED source file in the tree — silently, and it will be committed by
+the next `git commit -o` that names it. **A foreground `Bash` timeout counts as
+killing it**: #5047 lost a `--affected` run to the 10-minute cap, which is why
+these belong in the background. If you must stop one, `git status` afterwards and
+restore anything it left behind.
+
+⚠️ **A `-pg` baseline reported RED may be a DEAD DATABASE, not a real failure.**
+The runner aborts when a baseline suite is already failing, because a mutation
+count against a broken tree is breakage-plus-mutation and indistinguishable from
+a strong result. That guard is right, but it cannot tell a genuine regression
+from a Postgres that fell over — and the mutation load is heavy enough to do
+that. #5047 saw six specs report *"baseline is RED — 2 failing"*; every one was
+`connect ENOENT /tmp/.s.PGSQL.5432`. Before believing a baseline failure, check
+the server is up and re-run one suite directly.
 
 `/ci` uses a **launch-and-watch protocol** (see `ci.md`): the wrapper runs in the background and YOU poll `.ci-local/RESULT` on a loop — never end the turn "waiting for the CI report". A lost subagent hand-off here used to stall the whole ship loop until a human poked it; `.ci-local/RESULT` on disk is the completion signal, not any agent's reply.
 
@@ -105,7 +215,11 @@ So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` —
 ```
 /pr
 ```
-`/pr` branches/commits/pushes and opens the PR with `Closes #<N>`. Two gates must be green on the head SHA: the **internal `/review-panel`** (already run in Step 3) and **required CI**. Third-party review bots are now the *exception* — the panel is the review — so handle them only when one is actually on the PR. The settling point is the **first full CI completion**, not an open-ended wait for reviewers that may not exist.
+`/pr` branches/commits/pushes and opens the PR with `Closes #<N>`.
+
+⚠️ **If the Step-3 panel stopped early, the PR body owes the CURVE and the residue** — rounds with both numbers per round (`round 2: 17 — 4 new surface, 13 defect-in-prior-fix`), why the loop closed, and what was consciously left as a follow-up. That disclosure is what makes an early stop legitimate rather than a shortcut: the reviewer opening the PR is the human the stop rule wanted told, and the PR body is where they are standing.
+
+Two gates must be green on the head SHA: the **internal `/review-panel`** (already run in Step 3) and **required CI**. Third-party review bots are now the *exception* — the panel is the review — so handle them only when one is actually on the PR. The settling point is the **first full CI completion**, not an open-ended wait for reviewers that may not exist.
 
 1. **Wait for the first full CI run to complete** on the head SHA:
    ```bash
@@ -130,9 +244,12 @@ So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` —
    - **Ambiguous / architecturally significant** → `AskUserQuestion`; don't guess.
    - **Approvability / "needs human review" / policy sign-off with no code ask** → **acknowledge only.** Quote it in the report. It does **NOT** block the merge and is **NOT** a halt — `main` deploys to staging, not prod. Never sit waiting on a human-approval verdict.
 
-**Converged** when, on the head SHA: required CI green, the Step-3 panel was clean, and **either** no external reviewer is present **or** every present reviewer is re-reviewed-clean / carries only an acknowledged non-actionable verdict → **merge.** Cap the reviewer back-and-forth at **3 rounds** like the panel; if it won't converge, STOP and ask.
+**Converged** when, on the head SHA: required CI green, **the Step-3 panel CLOSED** — reached CLEAN, *or* stopped on the yield/ratio rule or the 3-round cap with every confirmed must-fix fixed and the curve reported in the PR body — and **either** no external reviewer is present **or** every present reviewer is re-reviewed-clean / carries only an acknowledged non-actionable verdict → **merge.** Cap the reviewer back-and-forth at **3 rounds** like the panel; if it won't converge, stop the rounds and say so on the PR.
 
-**HARD HALTS (never autonomous):**
+⚠️ **"CLOSED", not "clean", and the difference is a bug this line used to carry.** Read as *the panel was clean*, a run that stopped on the yield rule could never satisfy it — the stop rule tells you to end the rounds before CLEAN arrives, and this line then says you are not converged, so the diff can never merge and the loop deadlocks with a finished branch and no PR. #5047 hit exactly that. A panel that stopped early has DONE its job; what it owes is the disclosure, not a verdict word.
+
+**HARD HALTS (never autonomous)** — and these are the whole list. A Step-3 yield stop is NOT one of them; see the disambiguation there. If a stop reason is not on this list and does not make the work unshippable, it ships:
+- **A Step-3 spec ambiguity you cannot resolve, or a dependency that is not merged** → HALT and ask. These are the blockers the yield stop is not: they make the work unshippable rather than merely unreviewable-further.
 - **Fork PR** (`isCrossRepository: true`) → STOP, surface provenance, get human sign-off. Never `--admin` past `fork-pr-gate`.
 - A required check that's **structurally missing** (e.g. CodeQL on a fork) → stop sign, not an override.
 - `--admin` is only for a genuinely *broken* gate, not a *slow* one — wait for `gh pr checks --watch`.
@@ -150,7 +267,9 @@ git worktree remove ../atlas-wt-<slug>
 ⚠️ **Record rounds AND minutes per round in the ROADMAP entry.** Round counts have been recorded since #5027; wall clock never has, and without it there is no way to tell whether a change that makes rounds more thorough is buying fewer of them or just costing more. Two numbers per issue — `rounds: 3 (22m / 31m / 14m)` — is the whole ask, and it is what makes the Step 6 split above falsifiable.
 
 
-PR URL · issue closed · CI/merge status · panel rounds it took · **each external reviewer's verdict** (addressed / acknowledged) · anything you halted on.
+PR URL · issue closed · CI/merge status · panel rounds it took, with the CURVE if it stopped early · **each external reviewer's verdict** (addressed / acknowledged) · anything you halted on.
+
+⚠️ **"Anything you halted on" means a HARD HALT.** A yield stop is not a halt and does not belong in that slot — it belongs in the rounds/curve slot beside it. Reporting an early stop as a halt is how a finished, green, merged-ready branch gets described as blocked.
 
 ---
 

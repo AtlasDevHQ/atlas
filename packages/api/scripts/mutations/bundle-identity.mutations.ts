@@ -79,12 +79,18 @@ comparison and the counts are the real ones.
       edits: [
         {
           file: IMPORT,
-          oldString: `    subjectKey: fact.subjectKey ?? null,
-    predicateKey: fact.predicateKey ?? null,
-    objectKey: fact.objectKey ?? null,`,
-          newString: `    subjectKey: slotKey(fact.subject, identityVocabulary.subject),
-    predicateKey: slotKey(fact.predicate, identityVocabulary.predicate),
-    objectKey: slotKey(fact.object, identityVocabulary.object),`,
+          // ⚠️ RE-ANCHORED by #5047, the second time this mutation has needed it.
+          // The carried arm now routes through `tombstonePlaceholder`, so the
+          // three lines are one indent deeper and the old anchor matched
+          // NOTHING — caught by `--check`'s dead-anchor arm, exactly as #5037's
+          // re-anchor of the `logDegeneratePredicate` mutations was, and the
+          // reason the runner refuses to write a table it could not measure.
+          oldString: `      subjectKey: fact.subjectKey ?? null,
+      predicateKey: fact.predicateKey ?? null,
+      objectKey: fact.objectKey ?? null,`,
+          newString: `      subjectKey: slotKey(fact.subject, identityVocabulary.subject),
+      predicateKey: slotKey(fact.predicate, identityVocabulary.predicate),
+      objectKey: slotKey(fact.object, identityVocabulary.object),`,
         },
         // The mutation has to compile: `identityVocabulary` is not otherwise
         // imported here. Adding the import is part of the mutation, not a

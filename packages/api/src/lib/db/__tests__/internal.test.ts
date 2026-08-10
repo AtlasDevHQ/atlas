@@ -91,6 +91,12 @@ function createMockPool() {
           calls.releaseCount++;
           calls.lastReleaseArg = err;
         },
+        // `runMigrations` attaches a `notice` listener to hear a migration's
+        // `RAISE NOTICE`, and `migrateInternalDB` REFUSES a client that cannot
+        // carry one rather than migrating deaf (#5047). A double on that path
+        // has to model the surface the real `pg.PoolClient` has.
+        on() {},
+        off() {},
       };
     },
     on(event: "error", listener: (err: Error) => void) {
@@ -1157,6 +1163,8 @@ describe("hardDeleteWorkspace()", () => {
         return { rows: [] };
       },
       release() {},
+        on() {},
+        off() {},
     };
     const pool = {
       ...basePool,

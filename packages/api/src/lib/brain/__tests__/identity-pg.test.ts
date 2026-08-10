@@ -36,10 +36,13 @@
  *      migration text.
  *   6. **Was the slot index REPOINTED rather than added?** Zero net new
  *      indexes is a result, and a result nobody checks is a wish.
- *   7. **Are the columns still NULLABLE?** The constraint has THREE
- *      prerequisites, enumerated in 0187's header — landing it before them
- *      refuses every brain-fact write, every region import, or every claim
- *      whose surface norms away.
+ *   7. **Are the columns NOT NULL?** All three of 0187's prerequisites landed
+ *      (#5047, migration 0194), so this is now asserted rather than refused —
+ *      in a SEPARATE suite at the foot of this file, on a pristine migrated
+ *      schema. It cannot live in the suite above: that one DROPs the constraint
+ *      in its own scratch schema so it can replay 0187, which predates it, and a
+ *      nullability assertion made there would read the relaxed column and pass
+ *      whatever 0194 does.
  *
  * The migration is executed by READING THE FILE and running it, so there is no
  * copy of its SQL here to drift from it. `WHERE … IS NULL` is what makes that
@@ -151,6 +154,30 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
       await bootstrap.end();
     }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+
+    // ⚠️ THE SLOT KEYS ARE RELAXED IN THIS SUITE'S OWN THROWAWAY SCHEMA, and
+    // that is what lets this file keep doing its job after #5047.
+    //
+    // Everything below pins migration 0187 — its expression against
+    // `lexicalNorm`, row by row — and 0187 ran when these columns were nullable.
+    // The technique is *null the keys, run the real file, compare*, which is
+    // meaningful precisely because 0187's `WHERE … IS NULL` is what makes it
+    // re-runnable. Migration 0194 makes both halves of that impossible: the
+    // seeds below name no key column, and `rerunBackfill` writes NULL on
+    // purpose.
+    //
+    // Dropping the constraint HERE, rather than rewriting the corpus to carry
+    // pre-computed keys, keeps the comparison honest: a seed that supplied the
+    // key would be asserting the TypeScript against itself, and the whole point
+    // of this file is that the migration is a SECOND implementation.
+    //
+    // It costs nothing this file was covering. The constraint has its own suite
+    // below, on a PRISTINE migrated schema — this one can no longer speak about
+    // nullability at all, which is why the assertion that used to live here
+    // moved rather than being deleted.
+    for (const column of ["subject_key", "predicate_key", "object_key"] as const) {
+      await pool.query(`ALTER TABLE brain_facts ALTER COLUMN ${column} DROP NOT NULL`);
+    }
 
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes
@@ -658,8 +685,46 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
+});
+
+/**
+ * The CONSTRAINT itself (#5047, migration 0194) — deliberately its own suite on
+ * its own PRISTINE schema.
+ *
+ * It cannot share the schema above: that one drops the `NOT NULL` so it can
+ * replay migration 0187, which predates it. A nullability assertion made there
+ * would read the relaxed column and pass no matter what 0194 does.
+ */
+describeIfPg("the slot-key NOT NULL constraint (#5047, migration 0194)", () => {
+  let pool: Pool;
+  const schemaName = `brain_notnull_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+
+  beforeAll(async () => {
+    pool = new Pool({
+      connectionString: TEST_DB_URL,
+      options: `-c search_path="${schemaName}",public`,
+    });
+    const bootstrap = new Pool({ connectionString: TEST_DB_URL });
+    try {
+      await bootstrap.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    } finally {
+      await bootstrap.end();
+    }
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+  }, PG_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (pool) {
+      try {
+        await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+      } finally {
+        await pool.end();
+      }
+    }
+  });
+
   it(
-    "leaves the key columns NULLABLE — the constraint has three prerequisites",
+    "the key columns are NOT NULL — all three prerequisites landed (#5047)",
     async () => {
       const { rows } = await pool.query<{
         column_name: string;
@@ -696,19 +761,28 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
         ).toBeNull();
         expect(
           row.is_nullable,
-          `${row.column_name} is NOT NULL. 0187's header enumerates the three prerequisites: neither INSERT site names these columns yet (\`INSERT_FACT_SQL\`, #5020; the region import's 18-column INSERT, #5035), and \`identityKey\` returns NULL for a surface that norms away — which \`reconcile.ts\` admits today, so the constraint would turn a storable claim into a transaction-killing violation. Read the header, not this message, before flipping it`,
-        ).toBe("YES");
+          `${row.column_name} is NULLABLE. Migration 0194 makes all three \`NOT NULL\` — the third and last step of ADR-0037 §1's identity key — and a NULL key means a row that silently drops out of every slot consumer: a re-observation forks a duplicate draft instead of strengthening the fact, no tension edge is minted, and the publish gate reports "nothing to supersede" for a check it could not run. Reverting the constraint restores that state invisibly`,
+        ).toBe("NO");
       }
     },
     PG_TEST_TIMEOUT_MS,
   );
 
   it(
-    "admits an INSERT that names no key column — the constraint cannot have crept in",
+    "REFUSES an INSERT that names no key column — the positive control for the constraint",
     async () => {
-      // The positive control for the nullability assertion above: a metadata
-      // read passes if the column is absent from the result set for any reason,
-      // and `INSERT_FACT_SQL`'s exact shape is the thing that must keep working.
+      // The falsifier for the metadata read above, inverted by #5047. It used to
+      // assert the opposite — that `INSERT_FACT_SQL`'s pre-key shape still
+      // worked — because a metadata assertion passes if the column is absent
+      // from the result set for any reason, and something had to exercise the
+      // column itself.
+      //
+      // It still does exactly that job: a `SET NOT NULL` that silently failed to
+      // apply, or a `DEFAULT` quietly added to make the constraint satisfiable,
+      // both leave the read above green and are both caught here. The `DEFAULT`
+      // case is the one worth naming — 0187's header rejects `DEFAULT ''`
+      // because every unkeyed row would then join every other unkeyed row, and a
+      // default is the obvious way to make a stubborn `NOT NULL` land.
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO brain_episodes
            (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
@@ -716,28 +790,25 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
          RETURNING id`,
         [WS],
       );
-      await pool.query(
-        `INSERT INTO brain_facts
-           (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-         VALUES ($1, 'unkeyed subject', 'unkeyed predicate', 'unkeyed object', $2, $3::jsonb, ARRAY['org'])`,
-        [WS, rows[0]!.id, JSON.stringify({ source: "slack", actor: "U1" })],
-      );
 
-      const { rows: check } = await pool.query<{ subject_key: string | null }>(
-        `SELECT subject_key FROM brain_facts WHERE workspace_id = $1 AND subject = 'unkeyed subject'`,
+      await expect(
+        pool.query(
+          `INSERT INTO brain_facts
+             (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+           VALUES ($1, 'unkeyed subject', 'unkeyed predicate', 'unkeyed object', $2, $3::jsonb, ARRAY['org'])`,
+          [WS, rows[0]!.id, JSON.stringify({ source: "slack", actor: "U1" })],
+        ),
+        "an INSERT naming no key column succeeded — either the constraint is not applied, or a DEFAULT was added to satisfy it, which would file every unkeyed row under one slot",
+      ).rejects.toThrow(/null value in column "(subject|predicate|object)_key"/);
+
+      // The row is absent rather than merely unkeyed — the statement did not
+      // half-apply.
+      const { rows: check } = await pool.query(
+        `SELECT 1 FROM brain_facts WHERE workspace_id = $1 AND subject = 'unkeyed subject'`,
         [WS],
       );
-      expect(check.length).toBe(1);
-      // No default, either — a `DEFAULT ''` would silently corrupt the corpus by
-      // making every unkeyed row join every other unkeyed row.
-      expect(
-        check[0]!.subject_key,
-        "an unkeyed INSERT produced a non-NULL key — a DEFAULT crept onto the column, and every unkeyed row now shares one slot",
-      ).toBeNull();
+      expect(check).toHaveLength(0);
 
-      await pool.query(`DELETE FROM brain_facts WHERE workspace_id = $1 AND subject = 'unkeyed subject'`, [
-        WS,
-      ]);
       await pool.query(`DELETE FROM brain_episodes WHERE workspace_id = $1 AND source_id = 'identity-unkeyed'`, [
         WS,
       ]);

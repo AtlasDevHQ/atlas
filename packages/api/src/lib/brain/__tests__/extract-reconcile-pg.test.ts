@@ -555,28 +555,32 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   // tombstone, tenant — over one fixed claim, rather than varying the claim.
   // Identity is the corpus's axis; those are this file's.
 
-  it("keys a surface that norms away as NULL, and NULL corroborates nothing", async () => {
-    // `-` and `___` survive the MALFORMED_CLAIM guard (`trim` strips whitespace,
-    // not `_` or `-`), so they are storable claims with no slot. They must NOT
-    // share one: a stored `''` — or a NULL-safe join arm — would file every
-    // placeholder in the corpus under one key, and at `single` cardinality
-    // publishing either would stamp `valid_to` on the other.
+  it("REFUSES a surface that norms away — no row, so no shared slot to corrupt", async () => {
+    // `-` and `___` used to survive the `MALFORMED_CLAIM` guard (`trim` strips
+    // whitespace, not `_` or `-`) and become storable claims with no slot. This
+    // suite's job was to prove they did not SHARE one: a stored `''` — or a
+    // NULL-safe join arm — would file every placeholder in the corpus under one
+    // key, and at `single` cardinality publishing either would stamp `valid_to`
+    // on the other.
     //
-    // What the column read below pins is that `slotKey` returned `null` rather
-    // than `""` — NOT that no `DEFAULT ''` exists, since `INSERT_FACT_SQL` now
-    // binds `object_key` explicitly and an explicit NULL always beats a default.
-    // `identity-pg.test.ts` introspects the column for the default itself.
+    // #5047 removes the population instead of keeping it apart, which is the
+    // stronger version of the same guarantee: the guard refuses the candidate at
+    // ingest and migration 0194 makes the column `NOT NULL`, so there is no row
+    // to file anywhere. The refusal is asserted here — against a real database,
+    // and after the constraint — because a guard that let one through would now
+    // be a `23502` that fails the whole reconcile transaction, and no unit fake
+    // can see that.
     const first = await insertEpisode({ sourceId: "C01:key-6" });
     const second = await insertEpisode({ sourceId: "C01:key-7" });
 
-    await reconcileFacts({
+    const one = await reconcileFacts({
       vocabulary: identityVocabulary,
       episode: first,
       candidates: [candidate({ object: "-" })],
       producer: "p",
       extractedAt: new Date(),
     });
-    const report = await reconcileFacts({
+    const two = await reconcileFacts({
       vocabulary: identityVocabulary,
       episode: second,
       candidates: [candidate({ object: "___" })],
@@ -584,33 +588,35 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       extractedAt: new Date(),
     });
 
-    expect(report.corroborated).toBe(0);
-    const stored = await facts();
-    expect(stored).toHaveLength(2);
-    // The degenerate SURFACES survive to the column verbatim — a reviewer has
-    // to be able to see what the producer emitted in order to repair it.
-    expect(stored.map((f) => f.object)).toEqual(["-", "___"]);
-    for (const slot of await slots()) {
-      expect(slot.object_key).toBeNull();
-      expect(slot.subject_key).toBe("deploy window");
-    }
+    expect(one.blocked.MALFORMED_CLAIM).toBe(1);
+    expect(two.blocked.MALFORMED_CLAIM).toBe(1);
+    expect(one.created + two.created).toBe(0);
+    // Nothing was stored, and — the half that needed the live transaction — the
+    // episodes committed cleanly rather than rolling back. A refusal is a
+    // per-candidate block, not an episode failure.
+    expect(await facts()).toHaveLength(0);
   });
 
-  it("a rival with NO object identity is not a rival — the object arm's falsifier", async () => {
-    // This is what makes `object_key <> $4` load-bearing rather than
-    // decorative, and it took a review to find: a live row in the same slot
-    // whose object is `-` has `object_key IS NULL`, so the corroboration
-    // lookup does not return it either (`object_key = $4` is unknown) and it
-    // survives to the rival scan. There the two spellings genuinely diverge —
-    // `object <> $4` is TRUE, `object_key <> $4` is unknown.
+  it("a live row with NO object identity is UNREPRESENTABLE — the object arm's falsifier, closed", async () => {
+    // What this used to prove: a live row in the same slot whose object is `-`
+    // has `object_key IS NULL`, so the corroboration lookup does not return it
+    // (`object_key = $4` is unknown) and it survives to the rival scan — where
+    // the two spellings genuinely diverge, `object <> $4` being TRUE while
+    // `object_key <> $4` is unknown. Wiring the edge would have been the worse
+    // outcome: a permanent advisory `in-tension-with` from a real claim to a
+    // placeholder that asserts nothing, shown to a reviewer as a contradiction
+    // to arbitrate.
     //
-    // Wiring the edge would be the worse outcome: a permanent advisory
-    // `in-tension-with` from a real claim to a placeholder that asserts
-    // nothing, shown to a reviewer as a contradiction to arbitrate.
+    // The rule it established is unchanged and is still why the scan compares
+    // KEYS and not surfaces. What changed is that the falsifying INPUT can no
+    // longer be built: the degenerate claim is refused at ingest (#5047). So the
+    // test now proves the closure — the degenerate claim never lands, and the
+    // real claim beside it is minted with no edge, because there is nothing in
+    // its slot to be in tension with.
     const first = await insertEpisode({ sourceId: "C01:key-10" });
     const second = await insertEpisode({ sourceId: "C01:key-11" });
 
-    await reconcileFacts({
+    const degenerate = await reconcileFacts({
       vocabulary: identityVocabulary,
       episode: first,
       candidates: [candidate({ object: "-", predicateCardinality: "single" })],
@@ -625,9 +631,11 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       extractedAt: new Date(),
     });
 
-    // Two facts — the degenerate one could not corroborate — and NO edge.
+    expect(degenerate.blocked.MALFORMED_CLAIM).toBe(1);
+    // ONE fact — the degenerate one was refused rather than merely unable to
+    // corroborate — and NO edge.
     expect(report.outcomes[0]).toMatchObject({ kind: "created", tensionEdges: 0 });
-    expect(await facts()).toHaveLength(2);
+    expect(await facts()).toHaveLength(1);
     expect((await edges()).filter((e) => e.edge_type === "in-tension-with")).toHaveLength(0);
   });
 

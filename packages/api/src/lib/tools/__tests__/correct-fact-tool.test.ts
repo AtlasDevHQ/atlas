@@ -106,6 +106,7 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
     targetNotCurrent: "TARGET_NOT_CURRENT",
     replacementMissing: "REPLACEMENT_MISSING",
     replacementIdentical: "REPLACEMENT_IDENTICAL",
+    replacementMalformed: "REPLACEMENT_MALFORMED",
     replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
   } satisfies typeof import("@atlas/api/lib/brain/correction").CORRECTION_REFUSAL_REASONS,
   CorrectionRefusedError: class CorrectionRefusedError extends Error {},

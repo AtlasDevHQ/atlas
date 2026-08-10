@@ -17,6 +17,7 @@ import {
   identityAlias,
   identityVocabulary,
   SLOT_POSITIONS,
+  UNKEYABLE_KEY_PREFIX,
   identityKey,
   lexicalNorm,
   slotKey,
@@ -264,6 +265,60 @@ describe("lexicalNorm", () => {
       expect(lexicalNorm("$499")).toBe("$499");
       expect(lexicalNorm("499 USD")).toBe("499 usd");
       expect(lexicalNorm("a.b/c")).toBe("a.b/c");
+    });
+  });
+
+  describe("UNKEYABLE_KEY_PREFIX — the placeholder namespace (#5047)", () => {
+    // ⚠️ THE PROPERTY THE WHOLE PLACEHOLDER SCHEME RESTS ON, and until #5047 it
+    // was an argument in a docstring rather than something anything checked.
+    //
+    // Migration 0194 and the region importer both write
+    // `${UNKEYABLE_KEY_PREFIX}${factId}` into a key column for a row whose
+    // surface normalizes away. That is only safe while no COMPUTED key can ever
+    // equal one — otherwise a real claim joins a placeholder, and at `single`
+    // cardinality publishing either stamps `valid_to` on the other. The safety
+    // comes entirely from `lexicalNorm`'s treatment of `-`, so this is where it
+    // is pinned.
+    it("starts with a character `lexicalNorm` can never emit", () => {
+      expect(UNKEYABLE_KEY_PREFIX.startsWith("-")).toBe(true);
+    });
+
+    it("is unreachable from lexicalNorm — no norm starts with or contains `-`", () => {
+      // `-` is in the separator class, so every run of it collapses to a space
+      // and the edge trim removes it. A change to `SEPARATOR_RUN` that stops
+      // treating `-` as a separator silently makes placeholders forgeable, and
+      // this is the assertion that says so.
+      const surfaces = [
+        "-",
+        "--",
+        "-unkeyable:01J",
+        `${UNKEYABLE_KEY_PREFIX}some-fact-id`,
+        "-leading",
+        "trailing-",
+        "a-b",
+        "a - b",
+        "_x_",
+        ...Object.values(PAIRED_SURFACES).flat(),
+        ...DEGENERATE_SURFACES,
+      ];
+      for (const surface of surfaces) {
+        const norm = lexicalNorm(surface);
+        expect(norm.includes("-"), `lexicalNorm("${surface}") = "${norm}" contains a hyphen`).toBe(
+          false,
+        );
+      }
+    });
+
+    it("is unreachable through the FULL composition, vocabulary included", () => {
+      // `slotKey` re-norms the vocabulary's answer, so even a vocabulary that
+      // deliberately targets the placeholder namespace cannot produce one — the
+      // outer `identityKey` strips the leading `-` again. This is the arm that
+      // matters once `alias` is a reviewed data table with hand-authored targets.
+      const forge = () => `${UNKEYABLE_KEY_PREFIX}aaaaaaaa-0000-4000-8000-000000000001`;
+      const key = slotKey("billing", forge);
+      expect(key).not.toBeNull();
+      expect(key?.startsWith("-")).toBe(false);
+      expect(key).toBe("unkeyable:aaaaaaaa 0000 4000 8000 000000000001");
     });
   });
 });

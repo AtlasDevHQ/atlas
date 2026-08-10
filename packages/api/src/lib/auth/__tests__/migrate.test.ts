@@ -27,7 +27,7 @@ function createTrackingPool(opts: { shouldThrow?: boolean } = {}) {
     pool: {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -581,6 +581,7 @@ describe("migrateAuthTables", () => {
             // brain-owned table, so it is in the already-applied set for the
             // same reason as 0187–0192: Better Auth owns nothing it touches.
             { name: "0193_brain_fact_subject_cmp.sql" },
+            { name: "0194_brain_fact_slot_keys_not_null.sql" },
           ],
         };
       }
@@ -589,7 +590,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -629,7 +630,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -668,7 +669,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -705,7 +706,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -750,7 +751,7 @@ describe("migrateAuthTables", () => {
       return {
         query: queryFn,
         async connect() {
-          return { query: queryFn, release() {} };
+          return { query: queryFn, release() {}, on() {}, off() {} };
         },
       };
     }

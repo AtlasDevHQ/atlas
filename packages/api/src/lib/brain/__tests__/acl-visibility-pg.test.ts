@@ -33,6 +33,7 @@ import { Effect } from "effect";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import {
   USER_PREFIX,
   aclVisibilityClause,
@@ -91,10 +92,16 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, status, visible_to)
-       VALUES ($1, $2, 'is', 'thing', $3, '{"actor":"test"}'::jsonb, $4, $5::text[])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key,
+          source_episode_id, provenance, status, visible_to)
+       VALUES ($1, $2, 'is', 'thing', $6, 'is', 'thing', $3, '{"actor":"test"}'::jsonb, $4, $5::text[])
        RETURNING id`,
-      [opts.workspaceId, opts.subject, opts.episodeId, opts.status ?? "published", opts.visibleTo],
+      [opts.workspaceId, opts.subject, opts.episodeId, opts.status ?? "published", opts.visibleTo,
+        // The subject KEY, required since migration 0194 (#5047). Through
+        // `slotKey` rather than spelled in SQL, so the fixture keys its rows
+        // with the same function the ingest path uses.
+        slotKey(opts.subject, identityAlias),
+      ],
     );
     return rows[0]!.id;
   }

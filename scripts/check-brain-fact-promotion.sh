@@ -119,6 +119,17 @@
 #     would re-queue a human's completed review work at every region cutover.
 #     It is a restore of a prior gate decision, not a new one; the import's own
 #     `grantProblem` validation is paired with the 0180 CHECK.
+#     ⚠️ THAT "RESTORE, NEVER MINT" READING NO LONGER COVERS THE WHOLE FILE
+#     (#5047). `tombstonePlaceholder` now MINTS an `invalidated_at` for a fact
+#     whose surface normalizes away, matching what migration 0194 does to the
+#     same population — the row has no identity at some position, cannot be
+#     keyed by any vocabulary or re-key, and the slot keys are NOT NULL. It is
+#     still not an ARBITRATION (nothing decided that a meaningful claim is
+#     false; the claim asserts nothing), which is the distinction this allowlist
+#     draws — but the plain reading above would tell a reader the file never
+#     writes a tombstone of its own, and it does. A fact whose key merely failed
+#     to ARRIVE while its surface keys fine is refused outright rather than
+#     tombstoned, because that row is repairable and retiring it would not be.
 #     It also restores `pre_widening_visible_to` (#4836) — necessarily, since
 #     the column cannot be re-derived in the target region (the import writes
 #     `status` verbatim, so the fact never re-publishes and the widening UPDATE
@@ -225,6 +236,25 @@
 # directory would have let a one-shot backfill under
 # `db/migrations/scripts/*.ts` (where CLAUDE.md says they live) write this
 # column with no gate at all.
+#
+# ⚠️ THAT `.sql` EXEMPTION IS A REAL HOLE, and #5047 is the first migration to
+# walk through it, so it is recorded here rather than only in the migration:
+# `0194_brain_fact_slot_keys_not_null.sql` writes `invalidated_at` on rows whose
+# surfaces normalize away — a second, non-`promoteBrainFacts` retirement of
+# beliefs, including published ones. It passes this gate by EXCLUSION, not by
+# review, because `--include` cannot see it.
+#
+# The carve-out, per CLAUDE.md § Content Mode: those rows assert nothing at some
+# position. No reader could ever have acted on them, no vocabulary or re-key can
+# produce a key for them, and the ingest guard now refuses to create more. The
+# tombstone is what lets the slot keys be `NOT NULL` without inventing identity
+# for a row that has none. 0194's header carries the full argument.
+#
+# A future `.sql` migration writing `status`, `visible_to`, `valid_to` or
+# `invalidated_at` on `brain_facts` gets the same treatment: it is unguarded, so
+# it needs a reviewer who knows that. Widening `--include` to `.sql` is the real
+# fix and is not free — every historical migration would have to be allowlisted —
+# so this note is the interim, and the fact that it is an interim is the point.
 #
 # A regression here means a new promotion path appeared. Route it through
 # `promoteBrainFacts` (or, if it is genuinely a restore-not-a-decision like the

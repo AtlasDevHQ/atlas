@@ -34,6 +34,7 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { ACL_GATED_TABLES, parseGrant, type AclGatedTable } from "@atlas/api/lib/brain/acl";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import {
   MALFORMED_SAMPLE_CAP,
   grantScanSql,
@@ -138,9 +139,15 @@ describeIfPg("brain malformed-grant sweep (real Postgres)", () => {
   }): Promise<void> {
     await pool.query(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, status, visible_to)
-       VALUES ($1, $2, 'is', 'thing', $3, '{"actor":"test"}'::jsonb, $4, $5::text[])`,
-      [opts.workspaceId, opts.subject, opts.episodeId, opts.status ?? "published", opts.visibleTo],
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key,
+          source_episode_id, provenance, status, visible_to)
+       VALUES ($1, $2, 'is', 'thing', $6, 'is', 'thing', $3, '{"actor":"test"}'::jsonb, $4, $5::text[])`,
+      [opts.workspaceId, opts.subject, opts.episodeId, opts.status ?? "published", opts.visibleTo,
+        // The subject KEY, required since migration 0194 (#5047). Through
+        // `slotKey` rather than spelled in SQL, so the fixture keys its rows
+        // with the same function the ingest path uses.
+        slotKey(opts.subject, identityAlias),
+      ],
     );
   }
 

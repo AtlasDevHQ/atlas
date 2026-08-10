@@ -157,14 +157,16 @@ export function lexicalNorm(surface: string): string {
  * reached from the one input class the lexical layer cannot distinguish. `null`
  * joins nothing, which is the honest answer for a surface that asserts nothing.
  *
- * ⚠️ It does OVERLOAD the column, though, and the overload has a consequence
- * worth carrying forward: a NULL key now means either "no writer has keyed this
- * row yet" (transient) or "this surface norms away" (permanent, and legal). So
- * `SET NOT NULL` cannot land on the keys until `reconcile.ts`'s
- * `MALFORMED_CLAIM` guard also refuses a candidate whose `identityKey` is null
- * — otherwise the constraint turns a claim that is storable today into a
- * transaction-killing not-null violation. Migration 0187's header records this
- * as the third prerequisite; no issue owns it yet.
+ * ⚠️ NULL used to OVERLOAD the column — "no writer has keyed this row yet"
+ * (transient) and "this surface norms away" (permanent, and legal) — and
+ * `SET NOT NULL` could not land while the second was a storable state. #5047
+ * closed it at the ingest guard: `reconcile.ts`'s `MALFORMED_CLAIM` now refuses
+ * a candidate whose `slotKey` is null, and migration 0194 flipped all three
+ * columns to `NOT NULL`.
+ *
+ * So this function's `null` is a REFUSAL signal now, never a stored value. 0194's
+ * header carries the argument, including what became of the legacy rows that
+ * held the second meaning.
  *
  * Migration 0187 mirrors this with `NULLIF(…, '')`; the two are pinned against
  * each other row by row in `identity-pg.test.ts`.
@@ -179,6 +181,47 @@ export function identityKey(surface: string): string | null {
   const norm = lexicalNorm(surface);
   return norm === "" ? null : norm;
 }
+
+/**
+ * The namespace for a key that stands in for NO IDENTITY (#5047, migration 0194).
+ *
+ * `brain_facts`' three key columns are `NOT NULL`, and two writers meet rows that
+ * have no key to write: migration 0194, sweeping the legacy population whose
+ * SURFACES normalize away, and the region importer, landing a fact whose surface
+ * does the same. Both write `` `${UNKEYABLE_KEY_PREFIX}${factId}` `` and TOMBSTONE
+ * the row.
+ *
+ * ## Why a per-row value, and not the sentinel 0187 rejects
+ *
+ * Migration 0187's header rejects a sentinel key as *"the one-slot-for-every-
+ * placeholder hazard"* — a SHARED value under which every degenerate row joins
+ * every other one, so two unrelated placeholder claims occupy one slot and
+ * publishing either stamps `valid_to` on the other. Interpolating the row's own
+ * id removes exactly that: the value equals itself and nothing else.
+ *
+ * ## Why it can never collide with a real key
+ *
+ * {@link lexicalNorm} collapses every run of `[ \t\n\v\f\r_-]` to a single space
+ * and then trims, so its output can neither START with `-` nor CONTAIN one. Every
+ * key in the corpus is that function's output — including a key carried verbatim
+ * from another region (#5035), which is the SOURCE region's `lexicalNorm` output.
+ * So no computed key can equal a placeholder, at any position, in any region.
+ *
+ * ⚠️ That is a property of `lexicalNorm`, not a convention, and it is what the
+ * whole scheme rests on — so it is pinned by a falsifier in `identity.test.ts`
+ * rather than argued here. **A change to {@link SEPARATOR_RUN} that stops
+ * treating `-` as a separator silently makes placeholders forgeable**, and the
+ * test is what says so.
+ *
+ * ## The migration cannot import this
+ *
+ * A `.sql` migration is frozen the moment it ships, so 0194 spells the same
+ * prefix as a literal. That duplication is deliberate and bounded — 0194 is
+ * history and will never move — but it is why this constant exists at all rather
+ * than the string being inlined at its one TypeScript call site: the importer and
+ * the migration have to agree, and a named constant is what a reader greps.
+ */
+export const UNKEYABLE_KEY_PREFIX = "-unkeyable:";
 
 /**
  * The OUTER layer of `key = alias(lexicalNorm(surface))` — the curated

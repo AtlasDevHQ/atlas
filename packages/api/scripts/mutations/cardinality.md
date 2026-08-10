@@ -28,16 +28,15 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the repeat gate counts machine supersessions too | 1 | 1 | 0 | 0 | 0 |
 | the repeat threshold drops to 1 | 1 | 1 | 0 | 0 | 0 |
 | `INSERT_FACT_SQL` feeds `predicate_cardinality` again | 0 | 0 | 8 | 0 | 27 |
-| `retract` feeds the proposer too | 0 | 0 | 9 | 0 | 0 |
+| `retract` feeds the proposer too | 0 | 0 | 3 | 0 | 0 |
 | the post-commit proposer loses its deadline | 0 | 0 | 5 | 0 | 0 |
 | the deadline's timer is never cleared | 0 | 0 | 1 | 0 | 0 |
 | the post-deadline continuation is deleted | 0 | 0 | 2 | 0 | 0 |
 | the late-SUCCESS arm's guard is inverted | 0 | 0 | 1 | 0 | 0 |
-| `logDegeneratePredicate` fires for every verb, not only `supersede` | 0 | 0 | 3 | 0 | 0 |
-| `logDegeneratePredicate`'s call is removed | 0 | 0 | 3 | 0 | 0 |
+| the supersede refusal gates on the failing POSITION instead of its CAUSE | 0 | 0 | 1 | 0 | 0 |
 | the proposer runs INSIDE the correction's transaction | 0 | 0 | 8 | 0 | 0 |
 
-Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 84 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 70 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 87 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 72 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 
@@ -57,6 +56,5 @@ Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardi
 - **the deadline's timer is never cleared** — Round 1's own defect, respelled as the edit that reproduces it: a `finally` attached to the TIMER PROMISE settles only when the timer fires, so `clearTimeout` was always a no-op and the fast path left a 5s timer armed per correction. Round 2 published this row as an honest `0` (`bun test` force-exits); round 3 falsified it with the technique already in `correction-audit.test.ts`, which had stayed green only because it drives `pin` — a verb that never reaches the proposer.
 - **the post-deadline continuation is deleted** — `Promise.race` marks the loser's rejection HANDLED, so a store error arriving after the deadline is dropped with no line and not even an unhandled rejection — while the only record an operator holds says the statement *may still commit*. Round 3 wrote this block and shipped nothing that could reach it: the hang knob never settles, so both arms were structurally unfalsifiable until a DELAYED-settle knob existed.
 - **the late-SUCCESS arm's guard is inverted** — Fires *COMPLETED after its deadline* on every ordinary supersede — alert fatigue on the happy path, and the reason the arm needs a prohibition as well as an assertion. Deleting the arm outright is the milder mutation; inverting it is the one a reader would call a typo.
-- **`logDegeneratePredicate` fires for every verb, not only `supersede`** — A `retract` or a vouch would then log *superseded a claim whose predicate normalizes away* about a verb that superseded nothing. The guard is the whole content of the line.
-- **`logDegeneratePredicate`'s call is removed** — The case is legal and permanent (`identityKey`'s ⚠️), produces no proposal, and without this line produces no record either — a supersede that vanished.
+- **the supersede refusal gates on the failing POSITION instead of its CAUSE** — This is the mutation #5047's review round found LIVE — the first cut of the guard gated on the position alone, on the argument that the object is the caller's own text where the slot is copied off the target. `slotKey` is `identityKey(alias(identityKey(surface)))`, so an object key is ALSO null when the workspace's object-position vocabulary maps a real norm to something that normalizes away: a human superseding with good text is then told their replacement *normalizes away to nothing*, on a request no retry can satisfy. Fix-your-correct-input, from a guard written to stop exactly that.
 - **the proposer runs INSIDE the correction's transaction** — Stands in for the placement change rather than reproducing it literally (the real one cannot be expressed as a local edit). What it removes is the proposer's access to the committed `supersedes` edge — which is why the placement is post-commit rather than a `SAVEPOINT`.

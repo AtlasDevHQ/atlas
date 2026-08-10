@@ -3308,8 +3308,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     await expectRejected(
       "chk_brain_facts_grant_nonempty",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[NULL, '']::text[])`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[NULL, '']::text[])`,
       [ws, episodeId],
     );
   }, PG_TEST_TIMEOUT_MS);
@@ -3321,8 +3321,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
 
     const { rows } = await pool.query<{ status: string; predicate_cardinality: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 'acme', 'uses', 'postgres', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 'acme', 'uses', 'postgres', 'acme', 'uses', 'postgres', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING status, predicate_cardinality`,
       [ws, episodeId],
     );
@@ -3334,8 +3334,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     await expectRejected(
       "chk_brain_facts_status",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to, status)
-       VALUES ($1, 'acme', 'uses', 'mysql', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], 'live')`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to, status)
+       VALUES ($1, 'acme', 'uses', 'mysql', 'acme', 'uses', 'mysql', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], 'live')`,
       [ws, episodeId],
     );
   }, PG_TEST_TIMEOUT_MS);
@@ -3346,13 +3346,13 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
 
     const base = `INSERT INTO brain_facts
-        (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)`;
+        (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)`;
 
     // An EMPTY grant is the dangerous case, and the one NOT NULL alone misses:
     // it denies everyone, which reads as "hidden" but behaves as "unreviewed".
     await expectRejected(
       "chk_brain_facts_grant_nonempty",
-      `${base} VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[]::text[])`,
+      `${base} VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[]::text[])`,
       [ws, episodeId],
     );
 
@@ -3360,7 +3360,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // shape of a real one.
     await expectRejected(
       "chk_brain_facts_provenance_nonempty",
-      `${base} VALUES ($1, 's', 'p', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
+      `${base} VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
       [ws, episodeId],
     );
 
@@ -3368,7 +3368,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // has no constraint name, so this one matches on the message.
     let nullErr: (Error & { column?: string }) | null = null;
     try {
-      await pool.query(`${base} VALUES ($1, 's', 'p', 'o', NULL, '{"actor":"u1"}'::jsonb, ARRAY['org'])`, [ws]);
+      await pool.query(`${base} VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', NULL, '{"actor":"u1"}'::jsonb, ARRAY['org'])`, [ws]);
     } catch (e) {
       nullErr = e instanceof Error ? e : new Error(String(e));
     }
@@ -3398,8 +3398,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     await expectRejected(
       "fk_brain_facts_episode",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
       [wsA, episodeB],
     );
   }, PG_TEST_TIMEOUT_MS);
@@ -3413,18 +3413,18 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // a human promotion stamps one.
     await pool.query(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to,
           valid_from)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], now())`,
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], now())`,
       [ws, episodeId],
     );
 
     await expectRejected(
       "chk_brain_facts_valid_interval",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to,
           valid_from, valid_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'],
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'],
                now(), now() - interval '1 day')`,
       [ws, episodeId],
     );
@@ -3436,9 +3436,9 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows: factRows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org']),
-              ($1, 's', 'p', 'o2', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org']),
+              ($1, 's', 'p', 'o2', 's', 'p', 'o2', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );
@@ -3480,8 +3480,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows: factRows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );
@@ -3525,8 +3525,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows: factRows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );
@@ -3570,8 +3570,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeA = await insertEpisode(wsA, `ep-a-${stamp}`);
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [wsA, episodeA],
     );
@@ -3592,8 +3592,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     await pool.query(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
       [ws, episodeId],
     );
 
@@ -3612,8 +3612,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );
@@ -3695,4 +3695,200 @@ describe("integration stores: ISO timestamp SQL", () => {
       expect(source).not.toContain("installed_at::text");
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// 0194 — the slot-key constraint's own data transform (#5047)
+// ---------------------------------------------------------------------------
+
+describeIfPg("migrate-pg: 0194 replayed against a pre-0194 corpus (#5047)", () => {
+  let pool: Pool;
+  const schemaName = `pre_0194_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const migrationsDir = join(import.meta.dir, "..", "migrations");
+  const WS = "ws-0194";
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`migrate-pg 0194: SET search_path failed on new connection: ${message}`);
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+  });
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  it("keys through the VOCABULARY, scopes PER COLUMN, and tombstones what it cannot key", async () => {
+    // ⚠️ `migrate-pg.test.ts`'s ordinary run applies 0194 against an EMPTY
+    // `brain_facts`, so all four of its data statements touch zero rows and it
+    // sees nothing about what they do. This replays it against a seeded
+    // pre-state, using the partition technique the 0096 suite above established.
+    //
+    // Four fixtures, each the falsifier for one decision 0194's header argues:
+    //
+    //   (a) the backfill must write `alias(lexicalNorm(surface))`, not the raw
+    //       norm — reverting to 0188's pre-vocabulary statement writes `priced
+    //       at` where the vocabulary says `unit price`, an under-match nothing
+    //       surfaces;
+    //   (b) it must be PER COLUMN — 0187/0188's single `UPDATE` rewrites all
+    //       three keys on a row unkeyed at one position, silently reverting a
+    //       curated key at another;
+    //   (c) a degenerate position takes a per-row placeholder and a tombstone,
+    //       and its OTHER positions keep their real keys;
+    //   (d) an already-tombstoned row keeps its ORIGINAL timestamp — the
+    //       `COALESCE` — because when it stopped being a belief is a fact about
+    //       the corpus, not about this migration.
+    const allFiles = readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
+    const post0194 = allFiles.filter((f) => f.localeCompare("0194_") >= 0);
+    // Non-vacuity: an empty partition means 0194 already ran and this proves
+    // nothing.
+    expect(post0194).toContain("0194_brain_fact_slot_keys_not_null.sql");
+
+    const applied = await runMigrations(pool, {
+      skip: [...MANAGED_AUTH_MIGRATIONS, ...post0194],
+    });
+    expect(applied).toBeGreaterThan(0);
+
+    const { rows: epRows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_episodes
+         (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
+       VALUES ($1, 'slack', '0194-ep', 'U1', 'evidence', now(), ARRAY['org'])
+       RETURNING id`,
+      [WS],
+    );
+    const episodeId = epRows[0]!.id;
+
+    // The vocabulary the backfill must consult. Written directly to both
+    // relations: the closure table has an FK onto the edge, and going through
+    // the authoring seam here would need the whole approval path for one row.
+    await pool.query(
+      `INSERT INTO brain_vocabulary_edge
+         (workspace_id, slot_position, from_norm, to_norm, approved_by)
+       VALUES ($1, 'predicate', 'priced at', 'unit price', '0194-test')`,
+      [WS],
+    );
+    await pool.query(
+      `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
+       VALUES ($1, 'predicate', 'priced at', 'unit price')`,
+      [WS],
+    );
+
+    const seed = async (
+      subject: string,
+      predicate: string,
+      object: string,
+      keys: { s: string | null; p: string | null; o: string | null },
+      invalidatedAt: Date | null = null,
+    ): Promise<string> => {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO brain_facts
+           (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key,
+            source_episode_id, provenance, visible_to, invalidated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{"actor":"u1"}'::jsonb, ARRAY['org'], $9)
+         RETURNING id::text AS id`,
+        [WS, subject, predicate, object, keys.s, keys.p, keys.o, episodeId, invalidatedAt],
+      );
+      return rows[0]!.id;
+    };
+
+    const aliased = await seed("Widget", "Priced At", "nine", { s: null, p: null, o: null });
+    const curated = await seed("gadget", "priced at", "ten", {
+      s: "gadget",
+      p: "curated predicate",
+      o: null,
+    });
+    const degenerate = await seed("billing", "is owned by", "-", {
+      s: "billing",
+      p: "is owned by",
+      o: null,
+    });
+    const alreadyDead = new Date("2026-01-02T03:04:05.000Z");
+    const tombstoned = await seed("legacy", "is", "___", { s: null, p: null, o: null }, alreadyDead);
+
+    const before = await pool.query<{ id: string; updated_at: Date }>(
+      `SELECT id::text AS id, updated_at FROM brain_facts WHERE workspace_id = $1`,
+      [WS],
+    );
+
+    // Apply 0194 (and anything after it).
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+
+    const read = async (id: string) => {
+      const { rows } = await pool.query<{
+        subject_key: string;
+        predicate_key: string;
+        object_key: string;
+        invalidated_at: Date | null;
+        updated_at: Date;
+      }>(
+        `SELECT subject_key, predicate_key, object_key, invalidated_at, updated_at
+           FROM brain_facts WHERE id = $1`,
+        [id],
+      );
+      return rows[0]!;
+    };
+
+    // (a) the backfill is VOCABULARY-AWARE. `Priced At` norms to `priced at`,
+    // which the closure maps to `unit price`. 0188's statement writes
+    // `priced at` and this assertion is what says so.
+    const a = await read(aliased);
+    expect(
+      a.predicate_key,
+      "the backfill wrote the raw norm — it must compose the vocabulary, or the row sits in a different slot from every sibling the vocabulary unified",
+    ).toBe("unit price");
+    expect(a.subject_key).toBe("widget");
+    expect(a.object_key).toBe("nine");
+    expect(a.invalidated_at).toBeNull();
+
+    // (b) PER COLUMN. `curated` is unkeyed only at the object, and its stored
+    // predicate key disagrees with what the vocabulary would compute — so a
+    // single blanket `UPDATE` rewrites it to `unit price` and this catches it.
+    const b = await read(curated);
+    expect(
+      b.predicate_key,
+      "a column that already had a key was rewritten — 0194 must scope each statement to its own column, or it silently reverts curated keys at positions it was not asked about",
+    ).toBe("curated predicate");
+    expect(b.object_key).toBe("ten");
+    expect(b.invalidated_at).toBeNull();
+
+    // (c) the degenerate position takes a per-row placeholder AND a tombstone,
+    // while the two keyable positions keep their real keys.
+    const c = await read(degenerate);
+    expect(c.object_key).toBe(`-unkeyable:${degenerate}`);
+    expect(
+      [c.subject_key, c.predicate_key],
+      "a placeholder overwrote a position that keys perfectly well — a row merely valueless at one slot became unreachable at all three",
+    ).toEqual(["billing", "is owned by"]);
+    expect(c.invalidated_at).not.toBeNull();
+
+    // The placeholders are PER ROW: two degenerate rows must not share a slot,
+    // which is the entire difference from the sentinel 0187's header rejects.
+    const d = await read(tombstoned);
+    expect(d.object_key).toBe(`-unkeyable:${tombstoned}`);
+    expect(d.object_key).not.toBe(c.object_key);
+
+    // (d) an already-tombstoned row keeps its ORIGINAL timestamp.
+    expect(
+      d.invalidated_at?.toISOString(),
+      "0194 restamped a row that was already tombstoned — when it stopped being a belief is a fact about the corpus, not about this migration",
+    ).toBe(alreadyDead.toISOString());
+
+    // `updated_at` is untouched on every row: it sorts the publish preview, and
+    // a workspace-wide stamp reshuffles every reviewer's draft queue into
+    // backfill order.
+    for (const row of before.rows) {
+      const after = await read(row.id);
+      expect(after.updated_at.toISOString(), `updated_at moved on ${row.id}`).toBe(
+        row.updated_at.toISOString(),
+      );
+    }
+  }, PG_TEST_TIMEOUT_MS);
 });

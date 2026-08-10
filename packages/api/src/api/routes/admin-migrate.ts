@@ -15,6 +15,8 @@ import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
 import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
 import {
   SLOT_POSITIONS,
+  UNKEYABLE_KEY_PREFIX,
+  identityKey,
   isSlotPosition,
   lexicalNorm,
   slotKey,
@@ -860,6 +862,18 @@ const importRoute = createRoute({
       description: "Forbidden — admin role required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
+    409: {
+      description:
+        "Bundle refused — a fact has no identity key at a position whose surface normalizes to a " +
+        "real one, so landing it would either retire a healthy belief or re-derive its key under " +
+        "this region's vocabulary, and neither is reversible (#5047). NOTHING WAS WRITTEN. Two " +
+        "causes with two different remedies, and the `message` says which: on a v3 bundle the key " +
+        "was supposed to travel and did not — re-export from the source region, checking it for " +
+        "identity drift and that it has applied migration 0194 — while on a v1/v2 bundle the key " +
+        "is computed at import, so a refusal means THIS region's vocabulary maps that norm away " +
+        "and the fix is a local `brain_vocabulary_target` entry, which re-exporting cannot change.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -928,9 +942,31 @@ function isLoss(reason: RegionCarryOutcome["reason"]): boolean {
 
 /** The identity columns an imported fact lands with (#5035). */
 interface ImportedIdentity {
-  readonly subjectKey: string | null;
-  readonly predicateKey: string | null;
-  readonly objectKey: string | null;
+  /**
+   * NON-NULL since #5047 — `brain_facts`' three key columns are `NOT NULL` as of
+   * migration 0194, and this is the second key writer, so the type is what keeps
+   * that true here rather than a `23502` on the first offending row of an
+   * admin-triggered region import (ADR-0024, a production path).
+   *
+   * A null at any position is landed by {@link tombstonePlaceholder}, which is
+   * 0194's own policy for the same state. The type narrows AFTER that call and
+   * nowhere before it, so the two arms of {@link importedIdentity} cannot
+   * accidentally skip it.
+   */
+  readonly subjectKey: string;
+  readonly predicateKey: string;
+  readonly objectKey: string;
+  /**
+   * A key was replaced by a placeholder, so the row lands TOMBSTONED (#5047).
+   *
+   * Read at the INSERT, where it is `OR`ed into `invalidated_at`. Separate from
+   * {@link unkeyable} / {@link nullKeys} on purpose: those two are OPERATOR
+   * counters that say WHY the key was absent (computed here vs. arrived null),
+   * and this one says what the row DID about it. Collapsing them would make the
+   * import's log line and its write disagree the first time a fourth cause
+   * appears.
+   */
+  readonly tombstoned: boolean;
   /**
    * ⚠️ {@link RegionPortableComparable}, NOT `string | null` and not the wider
    * `ComparableValue`, and the narrowing is the whole guarantee this slice
@@ -964,7 +1000,12 @@ interface ImportedIdentity {
   readonly carryReasons: readonly RegionCarryOutcome["reason"][];
   /** A key this import COMPUTED came out null — the surface norms away. */
   readonly unkeyable: boolean;
-  /** A key this import CARRIED arrived null — the cause is the source region's. */
+  /**
+   * A key this import CARRIED arrived null AND that position's surface
+   * normalizes away — the only carried null that still LANDS, since #5047 makes
+   * the repairable kind refuse the bundle. The cause is the claim's own text,
+   * not the source region's.
+   */
   readonly nullKeys: boolean;
 }
 
@@ -1012,6 +1053,174 @@ interface ImportedIdentity {
  * imported"* rather than *"is worth recomputing"*, and #4772's review filter
  * reads it as the latter.
  */
+/**
+ * Raised when a bundle carries no identity for a fact whose SURFACE has one
+ * (#5047). Refuses the import rather than landing the row.
+ *
+ * See {@link tombstonePlaceholder} for why this case and the degenerate-surface
+ * case cannot take the same treatment.
+ */
+export class RegionImportUnkeyableError extends Error {
+  constructor(
+    readonly factId: string,
+    readonly positions: readonly string[],
+  ) {
+    super(
+      `Region import refused: fact ${factId} arrived with no identity key at ${positions.join(", ")}, ` +
+        "but its surface at those positions normalizes to a real key — so the bundle is missing " +
+        "identity the source region has. Landing it would either invalidate a healthy belief " +
+        "(tombstone) or re-derive its key under THIS region's vocabulary, which can merge it into a " +
+        "slot it never belonged to and stamp `valid_to` across the merge at publish. Neither is " +
+        "reversible. Check the source region's export for identity drift — a projection that stopped " +
+        "returning the key columns exports null for every fact — and that the source region has " +
+        "applied migration 0194, whose backfill keys exactly these rows. Then re-export and re-run.",
+    );
+    this.name = "RegionImportUnkeyableError";
+  }
+}
+
+/**
+ * Raised when a LEGACY (v1/v2) bundle's fact keys to nothing because THIS
+ * region's vocabulary maps its norm away (#5047).
+ *
+ * Split from {@link RegionImportUnkeyableError} because the two name different
+ * subsystems, different regions and different remedies, and a shared message
+ * sends the operator somewhere they can do nothing. A v1/v2 bundle carries no
+ * key columns at all, so "re-export from the source" is unfollowable advice for
+ * this cause — the defect is a local alias entry.
+ *
+ * Reachable only through a hand-written or imported `brain_vocabulary_target`
+ * row: `vocabulary-decide.ts` refuses a `degenerate-norm` target at authoring
+ * and `validateBundle` refuses a non-norm edge at import. Raised anyway rather
+ * than assumed unreachable, for the reason `REKEY_DRIFTED_FACTS_SQL`'s own
+ * `IS NOT NULL` arm gives: testing the composed expression is what keeps this
+ * correct if that guard ever reopens, and the failure mode here is a permanent
+ * 409 on a whole tenant migration.
+ */
+export class RegionImportVocabularyTargetError extends Error {
+  constructor(
+    readonly factId: string,
+    readonly positions: readonly string[],
+  ) {
+    super(
+      `Region import refused: fact ${factId} could not be keyed at ${positions.join(", ")} — its ` +
+        "surface normalizes to a real key, but THIS region's vocabulary maps that norm to " +
+        "something that normalizes away, so the fact would have no identity. This is a " +
+        "destination-side configuration defect and re-exporting will not change it: inspect this " +
+        "workspace's `brain_vocabulary_target` rows for the positions named above, remove or " +
+        "correct the offending alias entry, then re-run the import.",
+    );
+    this.name = "RegionImportVocabularyTargetError";
+  }
+}
+
+/**
+ * The `NOT NULL` landing for a key this import could not supply (#5047).
+ *
+ * `brain_facts`' key columns are `NOT NULL` since migration 0194, so this writer
+ * can no longer pass a null through. What it does instead depends on WHY the key
+ * is absent, and the two causes are not the same event.
+ *
+ * ## The surface normalizes away → TOMBSTONE with a per-row placeholder
+ *
+ * The claim asserts nothing at that position and never could: no vocabulary, no
+ * re-key, and no source region can produce a key for `-` or `___`. This is
+ * exactly migration 0194's population, and this is 0194's treatment of it, so the
+ * two key writers agree about one state.
+ *
+ * The tombstone is the load-bearing half. All three slot consumers require
+ * `invalidated_at IS NULL`, so the row is outside every join by the tombstone
+ * rather than by its key — which is where a NULL key left it before the
+ * constraint. The placeholder is per-row ({@link UNKEYABLE_KEY_PREFIX}), which is
+ * what separates it from the shared sentinel 0187's header rejects.
+ *
+ * ## The surface has a key but none arrived → REFUSE the import
+ *
+ * ⚠️ **This arm exists because the first one is WRONG for this case, and getting
+ * that wrong is how a recoverable state becomes an unrecoverable one.**
+ *
+ * Such a row is repairable: its surface keys perfectly well, so
+ * `REKEY_DRIFTED_FACTS_SQL` computes a real key for it at the next alias decision
+ * and it rejoins every consumer. Before #5047 it landed live-but-unjoined, which
+ * is ADR-0037 §8's accepted under-match. Tombstoning it instead retires a healthy
+ * belief, and NOTHING in the product clears `invalidated_at` — the re-key would
+ * repair the key while the row stayed invisible forever.
+ *
+ * Computing the key here is the other tempting repair and is worse. §8 settles
+ * that a row-copy path never re-derives, because re-deriving under the
+ * DESTINATION's vocabulary can merge imported facts into a slot they never
+ * belonged to, and publish then stamps `valid_to` across the merge — the
+ * irreversible direction.
+ *
+ * So neither landing is safe, and the honest move is not to land. WHICH
+ * subsystem to blame depends on the arm, and the two are not interchangeable:
+ *
+ *   - CARRIED (v3): the key was supposed to travel and did not. Source-side —
+ *     export drift that nulls the column for the whole corpus is the documented
+ *     shape, or a source region that has not yet applied 0194. Fixed at the
+ *     source and re-run. {@link RegionImportUnkeyableError}.
+ *   - COMPUTED (v1/v2): the key was derived HERE, so a null means this region's
+ *     own vocabulary maps a real norm to something that normalizes away.
+ *     Destination-side, fixed in `brain_vocabulary_target`, and re-exporting
+ *     cannot change it. {@link RegionImportVocabularyTargetError}.
+ *
+ * Refusing is the only outcome here that writes nothing.
+ *
+ * That a single such row refuses a whole region migration is deliberate: at this
+ * position it is not "one odd claim" but evidence that the bundle's identity is
+ * not trustworthy, and the alternative is committing an invalidation no verb can
+ * undo. A genuinely degenerate row — the far commoner case — takes the first arm
+ * and does not block anything.
+ */
+function tombstonePlaceholder(
+  fact: ExportedBrainFact,
+  source: IdentitySource,
+  keys: {
+    readonly subjectKey: string | null;
+    readonly predicateKey: string | null;
+    readonly objectKey: string | null;
+  },
+): Pick<ImportedIdentity, "subjectKey" | "predicateKey" | "objectKey" | "tombstoned"> {
+  // Decided per POSITION off that position's own surface, never off the row: a
+  // fact can be degenerate at the object and healthy at the subject, and the two
+  // positions then want opposite answers.
+  const absent = (
+    [
+      ["subject", keys.subjectKey, fact.subject],
+      ["predicate", keys.predicateKey, fact.predicate],
+      ["object", keys.objectKey, fact.object],
+    ] as const
+  ).filter(([, key]) => key === null);
+  const repairable = absent.filter(([, , surface]) => identityKey(surface) !== null);
+  if (repairable.length > 0) {
+    // ⚠️ WHICH SUBSYSTEM IS AT FAULT DEPENDS ON WHICH ARM CALLED, and the first
+    // cut raised the source-region error from both — so a v1/v2 bundle, which
+    // carries no key columns on the wire AT ALL, told the operator to "re-export
+    // from the source region and check it has applied 0194". Re-exporting cannot
+    // change anything on that arm, and 0194 at the source is irrelevant: the
+    // whole migration wedges behind an instruction nobody can follow.
+    //
+    // On the CARRIED arm a repairable null means the key was supposed to arrive
+    // and did not — source-side. On the COMPUTED arm the key was derived right
+    // here by `slotKey(surface, vocabulary[position])`, and `slotKey` reaches
+    // null a second way: this region's own alias entry maps a real norm to
+    // something that normalizes away. That is a destination-side configuration
+    // defect and names a different table, a different region, and a different
+    // remedy.
+    const positions = repairable.map(([position]) => position);
+    throw source.carried
+      ? new RegionImportUnkeyableError(fact.id, positions)
+      : new RegionImportVocabularyTargetError(fact.id, positions);
+  }
+  const placeholder = `${UNKEYABLE_KEY_PREFIX}${fact.id}`;
+  return {
+    subjectKey: keys.subjectKey ?? placeholder,
+    predicateKey: keys.predicateKey ?? placeholder,
+    objectKey: keys.objectKey ?? placeholder,
+    tombstoned: absent.length > 0,
+  };
+}
+
 function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): ImportedIdentity {
   if (!source.carried) {
     // A pre-#5035 bundle has no `_cmp` on the wire at all, so there is nothing
@@ -1025,7 +1234,7 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
       objectKey: slotKey(fact.object, vocabulary.object),
     };
     return {
-      ...keys,
+      ...tombstonePlaceholder(fact, source, keys),
       subjectCmp: null,
       objectCmp: null,
       comparableDropped: false,
@@ -1034,10 +1243,12 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
       // its null-ness is this import's own fact and its cause is the surface.
       nullKeys: false,
       // `slotKey` is null for a surface that normalizes away (`-`, `___`), which
-      // is legal and permanent. The INGEST path warns about it and is described
-      // as "the only signal such a claim ever produces" — this is the second key
-      // writer, so it owes the same signal or an imported corpus loses one an
-      // identical locally-ingested corpus would have produced.
+      // is legal and permanent — and since #5047 the two key writers no longer do
+      // the same thing with it. INGEST REFUSES the claim outright
+      // (`reconcile.ts`'s `MALFORMED_CLAIM`); this path cannot, because the row
+      // already exists in the source region, so it TOMBSTONES it exactly as
+      // migration 0194 does. This counter is what makes that visible — see
+      // `tombstonedFacts` in the aggregate warn below.
       unkeyable: Object.values(keys).some((k) => k === null),
     };
   }
@@ -1047,10 +1258,15 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
   return {
     // `?? null` normalizes ABSENT to NULL and is not a permissive fallback:
     // validation refuses a v3 fact missing any of the five, so the only shape
-    // that reaches here is the `string | null` the wire type declares.
-    subjectKey: fact.subjectKey ?? null,
-    predicateKey: fact.predicateKey ?? null,
-    objectKey: fact.objectKey ?? null,
+    // that reaches here is the `string | null` the wire type declares. A null
+    // that survives that is landed by {@link tombstonePlaceholder} — the keys
+    // are `NOT NULL` since #5047, and this arm CARRIES rather than computes, so
+    // it has nothing better to write.
+    ...tombstonePlaceholder(fact, source, {
+      subjectKey: fact.subjectKey ?? null,
+      predicateKey: fact.predicateKey ?? null,
+      objectKey: fact.objectKey ?? null,
+    }),
     subjectCmp: subject.value,
     objectCmp: object.value,
     // Derived from the REASONS through {@link isLoss}, not from the null-ness of
@@ -1061,12 +1277,15 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
     comparableDropped: [subject.reason, object.reason].some(isLoss),
     carryReasons: [subject.reason, object.reason],
     // A carried key is never recomputed here, so this import cannot make one
-    // NULL — but it can LAND one, and that is the state an operator needs
-    // reported. The exporter's own drift path produces exactly it: a projection
-    // that stops returning `f.subject_key` exports `null` for every fact, this
-    // region accepts it (null is legitimate at all five positions), and the
-    // whole corpus lands unkeyed with a green 200 at both ends. Region A's log
-    // carries the only other signal, and nobody watching the CUTOVER reads it.
+    // NULL — it can only LAND one, and since #5047 it lands only the kind whose
+    // SURFACE also normalizes away. A null beside a KEYABLE surface refuses the
+    // whole bundle (`RegionImportUnkeyableError`, 409), because that row is
+    // repairable by the next drift re-key and both ways of landing it are not.
+    //
+    // So the exporter's drift path — a projection that stops returning
+    // `f.subject_key`, exporting `null` for every fact — no longer lands quietly
+    // with a green 200 at both ends; it IS the 409. What this counter is left
+    // reporting is the residue: rows that arrived null legitimately.
     unkeyable: false,
     nullKeys: [fact.subjectKey, fact.predicateKey, fact.objectKey].some((k) => (k ?? null) === null),
   };
@@ -1647,20 +1866,31 @@ export async function importBundle(
   //                otherwise is its absence. A version skew between two
   //                independently deployed regions produces exactly this.
   //   unkeyableFacts — a legacy surface that normalizes away, so no key exists.
-  //                Legal and permanent; the ingest path warns about it and calls
-  //                that "the only signal such a claim ever produces", and this
-  //                is the second key writer.
-  //   nullKeyFacts — a v3 fact that ARRIVED with a null key. The exporter's
-  //                drift path produces a whole corpus of them.
+  //                Legal and permanent. Ingest REFUSES such a claim since #5047;
+  //                this writer cannot, since the row already exists in the source
+  //                region, so it tombstones it as migration 0194 does.
+  //   nullKeyFacts — a v3 fact that ARRIVED with a null key. Only reaches here
+  //                when its surface ALSO normalizes away: a null key beside a
+  //                keyable surface refuses the import instead (#5047), because
+  //                that row is repairable and both ways of landing it are not.
+  //   tombstonedFacts — what the import DID: the row carries a placeholder key
+  //                and `invalidated_at`. The count to act on.
   //
   // ⚠️ The names carry their UNIT because the first two count POSITIONS (up to
-  // two per fact) and the last two count FACTS. Read against `brainFacts.imported`
+  // two per fact) and the last three count FACTS. Read against `brainFacts.imported`
   // without that, a ratio is nonsense in one direction and understated in the other.
   const identityLoss = {
     storeLocalPositions: 0,
     unreadablePositions: 0,
     unkeyableFacts: 0,
     nullKeyFacts: 0,
+    // What the import DID about the two above (#5047), as opposed to why the key
+    // was absent. Kept separate from them deliberately: those two say WHERE the
+    // null came from — computed here off a degenerate surface, or arrived null on
+    // the wire — and this says the row landed TOMBSTONED, which is the fact an
+    // operator has to act on. A fourth cause would otherwise land unmarked and
+    // untold at once.
+    tombstonedFacts: 0,
   };
 
   // bundle episode id → the id it actually resolved to in the target. Only
@@ -1823,6 +2053,13 @@ export async function importBundle(
       }
       if (identity.unkeyable) identityLoss.unkeyableFacts++;
       if (identity.nullKeys) identityLoss.nullKeyFacts++;
+      // NEWLY tombstoned only. `identity.tombstoned` drives the WRITE, which
+      // `COALESCE`s so a fact that arrived already tombstoned keeps the source
+      // region's timestamp — for that row this import retired nothing, and
+      // counting it would raise a false alarm pointing at manual DB surgery.
+      if (identity.tombstoned && (fact.invalidatedAt ?? null) === null) {
+        identityLoss.tombstonedFacts++;
+      }
 
       await client.query(
         // `pre_widening_visible_to` travels or the target region re-opens the
@@ -1856,7 +2093,24 @@ export async function importBundle(
         // the null-out is merely safe; with it, it is recoverable, and
         // `PROVISIONAL_PREDICATE` is the query that finds the rows.
         `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, subject_cmp, object_cmp, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, pre_widening_visible_to, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                 -- invalidated_at is the one other column with a CASE, and for
+                 -- #5047's reason rather than #5035's. A fact whose key this
+                 -- import could not supply lands TOMBSTONED, matching migration
+                 -- 0194's treatment of the same state; the placeholder key beside
+                 -- it only satisfies the constraint, and the tombstone is what
+                 -- keeps the row out of all three slot consumers.
+                 --
+                 -- COALESCE and not an overwrite: a fact that arrived ALREADY
+                 -- tombstoned keeps the source region's timestamp, because when
+                 -- it stopped being a belief is a fact about the corpus and not
+                 -- about this import. now() and not a bind, so the stamp comes
+                 -- from the same clock the migration's does.
+                 -- (No backticks in this comment: the statement is a template
+                 -- literal, and one would end it.)
+                 CASE WHEN $24::boolean THEN COALESCE($14::timestamptz, now())
+                      ELSE $14::timestamptz END,
+                 $15, $16,
                  CASE WHEN $17::boolean
                       THEN jsonb_set($18::jsonb, '{provisional}', 'true'::jsonb, true)
                       ELSE $18::jsonb END,
@@ -1890,6 +2144,12 @@ export async function importBundle(
           fact.preWideningVisibleTo ?? null,
           fact.createdAt,
           fact.updatedAt,
+          // $24 — appended rather than inserted beside `invalidated_at`'s $14,
+          // which the CASE above reads. Renumbering the binds to put it there
+          // would move every placeholder after it, and this statement's column
+          // list and bind array are already the pair most exposed to that class
+          // of slip.
+          identity.tombstoned,
         ],
       );
       result.brainFacts.imported++;
@@ -1915,7 +2175,7 @@ export async function importBundle(
         brainFactsImported: result.brainFacts.imported,
         comparablePositions: result.brainFacts.imported * 2,
       },
-      "Region import WILL land identity losses when this transaction commits (#5035, ADR-0037 §8). `storeLocalPositions` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadablePositions` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. ⚠️ `nullKeyFacts` is AMBIGUOUS and both readings are here: a surface that normalizes away carries a null key legitimately and permanently (the v3 equivalent of `unkeyableFacts`, and nothing to act on), and so does a source-region projection that stopped returning the column. A count approaching `brainFactsImported` means the projection — check the source region's export log for its identity-drift line; a handful means normalized-away surfaces. `unkeyableFacts` is that same legal, permanent state on a legacy bundle. Units: the first two count POSITIONS, up to two per fact; the last two count FACTS",
+      "Region import WILL land identity losses when this transaction commits (#5035, ADR-0037 §8). `storeLocalPositions` is the RULE — a store-local entity id means nothing in this region, so those positions abstain until recomputed, and the rows carry `provenance.provisional` (find them with PROVISIONAL_PREDICATE). `unreadablePositions` is DRIFT and is the count to act on: the source region wrote a tag or payload this deployment cannot read, so that evidence is lost rather than deferred — check whether the two regions are on compatible releases. ⚠️ `tombstonedFacts` IS THE COUNT TO ACT ON FIRST (#5047): those facts had no identity at some position and the slot keys are NOT NULL, so they landed with a per-row placeholder key AND `invalidated_at` set — they are invisible to searchBrain and to the review queue, and no verb in the product restores them; only clearing `invalidated_at` by hand does. Their surfaces are retained verbatim, so the claim text is recoverable. Every one of them is a claim whose surface normalizes away (`-`, `___`), which is what migration 0194 did to the same population — a fact whose key merely FAILED TO ARRIVE while its surface keys fine refuses the whole import instead of landing (RegionImportUnkeyableError), because tombstoning a healthy belief and re-deriving its key under this region's vocabulary are both irreversible. `unkeyableFacts` counts those keyed HERE off a legacy bundle; `nullKeyFacts` counts those that arrived null on a v3 one. Units: the first two count POSITIONS, up to two per fact; the last three count FACTS",
     );
   }
 
@@ -2029,6 +2289,23 @@ adminMigrate.openapi(importRoute, async (c) => {
     });
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Migration import failed, rolled back");
+    // A refused bundle is not a server fault (#5047). TWO causes with two
+    // different remedies, and the `message` carries the right one: a v3 bundle
+    // that supplied no identity for a keyable surface (source-side — re-export),
+    // or a v1/v2 bundle this region's own vocabulary cannot key (destination-side
+    // — fix the alias entry; re-exporting changes nothing). Naming only the first
+    // here is the unfollowable advice #5047 removed from the error message and
+    // from the OpenAPI description.
+    //
+    // 409 rather than 400 because the request itself is well-formed —
+    // `validateBundle` passed — and rather than 500 because retrying THIS body
+    // can never succeed and nothing here is broken.
+    if (
+      err instanceof RegionImportUnkeyableError ||
+      err instanceof RegionImportVocabularyTargetError
+    ) {
+      return c.json({ error: "import_refused", message: detail, requestId }, 409);
+    }
     return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
   } finally {
     client.release();
@@ -2108,6 +2385,23 @@ internalMigrate.post("/import", async (c) => {
     });
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Internal import failed, rolled back");
+    // A refused bundle is not a server fault (#5047). TWO causes with two
+    // different remedies, and the `message` carries the right one: a v3 bundle
+    // that supplied no identity for a keyable surface (source-side — re-export),
+    // or a v1/v2 bundle this region's own vocabulary cannot key (destination-side
+    // — fix the alias entry; re-exporting changes nothing). Naming only the first
+    // here is the unfollowable advice #5047 removed from the error message and
+    // from the OpenAPI description.
+    //
+    // 409 rather than 400 because the request itself is well-formed —
+    // `validateBundle` passed — and rather than 500 because retrying THIS body
+    // can never succeed and nothing here is broken.
+    if (
+      err instanceof RegionImportUnkeyableError ||
+      err instanceof RegionImportVocabularyTargetError
+    ) {
+      return c.json({ error: "import_refused", message: detail, requestId }, 409);
+    }
     return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
   } finally {
     client.release();

@@ -161,34 +161,43 @@
  * — those pairs corroborate instead. For rows already in the corpus it is a
  * visible number moving the opposite way from the paragraph above.
  *
- * ## What the NULLABLE keys cost
+ * ## The keys are TOTAL as of #5047, and what that changed
  *
- * The acceptance criteria for #5020 also asked for `SET NOT NULL` on all three
- * columns. It is deliberately NOT in this cut: migration 0187's header
- * enumerates three prerequisites, and the third — tightening `MALFORMED_CLAIM`
- * to refuse a candidate whose key is null — is unowned, so the constraint would
- * turn a claim that is storable TODAY into a transaction-killing violation. Read
- * that header before flipping it.
+ * `SET NOT NULL` on all three columns landed in migration 0194, so a NULL key
+ * no longer means two things — it cannot occur. Migration 0187's header
+ * enumerated three prerequisites; #5020 supplied the first (`INSERT_FACT_SQL`
+ * keys new rows), #5035 the second (a v3 bundle carries keys verbatim), and
+ * #5047 the third: the `MALFORMED_CLAIM` guard in the preparation loop below now
+ * REFUSES a candidate whose `slotKey` is null, so an ingest that used to store an
+ * identity-less row is a block instead of a not-null violation that would fail
+ * the whole reconcile transaction.
  *
- *   - A surface that norms away (`-`, `___`) has a NULL key, so it corroborates
- *     nothing and earns no tension edge — where byte-exactness would have
- *     matched another `-`. `null = null` is unknown in SQL, and that is the
- *     point: the alternative, a stored `''`, is the one key value that joins
- *     every other degenerate row (migration 0187's header). Never write these
- *     comparisons NULL-safe. This one is PERMANENT and legal; no backfill
- *     repairs it, which is why it is logged at the prepare loop below.
- *   - A row written between 0187 deploying and this code deploying is unkeyed,
- *     and drops out of all three slot consumers. Migration 0188 repeats 0187's
- *     re-runnable backfill in THIS deploy to close exactly that window — the
- *     correctness need arrives here, not at the constraint flip, because here is
- *     where the consumers start depending on the column.
- *   - A region import used to land every row unkeyed, and 0188 could not help:
- *     it runs at boot, an import runs whenever an admin triggers one. **Closed
- *     by #5035** — a v3 bundle carries the keys verbatim and a v1/v2 bundle's
- *     facts are keyed once at import. What survives is narrower: a carried key
- *     can name a norm THIS region's vocabulary cannot produce, so it collides
- *     with nothing until a human curates. Under-match, and the recoverable
- *     direction ADR-0037 §8 chose deliberately.
+ *   - A surface that norms away (`-`, `___`) is no longer a storable claim. It
+ *     used to be — `String#trim` strips whitespace but not `_` or `-`, so the
+ *     blank-trim guard let it through — and the row it produced corroborated
+ *     nothing and earned no tension edge for as long as it existed. The refusal
+ *     is what the constraint needed and is the honest verdict besides: a claim
+ *     whose subject norms away asserts nothing.
+ *   - The comparisons stay NULL-hostile even though no key is NULL now. `= NULL`
+ *     being unknown is what keeps the abstain band honest at the two `_cmp`
+ *     columns, which ARE permanently nullable; and never write the KEY
+ *     comparisons NULL-safe, because the alternative a NULL-safe arm invites is
+ *     a stored `''`, the one key value that joins every other degenerate row
+ *     (migration 0187's header).
+ *   - Rows written between 0187 deploying and #5020's deploy were unkeyed and
+ *     dropped out of all three slot consumers. Migration 0188 repeated 0187's
+ *     re-runnable backfill to close that window; 0194 repeats it once more,
+ *     vocabulary-aware and per-column, immediately before the constraint, to
+ *     sweep the residue a rolling deploy's own overlap leaves behind.
+ *   - Legacy rows whose surfaces norm away could not be keyed by any backfill.
+ *     0194 tombstones them and gives the affected columns a per-row placeholder
+ *     (the row's own id, which `lexicalNorm` can never emit — it collapses `-`
+ *     and `_` away). The tombstone is what keeps them out of all three slot
+ *     consumers, which every one of them already required; the placeholder is
+ *     only there to satisfy the constraint. See 0194's header.
+ *   - A carried key can still name a norm THIS region's vocabulary cannot
+ *     produce, so it collides with nothing until a human curates. Under-match,
+ *     and the recoverable direction ADR-0037 §8 chose deliberately.
  *   - Dedupe is still only as good as the producer's determinism, just at a
  *     coarser grain. Two passes that phrase one claim differently ("is" vs "is
  *     on") remain two claims — that pair is a vocabulary ENTRY, not a
@@ -229,7 +238,12 @@ import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
 // ONE place `alias(lexicalNorm(surface))` is assembled, and a second assembly
 // site is how the write side and a future re-key start disagreeing about what a
 // claim's slot IS.
-import { slotKey, type ClaimVocabulary, type InheritedSlot } from "@atlas/api/lib/brain/identity";
+import {
+  identityKey,
+  slotKey,
+  type ClaimVocabulary,
+  type InheritedSlot,
+} from "@atlas/api/lib/brain/identity";
 // The comparable value, on the same terms: `comparableValue` is the ONE place a
 // surface becomes a typed canonical form, and `comparableSameSql` the ONE place
 // *provably same* is spelled — the two statements below negate each other and
@@ -597,12 +611,18 @@ export const RECONCILE_BLOCK_REASONS = {
   /** Neither the caller nor the episode yields a principal to attribute to. */
   sourcePrincipalUnresolved: "SOURCE_PRINCIPAL_UNRESOLVED",
   /**
-   * The candidate itself is not a claim — a blank subject, predicate, or
-   * object. Not in the issue's list because it is not a resolution failure: it
-   * is a malformed proposal, and unlike an unresolved entity there is nothing
-   * for a reviewer to repair (`brain_facts` would happily store `''`, and a
-   * three-column claim with an empty column says nothing). The producer's bug
-   * is logged with the reason.
+   * The candidate itself is not a claim. TWO halves under one reason: a BLANK
+   * subject, predicate or object (`trim() === ""`), and — since #5047 — a
+   * surface with no IDENTITY, i.e. any slot whose `slotKey` is null (a
+   * degenerate surface, a vocabulary target that normalizes away, or an
+   * inherited null).
+   *
+   * Both say the same thing: the proposal asserts nothing and there is nothing
+   * for a reviewer to repair, which is what separates it from an unresolved
+   * entity. The REASON stays single so one producer bug lands on one counter;
+   * the positions and their causes travel beside it on
+   * {@link BlockedEntry.unkeyed}, because one caller renders this for a human
+   * and must not blame the wrong party. The producer's bug is logged with it.
    */
   malformedClaim: "MALFORMED_CLAIM",
 } as const;
@@ -626,7 +646,16 @@ export type ReconcileOutcome =
       /** False when this episode had already been recorded as evidence. */
       readonly evidenceAdded: boolean;
     }
-  | { readonly kind: "blocked"; readonly reason: ReconcileBlockReason };
+  | {
+      readonly kind: "blocked";
+      readonly reason: ReconcileBlockReason;
+      /**
+       * For `MALFORMED_CLAIM` only: which slots had no identity, and WHY (#5047).
+       * See {@link BlockedEntry.unkeyed} — this is the same detail, on the wire
+       * the caller actually reads.
+       */
+      readonly unkeyed?: readonly UnkeyedSlot[];
+    };
 
 export interface ReconcileReport {
   /**
@@ -817,8 +846,11 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * Derived at ingest exactly as the grant is — which is why
  * `check-brain-fact-promotion.sh` gates the key columns on UPDATE only, and says
  * in as many words that OMITTING them is not a fix. They travel as three more
- * JSON scalars, `null` included: a surface that norms away has no key, and a
- * sentinel would file every such claim under one slot.
+ * JSON scalars, and since #5047 NEVER as `null`: the `MALFORMED_CLAIM` guard
+ * refuses a candidate whose `slotKey` is null, `ResolvedSlotKeys` carries that
+ * in the type, and the columns are `NOT NULL` as of migration 0194. A surface
+ * that norms away has no key and no longer becomes a row; a sentinel was the
+ * other repair and would file every such claim under one slot.
  *
  * `object_cmp` (#5030) is derived here on the same terms, and this is the only
  * path that DERIVES one — migration 0191 deliberately does not backfill, so a
@@ -905,23 +937,24 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * reached here), while `Ships On`/`ships_on` as PREDICATES now put their
  * differing objects in tension instead of sorting into two silent slots.
  *
- * A NULL key on either side matches nothing — `object_key <> NULL` is unknown,
- * so a degenerate or unkeyed row abstains OUT of tension. That is the weaker
- * direction (#5000's shape, and the reason the acceptance criteria want these
- * columns `NOT NULL` eventually), and it is still strictly better than the
- * over-match a NULL-safe comparison would buy: an edge here is advisory and a
- * missing one costs a reviewer a hint, where a wrong SLOT costs a `valid_to`
- * stamp at the publish gate.
+ * The arms stay NULL-hostile even though no key is NULL any more (#5047 /
+ * migration 0194): `object_key <> NULL` is unknown, so a row with no identity
+ * abstains OUT of tension rather than joining everything. Keeping that shape is
+ * what makes the statement correct standalone — it does not rely on the
+ * constraint to avoid the over-match a NULL-safe comparison would buy, and an
+ * N-1 instance during the deploy that adds the constraint runs this exact text
+ * against a corpus that still holds NULLs.
  *
- * The object arm's falsifying case is a DEGENERATE rival, and it is reachable
- * without a region import, a concurrent writer, or `correct_fact`. A live row
- * in this slot whose object is `-` has `object_key IS NULL`, so
- * {@link CORROBORATION_LOOKUP_SQL} does not return it either — `object_key = $4`
- * is unknown, and so is the cmp arm beside it, because a surface of only
- * separators parses to no comparable value — and it survives to this scan. There `object_key <> $4` is
- * unknown — not a rival — while `object <> $4` would be TRUE, wiring a
- * permanent advisory edge from a real claim to a placeholder that asserts
- * nothing. Pinned by `extract-reconcile-pg.test.ts`.
+ * The object arm's falsifying case USED to be a DEGENERATE rival — a live row in
+ * this slot whose object is `-`, which keyed to NULL and therefore matched
+ * neither {@link CORROBORATION_LOOKUP_SQL} nor this scan, where `object <> $4`
+ * would have been TRUE and would have wired a permanent advisory edge from a
+ * real claim to a placeholder that asserts nothing. Since #5047 such a row
+ * cannot be created: the `MALFORMED_CLAIM` guard refuses the candidate at
+ * ingest, and migration 0194 tombstoned the legacy population — so the
+ * `invalidated_at IS NULL` arm below excludes what survives of it. The rule the
+ * case established is unchanged and is why the comparison is still on the KEY
+ * and not on the surface. Pinned by `extract-reconcile-pg.test.ts`.
  *
  * ## Tension is *not provably same*, which is where the abstain band LANDS
  *
@@ -1188,6 +1221,137 @@ export async function reconcileFacts(
             predicate: slotKey(predicate, vocabulary.predicate),
             object: slotKey(object, vocabulary.object),
           };
+    // ── The identity half of MALFORMED_CLAIM (#5047) ──────────────────
+    //
+    // POST-RESOLUTION, and after `keys` rather than beside the blank-trim pass
+    // above, because the two guards test different things. `trim() === ""` asks
+    // whether the producer sent a surface at all; this asks whether the
+    // surface, put through the composition that decides the row's IDENTITY,
+    // names a slot. `String#trim` strips whitespace but not `_` or `-`, so `-`
+    // and `___` pass the first test and reach here with a null key — which is
+    // migration 0187's header item 3, the third prerequisite of `SET NOT NULL`
+    // and the reason the constraint could not land with #5020.
+    //
+    // It has to be HERE and not one loop earlier: `slotKey` composes the
+    // workspace's vocabulary over the norm, so a real surface whose alias entry
+    // maps it to something that norms away is also a null key — and an
+    // INHERITED slot (#5037) is copied off the target row rather than derived
+    // from any surface in this candidate at all. Neither is visible from the
+    // raw text.
+    //
+    // ⚠️ REFUSED, not sentinel-keyed. 0187's header rejects the other repair by
+    // name: a shared placeholder key is the one value that joins every other
+    // degenerate row, so two unrelated placeholder claims would occupy one slot
+    // and publishing either would stamp `valid_to` on the other.
+    //
+    // The BLOCK REASON is reused rather than widened. A claim whose subject
+    // norms away asserts nothing, which is the argument `MALFORMED_CLAIM`
+    // already makes for a blank one — the same verdict about the same kind of
+    // defect, reached one layer deeper. A second reason code would split one
+    // producer bug across two counters.
+    //
+    // This REPLACES the post-insert `log.warn` #5020 added at `writeCandidate`,
+    // which described a row that had already been stored and told the operator
+    // this guard was the fix. The signal it carried is preserved verbatim
+    // below — including #5037's `inheritedUnkeyed` discriminator — because
+    // blocking makes this line the only one such a claim ever produces.
+    // Named for the ROLE and not `subjectKey`/`predicateKey`/`objectKey`:
+    // `keys-not-on-the-wire.test.ts` bans those three identifiers outright in any
+    // file that speaks about `brain_facts`, because it cannot tell a local from a
+    // fact-shaped type growing a key field — which is the leak it exists to
+    // catch. `SlotKeys` takes role names for the same reason.
+    const { subject: subjectSlot, predicate: predicateSlot, object: objectSlot } = keys;
+    if (subjectSlot === null || predicateSlot === null || objectSlot === null) {
+      const surfaces = { subject, predicate, object } as const;
+      // WHICH subsystem to fix, per position — decided here, where the surface,
+      // the vocabulary and the inherited slot are all still in hand.
+      //
+      // ⚠️ An earlier cut of this line said the first two causes "cannot be
+      // distinguished once the vocabulary is real". THAT WAS FALSE, and it is
+      // the kind of false that sends an operator to the wrong subsystem: a null
+      // `identityKey` is a fact about the TEXT alone, so a surface that norms
+      // away and a vocabulary entry that maps a real norm to nothing are one
+      // call apart. `correction.ts` made exactly this distinction for exactly
+      // this reason until #5047 made its version unreachable; the distinction
+      // is not unreachable here.
+      const unkeyed: readonly UnkeyedSlot[] = SLOT_ROLES.filter(
+        (role) => keys[role] === null,
+      ).map((role) => ({
+        role,
+        cause:
+          candidate.inheritedSlot !== undefined && role !== "object"
+            ? "inherited"
+            : identityKey(surfaces[role]) === null
+              ? "degenerate-surface"
+              : "vocabulary-target",
+      }));
+      log.warn(
+        {
+          workspaceId: episode.workspaceId,
+          episodeId: episode.id,
+          producer,
+          unkeyed,
+          // Logged ONLY where the cause is `degenerate-surface`, and that
+          // restriction is the point: by construction such a surface is
+          // separators and whitespace and carries no claim content. A
+          // `vocabulary-target` surface is real text and stays out, matching the
+          // blank-trim guard above, which logs booleans rather than surfaces.
+          degenerateSurfaces: unkeyed
+            .filter((slot) => slot.cause === "degenerate-surface")
+            .map((slot) => ({ role: slot.role, surface: surfaces[slot.role] })),
+          // ⚠️ `inheritedFrom` alone is NOT the discriminator, and reporting it
+          // as one blames the wrong party. It is set for EVERY
+          // correction-produced candidate, but only the SUBJECT and PREDICATE
+          // are inherited — the object is always derived from the replacement's
+          // own text. So a human superseding with `"-"` lands here with
+          // `unkeyed: ["object"]` and a non-null `inheritedFrom`, and a message
+          // keyed on that field alone would send the operator to inspect a
+          // target row that is perfectly healthy.
+          inheritedFrom: candidate.inheritedSlot?.fromFactId ?? null,
+          // The intersection: unkeyed positions that were actually COPIED. Empty
+          // means the target explains none of this, whatever `inheritedFrom`
+          // says. Post-#5047 the slot keys are `NOT NULL`, so an inherited null
+          // is unreachable through the database — it survives as a diagnostic
+          // for a hand-built slot and for the deploy overlap, not as an expected
+          // state.
+          inheritedUnkeyed: unkeyed
+            .filter((slot) => slot.cause === "inherited")
+            .map((slot) => slot.role),
+        },
+        // The message renders `cause` rather than listing possibilities — see
+        // the ⚠️ above, which records why the claim that these are
+        // indistinguishable was false.
+        "brain reconcile: blocked a candidate with no identity for one or more slots — such a claim could never corroborate, earn a tension edge, or be superseded at publish, and the slot keys are NOT NULL since #5047. `cause` names the subsystem to fix, per position: `degenerate-surface` = the producer emitted separators only, and the offending text is in `degenerateSurfaces` (fix the producer); `vocabulary-target` = this workspace's vocabulary maps that slot to something that normalizes away, so the surface is fine and the ENTRY is the defect (no re-key repairs it); `inherited` = a row-copy path copied a null slot off the fact named by `inheritedFrom`, so this claim's own text is fine at that position and the TARGET row is what has no identity. The object is never inherited — it is always derived from this claim's own text",
+      );
+      blocked.MALFORMED_CLAIM++;
+      // The POSITIONS travel with the block (#5047). `MALFORMED_CLAIM` covers a
+      // blank surface, a degenerate one, a vocabulary target that norms away and
+      // an inherited null, and one caller — `correction.ts`'s supersede — turns
+      // this verdict into a message for a human. Without the positions it can
+      // only guess which slot failed, and guessing "the object" blames the
+      // replacement text for a defect in the target's slot or in the vocabulary.
+      // The REASON stays single, which is what keeps one producer bug on one
+      // counter; this is the detail beside it.
+      prepared.push({
+        kind: "blocked",
+        reason: RECONCILE_BLOCK_REASONS.malformedClaim,
+        unkeyed,
+      });
+      continue;
+    }
+    // Narrowed ONCE, here, so everything downstream of the guard carries three
+    // non-null keys in its TYPE rather than by position in this loop. The
+    // database stopped admitting a null key at migration 0194; this is the same
+    // statement made where the compiler can check it, and it is what stops a
+    // future edit that adds a second `prepared.push` above the guard from
+    // reaching `INSERT_FACT_SQL` with a null — which is a `23502` that fails the
+    // whole reconcile transaction, retried every cycle until quarantine.
+    const resolvedKeys: ResolvedSlotKeys = {
+      subject: subjectSlot,
+      predicate: predicateSlot,
+      object: objectSlot,
+    };
+
     // The comparable value, materialized beside the keys and for the same
     // reason: computing it per statement is how the corroboration lookup and
     // the INSERT would start disagreeing about what a claim's value IS.
@@ -1316,7 +1480,7 @@ export async function reconcileFacts(
       subject,
       predicate,
       object,
-      keys,
+      keys: resolvedKeys,
       comparableAtRest,
       comparableForLookups,
       resolutionFailed: resolution.kind === "failed",
@@ -1343,9 +1507,12 @@ export async function reconcileFacts(
       // entity-valued object would be a line per claim forever under the shipped
       // default resolver.
       //
-      // Emitted BEFORE the transaction, unlike the `unkeyed` warn below, and the
-      // prose is written to survive that: it claims a property of the BATCH,
-      // which is settled here, rather than of rows that may still roll back.
+      // Emitted BEFORE the transaction, and the prose is written to survive
+      // that: it claims a property of the BATCH, which is settled here, rather
+      // than of rows that may still roll back. (This used to contrast itself
+      // with the `unkeyed` warn "below" — #5047 deleted that one and its
+      // replacement sits ABOVE, also pre-transaction, so the contrast was dead
+      // twice over.)
       "brain reconcile: the entity store did not answer this episode's batch, so these candidates were reconciled with no object comparison (`object_cmp`) — worth recomputing once it does. Their identity keys are unaffected under the same vocabulary: no resolver reaches a slot key. The ones that CREATED a row carry `provenance.provisional`; the ones that corroborated get no provenance payload FROM THIS EPISODE — the existing row is untouched, keeping its own — so this count is the only place they are counted, and their `provenance` edges to this episode are how they are found",
     );
   }
@@ -1357,7 +1524,14 @@ export async function reconcileFacts(
     const results: ReconcileOutcome[] = [];
     for (const item of prepared) {
       if (item.kind === "blocked") {
-        results.push({ kind: "blocked", reason: item.reason });
+        // SPREAD, not rebuilt field by field. `BlockedEntry` and the blocked
+        // `ReconcileOutcome` are the same shape by design, and re-listing the
+        // fields here is how `unkeyed` was silently dropped on its first cut —
+        // the detail was attached in the preparation loop, discarded at this
+        // line, and `correction.ts` then saw `undefined` and 500'd on a request
+        // that should have been a 400. A spread cannot lose a field a future
+        // edit adds.
+        results.push({ ...item });
         continue;
       }
       results.push(
@@ -1454,6 +1628,58 @@ interface SlotKeys {
  */
 const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonly (keyof SlotKeys)[];
 
+/** One of the three claim slots, for the block detail and the log payload. */
+type SlotRole = (typeof SLOT_ROLES)[number];
+
+/**
+ * WHY a slot has no key — the discriminator a consumer needs to blame the right
+ * party (#5047).
+ *
+ * ⚠️ The POSITION is not the cause, and conflating them is a defect this type
+ * exists to have already made once. `applySupersede` first gated its user-facing
+ * 400 on "the object position failed", reasoning that the object is the
+ * caller's own text. It is not always: `slotKey` is
+ * `identityKey(alias(identityKey(surface)))`, so an object key is ALSO null when
+ * the workspace's object-position vocabulary maps a real norm to something that
+ * normalizes away — and the human is then told to retype text that is already
+ * correct, on a request no retry can fix.
+ *
+ *   - `degenerate-surface` — the producer's own text asserts nothing (`-`,
+ *     `___`). The one cause the SUPPLIER of the claim can fix.
+ *   - `vocabulary-target` — the surface keys fine and this workspace's alias
+ *     entry for it maps to nothing. A configuration defect; no re-key repairs it.
+ *   - `inherited` — a row-copy path copied a null slot off the target row, so
+ *     this claim's own text is fine at that position.
+ */
+export type SlotKeyFailureCause = "degenerate-surface" | "vocabulary-target" | "inherited";
+
+/** One slot that had no key, and why. */
+export interface UnkeyedSlot {
+  readonly role: SlotRole;
+  readonly cause: SlotKeyFailureCause;
+}
+
+/**
+ * {@link SlotKeys} AFTER the `MALFORMED_CLAIM` guard — three keys, none null.
+ *
+ * The two types are deliberately both here rather than one nullable shape with a
+ * runtime check. `SlotKeys` is what the composition PRODUCES: `slotKey` returns
+ * null for a surface that norms away, and an {@link InheritedSlot} copies a
+ * stored row whose columns the type still describes as nullable. This is what
+ * survives the guard, and it is what every consumer downstream of the guard
+ * takes — so "no null key reaches `INSERT_FACT_SQL`" is a property of the types
+ * rather than of the order of statements in a 200-line loop body.
+ *
+ * That matters because `brain_facts`' three key columns are `NOT NULL` as of
+ * migration 0194: the failure mode a lost guard produces is no longer a row that
+ * joins nothing, it is a `23502` that rolls back the whole episode.
+ */
+interface ResolvedSlotKeys {
+  readonly subject: string;
+  readonly predicate: string;
+  readonly object: string;
+}
+
 /**
  * The five agreement values, in the order all three statements bind them: the
  * three slot keys, the OBJECT's comparable value (#5030), then the SUBJECT's
@@ -1525,16 +1751,13 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
  * the two positionally.
  */
 function agreementBinds(
-  keys: SlotKeys,
+  // {@link ResolvedSlotKeys}, so the three key binds are `string` and the
+  // compiler's view of `INSERT_FACT_SQL` matches the column's `NOT NULL` (#5047).
+  // Every caller is downstream of the `MALFORMED_CLAIM` guard.
+  keys: ResolvedSlotKeys,
   objectComparable: ComparableValue,
   subjectComparable: SubjectComparable,
-): readonly [
-  string | null,
-  string | null,
-  string | null,
-  ComparableValue,
-  SubjectComparable,
-] {
+): readonly [string, string, string, ComparableValue, SubjectComparable] {
   return [keys.subject, keys.predicate, keys.object, objectComparable, subjectComparable];
 }
 
@@ -1543,8 +1766,13 @@ interface PreparedCandidate {
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
-  /** The identity of the claim above — what the two lookups below match on. */
-  readonly keys: SlotKeys;
+  /**
+   * The identity of the claim above — what the two lookups below match on.
+   *
+   * {@link ResolvedSlotKeys} and not {@link SlotKeys}: this shape only exists
+   * past the `MALFORMED_CLAIM` guard, which refuses a null at any position.
+   */
+  readonly keys: ResolvedSlotKeys;
   /**
    * The object's typed canonical value, or `null` for *unknown* (#5030). Not
    * folded into {@link SlotKeys}: a key proves sameness and is a JOIN arm, this
@@ -1627,6 +1855,16 @@ interface TrimmedCandidate {
 interface BlockedEntry {
   readonly kind: "blocked";
   readonly reason: ReconcileBlockReason;
+  /**
+   * For `MALFORMED_CLAIM` only: WHICH slots had no identity (#5047).
+   *
+   * Optional because the other three reasons refuse the whole EPISODE and the
+   * blank-trim guard refuses before any key exists. Present, it is what lets a
+   * caller translating this verdict for a human name the right slot — see
+   * `correction.ts`'s supersede arm, which must not blame a replacement's text
+   * for an inherited or vocabulary-caused failure.
+   */
+  readonly unkeyed?: readonly UnkeyedSlot[];
 }
 
 type TrimmedEntry = TrimmedCandidate | BlockedEntry;
@@ -2147,70 +2385,13 @@ async function writeCandidate(
 
   await tx.query(INSERT_PROVENANCE_EDGE_SQL, [episode.workspaceId, factId, episode.id]);
 
-  // A null key is legal, permanent, and invisible everywhere else: the row is
-  // stored and then joins nothing — no corroboration, no tension edge, and no
-  // supersession at the publish gate — for as long as it exists. No backfill
-  // repairs it (0187/0188 write the same NULL), so this line is the only signal
-  // such a claim ever produces.
-  //
-  // Emitted HERE rather than in the preparation loop so it describes a row that
-  // exists: everything after this point can still roll the episode back, and on
-  // the extraction path a failing episode is retried every cycle until
-  // quarantine — which would have re-emitted the identical line for a fact that
-  // was never written. `factId` is what makes it actionable.
-  //
-  // Warned rather than blocked because blocking is a GUARD change: 0187's header
-  // item 3 wants `MALFORMED_CLAIM` widened from `trim() === ""` to this
-  // predicate, and that is the `SET NOT NULL` prerequisite nobody owns yet.
-  // Refusing here unilaterally would drop claims a reviewer can currently see
-  // and repair.
-  const unkeyed = SLOT_ROLES.filter((role) => item.keys[role] === null);
-  if (unkeyed.length > 0) {
-    log.warn(
-      {
-        workspaceId: episode.workspaceId,
-        episodeId: episode.id,
-        producer: ctx.producer,
-        factId,
-        unkeyed,
-        // The row-copy provenance (#5037), and the positions it actually
-        // explains.
-        //
-        // ⚠️ `inheritedFrom` alone is NOT the discriminator, and reporting it as
-        // one blames the wrong party. It is set for EVERY correction-produced
-        // candidate, but only the SUBJECT and PREDICATE are inherited — the
-        // object is always derived from the replacement's own text. So a human
-        // superseding with `"-"` lands here with `unkeyed: ["object"]` and a
-        // non-null `inheritedFrom`, and a message keyed on that field alone
-        // would send the operator to inspect a target row that is perfectly
-        // healthy while the replacement text is what asserts nothing.
-        inheritedFrom: item.candidate.inheritedSlot?.fromFactId ?? null,
-        // The intersection: unkeyed positions that were actually COPIED. Empty
-        // means the target explains none of this, whatever `inheritedFrom` says.
-        inheritedUnkeyed:
-          item.candidate.inheritedSlot === undefined
-            ? []
-            : unkeyed.filter((role) => role !== "object"),
-      },
-      // THREE causes now, and the message names all three because it cannot
-      // distinguish the first two once the vocabulary is real: the SURFACE norms
-      // away (`-`, `___`), or an alias entry maps a real slot to something that
-      // does. Naming only the producer would send an operator after the wrong
-      // subsystem the day #5016 lands.
-      //
-      // ⚠️ The third arrived with #5037's row-copy path and inverts the advice.
-      // An inherited slot is copied off the TARGET row, so a correction whose
-      // target is unkeyed lands here with surfaces that are perfectly fine —
-      // and an operator following the first two causes would inspect
-      // `Billing / is owned by`, find nothing wrong, and conclude the log is
-      // lying.
-      //
-      // The discriminator is `inheritedUnkeyed`, NOT `inheritedFrom`: only the
-      // copied positions are the target's to answer for, and the object is never
-      // one of them.
-      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Three causes: the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3); a vocabulary entry maps that slot to nothing; or — for the positions listed in `inheritedUnkeyed` — a row-copy path copied a null slot off the fact named by `inheritedFrom`, in which case those positions' surfaces are fine here and the TARGET row is what has no identity. Any position NOT in `inheritedUnkeyed` was derived from this claim's own text (the object always is), so the first two causes are the ones to follow for it",
-    );
-  }
+  // (The post-insert unkeyed-claim warn #5020 emitted here is gone. #5047 moved
+  // the signal to the PREPARATION loop and turned it into a refusal: the
+  // `MALFORMED_CLAIM` guard now blocks a candidate whose `slotKey` is null, so
+  // no such row reaches this function and a line describing a stored one would
+  // describe a row that cannot exist. `brain_facts`' three key columns are
+  // `NOT NULL` as of migration 0194, which is the same statement made by the
+  // database.)
 
   let tensionEdges = 0;
   // The producer's hint, and since #5027 the ONLY thing it still gates. It no

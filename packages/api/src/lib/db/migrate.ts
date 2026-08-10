@@ -37,6 +37,38 @@ interface MigrationPool extends Queryable {
  */
 interface MigrationClient extends Queryable {
   release(err?: Error): void;
+  /**
+   * `node-postgres`' `EventEmitter` surface, narrowed to the one event this
+   * module listens for (#5047).
+   *
+   * REQUIRED, and the first cut of this had them optional with a `debug` line
+   * when absent — which reinstated the exact gap the listener closes, below the
+   * production log level, under two docstrings claiming it could not happen.
+   * A future pool wrapper or driver swap would have silently discarded every
+   * migration breadcrumb again.
+   *
+   * `InternalPoolClient` keeps them OPTIONAL so the tree's hand-built
+   * `{ query, release }` doubles still satisfy it (the count and the reason live
+   * there, in the file that pays it). Passing such a pool straight to
+   * `runMigrations` therefore fails to compile — which is why `migrateInternalDB`
+   * builds a wrapper, and why that wrapper's `typeof` check plus
+   * `MigrationClientContractError` is what turns a future driver swap into a loud
+   * boot failure rather than a silently deaf migration.
+   */
+  on(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+  off(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+}
+
+/**
+ * Which migration a server notice should be attributed to.
+ *
+ * A box rather than a closure variable because the listener is attached in
+ * {@link runMigrations} while the per-file loop runs one function down, and the
+ * alternative — attributing every notice to whatever ran last — is worse than no
+ * attribution at all.
+ */
+interface NoticeAttribution {
+  migration: string;
 }
 
 const MIGRATIONS_DIR = path.join(import.meta.dir, "migrations");
@@ -87,6 +119,49 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
   // transaction semantics.
   const client = await pool.connect();
 
+  // ⚠️ WITHOUT THIS, EVERY `RAISE NOTICE` IN EVERY MIGRATION IS DISCARDED (#5047).
+  //
+  // Migrations 0032, 0034, 0055, 0072 and 0085 all emit one as a deliberate
+  // operator breadcrumb — 0032's header even names the mistake it was written to
+  // stop: *"so operators have a post-mortem breadcrumb instead of silent
+  // rewrites (0031 shipped without this — don't repeat that gap)"*. `node-postgres`
+  // delivers server notices on a `notice` event and drops them when nothing is
+  // listening, and nothing was, so five files' worth of breadcrumbs had been
+  // going nowhere. 0194 adds a sixth (its tombstone count) and is what surfaced
+  // it.
+  //
+  // Attached to the DEDICATED client rather than the pool, matching every other
+  // statement here: the notice arrives on the session that raised it, and this is
+  // the only session migrations run on. Detached in `finally` with the same
+  // reference, so a pooled client cannot accumulate a listener per call — the
+  // shape that turns a long-lived pool into a `MaxListenersExceededWarning` and
+  // then a leak.
+  //
+  // `migration` is bound per statement below rather than captured here, so a
+  // notice names the file that raised it instead of whatever ran last.
+  //
+  // ⚠️ ROUTINE notices come through too — `CREATE TABLE IF NOT EXISTS` and
+  // `DROP … IF EXISTS` both raise one — and they are NOT filtered, because
+  // Postgres does not offer a discriminator that works. Measured on this repo's
+  // PG 16: a deliberate `RAISE NOTICE` reports SQLSTATE `00000`, and so does
+  // *"table … does not exist, skipping"*; only `CREATE TABLE IF NOT EXISTS`
+  // differs (`42P07`). A code filter would therefore drop nothing useful and
+  // keep half the noise.
+  //
+  // The volume is bounded by what already exists: this function logs "Applying
+  // migration" once per file at `info`, so a fresh install's few dozen extra
+  // lines sit beside ~195 of those, and an incremental deploy only runs the new
+  // files. Noise was the wrong thing to optimize against here — the failure this
+  // closes is a deliberate breadcrumb reaching nobody.
+  const noticeFrom: NoticeAttribution = { migration: "(before any migration)" };
+  const onNotice = (notice: { readonly message?: string }): void => {
+    log.info(
+      { migration: noticeFrom.migration, notice: notice.message ?? "(no message)" },
+      "Migration notice",
+    );
+  };
+  client.on("notice", onNotice);
+
   // A failed per-migration ROLLBACK propagates here via the callback so
   // the client gets destroyed on release instead of pooled dirty.
   let rollbackErr: Error | null = null;
@@ -111,9 +186,14 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
     await client.query(ADVISORY_LOCK_SQL);
 
     try {
-      return await _runMigrationsLocked(client, options.skip ?? [], (err) => {
-        rollbackErr = err;
-      });
+      return await _runMigrationsLocked(
+        client,
+        options.skip ?? [],
+        (err) => {
+          rollbackErr = err;
+        },
+        noticeFrom,
+      );
     } finally {
       await client.query(ADVISORY_UNLOCK_SQL).catch((err: unknown) => {
         // Unlock may legitimately fail if the connection is broken (in
@@ -126,6 +206,18 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
       });
     }
   } finally {
+    // Anything raised after the loop — `ADVISORY_UNLOCK_SQL` — is not the last
+    // migration's doing, and attributing it there would be a small lie in the
+    // one field this line exists to get right.
+    noticeFrom.migration = "(after the last migration)";
+    // Same reference, so the client goes back to the pool with no more listeners
+    // than it arrived with. `off` and not `removeAllListeners`: the pool's own
+    // internals may have their own.
+    //
+    // ⚠️ `runSeeds` runs on a DIFFERENT connection, after this returns, so seed
+    // notices are still discarded. Out of scope here and stated so the next
+    // reader does not assume coverage.
+    client.off("notice", onNotice);
     client.release(rollbackErr ?? undefined);
   }
 }
@@ -134,6 +226,7 @@ async function _runMigrationsLocked(
   client: MigrationClient,
   skip: string[],
   onRollbackFailure: (err: Error) => void,
+  noticeFrom: NoticeAttribution,
 ): Promise<number> {
   const skipSet = new Set(skip);
   // Ensure tracking table exists
@@ -187,6 +280,8 @@ async function _runMigrationsLocked(
     const sql = fs.readFileSync(filePath, "utf-8");
 
     log.info({ migration: file }, "Applying migration");
+    // So a `RAISE NOTICE` raised below is attributed to THIS file.
+    noticeFrom.migration = file;
 
     // Run inside a transaction — PostgreSQL DDL is transactional.
     // All queries use the same dedicated client (not the pool) so

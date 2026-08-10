@@ -57,7 +57,7 @@ import {
   type ReconcileExecutor,
   type ReconcileTransactionRunner,
 } from "@atlas/api/lib/brain/reconcile";
-import { identityVocabulary } from "@atlas/api/lib/brain/identity";
+import { identityVocabulary, inheritSlotFromFactRow } from "@atlas/api/lib/brain/identity";
 import { COMPARABLE_TAGS } from "@atlas/api/lib/brain/object-cmp";
 import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
@@ -1908,26 +1908,105 @@ describe("the draft candidate", () => {
     expect(store.facts[0]).toMatchObject({ subject: "deploy window", object: "Thursdays" });
   });
 
-  test("a surface that norms away is bound as NULL, never as an empty string", async () => {
-    // `-` survives the MALFORMED_CLAIM guard (`trim()` strips whitespace, not
-    // `_` or `-`), so it is a storable claim whose key is permanently NULL.
-    // A bound `""` would file every placeholder in the corpus under ONE slot:
-    // two unrelated claims corroborate as one and, at `single` cardinality,
-    // publishing either stamps `valid_to` on the other. `null` joins nothing,
-    // which is the honest answer for a surface that asserts nothing.
+  test("a surface that norms away is REFUSED, not stored with a null key (#5047)", async () => {
+    // `-` clears the blank-trim guard — `String#trim` strips whitespace but not
+    // `_` or `-` — and used to be a storable claim whose key was permanently
+    // NULL. Since #5047 the second half of `MALFORMED_CLAIM` refuses it
+    // post-resolution, which is migration 0187's third prerequisite and what
+    // let 0194 flip the three key columns to `NOT NULL`.
     //
-    // The bind is what this file can see. That two such rows then fail to
-    // corroborate each other is `extract-reconcile-pg.test.ts`'s.
+    // The claim is refused rather than sentinel-keyed, which is the arm the
+    // corpus depends on: a shared `""` key would file every placeholder under
+    // ONE slot, so two unrelated claims corroborate as one and, at `single`
+    // cardinality, publishing either stamps `valid_to` on the other.
     const store = new FakeBrainStore();
-    await run(store, { candidates: [candidate({ object: "-" })] });
+    const report = await run(store, { candidates: [candidate({ object: "-" })] });
 
-    expect(store.keyBindsFor("insertFact")[0]?.object).toBeNull();
-    expect(store.keyBindsFor("corroboration")[0]?.object).toBeNull();
-    // …and the degenerate surface is still stored VERBATIM, so the reviewer can
-    // see what the producer emitted and repair it. Asserted on `object` — the
-    // column that actually carries one; the subject is the shared default and
-    // would prove nothing.
-    expect(store.facts[0]?.object).toBe("-");
+    expect(report.blocked.MALFORMED_CLAIM).toBe(1);
+    // The POSITIONS travel with the block, and asserting them here is what keeps
+    // `correction.ts`'s supersede arm honest: it reads `unkeyed` to decide
+    // whether the human's replacement text is at fault (a 400) or the target's
+    // inherited slot is (a 500). Dropped anywhere between the preparation loop
+    // and this outcome, that arm silently blames the wrong party — which is
+    // exactly what happened when the detail was rebuilt field-by-field in the
+    // transaction loop instead of spread.
+    expect(report.outcomes).toEqual([
+      {
+        kind: "blocked",
+        reason: RECONCILE_BLOCK_REASONS.malformedClaim,
+        // The CAUSE travels with the position, and asserting it is what stops
+        // the 400-vs-500 split in `correction.ts` from regressing: gating on the
+        // position alone blames the caller for a vocabulary defect they cannot
+        // fix, which is exactly what the first cut of that gate did.
+        unkeyed: [{ role: "object", cause: "degenerate-surface" }],
+      },
+    ]);
+    // NOTHING was stored, and no statement ran for it. Asserted on the fact set
+    // AND on the statement log, because a guard placed one line too late would
+    // still have issued the corroboration lookup for a claim it then refused —
+    // work spent on a row that will never exist, and the reason the guard sits
+    // in the preparation loop.
+    expect(store.facts).toHaveLength(0);
+    expect(store.keyBindsFor("insertFact")).toHaveLength(0);
+    // The statement the comment above is actually about: `writeCandidate` issues
+    // `CORROBORATION_LOOKUP_SQL` before the insert, so a guard placed one line
+    // too late shows up HERE and nowhere else — the insert assertion alone
+    // cannot tell "refused in the preparation loop" from "refused in the
+    // transaction after a lookup was already spent on it".
+    expect(store.keyBindsFor("corroboration")).toHaveLength(0);
+    expect(report.created).toBe(0);
+  });
+
+  test("the refusal is on the KEY, not on the surface — `_` and `-` are separators, not text", async () => {
+    // The falsifier for the guard testing the wrong thing. A guard written as
+    // `object.trim() === ""` (the blank-trim guard, one loop up) passes `___`
+    // through, and one written on the raw surface would refuse `a-b` — a
+    // perfectly good claim whose key is `a b`.
+    //
+    // Both directions in one test on purpose: a guard that refuses everything
+    // containing a separator makes the first assertion pass, and only the
+    // second one fails.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [candidate({ object: "___" }), candidate({ object: "ships-on Thursdays" })],
+    });
+
+    expect(report.blocked.MALFORMED_CLAIM).toBe(1);
+    expect(report.outcomes[0]).toEqual({
+      kind: "blocked",
+      reason: RECONCILE_BLOCK_REASONS.malformedClaim,
+      unkeyed: [{ role: "object", cause: "degenerate-surface" }],
+    });
+    expect(report.outcomes[1]).toMatchObject({ kind: "created" });
+    // The surviving claim is stored with its surface VERBATIM and its key
+    // normalized — the retention half, which is what makes an alias reversible.
+    expect(store.facts).toHaveLength(1);
+    expect(store.facts[0]?.object).toBe("ships-on Thursdays");
+    expect(store.keyBindsFor("insertFact")[0]?.object).toBe("ships on thursdays");
+  });
+
+  test("an INHERITED null slot is refused too, at the position that was copied", async () => {
+    // The row-copy channel (#5037) reaches `keys` without going through any
+    // surface in this candidate, so a guard written over the trimmed surfaces
+    // would miss it entirely. Post-0194 an inherited null cannot come off the
+    // database — the columns are `NOT NULL` — so this pins the guard against a
+    // hand-built slot and against the deploy overlap, where an N-1 instance's
+    // rows are still unkeyed.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [
+        candidate({
+          inheritedSlot: inheritSlotFromFactRow({
+            id: "00000000-0000-4000-8000-000000000042",
+            subject_key: null,
+            predicate_key: null,
+          }),
+        }),
+      ],
+    });
+
+    expect(report.blocked.MALFORMED_CLAIM).toBe(1);
+    expect(store.facts).toHaveLength(0);
   });
 
   test("no candidates is a no-op, not an empty transaction", async () => {

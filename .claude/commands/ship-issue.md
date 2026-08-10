@@ -170,8 +170,18 @@ dirty tree during one is EXPECTED and committing it ships sabotaged source that
 reads as a legitimate change in review. Check before every commit in this window:
 
 ```bash
-pgrep -f "[m]utate.ts" >/dev/null && echo "MUTATION RUN LIVE — do not commit"
+ps -o pid=,args= -C bun | grep 'mutate\.ts' && echo "MUTATION RUN LIVE — do not commit"
 ```
+
+⚠️ **`pgrep -f` is the obvious spelling and it FALSE-POSITIVES, including on the
+bracket trick (`[m]utate.ts`).** `-f` matches other processes' full command
+lines, and your own shell's command line is one of them — so the moment the
+pattern appears anywhere else in the command you are running, the check reports a
+live run that does not exist. Measured on #5047 in the most pointed way
+available: the check fired while committing, because the COMMIT MESSAGE
+documented the check, putting the literal string in the shell's argv. A guard
+that cries wolf gets ignored, which is worse than no guard. `-C bun` matches on
+the EXECUTABLE, so a shell can never satisfy it.
 
 Measured on #5047: a stop hook asked for a commit four times during a 40-minute
 regeneration, while `git status` showed a different mutated file each time

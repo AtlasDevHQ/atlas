@@ -27,17 +27,17 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the repeat gate drops its provable-difference arm | 1 | 1 | 0 | 0 | 0 |
 | the repeat gate counts machine supersessions too | 1 | 1 | 0 | 0 | 0 |
 | the repeat threshold drops to 1 | 1 | 1 | 0 | 0 | 0 |
-| `INSERT_FACT_SQL` feeds `predicate_cardinality` again | 0 | 0 | 5 | 0 | 27 |
-| `retract` feeds the proposer too | 0 | 0 | 2 | 0 | 0 |
+| `INSERT_FACT_SQL` feeds `predicate_cardinality` again | 0 | 0 | 8 | 0 | 27 |
+| `retract` feeds the proposer too | 0 | 0 | 9 | 0 | 0 |
 | the post-commit proposer loses its deadline | 0 | 0 | 5 | 0 | 0 |
 | the deadline's timer is never cleared | 0 | 0 | 1 | 0 | 0 |
 | the post-deadline continuation is deleted | 0 | 0 | 2 | 0 | 0 |
 | the late-SUCCESS arm's guard is inverted | 0 | 0 | 1 | 0 | 0 |
 | `logDegeneratePredicate` fires for every verb, not only `supersede` | 0 | 0 | 3 | 0 | 0 |
-| `logDegeneratePredicate`'s call is removed | 0 | 0 | 1 | 0 | 0 |
-| the proposer runs INSIDE the correction's transaction | 0 | 0 | 7 | 0 | 0 |
+| `logDegeneratePredicate`'s call is removed | 0 | 0 | 3 | 0 | 0 |
+| the proposer runs INSIDE the correction's transaction | 0 | 0 | 8 | 0 | 0 |
 
-Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 61 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 70 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 38 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 84 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 70 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 

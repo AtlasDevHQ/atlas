@@ -18,6 +18,13 @@ name: Canonical Eval
 #   - Release tags (v*.*.*): blocking. A canonical-question regression
 #     should never ship in a tagged release — the gate script exits 1 on
 #     any non-PR event.
+#   - A job that did NOT RUN fails the gate (#5040). `skipped` used to
+#     count as a pass for every job, which is how `eval-mcp-llm` stayed
+#     green for its entire life without executing once. It is now an
+#     explicit per-label opt-in that only `eval-mcp-llm` holds, and only
+#     until #5039 wires ANTHROPIC_API_KEY. For the two deterministic jobs
+#     a `skipped` eval step means an earlier infra step already failed the
+#     job red; the gate now says so instead of reporting a pass over it.
 #   - Scope note: only the EVAL steps are shielded on PRs. Infra steps
 #     (install, types build, DB provision) fail the job red — deliberate:
 #     these checks are non-required, and /deps-update already documents the
@@ -88,6 +95,9 @@ on:
       - "plugins/mcp/src/init/hosted.ts"
       - "plugins/mcp/src/init/index.ts"
       - ".github/workflows/eval.yml"
+      # The gate step every job above ends with. A change to it changes
+      # what green means for all three, so it re-triggers them.
+      - "scripts/eval-informational-gate.sh"
   push:
     tags:
       - "v*.*.*"
@@ -235,9 +245,14 @@ jobs:
   #
   # ANTHROPIC_API_KEY must be added as a repo secret by an org owner.
   # Until the secret is wired the job emits a `::warning::` line and the
-  # eval is skipped — green on PRs and tag pushes alike (the gate script
-  # treats `skipped` as a pass). Once the secret lands, tag pushes become
-  # blocking via the informational-gate step. The preflight step
+  # eval is skipped — green on PRs and tag pushes alike, because this job
+  # is the sole entry on the gate script's SKIP_TOLERANT_LABELS list. That
+  # list is the whole exemption (#5040): every other job fails on a
+  # skipped step. ⚠️ This job has never actually run — #5039 wires the
+  # secret, and drops this job from the list in the same change, so that
+  # from then on a skip means the key stopped working. Once the secret
+  # lands, tag pushes become blocking via the informational-gate step. The
+  # preflight step
   # distinguishes an unset secret from an invalid/expired one so a
   # credential rotation doesn't masquerade as a "0/20 regression" on a
   # tag push.
@@ -334,7 +349,8 @@ jobs:
         # a rejected key would otherwise burn the full 20-minute eval as
         # spurious tool_selection failures. When the key is unset the
         # preflight is skipped, so this skips too — both outcomes reach the
-        # gate step, where `skipped` counts as a pass.
+        # gate step, where `skipped` counts as a pass for THIS job only
+        # (SKIP_TOLERANT_LABELS, #5040).
         if: ${{ steps.preflight.outcome == 'success' }}
         env:
           # Cheap-and-fast default: Haiku for the eval. Operators can
@@ -382,7 +398,10 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
           EVAL_OUTCOME: ${{ steps.eval.outcome }}
-        # Both `skipped` (no ANTHROPIC_API_KEY wired) and `success` pass;
-        # a failed preflight (rejected key) or failed eval goes through the
-        # PR-comment / tag-blocking split in the script.
+        # Both `skipped` (no ANTHROPIC_API_KEY wired) and `success` pass —
+        # the skip only because `eval-mcp-llm` is on the gate script's
+        # SKIP_TOLERANT_LABELS list (#5040), and it emits a ::warning::
+        # saying the run proved nothing. A failed preflight (rejected key)
+        # or failed eval goes through the PR-comment / tag-blocking split
+        # in the script.
         run: bash scripts/eval-informational-gate.sh eval-mcp-llm "$PREFLIGHT_OUTCOME" "$EVAL_OUTCOME"

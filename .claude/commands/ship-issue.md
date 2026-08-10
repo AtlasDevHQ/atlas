@@ -124,7 +124,77 @@ So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` —
 - you are touching `scripts/mutations/**` or the mutation gate itself, which remote CI does not exercise the same way;
 - you are about to `/release`, where the mutation gate and the full serial battery are the point.
 
-⚠️ **Never kill `ci-local.sh` mid-run.** `mutate.ts` rewrites source files in place and reverts them at the end, so an interrupted run leaves a MUTATED source file in the tree — silently, and it will be committed by the next `git commit -o` that names it. If you must stop one, `git status` afterwards and restore anything it left behind.
+⚠️ **THE MUTATION-GATE TRIGGER ABOVE IS WRITTEN ON THE WRONG THING, and this is
+the one pre-flight gap that actually costs remote round-trips.** `mutation-tables`
+does not break when you touch `scripts/mutations/**`. It breaks when you touch
+anything a spec **TARGETS** — and the commonest way to do that is to **RENAME OR
+REWRITE A TEST**, which goes nowhere near that directory. The generated tables
+record *"first test to die"* BY NAME plus a count per suite, so renaming a test
+makes them stale, and a refactor that moves the code a mutation anchors on kills
+the anchor outright.
+
+So add one cheap command to the pre-flight whenever the branch renamed a test,
+deleted a function, or reshaped a block a mutation might anchor on:
+
+```bash
+TEST_DATABASE_URL=… bash scripts/check-mutation-tables.sh --affected origin/main
+```
+
+It reports which specs the branch touched and exits instantly when the answer is
+none, which is the common PR. **It is NOT free when the answer is non-zero** —
+it re-runs whole `-pg` suites once per mutation, tens of minutes — so run it in
+the BACKGROUND and carry on; do not block the loop on it, and do not put it in
+the default pre-flight.
+
+Measured on #5047: the branch renamed tests across five suites and deleted one
+function. `mutation-tables` failed remote CI **twice**, and the second failure
+cost a full CI round-trip that a background `--affected` run started at PR time
+would have pre-empted. Three anchors were dead, and one of them had been
+re-anchored once already by the previous issue for the same reason.
+
+⚠️ **A DEAD ANCHOR IS NOT ALWAYS RE-ANCHORABLE, and reaching for a replacement
+mutation is how a tombstone gets into a table.** If the PR deleted the code a
+mutation targets, there is nothing to move the anchor to: DELETE the mutation and
+say why. Do not invent a successor pointing at whatever replaced it unless that
+successor is genuinely killable — a defensive arm for a state your change just
+made unreachable measures `0` in every suite, and `mutate.ts`'s header calls a
+published `0` a claim. Recording one asserts *"no test covers this"* where the
+truth is *"no input reaches this"*, which is precisely the tombstone the
+dead-anchor arm refuses to write. Point the replacement at the guard that made
+the state unreachable instead — that one has a test and a real number.
+
+⚠️ **NEVER COMMIT WHILE A MUTATION RUN IS LIVE — and that includes obeying a
+hook that tells you to.** `ci-local.sh`, `check-mutation-tables.sh` and a bare
+`mutate.ts` all rewrite source files in place and revert them at the end, so a
+dirty tree during one is EXPECTED and committing it ships sabotaged source that
+reads as a legitimate change in review. Check before every commit in this window:
+
+```bash
+pgrep -f "[m]utate.ts" >/dev/null && echo "MUTATION RUN LIVE — do not commit"
+```
+
+Measured on #5047: a stop hook asked for a commit four times during a 40-minute
+regeneration, while `git status` showed a different mutated file each time
+(`extract.ts`, then `alias-proposal.ts`, then `cardinality.ts`) as the runner
+worked through its list. The hook is not wrong in general; it is wrong in this
+window, and the `pgrep` is how you tell the two apart.
+
+⚠️ **Never kill `ci-local.sh` — or any mutation run — mid-run.** `mutate.ts`
+rewrites source files in place and reverts them at the end, so an interrupted run
+leaves a MUTATED source file in the tree — silently, and it will be committed by
+the next `git commit -o` that names it. **A foreground `Bash` timeout counts as
+killing it**: #5047 lost a `--affected` run to the 10-minute cap, which is why
+these belong in the background. If you must stop one, `git status` afterwards and
+restore anything it left behind.
+
+⚠️ **A `-pg` baseline reported RED may be a DEAD DATABASE, not a real failure.**
+The runner aborts when a baseline suite is already failing, because a mutation
+count against a broken tree is breakage-plus-mutation and indistinguishable from
+a strong result. That guard is right, but it cannot tell a genuine regression
+from a Postgres that fell over — and the mutation load is heavy enough to do
+that. #5047 saw six specs report *"baseline is RED — 2 failing"*; every one was
+`connect ENOENT /tmp/.s.PGSQL.5432`. Before believing a baseline failure, check
+the server is up and re-run one suite directly.
 
 `/ci` uses a **launch-and-watch protocol** (see `ci.md`): the wrapper runs in the background and YOU poll `.ci-local/RESULT` on a loop — never end the turn "waiting for the CI report". A lost subagent hand-off here used to stall the whole ship loop until a human poked it; `.ci-local/RESULT` on disk is the completion signal, not any agent's reply.
 

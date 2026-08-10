@@ -64,7 +64,7 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ⚠️ **"STOP" IN THIS STEP ENDS THE ROUNDS, NOT THE RUN. Read this before any stop rule below.**
 
 Every stop in Step 3 means *this diff gets no more review rounds* — fix what is
-confirmed, pay the closing round's costs, and **go to Step 5 and open the PR.**
+confirmed, pay the closing round's costs, and **continue to Step 4's pre-flight and Step 5's PR.**
 It does **not** mean park the issue and wait for a human. `/ship-issue` is the
 autonomous loop; the human boundaries are Step 5's HARD HALTS (a fork PR, a
 structurally missing required check) and a genuine blocker — a spec ambiguity you
@@ -121,7 +121,7 @@ So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` —
 
 **Run the full `/ci` only when:**
 - remote CI is itself broken or unavailable, and you need a local answer;
-- you are touching `scripts/mutations/**` or the mutation gate itself, which remote CI does not exercise the same way;
+- you renamed or deleted a test, deleted a function, or reshaped a block a mutation anchors on — see the mutation-gate note below. Remote CI DOES run `mutation-tables`, so this is about pre-empting a round-trip rather than about coverage;
 - you are about to `/release`, where the mutation gate and the full serial battery are the point.
 
 ⚠️ **THE MUTATION-GATE TRIGGER ABOVE IS WRITTEN ON THE WRONG THING, and this is
@@ -172,6 +172,8 @@ reads as a legitimate change in review. Check before every commit in this window
 ```bash
 ps -o pid=,args= -C bun | grep 'mutate\.ts' && echo "MUTATION RUN LIVE — do not commit"
 ```
+
+(`ps -C` is procps — Linux. On BSD/macOS use `ps -eo comm=,args= | awk '$1=="bun"'`.)
 
 ⚠️ **`pgrep -f` is the obvious spelling and it FALSE-POSITIVES, including on the
 bracket trick (`[m]utate.ts`).** `-f` matches other processes' full command
@@ -247,6 +249,7 @@ Two gates must be green on the head SHA: the **internal `/review-panel`** (alrea
 ⚠️ **"CLOSED", not "clean", and the difference is a bug this line used to carry.** Read as *the panel was clean*, a run that stopped on the yield rule could never satisfy it — the stop rule tells you to end the rounds before CLEAN arrives, and this line then says you are not converged, so the diff can never merge and the loop deadlocks with a finished branch and no PR. #5047 hit exactly that. A panel that stopped early has DONE its job; what it owes is the disclosure, not a verdict word.
 
 **HARD HALTS (never autonomous)** — and these are the whole list. A Step-3 yield stop is NOT one of them; see the disambiguation there. If a stop reason is not on this list and does not make the work unshippable, it ships:
+- **A Step-3 spec ambiguity you cannot resolve, or a dependency that is not merged** → HALT and ask. These are the blockers the yield stop is not: they make the work unshippable rather than merely unreviewable-further.
 - **Fork PR** (`isCrossRepository: true`) → STOP, surface provenance, get human sign-off. Never `--admin` past `fork-pr-gate`.
 - A required check that's **structurally missing** (e.g. CodeQL on a fork) → stop sign, not an override.
 - `--admin` is only for a genuinely *broken* gate, not a *slow* one — wait for `gh pr checks --watch`.

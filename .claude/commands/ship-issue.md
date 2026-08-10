@@ -363,6 +363,32 @@ After merge:
 git worktree remove ../atlas-wt-<slug>
 ```
 
+**⚠️ A FALSIFIER THAT CANNOT FAIL IS NOT A FALSIFIER — measure it, don't reason about it**
+
+Step 3 and Step 6 both say *build the falsifier*. Building one is not the same as
+having one, and the two ways a fresh falsifier turns out to be inert are both
+cheap to check and expensive to miss. Apply the mutation the test exists to catch
+and watch it go red; if it stays green the test is decoration.
+
+Measured on #5110, which hit both classes repeatedly:
+
+- **ACCIDENTAL EQUALITY — four times in one PR.** A test that distinguishes two
+  values cannot do so when the fixture makes them equal. The sharpest case: a
+  split-count assertion of `{rekeyed: 0, degenerate: 1, vocabulary_target: 1}` —
+  swapping the two SQL predicates, or pointing one at the other's population,
+  **passed the one test whose entire subject was telling them apart.** Same class
+  hit `unkeyableFacts`/`tombstonedFacts` (both 1) and the refusal's
+  `positions` (one null position, so `absent` and `repairable` were the same
+  set). Give the two states different sizes: `{0, 2, 1}`, not `{0, 1, 1}`.
+- **THE HELPER THAT MERGES WHAT THE TEST ASSERTS — three files in one PR.** A
+  logging test whose sinks all push into one array asserts the payload and the
+  message, and silently cannot see the LEVEL. Demoting `log.error` to `log.warn`
+  killed zero tests in two of those files, in the same commit that fixed it in
+  the third. If a property is part of the claim, it has to travel with the value
+  the helper returns.
+
+Neither is caught by reading. Both are caught by one mutation, in seconds.
+
 **Step 7 — The close-out check (run it; do not recall it)**
 
 Confirm each of these is TRUE by checking, and say so in the report. Every box is
@@ -375,7 +401,11 @@ one this loop has actually failed:
       in the PR body
 - [ ] every `Closes #N` issue actually closed — **verify**; GitHub only fires on
       merge into the DEFAULT branch, so milestone-branch mode never closes them
-- [ ] `git status` clean — no mutant from an interrupted run, no subagent probe
+- [ ] `git status` clean — no mutant from an interrupted run, **no subagent probe**.
+      Measured on #5110: a review subagent left a mutation applied in a file the
+      branch never touched (`object-cmp.ts`), which failed three unrelated `-pg`
+      suites and would have ridden along on a `git add -A`. Diff the SOURCE files
+      you did not edit, not just the ones you did
 - [ ] `mutation-tables` re-checked AFTER the last test edit (#5110)
 - [ ] worktree removed
 

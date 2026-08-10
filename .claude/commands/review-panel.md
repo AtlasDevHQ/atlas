@@ -25,7 +25,11 @@ If there is nothing to review, say so and stop.
 
 The reason is that comment findings are mostly *consequences* of the code findings. A comment sweep in round 1 describes code that round 1's own fixes are about to change, so its output is invalidated by the work it triggered — the round is spent and re-spent. The three code reviewers have no such dependency on each other.
 
-This is safe precisely because it is also useful: comment-only fixes are non-structural. They do not add a code path, so they almost never generate the follow-on round that a fix adding real machinery does. `comment-analyzer` is therefore the one reviewer whose findings can be gathered late without costing a round. **Do not "restore" it to every round** — that is the change this rule exists to prevent.
+This is safe precisely because it is also useful: comment-only fixes add no code path, so they rarely generate the follow-on round that a fix adding real machinery does. `comment-analyzer` is therefore the one reviewer whose findings can usually be gathered late without costing a round. **Do not "restore" it to every round** — that is the change this rule exists to prevent.
+
+⚠️ **"Rarely", not "never" — and the exception is the sweep's own output, so read its findings with the skepticism you give a code reviewer's.** This paragraph used to say a comment fix *cannot* generate a round. Measured false on #5029: the sweep flagged a docstring as inaccurate, and the rewrite **asserted a type-level guarantee that did not exist** — `message` was typed by indexing the object it was populated from, and all three values were built with `+`, which collapses to `string` under `as const`. So an accurate description of a hole was replaced by a claim of a guard nobody had built, on the one field that could carry a pg error message to a client. The *type* reviewer caught it a round later.
+
+The rule that follows is narrow: **a comment fix asserting a TYPE-LEVEL or MEASURED property is a claim, and gets verified like one** — compile the counter-example, run the probe. A comment fix restating intent is still free.
 
 Which round is final is not a prediction. It is determined structurally:
 
@@ -44,6 +48,10 @@ So: **if the caller is stopping — for any reason — run `comment-analyzer` be
 Pass `--final` to force all four in one round (useful for a docs- or comment-heavy diff, where deferring the sweep just delays the only review that matters — and it is the flag to reach for the moment you suspect this round is the last).
 
 Launch each round's reviewers in a single message (multiple `Agent` tool calls, one response) so they run concurrently. Each gets the diff scope and is told to review only the changed lines:
+
+⚠️ **This is the single largest recoverable cost in the loop, and stating the rule is evidently not enough — measure it instead.** On #5029 the three reviewers were launched one per message in BOTH round 1 and the closing round, so they ran back-to-back: **28.5m and 36m serial against 11.6m and 12.3m parallel — 41 minutes, 25% of a 2h45m session.** The run even announced "in parallel" and then made two separate calls.
+
+The instinct that causes it is wanting to read each report before starting the next. **That buys nothing here**: the reviewers are fresh-context and independent by construction, so nothing in report 1 changes what reviewer 2 should look at — that is the whole reason they are separate agents. The ONE place sequencing is correct is Step 5d, where each check audits the fix the previous one produced.
 
 > ⚠️ **Call `Agent` with `run_in_background: false` and NO `name:`.** Both matter, and getting either wrong loses the whole panel *silently* — the agents run, write complete reports, and you never see them.
 >
@@ -227,6 +235,17 @@ sweep. If you genuinely cannot mechanise it, say **why** in that line; "it is
 hard to check" is a finding about the design, and usually the design is what
 wants changing.
 
+⚠️ **A LEXICAL GUARD CANNOT TELL A QUOTATION FROM AN ASSERTION, AND THE ANSWER IS REWORD-NOT-EXEMPT.**
+
+The moment you grep for a defeated phrase, the guard fires on the docstring that quotes it to explain why it is wrong — because recording the defeated wording next to the fix is the RIGHT instinct, and it puts the forbidden string back in the file. This happened **five times** on #5029, on every guard added.
+
+Do not add a quotation exemption. An exemption is a hole shaped exactly like the thing you are guarding, and the next real instance will be written inside one. Instead:
+
+- **Describe the defeated claim, never quote it** — *"an earlier draft made the remedy conditional on maintenance completing"*, not the sentence itself.
+- **Keep the exact defeated wording in the guard's own matcher list**, where a reader can still see what was ruled out and the scan cannot trip over it.
+
+Two corollaries the same session paid for. **Match the concept, not the historical sentence** — the sentence-pinned matchers walked straight past every natural reword (`is running` vs `is reconciling`, `no other lock` vs `nothing else, ever`), which is the near-miss that lets a guard read green over a live instance. And **a positive control per matcher is not enough**: both sides are hand-written by the same author, so every matcher passes its own planted case by construction. Add a NEGATIVE control of legitimate prose — on #5029 it caught two over-broad matchers, one of which fired on its own refutation.
+
 This is the repo's existing ratchet, moved one loop over. `docs/agents/audits.md`
 already says it for audits — *"when an audit finds the same class of drift in two
 separate runs, that's the signal to promote the check to a CI guard … Audits are
@@ -256,6 +275,14 @@ Batch them: one `Agent` call per must-fix, all in one message, `run_in_backgroun
 ⚠️ **Fresh context is the entire mechanism, and it is not a preference.** **Four times inside #5077's review alone**, a fix reproduced the defect it fixed, one layer over, with the principle written down correctly nearby and twice in the same commit — and one of those was the fix for the previous one. (The looser pattern, round N breaking round N−1's fix, has recurred since #4767/#4768 across #5022, #5027, #5031, #5032, #5033, #5068 and #5088; this step targets the sharper subset.) Step 5b cannot catch it: a sibling sweep searches the tree that **exists**, and the recurrence is in the new surface being written as the fix. You cannot catch it either, for the reason this whole command exists — the context that wrote the fix holds the argument for why the fix is right, which is what hides the repeat. Round 2 of #5077 caught exactly this, and caught it *a round too late*: the check is the same check, moved inside the round that produced the fix.
 
 Report one line per must-fix alongside the fixes — the same place Step 6's named falsifiers go. **A round with an unresolved `REPRODUCED` is not clean**, whatever the three code reviewers said.
+
+⚠️ **TWO CONSECUTIVE `REPRODUCED` ON THE SAME PRINCIPLE MEANS STOP PATCHING INSTANCES AND BUILD THE CHECK.** This loop had no stopping rule and needed one.
+
+Measured on #5029: **five** consecutive passes returned `REPRODUCED`, every one the same principle one arm over — *a refusal asserting a cause its SQLSTATE cannot establish*. `too-slow` assumed a timeout where `57014` is also a cancel; `ingest` assumed the extraction fiber where the namespace had gained a second taker **in that very PR**; `table-lock` assumed maintenance where the real holder is usually a concurrent publish; then three prose copies of those causes survived in comments after the messages were fixed. Each fix was correct about the instance it was handed and blind to the sibling, because 5d shows you ONE fix at a time — which is exactly what makes it good at finding the repeat and bad at ending it.
+
+What ended it was a lexical guard, and **the guard immediately caught two more instances the reviewer had not listed**, then a fifth during the closing sweep. So the escalation is not a judgement call: after the second REPRODUCED, the finding has stopped being about a site and started being about a class, and Step 5b's ratchet applies — fix the instance AND write the cheapest mechanical thing that makes a third impossible, in that round.
+
+⚠️ Sequencing is the one thing 5d needs that Step 2 forbids: these run **one per message**, because each audits the fix the previous one produced.
 
 ⚠️ **`CANNOT TELL` is not a pass.** It means the principle could not be made universal or the diff was not the whole fix — either way the check measured nothing, and a round that counts it as "not REPRODUCED" has certified a fix nothing looked at. That is the byte-blessing shape #5077 exists to refuse, reproduced in the instrument built to catch it. Re-run with a repaired universal or the complete diff; if it still cannot tell, say so in the round report as an **open** item rather than resolving it silently. Likewise, a `CLEAN` that does not name the added surface it checked is indistinguishable from one that did not look — send it back.
 

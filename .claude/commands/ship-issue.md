@@ -309,6 +309,18 @@ that. #5047 saw six specs report *"baseline is RED — 2 failing"*; every one wa
 `connect ENOENT /tmp/.s.PGSQL.5432`. Before believing a baseline failure, check
 the server is up and re-run one suite directly.
 
+⚠️ **A live-but-CONTENDED database produces the subtler version: a STALE table rather
+than a red baseline.** The per-suite kill COUNTS shift under load, so the check reports
+a table as drifted when nothing drifted. Measured on #5029 — `subject-cmp.md` came back
+STALE locally while remote CI's `mutation-tables` passed on the same SHA, after the run
+had been sharing the scratch DB with repeated `--affected` sweeps.
+
+The tell is diagnostic and takes ten seconds: **is any suite named in that table actually
+in your diff?** If none is, your branch cannot have made it stale. Re-run that one spec
+alone on a quiet database (`bun run scripts/mutate.ts scripts/mutations/<spec>.ts --check`)
+before regenerating — regenerating on contended numbers commits a measurement CI will
+disagree with, which is worse than the stale table you started with.
+
 `/ci` uses a **launch-and-watch protocol** (see `ci.md`): the wrapper runs in the background and YOU poll `.ci-local/RESULT` on a loop — never end the turn "waiting for the CI report". A lost subagent hand-off here used to stall the whole ship loop until a human poked it; `.ci-local/RESULT` on disk is the completion signal, not any agent's reply.
 
 **Step 5 — Open the PR, then drive it to merge**
@@ -319,6 +331,50 @@ the server is up and re-run one suite directly.
 `/pr` branches/commits/pushes and opens the PR with `Closes #<N>`.
 
 ⚠️ **If the Step-3 panel stopped early, the PR body owes the CURVE and the residue** — rounds with both numbers per round (`round 2: 17 — 4 new surface, 13 defect-in-prior-fix`), why the loop closed, and what was consciously left as a follow-up. That disclosure is what makes an early stop legitimate rather than a shortcut: the reviewer opening the PR is the human the stop rule wanted told, and the PR body is where they are standing.
+
+⚠️ **Before you wait on anything, ask GitHub what this PR will CLOSE. Not what you meant it to close.**
+
+```bash
+gh pr view <N> -R AtlasDevHQ/atlas --json closingIssuesReferences \
+  --jq '.closingIssuesReferences[].number'
+```
+
+Every number that comes back must be one you intend. GitHub's keyword parser matches
+`fix|fixes|close|closes|resolve|resolves` + `#N` **anywhere in the body or any commit
+message, and it does not read negation** — so a sentence written to say the opposite
+closes the issue.
+
+Measured on #5029, whose PR body and squash commit both carried *"It does not **fix
+#5000** by itself, and that was the finding all along"*. #5000 is a long-lived tracking
+bug that closes on **prod verification, not merge**; it closed at the same second the PR
+merged and had to be reopened by hand. The prose was not sloppy — the whole finding was
+that the change does NOT fix that bug, so the sentence anyone writes to disclose it is
+the sentence that trips the parser.
+
+Verified against the offending PR itself — `gh pr view 5116 … --jq '…[].number'` answers
+`5000` and `5029`, where only `5029` was intended. The check is not theoretical and it
+is one command.
+
+⚠️ **It then caught the PR that ADDED it, twice — once in the body and once in a commit
+message — because both quoted the offending sentence in order to explain it.** That is
+the quotation trap `/review-panel`'s ratchet section describes, arriving through
+GitHub's parser: a parser is a lexical guard, and a lexical guard cannot tell a
+quotation from an assertion. The resolution is the same one — **reword, never exempt.**
+
+Two things follow, and both are cheap:
+
+- **Put the keyword AFTER the number.** *"#5000 is not fixed by this"* is safe;
+  *"does not fix #5000"* is not, and neither is any tense (`fixed`, `closed`,
+  `resolved`) nor a cross-repo form (`owner/repo#N` still closes). Backticks are not a
+  reliable escape — do not rely on them.
+- **Re-run the query after your LAST push, not just after opening the PR.** Commit
+  messages are parsed too, so an amend or a fresh commit can reintroduce it under a
+  green earlier check. On this PR the body was fixed first and the query still answered
+  `5000`, because the commit still carried it.
+
+Run it at Step 5, not Step 7: here the body is still editable. Safe phrasings keep the
+verb away from the number (*"#5000 is not fixed by this"*); a cross-repo reference does
+**not** help, since `owner/repo#N` still closes.
 
 Two gates must be green on the head SHA: the **internal `/review-panel`** (already run in Step 3) and **required CI**. Third-party review bots are now the *exception* — the panel is the review — so handle them only when one is actually on the PR. The settling point is the **first full CI completion**, not an open-ended wait for reviewers that may not exist.
 
@@ -399,6 +455,10 @@ one this loop has actually failed:
       diff, `comment-analyzer` on the closing round (#5110)
 - [ ] every must-fix fixed, every named falsifier BUILT, RUN, and its measurement
       in the PR body
+- [ ] **no issue closed that should NOT have** — re-run Step 5's
+      `closingIssuesReferences` query against the merged PR and reconcile it with what
+      you intended. A tracking bug that closes on prod verification is the case this
+      catches (#5029 closed #5000 on the word "fix" inside "does not fix")
 - [ ] every `Closes #N` issue actually closed — **verify**; GitHub only fires on
       merge into the DEFAULT branch, so milestone-branch mode never closes them
 - [ ] `git status` clean — no mutant from an interrupted run, **no subagent probe**.
@@ -412,6 +472,8 @@ one this loop has actually failed:
 **Step 7 — Report**
 
 ⚠️ **Record rounds AND minutes per round in the ROADMAP entry.** Round counts have been recorded since #5027; wall clock never has, and without it there is no way to tell whether a change that makes rounds more thorough is buying fewer of them or just costing more. Two numbers per issue — `rounds: 3 (22m / 31m / 14m)` — is the whole ask, and it is what makes the Step 6 split above falsifiable.
+
+⚠️ **Take the per-round minutes from each agent's REPORTED duration, and write nothing you cannot source.** Nothing in this loop measures elapsed session time, so an end-to-end figure is a guess wearing a measurement's formatting — the exact defect the panel spends its rounds removing from the code. #5029's ROADMAP entry shipped *"~7h end to end"* on a **2h45m** session, beside per-round numbers that were real. Record the agent durations, note what share of the run they represent if you know it, and leave the rest blank.
 
 
 PR URL · issue closed · CI/merge status · panel rounds it took, with the CURVE if it stopped early · **each external reviewer's verdict** (addressed / acknowledged) · anything you halted on.

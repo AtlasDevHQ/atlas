@@ -56632,7 +56632,7 @@
             }
           },
           "500": {
-            "description": "Internal server error",
+            "description": "Import failed and the transaction rolled back — nothing was written. The `message` is deliberately GENERIC and the `requestId` is the handle: the underlying driver error is recorded server-side against that id and is not echoed here, because a `pg` message routinely embeds row content, constraint and column names, and — on a connection failure — the internal host and port (#5106).",
             "content": {
               "application/json": {
                 "schema": {

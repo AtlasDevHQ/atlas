@@ -2130,7 +2130,7 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
   // ⚠️ THE DECLINED ROWS ARE SPLIT BY CAUSE, NOT COUNTED AS ONE (#5109 round 2).
   //
   // `new_key` is NULL for two reasons, and they are not one problem — which is
-  // the distinction the ⚠️ two blocks up is already emphatic about, and which a
+  // the distinction the `IS NOT NULL` block above is already emphatic about, and which a
   // single `skipped` count re-collapses one layer above the arm that draws it:
   //
   //   * `surface_norm IS NULL` — the SURFACE asserts nothing (`-`, `___`).
@@ -2209,6 +2209,30 @@ export const REKEY_DRIFTED_FACTS_SQL: Readonly<Record<SlotPosition, string>> = O
   object: rekeyDriftedFactsSql("object"),
 });
 /**
+ * A `count(*)::int` {@link rekeyDriftedFacts} is willing to act on.
+ *
+ * ⚠️ `typeof v === "number"` IS NOT ENOUGH, and the gap fails OPEN on the one
+ * value that decides the alarm. `NaN` is a number, and `NaN > 0` is **false** —
+ * so a `NaN` in `skipped_vocabulary_target` would sail past a `typeof` guard and
+ * then silently select *"existing facts now carry the keys this vocabulary
+ * decides"*: a success sentence about the exact population the split exists to
+ * make visible. The guard meant to prevent that would be the thing delivering it.
+ *
+ * `NaN` is reachable without a bug in Postgres. `VocabularyExecutor` is
+ * deliberately satisfiable by any `{ query }`, and `pg`'s int4 parser is
+ * `parseInt`, which yields `NaN` on any non-numeric text.
+ *
+ * Written in the DENY polarity for `vocabulary.ts`'s stated reason — its lock
+ * probe guards the identical "read an int off a one-row probe" with
+ * `Number.isFinite` and argues that *"a deny point written in the permissive
+ * polarity is how the fix becomes the defect."* `Number.isInteger` also encodes
+ * what `count(*)` can return and the type cannot: a non-negative whole number.
+ */
+export function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+/**
  * Run the drift re-key for one position, INSIDE the decide transaction.
  *
  * ## Why it stays in this transaction, stated rather than discovered
@@ -2233,29 +2257,6 @@ export const REKEY_DRIFTED_FACTS_SQL: Readonly<Record<SlotPosition, string>> = O
  * per-workspace, and the alternative trades a bounded latency for an unbounded
  * correctness window.
  */
-/**
- * A `count(*)::int` this function is willing to act on.
- *
- * ⚠️ `typeof v === "number"` IS NOT ENOUGH, and the gap fails OPEN on the one
- * value that decides the alarm. `NaN` is a number, and `NaN > 0` is **false** —
- * so a `NaN` in `skipped_vocabulary_target` would sail past a `typeof` guard and
- * then silently select *"existing facts now carry the keys this vocabulary
- * decides"*: a success sentence about the exact population the split exists to
- * make visible. The guard meant to prevent that would be the thing delivering it.
- *
- * `NaN` is reachable without a bug in Postgres. `VocabularyExecutor` is
- * deliberately satisfiable by any `{ query }`, and `pg`'s int4 parser is
- * `parseInt`, which yields `NaN` on any non-numeric text.
- *
- * Written in the DENY polarity for `vocabulary.ts`'s stated reason — its lock
- * probe guards the identical "read an int off a one-row probe" with
- * `Number.isFinite` and argues that *"a deny point written in the permissive
- * polarity is how the fix becomes the defect."* `Number.isInteger` also encodes
- * what `count(*)` can return and the type cannot: a non-negative whole number.
- */
-export function isCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
-}
 
 async function rekeyDriftedFacts(
   tx: VocabularyExecutor,
@@ -2365,11 +2366,14 @@ async function rekeyDriftedFacts(
   //
   //   `skippedDegenerateSurface` — 0194's tombstoned population. Nothing to do;
   //     the set is closed and shrinks only, so a flat number is health.
-  //   `skippedVocabularyTarget` — ⚠️ THE ONE TO ACT ON. Live, un-tombstoned
-  //     rows whose surface keys fine, left on their old key because this
-  //     workspace's `brain_vocabulary_target` maps their norm to something that
-  //     normalizes away. The closure and the corpus now disagree, and no
-  //     re-key repairs it — the entry does.
+  //   `skippedVocabularyTarget` — ⚠️ THE ONE TO ACT ON. Rows whose surface keys
+  //     fine, left on their old key because this workspace's
+  //     `brain_vocabulary_target` maps their norm to something that normalizes
+  //     away. The closure and the corpus now disagree, and no re-key repairs it
+  //     — the entry does. TYPICALLY live, but NOT scoped by `invalidated_at` or
+  //     `valid_to` (see the ⚠️ below) — an earlier cut of this line asserted
+  //     "live, un-tombstoned" as a premise and the retraction landed only on
+  //     the consequence, leaving a reader the wrong answer first.
   //
   // Counted against the EXPRESSION being NULL rather than by testing the key
   // column for the placeholder prefix, which is the rule migration 0187's

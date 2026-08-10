@@ -62,6 +62,8 @@ let statements: string[] = [];
  * know whether anything committed (#5106 round 2).
  */
 let rollbackFailure: Error | null = null;
+/** When set, `BEGIN` throws this — a socket that was dead before anything ran. */
+let beginFailure: Error | null = null;
 /** What `release()` was called WITH. `undefined` = pooled; an Error = destroyed. */
 let releasedWith: unknown[] = [];
 /** Saved so the suite leaves the environment as it found it. */
@@ -70,6 +72,7 @@ let priorInternalSecret: string | undefined;
 const FAKE_CLIENT = {
   query: async (sql: string) => {
     statements.push(typeof sql === "string" ? sql : String(sql));
+    if (sql === "BEGIN" && beginFailure !== null) throw beginFailure;
     if (sql === "ROLLBACK" && rollbackFailure !== null) throw rollbackFailure;
     // BEGIN and COMMIT always succeed: a failure there is a different test, and
     // one here would mask the arm under test.
@@ -235,6 +238,7 @@ describe("the import's error responses — both handlers", () => {
   beforeEach(() => {
     queryFailure = null;
     rollbackFailure = null;
+    beginFailure = null;
     releasedWith = [];
     statements = [];
     logged.length = 0;
@@ -490,6 +494,39 @@ describe("the import's error responses — both handlers", () => {
         "the rollback failure was logged below `error` — it reports a possibly-poisoned pooled " +
           "connection and an unknown transaction outcome",
       ).toBe("error");
+    });
+
+    it("⭐ a BEGIN that never succeeded is NOT uncertain — nothing could have been written", async () => {
+      // ⚠️ `begun` is what makes the uncertain body honest in BOTH directions.
+      // `pool.connect()` can hand back a dead socket: BEGIN throws, the catch's
+      // ROLLBACK throws on the same socket, and `rollbackErr` is set — but
+      // `importBundle` never ran, so nothing could have been written. Reporting
+      // "inspect the destination workspace first" here sends a human to audit a
+      // workspace on the one path where the answer is knowable.
+      //
+      // The log must agree with the body: round 3 keyed the message on
+      // `rollbackErr` alone while the body used `rollbackErr && begun`, so this
+      // case produced a log saying "the transaction's fate is unknown" beside a
+      // body saying "all changes rolled back". Both now read one derived answer.
+      beginFailure = new Error("Connection terminated unexpectedly");
+      rollbackFailure = new Error("Connection terminated unexpectedly");
+
+      const res = await post(minimalBundle());
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as ErrorBody;
+      expect(
+        body.error,
+        "a BEGIN that never resolved was reported as an uncertain outcome — nothing ran, so " +
+          "`nothing was written` is established rather than assumed",
+      ).toBe("import_failed");
+
+      const failureLine = logged.find((e) => e.message.includes("import failed"));
+      expect(
+        (failureLine?.payload as { rolledBack?: boolean }).rolledBack,
+        "the log and the body disagreed about the same transaction",
+      ).toBe(true);
+      // The client is still destroyed — the socket is untrustworthy either way.
+      expect(releasedWith[0]).toBeInstanceOf(Error);
     });
 
     it("⭐ a REFUSAL whose rollback also failed is uncertain, NOT a confident 409", async () => {

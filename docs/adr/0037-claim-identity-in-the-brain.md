@@ -258,6 +258,8 @@ The existing fixtures agree **by construction** — in the `-pg` suites the pred
 
 - **The eval lane produces the fixture; the deterministic suite consumes it.** Humans author the *messages*; the real extractor supplies the *predicates*; regeneration is a **reviewed commit**.
 - **Prerequisite, and it is not test work:** `ANTHROPIC_API_KEY` is **not wired**, and `eval-informational-gate.sh` treats `skipped` as a pass — so the repo's only real-model gate has been **permanently green without ever running**, with a 3-byte baseline. Wire the secret and make `skipped` fatal *before* the lane is trusted.
+
+  **Half shipped in [#5040](https://github.com/AtlasDevHQ/atlas/issues/5040):** `skipped` is now a failure for every label except an explicit opt-in list, so the identity eval lane is fail-closed from its first run rather than by anyone remembering to ask. The exemption exists **only** because the secret is still unwired — `eval-mcp-llm` is its sole entry, and [#5039](https://github.com/AtlasDevHQ/atlas/issues/5039) removes it in the same change that adds the key. Until then the finding above stands as written for that one job: it has still never run.
 - **Every prohibition is paired with a positive control** that proves the machinery ran. Most targets here pass green against machinery that does nothing at all.
 - **One corpus, three verdicts** — each consumer asserts a different verdict on the same rows, so they cannot drift into disagreeing about what collides.
 - **One side of every identity assertion must be a value the system produced, not a value the test wrote.**

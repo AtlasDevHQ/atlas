@@ -255,6 +255,13 @@ jobs:
       - name: Adversarial fixtures for the mutation-tables gate (#5077)
         run: bash scripts/__tests__/check-mutation-tables.test.sh
 
+      # Enumerated here for the reason stated above. This one gates the
+      # eval workflow's own pass/fail meaning — it must not be the suite
+      # that only ever ran locally. Pure bash, no network; well under a
+      # second.
+      - name: Adversarial fixtures for the eval informational gate (#5040)
+        run: bash scripts/__tests__/eval-informational-gate.test.sh
+
       - name: Check test-file discipline (1.5.4 / #2796)
         run: bash scripts/check-test-discipline.sh
 

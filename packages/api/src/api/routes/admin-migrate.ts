@@ -21,13 +21,12 @@ import {
   lexicalNorm,
   slotKey,
   type ClaimVocabulary,
-  type SlotPosition,
 } from "@atlas/api/lib/brain/identity";
 import {
   VOCABULARY_LOCK_NAMESPACE,
   VOCABULARY_LOCK_SQL,
   loadClaimVocabulary,
-  recomputeEffectiveTargets,
+  mergeApprovedEdges,
 } from "@atlas/api/lib/brain/vocabulary";
 import {
   regionPortableComparable,
@@ -773,8 +772,64 @@ const ImportResultSchema = z.object({
   brainFacts: z.object({ imported: z.number(), skipped: z.number() }),
   brainEdges: z.object({ imported: z.number(), skipped: z.number() }),
   factAudienceMembers: z.object({ imported: z.number(), skipped: z.number() }),
-  brainVocabularyEdges: z.object({ imported: z.number(), skipped: z.number() }),
+  // Three counters, alone among the sections (#5036). `skipped` is the benign
+  // half — an edge already approved here onto the SAME target; `refused` is a
+  // source-region human decision this region dropped because it would have
+  // closed a cycle or taken a second parent. `ImportResult` carries the argument
+  // for why the two must not be one number.
+  brainVocabularyEdges: z.object({
+    imported: z.number(),
+    skipped: z.number(),
+    refused: z.number(),
+  }),
 });
+
+/**
+ * Compile-time pin: the response SCHEMA and the published wire TYPE agree.
+ *
+ * All thirteen sections are spelled twice — once as Zod here, once as
+ * `ImportResult` in `@useatlas/types` — with nothing tying them together, so the
+ * OpenAPI contract this route publishes could silently stop describing what it
+ * returns. #5036 had to update both by hand and nothing would have caught
+ * missing one; a section added to the schema alone would document a field no
+ * client receives, and one added to the type alone would return a field the
+ * spec denies exists.
+ *
+ * Both directions, deliberately: assignability alone is satisfied by a schema
+ * that dropped a field. `migrate.ts`'s `_everySectionReconciled` is the same
+ * idiom two modules over, which is why this is a pin rather than a comment.
+ */
+/**
+ * ⚠️ ITS REACH, STATED EXACTLY — because the first version of this comment
+ * overclaimed in precisely the way this whole pin exists to prevent.
+ *
+ * The assignability pair catches a REQUIRED field added or dropped on either
+ * side, nested counters included. The key-set arm adds one thing the pair cannot
+ * see: an OPTIONAL top-level SECTION, since `{a} extends {a, b?}` holds in both
+ * directions.
+ *
+ * NEITHER arm sees an optional NESTED counter — a `refused?: number` added to
+ * one spelling and not the other still compiles, because the top-level key sets
+ * are unchanged and assignability tolerates the optional. Declaring a counter
+ * REQUIRED is what keeps it pinned, which is the reason `refused` is required on
+ * `ImportResult`.
+ */
+// ⚠️ The two key-set directions are checked as SEPARATE nested conditions, not
+// unioned. While the spellings agree both `Exclude`s are `never`, and a union of
+// nevers trips `no-duplicate-type-constituents` + `no-redundant-type-constituents`
+// in `lint:type-aware` — a CI-blocking gate. Nesting keeps the pin lint-clean and
+// keeps each direction separately falsifiable.
+type _SchemaMatchesWireType = z.infer<typeof ImportResultSchema> extends ImportResult
+  ? ImportResult extends z.infer<typeof ImportResultSchema>
+    ? [Exclude<keyof z.infer<typeof ImportResultSchema>, keyof ImportResult>] extends [never]
+      ? [Exclude<keyof ImportResult, keyof z.infer<typeof ImportResultSchema>>] extends [never]
+        ? true
+        : never
+      : never
+    : never
+  : never;
+const _importResultSchemaMatchesWireType: _SchemaMatchesWireType = true;
+void _importResultSchemaMatchesWireType;
 
 const importRoute = createRoute({
   method: "post",
@@ -1402,7 +1457,7 @@ export async function importBundle(
     brainFacts: { imported: 0, skipped: 0 },
     brainEdges: { imported: 0, skipped: 0 },
     factAudienceMembers: { imported: 0, skipped: 0 },
-    brainVocabularyEdges: { imported: 0, skipped: 0 },
+    brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -1772,7 +1827,7 @@ export async function importBundle(
     result.agentSessionMemory.imported++;
   }
 
-  // --- 9. The curated identity vocabulary (#5022, ADR-0037 §6/§8) ---
+  // --- 9. The curated identity vocabulary (#5022, ADR-0037 §6/§8; merged by #5036) ---
   // It travels because the identity keys on every imported fact are
   // `alias(lexicalNorm(surface))` and ADR-0037 §8 carries those keys verbatim —
   // a workspace that arrived without its vocabulary would hold keys nothing in
@@ -1786,107 +1841,70 @@ export async function importBundle(
   // legacy arm would compose only the destination's own pre-existing decisions
   // and discard the source's, which is the half of §4's merge that exists to be
   // composed. Nothing else moved: this block touches only the two vocabulary
-  // tables, and `recomputeEffectiveTargets` reads no fact.
+  // tables, and the closure rebuild inside the merge reads no fact.
   //
-  // `ON CONFLICT DO NOTHING` on the at-most-one-parent key, which is the
-  // deliberately CONSERVATIVE half of this block. An arriving edge whose
-  // `fromNorm` is already approved onto something else in this region is
-  // SKIPPED, never applied over the top: the destination's edge is a decision a
-  // human here made, and silently retargeting it is exactly the rewrite
-  // ADR-0037 §6 forbids at approval time. #5036 owns the real merge — union the
-  // approved edges, refuse cycle-closing ones, log every refusal — and this
-  // skip is what keeps the gap from being a corruption in the meantime.
+  // ⚠️ THE MERGE IS `mergeApprovedEdges`, NOT A STATEMENT SPELLED HERE, and that
+  // is the whole shape of #5036. Until it landed this block was an
+  // `ON CONFLICT DO NOTHING` — deliberately conservative, and wrong in a way
+  // that only shows up against a destination that ALREADY holds a vocabulary:
   //
-  // ⚠️ TWO residuals, recorded rather than papered over. Both need a
-  // destination that ALREADY holds a vocabulary, which the ordinary migration
-  // flow (a fresh region) does not produce — they are the re-import and
-  // merge-into-occupied cases #5036 owns.
+  //   1. `DO NOTHING` is destination-wins-SILENTLY. That is the right rule for
+  //      every other section here, because a conversation in both regions is the
+  //      same conversation — but a vocabulary edge is a HUMAN REVIEW DECISION,
+  //      and two regions can hold contradictory ones legitimately. Skipping
+  //      discarded the source's approved review work with no record it existed.
+  //   2. It did not look for CYCLES at all, so an arriving edge could close one
+  //      against a destination edge. Nothing corrupt committed — the closure
+  //      rebuild refuses to commit a non-converging closure — but it aborted the
+  //      ENTIRE import rather than dropping the one offending edge.
   //
-  //   1. Skipping means an imported workspace can end up with FEWER aliases
-  //      than the bundle carried, and nothing says which. Visible in the counts
-  //      (`skipped > 0`) and no further; the surfacing is #5036's refusal log.
-  //   2. `ON CONFLICT DO NOTHING` does not look for CYCLES, so an arriving edge
-  //      can close one against a destination edge. That does not corrupt
-  //      anything — the closure rebuild below refuses to commit a
-  //      non-converging closure — but it aborts the ENTIRE import transaction
-  //      rather than dropping the one offending edge. Loud and recoverable
-  //      beats silent and not; refusing the edge instead is #5036's job, and
-  //      doing it here would be implementing the merge this PR scopes out.
+  // Both are now the merge's job: it unions the approved edges, refuses the ones
+  // that would close a cycle or take a second parent, LOGS every refusal with
+  // enough of the source row to re-author it, and recomputes the closure once
+  // per position that gained an edge. It lives in `lib/brain/vocabulary.ts`
+  // beside `approveAliasEdge` so the two write paths share one copy of the four
+  // refusal rules — and because `lib/` must not import from `api/routes/`.
   //
-  // ⚠️ THE LOCK IS TAKEN BEFORE THE INSERT LOOP, AND THE ORDER IS THE POINT.
-  //
-  // `approveAliasEdge` acquires the advisory lock FIRST and then touches rows.
-  // An importer that inserts first and reaches the lock only inside
-  // `recomputeEffectiveTargets` acquires the same two resources in the opposite
-  // order, so two writers sharing a `from_norm` close a cycle: the approver
-  // holds the advisory lock and blocks on the importer's uncommitted row, while
-  // the importer blocks on the advisory lock. Postgres resolves it with `40P01
-  // deadlock detected`, and the victim — sometimes the entire region import — is
-  // whichever transaction it picks.
-  //
-  // This is recorded at length because the acquisition was REMOVED once, on the
-  // reasoning that `recomputeEffectiveTargets` takes the same lock so an earlier
-  // acquisition was redundant. That reasoning is wrong in the way lock-ordering
-  // arguments usually are: the later lock does not block in the same PLACE, and
-  // the displacement IS the bug. Measured — with the removal, an approver and an
-  // import over the same norm deadlock; with it restored, they serialize and the
-  // approver gets its typed `already-aliased` refusal.
-  //
-  // Re-taking it inside `recomputeEffectiveTargets` costs nothing:
-  // `pg_advisory_xact_lock` is re-entrant within a transaction.
-  const vocabularyEdges = bundle.brainVocabularyEdges ?? [];
-  if (vocabularyEdges.length > 0) {
-    await client.query(VOCABULARY_LOCK_SQL, [VOCABULARY_LOCK_NAMESPACE, orgId]);
-  }
+  // ⚠️ THE LOCK IS TAKEN INSIDE THE MERGE, BEFORE ITS FIRST INSERT, and the
+  // order is the point: an importer that inserts first and reaches the lock only
+  // at closure-rebuild time acquires the same two resources in the opposite
+  // order to `approveAliasEdge`, and two writers sharing a `from_norm` deadlock
+  // (`40P01`) with the whole region import as a possible victim. That
+  // acquisition was removed once on a redundancy argument and had to be
+  // restored; `mergeApprovedEdges` carries the long version of the story.
+  const vocabularyMerge = await mergeApprovedEdges(
+    client,
+    orgId,
+    (bundle.brainVocabularyEdges ?? []).map((edge) => ({
+      // No cast: `validateBundle` narrowed this through `isSlotPosition`, and
+      // `mergeApprovedEdges` asks for a `SlotPosition` — so assignability here
+      // IS the check, and drift between the wire union and `SlotPosition`
+      // surfaces as a compile error at this line. An `as SlotPosition` would
+      // suppress exactly that error. This is the call site `identity.ts`'s
+      // `_SlotPositionsCoverTheWire` pin names.
+      position: edge.slotPosition,
+      fromNorm: edge.fromNorm,
+      toNorm: edge.toNorm,
+      approvedBy: edge.approvedBy ?? null,
+      approvedAt: edge.approvedAt,
+    })),
+  );
 
-  const vocabularyPositionsTouched = new Set<SlotPosition>();
-  for (const edge of vocabularyEdges) {
-    const inserted = await client.query(
-      `INSERT INTO brain_vocabulary_edge
-         (workspace_id, slot_position, from_norm, to_norm, approved_by, approved_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (workspace_id, slot_position, from_norm) DO NOTHING`,
-      [orgId, edge.slotPosition, edge.fromNorm, edge.toNorm, edge.approvedBy ?? null, edge.approvedAt],
-    );
-
-    // `!== 0`, deliberately NOT `(rowCount ?? 0) !== 0`: an ABSENT `rowCount` is
-    // UNKNOWN and must rebuild, while a reported `0` is a definite conflict that
-    // needs none. Gating the rebuild on a `?? 0` would make it depend on the one
-    // value whose absence means "did this land?" is unanswerable, and an
-    // executor that omits it would then commit an edge with NO closure row —
-    // precisely the half-rebuilt state `loadClaimVocabulary` refuses to load.
-    //
-    // The COUNTER below takes the opposite default on purpose: unknown counts as
-    // skipped, because `skipped > 0` is the only signal that a curated decision
-    // was dropped and a counter should under-claim rather than over-claim.
-    // No `as SlotPosition` here: `validateBundle` narrowed it through
-    // `isSlotPosition`, and a cast would suppress exactly the compile error that
-    // drift between the wire union and `SlotPosition` should produce. That is
-    // the call site `identity.ts`'s `_SlotPositionsCoverTheWire` pin names.
-    if (inserted.rowCount !== 0) vocabularyPositionsTouched.add(edge.slotPosition);
-
-    if ((inserted.rowCount ?? 0) === 0) {
-      result.brainVocabularyEdges.skipped++;
-      continue;
-    }
-    result.brainVocabularyEdges.imported++;
-  }
-
-  // The closure is RECOMPUTED, never carried — which is why the bundle has no
-  // `brainVocabularyTargets` section and `brain_vocabulary_target` is classified
-  // 'stays'. Restoring a source closure into a destination that already holds
-  // its own vocabulary would produce a closure of neither: the source's rows
-  // know nothing about the destination's edges, and the destination's know
-  // nothing about the arrivals. Recomputing from the edges now present is the
-  // only answer that is a closure of what this region actually approves.
+  // Three counters, and the split is the point of the slice. `skipped` is the
+  // BENIGN half — an edge this region already holds with the same target, i.e.
+  // what an idempotent re-import looks like from the inside. `refused` is a
+  // source-region human decision this region dropped. Reporting them as one
+  // number would restore the exact conflation the `DO NOTHING` had: an operator
+  // reading `skipped: 2` cannot tell a clean re-import from two discarded
+  // approvals, and only one of those needs them to go and re-author something.
   //
-  // Deliberately NOT a re-derive of anything ADR-0037 §8 says must be carried.
-  // §8's rule is about identity KEYS, where re-deriving fails to OVER-match (the
-  // irreversible direction); this is a derived relation whose inputs are all
-  // present in the same transaction, so recomputation is exact.
-  for (const position of vocabularyPositionsTouched) {
-    await recomputeEffectiveTargets(client, orgId, position);
-  }
+  // ⚠️ `migrate.ts` reconciles these against the manifest count and ABORTS the
+  // migration before cutover if they do not add up, so `refused` had to be added
+  // to that sum in the same change — otherwise the first genuinely conflicting
+  // edge would fail a whole cutover instead of being logged and carried on past.
+  result.brainVocabularyEdges.imported = vocabularyMerge.applied;
+  result.brainVocabularyEdges.skipped = vocabularyMerge.duplicate;
+  result.brainVocabularyEdges.refused = vocabularyMerge.refusals.length;
 
   // --- 10. Company brain (#4767, ADR-0036) — facts ride inside their episode ---
   // Ordering is load-bearing, and it is the reason facts are NESTED rather

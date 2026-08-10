@@ -260,7 +260,8 @@ describe("bundle round-trip shape", () => {
       brainFacts: { imported: 9, skipped: 3 },
       brainEdges: { imported: 4, skipped: 0 },
       factAudienceMembers: { imported: 2, skipped: 5 },
-      brainVocabularyEdges: { imported: 1, skipped: 4 },
+      // Three counters here alone (#5036).
+      brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;
@@ -276,6 +277,21 @@ describe("bundle round-trip shape", () => {
     expect(total(result.brainFacts)).toBe(12);
     expect(total(result.brainEdges)).toBe(4);
     expect(total(result.factAudienceMembers)).toBe(7);
+    // ⚠️ THE COUNTER SET, not a sum of literals this test just wrote. Summing
+    // `1 + 4 + 6 === 11` is arithmetic over its own fixture and cannot go red
+    // for any production change.
+    //
+    // What the key set adds, stated at its real strength: it catches a counter
+    // RENAMED or REMOVED, and it catches a REQUIRED fourth one (which stops the
+    // literal above type-checking, so someone has to edit it). An OPTIONAL
+    // fourth counter slips past both. The reconciliation behaviour that would
+    // need revisiting is pinned in `migrate.test.ts`; this file pins shape, and
+    // `bun run type` is what enforces it.
+    expect(Object.keys(result.brainVocabularyEdges).toSorted()).toEqual([
+      "imported",
+      "refused",
+      "skipped",
+    ]);
   });
 });
 

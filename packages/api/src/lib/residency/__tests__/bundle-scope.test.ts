@@ -141,18 +141,141 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     }
   });
 
-  it("every exported table is actually written by the import implementation", () => {
-    const importSource = readFileSync(
-      join(import.meta.dir, "..", "..", "..", "api", "routes", "admin-migrate.ts"),
+  /**
+   * Where each exported table's RESTORING statement lives.
+   *
+   * `admin-migrate.ts` for everything by default — it is the import path, and
+   * for an ordinary section the INSERT is spelled there inline.
+   *
+   * ⚠️ `brain_vocabulary_edge` is the one delegation, and it is a delegation
+   * rather than a loophole (#5036). Restoring an alias edge is a MERGE, not an
+   * insert: the arriving edge has to be screened against this region's own
+   * approved edges for at-most-one-parent and for cycles, which are the exact
+   * four rules `approveAliasEdge` applies. Spelled a second time in the route
+   * they would drift, and `lib/` must not import from `api/routes/` — so the
+   * shared implementation lives in `lib/brain/vocabulary.ts` and the route calls
+   * `mergeApprovedEdges`.
+   *
+   * ⚠️ A DELEGATED WRITER NAMES ITS FUNCTION, and the scoping is load-bearing
+   * rather than tidiness. `vocabulary.ts` contains TWO
+   * `INSERT INTO brain_vocabulary_edge` statements — `approveAliasEdge`'s and
+   * `mergeApprovedEdges`' — so a whole-file search stays true after the IMPORT
+   * path's write is deleted outright, which is precisely the drift this arm
+   * exists to catch. The single-file form never had that problem, because
+   * `admin-migrate.ts` held exactly one. Searching only the delegated function's
+   * own body restores the original strength.
+   */
+  const IMPORT_WRITER: Readonly<
+    Partial<Record<string, { readonly path: readonly string[]; readonly symbol: string }>>
+  > = {
+    brain_vocabulary_edge: {
+      path: ["..", "..", "brain", "vocabulary.ts"],
+      symbol: "export async function mergeApprovedEdges",
+    },
+  };
+  const DEFAULT_IMPORT_WRITER = ["..", "..", "..", "api", "routes", "admin-migrate.ts"] as const;
+
+  /**
+   * The source of the declaration `symbol` opens, up to the next top-level
+   * declaration, with COMMENTS STRIPPED.
+   *
+   * ⚠️ Both halves are load-bearing and the first cut of this helper had neither.
+   *
+   * Comments, because the terminator matches a DECLARATION line and every
+   * declaration in this repo is preceded by a docblock — so the slice ran to the
+   * end of the NEXT function's documentation, roughly 10 KB whose tail was the
+   * whole of `removeAliasEdge`'s docblock. Nothing in that tail quotes the
+   * statement TODAY; the hazard is that in a codebase whose docblocks routinely
+   * quote SQL, a tripwire a COMMENT can satisfy is not a tripwire. Delete the
+   * real INSERT, mention it in the next function's prose, and the suite goes
+   * green. The falsifier below pins that directly rather than resting on a
+   * measurement that drifts with every comment edit in `vocabulary.ts`.
+   *
+   * The wider terminator, because `export enum` / `export default` /
+   * `export abstract class` / `export function*` were all unmatched — and an
+   * unmatched terminator runs the slice to EOF, so everything BELOW
+   * `mergeApprovedEdges` counts as its body. No statement down there satisfies
+   * the tripwire today, which is exactly why that failure would be silent: the
+   * first `INSERT INTO brain_vocabulary_edge` added below this function would
+   * stand in for the merge's own. (`approveAliasEdge`'s INSERT sits ABOVE the
+   * start point and is structurally out of reach either way — the slice only
+   * extends forward.)
+   */
+  const stripComments = (source: string): string =>
+    source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  const declarationBody = (source: string, symbol: string): string => {
+    const src = stripComments(source);
+    const start = src.indexOf(symbol);
+    expect(start, `delegated writer '${symbol}' no longer exists`).toBeGreaterThanOrEqual(0);
+    const rest = src.slice(start + symbol.length);
+    const end = rest.search(
+      /\nexport (?:default |declare |abstract )?(?:async function|function\*?|const|interface|type|class|enum) /,
+    );
+    return end === -1 ? rest : rest.slice(0, end);
+  };
+
+  it("declarationBody isolates the delegated writer — the tripwire's own falsifier", () => {
+    // ⚠️ `declarationBody` is machinery INSIDE a guard, so it needs its own
+    // guard: a slicer that quietly returned the whole file would make the arm
+    // below pass for every possible edit, which is worse than no arm at all.
+    // The `removeAliasEdge` bound and the comment-stripping case were both RED
+    // against this helper's first cut.
+    const vocabularySource = readFileSync(
+      join(import.meta.dir, "..", "..", "brain", "vocabulary.ts"),
       "utf8",
     );
+    const mergeBody = declarationBody(vocabularySource, "export async function mergeApprovedEdges");
+
+    // It stops before the neighbour BELOW it. `removeAliasEdge` is the one whose
+    // docblock the un-stripped slice swept up, so that bound is the assertion
+    // that was actually red.
+    expect(mergeBody).not.toContain("export async function removeAliasEdge");
+    // `approveAliasEdge` holds the OTHER `INSERT INTO brain_vocabulary_edge` and
+    // sits ABOVE the start point, so it can never appear in a forward-only
+    // slice. Kept as a readability marker naming the statement this arm exists
+    // to exclude — NOT a falsifier: it is vacuously true for any implementation.
+    expect(mergeBody).not.toContain("export async function approveAliasEdge");
+
+    // And a COMMENT cannot satisfy it. `removeAliasEdge`'s docblock follows the
+    // merge in the file, so an un-stripped slice swept it up — and any docblock
+    // quoting the statement would then stand in for the code.
+    const withPretendComment = declarationBody(
+      `export async function mergeApprovedEdges() { return 1; }\n` +
+        `/** INSERT INTO brain_vocabulary_edge — prose, not code */\n` +
+        `export async function next() {}\n`,
+      "export async function mergeApprovedEdges",
+    );
+    expect(withPretendComment).not.toContain("INSERT INTO brain_vocabulary_edge");
+  });
+
+  it("every exported table is actually written by the import implementation", () => {
     for (const table of EXPORTED_TABLES) {
+      const delegated = IMPORT_WRITER[table];
+      const relative = delegated?.path ?? DEFAULT_IMPORT_WRITER;
+      const source = readFileSync(join(import.meta.dir, ...relative), "utf8");
+      const writer = relative[relative.length - 1];
+      const haystack = delegated ? declarationBody(source, delegated.symbol) : source;
+      const where = delegated ? `${writer}'s ${delegated.symbol.split(" ").pop()}` : writer;
       expect(
-        importSource.includes(`INSERT INTO ${table}`),
-        `bundle-scope.ts says '${table}' is exported, but admin-migrate.ts has no ` +
+        haystack.includes(`INSERT INTO ${table}`),
+        `bundle-scope.ts says '${table}' is exported, but ${where} has no ` +
           `'INSERT INTO ${table}' — the bundle would be produced but never restored.`,
       ).toBe(true);
     }
+  });
+
+  it("the import path still REACHES every delegated writer", () => {
+    // The half the lookup above cannot check on its own. Pointing the tripwire
+    // at another file proves a statement exists there; it does not prove the
+    // route still calls it. Without this, deleting the `mergeApprovedEdges` call
+    // from `admin-migrate.ts` would leave the vocabulary silently unrestored
+    // with every drift test green — which is precisely the failure the original
+    // single-file assertion was strong against, handed back the moment the
+    // indirection was allowed.
+    const routeSource = readFileSync(join(import.meta.dir, ...DEFAULT_IMPORT_WRITER), "utf8");
+    expect(Object.keys(IMPORT_WRITER)).toEqual(["brain_vocabulary_edge"]);
+    expect(routeSource).toContain("mergeApprovedEdges(");
   });
 
   it("org-scoped tables classified 'platform' stay a pinned, deliberate exemption set", () => {

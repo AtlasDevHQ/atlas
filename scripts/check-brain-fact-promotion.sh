@@ -139,6 +139,34 @@
 #     the fail direction is opposite to `visible_to`'s — a bad pre-widening
 #     grant over-WITHHOLDS attribution, which is recoverable, where a bad
 #     `visible_to` would over-disclose.
+#     SINCE #5035 IT ALSO WRITES THE IDENTITY KEYS, and #5036 records it here
+#     for `correction.ts`'s reason exactly: the entry is WHOLE-FILE, so it
+#     already covers what follows whether or not anyone writes it down, which is
+#     precisely why it has to be written down rather than left to the scan.
+#     WHAT IT DOES WITH THEM: the explicit column INSERT carries `subject_key`,
+#     `predicate_key` and `object_key` verbatim off a v3 bundle, and computes
+#     them ONCE for a legacy v1/v2 one via `alias_dest(lexicalNorm(surface))`.
+#     WHY THAT IS A ROW-COPY AND NOT A SECOND CANONICALIZER: ADR-0037 §8 — *a
+#     row-copy path carries keys verbatim; a claim-supply path never supplies
+#     them*. §1 prohibits a PRODUCER computing identity; this copies rows that
+#     were already keyed in another region of the same product. The legacy arm
+#     is the one place it computes rather than copies, and it is bounded to
+#     bundles that carry no keys at all — where the alternative is not "carry"
+#     but "leave NULL", which the NOT NULL slot keys forbid.
+#     ⚠️ WHAT THE ENTRY THEREFORE COSTS, stated because it is load-bearing: a
+#     future `UPDATE brain_facts SET subject_key = …` added to THIS file would
+#     be exempt, silently — it was allowlisted for `status` long before it had
+#     any business near a key. The compensating pins are
+#     `migrate-roundtrip-pg.test.ts`'s verbatim-carry assertions (read against
+#     what the BUNDLE carried, not against literals the test also wrote) and
+#     `keys-not-on-the-wire.test.ts`.
+#     ⚠️ IT IS ALSO THE ONE IMPORT PATH THAT NOW WRITES NO VOCABULARY STATEMENT
+#     OF ITS OWN (#5036). The arriving alias edges are merged by
+#     `lib/brain/vocabulary.ts`'s `mergeApprovedEdges`, which the route calls —
+#     so a reader looking here for the vocabulary's restore will not find it,
+#     and `bundle-scope.test.ts` is what keeps that delegation honest in both
+#     directions. Nothing about the fact-key story above changes: the merge
+#     touches the two vocabulary tables only, and reads no fact.
 #
 #   packages/api/src/lib/brain/correction.ts
 #     `correct_fact` (#4915) — the SECOND gate-time decision maker this
